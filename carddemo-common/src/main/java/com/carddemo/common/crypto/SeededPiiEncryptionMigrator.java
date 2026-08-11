@@ -29,22 +29,22 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * :purpose: Bring the regulated columns protected by {@link CryptoConverter} to a
- *     fully-encrypted state at rest before the service accepts traffic. The
- *     migration seed data is written as human-readable fixed-width values taken
- *     from the legacy ASCII fixtures, and AES-GCM ciphertext cannot be produced in
- *     SQL, so the rows land unencrypted; every subsequent read of them then fails
- *     because the converter cannot decrypt plaintext. This component closes that
- *     gap by encrypting exactly the values that are not already ciphertext.
- * :output: For each configured column, the number of rows encrypted, logged as a
- *     single summary line. No column value is ever logged.
- * :note: The pass is idempotent and safe to re-run: a value that already decrypts
- *     under the configured key is left untouched, so restarts, several services
- *     running the pass concurrently, and re-seeded environments all converge to the
- *     same state. It runs during context initialization (before the web server
- *     accepts requests) so no caller can observe a half-encrypted table.
+ *     fully-encrypted state at rest before the service accepts traffic. The migration seed
+ *     data is written as human-readable fixed-width values taken from the legacy ASCII
+ *     fixtures, and AES-GCM ciphertext cannot be produced in SQL, so the rows land
+ *     unencrypted; every subsequent read of them then fails because the converter cannot
+ *     decrypt plaintext. This component closes that gap by encrypting exactly the values that
+ *     are not already ciphertext.
+ * :output: For each configured column, the number of rows encrypted, logged as a single
+ *     summary line. No column value is ever logged.
+ * :note: The pass is idempotent and safe to re-run: a value that already decrypts under
+ *     the configured key is left untouched, so restarts, several services running the pass
+ *     concurrently, and re-seeded environments all converge to the same state. It runs during
+ *     context initialization (before the web server accepts requests) so no caller can observe
+ *     a half-encrypted table.
  * :note: It never DEcrypts a column. If the configured key does not match existing
- *     ciphertext, those rows are reported and left alone rather than being
- *     re-encrypted under the new key, which would destroy the original values.
+ *     ciphertext, those rows are reported and left alone rather than being re-encrypted under
+ *     the new key, which would destroy the original values.
  */
 public class SeededPiiEncryptionMigrator implements InitializingBean {
 

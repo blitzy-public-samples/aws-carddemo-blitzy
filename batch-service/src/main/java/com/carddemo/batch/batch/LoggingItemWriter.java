@@ -26,28 +26,25 @@ import org.springframework.batch.infrastructure.item.ItemWriter;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * :purpose: Generic, log-only {@link ItemWriter} that records processed-record
- *  counts for the sequential read/print "dump" jobs migrated from the legacy
- *  COBOL batch programs ``CBACT01C`` (account master), ``CBACT02C`` (card
- *  master), ``CBACT03C`` (card cross-reference) and ``CBCUS01C`` (customer
- *  master), and reused as the pass-through sink for the ``CBTRN01C``
- *  daily-transaction validation-read pass. It is the Java analogue of the
- *  legacy ``DISPLAY`` record sink and emits counts only — the record-type label
- *  and the number of records seen — never the contents of any item, so no card
- *  number, CVV, SSN, government id, customer name or balance reaches the log
- *  stream (PII safety).
- * :note: The class carries no annotation of its own: the sibling ``config``
- *  package declares one writer per consuming step as a ``@Bean @StepScope``
- *  factory method returning ``new LoggingItemWriter<>(label)``. The step scope is
- *  part of the contract, because the running total below belongs to one step
- *  execution: a single instance shared by a singleton step accumulated across
- *  every execution and interleaved between concurrent ones.
- * :note: Structured JSON logging and the ``correlationId`` MDC key are supplied
- *  by the module's ``logback-spring.xml`` together with
- *  {@link CorrelationIdContext}; this writer only ensures a correlation id is
- *  present before it logs.
- * :param <T>: the item type streamed by the step; its contents are never
- *  inspected or logged.
+ * :purpose: Generic, log-only {@link ItemWriter} that records processed-record counts for
+ *     the sequential read/print "dump" jobs migrated from the legacy COBOL batch programs
+ *     ``CBACT01C`` (account master), ``CBACT02C`` (card master), ``CBACT03C`` (card
+ *     cross-reference) and ``CBCUS01C`` (customer master), and reused as the pass-through sink
+ *     for the ``CBTRN01C`` daily-transaction validation-read pass. It is the Java analogue of
+ *     the legacy ``DISPLAY`` record sink and emits counts only — the record-type label and the
+ *     number of records seen — never the contents of any item, so no card number, CVV, SSN,
+ *     government id, customer name or balance reaches the log stream (PII safety).
+ * :note: The class carries no annotation of its own: the sibling ``config`` package
+ *     declares one writer per consuming step as a ``@Bean @StepScope`` factory method
+ *     returning ``new LoggingItemWriter<>(label)``. The step scope is part of the contract,
+ *     because the running total below belongs to one step execution: a single instance shared
+ *     by a singleton step accumulated across every execution and interleaved between
+ *     concurrent ones.
+ * :note: Structured JSON logging and the ``correlationId`` MDC key are supplied by the
+ *     module's ``logback-spring.xml`` together with {@link CorrelationIdContext}; this writer
+ *     only ensures a correlation id is present before it logs.
+ * :param <T>: the item type streamed by the step; its contents are never inspected or
+ *     logged.
  */
 public class LoggingItemWriter<T> implements ItemWriter<T> {
 

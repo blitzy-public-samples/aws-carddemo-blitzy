@@ -33,23 +33,22 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
- * :purpose: Maintain the principal-to-session index that makes session revocation
- *     possible across the stateless CardDemo services. Sign-on records the session it
- *     created for a security-user id; administrator user maintenance uses the index to
- *     invalidate every live session of a user whose role changed or who was deleted, so
- *     a stale authorization cannot survive for the remainder of the session timeout.
- * :output: A Redis set per user id (``<namespace>:principal:<userId>``) whose members
- *     are live session ids, expiring with the session timeout.
+ * :purpose: Maintain the principal-to-session index that makes session revocation possible
+ *     across the stateless CardDemo services. Sign-on records the session it created for a
+ *     security-user id; administrator user maintenance uses the index to invalidate every live
+ *     session of a user whose role changed or who was deleted, so a stale authorization cannot
+ *     survive for the remainder of the session timeout.
+ * :output: A Redis set per user id (``<namespace>:principal:<userId>``) whose members are
+ *     live session ids, expiring with the session timeout.
  * :note: The index is intentionally explicit rather than relying on Spring Session's
  *     indexed repository: the indexed repository requires Redis keyspace-notification
- *     configuration (``CONFIG SET``) that a hardened, managed Redis often refuses,
- *     which would make startup fail. This implementation needs no server configuration.
+ *     configuration (``CONFIG SET``) that a hardened, managed Redis often refuses, which would
+ *     make startup fail. This implementation needs no server configuration.
  * :note: All operations fail soft: a Redis error is logged and treated as "no sessions
- *     known" so an index problem can never block sign-on or user maintenance. Deleting
- *     the session itself always goes through the session repository, so the correct
- *     namespace and serializer are used. When no Redis template or session repository is
- *     available (a web-layer slice test, for example) the index is inert and every
- *     operation is a no-op.
+ *     known" so an index problem can never block sign-on or user maintenance. Deleting the
+ *     session itself always goes through the session repository, so the correct namespace and
+ *     serializer are used. When no Redis template or session repository is available (a
+ *     web-layer slice test, for example) the index is inert and every operation is a no-op.
  */
 public class SessionPrincipalIndex {
 

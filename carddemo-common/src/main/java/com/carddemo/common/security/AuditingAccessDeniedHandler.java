@@ -32,12 +32,12 @@ import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.access.AccessDeniedHandler;
 
 /**
- * :purpose: Answer an authenticated-but-unauthorized request with HTTP
- *     ``403 Forbidden`` and write one audit record naming the denied principal, so a
- *     role-boundary probe (for example a ``ROLE_USER`` session reaching an
- *     administrator-only route) is always visible in the log stream. A denial raised for
- *     a caller who is not authenticated at all is handed to the ``401`` entry point
- *     instead, so an unauthenticated caller always receives ``401`` whatever refused it.
+ * :purpose: Answer an authenticated-but-unauthorized request with HTTP ``403 Forbidden``
+ *     and write one audit record naming the denied principal, so a role-boundary probe (for
+ *     example a ``ROLE_USER`` session reaching an administrator-only route) is always visible
+ *     in the log stream. A denial raised for a caller who is not authenticated at all is
+ *     handed to the ``401`` entry point instead, so an unauthenticated caller always receives
+ *     ``401`` whatever refused it.
  * :output: A ``403`` response carrying the shared ``ErrorResponse`` envelope plus one
  *     ``WARN`` audit record; or, for an unauthenticated caller, the ``401`` and the audit
  *     record the entry point writes.
@@ -45,16 +45,16 @@ import org.springframework.security.web.access.AccessDeniedHandler;
  *     ``AnonymousAuthenticationFilter``, so a missing-token denial on a write reaches this
  *     handler with an empty ``SecurityContext``. Spring Security's
  *     ``ExceptionTranslationFilter`` decides between the entry point and this handler with
- *     ``AuthenticationTrustResolver``, whose ``isAnonymous(null)`` is ``false`` — which
- *     turned an unauthenticated ``POST`` into ``403`` while an unauthenticated ``GET``
- *     answered ``401``. The SPA returns to sign-on on ``401`` and keeps the screen on
- *     ``403``, so the inconsistency left an expired session silently refused instead of
- *     returning the operator to sign-on.
+ *     ``AuthenticationTrustResolver``, whose ``isAnonymous(null)`` is ``false`` — which turned
+ *     an unauthenticated ``POST`` into ``403`` while an unauthenticated ``GET`` answered
+ *     ``401``. The SPA returns to sign-on on ``401`` and keeps the screen on ``403``, so the
+ *     inconsistency left an expired session silently refused instead of returning the operator
+ *     to sign-on.
  * :note: As with the ``401`` entry point the response carries the shared refusal envelope:
- *     a fixed message, the request path with any PAN redacted, and the trace and
- *     correlation ids that tie it to the audit record above. The denied caller is told that
- *     the request was refused and that the refusal is recoverable, and nothing more — no
- *     resource, no principal and no reason beyond the status.
+ *     a fixed message, the request path with any PAN redacted, and the trace and correlation
+ *     ids that tie it to the audit record above. The denied caller is told that the request
+ *     was refused and that the refusal is recoverable, and nothing more — no resource, no
+ *     principal and no reason beyond the status.
  */
 public class AuditingAccessDeniedHandler implements AccessDeniedHandler {
 

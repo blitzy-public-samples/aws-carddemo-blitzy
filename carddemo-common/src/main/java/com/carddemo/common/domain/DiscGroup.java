@@ -11,22 +11,19 @@ import java.util.Objects;
 
 /**
  * JPA entity for the CardDemo disclosure-group record.
- *
- * :purpose: Maps the legacy COBOL ``DIS-GROUP-RECORD`` layout (copybook
- *     ``CVTRA02Y``, fixed length 50 bytes) onto the ``disclosure_group``
- *     relational table, preserving the legacy field names, field widths and the
- *     monetary scale of the interest rate so that the migrated monthly-interest
- *     calculation remains byte-identical. The three-part ``DIS-GROUP-KEY``
- *     (account group id, transaction type code, transaction category code) is the
- *     composite primary key, bound through {@link DiscGroupId} via
- *     {@code @IdClass(DiscGroupId.class)}. The trailing COBOL ``FILLER`` is
- *     intentionally not persisted.
- * :output: A persistent disclosure-group aggregate exposing the three key
- *     components and the disclosure interest rate. The interest rate is stored as
- *     a fixed-scale {@link java.math.BigDecimal} on a ``NUMERIC(6,2)`` column,
- *     supplying the ``DIS-INT-RATE`` operand of the batch interest formula
- *     ``(TRAN-CAT-BAL * DIS-INT-RATE) / 1200`` without rounding or normalization
- *     at the persistence layer.
+ * :purpose: Maps the legacy COBOL ``DIS-GROUP-RECORD`` layout (copybook ``CVTRA02Y``,
+ *     fixed length 50 bytes) onto the ``disclosure_group`` relational table, preserving the
+ *     legacy field names, field widths and the monetary scale of the interest rate so that the
+ *     migrated monthly-interest calculation remains byte-identical. The three-part
+ *     ``DIS-GROUP-KEY`` (account group id, transaction type code, transaction category code)
+ *     is the composite primary key, bound through {@link DiscGroupId} via {@code
+ *     @IdClass(DiscGroupId.class)}. The trailing COBOL ``FILLER`` is intentionally not
+ *     persisted.
+ * :output: A persistent disclosure-group aggregate exposing the three key components and
+ *     the disclosure interest rate. The interest rate is stored as a fixed-scale {@link
+ *     java.math.BigDecimal} on a ``NUMERIC(6,2)`` column, supplying the ``DIS-INT-RATE``
+ *     operand of the batch interest formula ``(TRAN-CAT-BAL * DIS-INT-RATE) / 1200`` without
+ *     rounding or normalization at the persistence layer.
  */
 @Entity
 @Table(name = "disclosure_group")

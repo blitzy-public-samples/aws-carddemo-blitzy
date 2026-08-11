@@ -1,17 +1,17 @@
 /**
  * :module: ``frontend/src/components/display.ts``
- * :purpose: The display and error-text helpers the screen components share, held in
- *     one module so the seventeen pages do not each carry their own copy of the same
- *     three rules: how a wire value is rendered into a BMS field, how a COBOL blank
- *     test is applied to an entry value, and which text a failed call puts on line 23.
- * :output: The named ``displayText``, ``displayField``, ``parseWireDecimal``,
- *     ``isBlank`` and ``resolveApiErrorMessage`` helpers.
- * :note: Presentation only. No value is reformatted, rounded or re-scaled here: a
- *     money string stays the exact ``NUMERIC(p,s)`` decimal string the service sent
- *     and a date stays ``YYYY-MM-DD``. Every numeric wire field arrives as a string
- *     (the services serialize identifiers, amounts and scores as strings so COBOL
- *     scale and field width survive), so these helpers accept ``string`` and a
- *     caller holding a genuine ``number`` converts it explicitly.
+ * :purpose: The display and error-text helpers the screen components share, held in one
+ *     module so the seventeen pages do not each carry their own copy of the same three rules:
+ *     how a wire value is rendered into a BMS field, how a COBOL blank test is applied to an
+ *     entry value, and which text a failed call puts on line 23.
+ * :output: The named ``displayText``, ``displayField``, ``parseWireDecimal``, ``isBlank``
+ *     and ``resolveApiErrorMessage`` helpers.
+ * :note: Presentation only. No value is reformatted, rounded or re-scaled here: a money
+ *     string stays the exact ``NUMERIC(p,s)`` decimal string the service sent and a date stays
+ *     ``YYYY-MM-DD``. Every numeric wire field arrives as a string (the services serialize
+ *     identifiers, amounts and scores as strings so COBOL scale and field width survive), so
+ *     these helpers accept ``string`` and a caller holding a genuine ``number`` converts it
+ *     explicitly.
  */
 
 import type { ApiError } from '../api';
@@ -62,24 +62,21 @@ export function displayZoned(value: number, digits: number): string {
 }
 
 /**
- * :purpose: Apply the menu screens' own option edit, exactly as ``COMEN01C`` L118-L129
- *     and ``COADM01C`` perform it. The entered text is right justified into
- *     ``WS-OPTION-X PIC X(02) JUST RIGHT``, its blanks become zeros
- *     (``INSPECT ... REPLACING ALL ' ' BY '0'``) and the result is moved to
- *     ``WS-OPTION PIC 9(02)``; the option is then refused when it ``IS NOT NUMERIC``,
- *     exceeds the option count, or is zero.
- *
- *     The edit belongs on the client as well as the server because the field it guards
- *     admits characters that are not digits. A 3270 numeric field accepts a minus sign
- *     and a period alongside 0-9 -- which is precisely why the program tests
- *     ``IS NOT NUMERIC`` rather than trusting the keyboard -- so an entry like ``-1``
- *     reaches the edit intact and has to be refused there. Stripping those characters
- *     as they are typed instead turns ``-1`` into the valid option ``1`` and dispatches
- *     a screen the operator never asked for.
+ * :purpose: Apply the menu screens' own option edit, exactly as ``COMEN01C`` L118-L129 and
+ *     ``COADM01C`` perform it. The entered text is right justified into ``WS-OPTION-X PIC
+ *     X(02) JUST RIGHT``, its blanks become zeros (``INSPECT ... REPLACING ALL ' ' BY '0'``)
+ *     and the result is moved to ``WS-OPTION PIC 9(02)``; the option is then refused when it
+ *     ``IS NOT NUMERIC``, exceeds the option count, or is zero. The edit belongs on the client
+ *     as well as the server because the field it guards admits characters that are not digits.
+ *     A 3270 numeric field accepts a minus sign and a period alongside 0-9 -- which is
+ *     precisely why the program tests ``IS NOT NUMERIC`` rather than trusting the keyboard --
+ *     so an entry like ``-1`` reaches the edit intact and has to be refused there. Stripping
+ *     those characters as they are typed instead turns ``-1`` into the valid option ``1`` and
+ *     dispatches a screen the operator never asked for.
  * :param value: the raw text held by the ``OPTION`` field.
- * :param optionCount: the screen's ``CDEMO-MENU-OPT-COUNT`` / ``CDEMO-ADMIN-OPT-COUNT``
- *     -- the total the map declares, not the number of options a role can see, since
- *     the role gate is a separate edit carrying its own message.
+ * :param optionCount: the screen's ``CDEMO-MENU-OPT-COUNT`` / ``CDEMO-ADMIN-OPT-COUNT`` --
+ *     the total the map declares, not the number of options a role can see, since the role
+ *     gate is a separate edit carrying its own message.
  * :returns: the accepted option number, or ``null`` when the edit refuses the entry.
  */
 export function editMenuOption(value: string, optionCount: number): number | null {
@@ -251,4 +248,52 @@ export function toSignedAmountPicture(value: string, integerDigits: number): str
     .padEnd(PICTURE_DECIMAL_DIGITS, '0')
     .slice(0, PICTURE_DECIMAL_DIGITS);
   return `${sign}${integerPart}.${fractionPart}`;
+}
+
+/** Integer digit count of the ``+ZZZ,ZZZ,ZZZ.99`` map pictures (nine ``Z`` positions). */
+export const SUPPRESSED_PICTURE_INTEGER_DIGITS = 9;
+
+/**
+ * :purpose: Edit a scale-2 monetary value into the BMS numeric edit picture
+ *     ``PICOUT='+ZZZ,ZZZ,ZZZ.99'``, which ``COACTVW`` declares on all five of its amount
+ *     fields (``ACRDLIM``, ``ACSHLIM``, ``ACURBAL``, ``ACRCYCR``, ``ACRCYDB``, each
+ *     ``LENGTH=15``). Unlike a ``PIC +9(n)V99`` receiver, a ``Z`` position SUPPRESSES a
+ *     leading zero: the zero and any comma still inside the suppressed run are replaced by
+ *     spaces, and suppression stops at the first significant digit.
+ * :param value: the value in its wire form, for example ``4998.00`` or ``-919.50``.
+ * :returns: the edited value, always exactly 15 characters: the sign, nine zero-suppressed
+ *     integer positions with their two group separators, the decimal point and two decimals.
+ *     ``4998.00`` becomes ``+ 4,998.00``.
+ * :note: Nine integer positions is what the picture declares, so a value with more of them
+ *     loses its high-order digits, exactly as a COBOL ``MOVE`` into this receiver does. The
+ *     account columns are ``NUMERIC(12,2)``, so a ten-digit balance is reachable and renders
+ *     as its low-order nine digits -- the same characters the 3270 painted.
+ */
+export function toSuppressedAmountPicture(value: string): string {
+  const trimmed = value.trim();
+  const sign = trimmed.startsWith('-') ? '-' : '+';
+  const [whole = '', fraction = ''] = trimmed.replace(/^[-+]/, '').split('.');
+  const digits = whole
+    .replace(/\D/g, '')
+    .padStart(SUPPRESSED_PICTURE_INTEGER_DIGITS, '0')
+    .slice(-SUPPRESSED_PICTURE_INTEGER_DIGITS);
+  const grouped = `${digits.slice(0, 3)},${digits.slice(3, 6)},${digits.slice(6)}`;
+  let significant = false;
+  const suppressed = Array.from(grouped)
+    .map((character) => {
+      if (significant) {
+        return character;
+      }
+      if (character === '0' || character === ',') {
+        return ' ';
+      }
+      significant = true;
+      return character;
+    })
+    .join('');
+  const fractionPart = fraction
+    .replace(/\D/g, '')
+    .padEnd(PICTURE_DECIMAL_DIGITS, '0')
+    .slice(0, PICTURE_DECIMAL_DIGITS);
+  return `${sign}${suppressed}.${fractionPart}`;
 }

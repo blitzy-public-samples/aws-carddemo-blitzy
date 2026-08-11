@@ -36,20 +36,19 @@ import org.springframework.web.servlet.FlashMapManager;
 
 /**
  * :purpose: Apply the container-level hardening that every CardDemo servlet service
- *     shares: an inbound request-body size cap and the suppression of the container's
- *     default HTML error page, which fingerprints the server and echoes exception text
- *     to the caller. Together with the Spring Security response headers this closes the
- *     transport-level findings of the runtime security review.
+ *     shares: an inbound request-body size cap and the suppression of the container's default
+ *     HTML error page, which fingerprints the server and echoes exception text to the caller.
+ *     Together with the Spring Security response headers this closes the transport-level
+ *     findings of the runtime security review.
  * :output: A {@link RequestSizeLimitFilter} registration, a Tomcat customizer that
- *     silences the ``ErrorReportValve`` report and server-info banner, and a
- *     store-nothing {@link FlashMapManager} that keeps ``DispatcherServlet`` from
- *     reading the shared session on every request.
+ *     silences the ``ErrorReportValve`` report and server-info banner, and a store-nothing
+ *     {@link FlashMapManager} that keeps ``DispatcherServlet`` from reading the shared session
+ *     on every request.
  * :note: The cap is configurable through ``carddemo.http.max-request-body-bytes`` and
  *     defaults to {@link RequestSizeLimitFilter#DEFAULT_MAX_BODY_BYTES}.
  * :note: A service activates this configuration with
- *     ``@Import(WebHardeningConfig.class)``, matching the ``@Import`` convention of the
- *     other ``carddemo-common`` configurations. It is inert outside servlet web
- *     applications.
+ *     ``@Import(WebHardeningConfig.class)``, matching the ``@Import`` convention of the other
+ *     ``carddemo-common`` configurations. It is inert outside servlet web applications.
  */
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -95,25 +94,24 @@ public class WebHardeningConfig {
     }
 
     /**
-     * :purpose: Replace the MVC default ``SessionFlashMapManager`` so
-     *     ``DispatcherServlet`` stops loading the caller's session on EVERY request to
-     *     look for flash attributes this application never produces.
-     * :returns: a {@link FlashMapManager} that reports no input flash map and keeps no
-     *     output one.
-     * :note: ``DispatcherServlet.doService`` calls the flash-map manager before routing,
-     *     and the default implementation reads the session. With a Redis-backed shared
-     *     session that read makes the hop OWN the session for the request, so Spring
-     *     Session writes it back when the response commits. That write is what turned a
-     *     successful sign-on into HTTP 500: sign-on rotates the session id — deleting the
-     *     old store entry, which is the session-fixation protection — and the gateway hop
-     *     then tried to save the entry that no longer existed
-     *     (``IllegalStateException: Session was invalidated``), outside any handler that
-     *     could recover the proxied 200. Nothing in CardDemo uses flash attributes (no
-     *     ``RedirectAttributes``, no ``RedirectView``), so the read has no purpose to
-     *     preserve, and removing it also drops one Redis round trip per request.
-     * :note: Session idle timeout is unaffected: every authenticated request still reads
-     *     the session through ``SessionContextAuthenticationFilter``, which is what
-     *     refreshes ``lastAccessedTime``.
+     * :purpose: Replace the MVC default ``SessionFlashMapManager`` so ``DispatcherServlet``
+     *     stops loading the caller's session on EVERY request to look for flash attributes this
+     *     application never produces.
+     * :returns: a {@link FlashMapManager} that reports no input flash map and keeps no output
+     *     one.
+     * :note: ``DispatcherServlet.doService`` calls the flash-map manager before routing, and
+     *     the default implementation reads the session. With a Redis-backed shared session that
+     *     read makes the hop OWN the session for the request, so Spring Session writes it back
+     *     when the response commits. That write is what turned a successful sign-on into HTTP 500:
+     *     sign-on rotates the session id — deleting the old store entry, which is the
+     *     session-fixation protection — and the gateway hop then tried to save the entry that no
+     *     longer existed (``IllegalStateException: Session was invalidated``), outside any handler
+     *     that could recover the proxied 200. Nothing in CardDemo uses flash attributes (no
+     *     ``RedirectAttributes``, no ``RedirectView``), so the read has no purpose to preserve,
+     *     and removing it also drops one Redis round trip per request.
+     * :note: Session idle timeout is unaffected: every authenticated request still reads the
+     *     session through ``SessionContextAuthenticationFilter``, which is what refreshes
+     *     ``lastAccessedTime``.
      */
     @Bean(DispatcherServlet.FLASH_MAP_MANAGER_BEAN_NAME)
     FlashMapManager flashMapManager() {

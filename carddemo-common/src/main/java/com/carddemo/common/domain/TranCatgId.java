@@ -45,6 +45,7 @@ public class TranCatgId implements Serializable {
     }
 
     /**
+     * :purpose: Read ``tranTypeCd``.
      * :return: the transaction type code component of the key
      */
     public String getTranTypeCd() {
@@ -52,6 +53,7 @@ public class TranCatgId implements Serializable {
     }
 
     /**
+     * :purpose: Set ``tranTypeCd``.
      * :param tranTypeCd: the transaction type code component of the key
      */
     public void setTranTypeCd(String tranTypeCd) {
@@ -59,6 +61,7 @@ public class TranCatgId implements Serializable {
     }
 
     /**
+     * :purpose: Read ``tranCatCd``.
      * :return: the transaction category code component of the key
      */
     public Integer getTranCatCd() {
@@ -66,6 +69,7 @@ public class TranCatgId implements Serializable {
     }
 
     /**
+     * :purpose: Set ``tranCatCd``.
      * :param tranCatCd: the transaction category code component of the key
      */
     public void setTranCatCd(Integer tranCatCd) {

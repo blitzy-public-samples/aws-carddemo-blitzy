@@ -33,41 +33,39 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedWriter;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
 /**
- * :purpose: Idempotent, ordered combine pass over the unified ``transactions``
- *  table; the Java analogue of the legacy ``COMBTRAN`` job
- *  (``app/jcl/COMBTRAN.jcl``). The legacy ``STEP05R`` sorts the transaction
- *  backup concatenated with the system-generated interest transactions by
- *  ``SORT FIELDS=(TRAN-ID,A)`` into a combined ``SORTOUT`` file, and ``STEP10``
- *  reloads that combined file into the transaction master via IDCAMS ``REPRO``.
- *  In the relational target there is a single ``transactions`` table and the
- *  interest transactions are already persisted into it by the
- *  interest-calculation job, so the reload is idempotent and this tasklet
- *  performs no INSERT, UPDATE, or DELETE. It walks the table once in ``tranId``
- *  ascending order (the ``SORT FIELDS=(TRAN-ID,A)`` semantics) and writes each
- *  transaction as a fixed-width ``CVTRA05Y`` record to the combined output file,
- *  reproducing the ``STEP05R`` ``SORTOUT`` artifact.
- * :output: The combined output file at the resolved ``outputFile`` path holding
- *  every transaction as a 350-character fixed-width record in ``tranId`` order,
- *  and a single INFO log line reporting the combined row count — the count only,
- *  never any transaction content, card number, amount, or other record field
- *  (PII safety).
- * :note: The batch ``config`` package wires this tasklet into a single-step
- *  ``Job`` via ``new StepBuilder(name, jobRepository).tasklet(tasklet,
- *  transactionManager).build()``, sets the job-level correlation id, and
- *  launches it through the auto-configured ``JobOperator``; the module's
- *  ``JdbcBatchConfiguration`` supplies the JDBC job repository with
- *  ``@EnableJdbcJobRepository`` so the run is persisted to the ``BATCH_*``
- *  tables.
- * :note: Structured JSON logging and the ``correlationId`` MDC key are supplied
- *  by the module's ``logback-spring.xml`` together with
- *  {@link CorrelationIdContext}; this tasklet only ensures a correlation id is
- *  present before it logs.
+ * :purpose: Idempotent, ordered combine pass over the unified ``transactions`` table; the
+ *     Java analogue of the legacy ``COMBTRAN`` job (``app/jcl/COMBTRAN.jcl``). The legacy
+ *     ``STEP05R`` sorts the transaction backup concatenated with the system-generated interest
+ *     transactions by ``SORT FIELDS=(TRAN-ID,A)`` into a combined ``SORTOUT`` file, and
+ *     ``STEP10`` reloads that combined file into the transaction master via IDCAMS ``REPRO``.
+ *     In the relational target there is a single ``transactions`` table and the interest
+ *     transactions are already persisted into it by the interest-calculation job, so the
+ *     reload is idempotent and this tasklet performs no INSERT, UPDATE, or DELETE. It walks
+ *     the table once in ``tranId`` ascending order (the ``SORT FIELDS=(TRAN-ID,A)`` semantics)
+ *     and writes each transaction as a fixed-width ``CVTRA05Y`` record to the combined output
+ *     file, reproducing the ``STEP05R`` ``SORTOUT`` artifact.
+ * :output: The combined output file at the resolved ``outputFile`` path holding every
+ *     transaction as a 350-character fixed-width record in ``tranId`` order, and a single INFO
+ *     log line reporting the combined row count — the count only, never any transaction
+ *     content, card number, amount, or other record field (PII safety).
+ * :note: The batch ``config`` package wires this tasklet into a single-step ``Job`` via
+ *     ``new StepBuilder(name, jobRepository).tasklet(tasklet, transactionManager).build()``,
+ *     sets the job-level correlation id, and launches it through the auto-configured
+ *     ``JobOperator``; the module's ``JdbcBatchConfiguration`` supplies the JDBC job
+ *     repository with ``@EnableJdbcJobRepository`` so the run is persisted to the ``BATCH_*``
+ *     tables.
+ * :note: Structured JSON logging and the ``correlationId`` MDC key are supplied by the
+ *     module's ``logback-spring.xml`` together with {@link CorrelationIdContext}; this tasklet
+ *     only ensures a correlation id is present before it logs.
  */
 @Component
 public class CombineTransactionsTasklet implements Tasklet {
@@ -118,21 +116,20 @@ public class CombineTransactionsTasklet implements Tasklet {
     }
 
     /**
-     * :purpose: Walk the unified ``transactions`` table once in ``tranId``
-     *  ascending order, paging through the rows, and write each transaction as a
-     *  fixed-width ``CVTRA05Y`` record to the combined output file (the
-     *  ``STEP05R`` ``SORTOUT`` artifact); emit a single aggregate INFO log line
-     *  with the combined row count. Performs no persistence or mutation of the
-     *  table.
-     * :param contribution: the step contribution for the current step execution
-     *  (not modified; this combine pass contributes no read or write count).
-     * :param chunkContext: the chunk context for the current step execution,
-     *  supplying the ``outputFile`` job parameter for the combined file path.
-     * :returns: {@link RepeatStatus#FINISHED}, signalling that the tasklet
-     *  completed its work in a single invocation.
-     * :note: An I/O failure while writing the combined file propagates out of
-     *  ``execute`` so the step ends ``FAILED`` (the batch analogue of the legacy
-     *  non-zero completion code); a clean run ends ``COMPLETED``.
+     * :purpose: Walk the unified ``transactions`` table once in ``tranId`` ascending order,
+     *     paging through the rows, and write each transaction as a fixed-width ``CVTRA05Y`` record
+     *     to the combined output file (the ``STEP05R`` ``SORTOUT`` artifact); emit a single
+     *     aggregate INFO log line with the combined row count. Performs no persistence or mutation
+     *     of the table.
+     * :param contribution: the step contribution for the current step execution (not modified;
+     *     this combine pass contributes no read or write count).
+     * :param chunkContext: the chunk context for the current step execution, supplying the
+     *     ``outputFile`` job parameter for the combined file path.
+     * :returns: {@link RepeatStatus#FINISHED}, signalling that the tasklet completed its work
+     *     in a single invocation.
+     * :note: An I/O failure while writing the combined file propagates out of ``execute`` so
+     *     the step ends ``FAILED`` (the batch analogue of the legacy non-zero completion code); a
+     *     clean run ends ``COMPLETED``.
      */
     @Override
     public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) throws Exception {
@@ -144,7 +141,18 @@ public class CombineTransactionsTasklet implements Tasklet {
         Path resolved = pathResolver.resolveOutput(outputFile);
 
         long combinedCount = 0;
-        try (BufferedWriter writer = Files.newBufferedWriter(resolved, StandardCharsets.ISO_8859_1)) {
+        // REPLACE, not report. Files.newBufferedWriter's default encoder is STRICT, so a
+        // single unrepresentable code point anywhere in the 300-row feed aborted the whole
+        // combine step with UnmappableCharacterException and left a truncated file behind.
+        // CobolRecordFormatter already reduces every text field to single-byte text before
+        // padding, so nothing unrepresentable should reach the encoder; this configuration
+        // is what guarantees that if one ever does, the job still delivers a byte-exact
+        // record with a visible '?' substitute instead of failing the whole run.
+        CharsetEncoder encoder = StandardCharsets.ISO_8859_1.newEncoder()
+                .onMalformedInput(CodingErrorAction.REPLACE)
+                .onUnmappableCharacter(CodingErrorAction.REPLACE);
+        try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+                Files.newOutputStream(resolved), encoder))) {
             int pageIndex = 0;
             List<Transaction> page;
             do {

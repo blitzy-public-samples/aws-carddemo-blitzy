@@ -31,12 +31,12 @@ import org.springframework.security.web.firewall.RequestRejectedHandler;
  * :output: The handler bean plus the {@link WebSecurityCustomizer} that hands it to
  *     ``WebSecurity``, which is what installs it on ``FilterChainProxy``.
  * :note: A ``RequestRejectedHandler`` bean is NOT wired automatically —
- *     ``WebSecurityConfiguration`` collects ``WebSecurityCustomizer`` beans and nothing
- *     else, so ``web.requestRejectedHandler(handler)`` is the supported route and the
- *     customizer below is not optional plumbing.
- * :note: Registered through the library's auto-configuration import file, so a service gets
- *     the behaviour by depending on ``carddemo-common``. Gated on the servlet stack and on
- *     Spring Security being present, so the pure batch classpath is unaffected, and on
+ *     ``WebSecurityConfiguration`` collects ``WebSecurityCustomizer`` beans and nothing else,
+ *     so ``web.requestRejectedHandler(handler)`` is the supported route and the customizer
+ *     below is not optional plumbing.
+ * :note: Registered through the library's auto-configuration import file, so a service
+ *     gets the behaviour by depending on ``carddemo-common``. Gated on the servlet stack and
+ *     on Spring Security being present, so the pure batch classpath is unaffected, and on
  *     ``@ConditionalOnMissingBean`` so a service can install a different handler.
  */
 @AutoConfiguration

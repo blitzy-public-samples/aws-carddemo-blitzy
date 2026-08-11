@@ -19,20 +19,19 @@ import apiClient from './client';
 import type { BillPayRequestDto, BillPayResponseDto } from '../types';
 
 /**
- * :purpose: Submit a bill payment for a single account, re-expressing CICS
- *   transaction ``CB00`` (program ``COBIL00C``) as ``POST /billpay`` on the
- *   api-gateway. The request is forwarded to the backend ``BillPaymentService``,
- *   which reads the account, posts a full-balance payment transaction, and
- *   returns the resulting balance.
- * :param request: the bill-payment request body. ``request.accountId`` is the
- *   11-digit, zero-padded account id as a ``string`` (never a ``number``, so the
- *   width and any leading zeros are preserved); ``request.confirm`` is the
- *   single-character ``'Y'``/``'N'`` operator confirmation (``CONFIRM`` ``X(1)``).
- *   The DTO is forwarded to the server untouched.
- * :returns: a ``Promise`` resolving to the :ts:type:`BillPayResponseDto` returned
- *   by the service (echoed account id, current balance, generated transaction id
- *   when a payment was made, and the confirmation/error message). Monetary values
- *   are left as the server-provided decimal strings and are not reformatted.
+ * :purpose: Submit a bill payment for a single account, re-expressing CICS transaction
+ *     ``CB00`` (program ``COBIL00C``) as ``POST /billpay`` on the api-gateway. The request is
+ *     forwarded to the backend ``BillPaymentService``, which reads the account, posts a
+ *     full-balance payment transaction, and returns the resulting balance.
+ * :param request: the bill-payment request body. ``request.accountId`` is the 11-digit,
+ *     zero-padded account id as a ``string`` (never a ``number``, so the width and any leading
+ *     zeros are preserved); ``request.confirm`` is the single-character ``'Y'``/``'N'``
+ *     operator confirmation (``CONFIRM`` ``X(1)``). The DTO is forwarded to the server
+ *     untouched.
+ * :returns: a ``Promise`` resolving to the :ts:type:`BillPayResponseDto` returned by the
+ *     service (echoed account id, current balance, generated transaction id when a payment was
+ *     made, and the confirmation/error message). Monetary values are left as the
+ *     server-provided decimal strings and are not reformatted.
  */
 export async function payBill(
   request: BillPayRequestDto,

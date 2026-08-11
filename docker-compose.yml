@@ -190,6 +190,13 @@ x-backend-service: &backend-service
   # the request through bash's /dev/tcp pseudo-device so it can assert on the RESPONSE
   # BODY - `grep -q UP` fails a 200 whose aggregate status is DOWN, which a bare
   # `curl -f` would pass - and so it depends on no HTTP client the base image may drop.
+  #
+  # start_period covers start-up AND the readiness warm-up that now precedes the
+  # readiness signal (carddemo-common WarmUpAutoConfiguration): a service reports UP only
+  # once its critical read path performs, which is the point of the warm-up, and its
+  # budget ceiling is 30 s on top of the ~13 s the context itself takes. 120 s leaves room
+  # for a service that spends the whole ceiling on a contended host without a single
+  # failing probe being counted against it.
   healthcheck:
     test:
       - CMD-SHELL
@@ -200,7 +207,7 @@ x-backend-service: &backend-service
     interval: 15s
     timeout: 5s
     retries: 5
-    start_period: 60s
+    start_period: 120s
   # Resource budget, mirroring `resources` in every k8s/deployment-*.yaml so one
   # image has one footprint in both runtimes. The memory limit is what each
   # image's JAVA_OPTS percentages resolve against: with no limit declared the JVM
@@ -243,7 +250,29 @@ services:
   # =========================================================================
 
   postgres:
-    image: postgres:18@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+    # Built from db/Dockerfile: the official postgres:18 image with the
+    # unreachable `gosu` privilege-dropping helper removed. Every fixable
+    # CRITICAL/HIGH finding a vulnerability scan reports against postgres:18 lives
+    # in that one statically linked binary, and no upstream tag or digest is free
+    # of it (18 and 18-alpine were both scanned). The container runs as the
+    # image's own postgres uid, so the entrypoint branch that would have called
+    # gosu is never taken. See db/Dockerfile and docs/decision-log.md.
+    build:
+      context: ./db
+      # OCI provenance (org.opencontainers.image.revision / .created) is supplied at
+      # BUILD time, so it must come from the build itself rather than from a flag a
+      # caller has to remember: an image built without it carries "unspecified" and
+      # cannot be traced back to a commit. Defaults keep an ad-hoc build working.
+      args:
+        CARDDEMO_IMAGE_VERSION: ${CARDDEMO_IMAGE_TAG:-1.0.0}
+        CARDDEMO_IMAGE_REVISION: ${CARDDEMO_IMAGE_REVISION:-unspecified}
+        CARDDEMO_IMAGE_CREATED: ${CARDDEMO_IMAGE_CREATED:-unspecified}
+    image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/postgres:${CARDDEMO_IMAGE_TAG:-1.0.0}
+    # Non-root from PID 1, matching runAsUser in k8s/deployment-postgres.yaml.
+    # 999 is the image's postgres account and owns the pgdata volume, which Docker
+    # initialises from the image's own /var/lib/postgresql ownership, so initdb and
+    # every subsequent start find a directory they own.
+    user: "999:999"
     # Bounded log retention (see x-logging).
     logging: *service-logging
     environment:
@@ -327,11 +356,13 @@ services:
         reservations:
           cpus: "0.25"
           memory: 512m
-    # The official image's entrypoint chowns the data dir and drops to the
-    # unprivileged postgres user on its own, so only no-new-privileges is added
-    # here (dropping all caps would break first-run initialization).
+    # The container starts as uid 999 (see `user:` above), so no privilege change
+    # ever happens inside it: every capability is dropped and no-new-privileges is
+    # set. initdb runs as that same uid on a volume it owns.
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     networks:
       - carddemo-net
     restart: unless-stopped
@@ -402,6 +433,14 @@ services:
     <<: *backend-service
     build:
       context: ./api-gateway
+      # OCI provenance (org.opencontainers.image.revision / .created) is supplied at
+      # BUILD time, so it must come from the build itself rather than from a flag a
+      # caller has to remember: an image built without it carries "unspecified" and
+      # cannot be traced back to a commit. Defaults keep an ad-hoc build working.
+      args:
+        CARDDEMO_IMAGE_VERSION: ${CARDDEMO_IMAGE_TAG:-1.0.0}
+        CARDDEMO_IMAGE_REVISION: ${CARDDEMO_IMAGE_REVISION:-unspecified}
+        CARDDEMO_IMAGE_CREATED: ${CARDDEMO_IMAGE_CREATED:-unspecified}
     # Tag the built image exactly as k8s/deployment-api-gateway.yaml references it, so
     # `docker compose build` produces the artifact the manifests apply against.
     # Registry and tag are overridable for a private registry or a
@@ -439,20 +478,35 @@ services:
       # Same telemetry scrape credential as every other service: the
       # gateway also publishes /actuator/prometheus and must not leave it open.
       MONITORING_PASSWORD: ${MONITORING_PASSWORD:?set MONITORING_PASSWORD in .env}
-      # Full sampling in this local stack (see the x-backend-service anchor).
-      AUTH_SERVICE_URI: http://auth-service:8080
-      USER_SERVICE_URI: http://user-service:8080
-      ACCOUNT_SERVICE_URI: http://account-service:8080
-      CARD_SERVICE_URI: http://card-service:8080
-      TRANSACTION_SERVICE_URI: http://transaction-service:8080
-      BILLPAY_SERVICE_URI: http://billpay-service:8080
-      REPORTING_SERVICE_URI: http://reporting-service:8080
-      BATCH_SERVICE_URI: http://batch-service:8080
+      # Downstream routes. The `lb` scheme, not a fixed authority: this file's services
+      # can be scaled (`docker compose up -d --scale account-service=2`), and a fixed
+      # authority is resolved once and then kept for the life of the gateway's pooled
+      # keep-alive connections - measured, one replica served 200 of 200 reads while the
+      # other sat idle, and stopping the serving replica surfaced 503 for ~11 s. `lb://`
+      # makes the gateway choose an instance per request from the address set Docker's
+      # embedded DNS publishes for the service name. Overriding one of these with a plain
+      # http:// authority still works and simply opts that route out of balancing.
+      AUTH_SERVICE_URI: lb://auth-service
+      USER_SERVICE_URI: lb://user-service
+      ACCOUNT_SERVICE_URI: lb://account-service
+      CARD_SERVICE_URI: lb://card-service
+      TRANSACTION_SERVICE_URI: lb://transaction-service
+      BILLPAY_SERVICE_URI: lb://billpay-service
+      REPORTING_SERVICE_URI: lb://reporting-service
+      BATCH_SERVICE_URI: lb://batch-service
 
   auth-service:
     <<: *backend-service
     build:
       context: ./auth-service
+      # OCI provenance (org.opencontainers.image.revision / .created) is supplied at
+      # BUILD time, so it must come from the build itself rather than from a flag a
+      # caller has to remember: an image built without it carries "unspecified" and
+      # cannot be traced back to a commit. Defaults keep an ad-hoc build working.
+      args:
+        CARDDEMO_IMAGE_VERSION: ${CARDDEMO_IMAGE_TAG:-1.0.0}
+        CARDDEMO_IMAGE_REVISION: ${CARDDEMO_IMAGE_REVISION:-unspecified}
+        CARDDEMO_IMAGE_CREATED: ${CARDDEMO_IMAGE_CREATED:-unspecified}
     # Tag the built image exactly as k8s/deployment-auth-service.yaml references it, so
     # `docker compose build` produces the artifact the manifests apply against.
     # Registry and tag are overridable for a private registry or a
@@ -470,10 +524,28 @@ services:
       # matching the carddemo-auth-service-db Secret in k8s/secret.yaml.
       SPRING_DATASOURCE_USERNAME: carddemo_auth
       SPRING_DATASOURCE_PASSWORD: ${CARDDEMO_AUTH_DB_PASSWORD:?set CARDDEMO_AUTH_DB_PASSWORD in .env}
+      # Seeded-credential provisioning for THIS local demo stack only.
+      # Flyway V10 leaves the ten seeded USRSEC accounts with a credential no input
+      # can match, because they previously shared a BCrypt hash of the documented
+      # string 'PASSWORD'. auth-service's SeedCredentialProvisioner turns them back
+      # into usable demo logins when, and only when, both of these are supplied - and
+      # the password comes from the GITIGNORED .env, never from the repository. A
+      # deployment that omits them (the default everywhere else, including
+      # k8s/configmap.yaml) comes up with those accounts locked.
+      CARDDEMO_SEED_CREDENTIALS_ENABLED: "${CARDDEMO_SEED_CREDENTIALS_ENABLED:-true}"
+      CARDDEMO_SEED_USER_PASSWORD: ${CARDDEMO_SEED_USER_PASSWORD:?set CARDDEMO_SEED_USER_PASSWORD in .env (at most 8 characters)}
   user-service:
     <<: *backend-service
     build:
       context: ./user-service
+      # OCI provenance (org.opencontainers.image.revision / .created) is supplied at
+      # BUILD time, so it must come from the build itself rather than from a flag a
+      # caller has to remember: an image built without it carries "unspecified" and
+      # cannot be traced back to a commit. Defaults keep an ad-hoc build working.
+      args:
+        CARDDEMO_IMAGE_VERSION: ${CARDDEMO_IMAGE_TAG:-1.0.0}
+        CARDDEMO_IMAGE_REVISION: ${CARDDEMO_IMAGE_REVISION:-unspecified}
+        CARDDEMO_IMAGE_CREATED: ${CARDDEMO_IMAGE_CREATED:-unspecified}
     # Tag the built image exactly as k8s/deployment-user-service.yaml references it, so
     # `docker compose build` produces the artifact the manifests apply against.
     # Registry and tag are overridable for a private registry or a
@@ -495,6 +567,14 @@ services:
     <<: *backend-service
     build:
       context: ./account-service
+      # OCI provenance (org.opencontainers.image.revision / .created) is supplied at
+      # BUILD time, so it must come from the build itself rather than from a flag a
+      # caller has to remember: an image built without it carries "unspecified" and
+      # cannot be traced back to a commit. Defaults keep an ad-hoc build working.
+      args:
+        CARDDEMO_IMAGE_VERSION: ${CARDDEMO_IMAGE_TAG:-1.0.0}
+        CARDDEMO_IMAGE_REVISION: ${CARDDEMO_IMAGE_REVISION:-unspecified}
+        CARDDEMO_IMAGE_CREATED: ${CARDDEMO_IMAGE_CREATED:-unspecified}
     # Tag the built image exactly as k8s/deployment-account-service.yaml references it, so
     # `docker compose build` produces the artifact the manifests apply against.
     # Registry and tag are overridable for a private registry or a
@@ -516,6 +596,14 @@ services:
     <<: *backend-service
     build:
       context: ./card-service
+      # OCI provenance (org.opencontainers.image.revision / .created) is supplied at
+      # BUILD time, so it must come from the build itself rather than from a flag a
+      # caller has to remember: an image built without it carries "unspecified" and
+      # cannot be traced back to a commit. Defaults keep an ad-hoc build working.
+      args:
+        CARDDEMO_IMAGE_VERSION: ${CARDDEMO_IMAGE_TAG:-1.0.0}
+        CARDDEMO_IMAGE_REVISION: ${CARDDEMO_IMAGE_REVISION:-unspecified}
+        CARDDEMO_IMAGE_CREATED: ${CARDDEMO_IMAGE_CREATED:-unspecified}
     # Tag the built image exactly as k8s/deployment-card-service.yaml references it, so
     # `docker compose build` produces the artifact the manifests apply against.
     # Registry and tag are overridable for a private registry or a
@@ -548,11 +636,29 @@ services:
       # the read-only root filesystem.
       CARDDEMO_BATCH_OUTPUT_DIR: /var/carddemo/batch/output
       CARDDEMO_BATCH_INPUT_DIR: /var/carddemo/batch/input
+    # The DALYREJS reject generations are a DELIVERABLE to a downstream consumer, so
+    # they are written to a NAMED VOLUME, not to scratch. On a tmpfs every reject file
+    # a completed run had produced disappeared the moment the container restarted while
+    # BATCH_JOB_EXECUTION still reported COMPLETED - a zero-data-loss violation
+    # (AAP 0.7.1) that no application error surfaced. The volume's ownership is
+    # inherited from the image path, which transaction-service/Dockerfile creates owned
+    # by the 1000:1000 runtime user, so a FRESH volume is writable without a root
+    # entrypoint. The input feed root stays scratch: it is read-only reference data.
+    volumes:
+      - transactionbatchoutput:/var/carddemo/batch/output
     tmpfs:
       - /tmp:mode=1777
-      - /var/carddemo/batch:mode=1777
+      - /var/carddemo/batch/input:mode=1777
     build:
       context: ./transaction-service
+      # OCI provenance (org.opencontainers.image.revision / .created) is supplied at
+      # BUILD time, so it must come from the build itself rather than from a flag a
+      # caller has to remember: an image built without it carries "unspecified" and
+      # cannot be traced back to a commit. Defaults keep an ad-hoc build working.
+      args:
+        CARDDEMO_IMAGE_VERSION: ${CARDDEMO_IMAGE_TAG:-1.0.0}
+        CARDDEMO_IMAGE_REVISION: ${CARDDEMO_IMAGE_REVISION:-unspecified}
+        CARDDEMO_IMAGE_CREATED: ${CARDDEMO_IMAGE_CREATED:-unspecified}
     # Tag the built image exactly as k8s/deployment-transaction-service.yaml references it, so
     # `docker compose build` produces the artifact the manifests apply against.
     # Registry and tag are overridable for a private registry or a
@@ -566,6 +672,14 @@ services:
     <<: *backend-service
     build:
       context: ./billpay-service
+      # OCI provenance (org.opencontainers.image.revision / .created) is supplied at
+      # BUILD time, so it must come from the build itself rather than from a flag a
+      # caller has to remember: an image built without it carries "unspecified" and
+      # cannot be traced back to a commit. Defaults keep an ad-hoc build working.
+      args:
+        CARDDEMO_IMAGE_VERSION: ${CARDDEMO_IMAGE_TAG:-1.0.0}
+        CARDDEMO_IMAGE_REVISION: ${CARDDEMO_IMAGE_REVISION:-unspecified}
+        CARDDEMO_IMAGE_CREATED: ${CARDDEMO_IMAGE_CREATED:-unspecified}
     # Tag the built image exactly as k8s/deployment-billpay-service.yaml references it, so
     # `docker compose build` produces the artifact the manifests apply against.
     # Registry and tag are overridable for a private registry or a
@@ -591,6 +705,14 @@ services:
     build:
       context: .
       dockerfile: reporting-service/Dockerfile
+      # OCI provenance (org.opencontainers.image.revision / .created) is supplied at
+      # BUILD time, so it must come from the build itself rather than from a flag a
+      # caller has to remember: an image built without it carries "unspecified" and
+      # cannot be traced back to a commit. Defaults keep an ad-hoc build working.
+      args:
+        CARDDEMO_IMAGE_VERSION: ${CARDDEMO_IMAGE_TAG:-1.0.0}
+        CARDDEMO_IMAGE_REVISION: ${CARDDEMO_IMAGE_REVISION:-unspecified}
+        CARDDEMO_IMAGE_CREATED: ${CARDDEMO_IMAGE_CREATED:-unspecified}
     # Tag the built image exactly as k8s/deployment-reporting-service.yaml references it, so
     # `docker compose build` produces the artifact the manifests apply against.
     # Registry and tag are overridable for a private registry or a
@@ -610,9 +732,16 @@ services:
       # carddemo-common's BatchOutputPathResolver proves it writable at startup.
       CARDDEMO_BATCH_OUTPUT_DIR: /var/carddemo/batch/output
       CARDDEMO_BATCH_INPUT_DIR: /var/carddemo/batch/input
+    # Statement text and HTML files are DELIVERABLES (CBSTM03A), so they live on a
+    # named volume for the same reason as the reject generations above: on a tmpfs a
+    # completed statement run left nothing behind after a restart while its
+    # JobExecution still read COMPLETED. Ownership is inherited from the image path
+    # created by reporting-service/Dockerfile.
+    volumes:
+      - reportingbatchoutput:/var/carddemo/batch/output
     tmpfs:
       - /tmp:mode=1777
-      - /var/carddemo/batch:mode=1777
+      - /var/carddemo/batch/input:mode=1777
     # Waits for the shared schema: this service does not migrate, it validates
     # (see x-schema-dependencies above).
     depends_on: *schema-dependencies
@@ -621,6 +750,14 @@ services:
     <<: *backend-service
     build:
       context: ./batch-service
+      # OCI provenance (org.opencontainers.image.revision / .created) is supplied at
+      # BUILD time, so it must come from the build itself rather than from a flag a
+      # caller has to remember: an image built without it carries "unspecified" and
+      # cannot be traced back to a commit. Defaults keep an ad-hoc build working.
+      args:
+        CARDDEMO_IMAGE_VERSION: ${CARDDEMO_IMAGE_TAG:-1.0.0}
+        CARDDEMO_IMAGE_REVISION: ${CARDDEMO_IMAGE_REVISION:-unspecified}
+        CARDDEMO_IMAGE_CREATED: ${CARDDEMO_IMAGE_CREATED:-unspecified}
     # Tag the built image exactly as k8s/deployment-batch-service.yaml references it, so
     # `docker compose build` produces the artifact the manifests apply against.
     # Registry and tag are overridable for a private registry or a
@@ -646,11 +783,17 @@ services:
       # set an upstream feed process would deliver, and is mounted read-only
       # below so the job is genuinely launchable in this environment.
       CARDDEMO_BATCH_INPUT_DIR: /var/carddemo/batch/input
+    # The nine data-management jobs' report and record-dump files are DELIVERABLES, so
+    # the output root is a named volume rather than scratch: Phase-5 QA measured 32
+    # completed output files becoming zero bytes across three services after a routine
+    # restart, with the JobRepository still reporting COMPLETED. Ownership is inherited
+    # from the image path created by batch-service/Dockerfile. The input mount stays a
+    # read-only projection of the repository's own legacy fixture.
     volumes:
       - ./app/data/ASCII:/var/carddemo/batch/input:ro
+      - batchoutput:/var/carddemo/batch/output
     tmpfs:
       - /tmp:mode=1777
-      - /var/carddemo/batch/output:mode=1777
 
   # =========================================================================
   # Frontend (React 19 SPA served by nginx). The bundle talks to the backend
@@ -674,6 +817,13 @@ services:
     build:
       context: ./frontend
       args:
+        # OCI provenance (org.opencontainers.image.revision / .created) is supplied at
+        # BUILD time, so it must come from the build itself rather than from a flag a
+        # caller has to remember: an image built without it carries "unspecified" and
+        # cannot be traced back to a commit. Defaults keep an ad-hoc build working.
+        CARDDEMO_IMAGE_VERSION: ${CARDDEMO_IMAGE_TAG:-1.0.0}
+        CARDDEMO_IMAGE_REVISION: ${CARDDEMO_IMAGE_REVISION:-unspecified}
+        CARDDEMO_IMAGE_CREATED: ${CARDDEMO_IMAGE_CREATED:-unspecified}
         VITE_API_BASE_URL: /api
         # Sign-on header AppID:/SysID: fields (legacy EXEC CICS ASSIGN APPLID / ASSIGN
         # SYSID, COSGN00C L198-L203 — the program fills both before its first SEND, so
@@ -687,7 +837,10 @@ services:
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/frontend:${CARDDEMO_IMAGE_TAG:-1.0.0}
     ports:
-      - "3000:80"
+      # nginx runs unprivileged inside the container and therefore listens on
+      # 8080, not 80 (see frontend/Dockerfile and frontend/nginx.conf). The host
+      # port the README documents is unchanged.
+      - "3000:8080"
     # Wait for the gateway to be HEALTHY, not merely started: nginx must have a
     # reachable upstream on its first proxied request. The upstream address itself
     # is re-resolved per request (frontend/nginx.conf resolver), so a gateway
@@ -704,9 +857,24 @@ services:
         reservations:
           cpus: "0.05"
           memory: 64m
+    # Liveness of the browser tier. Without a healthcheck `docker ps` reported this
+    # container as merely "Up" and an nginx that had stopped serving - a bad
+    # configuration reload, an exhausted worker set - was indistinguishable from a
+    # healthy one. The probe is the base image's own busybox wget against the SPA
+    # entry document, so it needs no extra package and runs as the unprivileged user.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     # nginx needs a few writable paths; everything else is read-only.
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     read_only: true
     tmpfs:
       - /tmp:mode=1777
@@ -730,20 +898,43 @@ services:
   # 4318 (HTTP/protobuf) and 4317 (gRPC) and serves the trace-query API and UI on
   # 16686. Without a collector in the local environment the exported spans have
   # nowhere to go and "distributed tracing verified against the local Docker
-  # Compose environment" cannot be satisfied. Storage is the in-memory badger-less
-  # default: traces are development evidence, not durable data, so no volume is
-  # mounted and nothing survives a restart by design.
+  # Compose environment" cannot be satisfied. Storage is in-memory: traces are
+  # development evidence, not durable data, so no volume is mounted and nothing
+  # survives a restart by design. What MUST NOT happen is the restart itself —
+  # see the retention and Go-runtime notes below, which together are what keeps
+  # this container inside the limit it declares.
   jaeger:
     image: jaegertracing/jaeger:2.20.0@sha256:46a886260e04002d8f45e213fc39063fa11a50446048fdaa64786fc0840cb9f8
     # Bounded log retention (see x-logging).
     logging: *service-logging
-    # Only the query UI/API is published, on loopback; the OTLP receivers stay on
-    # the private carddemo-net bridge exactly like the datastores.
-    ports:
-      - "127.0.0.1:16686:16686"
-    # Mirrors resources in k8s/deployment-jaeger.yaml. In-memory span storage is
-    # bounded by the collector's own retention, so the limit is what stops an
-    # unbounded trace buffer competing with the services for host memory.
+    # Explicit configuration document (observability/jaeger-config.yaml) instead
+    # of the binary's embedded default, whose in-memory store is bounded at
+    # max_traces 100000 — about 3.4 GB of live heap at this application's measured
+    # ~34 KB per 21-span trace, i.e. 4.2x the memory limit declared below. That
+    # default is why this container previously grew past its cgroup and was killed
+    # and restarted under load, losing every span it held. There is no environment
+    # variable for max_traces, so the bound requires owning the document; the
+    # file reproduces the rest of the embedded default and explains each delta.
+    command:
+      - --config=file:/etc/jaeger/config.yaml
+    volumes:
+      - ./observability/jaeger-config.yaml:/etc/jaeger/config.yaml:ro
+    # Go sizes its heap and its P count from the HOST unless told otherwise, so a
+    # cgroup-limited collector will happily allocate past `limits.memory` and be
+    # killed with no OOM attribution — the same defect, and the same fix, as the
+    # GOMEMLIMIT already set on the Grafana service below. GOMEMLIMIT is a SOFT
+    # limit at 67% of the 768 MiB below, leaving the balance for non-heap RSS; the
+    # store's own max_traces bound keeps the live set (~204 MB) far enough under it
+    # that the collection cycle is driven by GOGC and never by the soft limit.
+    # GOMAXPROCS 1 is the value go1.26's cgroup-aware default computes for a 0.5
+    # CPU quota, pinned here so the figure is auditable next to the quota it
+    # derives from (measured effect: 8 OS threads down to 5).
+    environment:
+      GOMEMLIMIT: 512MiB
+      GOGC: "80"
+      GOMAXPROCS: "1"
+      JAEGER_MAX_TRACES: ${JAEGER_MAX_TRACES:-6000}
+    # Mirrors resources in k8s/deployment-jaeger.yaml.
     deploy:
       resources:
         limits:
@@ -754,11 +945,30 @@ services:
           memory: 256m
     security_opt:
       - no-new-privileges:true
-    # No healthcheck: the image is a minimal distroless-style rootfs without bash,
-    # so the /dev/tcp probe the backend services use is unavailable here (it ships
-    # /bin/sh and wget, but no bash and no curl). More importantly, span export is
-    # deliberately BEST-EFFORT: no service may gate its own startup or readiness on
-    # the tracing backend, so nothing depends on jaeger's health.
+    # Span export is deliberately BEST-EFFORT — no service gates its startup or
+    # readiness on the tracing backend — but "nothing depends on it" is not a
+    # reason for its failures to be invisible: with no probe this container
+    # reported a bare "Up" through ten restarts. healthcheckv2's /status returns
+    # the aggregate component status as a document, so the probe asserts
+    # {"healthy":true} rather than merely proving a socket is bound. wget is the
+    # image's own busybox utility (the same one the frontend and Grafana probes
+    # use); this image is Alpine-based and ships /bin/sh, wget and nc.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O - http://127.0.0.1:13133/status | grep -q '"healthy":true'
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # Only the query UI/API is published, on loopback; the OTLP receivers stay on
+    # the private carddemo-net bridge exactly like the datastores. Without this the
+    # collector still receives and serves traces INSIDE the network - Grafana's
+    # datasource reaches it as http://jaeger:16686 - but the UI a developer opens to
+    # read a trace, and the query API this stack is verified through, are unreachable
+    # from the host.
+    ports:
+      - "127.0.0.1:16686:16686"
     networks:
       - carddemo-net
     restart: unless-stopped
@@ -819,11 +1029,28 @@ services:
     restart: unless-stopped
 
   grafana:
-    # Pinned to an explicit version. The provisioned dashboard is
-    # validated against this release - notably its handling of the saved `refresh`
-    # interval and the table legend - so a floating :latest could change rendering
-    # behaviour without any repository change.
-    image: grafana/grafana:13.1.2@sha256:d177053ab62253815f130d81504f77063baf5fd4ca93299d6048453bd31e047a
+    # Built from observability/Dockerfile.grafana: the pinned upstream release
+    # (13.1.3, digest-pinned there) with the two bundled datasource plugins this
+    # stack never loads - zipkin and elasticsearch - deleted. Twelve of the
+    # fourteen fixable HIGH findings a scan reports against the upstream image live
+    # in those two binaries; the dashboards use the CORE Prometheus and Jaeger
+    # datasources, so nothing this deployment relies on is removed with them.
+    # The version stays pinned because the provisioned dashboard is validated
+    # against it - notably its handling of the saved `refresh` interval and the
+    # table legend - so a floating :latest could change rendering behaviour with no
+    # repository change.
+    build:
+      context: ./observability
+      dockerfile: Dockerfile.grafana
+      # OCI provenance (org.opencontainers.image.revision / .created) is supplied at
+      # BUILD time, so it must come from the build itself rather than from a flag a
+      # caller has to remember: an image built without it carries "unspecified" and
+      # cannot be traced back to a commit. Defaults keep an ad-hoc build working.
+      args:
+        CARDDEMO_IMAGE_VERSION: ${CARDDEMO_IMAGE_TAG:-1.0.0}
+        CARDDEMO_IMAGE_REVISION: ${CARDDEMO_IMAGE_REVISION:-unspecified}
+        CARDDEMO_IMAGE_CREATED: ${CARDDEMO_IMAGE_CREATED:-unspecified}
+    image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/grafana:${CARDDEMO_IMAGE_TAG:-1.0.0}
     # Bounded log retention (see x-logging).
     logging: *service-logging
     environment:
@@ -869,8 +1096,9 @@ services:
     #
     # 384m was the original figure, on the reasoning that "one provisioned
     # datasource and one dashboard need no more". Measurement falsified that:
-    # under a real authenticated browser session rendering all 26 data panels
-    # (9 series each) the container terminated and was restarted by the policy
+    # under a real authenticated browser session rendering all 26 data panels the
+    # dashboard then carried (9 series each) the container terminated and was
+    # restarted by the policy
     # below NINE times in thirty minutes — exit code 0, not an OOM kill, so
     # nothing in `docker compose ps` or the logs announced it. Grafana 13 also
     # runs a bleve search backend that indexes on demand, which the original
@@ -888,6 +1116,10 @@ services:
     # all 26 panels held memory in a bounded 391-431 MiB sawtooth (peak 84% of
     # this cap, 8 MiB under GOMEMLIMIT) with a net trend of +0.002 MiB/min,
     # RestartCount unchanged at 0, and the live WebSocket never dropping.
+    #
+    # The "Tracing backend (Jaeger)" row added later brings the dashboard to 29
+    # data panels; its three panels carry nine series between them against the
+    # single `jaeger` scrape target, against the ~234 the soak above sustained.
     deploy:
       resources:
         limits:
@@ -926,6 +1158,14 @@ volumes:
   redisdata:
   prometheusdata:
   grafanadata:
+  # Durable batch output roots, one per writing service so a service's deliverables
+  # cannot be truncated by another's generation naming. These hold files a downstream
+  # consumer reads (DALYREJS reject generations, statement text/HTML, the report and
+  # record-dump files), so they must outlive a container restart - which is exactly
+  # what the tmpfs mounts they replaced did not do.
+  transactionbatchoutput:
+  reportingbatchoutput:
+  batchoutput:
 
 # ---------------------------------------------------------------------------
 # Inline config content. The Grafana entries wire the Prometheus and Jaeger

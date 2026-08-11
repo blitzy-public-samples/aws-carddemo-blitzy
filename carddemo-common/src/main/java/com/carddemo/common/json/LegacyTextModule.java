@@ -18,6 +18,7 @@ package com.carddemo.common.json;
 
 import tools.jackson.core.JsonGenerator;
 import tools.jackson.core.JsonParser;
+import tools.jackson.core.JsonToken;
 import tools.jackson.databind.DeserializationContext;
 import tools.jackson.databind.SerializationContext;
 import tools.jackson.databind.ValueDeserializer;
@@ -54,6 +55,13 @@ public final class LegacyTextModule extends SimpleModule {
     /**
      * :purpose: Read a JSON string and normalise it before anything else sees it, so bean
      *     validation, the service edits and the persisted row all agree on one form.
+     * :note: A non-string scalar is REFUSED rather than converted. Every field this
+     *     deserializer serves is a ``PIC X(n)`` character field an operator types on a 3270
+     *     screen, so a number is a client type error and is reported as one - which is also what
+     *     Jackson's own coercion configuration asks for (see
+     * :java: class:`com.carddemo.common.json.StrictScalarCoercionAutoConfiguration`); a custom
+     *     deserializer bypasses that configuration, so the rule is restated here where the value
+     *     is actually read.
      */
     private static final class NormalizingStringDeserializer extends ValueDeserializer<String> {
 
@@ -62,10 +70,32 @@ public final class LegacyTextModule extends SimpleModule {
          * :param parser: the active parser.
          * :param context: the active deserialization context.
          * :returns: the normalised string value.
+         * :raises tools.jackson.databind.exc.MismatchedInputException: when the token is a
+         *     number, a boolean or a structure rather than a JSON string.
          */
         @Override
         public String deserialize(JsonParser parser, DeserializationContext context) {
-            return LegacyTextNormalizer.normalize(parser.getValueAsString());
+            if (parser.currentToken() == JsonToken.VALUE_STRING) {
+                return LegacyTextNormalizer.normalize(parser.getString());
+            }
+            // A buffered/embedded value that is ALREADY text (token-buffer replays and
+            // binary formats produce these) is not a client type error, so it is read as
+            // before rather than refused.
+            if (parser.currentToken() == JsonToken.VALUE_EMBEDDED_OBJECT) {
+                Object embedded = parser.getEmbeddedObject();
+                if (embedded == null) {
+                    return null;
+                }
+                if (embedded instanceof String text) {
+                    return LegacyTextNormalizer.normalize(text);
+                }
+                if (embedded instanceof char[] characters) {
+                    return LegacyTextNormalizer.normalize(new String(characters));
+                }
+            }
+            // Reports the member path and the offending shape through the standard
+            // mismatch, which the shared GlobalExceptionHandler renders as a 400.
+            return (String) context.handleUnexpectedToken(String.class, parser);
         }
     }
 

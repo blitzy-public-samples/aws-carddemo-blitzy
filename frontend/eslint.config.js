@@ -124,9 +124,11 @@ export default tseslint.config(
     extends: [tseslint.configs.disableTypeChecked],
   },
 
-  // This config file and the Vite config run in Node, not the browser.
+  // This config file, the Vite and Jest configs, and the build scripts under
+  // `scripts/` all run in Node, not the browser. `scripts/precompress.mjs` executes in
+  // the Docker build stage after `vite build` and legitimately reaches for `process`.
   {
-    files: ['eslint.config.js', 'vite.config.ts', 'jest.config.*'],
+    files: ['eslint.config.js', 'vite.config.ts', 'jest.config.*', 'scripts/**/*.mjs'],
     languageOptions: {
       globals: { ...globals.node },
     },

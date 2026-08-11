@@ -33,42 +33,41 @@ import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.springframework.transaction.annotation.Isolation;
 
 /**
- * :purpose: Give every CardDemo batch-capable service a JDBC-backed Spring Batch
- *  {@code JobRepository} so job and step executions are persisted in the
- *  ``BATCH_*`` metadata tables that ``V5__batch_metadata.sql`` creates.
- * :output: Replaces Spring Boot's default batch configuration wholesale. Extending
- *  a {@code DefaultBatchConfiguration} is the supported extension point:
- *  ``BatchAutoConfiguration`` is annotated
- *  ``@ConditionalOnMissingBean(DefaultBatchConfiguration.class)``, so declaring
- *  this class makes Boot back off and this configuration supplies the
- *  ``jobRepository`` and ``jobOperator`` beans (the ``JobOperator`` also satisfies
- *  ``JobLauncher`` injection points, since ``JobOperator extends JobLauncher``).
- *  Spring Batch's {@code JdbcDefaultBatchConfiguration} resolves the
- *  ``DataSource`` and the ``PlatformTransactionManager`` from the application
- *  context by type, so no wiring is needed here.
+ * :purpose: Give every CardDemo batch-capable service a JDBC-backed Spring Batch {@code
+ *     JobRepository} so job and step executions are persisted in the ``BATCH_*`` metadata
+ *     tables that ``V5__batch_metadata.sql`` creates.
+ * :output: Replaces Spring Boot's default batch configuration wholesale. Extending a
+ *     {@code DefaultBatchConfiguration} is the supported extension point:
+ *     ``BatchAutoConfiguration`` is annotated
+ *     ``@ConditionalOnMissingBean(DefaultBatchConfiguration.class)``, so declaring this class
+ *     makes Boot back off and this configuration supplies the ``jobRepository`` and
+ *     ``jobOperator`` beans (the ``JobOperator`` also satisfies ``JobLauncher`` injection
+ *     points, since ``JobOperator extends JobLauncher``). Spring Batch's {@code
+ *     JdbcDefaultBatchConfiguration} resolves the ``DataSource`` and the
+ *     ``PlatformTransactionManager`` from the application context by type, so no wiring is
+ *     needed here.
  * :note: Why this is required. Spring Batch 6 changed
- *  ``DefaultBatchConfiguration.jobRepository()`` to return a
- *  {@code ResourcelessJobRepository} - an in-memory repository that persists
- *  nothing - and Boot's ``SpringBootBatchDefaultConfiguration`` inherits it. The
- *  consequence, confirmed at runtime, was that every batch job ran and completed
- *  while ``BATCH_JOB_INSTANCE`` and ``BATCH_JOB_EXECUTION`` stayed EMPTY: every
- *  execution reported id 1, no job history existed, the ``/batch/jobs/executions``
- *  status endpoint could never resolve an execution, duplicate-instance detection
- *  could not fire, and the restart-from-last-committed-chunk behaviour that the
- *  chunk readers advertise (``saveState(true)``) was silently unavailable. The
- *  migrated JCL job streams rely on that metadata exactly as the legacy jobs
- *  relied on JES job history.
- * :note: This class is the ONE batch infrastructure definition for every
- *  batch-capable service (``batch-service``, ``reporting-service`` and
- *  ``transaction-service`` each import it). A context must not combine it with a
- *  second {@code DefaultBatchConfiguration} subclass or with
- *  ``@EnableBatchProcessing``: both routes declare the same ``jobRepository`` and
- *  ``jobOperator`` beans, so the container would reject the duplicate definitions.
+ *     ``DefaultBatchConfiguration.jobRepository()`` to return a {@code
+ *     ResourcelessJobRepository} - an in-memory repository that persists nothing - and Boot's
+ *     ``SpringBootBatchDefaultConfiguration`` inherits it. The consequence, confirmed at
+ *     runtime, was that every batch job ran and completed while ``BATCH_JOB_INSTANCE`` and
+ *     ``BATCH_JOB_EXECUTION`` stayed EMPTY: every execution reported id 1, no job history
+ *     existed, the ``/batch/jobs/executions`` status endpoint could never resolve an
+ *     execution, duplicate-instance detection could not fire, and the
+ *     restart-from-last-committed-chunk behaviour that the chunk readers advertise
+ *     (``saveState(true)``) was silently unavailable. The migrated JCL job streams rely on
+ *     that metadata exactly as the legacy jobs relied on JES job history.
+ * :note: This class is the ONE batch infrastructure definition for every batch-capable
+ *     service (``batch-service``, ``reporting-service`` and ``transaction-service`` each
+ *     import it). A context must not combine it with a second {@code
+ *     DefaultBatchConfiguration} subclass or with ``@EnableBatchProcessing``: both routes
+ *     declare the same ``jobRepository`` and ``jobOperator`` beans, so the container would
+ *     reject the duplicate definitions.
  * :note: {@code getObservationRegistry()} is overridden because
- *  ``DefaultBatchConfiguration`` returns {@code ObservationRegistry.NOOP};
- *  handing it the application's real registry keeps anything this configuration
- *  instruments consistent with the ``spring_batch_*`` metrics that Boot's
- *  ``BatchObservabilityBeanPostProcessor`` records on the job and step beans.
+ *     ``DefaultBatchConfiguration`` returns {@code ObservationRegistry.NOOP}; handing it the
+ *     application's real registry keeps anything this configuration instruments consistent
+ *     with the ``spring_batch_*`` metrics that Boot's ``BatchObservabilityBeanPostProcessor``
+ *     records on the job and step beans.
  */
 @Configuration(proxyBeanMethods = false)
 public class JdbcBatchConfiguration extends JdbcDefaultBatchConfiguration {
@@ -144,28 +143,26 @@ public class JdbcBatchConfiguration extends JdbcDefaultBatchConfiguration {
     }
 
     /**
-     * :purpose: Run the repository's metadata transactions at ``READ COMMITTED``
-     *  instead of the ``SERIALIZABLE`` default.
+     * :purpose: Run the repository's metadata transactions at ``READ COMMITTED`` instead of
+     *     the ``SERIALIZABLE`` default.
      * :returns: {@link Isolation#READ_COMMITTED}.
-     * :note: {@code AbstractJobRepositoryFactoryBean} applies this isolation level
-     *  to the transaction interceptor that advises EVERY ``JobRepository`` method,
-     *  not only the ``create*`` ones. Under PostgreSQL's serializable-snapshot
-     *  isolation that made concurrent job submissions abort one another: the
-     *  foreign-key check behind ``INSERT INTO BATCH_STEP_EXECUTION_CONTEXT``
-     *  performs a predicate read (``SELECT 1 FROM batch_step_execution ... FOR KEY
-     *  SHARE``) that conflicts with a concurrent ``BATCH_STEP_EXECUTION`` insert, so
-     *  PostgreSQL cancelled the transaction with "could not serialize access due to
-     *  read/write dependencies among transactions" and an otherwise-successful job
-     *  ended ``FAILED``. Reproduced at runtime by submitting the nine batch-service
-     *  jobs together: one of the nine failed on the metadata write while its own
-     *  business step had done nothing wrong.
-     * :note: Nothing is weakened by the change. Two submissions can still never
-     *  share a ``JobInstance``: ``BATCH_JOB_INSTANCE`` carries the unique constraint
-     *  ``JOB_INST_UN (JOB_NAME, JOB_KEY)``, which rejects a duplicate at any
-     *  isolation level, and every ``launch*`` method adds a unique identifying
-     *  ``run.id`` parameter, so two submissions never compute the same job key.
-     *  Concurrent, independent job streams running without serializing against one
-     *  another is also what the legacy JES initiators did.
+     * :note: {@code AbstractJobRepositoryFactoryBean} applies this isolation level to the
+     *     transaction interceptor that advises EVERY ``JobRepository`` method, not only the
+     *     ``create*`` ones. Under PostgreSQL's serializable-snapshot isolation that made
+     *     concurrent job submissions abort one another: the foreign-key check behind ``INSERT INTO
+     *     BATCH_STEP_EXECUTION_CONTEXT`` performs a predicate read (``SELECT 1 FROM
+     *     batch_step_execution ... FOR KEY SHARE``) that conflicts with a concurrent
+     *     ``BATCH_STEP_EXECUTION`` insert, so PostgreSQL cancelled the transaction with "could not
+     *     serialize access due to read/write dependencies among transactions" and an
+     *     otherwise-successful job ended ``FAILED``. Reproduced at runtime by submitting the nine
+     *     batch-service jobs together: one of the nine failed on the metadata write while its own
+     *     business step had done nothing wrong.
+     * :note: Nothing is weakened by the change. Two submissions can still never share a
+     *     ``JobInstance``: ``BATCH_JOB_INSTANCE`` carries the unique constraint ``JOB_INST_UN
+     *     (JOB_NAME, JOB_KEY)``, which rejects a duplicate at any isolation level, and every
+     *     ``launch*`` method adds a unique identifying ``run.id`` parameter, so two submissions
+     *     never compute the same job key. Concurrent, independent job streams running without
+     *     serializing against one another is also what the legacy JES initiators did.
      */
     @Override
     protected Isolation getIsolationLevelForCreate() {

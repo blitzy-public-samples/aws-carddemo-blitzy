@@ -15,6 +15,7 @@
  */
 package com.carddemo.common.dto;
 
+import com.carddemo.common.validation.SingleByteText;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
@@ -23,6 +24,16 @@ import jakarta.validation.constraints.Size;
  * :purpose: Inbound DTO for the card update screen (COCRDUPC, CICS CCUP). Carries the editable card fields (the new values), plus the optional display-time snapshot of those fields (the legacy ``CCUP-OLD-*`` values) used to detect a concurrent modification. The card number and owning account id are carried as identifiers only -- in the body rather than the URL, so a Primary Account Number is not written verbatim into access, proxy and trace logs -- and are never rewritten.
  * :output: A mutable carrier of the addressed card number and optional account id, the editable embossed name, active status, expiry date, and CVV, together with the optional display-time snapshot (old embossed name, active status, expiry date, and CVV) of the same fields.
  */
+/*
+ * Boundary encoding guard. The fields of this request are persisted and then
+ * rendered into the 150-byte CARD record (CVACT02Y),
+ * every one of which is a BYTE-width contract a downstream consumer parses by
+ * offset. Text that needs more than one byte per character therefore cannot
+ * survive that rendering intact - it either loses the character or shifts every
+ * following field - so it is refused here, at the only point where the operator
+ * can still be told which field to correct.
+ */
+@SingleByteText
 public class CardUpdateRequestDto {
 
     /** :purpose: ``CARD-CVV-CD PIC 9(03)`` -- exactly three decimal digits. */

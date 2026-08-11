@@ -103,12 +103,19 @@ const EMPTY_ROWS: UserListItemDto[] = [];
  * :note: Those runs ARE the column widths on a 3270, so the table is laid out from them
  *     rather than from its content.
  */
-const COLUMNS: ReadonlyArray<{ caption: string; rule: string }> = [
-  { caption: 'Sel', rule: '-'.repeat(3) },
-  { caption: 'User ID', rule: '-'.repeat(8) },
-  { caption: 'First Name', rule: '-'.repeat(20) },
-  { caption: 'Last Name', rule: '-'.repeat(20) },
-  { caption: 'Type', rule: '-'.repeat(4) },
+/**
+ * :purpose: The browse columns of ``COUSR00``, each with the mapset's own column pitch.
+ * :note: ``pitch`` is the distance from one dashed rule to the next --
+ *     ``POS=(9,5) (9,12) (9,24) (9,48) (9,72)`` gives 7, 12, 24, 24 and 4 -- and sizing a
+ *     column to its rule length instead left every column after the first short of the
+ *     column the mapset places it on.
+ */
+const COLUMNS: ReadonlyArray<{ caption: string; rule: string; pitch: number }> = [
+  { caption: 'Sel', rule: '-'.repeat(3), pitch: 7 },
+  { caption: 'User ID', rule: '-'.repeat(8), pitch: 12 },
+  { caption: 'First Name', rule: '-'.repeat(20), pitch: 24 },
+  { caption: 'Last Name', rule: '-'.repeat(20), pitch: 24 },
+  { caption: 'Type', rule: '-'.repeat(4), pitch: 4 },
 ];
 
 /**
@@ -121,10 +128,7 @@ const COLUMNS: ReadonlyArray<{ caption: string; rule: string }> = [
  *     scrolling never reveals it either. Holding the table to this floor gives the last
  *     column its cells back and puts the shortfall into the scroll range instead.
  */
-const TABLE_MIN_WIDTH_CH = COLUMNS.reduce(
-  (total, column) => total + column.rule.length + 2,
-  0,
-);
+const TABLE_MIN_WIDTH_CH = COLUMNS.reduce((total, column) => total + column.pitch, 0);
 
 /**
  * :purpose: Build the row-select field name for a displayed row.
@@ -461,7 +465,7 @@ export default function UserListPage(): ReactElement {
                 style={
                   index === COLUMNS.length - 1
                     ? undefined
-                    : { width: `${String(column.rule.length + 2)}ch` }
+                    : { width: `${String(column.pitch)}ch` }
                 }
               />
             ))}

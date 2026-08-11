@@ -95,6 +95,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Read ``acctId``.
      * :returns: the 11-digit account identifier (natural key).
      */
     public Long getAcctId() {
@@ -102,6 +103,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Set ``acctId``.
      * :param acctId: the 11-digit account identifier to assign.
      */
     public void setAcctId(Long acctId) {
@@ -109,6 +111,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Read ``acctActiveStatus``.
      * :returns: the single-character active status flag.
      */
     public String getAcctActiveStatus() {
@@ -116,6 +119,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Set ``acctActiveStatus``.
      * :param acctActiveStatus: the single-character active status flag.
      */
     public void setAcctActiveStatus(String acctActiveStatus) {
@@ -123,6 +127,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Read ``acctCurrBal``.
      * :returns: the current account balance.
      */
     public BigDecimal getAcctCurrBal() {
@@ -130,6 +135,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Set ``acctCurrBal``.
      * :param acctCurrBal: the current account balance.
      */
     public void setAcctCurrBal(BigDecimal acctCurrBal) {
@@ -137,6 +143,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Read ``acctCreditLimit``.
      * :returns: the account credit limit.
      */
     public BigDecimal getAcctCreditLimit() {
@@ -144,6 +151,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Set ``acctCreditLimit``.
      * :param acctCreditLimit: the account credit limit.
      */
     public void setAcctCreditLimit(BigDecimal acctCreditLimit) {
@@ -151,6 +159,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Read ``acctCashCreditLimit``.
      * :returns: the account cash-credit limit.
      */
     public BigDecimal getAcctCashCreditLimit() {
@@ -158,6 +167,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Set ``acctCashCreditLimit``.
      * :param acctCashCreditLimit: the account cash-credit limit.
      */
     public void setAcctCashCreditLimit(BigDecimal acctCashCreditLimit) {
@@ -165,6 +175,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Read ``acctOpenDate``.
      * :returns: the account open date in "YYYY-MM-DD" form.
      */
     public String getAcctOpenDate() {
@@ -172,6 +183,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Set ``acctOpenDate``.
      * :param acctOpenDate: the account open date in "YYYY-MM-DD" form.
      */
     public void setAcctOpenDate(String acctOpenDate) {
@@ -179,6 +191,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Read ``acctExpiraionDate``.
      * :returns: the account expiration date in "YYYY-MM-DD" form (legacy
      *     misspelled identifier preserved).
      */
@@ -187,6 +200,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Set ``acctExpiraionDate``.
      * :param acctExpiraionDate: the account expiration date in "YYYY-MM-DD"
      *     form (legacy misspelled identifier preserved).
      */
@@ -195,6 +209,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Read ``acctReissueDate``.
      * :returns: the account reissue date in "YYYY-MM-DD" form.
      */
     public String getAcctReissueDate() {
@@ -202,6 +217,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Set ``acctReissueDate``.
      * :param acctReissueDate: the account reissue date in "YYYY-MM-DD" form.
      */
     public void setAcctReissueDate(String acctReissueDate) {
@@ -209,6 +225,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Read ``acctCurrCycCredit``.
      * :returns: the current-cycle credit total.
      */
     public BigDecimal getAcctCurrCycCredit() {
@@ -216,6 +233,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Set ``acctCurrCycCredit``.
      * :param acctCurrCycCredit: the current-cycle credit total.
      */
     public void setAcctCurrCycCredit(BigDecimal acctCurrCycCredit) {
@@ -223,6 +241,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Read ``acctCurrCycDebit``.
      * :returns: the current-cycle debit total.
      */
     public BigDecimal getAcctCurrCycDebit() {
@@ -230,6 +249,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Set ``acctCurrCycDebit``.
      * :param acctCurrCycDebit: the current-cycle debit total.
      */
     public void setAcctCurrCycDebit(BigDecimal acctCurrCycDebit) {
@@ -237,6 +257,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Read ``acctAddrZip``.
      * :returns: the account address ZIP code.
      */
     public String getAcctAddrZip() {
@@ -244,6 +265,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Set ``acctAddrZip``.
      * :param acctAddrZip: the account address ZIP code.
      */
     public void setAcctAddrZip(String acctAddrZip) {
@@ -251,6 +273,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Read ``acctGroupId``.
      * :returns: the disclosure/pricing group identifier.
      */
     public String getAcctGroupId() {
@@ -258,6 +281,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Set ``acctGroupId``.
      * :param acctGroupId: the disclosure/pricing group identifier.
      */
     public void setAcctGroupId(String acctGroupId) {
@@ -265,6 +289,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Read ``version``.
      * :returns: the optimistic-locking version managed by the JPA provider.
      */
     public Long getVersion() {
@@ -272,6 +297,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Set ``version``.
      * :param version: the optimistic-locking version; normally managed by the
      *     JPA provider and set explicitly only in tests or detached-merge flows.
      */
@@ -298,6 +324,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Hash consistent with :java:meth:`equals`.
      * :returns: a proxy-stable hash code consistent with {@link #equals(Object)}.
      */
     @Override
@@ -306,6 +333,7 @@ public class Account {
     }
 
     /**
+     * :purpose: Diagnostic rendering that never discloses unmasked PII.
      * :returns: a diagnostic representation of the account (no sensitive PII).
      */
     @Override

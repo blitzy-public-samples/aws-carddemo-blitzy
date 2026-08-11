@@ -1,31 +1,29 @@
 /**
  * :module: ``frontend/src/api/client.ts``
- * :purpose: Provide the single shared, pre-configured axios instance used by
- *   every CardDemo domain API module (``auth``, ``accounts``, ``cards``,
- *   ``transactions``, ``billpay``, ``reports``, ``users``, ``menu``). It
- *   centralizes the api-gateway base URL, the externalized-session credential
- *   (the Spring Session cookie), CSRF double-submit, correlation-id propagation
- *   for distributed tracing, HTTP-error normalization, and the single place where
- *   an expired (``401``) or refused (``403``) session clears the client's local
- *   authority. It re-expresses the legacy CICS COMMAREA/session and ``RESP``
- *   return-code handling model (``app/cpy/COCOM01Y.cpy``,
- *   ``app/cbl/COACTUPC.cbl``) as axios request and response interceptors.
- * :note: It navigates nowhere. Clearing the local authority is what returns the
- *   operator to the sign-on screen, through the route guard and therefore
- *   CLIENT-SIDE; a full-document assignment would discard and re-parse the whole
- *   application on every expiry and take the store's message with it.
- * :output: The default export ``apiClient`` (a configured ``AxiosInstance``), the
- *   named exports ``ApiError`` (the normalized error type carrying a safe
- *   ``correlationId`` support reference) and ``isApiError`` (its type-guard),
- *   ``registerSessionExpiryHandler`` used by the session store to drop local
- *   authority exactly once per expiry, ``runWithRequestSignal``, which binds an
- *   ``AbortSignal`` to every request a call issues so an abandoned screen really
- *   cancels its work, ``isCancelledRequest``, its companion predicate, and
- *   ``generateCorrelationId``, the one correlation-id source the request
- *   interceptor and the SPA's uncaught-error telemetry both draw from.
- * :note: This module never reads the Vite build-time environment directly; the
- *   base URL is obtained only through ``getApiBaseUrl`` from ``./config``, so the
- *   module is evaluable under Jest (jsdom) without any Vite environment injection.
+ * :purpose: Provide the single shared, pre-configured axios instance used by every
+ *     CardDemo domain API module (``auth``, ``accounts``, ``cards``, ``transactions``,
+ *     ``billpay``, ``reports``, ``users``, ``menu``). It centralizes the api-gateway base URL,
+ *     the externalized-session credential (the Spring Session cookie), CSRF double-submit,
+ *     correlation-id propagation for distributed tracing, HTTP-error normalization, and the
+ *     single place where an expired (``401``) or refused (``403``) session clears the client's
+ *     local authority. It re-expresses the legacy CICS COMMAREA/session and ``RESP``
+ *     return-code handling model (``app/cpy/COCOM01Y.cpy``, ``app/cbl/COACTUPC.cbl``) as axios
+ *     request and response interceptors.
+ * :note: It navigates nowhere. Clearing the local authority is what returns the operator
+ *     to the sign-on screen, through the route guard and therefore CLIENT-SIDE; a
+ *     full-document assignment would discard and re-parse the whole application on every
+ *     expiry and take the store's message with it.
+ * :output: The default export ``apiClient`` (a configured ``AxiosInstance``), the named
+ *     exports ``ApiError`` (the normalized error type carrying a safe ``correlationId``
+ *     support reference) and ``isApiError`` (its type-guard), ``registerSessionExpiryHandler``
+ *     used by the session store to drop local authority exactly once per expiry,
+ *     ``runWithRequestSignal``, which binds an ``AbortSignal`` to every request a call issues
+ *     so an abandoned screen really cancels its work, ``isCancelledRequest``, its companion
+ *     predicate, and ``generateCorrelationId``, the one correlation-id source the request
+ *     interceptor and the SPA's uncaught-error telemetry both draw from.
+ * :note: This module never reads the Vite build-time environment directly; the base URL is
+ *     obtained only through ``getApiBaseUrl`` from ``./config``, so the module is evaluable
+ *     under Jest (jsdom) without any Vite environment injection.
  */
 
 import axios, {
@@ -131,24 +129,23 @@ const REQUEST_REFUSED_MESSAGE =
   'Request could not be authorized. Please try again.';
 
 /**
- * :purpose: Normalized, typed error raised for every failed CardDemo REST call
- *   so pages and hooks branch on the outcome without re-inspecting axios
- *   internals.
- * :param status: HTTP status code, or ``0`` for a network/transport failure
- *   (timeout, offline, DNS) where no response was received.
+ * :purpose: Normalized, typed error raised for every failed CardDemo REST call so pages
+ *     and hooks branch on the outcome without re-inspecting axios internals.
+ * :param status: HTTP status code, or ``0`` for a network/transport failure (timeout,
+ *     offline, DNS) where no response was received.
  * :param message: already-resolved, human-readable error message.
  * :param body: standardized backend error body when the response carried one;
- *   ``undefined`` for network failures or non-JSON responses.
- * :param isOptimisticLockConflict: ``true`` only for the ``409`` conflict that
- *   corresponds to the backend ``@Version`` optimistic-lock failure.
+ *     ``undefined`` for network failures or non-JSON responses.
+ * :param isOptimisticLockConflict: ``true`` only for the ``409`` conflict that corresponds
+ *     to the backend ``@Version`` optimistic-lock failure.
  * :param correlationId: the safe support reference for this failure — the
- *   ``X-Correlation-Id`` the backend echoed and stamped on every log record for the
- *   request. It is not sensitive and is the value an operator quotes; ``undefined``
- *   when neither the response body nor the response headers carried one.
- * :param cancelled: ``true`` only when the request was ABORTED by the caller (a
- *   superseded or abandoned call) rather than rejected by the server or the network.
- *   Always accompanied by ``status`` ``0``, and never a failure the operator caused,
- *   so it is not reported on a screen's message line.
+ *     ``X-Correlation-Id`` the backend echoed and stamped on every log record for the request.
+ *     It is not sensitive and is the value an operator quotes; ``undefined`` when neither the
+ *     response body nor the response headers carried one.
+ * :param cancelled: ``true`` only when the request was ABORTED by the caller (a superseded
+ *     or abandoned call) rather than rejected by the server or the network. Always accompanied
+ *     by ``status`` ``0``, and never a failure the operator caused, so it is not reported on a
+ *     screen's message line.
  */
 export class ApiError extends Error {
   readonly status: number;
@@ -374,18 +371,18 @@ export function generateCorrelationId(): string {
 
 /**
  * :purpose: Request interceptor. Guarantees an ``X-Correlation-Id`` header so tracing
- *   spans the SPA -> gateway -> services boundary, echoes the CSRF cookie on every
- *   unsafe method, and binds the cancellation signal of the call being issued (see
- *   :func:`runWithRequestSignal`) so an abandoned call really stops. The session
- *   cookie is the only credential and is carried automatically by
- *   ``withCredentials``, so no credential code belongs here.
+ *     spans the SPA -> gateway -> services boundary, echoes the CSRF cookie on every unsafe
+ *     method, and binds the cancellation signal of the call being issued (see
+ * :func: `runWithRequestSignal`) so an abandoned call really stops. The session cookie is
+ *     the only credential and is carried automatically by ``withCredentials``, so no
+ *     credential code belongs here.
  * :param config: the outgoing request configuration.
  * :returns: the (possibly header-augmented) request configuration.
- * :note: Registered ``synchronous`` — every step below is pure and synchronous, and
- *   axios then runs the whole request-interceptor chain INSIDE the ``apiClient.get``
- *   / ``.post`` / ``.put`` / ``.delete`` call rather than in a later microtask. That
- *   is what makes the ambient signal binding exact: several calls started in one tick
- *   each read their own signal instead of racing for the last one written.
+ * :note: Registered ``synchronous`` — every step below is pure and synchronous, and axios
+ *     then runs the whole request-interceptor chain INSIDE the ``apiClient.get`` / ``.post`` /
+ *     ``.put`` / ``.delete`` call rather than in a later microtask. That is what makes the
+ *     ambient signal binding exact: several calls started in one tick each read their own
+ *     signal instead of racing for the last one written.
  */
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig): InternalAxiosRequestConfig => {
@@ -522,26 +519,25 @@ function resolveCorrelationId(
 }
 
 /**
- * :purpose: Response interceptor. Passes successful responses through unchanged
- *   (wire formats are preserved: money stays a string, dates stay
- *   ``YYYY-MM-DD``) and normalizes every failure into an ``ApiError``.
+ * :purpose: Response interceptor. Passes successful responses through unchanged (wire
+ *     formats are preserved: money stays a string, dates stay ``YYYY-MM-DD``) and normalizes
+ *     every failure into an ``ApiError``.
  * :behavior: a request ABORTED by its caller rejects with a cancelled ``ApiError``
- *   (``status`` ``0``, ``cancelled`` ``true``) and triggers no session handling at
- *   all — it is not a failure; ``409`` becomes an optimistic-lock conflict carrying
- *   the verbatim legacy message; ``401`` means the session itself is gone, so it
- *   drops the locally held authority and lets the route guard return the caller to
- *   sign-on with the reason on line 23; ``403`` means the session is still live but
- *   this request was refused — a missing or stale double-submit token, or a call the
- *   principal has no authority for — so it is reported in place, the screen and its
- *   entry fields are kept, and the CSRF token is refreshed so the operator's retry
- *   can succeed; every other status, and network failures (``status`` 0), reject with
- *   a normalized ``ApiError``. A request that set ``skipAuthRedirect`` is exempt from
- *   the expiry handling so sign-on, the session probe and logout report their own
- *   outcome.
+ *     (``status`` ``0``, ``cancelled`` ``true``) and triggers no session handling at all — it
+ *     is not a failure; ``409`` becomes an optimistic-lock conflict carrying the verbatim
+ *     legacy message; ``401`` means the session itself is gone, so it drops the locally held
+ *     authority and lets the route guard return the caller to sign-on with the reason on line
+ *     23; ``403`` means the session is still live but this request was refused — a missing or
+ *     stale double-submit token, or a call the principal has no authority for — so it is
+ *     reported in place, the screen and its entry fields are kept, and the CSRF token is
+ *     refreshed so the operator's retry can succeed; every other status, and network failures
+ *     (``status`` 0), reject with a normalized ``ApiError``. A request that set
+ *     ``skipAuthRedirect`` is exempt from the expiry handling so sign-on, the session probe
+ *     and logout report their own outcome.
  * :param response: the fulfilled response, returned unchanged.
  * :param error: the axios error, mapped to and rejected as an ``ApiError``.
- * :returns: the response on success; a rejected ``Promise`` carrying an
- *   ``ApiError`` on failure.
+ * :returns: the response on success; a rejected ``Promise`` carrying an ``ApiError`` on
+ *     failure.
  */
 apiClient.interceptors.response.use(
   (response: AxiosResponse): AxiosResponse => response,

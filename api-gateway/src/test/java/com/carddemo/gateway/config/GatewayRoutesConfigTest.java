@@ -51,7 +51,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * :purpose: Verifies the api-gateway declarative downstream route table
  *     (``spring.cloud.gateway.server.webmvc.routes`` in ``application.yml``)
- *     binds the eight expected service routes to their base URIs, leaves the
+ *     binds a route PAIR per downstream service - the idempotent-methods route
+ *     carrying a bounded retry ahead of the catch-all route carrying none - to
+ *     their base URIs in both the default and the container documents, leaves the
  *     locally-served ``/menu`` and ``/admin`` paths unrouted, and that
  *     {@link GatewayRoutesConfig} registers the correlation-id propagation
  *     servlet filter as a single ``FilterRegistrationBean`` ordered just after
@@ -75,6 +77,15 @@ class GatewayRoutesConfigTest {
      *     used to isolate and bind the default (non-profile) document.
      */
     private static final String PROFILE_ACTIVATION_KEY = "spring.config.activate.on-profile";
+
+    /** :purpose: Profile of the container route table (Docker Compose / Kubernetes). */
+    private static final String DOCKER_PROFILE = "docker";
+
+    /**
+     * :purpose: Id suffix marking the container route that carries only the idempotent
+     *     methods, and therefore the only one allowed to retry.
+     */
+    private static final String READ_ROUTE_SUFFIX = "-reads";
 
     /**
      * :purpose: Header carrying the business correlation id that the gateway
@@ -132,31 +143,48 @@ class GatewayRoutesConfigTest {
     }
 
     /**
-     * :purpose: Assert that a route with the given id is present and binds the
-     *     expected single ``Path`` predicate and base URI.
+     * :purpose: Assert that a service's route PAIR is present and that both routes bind
+     *     the expected ``Path`` predicate and base URI: the idempotent-methods route
+     *     additionally restricted by ``Method`` and carrying the retry, the catch-all
+     *     route restricted by path alone and carrying no filter.
      * :param byId: routes indexed by their id.
-     * :param id: the route id under assertion.
+     * :param id: the service's catch-all route id (the pair's read route is
+     *     ``<id>-reads``).
      * :param path: the expected ``Path`` predicate suffix (e.g. ``/auth/**``).
-     * :param uri: the expected downstream base URI.
+     * :param uri: the expected downstream base URI, shared by both routes of the pair.
      */
     private void assertRoute(Map<String, RouteBinding> byId, String id, String path, String uri) {
+        RouteBinding readRoute = byId.get(id + READ_ROUTE_SUFFIX);
+        assertThat(readRoute).as("route %s should be present", id + READ_ROUTE_SUFFIX).isNotNull();
+        assertThat(readRoute.uri()).isEqualTo(uri);
+        assertThat(readRoute.predicates()).containsExactly("Path=" + path, "Method=GET,HEAD,OPTIONS");
+        assertThat(readRoute.filters()).extracting(FilterBinding::name).containsExactly("Retry");
+
         RouteBinding route = byId.get(id);
         assertThat(route).as("route %s should be present", id).isNotNull();
         assertThat(route.uri()).isEqualTo(uri);
         assertThat(route.predicates()).containsExactly("Path=" + path);
+        assertThat(route.filters()).isNullOrEmpty();
     }
 
     /**
-     * :purpose: Confirm the route table exposes exactly the eight downstream
-     *     service ids and no others.
+     * :purpose: Confirm the route table exposes exactly the eight downstream services and
+     *     no others, each as a pair whose idempotent-methods route comes FIRST - the
+     *     gateway takes the first matching route, so the order is what decides whether a
+     *     GET is retried at all.
      */
     @Test
-    @DisplayName("route table exposes exactly the eight downstream service ids")
-    void routeTableExposesEightDownstreamServices() throws IOException {
-        assertThat(loadDefaultRoutes()).extracting(RouteBinding::id)
-                .containsExactlyInAnyOrder("auth-service", "user-service", "account-service",
-                        "card-service", "transaction-service", "billpay-service",
-                        "reporting-service", "batch-service");
+    @DisplayName("route table exposes a route pair per downstream service, read route first")
+    void routeTableExposesAPairPerDownstreamService() throws IOException {
+        assertThat(loadDefaultRoutes()).extracting(RouteBinding::id).containsExactly(
+                "auth-service-reads", "auth-service",
+                "user-service-reads", "user-service",
+                "account-service-reads", "account-service",
+                "card-service-reads", "card-service",
+                "transaction-service-reads", "transaction-service",
+                "billpay-service-reads", "billpay-service",
+                "reporting-service-reads", "reporting-service",
+                "batch-service-reads", "batch-service");
     }
 
     /**
@@ -164,7 +192,7 @@ class GatewayRoutesConfigTest {
      *     and its localhost base URI resolved from the placeholder default.
      */
     @Test
-    @DisplayName("each route binds its expected Path predicate and localhost base URI")
+    @DisplayName("each route pair binds its expected Path predicate and localhost base URI")
     void eachRouteBindsExpectedPathPredicateAndBaseUri() throws IOException {
         Map<String, RouteBinding> byId = loadDefaultRoutes().stream()
                 .collect(Collectors.toMap(RouteBinding::id, route -> route));
@@ -264,12 +292,118 @@ class GatewayRoutesConfigTest {
     }
 
     /**
+     * :purpose: Locate the container (``docker``) YAML document within
+     *     ``application.yml``.
+     * :returns: the property source backing the profile-scoped document.
+     */
+    private PropertySource<?> containerDocument() throws IOException {
+        List<PropertySource<?>> documents = new YamlPropertySourceLoader()
+                .load("gateway-application", new ClassPathResource("application.yml"));
+        return documents.stream()
+                .filter(document -> DOCKER_PROFILE.equals(document.getProperty(PROFILE_ACTIVATION_KEY)))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "No " + DOCKER_PROFILE + " document found in application.yml"));
+    }
+
+    /**
+     * :purpose: Bind the container document's route table, resolving
+     *     ``${*:default}`` placeholders against only the YAML source so the
+     *     committed defaults apply regardless of any ambient environment variables.
+     * :returns: the bound route definitions of the container profile.
+     */
+    private List<RouteBinding> loadContainerRoutes() throws IOException {
+        MutablePropertySources sources = new MutablePropertySources();
+        sources.addFirst(containerDocument());
+        Binder binder = new Binder(ConfigurationPropertySources.from(sources),
+                new PropertySourcesPlaceholdersResolver(sources));
+        return binder.bind(ROUTES_PREFIX, Bindable.listOf(RouteBinding.class)).get();
+    }
+
+    /**
+     * :purpose: Confirm every container-profile route addresses its service through
+     *     the ``lb`` scheme, which is what makes the gateway choose an instance per
+     *     request instead of pinning to the first address it resolved.
+     */
+    @Test
+    @DisplayName("every container route addresses its service through the lb scheme")
+    void containerRoutesUseTheLoadBalancedScheme() throws IOException {
+        assertThat(loadContainerRoutes())
+                .isNotEmpty()
+                .allSatisfy(route -> assertThat(route.uri())
+                        .isEqualTo("lb://" + route.id().replace(READ_ROUTE_SUFFIX, "")));
+    }
+
+    /**
+     * :purpose: Confirm each downstream service contributes exactly two container
+     *     routes - the idempotent-methods route first, then the catch-all - because
+     *     the first matching route wins and only the first may retry.
+     */
+    @Test
+    @DisplayName("each service contributes an idempotent route ahead of its catch-all route")
+    void containerRoutesPairIdempotentRouteAheadOfCatchAll() throws IOException {
+        List<RouteBinding> routes = loadContainerRoutes();
+        assertThat(routes).extracting(RouteBinding::id).containsExactly(
+                "auth-service-reads", "auth-service",
+                "user-service-reads", "user-service",
+                "account-service-reads", "account-service",
+                "card-service-reads", "card-service",
+                "transaction-service-reads", "transaction-service",
+                "billpay-service-reads", "billpay-service",
+                "reporting-service-reads", "reporting-service",
+                "batch-service-reads", "batch-service");
+    }
+
+    /**
+     * :purpose: Confirm the retry is declared on the idempotent routes ONLY, bounded,
+     *     and matching the exception the proxy exchange actually raises. A retry on a
+     *     route that carries writes could re-apply a payment whose response merely
+     *     timed out, and a retry that matches only the filter's default exceptions
+     *     never fires at all.
+     */
+    @Test
+    @DisplayName("the bounded retry is declared on the idempotent routes only")
+    void containerRetryIsDeclaredOnIdempotentRoutesOnly() throws IOException {
+        List<RouteBinding> routes = loadContainerRoutes();
+
+        assertThat(routes).filteredOn(route -> route.id().endsWith(READ_ROUTE_SUFFIX))
+                .hasSize(8)
+                .allSatisfy(route -> {
+                    assertThat(route.predicates()).contains("Method=GET,HEAD,OPTIONS");
+                    assertThat(route.filters()).hasSize(1);
+                    FilterBinding retry = route.filters().get(0);
+                    assertThat(retry.name()).isEqualTo("Retry");
+                    assertThat(retry.args()).containsEntry("retries", "2");
+                    assertThat(retry.args().values())
+                            .contains("org.springframework.web.client.ResourceAccessException");
+                });
+
+        assertThat(routes).filteredOn(route -> !route.id().endsWith(READ_ROUTE_SUFFIX))
+                .hasSize(8)
+                .allSatisfy(route -> {
+                    assertThat(route.filters()).isNullOrEmpty();
+                    assertThat(route.predicates()).noneMatch(predicate -> predicate.startsWith("Method="));
+                });
+    }
+
+    /**
      * :purpose: Minimal binding view of one YAML gateway route entry (id, base
-     *     URI, and its list of predicate expressions).
+     *     URI, its list of predicate expressions, and the filters it declares).
      * :param id: the route id.
      * :param uri: the downstream base URI.
      * :param predicates: the route's predicate expressions.
+     * :param filters: the route's filter declarations; absent (bound as ``null``)
+     *     where a route declares none.
      */
-    record RouteBinding(String id, String uri, List<String> predicates) {
+    record RouteBinding(String id, String uri, List<String> predicates, List<FilterBinding> filters) {
+    }
+
+    /**
+     * :purpose: Binding view of one route filter declaration.
+     * :param name: the filter name (e.g. ``Retry``).
+     * :param args: the filter's arguments as declared, indexed collection
+     *     elements included (e.g. ``exceptions[0]``).
+     */
+    record FilterBinding(String name, Map<String, String> args) {
     }
 }

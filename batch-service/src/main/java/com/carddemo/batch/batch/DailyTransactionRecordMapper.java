@@ -24,27 +24,25 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 
 /**
- * :purpose: Map one fixed-length line of the daily-transaction feed
- *  (``DALYTRAN``, copybook ``CVTRA06Y``, RECLN 350) into a
- *  {@link DailyTransaction}. It is the record-parsing counterpart of the
- *  sequential ``READ DALYTRAN-FILE`` in the legacy ``CBTRN01C`` batch program:
- *  each 350-character record is split by the ``CVTRA06Y`` field positions, the
- *  text fields are right-trimmed to their logical value, the two integral
- *  identifier fields are parsed as whole numbers, and the ``DALYTRAN-AMT``
- *  ``PIC S9(09)V99`` field is decoded from its zoned-decimal trailing
- *  sign-overpunch representation into a scale-2 {@link BigDecimal}.
- * :output: A populated {@link DailyTransaction} with the thirteen logical feed
- *  fields set; the trailing 20-character ``FILLER`` is ignored. Monetary and
- *  identifier values retain exact fixed-point and integral precision (no binary
- *  floating point). A record shorter than the fixed width is right-padded with
- *  spaces before splitting, reproducing the fixed-length record semantics of the
- *  mainframe feed; a malformed numeric field raises
- *  {@link IllegalArgumentException}.
- * :note: Field positions follow ``CVTRA06Y``: id ``X(16)``, type ``X(02)``,
- *  category ``9(04)``, source ``X(10)``, description ``X(100)``, amount
- *  ``S9(09)V99``, merchant id ``9(09)``, merchant name ``X(50)``, merchant city
- *  ``X(50)``, merchant zip ``X(10)``, card number ``X(16)``, origination
- *  timestamp ``X(26)``, processing timestamp ``X(26)``, filler ``X(20)``.
+ * :purpose: Map one fixed-length line of the daily-transaction feed (``DALYTRAN``,
+ *     copybook ``CVTRA06Y``, RECLN 350) into a {@link DailyTransaction}. It is the
+ *     record-parsing counterpart of the sequential ``READ DALYTRAN-FILE`` in the legacy
+ *     ``CBTRN01C`` batch program: each 350-character record is split by the ``CVTRA06Y`` field
+ *     positions, the text fields are right-trimmed to their logical value, the two integral
+ *     identifier fields are parsed as whole numbers, and the ``DALYTRAN-AMT`` ``PIC
+ *     S9(09)V99`` field is decoded from its zoned-decimal trailing sign-overpunch
+ *     representation into a scale-2 {@link BigDecimal}.
+ * :output: A populated {@link DailyTransaction} with the thirteen logical feed fields set;
+ *     the trailing 20-character ``FILLER`` is ignored. Monetary and identifier values retain
+ *     exact fixed-point and integral precision (no binary floating point). A record shorter
+ *     than the fixed width is right-padded with spaces before splitting, reproducing the
+ *     fixed-length record semantics of the mainframe feed; a malformed numeric field raises
+ *     {@link IllegalArgumentException}.
+ * :note: Field positions follow ``CVTRA06Y``: id ``X(16)``, type ``X(02)``, category
+ *     ``9(04)``, source ``X(10)``, description ``X(100)``, amount ``S9(09)V99``, merchant id
+ *     ``9(09)``, merchant name ``X(50)``, merchant city ``X(50)``, merchant zip ``X(10)``,
+ *     card number ``X(16)``, origination timestamp ``X(26)``, processing timestamp ``X(26)``,
+ *     filler ``X(20)``.
  */
 public class DailyTransactionRecordMapper implements LineMapper<DailyTransaction> {
 

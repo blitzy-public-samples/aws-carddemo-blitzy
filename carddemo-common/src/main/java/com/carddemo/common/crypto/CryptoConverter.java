@@ -15,31 +15,26 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * JPA attribute converter that transparently encrypts and decrypts sensitive
- * personally-identifiable string columns (SSN, government-issued id, EFT
- * account id, and the card verification value) at rest using AES-256-GCM.
- *
- * :purpose: Ensure regulated PII the application writes is never stored as
- *     plaintext in the database, satisfying the encrypt-permitted-PII control
- *     while leaving the in-memory Java field value unchanged for business logic.
- * :output: On write, a Base64 token of ``IV || ciphertext || GCM-tag``; on read,
- *     the original plaintext. ``null`` and empty inputs pass through unchanged so
- *     nullable columns and blank fixed-width fields are preserved.
- *
- * The 256-bit key is resolved from the ``CARDDEMO_PII_KEY`` environment variable
- * or the ``carddemo.pii.key`` system property, expected as a Base64 value of 32
- * bytes. When no key is configured any attempt to encrypt fails fast, so a
- * misconfigured deployment cannot silently persist plaintext.
- *
- * The read path additionally tolerates a column value that is not a ciphertext
- * token. Those values exist because the legacy application loaded its VSAM files
- * from fixed-width sequential data sets and the seed migrations derived from
- * ``app/data/ASCII`` reproduce them verbatim, so a column can legitimately hold a
- * value written before encryption was introduced. Such a value is returned as
- * read, and is re-written encrypted the next time the owning entity is persisted.
- * The distinction is structural, not a fallback for decryption failures: a value
- * that IS a well-formed token but cannot be decrypted still raises
- * ``IllegalStateException`` rather than surfacing ciphertext as data. Rationale
- * and the accepted residual risk are recorded in ``docs/decision-log.md``.
+ *     personally-identifiable string columns (SSN, government-issued id, EFT account id, and
+ *     the card verification value) at rest using AES-256-GCM.
+ * :purpose: Ensure regulated PII the application writes is never stored as plaintext in
+ *     the database, satisfying the encrypt-permitted-PII control while leaving the in-memory
+ *     Java field value unchanged for business logic.
+ * :output: On write, a Base64 token of ``IV || ciphertext || GCM-tag``; on read, the
+ *     original plaintext. ``null`` and empty inputs pass through unchanged so nullable columns
+ *     and blank fixed-width fields are preserved. The 256-bit key is resolved from the
+ *     ``CARDDEMO_PII_KEY`` environment variable or the ``carddemo.pii.key`` system property,
+ *     expected as a Base64 value of 32 bytes. When no key is configured any attempt to encrypt
+ *     fails fast, so a misconfigured deployment cannot silently persist plaintext. The read
+ *     path additionally tolerates a column value that is not a ciphertext token. Those values
+ *     exist because the legacy application loaded its VSAM files from fixed-width sequential
+ *     data sets and the seed migrations derived from ``app/data/ASCII`` reproduce them
+ *     verbatim, so a column can legitimately hold a value written before encryption was
+ *     introduced. Such a value is returned as read, and is re-written encrypted the next time
+ *     the owning entity is persisted. The distinction is structural, not a fallback for
+ *     decryption failures: a value that IS a well-formed token but cannot be decrypted still
+ *     raises ``IllegalStateException`` rather than surfacing ciphertext as data. Rationale and
+ *     the accepted residual risk are recorded in ``docs/decision-log.md``.
  */
 @Converter
 public class CryptoConverter implements AttributeConverter<String, String> {

@@ -1,21 +1,18 @@
 /**
- * browseNotices
- * =============
- *
- * :purpose: Classify the line-23 text a browse screen publishes as either a failure or
- *     a non-failure NOTICE. ``COUSR00.bms``, ``COCRDLI.bms`` and ``COTRN00.bms`` each
- *     declare their ``ERRMSG`` field ``COLOR=RED`` statically and their programs never
- *     move ``DFHGREEN``, so reaching the end of a browse is displayed in RED on a real
- *     3270 and that colour is preserved verbatim. What the terminal had no way to
- *     express is announcement urgency: routing an ordinary end-of-list condition
- *     through ``role="alert"`` interrupts a screen-reader user to tell them a list
- *     ended. These literals are therefore published as notices -- same RED, polite
- *     announcement.
+ * browseNotices =============
+ * :purpose: Classify the line-23 text a browse screen publishes as either a failure or a
+ *     non-failure NOTICE. ``COUSR00.bms``, ``COCRDLI.bms`` and ``COTRN00.bms`` each declare
+ *     their ``ERRMSG`` field ``COLOR=RED`` statically and their programs never move
+ *     ``DFHGREEN``, so reaching the end of a browse is displayed in RED on a real 3270 and
+ *     that colour is preserved verbatim. What the terminal had no way to express is
+ *     announcement urgency: routing an ordinary end-of-list condition through ``role="alert"``
+ *     interrupts a screen-reader user to tell them a list ended. These literals are therefore
+ *     published as notices -- same RED, polite announcement.
  * :output: The verbatim :data:`BROWSE_NOTICE_MESSAGES` set and the
- *     :func:`isBrowseNotice` predicate.
+ * :func: `isBrowseNotice` predicate.
  * :note: The literals are reproduced character-for-character from the COBOL sources,
- *     including their trailing ellipses and full stop, so a message that is NOT one of
- *     these keeps the assertive alert role it deserves.
+ *     including their trailing ellipses and full stop, so a message that is NOT one of these
+ *     keeps the assertive alert role it deserves.
  */
 
 /**

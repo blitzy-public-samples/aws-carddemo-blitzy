@@ -50,3 +50,11 @@ logging:
   level:
     com.carddemo.user: DEBUG
     org.hibernate.SQL: DEBUG
+# Start-up warm-up is a production latency control (carddemo-common
+# WarmUpAutoConfiguration): it pre-establishes pooled connections and compiles the
+# read paths so a freshly started service meets the 200 ms target of AAP 0.7.1 on its
+# first request. A test context is never measured for latency, so it is switched off
+# here to keep every context boot as fast as it was.
+carddemo:
+  warmup:
+    enabled: false

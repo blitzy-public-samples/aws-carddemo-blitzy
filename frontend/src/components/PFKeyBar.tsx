@@ -1,20 +1,18 @@
 /**
- * PFKeyBar
- * ========
- *
- * :purpose: Render the BMS line-24 function-key legend as accessible buttons and
- *     bind the physical 3270 AID keys to their per-screen handlers. Mirrors the
- *     AID-to-PFKey mapping of ``app/cpy/CSSTRPFY.cpy`` and the navigation
- *     conventions of AAP 0.3.5 (ENTER=submit, PF3=exit/back, PF7=page backward,
- *     PF8=page forward), plus any extra keys a page declares (F4/F5/F12).
- * :note: The legend is a plain labelled group rather than an ARIA ``toolbar``. Every
- *     key is an independent tab stop, which is the 3270 legend's own behaviour and the
- *     tab order the mapsets declare; an ARIA toolbar would additionally owe a roving
- *     tabindex plus arrow and Escape handling, which would change that order.
+ * PFKeyBar ========
+ * :purpose: Render the BMS line-24 function-key legend as accessible buttons and bind the
+ *     physical 3270 AID keys to their per-screen handlers. Mirrors the AID-to-PFKey mapping of
+ *     ``app/cpy/CSSTRPFY.cpy`` and the navigation conventions of AAP 0.3.5 (ENTER=submit,
+ *     PF3=exit/back, PF7=page backward, PF8=page forward), plus any extra keys a page declares
+ *     (F4/F5/F12).
+ * :note: The legend is a plain labelled group rather than an ARIA ``toolbar``. Every key
+ *     is an independent tab stop, which is the 3270 legend's own behaviour and the tab order
+ *     the mapsets declare; an ARIA toolbar would additionally owe a roving tabindex plus arrow
+ *     and Escape handling, which would change that order.
  * :note: The listener reads the current legend, the current keyboard-lock state and the
  *     send counter through refs refreshed in a LAYOUT effect. A passive effect would be
- *     deferred past the commit and leave a window in which a key struck immediately
- *     after a keystroke acts on the screen state that preceded it.
+ *     deferred past the commit and leave a window in which a key struck immediately after a
+ *     keystroke acts on the screen state that preceded it.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import type { ReactElement } from 'react';
@@ -43,19 +41,19 @@ export interface PFKeyDef {
  * :purpose: Props for :func:`PFKeyBar`.
  * :param keys: Enabled function keys and handlers supplied by the active page.
  * :param tone: The colour the screen's mapset declares on its line-24 legend field.
- * :param inputInhibited: ``true`` while the screen's transaction is outstanding. A
- *     3270 keyboard is locked for the whole of a transaction, so no AID reaches the
- *     program and no legend key can be pressed until the reply arrives.
+ * :param inputInhibited: ``true`` while the screen's transaction is outstanding. A 3270
+ *     keyboard is locked for the whole of a transaction, so no AID reaches the program and no
+ *     legend key can be pressed until the reply arrives.
  * :param onAidDispatched: Notified with the dispatched action every time an AID is
- *     accepted, whether from a physical key or from a legend button. The shell uses
- *     it to count sends, which is what re-announces a repeated message and
- *     re-captures the header clock.
- * :param onUnhandledAid: Notified with an AID the active screen does NOT declare. This
- *     is the ``WHEN OTHER`` arm of the program's ``EVALUATE EIBAID``: a 3270 transmits
- *     every attention identifier to the program, which always answers -- twelve of the
- *     seventeen with ``MOVE CCDA-MSG-INVALID-KEY TO WS-MESSAGE``, the other five by
- *     remapping the key to ENTER (``IF PFK-INVALID SET CCARD-AID-ENTER TO TRUE``).
- *     Omitting it silently discards the key, which no program does.
+ *     accepted, whether from a physical key or from a legend button. The shell uses it to
+ *     count sends, which is what re-announces a repeated message and re-captures the header
+ *     clock.
+ * :param onUnhandledAid: Notified with an AID the active screen does NOT declare. This is
+ *     the ``WHEN OTHER`` arm of the program's ``EVALUATE EIBAID``: a 3270 transmits every
+ *     attention identifier to the program, which always answers -- twelve of the seventeen
+ *     with ``MOVE CCDA-MSG-INVALID-KEY TO WS-MESSAGE``, the other five by remapping the key to
+ *     ENTER (``IF PFK-INVALID SET CCARD-AID-ENTER TO TRUE``). Omitting it silently discards
+ *     the key, which no program does.
  */
 export interface PFKeyBarProps {
   keys: PFKeyDef[];

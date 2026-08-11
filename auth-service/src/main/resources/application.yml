@@ -11,6 +11,18 @@ spring:
   application:
     name: auth-service
 
+  # The Spring Boot ASCII banner is written straight to stdout by the banner printer,
+  # not through the logging system, so its seven lines are the only records in the
+  # stream that are not parseable JSON -- which breaks a collector that reads this
+  # container's stdout line-by-line as JSON, contradicting the structured-logging
+  # requirement of AAP 0.7.5. Turning the banner off is what makes EVERY line of
+  # startup output a log record; the version and application name it carried are
+  # already reported by /actuator/info and by the startup records themselves.
+  main:
+    # QUOTED deliberately: YAML 1.1 resolves a bare `off` to the boolean false, which
+    # the relaxed binder then cannot convert to the Banner.Mode enum.
+    banner-mode: "off"
+
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
     username: ${SPRING_DATASOURCE_USERNAME:carddemo}
@@ -244,6 +256,28 @@ logging:
     json:
       add:
         service: ${spring.application.name}
+
+# ---------------------------------------------------------------------
+# Seeded-credential provisioning (SeedCredentialProvisioner).
+#
+# Flyway migration V10__lock_seeded_credentials.sql leaves the ten seeded USRSEC
+# accounts (ADMIN001-005 / USER0001-0005) with a credential no input can match,
+# because they previously all shared a BCrypt hash of the documented string
+# 'PASSWORD' and that made a known administrator password active on every
+# deployment of this repository.
+#
+# Both settings below are deliberately inert by default: `enabled` is false, and
+# `password` has no value. A deployment that wants the seeded accounts usable must
+# opt in AND inject a credential (CARDDEMO_SEED_USER_PASSWORD, at most eight
+# characters - SEC-USR-PWD is PIC X(08)). Enabling the flag without a password
+# FAILS start-up rather than leaving the accounts silently locked. Nothing here
+# carries a committed credential value.
+# ---------------------------------------------------------------------
+carddemo:
+  security:
+    seed-credentials:
+      enabled: ${CARDDEMO_SEED_CREDENTIALS_ENABLED:false}
+      password: ${CARDDEMO_SEED_USER_PASSWORD:}
 
 # ---------------------------------------------------------------------
 # Docker Compose profile (SPRING_PROFILES_ACTIVE=docker).

@@ -36,28 +36,27 @@ import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * :purpose: Restore the authenticated principal and its role authority for every
- *     request from the shared, Redis-backed pseudo-conversational
- *     {@link SessionContext} written by ``auth-service`` sign-on, so the
- *     ``ROLE_ADMIN`` / ``ROLE_USER`` authorization rules of the API gateway and of
- *     every microservice can be satisfied without persisting Spring Security's own
- *     ``SPRING_SECURITY_CONTEXT`` attribute. This is the servlet-layer equivalent of
- *     the CICS COMMAREA carrying ``CDEMO-USER-TYPE`` from ``COSGN00C`` into every
- *     subsequent transaction.
- * :output: A request-scoped {@link SecurityContext} holding a
- *     {@link UsernamePasswordAuthenticationToken} whose name is the signed-on user id
- *     and whose single authority is derived from ``CDEMO-USER-TYPE``.
- * :note: The filter NEVER creates an HTTP session (it uses
- *     ``request.getSession(false)``), so an anonymous request cannot cause a
- *     persisted Redis session to be minted. It also never mutates the session, so it
- *     is safe on read-only and stateless chains. It does not run at all for the anonymous
- *     ``/auth/**`` sign-on routes -- see {@link #shouldNotFilter(HttpServletRequest)} -- so no
- *     hop holds a handle to, or reads, the session that a sign-on rotates.
- * :note: The authentication is intentionally not persisted between requests: the
- *     session context itself is the durable state, and rebuilding the authentication
- *     from it on every request means a revoked or expired session immediately stops
- *     authorizing, and the Redis payload contains only CardDemo types (keeping the
- *     allowlisted JSON serializer effective).
+ * :purpose: Restore the authenticated principal and its role authority for every request
+ *     from the shared, Redis-backed pseudo-conversational {@link SessionContext} written by
+ *     ``auth-service`` sign-on, so the ``ROLE_ADMIN`` / ``ROLE_USER`` authorization rules of
+ *     the API gateway and of every microservice can be satisfied without persisting Spring
+ *     Security's own ``SPRING_SECURITY_CONTEXT`` attribute. This is the servlet-layer
+ *     equivalent of the CICS COMMAREA carrying ``CDEMO-USER-TYPE`` from ``COSGN00C`` into
+ *     every subsequent transaction.
+ * :output: A request-scoped {@link SecurityContext} holding a {@link
+ *     UsernamePasswordAuthenticationToken} whose name is the signed-on user id and whose
+ *     single authority is derived from ``CDEMO-USER-TYPE``.
+ * :note: The filter NEVER creates an HTTP session (it uses ``request.getSession(false)``),
+ *     so an anonymous request cannot cause a persisted Redis session to be minted. It also
+ *     never mutates the session, so it is safe on read-only and stateless chains. It does not
+ *     run at all for the anonymous ``/auth/**`` sign-on routes -- see {@link
+ *     #shouldNotFilter(HttpServletRequest)} -- so no hop holds a handle to, or reads, the
+ *     session that a sign-on rotates.
+ * :note: The authentication is intentionally not persisted between requests: the session
+ *     context itself is the durable state, and rebuilding the authentication from it on every
+ *     request means a revoked or expired session immediately stops authorizing, and the Redis
+ *     payload contains only CardDemo types (keeping the allowlisted JSON serializer
+ *     effective).
  */
 public class SessionContextAuthenticationFilter extends OncePerRequestFilter {
 

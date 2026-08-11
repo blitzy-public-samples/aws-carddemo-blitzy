@@ -25,22 +25,22 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.Environment;
 
 /**
- * :purpose: Validate the PII encryption key EAGERLY, while the application context is still
- *           starting, for every service that persists data — so a missing, blank or structurally
- *           invalid key aborts startup with a precise message instead of letting the service report
- *           UP and then fail every request that touches an encrypted column.
- * :output: The validated key installed in {@link PiiEncryptionKey} for the JPA
- *          {@link CryptoConverter}, or an {@link IllegalStateException} that fails the context.
- * :note: Registered through ``META-INF/spring/...AutoConfiguration.imports``, so every service on
- *        carddemo-common's classpath is covered with no per-service wiring.
- * :note: Only services that actually persist data are validated: the check is skipped when the
- *        context declares no ``DataSource`` bean. That exempts the api-gateway (which has no
- *        datasource) and web-slice tests, while covering all eight JPA services. The look-up reads
- *        bean DEFINITIONS and deliberately does not instantiate the ``DataSource``.
- * :note: The validator is a ``BeanFactoryPostProcessor`` so it runs before ANY singleton is created.
- *        As an ordinary bean it ran after the datasource and Flyway beans, and a misconfiguration was
- *        reported by whichever of those failed first - an obscure message about a JDBC URL - instead
- *        of the precise configuration error.
+ * :purpose: Validate the PII encryption key EAGERLY, while the application context is
+ *     still starting, for every service that persists data — so a missing, blank or
+ *     structurally invalid key aborts startup with a precise message instead of letting the
+ *     service report UP and then fail every request that touches an encrypted column.
+ * :output: The validated key installed in {@link PiiEncryptionKey} for the JPA {@link
+ *     CryptoConverter}, or an {@link IllegalStateException} that fails the context.
+ * :note: Registered through ``META-INF/spring/...AutoConfiguration.imports``, so every
+ *     service on carddemo-common's classpath is covered with no per-service wiring.
+ * :note: Only services that actually persist data are validated: the check is skipped when
+ *     the context declares no ``DataSource`` bean. That exempts the api-gateway (which has no
+ *     datasource) and web-slice tests, while covering all eight JPA services. The look-up
+ *     reads bean DEFINITIONS and deliberately does not instantiate the ``DataSource``.
+ * :note: The validator is a ``BeanFactoryPostProcessor`` so it runs before ANY singleton
+ *     is created. As an ordinary bean it ran after the datasource and Flyway beans, and a
+ *     misconfiguration was reported by whichever of those failed first - an obscure message
+ *     about a JDBC URL - instead of the precise configuration error.
  */
 @AutoConfiguration
 public class PiiEncryptionAutoConfiguration {

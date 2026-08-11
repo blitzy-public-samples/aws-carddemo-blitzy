@@ -50,19 +50,19 @@ public final class UserIdNormalizer {
     /**
      * :purpose: Fold a user id to its canonical stored form.
      * :param userId: the raw user id as supplied by a caller or read from a request; may be
-     *  ``null``.
-     * :returns: the NFKC-canonicalized, trimmed, upper-cased id, or ``null`` when ``userId`` is
-     *  ``null``. A ``null`` input yields ``null`` rather than an empty string so an absent value
-     *  stays distinguishable from a blank one and the legacy presence edits still report their
-     *  own messages.
+     *     ``null``.
+     * :returns: the NFKC-canonicalized, trimmed, upper-cased id, or ``null`` when ``userId``
+     *     is ``null``. A ``null`` input yields ``null`` rather than an empty string so an absent
+     *     value stays distinguishable from a blank one and the legacy presence edits still report
+     *     their own messages.
      * :note: Unicode NFKC runs FIRST, so a compatibility form folds to the character it stands
-     *  for -- fullwidth ``Ａ`` (U+FF21) to ``A``, the ligature ``ﬁ`` to ``fi`` -- before the id is
-     *  compared or stored. Without it two ids that a reviewer reads as the same string are two
-     *  different rows and two different principals. NFKC does not equate characters from
-     *  DIFFERENT scripts (Cyrillic ``А`` U+0410 is not Latin ``A``), which is why the character
-     *  set is additionally restricted where a user id is accepted -- on the add-user request DTO
-     *  and by the ``chk_sec_usr_id_charset`` constraint -- rather than being left to
-     *  canonicalization alone.
+     *     for -- fullwidth ``Ａ`` (U+FF21) to ``A``, the ligature ``ﬁ`` to ``fi`` -- before the id
+     *     is compared or stored. Without it two ids that a reviewer reads as the same string are
+     *     two different rows and two different principals. NFKC does not equate characters from
+     *     DIFFERENT scripts (Cyrillic ``А`` U+0410 is not Latin ``A``), which is why the character
+     *     set is additionally restricted where a user id is accepted -- on the add-user request
+     *     DTO and by the ``chk_sec_usr_id_charset`` constraint -- rather than being left to
+     *     canonicalization alone.
      */
     public static String normalize(String userId) {
         if (userId == null) {

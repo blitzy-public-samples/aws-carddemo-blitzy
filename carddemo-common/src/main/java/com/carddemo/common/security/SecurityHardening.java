@@ -81,20 +81,19 @@ public final class SecurityHardening {
     /**
      * :purpose: Decide whether a response may assert HSTS. Spring Security's default matcher
      *     is ``request.isSecure()`` alone, which is FALSE for every request in this topology
-     *     because TLS is terminated at the edge and the hop into the service is plain HTTP --
-     *     so no surface emitted the header at all, and AAP 0.6.7 ("all traffic uses TLS")
-     *     had no enforcement on the wire. This matcher additionally accepts a request whose
-     *     edge reported ``X-Forwarded-Proto: https``.
-     * :note: Consulting the forwarded header HERE, in the one header writer that needs it,
-     *     is deliberate and is NOT the same as enabling ``server.forward-headers-strategy``.
-     *     That property installs ``ForwardedHeaderFilter``, which also rewrites
-     *     ``getRemoteAddr()`` from ``X-Forwarded-For`` -- a header an internet client controls
-     *     -- and the gateway's rate limiter and the security audit trail both read the remote
-     *     address. Enabling it would hand an attacker a per-request rate-limit key and would
-     *     write spoofed source addresses into the audit log. Nothing but the HSTS decision
-     *     trusts this header, and an asserted HSTS policy is not something an attacker can
-     *     turn against another caller: a response's headers are derived from that request's
-     *     own headers.
+     *     because TLS is terminated at the edge and the hop into the service is plain HTTP -- so
+     *     no surface emitted the header at all, and AAP 0.6.7 ("all traffic uses TLS") had no
+     *     enforcement on the wire. This matcher additionally accepts a request whose edge reported
+     *     ``X-Forwarded-Proto: https``.
+     * :note: Consulting the forwarded header HERE, in the one header writer that needs it, is
+     *     deliberate and is NOT the same as enabling ``server.forward-headers-strategy``. That
+     *     property installs ``ForwardedHeaderFilter``, which also rewrites ``getRemoteAddr()``
+     *     from ``X-Forwarded-For`` -- a header an internet client controls -- and the gateway's
+     *     rate limiter and the security audit trail both read the remote address. Enabling it
+     *     would hand an attacker a per-request rate-limit key and would write spoofed source
+     *     addresses into the audit log. Nothing but the HSTS decision trusts this header, and an
+     *     asserted HSTS policy is not something an attacker can turn against another caller: a
+     *     response's headers are derived from that request's own headers.
      */
     private static final org.springframework.security.web.util.matcher.RequestMatcher HSTS_MATCHER =
             request -> request.isSecure() || forwardedOverHttps(request);

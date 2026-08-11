@@ -74,6 +74,33 @@
             <artifactId>spring-cloud-starter-gateway-server-webmvc</artifactId>
         </dependency>
 
+        <!--
+          Client-side load balancing across the instances of a downstream service.
+
+          WITHOUT this artifact a route's `uri` may only name a single fixed authority,
+          which the gateway resolves once and then keeps for the life of its pooled
+          keep-alive connections. Scaling a service to two replicas therefore left one
+          replica idle - measured: 200 authenticated reads through the gateway with
+          account-service scaled to 2 were served 200/0 by a single replica - and stopping
+          the serving replica surfaced HTTP 503 to the caller for ~11 s.
+
+          The artifact is what activates
+          FilterAutoConfiguration$LoadBalancerHandlerConfiguration, which is
+          @ConditionalOnClass(org.springframework.cloud.loadbalancer.annotation.LoadBalancerClient)
+          and registers the `lb` route-uri scheme. Only then does `uri: lb://<service>`
+          bind, applying LoadBalancerFilterFunctions.lb(<service>) as a route filter that
+          rewrites the target authority per request from a chosen ServiceInstance.
+
+          Spring Cloud LoadBalancer ships NO instance source that works without a service
+          registry, so UpstreamLoadBalancerConfig supplies one built on the container
+          platform's own DNS. Version is managed by the Spring Cloud release-train BOM
+          imported above - the same train as the gateway starter, never pinned separately.
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+        </dependency>
+
         <!-- Servlet MVC (Tomcat) stack for the local menu-navigation REST endpoints. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

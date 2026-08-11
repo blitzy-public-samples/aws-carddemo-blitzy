@@ -37,21 +37,19 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * :purpose: Suppress the servlet container's own HTML error report. A request the
- *  container rejects before it reaches the servlet -- for example a URI carrying an
- *  encoded path separator, which Tomcat refuses while parsing -- never reaches the
- *  Spring dispatcher, so neither the shared ``@RestControllerAdvice`` nor
- *  {@link CardDemoErrorController} can render the documented JSON envelope for it.
- *  Left at its default the container answers such a request with a full HTML error
- *  page, which is a second, undocumented error shape in the API contract.
- * :output: A {@link WebServerFactoryCustomizer} that installs an
- *  {@link ErrorReportValve} with report and server-info rendering disabled, so a
- *  container-level rejection returns the bare status with an empty body and
- *  discloses neither markup nor server identity. Every error that does reach the
- *  application still renders the {@link com.carddemo.common.dto.ErrorResponse}
- *  envelope.
- * :note: Import it alongside {@link GlobalExceptionHandler} and
- *  {@link CardDemoErrorController} in every web-enabled service; it is not
- *  auto-configured.
+ *     container rejects before it reaches the servlet -- for example a URI carrying an encoded
+ *     path separator, which Tomcat refuses while parsing -- never reaches the Spring
+ *     dispatcher, so neither the shared ``@RestControllerAdvice`` nor {@link
+ *     CardDemoErrorController} can render the documented JSON envelope for it. Left at its
+ *     default the container answers such a request with a full HTML error page, which is a
+ *     second, undocumented error shape in the API contract.
+ * :output: A {@link WebServerFactoryCustomizer} that installs an {@link ErrorReportValve}
+ *     with report and server-info rendering disabled, so a container-level rejection returns
+ *     the bare status with an empty body and discloses neither markup nor server identity.
+ *     Every error that does reach the application still renders the {@link
+ *     com.carddemo.common.dto.ErrorResponse} envelope.
+ * :note: Import it alongside {@link GlobalExceptionHandler} and {@link
+ *     CardDemoErrorController} in every web-enabled service; it is not auto-configured.
  */
 @Configuration
 @ConditionalOnClass(name = "org.apache.catalina.valves.ErrorReportValve")
@@ -138,18 +136,18 @@ public class ContainerErrorReportConfig {
 
         /**
          * :purpose: Recover the correlation id for a failure the container itself answers, so the
-         *  envelope carries the SAME id the caller holds whenever such an id exists.
+         *     envelope carries the SAME id the caller holds whenever such an id exists.
          * :param request: the rejected request.
          * :returns: the id {@link CorrelationIdFilter} published as a request attribute when that
-         *  filter ran; otherwise the sanitized inbound ``X-Correlation-Id`` supplied by the
-         *  caller; otherwise ``null``.
+         *     filter ran; otherwise the sanitized inbound ``X-Correlation-Id`` supplied by the caller;
+         *     otherwise ``null``.
          * :note: The ``null`` case is reachable and is not a defect. A URI the container refuses
-         *  while parsing the request line -- an encoded path separator, for instance -- is
-         *  rejected before a context is selected, so NO servlet filter runs and the server never
-         *  mints an id for it. Reading the inbound header here means a caller that supplies its
-         *  own id can still correlate even that class of rejection; a caller that supplies none
-         *  gets ``null``, matching the fact that no id was ever issued or logged. ``traceId``
-         *  stays ``null`` for the same reason: no observation scope was ever opened.
+         *     while parsing the request line -- an encoded path separator, for instance -- is rejected
+         *     before a context is selected, so NO servlet filter runs and the server never mints an id
+         *     for it. Reading the inbound header here means a caller that supplies its own id can
+         *     still correlate even that class of rejection; a caller that supplies none gets ``null``,
+         *     matching the fact that no id was ever issued or logged. ``traceId`` stays ``null`` for
+         *     the same reason: no observation scope was ever opened.
          */
         private String resolveCorrelationId(Request request) {
             Object established = request.getAttribute(CorrelationIdFilter.CORRELATION_ID_ATTRIBUTE);

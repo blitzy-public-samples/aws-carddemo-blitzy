@@ -75,6 +75,7 @@ public class TranCatBal {
     }
 
     /**
+     * :purpose: Read ``trancatAcctId``.
      * :returns: the account identifier component of the composite key.
      */
     public Long getTrancatAcctId() {
@@ -82,6 +83,7 @@ public class TranCatBal {
     }
 
     /**
+     * :purpose: Set ``trancatAcctId``.
      * :param trancatAcctId: the account identifier component to assign.
      */
     public void setTrancatAcctId(Long trancatAcctId) {
@@ -89,6 +91,7 @@ public class TranCatBal {
     }
 
     /**
+     * :purpose: Read ``trancatTypeCd``.
      * :returns: the transaction type code component of the composite key.
      */
     public String getTrancatTypeCd() {
@@ -96,6 +99,7 @@ public class TranCatBal {
     }
 
     /**
+     * :purpose: Set ``trancatTypeCd``.
      * :param trancatTypeCd: the transaction type code component to assign.
      */
     public void setTrancatTypeCd(String trancatTypeCd) {
@@ -103,6 +107,7 @@ public class TranCatBal {
     }
 
     /**
+     * :purpose: Read ``trancatCd``.
      * :returns: the transaction category code component of the composite key.
      */
     public Integer getTrancatCd() {
@@ -110,6 +115,7 @@ public class TranCatBal {
     }
 
     /**
+     * :purpose: Set ``trancatCd``.
      * :param trancatCd: the transaction category code component to assign.
      */
     public void setTrancatCd(Integer trancatCd) {
@@ -117,6 +123,7 @@ public class TranCatBal {
     }
 
     /**
+     * :purpose: Read ``tranCatBal``.
      * :returns: the category running balance as a fixed-scale value.
      */
     public BigDecimal getTranCatBal() {
@@ -124,6 +131,7 @@ public class TranCatBal {
     }
 
     /**
+     * :purpose: Set ``tranCatBal``.
      * :param tranCatBal: the category running balance to assign (scale 2);
      *     stored verbatim without rounding to preserve financial precision.
      */
@@ -153,6 +161,7 @@ public class TranCatBal {
     }
 
     /**
+     * :purpose: Hash consistent with :java:meth:`equals`.
      * :output: a hash code derived from the three composite-key components,
      *     consistent with {@link #equals(Object)}.
      */
@@ -162,6 +171,7 @@ public class TranCatBal {
     }
 
     /**
+     * :purpose: Diagnostic rendering that never discloses unmasked PII.
      * Render a diagnostic representation of this entity.
      *
      * :output: a string containing the composite-key components and the

@@ -80,23 +80,23 @@ public class BatchJobClient {
 
     /**
      * :purpose: Build the client against the configured batch-service base URI, on the
-     *  application's own instrumented HTTP client builder, and attach the correlation-id
-     *  propagation interceptor.
+     *     application's own instrumented HTTP client builder, and attach the correlation-id
+     *     propagation interceptor.
      * :param restClientBuilder: the Spring Boot managed {@link RestClient.Builder}.
      * :param httpRequest: the current request, injected as a scoped proxy.
      * :param batchServiceUri: base URI of batch-service (``BATCH_SERVICE_URI``).
      * :note: The MANAGED builder must be used rather than ``RestClient.builder()``. Only the
-     *  managed one carries the observation registry that Boot's client instrumentation
-     *  configures, and that instrumentation is what writes the ``traceparent`` header onto
-     *  the outbound request. Built from a bare builder, this hop left no trace context at
-     *  all: batch-service opened a brand-new trace for the run, so the report submission and
-     *  the run it launched could not be connected in Jaeger, and the AAP's requirement for
-     *  distributed tracing ACROSS SERVICE BOUNDARIES was unmet on the one hop that crosses a
-     *  service boundary (AAP 0.7.5).
+     *     managed one carries the observation registry that Boot's client instrumentation
+     *     configures, and that instrumentation is what writes the ``traceparent`` header onto the
+     *     outbound request. Built from a bare builder, this hop left no trace context at all:
+     *     batch-service opened a brand-new trace for the run, so the report submission and the run
+     *     it launched could not be connected in Jaeger, and the AAP's requirement for distributed
+     *     tracing ACROSS SERVICE BOUNDARIES was unmet on the one hop that crosses a service
+     *     boundary (AAP 0.7.5).
      * :note: ``traceparent`` identifies the trace; ``X-Correlation-Id`` is the BUSINESS
-     *  identifier the whole estate logs and returns to callers, and it is not a tracing
-     *  header, so the instrumentation does not carry it. The interceptor below propagates it
-     *  explicitly, matching what the gateway does for every inbound request.
+     *     identifier the whole estate logs and returns to callers, and it is not a tracing header,
+     *     so the instrumentation does not carry it. The interceptor below propagates it
+     *     explicitly, matching what the gateway does for every inbound request.
      */
     public BatchJobClient(RestClient.Builder restClientBuilder,
                           HttpServletRequest httpRequest,

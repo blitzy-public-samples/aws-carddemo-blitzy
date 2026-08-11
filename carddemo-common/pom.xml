@@ -196,6 +196,21 @@
         </dependency>
 
         <!--
+          Spring Boot's Jackson auto-configuration types. Needed only for the
+          JsonMapperBuilderCustomizer contract that
+          StrictScalarCoercionAutoConfiguration implements to make the JSON boundary
+          refuse a number or boolean where a textual member is declared.
+          <optional>true</optional> for the same reason as the web types above: the
+          pure batch module does not need it, and every service that binds JSON
+          already has it transitively through spring-boot-starter-web.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-jackson</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
           Flyway migration API for the shared migration set that ships in this module's
           resources (classpath:db/migration) together with its code-based member,
           SeededPiiEncryptionMigration (a JavaMigration). Optional like every other

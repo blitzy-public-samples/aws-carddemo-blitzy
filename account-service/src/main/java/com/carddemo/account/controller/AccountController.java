@@ -104,18 +104,20 @@ public class AccountController {
     }
 
     /**
-     * :purpose: Update an account and its associated customer under optimistic
-     *  locking (CICS ``CAUP``, program ``COACTUPC``). Edits the path id, validates
-     *  the request body, bridges the externalized session, and delegates the
-     *  single-transaction read-snapshot-compare-rewrite to {@link AccountService}.
+     * :purpose: Update an account and its associated customer under optimistic locking (CICS
+     *     ``CAUP``, program ``COACTUPC``). Edits the path id, validates the request body, bridges
+     *     the externalized session, and delegates the single-transaction
+     *     read-snapshot-compare-rewrite to {@link AccountService}.
      * :param id: the account id path variable (``ACCT-ID PIC 9(11)``).
      * :param request: the validated editable account and customer master fields.
-     * :param httpRequest: the current servlet request; its already-established session,
-     *  when present, carries the externalized context.
+     * :param httpRequest: the current servlet request; its already-established session, when
+     *     present, carries the externalized context.
      * :returns: the post-update account response (HTTP 200).
      * :raises CardDemoException: when the id is not a non-zero eleven-digit number (HTTP 400).
-     * :raises RecordNotFoundException: when the cross-reference, account, or customer is not found (HTTP 404).
-     * :raises OptimisticLockConflictException: when the account was modified concurrently (HTTP 409).
+     * :raises RecordNotFoundException: when the cross-reference, account, or customer is not
+     *     found (HTTP 404).
+     * :raises OptimisticLockConflictException: when the account was modified concurrently
+     *     (HTTP 409).
      */
     @PutMapping("/{id}")
     public AccountUpdateResponseDto updateAccount(@PathVariable("id") String id,
@@ -129,20 +131,20 @@ public class AccountController {
     }
 
     /**
-     * :purpose: Run the ``COACTUPC`` edit pass over a submission without rewriting anything
-     *  -- the ENTER half of CICS ``CAUP``, whose ``1200-EDIT-MAP-INPUTS`` runs inside the
-     *  program before ``CHANGES-OK-NOT-CONFIRMED`` is set and the operator is invited to
-     *  press PF5. The edits and their frozen literals live in the service, so the screen
-     *  reports ``Changes validated.Press F5 to save`` only once they have actually run
-     *  against the values on display.
+     * :purpose: Run the ``COACTUPC`` edit pass over a submission without rewriting anything --
+     *     the ENTER half of CICS ``CAUP``, whose ``1200-EDIT-MAP-INPUTS`` runs inside the program
+     *     before ``CHANGES-OK-NOT-CONFIRMED`` is set and the operator is invited to press PF5. The
+     *     edits and their frozen literals live in the service, so the screen reports ``Changes
+     *     validated.Press F5 to save`` only once they have actually run against the values on
+     *     display.
      * :param id: the account id path variable (``ACCT-ID PIC 9(11)``).
      * :param request: the editable account and customer fields as currently entered.
      * :param httpRequest: the current servlet request, carrying the externalized context.
      * :returns: HTTP 204 with no body when every edit passes; the failing edit is reported
-     *  through the shared error envelope instead.
+     *     through the shared error envelope instead.
      * :raises CardDemoException: when the id is not a non-zero eleven-digit number, when the
-     *  submission carries no field, when it matches the display-time snapshot, or when a
-     *  field edit fails (HTTP 400 / 422 through the shared handler).
+     *     submission carries no field, when it matches the display-time snapshot, or when a field
+     *     edit fails (HTTP 400 / 422 through the shared handler).
      */
     @PostMapping("/{id}/validate")
     @ResponseStatus(HttpStatus.NO_CONTENT)
@@ -157,24 +159,24 @@ public class AccountController {
     }
 
     /**
-     * :purpose: Edit the account-id path variable per the legacy
-     *  ``COACTVWC``/``COACTUPC`` ``2210-EDIT-ACCOUNT`` rule (``ACCT-ID PIC 9(11)``):
-     *  the key must be EXACTLY eleven ASCII digits and must not be all zeros.
+     * :purpose: Edit the account-id path variable per the legacy ``COACTVWC``/``COACTUPC``
+     *     ``2210-EDIT-ACCOUNT`` rule (``ACCT-ID PIC 9(11)``): the key must be EXACTLY eleven ASCII
+     *     digits and must not be all zeros.
      * :param id: the raw ``{id}`` path variable.
-     * :param message: the verbatim edit literal of the screen making the call, because
-     *  the view and update screens publish different text for the same edit.
+     * :param message: the verbatim edit literal of the screen making the call, because the
+     *     view and update screens publish different text for the same edit.
      * :returns: the validated account id as a ``Long``.
-     * :raises CardDemoException: when the id is not eleven ASCII digits or is all zeros (HTTP 400).
-     * :note: The width is exact, not a maximum. Both programs receive the key in a
-     *  ``PIC X(11)`` map field and test it with ``IF CC-ACCT-ID IS NOT NUMERIC``
-     *  (``COACTVWC`` L665, ``COACTUPC`` L1801); a class test on an alphanumeric item is
-     *  true only when EVERY character is a digit, and BMS blank-pads the positions the
-     *  operator did not type. A shorter run therefore arrives as digits followed by
-     *  spaces and is refused. Accepting one to eleven digits let an unpadded id resolve
-     *  the same record as its zero-padded form, which is the observable divergence.
-     *  ``\\d`` is deliberate rather than a ``Character.isDigit`` loop: the regex class is
-     *  ASCII-only, so a full-width Unicode digit cannot slip through and then be
-     *  normalised by ``Long.valueOf``.
+     * :raises CardDemoException: when the id is not eleven ASCII digits or is all zeros (HTTP
+     *     400).
+     * :note: The width is exact, not a maximum. Both programs receive the key in a ``PIC
+     *     X(11)`` map field and test it with ``IF CC-ACCT-ID IS NOT NUMERIC`` (``COACTVWC`` L665,
+     *     ``COACTUPC`` L1801); a class test on an alphanumeric item is true only when EVERY
+     *     character is a digit, and BMS blank-pads the positions the operator did not type. A
+     *     shorter run therefore arrives as digits followed by spaces and is refused. Accepting one
+     *     to eleven digits let an unpadded id resolve the same record as its zero-padded form,
+     *     which is the observable divergence. ``\\d`` is deliberate rather than a
+     *     ``Character.isDigit`` loop: the regex class is ASCII-only, so a full-width Unicode digit
+     *     cannot slip through and then be normalised by ``Long.valueOf``.
      */
     private Long parseAccountId(String id, String message) {
         if (id == null || !id.matches("\\d{11}") || id.chars().allMatch(c -> c == '0')) {

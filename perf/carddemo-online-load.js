@@ -147,6 +147,15 @@ const ANONYMOUS_PROBE_STATUSES = http.expectedStatuses(200, 401);
  */
 const ACCOUNT_UPDATE_STATUSES = http.expectedStatuses(200, 409);
 
+/**
+ * :purpose: The statuses a card rewrite may legitimately answer with. Identical reasoning
+ *     to the account rewrite above: two virtual users holding the same snapshot race, and
+ *     `COCRDUPC`'s compare-rewrite refuses the loser with a conflict rather than letting it
+ *     overwrite. Without this callback k6's built-in ``http_req_failed`` counts that
+ *     correct refusal as a transport failure and the run reports a false error rate.
+ */
+const CARD_UPDATE_STATUSES = http.expectedStatuses(200, 409);
+
 /** The 200 ms 95th-percentile target of AAP 0.7.1, in milliseconds. */
 const P95_TARGET_MS = 200;
 
@@ -156,8 +165,19 @@ const ADMIN_IDS = ['ADMIN001', 'ADMIN002', 'ADMIN003', 'ADMIN004', 'ADMIN005'];
 /** Seeded ordinary-user ids; ``SEC-USR-TYPE`` 'U'. */
 const USER_IDS = ['USER0001', 'USER0002', 'USER0003', 'USER0004', 'USER0005'];
 
-/** The seeded credential shared by every fixture user (``app/jcl/DUSRSECJ.jcl``). */
-const PASSWORD = 'PASSWORD';
+/**
+ * The seeded credential. `V10__lock_seeded_credentials.sql` replaced the fixture hashes
+ * with a sentinel that matches no input, so there is no literal to hard-code any more:
+ * the value comes from the same `CARDDEMO_SEED_USER_PASSWORD` the deployment was given.
+ * Run with `k6 run -e CARDDEMO_SEED_USER_PASSWORD=... perf/carddemo-online-load.js`.
+ */
+const PASSWORD = __ENV.CARDDEMO_SEED_USER_PASSWORD;
+if (!PASSWORD) {
+  throw new Error(
+    'CARDDEMO_SEED_USER_PASSWORD is not set. Every sign-on would return 401 and the run '
+      + 'would measure the rejection path. Pass it with -e CARDDEMO_SEED_USER_PASSWORD=...',
+  );
+}
 
 /** Number of seeded accounts, one card each (``V3__seed_test_data.sql``). */
 const SEEDED_ACCOUNTS = 50;
@@ -175,12 +195,12 @@ const MEASURED_ENDPOINTS = [
   'POST /menu/select',
   'GET /accounts/{id}',
   'GET /cards',
-  'GET /cards/{cardNumber}',
+  'POST /cards/detail',
   'GET /transactions',
-  'GET /transactions/{id}',
+  'GET /transactions/detail',
   'GET /users',
   // update mix
-  'PUT /cards/{cardNumber}',
+  'PUT /cards',
   'PUT /accounts/{id}',
   // administration mix
   'GET /admin/menu',
@@ -307,7 +327,10 @@ function signOn(admin) {
   );
   check(response, { 'sign-on succeeded': (r) => r.status === 200 });
 
-  return { userId, admin, accountId: (__VU % SEEDED_ACCOUNTS) + 1 };
+  // ACCT-ID is PIC 9(11). A raw ordinal reaches the API as `/accounts/7`, which is a
+  // 400 VALIDATION_FAILED rather than a lookup, so pad it to the frozen key width.
+  const ordinal = (__VU % SEEDED_ACCOUNTS) + 1;
+  return { userId, admin, accountId: String(ordinal).padStart(11, '0') };
 }
 
 /**
@@ -373,10 +396,15 @@ export function onlineReads() {
   if (cardNumber !== null) {
     think();
     check(
-      http.get(`${BASE_URL}/cards/${cardNumber}?accountId=${current.accountId}`, {
-        jar,
-        tags: { name: 'GET /cards/{cardNumber}' },
-      }),
+      http.post(
+        `${BASE_URL}/cards/detail`,
+        JSON.stringify({ cardNumber, accountId: current.accountId }),
+        {
+          jar,
+          headers: { 'Content-Type': 'application/json', 'X-XSRF-TOKEN': csrfToken() },
+          tags: { name: 'POST /cards/detail' },
+        },
+      ),
       { 'card detail returned': (r) => r.status === 200 },
     );
   }
@@ -392,9 +420,9 @@ export function onlineReads() {
   if (transactionId !== null) {
     think();
     check(
-      http.get(`${BASE_URL}/transactions/${transactionId}`, {
+      http.get(`${BASE_URL}/transactions/detail?tranId=${transactionId}`, {
         jar,
-        tags: { name: 'GET /transactions/{id}' },
+        tags: { name: 'GET /transactions/detail' },
       }),
       { 'transaction view returned': (r) => r.status === 200 },
     );
@@ -428,10 +456,15 @@ export function onlineWrites() {
     return;
   }
 
-  const detail = http.get(`${BASE_URL}/cards/${cardNumber}?accountId=${current.accountId}`, {
-    jar,
-    tags: { name: 'GET /cards/{cardNumber}' },
-  });
+  const detail = http.post(
+    `${BASE_URL}/cards/detail`,
+    JSON.stringify({ cardNumber, accountId: current.accountId }),
+    {
+      jar,
+      headers: { 'Content-Type': 'application/json', 'X-XSRF-TOKEN': csrfToken() },
+      tags: { name: 'POST /cards/detail' },
+    },
+  );
   check(detail, { 'card detail returned': (r) => r.status === 200 });
 
   let card;
@@ -445,18 +478,43 @@ export function onlineWrites() {
   }
   think();
 
+  // `PUT /cards` carries the key in the BODY (there is no path variable), and it carries
+  // the optimistic-lock `version` plus the `old*` snapshot the screen read -- COCRDUPC's
+  // read-snapshot-compare-rewrite. Omitting them is why this metric used to read zero.
+  //
+  // The comparison also REFUSES an update that changes nothing ("No change detected with
+  // respect to values fetched.", a 400), and it compares the embossed name case-
+  // insensitively as the legacy MOVE did. So the write path is only exercised by a
+  // genuinely different value: alternate the trailing character between two spellings so
+  // every iteration is a real change and the fixture stays bounded.
+  // CARD-NAME accepts alphabets and spaces only ("Card name can only contain alphabets
+  // and spaces"), and it is PIC X(50), so the rotation appends and removes a single
+  // LETTER and never grows past the declared width.
+  const name = card.cardEmbossedName;
+  const rotated = name.endsWith('X') || name.length >= 50
+    ? name.slice(0, -1)
+    : `${name}X`;
   const body = JSON.stringify({
-    cardEmbossedName: card.cardEmbossedName,
+    cardNumber,
+    accountId: current.accountId,
+    cardEmbossedName: rotated,
     cardActiveStatus: card.cardActiveStatus,
     cardExpiraionDate: card.cardExpiraionDate,
+    version: card.version,
+    oldCardEmbossedName: card.cardEmbossedName,
+    oldCardActiveStatus: card.cardActiveStatus,
+    oldCardExpiraionDate: card.cardExpiraionDate,
   });
   check(
-    http.put(`${BASE_URL}/cards/${cardNumber}?accountId=${current.accountId}`, body, {
+    http.put(`${BASE_URL}/cards`, body, {
       jar,
       headers: { 'Content-Type': 'application/json', 'X-XSRF-TOKEN': csrfToken() },
-      tags: { name: 'PUT /cards/{cardNumber}' },
+      responseCallback: CARD_UPDATE_STATUSES,
+      tags: { name: 'PUT /cards' },
     }),
-    { 'card update accepted': (r) => r.status === 200 },
+    // 409 is a legitimate outcome under concurrency: two VUs holding the same snapshot
+    // race, and the loser must be refused rather than silently overwriting.
+    { 'card update resolved': (r) => r.status === 200 || r.status === 409 },
   );
   think();
 
@@ -719,7 +777,10 @@ function addTransaction(current) {
   check(last, { 'last transaction returned': (r) => r.status === 200 });
   think();
 
-  const stamp = timestamp();
+  // COTRN02's map fields are the 10-character DATE (`Orig Date should be in format
+  // YYYY-MM-DD`); the service composes the canonical 26-character TRAN-ORIG-TS /
+  // TRAN-PROC-TS from it. Sending the 26-character form is a 400.
+  const stamp = timestamp().slice(0, 10);
   const body = JSON.stringify({
     acctId: String(current.accountId),
     tranTypeCd: '01',

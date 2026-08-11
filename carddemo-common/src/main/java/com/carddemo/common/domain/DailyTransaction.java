@@ -10,21 +10,17 @@ import java.util.Objects;
 
 /**
  * JPA entity for one record of the daily-transaction feed (``DALYTRAN``).
- *
- * :purpose: Maps the legacy COBOL ``DALYTRAN-RECORD`` layout
- *     (``app/cpy/CVTRA06Y.cpy``, record length 350) onto the relational
- *     ``daily_transactions`` table, which is the staged image of the sequential
- *     ``DALYTRAN`` data set that the ``CBTRN02C`` transaction-posting job reads
- *     (``app/jcl/POSTTRAN.jcl`` DD ``DALYTRAN``). Persisting the feed keeps the
- *     staged records readable by the posting ``ItemReader`` across job launches
- *     and across service instances, exactly as the legacy job re-reads its input
- *     data set.
- * :output: A persistent feed row keyed by the 16-character ``DALYTRAN-ID``
- *     (the trailing 20-byte COBOL ``FILLER`` carries no data and is not modeled).
- *     Monetary and identifier fields retain exact fixed-point
- *     (``BigDecimal``/``NUMERIC(11,2)``) and integral types so downstream posting
- *     validation (over-limit, cross-reference, and expiry checks) reproduces the
- *     legacy results byte-for-byte.
+ * :purpose: Maps the legacy COBOL ``DALYTRAN-RECORD`` layout (``app/cpy/CVTRA06Y.cpy``,
+ *     record length 350) onto the relational ``daily_transactions`` table, which is the staged
+ *     image of the sequential ``DALYTRAN`` data set that the ``CBTRN02C`` transaction-posting
+ *     job reads (``app/jcl/POSTTRAN.jcl`` DD ``DALYTRAN``). Persisting the feed keeps the
+ *     staged records readable by the posting ``ItemReader`` across job launches and across
+ *     service instances, exactly as the legacy job re-reads its input data set.
+ * :output: A persistent feed row keyed by the 16-character ``DALYTRAN-ID`` (the trailing
+ *     20-byte COBOL ``FILLER`` carries no data and is not modeled). Monetary and identifier
+ *     fields retain exact fixed-point (``BigDecimal``/``NUMERIC(11,2)``) and integral types so
+ *     downstream posting validation (over-limit, cross-reference, and expiry checks)
+ *     reproduces the legacy results byte-for-byte.
  */
 @Entity
 @Table(name = "daily_transactions")
@@ -125,6 +121,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Read ``dalytranId``.
      * :return: the ``DALYTRAN-ID`` record identifier.
      */
     public String getDalytranId() {
@@ -132,6 +129,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Set ``dalytranId``.
      * :param dalytranId: the ``DALYTRAN-ID`` record identifier to set.
      */
     public void setDalytranId(String dalytranId) {
@@ -139,6 +137,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Read ``dalytranTypeCd``.
      * :return: the ``DALYTRAN-TYPE-CD`` transaction type code.
      */
     public String getDalytranTypeCd() {
@@ -146,6 +145,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Set ``dalytranTypeCd``.
      * :param dalytranTypeCd: the ``DALYTRAN-TYPE-CD`` transaction type code to set.
      */
     public void setDalytranTypeCd(String dalytranTypeCd) {
@@ -153,6 +153,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Read ``dalytranCatCd``.
      * :return: the ``DALYTRAN-CAT-CD`` transaction category code.
      */
     public Integer getDalytranCatCd() {
@@ -160,6 +161,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Set ``dalytranCatCd``.
      * :param dalytranCatCd: the ``DALYTRAN-CAT-CD`` transaction category code to set.
      */
     public void setDalytranCatCd(Integer dalytranCatCd) {
@@ -167,6 +169,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Read ``dalytranSource``.
      * :return: the ``DALYTRAN-SOURCE`` originating source channel.
      */
     public String getDalytranSource() {
@@ -174,6 +177,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Set ``dalytranSource``.
      * :param dalytranSource: the ``DALYTRAN-SOURCE`` originating source channel to set.
      */
     public void setDalytranSource(String dalytranSource) {
@@ -181,6 +185,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Read ``dalytranDesc``.
      * :return: the ``DALYTRAN-DESC`` transaction description.
      */
     public String getDalytranDesc() {
@@ -188,6 +193,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Set ``dalytranDesc``.
      * :param dalytranDesc: the ``DALYTRAN-DESC`` transaction description to set.
      */
     public void setDalytranDesc(String dalytranDesc) {
@@ -195,6 +201,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Read ``dalytranAmt``.
      * :return: the ``DALYTRAN-AMT`` signed transaction amount.
      */
     public BigDecimal getDalytranAmt() {
@@ -202,6 +209,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Set ``dalytranAmt``.
      * :param dalytranAmt: the ``DALYTRAN-AMT`` signed transaction amount to set.
      */
     public void setDalytranAmt(BigDecimal dalytranAmt) {
@@ -209,6 +217,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Read ``dalytranMerchantId``.
      * :return: the ``DALYTRAN-MERCHANT-ID`` merchant identifier.
      */
     public Long getDalytranMerchantId() {
@@ -216,6 +225,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Set ``dalytranMerchantId``.
      * :param dalytranMerchantId: the ``DALYTRAN-MERCHANT-ID`` merchant identifier to set.
      */
     public void setDalytranMerchantId(Long dalytranMerchantId) {
@@ -223,6 +233,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Read ``dalytranMerchantName``.
      * :return: the ``DALYTRAN-MERCHANT-NAME`` merchant name.
      */
     public String getDalytranMerchantName() {
@@ -230,6 +241,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Set ``dalytranMerchantName``.
      * :param dalytranMerchantName: the ``DALYTRAN-MERCHANT-NAME`` merchant name to set.
      */
     public void setDalytranMerchantName(String dalytranMerchantName) {
@@ -237,6 +249,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Read ``dalytranMerchantCity``.
      * :return: the ``DALYTRAN-MERCHANT-CITY`` merchant city.
      */
     public String getDalytranMerchantCity() {
@@ -244,6 +257,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Set ``dalytranMerchantCity``.
      * :param dalytranMerchantCity: the ``DALYTRAN-MERCHANT-CITY`` merchant city to set.
      */
     public void setDalytranMerchantCity(String dalytranMerchantCity) {
@@ -251,6 +265,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Read ``dalytranMerchantZip``.
      * :return: the ``DALYTRAN-MERCHANT-ZIP`` merchant postal code.
      */
     public String getDalytranMerchantZip() {
@@ -258,6 +273,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Set ``dalytranMerchantZip``.
      * :param dalytranMerchantZip: the ``DALYTRAN-MERCHANT-ZIP`` merchant postal code to set.
      */
     public void setDalytranMerchantZip(String dalytranMerchantZip) {
@@ -265,6 +281,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Read ``dalytranCardNum``.
      * :return: the ``DALYTRAN-CARD-NUM`` card number.
      */
     public String getDalytranCardNum() {
@@ -272,6 +289,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Set ``dalytranCardNum``.
      * :param dalytranCardNum: the ``DALYTRAN-CARD-NUM`` card number to set.
      */
     public void setDalytranCardNum(String dalytranCardNum) {
@@ -279,6 +297,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Read ``dalytranOrigTs``.
      * :return: the ``DALYTRAN-ORIG-TS`` origination timestamp (26-character form).
      */
     public String getDalytranOrigTs() {
@@ -286,6 +305,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Set ``dalytranOrigTs``.
      * :param dalytranOrigTs: the ``DALYTRAN-ORIG-TS`` origination timestamp to set.
      */
     public void setDalytranOrigTs(String dalytranOrigTs) {
@@ -293,6 +313,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Read ``dalytranProcTs``.
      * :return: the ``DALYTRAN-PROC-TS`` processing timestamp (26-character form).
      */
     public String getDalytranProcTs() {
@@ -300,6 +321,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Set ``dalytranProcTs``.
      * :param dalytranProcTs: the ``DALYTRAN-PROC-TS`` processing timestamp to set.
      */
     public void setDalytranProcTs(String dalytranProcTs) {
@@ -325,6 +347,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Hash consistent with :java:meth:`equals`.
      * :return: a hash code derived from the ``DALYTRAN-ID`` value.
      */
     @Override
@@ -333,6 +356,7 @@ public class DailyTransaction {
     }
 
     /**
+     * :purpose: Diagnostic rendering that never discloses unmasked PII.
      * :return: a diagnostic string representation. The card number is
      *     deliberately omitted to avoid exposing sensitive data.
      */

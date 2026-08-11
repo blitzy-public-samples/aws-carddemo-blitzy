@@ -112,23 +112,19 @@ public class CardMapper {
     }
 
     /**
-     * :purpose: Apply the editable card fields from an update request onto the
-     *   caller-supplied managed card, re-expressing the ``COCRDUPC``
-     *   update-record preparation. Mutates the passed-in entity in place so JPA
-     *   optimistic-locking and identity are preserved; sets only the embossed
-     *   name, active status, expiry date and CVV. The card number (primary
-     *   key) and the owning account id (linkage) are identifiers and are never
-     *   overwritten from the request.
-     * :param request: the card update request DTO; when ``null`` the method is a
-     *   no-op.
-     * :param card: the managed card entity to mutate; when ``null`` the method is
-     *   a no-op.
-     * :note: The CVV is applied ONLY when the request actually carries one. No read
-     *   path returns ``CARD-CVV-CD`` (it is encrypted at rest and never projected,
-     *   AAP 0.6.7), so a client cannot echo it back and every ordinary
-     *   name/status/expiry change omits it. Writing the absent value would erase the
-     *   stored verification value silently, which is data loss rather than an edit;
-     *   an omitted field is therefore retained.
+     * :purpose: Apply the editable card fields from an update request onto the caller-supplied
+     *     managed card, re-expressing the ``COCRDUPC`` update-record preparation. Mutates the
+     *     passed-in entity in place so JPA optimistic-locking and identity are preserved; sets
+     *     only the embossed name, active status, expiry date and CVV. The card number (primary
+     *     key) and the owning account id (linkage) are identifiers and are never overwritten from
+     *     the request.
+     * :param request: the card update request DTO; when ``null`` the method is a no-op.
+     * :param card: the managed card entity to mutate; when ``null`` the method is a no-op.
+     * :note: The CVV is applied ONLY when the request actually carries one. No read path
+     *     returns ``CARD-CVV-CD`` (it is encrypted at rest and never projected, AAP 0.6.7), so a
+     *     client cannot echo it back and every ordinary name/status/expiry change omits it.
+     *     Writing the absent value would erase the stored verification value silently, which is
+     *     data loss rather than an edit; an omitted field is therefore retained.
      */
     public void applyUpdate(CardUpdateRequestDto request, Card card) {
         if (request == null || card == null) {

@@ -39,7 +39,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  *     renders identically to the legitimate ``ADMIN001`` in every audit record, panel and report
  *     (CWE-1007).
  * :output: Assertions that the homoglyph and other non-alphanumeric ids are refused, that
- *     legitimate ids pass, and that the legacy presence and width edits keep their own messages.
+ *     legitimate ids pass, that the legacy presence and width edits keep their own messages, and
+ *     that the single-byte edit refuses text the downstream fixed-width record cannot represent.
  */
 @DisplayName("AddUserRequestDto — user id character set")
 class AddUserRequestDtoValidationTest {
@@ -76,13 +77,39 @@ class AddUserRequestDtoValidationTest {
     @DisplayName("the Cyrillic homoglyph administrator id is refused")
     void refusesTheCyrillicHomoglyphId() {
         // U+0410 CYRILLIC CAPITAL LETTER A followed by "DMIN001" — length 8, so the width edit
-        // alone never fires; only the character set can refuse it.
+        // never fires. Two independent edits claim it: the character set, and the single-byte
+        // edit that keeps the value representable on the fixed-width record interface. Both
+        // name userId, and the character-set message is the one the screen shows.
         Set<ConstraintViolation<AddUserRequestDto>> violations = violationsFor("\u0410DMIN001");
 
-        assertThat(violations).hasSize(1);
-        assertThat(violations.iterator().next().getMessage())
-                .isEqualTo("User ID must contain only letters and digits");
-        assertThat(violations.iterator().next().getPropertyPath()).hasToString("userId");
+        assertThat(violations)
+                .extracting(ConstraintViolation::getMessage)
+                .containsExactlyInAnyOrder(
+                        "User ID must contain only letters and digits",
+                        "must contain only characters the downstream fixed-width record interface"
+                                + " can represent (ISO-8859-1)");
+        assertThat(violations)
+                .allSatisfy(violation ->
+                        assertThat(violation.getPropertyPath()).hasToString("userId"));
+    }
+
+    @Test
+    @DisplayName("a name outside ISO-8859-1 is refused by the single-byte edit alone, naming its own field")
+    void refusesASingleByteUnrepresentableName() {
+        // firstName carries only the field-width edit, so U+0100 LATIN CAPITAL A WITH MACRON --
+        // twenty characters or fewer and outside Latin-1 -- is refused by nothing but the
+        // single-byte edit. Unrefused it reaches CobolRecordFormatter and becomes a substitute
+        // byte in the downstream fixed-width record.
+        AddUserRequestDto dto = withUserId("ADMIN001");
+        dto.setFirstName("\u0100LEX");
+
+        Set<ConstraintViolation<AddUserRequestDto>> violations = validator.validate(dto);
+
+        assertThat(violations)
+                .extracting(ConstraintViolation::getMessage)
+                .containsExactly("must contain only characters the downstream fixed-width record"
+                        + " interface can represent (ISO-8859-1)");
+        assertThat(violations.iterator().next().getPropertyPath()).hasToString("firstName");
     }
 
     @ParameterizedTest

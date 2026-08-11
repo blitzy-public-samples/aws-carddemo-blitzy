@@ -100,21 +100,23 @@ public class ObservabilityConfig {
     }
 
     /**
-     * :purpose: Mask card numbers in every HIGH-cardinality observation value, so no span attribute
-     *           exported to the tracing backend carries a primary account number. The servlet
-     *           convention's only high-cardinality key is ``http.url``, whose value is the request
-     *           URI — for a card screen that URI contains the PAN. Applying
-     *           {@link SensitiveDataMasker} here masks it exactly as the log stream, the audit log
-     *           and the error envelope already mask it, so every channel redacts identically.
-     * :note: LOW-cardinality values are deliberately left untouched: they are the Micrometer meter
-     *        tags, and the request-timer's ``uri`` is already the templated route
-     *        (``/cards/{cardNumber}``), so the metric label set and its cardinality contract are
-     *        unchanged. The span name is the contextual name, also templated.
-     * :note: Filters run after the convention has contributed its key values and before any handler
-     *        records the span, so the replacement is what reaches the exporter.
-     *        ``addHighCardinalityKeyValue`` replaces a value stored under the same key, and
-     *        ``getHighCardinalityKeyValues`` returns a snapshot, so replacing while iterating is safe.
-     * :returns: a filter that redacts PAN-shaped digit runs from high-cardinality observation values.
+     * :purpose: Mask card numbers in every HIGH-cardinality observation value, so no span
+     *     attribute exported to the tracing backend carries a primary account number. The servlet
+     *     convention's only high-cardinality key is ``http.url``, whose value is the request URI —
+     *     for a card screen that URI contains the PAN. Applying {@link SensitiveDataMasker} here
+     *     masks it exactly as the log stream, the audit log and the error envelope already mask
+     *     it, so every channel redacts identically.
+     * :note: LOW-cardinality values are deliberately left untouched: they are the Micrometer
+     *     meter tags, and the request-timer's ``uri`` is already the templated route
+     *     (``/cards/{cardNumber}``), so the metric label set and its cardinality contract are
+     *     unchanged. The span name is the contextual name, also templated.
+     * :note: Filters run after the convention has contributed its key values and before any
+     *     handler records the span, so the replacement is what reaches the exporter.
+     *     ``addHighCardinalityKeyValue`` replaces a value stored under the same key, and
+     *     ``getHighCardinalityKeyValues`` returns a snapshot, so replacing while iterating is
+     *     safe.
+     * :returns: a filter that redacts PAN-shaped digit runs from high-cardinality observation
+     *     values.
      */
     @Bean
     ObservationFilter sensitiveTraceAttributeMask() {
@@ -177,18 +179,18 @@ public class ObservabilityConfig {
 
     /**
      * :purpose: Register {@link CorrelationIdThreadLocalAccessor} in Micrometer's global
-     *           ``ContextRegistry`` so the business correlation id travels with the trace context
-     *           across every thread boundary crossed by {@link #contextPropagatingTaskDecorator()}
-     *           — ``@Async`` report launches and Spring Batch worker threads included.
-     * :note: The decorator alone only propagates contexts that have a registered accessor. Without
-     *        this registration the MDC's ``correlationId`` (a plain ``ThreadLocal``) was lost the
-     *        moment work left the request thread, so asynchronous and batch log records could not be
-     *        correlated back to the request that launched them.
-     * :note: Declared here rather than in {@link WebObservabilityConfig} because the correlation id
-     *        is not web-specific: a non-web module that imports this configuration gets the same
-     *        cross-thread propagation. ``registerThreadLocalAccessor`` replaces any accessor already
-     *        registered under the same key, so repeated context refreshes in a test JVM are
-     *        idempotent.
+     *     ``ContextRegistry`` so the business correlation id travels with the trace context across
+     *     every thread boundary crossed by {@link #contextPropagatingTaskDecorator()} — ``@Async``
+     *     report launches and Spring Batch worker threads included.
+     * :note: The decorator alone only propagates contexts that have a registered accessor.
+     *     Without this registration the MDC's ``correlationId`` (a plain ``ThreadLocal``) was lost
+     *     the moment work left the request thread, so asynchronous and batch log records could not
+     *     be correlated back to the request that launched them.
+     * :note: Declared here rather than in {@link WebObservabilityConfig} because the
+     *     correlation id is not web-specific: a non-web module that imports this configuration
+     *     gets the same cross-thread propagation. ``registerThreadLocalAccessor`` replaces any
+     *     accessor already registered under the same key, so repeated context refreshes in a test
+     *     JVM are idempotent.
      */
     @PostConstruct
     void registerCorrelationIdContextAccessor() {

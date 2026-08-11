@@ -53,21 +53,20 @@ export type UserListSelection = 'U' | 'D';
 
 /**
  * :purpose: Query parameters for the user list screen ``COUSR00``, mirroring the
- *   parameters the ``GET /users`` route binds.
+ *     parameters the ``GET /users`` route binds.
  * :field userId: optional browse-start user id — the ``Search User ID`` field
- *   (``USRIDIN``). The browse is positioned at the first id greater than or equal
- *   to it, and it is ignored when ``direction`` is supplied because PF7 / PF8
- *   browse from the cursors instead (``COUSR00C`` L218-L221, L239-L265).
+ *     (``USRIDIN``). The browse is positioned at the first id greater than or equal to it, and
+ *     it is ignored when ``direction`` is supplied because PF7 / PF8 browse from the cursors
+ *     instead (``COUSR00C`` L218-L221, L239-L265).
  * :field page: optional **one-based** page index, matching the legacy
- *   ``CDEMO-CU00-PAGE-NUM`` counter the screen displays under ``Page:``. The
- *   ``api/users`` module converts it to the zero-based ``page`` the route binds.
- * :field direction: optional paging action; ``'PF8'`` pages forward from
- *   ``cursor`` and ``'PF7'`` pages backward from it.
- * :field cursor: the user id anchoring keyset paging — ``userIdLast`` for
- *   ``'PF8'`` and ``userIdFirst`` for ``'PF7'``.
+ *     ``CDEMO-CU00-PAGE-NUM`` counter the screen displays under ``Page:``. The ``api/users``
+ *     module converts it to the zero-based ``page`` the route binds.
+ * :field direction: optional paging action; ``'PF8'`` pages forward from ``cursor`` and
+ *     ``'PF7'`` pages backward from it.
+ * :field cursor: the user id anchoring keyset paging — ``userIdLast`` for ``'PF8'`` and
+ *     ``userIdFirst`` for ``'PF7'``.
  * :field selection: optional row-selection flag.
- * :field selectedUserId: the user id of the selected row
- *   (``CDEMO-CU00-USR-SELECTED``).
+ * :field selectedUserId: the user id of the selected row (``CDEMO-CU00-USR-SELECTED``).
  */
 export interface UserListRequestDto {
   userId?: string;
@@ -79,21 +78,20 @@ export interface UserListRequestDto {
 }
 
 /**
- * :purpose: Response for the user list screen ``COUSR00`` (ten rows per page).
- *   Mirrors the backend ``UserListResponseDto`` field for field.
+ * :purpose: Response for the user list screen ``COUSR00`` (ten rows per page). Mirrors the
+ *     backend ``UserListResponseDto`` field for field.
  * :field users: the page of password-free rows (up to ten).
- * :field pageNumber: **zero-based** index of the returned page for page-based
- *   listing; ``0`` for a cursor-driven or search-key-driven browse, in which case
- *   the screen's own ``CDEMO-CU00-PAGE-NUM`` counter governs the ``Page:``
- *   display.
- * :field userIdFirst: first user id on the page (``CDEMO-CU00-USRID-FIRST``, the
- *   PF7 anchor), or ``null`` when the page is empty.
- * :field userIdLast: last user id on the page (``CDEMO-CU00-USRID-LAST``, the PF8
- *   anchor), or ``null`` when the page is empty.
+ * :field pageNumber: **zero-based** index of the returned page for page-based listing;
+ *     ``0`` for a cursor-driven or search-key-driven browse, in which case the screen's own
+ *     ``CDEMO-CU00-PAGE-NUM`` counter governs the ``Page:`` display.
+ * :field userIdFirst: first user id on the page (``CDEMO-CU00-USRID-FIRST``, the PF7
+ *     anchor), or ``null`` when the page is empty.
+ * :field userIdLast: last user id on the page (``CDEMO-CU00-USRID-LAST``, the PF8 anchor),
+ *     or ``null`` when the page is empty.
  * :field nextPage: ``true`` when a further forward page exists (PF8 available).
  * :field selectedUserId: echoed selected row id, or ``null``.
- * :field selectedAction: the resolved selection — ``'U'`` or ``'D'`` — or ``null``
- *   when no row was selected.
+ * :field selectedAction: the resolved selection — ``'U'`` or ``'D'`` — or ``null`` when no
+ *     row was selected.
  * :field message: the verbatim legacy banner (``WS-MESSAGE``), or ``null``.
  */
 export interface UserListResponseDto {
@@ -127,18 +125,18 @@ export interface UserAddRequestDto {
 
 /**
  * :purpose: Request body for the update-user screen ``COUSR02``. Mirrors
- *   ``UpdateUserRequestDto``; the target user id travels in the request path.
+ *     ``UpdateUserRequestDto``; the target user id travels in the request path.
  * :field firstName: first name (``SEC-USR-FNAME``).
  * :field lastName: last name (``SEC-USR-LNAME``).
  * :field userType: role code (``SEC-USR-TYPE``), a :ts:type:`Role`.
- * :field password: raw password (``SEC-USR-PWD``); request-only and OPTIONAL. Omit it
- *   to change the profile fields while leaving the stored credential untouched; supply
- *   it to set a new one, which the service verifies against the stored hash and
- *   re-encodes when it differs. Absence carries the meaning ``COUSR02C`` gave the
- *   pre-filled field: that program filled ``PASSWD`` from ``SEC-USR-PWD`` (L169) and
- *   rewrote the credential only when the returned value differed, whereas a hashed
- *   credential cannot be pre-filled and the update route never returns it -- so the
- *   screen cannot repopulate the field after a fetch and must be able to save without it.
+ * :field password: raw password (``SEC-USR-PWD``); request-only and OPTIONAL. Omit it to
+ *     change the profile fields while leaving the stored credential untouched; supply it to
+ *     set a new one, which the service verifies against the stored hash and re-encodes when it
+ *     differs. Absence carries the meaning ``COUSR02C`` gave the pre-filled field: that
+ *     program filled ``PASSWD`` from ``SEC-USR-PWD`` (L169) and rewrote the credential only
+ *     when the returned value differed, whereas a hashed credential cannot be pre-filled and
+ *     the update route never returns it -- so the screen cannot repopulate the field after a
+ *     fetch and must be able to save without it.
  */
 export interface UserUpdateRequestDto {
   firstName: string;

@@ -219,19 +219,21 @@ public class CardService {
     }
 
     /**
-     * :purpose: List cards for the card-list screen (``COCRDLIC``, CICS ``CCLI``),
-     *  reproducing the seven-rows-per-page browse over the card master with the legacy
-     *  ``ACCTSID`` / ``CARDSID`` filter edits. The list projection shows only the owning
-     *  account id, the card number and the active status; the CVV and embossed name are
-     *  never listed.
-     * :param acctIdFilter: optional owning-account filter; when supplied it must be
-     *  a positive number of at most eleven digits.
-     * :param cardNumFilter: optional exact card-number filter; when supplied it must
-     *  be sixteen digits.
+     * :purpose: List cards for the card-list screen (``COCRDLIC``, CICS ``CCLI``), reproducing
+     *     the seven-rows-per-page browse over the card master with the legacy ``ACCTSID`` /
+     *     ``CARDSID`` filter edits. The list projection shows only the owning account id, the card
+     *     number and the active status; the CVV and embossed name are never listed.
+     * :param acctIdFilter: optional owning-account filter; when supplied it must be a positive
+     *     number of at most eleven digits. Zero counts as NOT supplied (``COCRDLIC``
+     *     2210-EDIT-ACCOUNT ``CC-ACCT-ID-N EQUAL ZEROS``).
+     * :param cardNumFilter: optional exact card-number filter; when supplied it must be
+     *     sixteen digits. An all-zero value counts as NOT supplied (``COCRDLIC`` 2220-EDIT-CARD
+     *     ``CC-CARD-NUM-N EQUAL ZEROS``).
      * :param pageNumber: the one-based page number to return.
-     * :param sessionContext: the caller session. The browse reads NO field from it: the
-     *  filters above are the only scope, because ``9500-FILTER-RECORDS`` carries no
-     *  user-type branch (decision log §19.1). May be ``null``.
+     * :param sessionContext: the caller session. It narrows NOTHING by role - the filters
+     *     above are the only scope, because ``9500-FILTER-RECORDS`` carries no user-type branch
+     *     (decision log §19.1) - but it does carry the ``COCRDLIC`` ``WS-CA-LAST-PAGE-DISPLAYED``
+     *     terminal-page latch across turns, and this call updates it. May be ``null``.
      * :returns: the card-list response holding at most ``MAX_SCREEN_LINES`` rows.
      * :raises CardDemoException: when a supplied account or card-number filter is invalid.
      */
@@ -244,25 +246,29 @@ public class CardService {
     }
 
     /**
-     * :purpose: List cards for the card-list screen (``COCRDLIC``, CICS ``CCLI``) including the
-     *  navigation action and the row selection the screen carries, and reproduce
-     *  ``1400-SETUP-MESSAGE`` (L895-925) so the operator sees the same banner the 3270 screen
-     *  would have shown. ``WS-ERROR-MSG`` holds at most one message, and the legacy
-     *  ``IF WS-ERROR-MSG-OFF`` guards mean the FIRST condition to fire wins.
-     * :param acctIdFilter: optional owning-account filter; at most eleven digits when supplied.
+     * :purpose: List cards for the card-list screen (``COCRDLIC``, CICS ``CCLI``) including
+     *     the navigation action and the row selection the screen carries, and reproduce
+     *     ``1400-SETUP-MESSAGE`` (L895-925) so the operator sees the same banner the 3270 screen
+     *     would have shown. ``WS-ERROR-MSG`` holds at most one message, and the legacy ``IF
+     *     WS-ERROR-MSG-OFF`` guards mean the FIRST condition to fire wins.
+     * :param acctIdFilter: optional owning-account filter; at most eleven digits when
+     *     supplied. A value of zero counts as NOT supplied (``COCRDLIC`` 2210-EDIT-ACCOUNT
+     *     ``CC-ACCT-ID-N EQUAL ZEROS``) and the browse runs unfiltered.
      * :param cardNumFilter: optional exact card-number filter; sixteen digits when supplied.
      * :param pageNumber: the one-based page number to return (``WS-CA-SCREEN-NUM``).
      * :param aid: the navigation action, ``"PF7"`` (page back) or ``"PF8"`` (page forward);
-     *  ``null`` or blank means plain entry.
+     *     ``null`` or blank means plain entry.
      * :param action: the row-selection flag, ``"S"`` for detail or ``"U"`` for update.
      * :param selectedCardNumber: the card number of the selected row.
-     * :param sessionContext: the caller session. The browse reads NO field from it and
-     *  narrows nothing by role: the resolved selection travels back on the response and is
-     *  stored by the controller (decision log §19.1). May be ``null``.
+     * :param sessionContext: the caller session. It narrows nothing by role and the resolved
+     *     selection travels back on the response to be stored by the controller (decision log
+     *     §19.1); it also carries the ``COCRDLIC`` ``WS-CA-LAST-PAGE-DISPLAYED`` terminal-page
+     *     latch, which this call reads and updates so a repeated forward key can be told from a
+     *     first one. May be ``null``.
      * :returns: the card-list response holding at most ``MAX_SCREEN_LINES`` rows, the paging
-     *  state, the resolved selection and the two message lines.
+     *     state, the resolved selection and the two message lines.
      * :raises CardDemoException: when a supplied filter is invalid, or the row-selection flag
-     *  is neither ``S`` nor ``U``.
+     *     is neither ``S`` nor ``U``.
      */
     @Transactional(readOnly = true)
     public CardListResponseDto listCards(Long acctIdFilter,
@@ -272,11 +278,20 @@ public class CardService {
                                          String action,
                                          String selectedCardNumber,
                                          SessionContext sessionContext) {
-        // Filter edits (COCRDLIC 1210/1220), applied only when a filter is supplied.
-        if (acctIdFilter != null && (acctIdFilter <= 0L || acctIdFilter > ACCT_ID_MAX)) {
+        // COCRDLIC 2210-EDIT-ACCOUNT / 2220-EDIT-CARD open with a "Not supplied" test that
+        // includes a numeric ZERO field -- `CC-ACCT-ID-N EQUAL ZEROS` / `CC-CARD-NUM-N EQUAL
+        // ZEROS` (L1007-L1013, L1042-L1048) -- and that test comes BEFORE the numeric edit
+        // and exits the paragraph, so an operator who types zeros has supplied no filter and
+        // the browse runs unfiltered. Treating zero as an invalid filter instead answered
+        // 400 for a value the screen accepts as blank, which is the one entry a user makes
+        // when clearing the field on a terminal that will not accept spaces.
+        Long effectiveAcctFilter = acctIdFilter != null && acctIdFilter == 0L ? null : acctIdFilter;
+        if (effectiveAcctFilter != null
+                && (effectiveAcctFilter <= 0L || effectiveAcctFilter > ACCT_ID_MAX)) {
             throw new CardDemoException(MSG_ACCT_FILTER_11);
         }
-        boolean cardFilterSupplied = cardNumFilter != null && !cardNumFilter.isBlank();
+        boolean cardFilterSupplied = cardNumFilter != null && !cardNumFilter.isBlank()
+                && !isAllZeros(cardNumFilter.trim());
         if (cardFilterSupplied && !cardNumFilter.matches(CARD_NUM_PATTERN)) {
             throw new CardDemoException(MSG_CARD_FILTER_16);
         }
@@ -290,7 +305,7 @@ public class CardService {
         if (cardFilterSupplied) {
             Card single = cardRepository.findById(cardNumFilter).orElse(null);
             boolean inScope = single != null
-                    && (acctIdFilter == null || acctIdFilter.equals(single.getCardAcctId()));
+                    && (effectiveAcctFilter == null || effectiveAcctFilter.equals(single.getCardAcctId()));
             // A keyed read yields at most one row, so only the first page can hold it.
             windowRows = inScope && page == 1 ? List.of(single) : List.of();
         } else if (beyondAddressableRows(page)) {
@@ -305,8 +320,8 @@ public class CardService {
             // screen needs however large the card base grows. The lookahead row is the
             // WS-MAX-SCREEN-LINES + 1 record COBOL reads to learn a further page exists.
             Pageable window = screenWindow(page);
-            windowRows = acctIdFilter != null
-                    ? cardRepository.findByCardAcctIdOrderByCardNumAsc(acctIdFilter, window)
+            windowRows = effectiveAcctFilter != null
+                    ? cardRepository.findByCardAcctIdOrderByCardNumAsc(effectiveAcctFilter, window)
                     : cardRepository.findAllByOrderByCardNumAsc(window);
         }
 
@@ -331,7 +346,8 @@ public class CardService {
             response.setSelectedCardNumber(selectedCardNumber == null ? null : selectedCardNumber.trim());
         }
 
-        response.setMessage(resolveListMessage(page, pageRows.isEmpty(), morePagesExist, aid));
+        response.setMessage(resolveListMessage(page, pageRows.isEmpty(), morePagesExist, aid,
+                sessionContext));
         if (!pageRows.isEmpty()) {
             response.setInfoMessage(MSG_INFORM_REC_ACTIONS);
         }
@@ -453,18 +469,65 @@ public class CardService {
      * :param aid: the navigation action, ``"PF7"``, ``"PF8"``, or ``null``.
      * :returns: the single ``WS-ERROR-MSG`` line, or ``null`` when no condition applies.
      */
-    private String resolveListMessage(int page, boolean empty, boolean morePagesExist, String aid) {
+    /**
+     * :purpose: Report whether a filter value holds nothing but the digit zero, which
+     *  ``COCRDLIC`` treats as a field the operator did not supply.
+     * :param value: the trimmed filter value.
+     * :returns: ``true`` when every character is ``'0'``.
+     * :note: This is the ``CC-CARD-NUM-N EQUAL ZEROS`` limb of the 2220-EDIT-CARD
+     *  "Not supplied" test (L1042-L1048). A card filter of sixteen zeros satisfies the
+     *  digits-only edit, so without this test it was taken as a real key, read nothing and
+     *  reported "NO RECORDS FOUND" for what the screen calls an empty field.
+     */
+    private static boolean isAllZeros(String value) {
+        if (value.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            if (value.charAt(i) != '0') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private String resolveListMessage(int page, boolean empty, boolean morePagesExist, String aid,
+                                     SessionContext sessionContext) {
         boolean pf7 = AID_PF7.equalsIgnoreCase(aid);
         boolean pf8 = AID_PF8.equalsIgnoreCase(aid);
+
+        // L408-L414: any attention identifier OTHER than the forward key clears the
+        // terminal-page latch, so a page reached by ENTER or PF7 always starts unlatched
+        // and the next forward key is a FIRST press again.
+        boolean lastPageAlreadyShown = sessionContext != null
+                && sessionContext.isCardListLastPageDisplayed();
+        if (!pf8 && sessionContext != null) {
+            sessionContext.setCardListLastPageDisplayed(false);
+        }
 
         // WHEN CCARD-AID-PFK07 AND CA-FIRST-PAGE (L902-904).
         if (pf7 && page <= 1) {
             return MSG_NO_PREVIOUS_PAGES;
         }
-        // WHEN CCARD-AID-PFK08 AND CA-NEXT-PAGE-NOT-EXISTS AND CA-LAST-PAGE-SHOWN (L905-909):
-        // asking to advance past a page that is already the last one shown.
-        if (pf8 && !morePagesExist && empty) {
+        // WHEN CCARD-AID-PFK08 AND CA-NEXT-PAGE-NOT-EXISTS AND CA-LAST-PAGE-SHOWN
+        // (L905-L909): a REPEATED forward key on a page that has no successor. The latch is
+        // the whole test - it is what tells a repeated press from a first one - and reading
+        // emptiness instead, as this did, answered the wrong literal on the final NON-EMPTY
+        // page and only ever produced this one on an empty page past the end.
+        if (pf8 && !morePagesExist && lastPageAlreadyShown) {
             return MSG_NO_MORE_PAGES;
+        }
+        // WHEN CCARD-AID-PFK08 AND CA-NEXT-PAGE-NOT-EXISTS (L910-L916): the FIRST forward
+        // key that lands on a page with no successor sets the latch and carries no error
+        // line at all - only the record-actions information line, which 1400-SETUP-MESSAGE
+        // reaches through WS-INFORM-REC-ACTIONS.
+        if (pf8 && !morePagesExist) {
+            if (sessionContext != null) {
+                sessionContext.setCardListLastPageDisplayed(true);
+            }
+            if (!empty) {
+                return null;
+            }
         }
         // Browse ENDFILE on the first screen with nothing read at all sets
         // WS-NO-RECORDS-FOUND (L1240-1244).
@@ -519,31 +582,30 @@ public class CardService {
     }
 
     /**
-     * :purpose: Update a card for the card-update screen (``COCRDUPC``, CICS ``CCUP``)
-     *  in one atomic transaction, reproducing the fail-fast input edits
-     *  (``1230``-``1260``), the no-change short-circuit (``1200``), and the
-     *  re-read-then-rewrite sequence (``9200``).
+     * :purpose: Update a card for the card-update screen (``COCRDUPC``, CICS ``CCUP``) in one
+     *     atomic transaction, reproducing the fail-fast input edits (``1230``-``1260``), the
+     *     no-change short-circuit (``1200``), and the re-read-then-rewrite sequence (``9200``).
      * :param cardNumber: the sixteen-character card number to update.
-     * :param acctIdFilter: the account number the operator supplied alongside the card
-     *  number (``ACCTSID``), completing the screen's composite selection; ``null`` when
-     *  the caller supplied none.
-     * :param request: the editable card fields (embossed name, active status, expiry
-     *  date and CVV).
-     * :param sessionContext: the caller session; the resolved card number and account
-     *  id are propagated into it. May be ``null``.
+     * :param acctIdFilter: the account number the operator supplied alongside the card number
+     *     (``ACCTSID``), completing the screen's composite selection; ``null`` when the caller
+     *     supplied none.
+     * :param request: the editable card fields (embossed name, active status, expiry date and
+     *     CVV).
+     * :param sessionContext: the caller session; the resolved card number and account id are
+     *     propagated into it. May be ``null``.
      * :returns: the card-update response reflecting the persisted card.
      * :raises CardDemoException: when the supplied account number is not a non-zero
-     *  eleven-digit value, or a validation edit fails (name, active status, expiry month
-     *  or expiry year).
+     *     eleven-digit value, or a validation edit fails (name, active status, expiry month or
+     *     expiry year).
      * :raises RecordNotFoundException: when no card matches the composite selection.
      * :raises OptimisticLockConflictException: when the request carries a display-time
-     *  snapshot (``CCUP-OLD-*``) that no longer matches the re-read card, signalling a
-     *  concurrent modification (``9300-CHECK-CHANGE-IN-REC``).
+     *     snapshot (``CCUP-OLD-*``) that no longer matches the re-read card, signalling a
+     *     concurrent modification (``9300-CHECK-CHANGE-IN-REC``).
      * :note: Two independent proofs of what the caller read are honoured, and either alone is
-     *  sufficient: the ``Card`` ``@Version`` counter returned by the read paths, and the
-     *  display-time ``CCUP-OLD-*`` field snapshot that reproduces
-     *  ``9300-CHECK-CHANGE-IN-REC``. When neither is supplied the update is guarded only by
-     *  the in-transaction re-read under a row write lock and the no-change short-circuit.
+     *     sufficient: the ``Card`` ``@Version`` counter returned by the read paths, and the
+     *     display-time ``CCUP-OLD-*`` field snapshot that reproduces ``9300-CHECK-CHANGE-IN-REC``.
+     *     When neither is supplied the update is guarded only by the in-transaction re-read under
+     *     a row write lock and the no-change short-circuit.
      */
     @Transactional
     public CardUpdateResponseDto updateCard(String cardNumber,

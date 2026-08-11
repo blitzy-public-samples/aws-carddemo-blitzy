@@ -30,6 +30,7 @@ import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.card.mapper.CardMapper;
@@ -444,12 +445,15 @@ class CardServiceTest {
     }
 
     /**
-     * :purpose: The browse consults NOTHING on the caller session: the typed ``ACCTSID`` is
-     *     the whole scope, so no session field is read to narrow, widen or reject it. The
+     * :purpose: The typed ``ACCTSID`` is the WHOLE scope of the browse: the only session
+     *     field the call touches is the ``COCRDLIC`` ``WS-CA-LAST-PAGE-DISPLAYED``
+     *     terminal-page latch, which paging state alone drives. No user type, no role and
+     *     no principal field is read, because ``9500-FILTER-RECORDS`` carries no user-type
+     *     branch (decision log §19.1). ``verifyNoMoreInteractions`` is the guard: the
      *     moment a per-principal entitlement filter is reintroduced this assertion fails.
      */
     @Test
-    void listCards_acctFilter_readsNoSessionFieldToScopeTheBrowse() {
+    void listCards_acctFilter_touchesOnlyTheTerminalPageLatchOnTheSession() {
         SessionContext session = mock(SessionContext.class);
         CardListResponseDto expected = mock(CardListResponseDto.class);
         stubAccountWindow(ACCT_ID, 2, false);
@@ -459,7 +463,11 @@ class CardServiceTest {
 
         verify(cardRepository).findByCardAcctIdOrderByCardNumAsc(eq(ACCT_ID), any(Pageable.class));
         verify(cardRepository, never()).findAll();
-        verifyNoInteractions(session);
+        // Plain entry is not the forward key, so L408-L414 clears the latch and nothing else
+        // on the session is consulted at all.
+        verify(session).isCardListLastPageDisplayed();
+        verify(session).setCardListLastPageDisplayed(false);
+        verifyNoMoreInteractions(session);
     }
 
     /**
@@ -543,14 +551,25 @@ class CardServiceTest {
     }
 
     /**
-     * :purpose: A non-positive account filter fails the same eleven-digit filter edit.
+     * :purpose: ``COCRDLIC`` 2210-EDIT-ACCOUNT opens with a "Not supplied" test that includes
+     *     ``CC-ACCT-ID-N EQUAL ZEROS`` (L1007-L1013) and EXITS the paragraph before the
+     *     numeric edit, so an account filter of zero is a field the operator did not supply
+     *     and the browse runs UNFILTERED. Refusing it, as this did, answered 400 for the one
+     *     entry a user makes when clearing the field on a terminal that will not accept
+     *     spaces.
      */
     @Test
-    void listCards_zeroAcctFilter_throwsCardDemoException() {
-        assertThatExceptionOfType(CardDemoException.class)
-                .isThrownBy(() -> cardService.listCards(0L, null, 1, null))
-                .withMessage(MSG_ACCT_FILTER_11);
-        verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
+    @DisplayName("a zero account filter browses unfiltered instead of being refused")
+    void listCards_zeroAcctFilter_browsesUnfiltered() {
+        stubWindow(3, false);
+        stubRealListResponse(3);
+
+        CardListResponseDto result = cardService.listCards(0L, null, 1, null);
+
+        assertThat(result.getCards()).hasSize(3);
+        // Unfiltered: the account-scoped finder is never called, the unscoped one is.
+        verify(cardRepository).findAllByOrderByCardNumAsc(any());
+        verify(cardRepository, never()).findByCardAcctIdOrderByCardNumAsc(any(), any());
     }
 
     /**
@@ -1238,20 +1257,48 @@ class CardServiceTest {
     }
 
     /**
-     * :purpose: ``COCRDLIC`` L905-909: pressing PF8 when no further page exists and the last
-     *  page has already been shown displays ``'NO MORE PAGES TO DISPLAY'``.
+     * :purpose: ``COCRDLIC`` L905-L916 is a TWO-press contract, and the latch
+     *  ``WS-CA-LAST-PAGE-DISPLAYED`` is what separates the presses. The FIRST forward key
+     *  that lands on a page with no successor sets the latch and carries NO error line
+     *  (L910-L916); only a REPEATED one earns ``'NO MORE PAGES TO DISPLAY'`` (L905-L909).
+     *  Reading emptiness instead of the latch answered the wrong literal on the final
+     *  NON-EMPTY page and produced this one only on an empty page past the end.
      */
     @Test
-    @DisplayName("PF8 past the last page carries 'NO MORE PAGES TO DISPLAY'")
-    void listCards_pf8PastLastPage_carriesNoMorePages() {
-        stubWindow(0, false);
-        stubRealListResponse(0);
+    @DisplayName("a repeated PF8 on the last page carries 'NO MORE PAGES TO DISPLAY'")
+    void listCards_repeatedPf8OnLastPage_carriesNoMorePages() {
+        SessionContext session = new SessionContext();
+        stubWindow(3, false);
+        stubRealListResponse(3);
 
-        CardListResponseDto result =
-                cardService.listCards(null, null, 2, CardService.AID_PF8, null, null, null);
+        // First press: the last page is reached, the latch is set, and no error line is sent.
+        CardListResponseDto first =
+                cardService.listCards(null, null, 2, CardService.AID_PF8, null, null, session);
+        assertThat(first.getMessage()).isNull();
+        assertThat(session.isCardListLastPageDisplayed()).isTrue();
 
-        assertThat(result.getCards()).isEmpty();
-        assertThat(result.getMessage()).isEqualTo("NO MORE PAGES TO DISPLAY");
+        // Second press on the same page: now the literal is due.
+        CardListResponseDto second =
+                cardService.listCards(null, null, 2, CardService.AID_PF8, null, null, session);
+        assertThat(second.getMessage()).isEqualTo("NO MORE PAGES TO DISPLAY");
+    }
+
+    /**
+     * :purpose: ``COCRDLIC`` L408-L414 resets the latch on ANY attention identifier other
+     *  than the forward key, so a page reached by ENTER or PF7 starts unlatched and the next
+     *  forward key is a first press again.
+     */
+    @Test
+    @DisplayName("any key other than PF8 clears the terminal-page latch")
+    void listCards_nonPf8Key_clearsTheLatch() {
+        SessionContext session = new SessionContext();
+        session.setCardListLastPageDisplayed(true);
+        stubWindow(3, false);
+        stubRealListResponse(3);
+
+        cardService.listCards(null, null, 1, null, null, null, session);
+
+        assertThat(session.isCardListLastPageDisplayed()).isFalse();
     }
 
     /**

@@ -58,6 +58,7 @@ public class SignonRequestDto {
     }
 
     /**
+     * :purpose: Read ``userId``.
      * :returns: the user id entered on the sign-on screen.
      */
     public String getUserId() {
@@ -65,6 +66,7 @@ public class SignonRequestDto {
     }
 
     /**
+     * :purpose: Set ``userId``.
      * :param userId: user id entered on the sign-on screen.
      */
     public void setUserId(String userId) {
@@ -72,6 +74,7 @@ public class SignonRequestDto {
     }
 
     /**
+     * :purpose: Read ``password``.
      * :returns: the password entered on the sign-on screen.
      */
     public String getPassword() {
@@ -79,6 +82,7 @@ public class SignonRequestDto {
     }
 
     /**
+     * :purpose: Set ``password``.
      * :param password: password entered on the sign-on screen.
      */
     public void setPassword(String password) {

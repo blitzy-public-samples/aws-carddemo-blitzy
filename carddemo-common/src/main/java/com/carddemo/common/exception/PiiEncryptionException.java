@@ -16,19 +16,18 @@
 package com.carddemo.common.exception;
 
 /**
- * :purpose: Signal that a sensitive customer or card attribute could not be
- *     encrypted for persistence or decrypted after being read — for example because
- *     the stored value is not the ``Base64(IV || AES-GCM ciphertext)`` the
- *     ``CryptoConverter`` writes, or because no encryption key is configured. Raising
- *     a dedicated domain type lets the shared exception handler answer with the
- *     standard error envelope instead of letting an ORM-wrapped
+ * :purpose: Signal that a sensitive customer or card attribute could not be encrypted for
+ *     persistence or decrypted after being read — for example because the stored value is not
+ *     the ``Base64(IV || AES-GCM ciphertext)`` the ``CryptoConverter`` writes, or because no
+ *     encryption key is configured. Raising a dedicated domain type lets the shared exception
+ *     handler answer with the standard error envelope instead of letting an ORM-wrapped
  *     ``IllegalStateException`` escape as an opaque framework error page.
  * :note: This type has no legacy analogue: at-rest field encryption is a target-only
- *     control introduced for AAP 0.6.7, so it is recorded as rule-mandated
- *     infrastructure in ``docs/traceability-matrix.md``. The message deliberately
- *     discloses no column name, key material or cryptographic detail.
- * :note: It extends {@link IllegalStateException} because an unreadable protected column IS
- *     an illegal state, and because the converter's own legacy-plaintext fallthrough — and
+ *     control introduced for AAP 0.6.7, so it is recorded as rule-mandated infrastructure in
+ *     ``docs/traceability-matrix.md``. The message deliberately discloses no column name, key
+ *     material or cryptographic detail.
+ * :note: It extends {@link IllegalStateException} because an unreadable protected column
+ *     IS an illegal state, and because the converter's own legacy-plaintext fallthrough — and
  *     the seeded-PII migration's ciphertext probe — decide by catching that type. Narrowing
  *     the thrown type without widening those catches would turn a token-shaped foreign value
  *     into a hard failure instead of the legacy value it is.

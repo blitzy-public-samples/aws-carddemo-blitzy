@@ -17,8 +17,10 @@
 package com.carddemo.transaction.controller;
 
 import com.carddemo.common.batch.BatchExitMessageSanitizer;
+import com.carddemo.common.batch.BatchLaunchRequestGuard;
 import com.carddemo.common.dto.BatchJobExecutionDto;
 import com.carddemo.common.exception.CardDemoException;
+import jakarta.servlet.http.HttpServletRequest;
 import com.carddemo.common.exception.RecordNotFoundException;
 import com.carddemo.transaction.config.PostingJobLaunchConfig;
 
@@ -28,6 +30,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.launch.JobInstanceAlreadyCompleteException;
+import org.springframework.batch.core.launch.JobExecutionAlreadyRunningException;
+import org.springframework.batch.core.launch.JobRestartException;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -41,21 +46,20 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * :purpose: Operator entry point for the daily transaction-posting job stream
  *     (``app/jcl/POSTTRAN.jcl`` + ``CBTRN02C``, AAP 0.4.4). It re-platforms the legacy
- *     operator submission of POSTTRAN to JES as an HTTP submission handled by
- *     {@link PostingJobLaunchConfig}, and exposes the durable execution handle so the
- *     outcome of an asynchronous run can be followed to completion or failure —
- *     the same contract batch-service publishes for its nine job streams.
- * :output: ``POST /transactions/batch/jobs/transactionPostingJob`` (202 Accepted with
- *     the execution handle), ``GET /transactions/batch/jobs/executions/{id}`` (the
- *     persisted execution) and ``GET /transactions/batch/jobs`` (the launchable job
- *     names). Every route sits under ``/transactions``, which the API gateway already
- *     routes to this service and role-gates for ``ROLE_USER`` / ``ROLE_ADMIN``, and
- *     this service's own filter chain requires one of those authorities as well.
+ *     operator submission of POSTTRAN to JES as an HTTP submission handled by {@link
+ *     PostingJobLaunchConfig}, and exposes the durable execution handle so the outcome of an
+ *     asynchronous run can be followed to completion or failure — the same contract
+ *     batch-service publishes for its nine job streams.
+ * :output: ``POST /transactions/batch/jobs/transactionPostingJob`` (202 Accepted with the
+ *     execution handle), ``GET /transactions/batch/jobs/executions/{id}`` (the persisted
+ *     execution) and ``GET /transactions/batch/jobs`` (the launchable job names). Every route
+ *     sits under ``/transactions``, which the API gateway already routes to this service and
+ *     role-gates for ``ROLE_USER`` / ``ROLE_ADMIN``, and this service's own filter chain
+ *     requires one of those authorities as well.
  * :note: Submission is synchronous while execution stays asynchronous: a refused
- *     submission (an already-running instance, or a business date whose feed has
- *     already been posted) is raised to the caller instead of being reported as an
- *     accepted run, matching the legacy submit-and-return semantics without ever
- *     signalling a false success.
+ *     submission (an already-running instance, or a business date whose feed has already been
+ *     posted) is raised to the caller instead of being reported as an accepted run, matching
+ *     the legacy submit-and-return semantics without ever signalling a false success.
  */
 @RestController
 @RequestMapping("/transactions/batch")
@@ -96,22 +100,26 @@ public class PostingJobController {
     }
 
     /**
-     * :purpose: Submit the daily transaction-posting job for one business date,
-     *     re-platforming the operator submission of ``POSTTRAN.jcl``.
-     * :param jobName: the job bean name; only ``transactionPostingJob`` is launchable
-     *     here, so any other name is refused rather than silently ignored.
-     * :param postingDate: business date of the posting cycle in ``YYYY-MM-DD`` form;
-     *     when absent the current date is used. It is the job's identifying parameter,
-     *     so a completed date cannot be posted twice while an interrupted run for that
-     *     date restarts where it stopped.
+     * :purpose: Submit the daily transaction-posting job for one business date, re-platforming
+     *     the operator submission of ``POSTTRAN.jcl``.
+     * :param jobName: the job bean name; only ``transactionPostingJob`` is launchable here, so
+     *     any other name is refused rather than silently ignored.
+     * :param postingDate: business date of the posting cycle in ``YYYY-MM-DD`` form; when
+     *     absent the current date is used. It is the job's identifying parameter, so a completed
+     *     date cannot be posted twice while an interrupted run for that date restarts where it
+     *     stopped.
+     * :param request: the current servlet request, consulted only to refuse a body this
+     *     endpoint does not read (see {@link BatchLaunchRequestGuard}).
      * :returns: the accepted execution's durable handle and current status.
-     * :raises CardDemoException: when the job name is unknown or the submission is
-     *     refused, so a rejected submission never reads as an accepted one.
+     * :raises CardDemoException: when the job name is unknown or the submission is refused, so
+     *     a rejected submission never reads as an accepted one.
      */
     @PostMapping("/jobs/{jobName}")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public BatchJobExecutionDto launchJob(@PathVariable String jobName,
-                                          @RequestParam(required = false) String postingDate) {
+                                          @RequestParam(required = false) String postingDate,
+                                          HttpServletRequest request) {
+        BatchLaunchRequestGuard.requireNoRequestBody(request);
         if (!TRANSACTION_POSTING_JOB.equals(jobName)) {
             throw new CardDemoException("Unknown batch job: " + jobName);
         }
@@ -121,10 +129,29 @@ public class PostingJobController {
             return toDto(jobName, execution);
         } catch (CardDemoException e) {
             throw e;
+        } catch (JobInstanceAlreadyCompleteException e) {
+            // A resubmission of a completed instance is an expected outcome of the launch
+            // contract, not an internal fault. The framework's own message publishes the
+            // whole JobParameters map and its class name; a stable domain sentence says
+            // the same thing without handing the caller the internals.
+            LOGGER.info("Batch launch refused for job {}: the instance for these parameters has"
+                    + " already completed", jobName);
+            throw new CardDemoException("Batch job " + jobName + " has already completed for these"
+                    + " parameters. A completed run cannot be repeated: change a parameter to run"
+                    + " a new instance.", e);
+        } catch (JobExecutionAlreadyRunningException e) {
+            LOGGER.info("Batch launch refused for job {}: an execution for these parameters is"
+                    + " already running", jobName);
+            throw new CardDemoException("Batch job " + jobName + " is already running for these"
+                    + " parameters. Wait for that execution to finish before submitting again.", e);
+        } catch (JobRestartException e) {
+            LOGGER.info("Batch launch refused for job {}: the instance cannot be restarted", jobName);
+            throw new CardDemoException("Batch job " + jobName + " cannot be restarted for these"
+                    + " parameters.", e);
         } catch (Exception e) {
-            // Covers an already-running instance, an already-complete instance, a
-            // restart violation and unusable parameters. Raising synchronously is the
-            // point: the caller must not be told a rejected submission was accepted.
+            // Anything else: unusable parameters, or a launcher that could not start.
+            // Raising synchronously is the point: the caller must not be told a rejected
+            // submission was accepted.
             LOGGER.error("Batch launch rejected for job {}: {}", jobName, e.getMessage());
             throw new CardDemoException("Unable to submit batch job " + jobName
                     + ": " + e.getMessage(), e);
@@ -156,6 +183,13 @@ public class PostingJobController {
         }
         String jobName = execution.getJobInstance() == null
                 ? "" : execution.getJobInstance().getJobName();
+        if (!TRANSACTION_POSTING_JOB.equals(jobName)) {
+            // BATCH_JOB_EXECUTION is SHARED by every service in this deployment, so a
+            // bare id lookup answered for executions this service does not own. An
+            // execution of another service's job is not found HERE.
+            throw new RecordNotFoundException(
+                    "No batch job execution found for id " + jobExecutionId);
+        }
         return toDto(jobName, execution);
     }
 

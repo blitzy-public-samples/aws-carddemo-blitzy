@@ -27,6 +27,7 @@
 import { jest } from '@jest/globals';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { setupInteraction } from '../testing/interaction';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import type {
   AccountUpdateRequestDto,
@@ -334,6 +335,14 @@ async function commit(
     await retype(user, 'acctCreditLimit', EDITED_CREDIT_LIMIT);
   }
   await user.keyboard('{Enter}');
+  // A 3270 keyboard is locked from the instant an AID is transmitted until the program
+  // replies, so F5 cannot be struck while the ENTER is still outstanding. Waiting for
+  // the input-inhibited indicator to clear is that lock: the save is sent to a screen
+  // that has finished answering the edit pass, which is the only order an operator can
+  // produce.
+  await waitFor(() => {
+    expect(screen.getByTestId('screen-busy').textContent).toBe('');
+  });
   await user.keyboard('{F5}');
 }
 
@@ -421,7 +430,7 @@ describe('AccountUpdatePage — load and version snapshot', () => {
 
   it('carries the version read at display time on the update request', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await commit(user);
 
@@ -435,7 +444,7 @@ describe('AccountUpdatePage — load and version snapshot', () => {
 
   it('submits the edited values with the misspelled acctExpiraionDate preserved', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await retype(user, 'acctCreditLimit', '7500.00');
     await commit(user, true);
@@ -453,7 +462,7 @@ describe('AccountUpdatePage — load and version snapshot', () => {
 
   it('adopts the version the committed update returns for the next save', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await commit(user);
     await waitFor(() => {
@@ -481,7 +490,7 @@ describe('AccountUpdatePage — load and version snapshot', () => {
 
   it('reports the missing snapshot when a save is attempted before a read', async () => {
     await renderScreen('00000000000');
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await user.keyboard('{F5}');
 
@@ -626,7 +635,7 @@ describe('AccountUpdatePage — editable fields and captions', () => {
 describe('AccountUpdatePage — field validation', () => {
   it('reports a blank required field as "must be supplied." and does not submit', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await retype(user, 'custFirstName', '');
     await commit(user, true);
@@ -637,7 +646,7 @@ describe('AccountUpdatePage — field validation', () => {
 
   it('reports a non-numeric field as "must be all numeric." and does not submit', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await retype(user, 'custAddrZip', 'ABCDE');
     await commit(user, true);
@@ -648,7 +657,7 @@ describe('AccountUpdatePage — field validation', () => {
 
   it('reports an out-of-domain flag as "must be Y or N." and does not submit', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await retype(user, 'acctActiveStatus', 'X');
     await commit(user, true);
@@ -659,7 +668,7 @@ describe('AccountUpdatePage — field validation', () => {
 
   it('rejects a non-numeric account key with the account-number message', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await retype(user, 'acctsid', 'ABCDEFGHIJK');
     await commit(user, true);
@@ -672,7 +681,7 @@ describe('AccountUpdatePage — field validation', () => {
 
   it('highlights the failing field locally, marking a blank required field', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await retype(user, 'custFirstName', '');
     await commit(user, true);
@@ -698,19 +707,37 @@ describe('AccountUpdatePage — field validation', () => {
 
   it('clears the highlight once the corrected screen validates', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
+    // ENTER alone for the first pass: the highlight is what the EDIT pass produces, and
+    // an F5 struck in CHANGES_NOT_OK is rewritten straight back to ENTER (L905-916), so
+    // sending it here would only run the same failing edit pass a second time. Awaited
+    // rather than asserted synchronously, because the highlight arrives with the
+    // service's answer and the correction below must not be keyed into a screen whose
+    // previous turn is still settling.
     await retype(user, 'custAddrZip', 'ABCDE');
-    await commit(user, true);
-    expect(fieldInput('custAddrZip')).toBeInvalid();
+    await user.keyboard('{Enter}');
+    await waitFor(() => {
+      expect(fieldInput('custAddrZip')).toBeInvalid();
+    });
 
     // A corrected value that also differs from the record read, so the screen has
-    // a change to validate and then rewrite.
+    // a change to validate and then rewrite. The two AIDs are sent separately rather
+    // than through :func:`commit`, so each transition the screen makes is awaited where
+    // it happens: the edit pass has to report the invitation before the save is struck,
+    // and the save has to report back before the highlight is read.
     await retype(user, 'custAddrZip', '98052');
-    await commit(user, true);
+    await user.keyboard('{Enter}');
+    await waitFor(() => {
+      expect(infoBanner()).toHaveTextContent(PROMPT_FOR_CONFIRMATION_MESSAGE);
+    });
 
+    await user.keyboard('{F5}');
     await waitFor(() => {
       expect(updateAccountMock).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('screen-busy').textContent).toBe('');
     });
     expect(fieldInput('custAddrZip')).not.toBeInvalid();
     // The reserved marker columns are still there; none of them carries the `*`.
@@ -728,7 +755,7 @@ describe('AccountUpdatePage — optimistic-lock conflict', () => {
       new ApiError(409, OPTIMISTIC_LOCK_MESSAGE),
     );
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await commit(user);
 
@@ -754,7 +781,7 @@ describe('AccountUpdatePage — optimistic-lock conflict', () => {
     getAccountMock.mockResolvedValueOnce(ACCOUNT).mockResolvedValue(WINNER);
     updateAccountMock.mockRejectedValueOnce(new ApiError(409, OPTIMISTIC_LOCK_MESSAGE));
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await commit(user);
     await screen.findByRole('alert');
@@ -797,7 +824,7 @@ describe('AccountUpdatePage — optimistic-lock conflict', () => {
       }),
     );
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await commit(user);
 
@@ -810,7 +837,7 @@ describe('AccountUpdatePage — optimistic-lock conflict', () => {
       new ApiError(409, OPTIMISTIC_LOCK_MESSAGE),
     );
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await retype(user, 'acctCreditLimit', '9000.00');
     await commit(user, true);
@@ -839,7 +866,7 @@ describe('AccountUpdatePage — optimistic-lock conflict', () => {
 describe('AccountUpdatePage — committed update', () => {
   it('reports the commit and leaves the error region empty', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await commit(user);
 
@@ -856,7 +883,7 @@ describe('AccountUpdatePage — committed update', () => {
       acctCurrBal: '1250.75',
     });
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await commit(user);
 
@@ -879,7 +906,7 @@ describe('AccountUpdatePage — in-flight duplicate-save guard', () => {
       }),
     );
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await commit(user);
 
@@ -921,7 +948,7 @@ describe('AccountUpdatePage — unauthorized', () => {
   it('surfaces a 401 update failure without treating it as a lock conflict', async () => {
     updateAccountMock.mockRejectedValue(new ApiError(401, 'Unauthorized'));
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await commit(user);
 
@@ -950,7 +977,7 @@ describe('AccountUpdatePage — function keys', () => {
         .map((key) => key.textContent),
     ).toEqual(['ENTER=Process', 'F3=Exit']);
 
-    const user = userEvent.setup();
+    const user = setupInteraction();
     await retype(user, 'acctCreditLimit', '9999.99');
     await user.keyboard('{Enter}');
 
@@ -967,7 +994,7 @@ describe('AccountUpdatePage — function keys', () => {
 
   it('validates the screen on ENTER and invites the save', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     // ``1200-EDIT-MAP-INPUTS`` runs against the CHANGES on the map, so a screen
     // with nothing altered is reported as such instead of inviting a rewrite.
@@ -984,7 +1011,7 @@ describe('AccountUpdatePage — function keys', () => {
 
   it('reports an unchanged screen on ENTER instead of inviting the save', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await user.keyboard('{Enter}');
 
@@ -1002,7 +1029,7 @@ describe('AccountUpdatePage — function keys', () => {
     // line sits in the row ABOVE the error, and it is NEUTRAL rather than green -- the
     // program never moves DFHGREEN anywhere.
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await user.keyboard('{Enter}');
     await screen.findByRole('alert');
@@ -1019,7 +1046,7 @@ describe('AccountUpdatePage — function keys', () => {
 
   it('reports a failing edit on ENTER without submitting', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await retype(user, 'custAddrCountryCd', '');
     await user.keyboard('{Enter}');
@@ -1030,7 +1057,7 @@ describe('AccountUpdatePage — function keys', () => {
 
   it('commits on F5', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await commit(user);
 
@@ -1043,7 +1070,7 @@ describe('AccountUpdatePage — function keys', () => {
 
   it('exits to the calling menu on F3', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await user.keyboard('{F3}');
 
@@ -1053,7 +1080,7 @@ describe('AccountUpdatePage — function keys', () => {
 
   it('abandons the edits by re-reading the record on F12', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await retype(user, 'acctCreditLimit', '9999.99');
     await user.keyboard('{F12}');
@@ -1069,7 +1096,7 @@ describe('AccountUpdatePage — function keys', () => {
 
   it('activates the same handlers from the legend buttons', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
     const toolbar = screen.getByRole('group', { name: 'Function keys' });
 
     await retype(user, 'acctCreditLimit', '7500.00');
@@ -1106,7 +1133,7 @@ describe('AccountUpdatePage — the ENTER edit pass is the program\'s own', () =
       }),
     );
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await retype(user, 'custFicoCreditScore', '3000');
     await user.keyboard('{Enter}');
@@ -1131,7 +1158,7 @@ describe('AccountUpdatePage — the ENTER edit pass is the program\'s own', () =
       }),
     );
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await retype(user, 'custFicoCreditScore', '3000');
     await user.keyboard('{Enter}');
@@ -1147,7 +1174,7 @@ describe('AccountUpdatePage — the ENTER edit pass is the program\'s own', () =
 
   it('edits the entered shape before spending a round trip on it', async () => {
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     // A malformed entry is refused by the shape pass, so no request is issued at all.
     await retype(user, 'acctActiveStatus', 'X');
@@ -1188,7 +1215,7 @@ describe('AccountUpdatePage — zip field width (ACSZIPC LENGTH=5)', () => {
     // there is something to save before F5 does it.
     getAccountMock.mockResolvedValue({ ...ACCOUNT, custAddrZip: '46713-5148' });
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await user.keyboard('{Enter}');
 
@@ -1209,7 +1236,7 @@ describe('AccountUpdatePage — keyboard lock while the rewrite is outstanding',
       }),
     );
     await renderScreen();
-    const user = userEvent.setup();
+    const user = setupInteraction();
 
     await commit(user);
     await waitFor(() => {

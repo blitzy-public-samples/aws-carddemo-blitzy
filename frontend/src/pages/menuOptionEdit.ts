@@ -1,17 +1,15 @@
 /**
  * :module: ``frontend/src/pages/menuOptionEdit.ts``
  * :purpose: The option edit both menu screens perform on the two positions of their
- *     ``OPTION`` field, expressed the way ``COMEN01C`` and ``COADM01C`` express it:
- *     against the RAW content of the map field.
- *
- *     ``PROCESS-ENTER-KEY`` is identical in both programs (``COMEN01C`` L117-134,
- *     ``COADM01C`` L117-134). It transforms the entry and then tests it with ``IF
- *     WS-OPTION IS NOT NUMERIC OR WS-OPTION > <count> OR WS-OPTION = ZEROS``. That class
- *     test is the whole point of this module: discarding the characters it would have
- *     refused looks equivalent and is not, because it rewrites what the operator entered
- *     into a DIFFERENT, valid option and dispatches that one. ``-1`` became ``1`` and
- *     opened Account View. The test would also be dead code if the field could only ever
- *     hold digits, which is the source's own evidence that it cannot.
+ *     ``OPTION`` field, expressed the way ``COMEN01C`` and ``COADM01C`` express it: against
+ *     the RAW content of the map field. ``PROCESS-ENTER-KEY`` is identical in both programs
+ *     (``COMEN01C`` L117-134, ``COADM01C`` L117-134). It transforms the entry and then tests
+ *     it with ``IF WS-OPTION IS NOT NUMERIC OR WS-OPTION > <count> OR WS-OPTION = ZEROS``.
+ *     That class test is the whole point of this module: discarding the characters it would
+ *     have refused looks equivalent and is not, because it rewrites what the operator entered
+ *     into a DIFFERENT, valid option and dispatches that one. ``-1`` became ``1`` and opened
+ *     Account View. The test would also be dead code if the field could only ever hold digits,
+ *     which is the source's own evidence that it cannot.
  * :output: The named ``toProgramOption`` and ``isOptionRefused`` functions, the refusal
  *     literal, the field width, and the two declared option counts.
  * :note: Logic only — no UI, no I/O and no browser global, so it imports cleanly under

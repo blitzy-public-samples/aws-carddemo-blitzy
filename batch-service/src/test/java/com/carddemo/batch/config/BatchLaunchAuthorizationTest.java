@@ -265,7 +265,10 @@ class BatchLaunchAuthorizationTest {
     void legacyReturnCodeTextIsPublishedUnchanged() throws Exception {
         MockHttpSession session =
                 signedOnSession("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN);
-        JobExecution execution = new JobExecution(3L, new JobInstance(3L, "job"), new JobParameters());
+        // The instance must name a job this service owns: BATCH_JOB_EXECUTION is shared by
+        // every service, so the endpoint only reports executions of its own jobs.
+        JobExecution execution = new JobExecution(3L,
+                new JobInstance(3L, "dailyTransactionValidationJob"), new JobParameters());
         execution.setStatus(BatchStatus.COMPLETED);
         execution.setExitStatus(new ExitStatus("COMPLETED_WITH_REJECTS",
                 "Return code 4: 38 transaction(s) rejected"));
@@ -303,9 +306,98 @@ class BatchLaunchAuthorizationTest {
      */
     private static JobExecution acceptedExecution() {
         JobExecution execution = new JobExecution(1L,
-                new JobInstance(1L, "job"), new JobParameters());
+                new JobInstance(1L, "interestCalculationJob"), new JobParameters());
         execution.setStatus(BatchStatus.STARTED);
         execution.setExitStatus(ExitStatus.EXECUTING);
         return execution;
+    }
+
+    /**
+     * :purpose: Every service in the deployment shares ONE ``BATCH_JOB_EXECUTION`` table,
+     *     so an execution id is a global handle: without an ownership check this endpoint
+     *     answered for a run it does not own -- a transaction-posting run, or a statement
+     *     generation -- and an id is a small integer that can simply be counted through.
+     *     Ownership is decided by the job NAME on the instance, which is the only
+     *     authoritative record of which service launched the run.
+     * :output: An admin reading a foreign execution is answered as though it does not
+     *     exist, and the foreign run's status and exit text are not disclosed.
+     * :raises Exception: if the request fails.
+     */
+    @Test
+    @DisplayName("a foreign service's execution is not disclosed, even to an ADMIN")
+    void aForeignExecutionIsNotDisclosed() throws Exception {
+        MockHttpSession session =
+                signedOnSession("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        // transactionPostingJob is launched by transaction-service and is absent from this
+        // service's launchable set, so its rows are none of this endpoint's business.
+        JobExecution foreign = new JobExecution(9L,
+                new JobInstance(9L, "transactionPostingJob"), new JobParameters());
+        foreign.setStatus(BatchStatus.COMPLETED);
+        foreign.setExitStatus(new ExitStatus("COMPLETED_WITH_REJECTS",
+                "Return code 4: 38 transaction(s) rejected"));
+        when(jobRepository.getJobExecution(9L)).thenReturn(foreign);
+
+        // The envelope's own "status" is the HTTP status, so the assertions name the fields
+        // that would DISCLOSE the foreign run: its job name, its batch status, its exit code
+        // and its exit text. None may appear, and the message must not name the job either.
+        mockMvc.perform(get("/batch/jobs/executions/{id}", 9L).session(session))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.jobName").doesNotExist())
+                .andExpect(jsonPath("$.exitCode").doesNotExist())
+                .andExpect(jsonPath("$.exitMessage").doesNotExist())
+                .andExpect(jsonPath("$.message",
+                        org.hamcrest.Matchers.not(
+                                org.hamcrest.Matchers.containsString("transactionPostingJob"))))
+                .andExpect(jsonPath("$.message",
+                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("rejected"))));
+    }
+
+    /**
+     * :purpose: An execution id that no service ever wrote is answered the same way as a
+     *     foreign one, so the response cannot be used to tell an id that exists elsewhere
+     *     from one that exists nowhere.
+     * :raises Exception: if the request fails.
+     */
+    @Test
+    @DisplayName("an unknown execution id is indistinguishable from a foreign one")
+    void anUnknownExecutionIsIndistinguishableFromAForeignOne() throws Exception {
+        MockHttpSession session =
+                signedOnSession("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        when(jobRepository.getJobExecution(404L)).thenReturn(null);
+
+        mockMvc.perform(get("/batch/jobs/executions/{id}", 404L).session(session))
+                .andExpect(status().isNotFound());
+    }
+
+    /**
+     * :purpose: Ownership does not cost the endpoint its own runs: every job this service
+     *     launches is still readable.
+     * :param jobName: the owned job whose execution is read back.
+     * :raises Exception: if the request fails.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "interestCalculationJob",
+            "transactionDetailReportJob",
+            "categoryBalanceReportJob",
+            "dailyTransactionValidationJob",
+            "accountReadJob",
+            "cardReadJob",
+            "cardXrefReadJob",
+            "customerReadJob",
+            "combineTransactionsJob"})
+    @DisplayName("every job this service owns is still readable")
+    void everyOwnedJobIsStillReadable(String jobName) throws Exception {
+        MockHttpSession session =
+                signedOnSession("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        JobExecution owned = new JobExecution(11L,
+                new JobInstance(11L, jobName), new JobParameters());
+        owned.setStatus(BatchStatus.COMPLETED);
+        owned.setExitStatus(ExitStatus.COMPLETED);
+        when(jobRepository.getJobExecution(11L)).thenReturn(owned);
+
+        mockMvc.perform(get("/batch/jobs/executions/{id}", 11L).session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.jobName").value(jobName));
     }
 }

@@ -1,26 +1,24 @@
 /**
  * :module: ``frontend/src/api/users.ts``
- * :purpose: Administrator-only user-management domain API module. Wraps the
- *   ``/users`` routes on the CardDemo api-gateway and re-expresses the four
- *   legacy CICS user-maintenance transactions — ``CU00`` list
- *   (``app/cbl/COUSR00C.cbl``), ``CU01`` add (``app/cbl/COUSR01C.cbl``),
- *   ``CU02`` update (``app/cbl/COUSR02C.cbl``), and ``CU03`` delete
- *   (``app/cbl/COUSR03C.cbl``) — as REST calls issued through the shared
- *   ``apiClient``. Backs the ``UserListPage``, ``UserAddPage``,
- *   ``UserUpdatePage``, and ``UserDeletePage`` screens.
+ * :purpose: Administrator-only user-management domain API module. Wraps the ``/users``
+ *     routes on the CardDemo api-gateway and re-expresses the four legacy CICS
+ *     user-maintenance transactions — ``CU00`` list (``app/cbl/COUSR00C.cbl``), ``CU01`` add
+ *     (``app/cbl/COUSR01C.cbl``), ``CU02`` update (``app/cbl/COUSR02C.cbl``), and ``CU03``
+ *     delete (``app/cbl/COUSR03C.cbl``) — as REST calls issued through the shared
+ *     ``apiClient``. Backs the ``UserListPage``, ``UserAddPage``, ``UserUpdatePage``, and
+ *     ``UserDeletePage`` screens.
  * :output: The named async functions ``listUsers``, ``getUser``, ``addUser``,
- *   ``updateUser``, and ``deleteUser``.
- * :note: These operations are ``ROLE_ADMIN``-only; authorization is enforced by
- *   the api-gateway/backend, not here (a non-admin caller receives ``401`` /
- *   ``403`` normalized by ``./client``). This module performs no role checks.
+ *     ``updateUser``, and ``deleteUser``.
+ * :note: These operations are ``ROLE_ADMIN``-only; authorization is enforced by the
+ *     api-gateway/backend, not here (a non-admin caller receives ``401`` / ``403`` normalized
+ *     by ``./client``). This module performs no role checks.
  * :note: The raw password is carried only on the add / update request bodies
- *   (``UserAddRequestDto`` / ``UserUpdateRequestDto``); it is encoded server-side
- *   and never appears in any response type (``UserDto`` is password-free). The
- *   request DTO is forwarded to ``apiClient`` as an opaque body and is never
- *   logged here.
+ *     (``UserAddRequestDto`` / ``UserUpdateRequestDto``); it is encoded server-side and never
+ *     appears in any response type (``UserDto`` is password-free). The request DTO is
+ *     forwarded to ``apiClient`` as an opaque body and is never logged here.
  * :note: The rationale for the design choices below (path-id delete returning
- *   ``void``/``204``; a database sequence for id generation) is recorded in
- *   ``docs/decision-log.md`` per the Explainability rule.
+ *     ``void``/``204``; a database sequence for id generation) is recorded in
+ *     ``docs/decision-log.md`` per the Explainability rule.
  */
 
 import apiClient from './client';

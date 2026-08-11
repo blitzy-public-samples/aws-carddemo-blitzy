@@ -1,27 +1,25 @@
 /**
- * App
- * ===
- *
- * :purpose: The routed application: the seventeen migrated BMS screens mounted on
- *     their routes inside the shared 24x80 :func:`Layout` frame, with the CICS
- *     transaction-security gate re-expressed as two route guards. It replaces the
- *     legacy program-to-program ``XCTL`` transfer graph — ``COSGN00C`` handing to
- *     ``COMEN01C`` or ``COADM01C``, each of those handing to the screen its selected
- *     option names — with client-side navigation over the same transitions.
+ * App ===
+ * :purpose: The routed application: the seventeen migrated BMS screens mounted on their
+ *     routes inside the shared 24x80 :func:`Layout` frame, with the CICS transaction-security
+ *     gate re-expressed as two route guards. It replaces the legacy program-to-program
+ *     ``XCTL`` transfer graph — ``COSGN00C`` handing to ``COMEN01C`` or ``COADM01C``, each of
+ *     those handing to the screen its selected option names — with client-side navigation over
+ *     the same transitions.
  * :output: The named default ``App`` component.
  * :note: The guards mirror, and never replace, the gateway's own authorization: the
- *     api-gateway gates ``/admin/**`` and ``/users/**`` to ``ROLE_ADMIN`` and every
- *     other business route to a signed-on role, so a bypassed guard changes what is
- *     drawn and never what a caller is allowed to read or write.
- * :note: A guard must not answer before the server has: the session store starts
- *     signed out and resolves the identity through ``GET /session``, so until
- *     ``isSessionResolved`` is true a deep link that carries a valid session cookie
- *     waits instead of being bounced to the sign-on screen.
- * :note: The entry route and the catch-all resolve by ROLE rather than to a fixed
- *     screen, re-expressing the ``COSGN00C`` sign-on transfer and the 3270's absence of
- *     a not-found state. Both hops use ``replace``, so neither leaves a history entry.
+ *     api-gateway gates ``/admin/**`` and ``/users/**`` to ``ROLE_ADMIN`` and every other
+ *     business route to a signed-on role, so a bypassed guard changes what is drawn and never
+ *     what a caller is allowed to read or write.
+ * :note: A guard must not answer before the server has: the session store starts signed
+ *     out and resolves the identity through ``GET /session``, so until ``isSessionResolved``
+ *     is true a deep link that carries a valid session cookie waits instead of being bounced
+ *     to the sign-on screen.
+ * :note: The entry route and the catch-all resolve by ROLE rather than to a fixed screen,
+ *     re-expressing the ``COSGN00C`` sign-on transfer and the 3270's absence of a not-found
+ *     state. Both hops use ``replace``, so neither leaves a history entry.
  */
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import type { ReactElement } from 'react';
 import { Navigate, Outlet, Route, Routes } from 'react-router';
 import Layout from './components/Layout';
@@ -29,23 +27,38 @@ import { SESSION_ENDED_MESSAGE } from './api/messages';
 import { useSession } from './hooks';
 import type { Role } from './types';
 import { CDEMO_USRTYP_ADMIN, CDEMO_USRTYP_USER } from './types';
-import SignonPage from './pages/SignonPage';
-import MainMenuPage from './pages/MainMenuPage';
-import AdminMenuPage from './pages/AdminMenuPage';
-import AccountViewPage from './pages/AccountViewPage';
-import AccountUpdatePage from './pages/AccountUpdatePage';
-import CardListPage from './pages/CardListPage';
-import CardDetailPage from './pages/CardDetailPage';
-import CardUpdatePage from './pages/CardUpdatePage';
-import TranListPage from './pages/TranListPage';
-import TranViewPage from './pages/TranViewPage';
-import TranAddPage from './pages/TranAddPage';
-import BillPayPage from './pages/BillPayPage';
-import ReportPage from './pages/ReportPage';
-import UserListPage from './pages/UserListPage';
-import UserAddPage from './pages/UserAddPage';
-import UserUpdatePage from './pages/UserUpdatePage';
-import UserDeletePage from './pages/UserDeletePage';
+/*
+ * The seventeen screens are loaded PER ROUTE, not with the entry chunk.
+ *
+ * Loaded eagerly, all seventeen were linked into one 406,904-byte script that an
+ * anonymous caller had to download to see the sign-on map, of which 69% was never
+ * executed on that screen -- every account, card, transaction, billing, report and user
+ * workflow, none of which a caller who has not signed on can reach. `React.lazy` gives
+ * each screen its own chunk, so a route costs its own code and nothing else.
+ *
+ * `Suspense` sits at the frame, below the shell, so the header, the message region and the
+ * key legend stay painted while a screen's chunk is fetched -- which is what a 3270 does
+ * too: the frame is already on the glass and the program fills it in. The fallback is the
+ * shell's own busy announcement rather than a spinner, so nothing is displayed that no
+ * program produces.
+ */
+const SignonPage = lazy(() => import('./pages/SignonPage'));
+const MainMenuPage = lazy(() => import('./pages/MainMenuPage'));
+const AdminMenuPage = lazy(() => import('./pages/AdminMenuPage'));
+const AccountViewPage = lazy(() => import('./pages/AccountViewPage'));
+const AccountUpdatePage = lazy(() => import('./pages/AccountUpdatePage'));
+const CardListPage = lazy(() => import('./pages/CardListPage'));
+const CardDetailPage = lazy(() => import('./pages/CardDetailPage'));
+const CardUpdatePage = lazy(() => import('./pages/CardUpdatePage'));
+const TranListPage = lazy(() => import('./pages/TranListPage'));
+const TranViewPage = lazy(() => import('./pages/TranViewPage'));
+const TranAddPage = lazy(() => import('./pages/TranAddPage'));
+const BillPayPage = lazy(() => import('./pages/BillPayPage'));
+const ReportPage = lazy(() => import('./pages/ReportPage'));
+const UserListPage = lazy(() => import('./pages/UserListPage'));
+const UserAddPage = lazy(() => import('./pages/UserAddPage'));
+const UserUpdatePage = lazy(() => import('./pages/UserUpdatePage'));
+const UserDeletePage = lazy(() => import('./pages/UserDeletePage'));
 
 /** Route of the sign-on screen (``COSGN00`` / ``CC00``). */
 const SIGNON_ROUTE = '/signon';
@@ -94,7 +107,16 @@ const RESOLVING_ANNOUNCEMENT = 'Checking sign-on';
 function AppFrame(): ReactElement {
   return (
     <Layout>
-      <Outlet />
+      {/*
+       * The boundary for the per-route chunks. It is INSIDE the frame, so a screen whose
+       * code is still arriving leaves the header rows, the message region and the key
+       * legend painted, and it announces the wait on the same channel the shell uses for
+       * an outstanding transaction -- `ResolvingSession` renders the hidden live region
+       * rather than any text a program does not produce.
+       */}
+      <Suspense fallback={<ResolvingSession />}>
+        <Outlet />
+      </Suspense>
     </Layout>
   );
 }

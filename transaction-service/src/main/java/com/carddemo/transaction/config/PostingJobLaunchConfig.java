@@ -217,20 +217,20 @@ public class PostingJobLaunchConfig {
 
     /**
      * :purpose: Resolve and VALIDATE the business date of a submission, defaulting to the
-     *     current date so an unattended or parameterless submission still carries the
-     *     identifying date the daily cycle needs.
+     *     current date so an unattended or parameterless submission still carries the identifying
+     *     date the daily cycle needs.
      * :param postingDate: the requested date, possibly ``null`` or blank.
      * :returns: the effective ``YYYY-MM-DD`` posting date.
-     * :raises CardDemoException: when the value is not a real calendar date in
-     *     ``YYYY-MM-DD`` form.
+     * :raises CardDemoException: when the value is not a real calendar date in ``YYYY-MM-DD``
+     *     form.
      * :note: ``postingDate`` is the IDENTIFYING job parameter: it is the instance key of a
      *     posting cycle and it is persisted verbatim in ``BATCH_JOB_EXECUTION_PARAMS`` as the
-     *     audit record of the run. Unvalidated, any caller could mint unlimited instances
-     *     that re-post the same feed under names like ``NOT-A-DATE``, ``2026-13-45``, 600
-     *     nines or an injection string, and the batch audit trail carried them for good. The
-     *     legacy ``PARM`` was a real date consumed by the program, so it is validated with
-     *     the shared ``CSUTLDTC`` replacement — ``DateUtil`` with STRICT resolution, which
-     *     rejects ``2026-02-30`` as well as a malformed string [app/cbl/CSUTLDTC.cbl].
+     *     audit record of the run. Unvalidated, any caller could mint unlimited instances that
+     *     re-post the same feed under names like ``NOT-A-DATE``, ``2026-13-45``, 600 nines or an
+     *     injection string, and the batch audit trail carried them for good. The legacy ``PARM``
+     *     was a real date consumed by the program, so it is validated with the shared ``CSUTLDTC``
+     *     replacement — ``DateUtil`` with STRICT resolution, which rejects ``2026-02-30`` as well
+     *     as a malformed string [app/cbl/CSUTLDTC.cbl].
      */
     private static String effectivePostingDate(String postingDate) {
         if (postingDate == null || postingDate.isBlank()) {

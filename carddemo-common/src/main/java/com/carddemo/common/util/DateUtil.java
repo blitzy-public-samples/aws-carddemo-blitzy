@@ -105,25 +105,21 @@ public final class DateUtil {
     }
 
     /**
-     * Validates a date string against a mask, mirroring ``CSUTLDTC`` / CEEDAYS.
-     *
-     * <p>The input is not trimmed: the CEEDAYS picture is fixed-width, so embedded
-     * or surrounding spaces are treated as data errors exactly as the mainframe
-     * service would. A successfully parsed date is additionally range-checked
-     * against the CEEDAYS supported window (Lillian day 1 = ``1582-10-15``) and
-     * for a year-in-era of zero.
-     *
+     * Validates a date string against a mask, mirroring ``CSUTLDTC`` / CEEDAYS. <p>The input
+     *     is not trimmed: the CEEDAYS picture is fixed-width, so embedded or surrounding spaces
+     *     are treated as data errors exactly as the mainframe service would. A successfully parsed
+     *     date is additionally range-checked against the CEEDAYS supported window (Lillian day 1 =
+     *     ``1582-10-15``) and for a year-in-era of zero.
      * :param date: the date text to validate.
      * :param format: the mask literal; {@link #MASK_CCYYMMDD} or {@link #MASK_ISO}.
-     * :returns: a {@link DateValidationResult}; severity ``0`` with
-     *     {@link #RESULT_VALID} when the date parses under a strict Gregorian
-     *     calendar and lies within the supported range, otherwise severity ``3``
-     *     with the matching classification ({@link #RESULT_BAD_PIC_STRING} for an
-     *     unknown mask, {@link #RESULT_INSUFFICIENT} for null/blank or too-short
-     *     input, {@link #RESULT_YEAR_IN_ERA_ZERO} for year zero,
-     *     {@link #RESULT_UNSUPP_RANGE} for a date before ``1582-10-15``, or one of
-     *     {@link #RESULT_NON_NUMERIC}, {@link #RESULT_INVALID_MONTH},
-     *     {@link #RESULT_BAD_DATE_VALUE} for a malformed date value).
+     * :returns: a {@link DateValidationResult}; severity ``0`` with {@link #RESULT_VALID} when
+     *     the date parses under a strict Gregorian calendar and lies within the supported range,
+     *     otherwise severity ``3`` with the matching classification ({@link
+     *     #RESULT_BAD_PIC_STRING} for an unknown mask, {@link #RESULT_INSUFFICIENT} for null/blank
+     *     or too-short input, {@link #RESULT_YEAR_IN_ERA_ZERO} for year zero, {@link
+     *     #RESULT_UNSUPP_RANGE} for a date before ``1582-10-15``, or one of {@link
+     *     #RESULT_NON_NUMERIC}, {@link #RESULT_INVALID_MONTH}, {@link #RESULT_BAD_DATE_VALUE} for
+     *     a malformed date value).
      */
     public static DateValidationResult validateDate(String date, String format) {
         DateTimeFormatter formatter = formatterFor(format);

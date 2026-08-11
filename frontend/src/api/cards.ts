@@ -1,33 +1,30 @@
 /**
  * :module: ``frontend/src/api/cards.ts``
- * :purpose: Domain API module for the three CardDemo card screens —
- *   ``CardListPage`` (``COCRDLI`` / CICS ``CCLI``, ``app/cbl/COCRDLIC.cbl``),
- *   ``CardDetailPage`` (``COCRDSL`` / CICS ``CCDL``, ``app/cbl/COCRDSLC.cbl``),
- *   and ``CardUpdatePage`` (``COCRDUP`` / CICS ``CCUP``,
- *   ``app/cbl/COCRDUPC.cbl``). It re-expresses the legacy alternate-index browse
- *   (``CXACAIX`` -> ``findByAccountId``), single-record read, and
- *   read-validate-rewrite update as REST calls against the ``card-service`` card
- *   routes on the api-gateway, using the shared axios instance so session,
- *   correlation-id, and error normalization are applied uniformly.
- * :output: The named async functions ``listCards`` (``GET /cards``, 7 rows per
- *   page), ``getCard`` (``POST /cards/detail``), and ``updateCard``
- *   (``PUT /cards``). Neither of the latter two puts the card number in the URL:
- *   a PAN in a path or query string is written verbatim into every access log,
- *   proxy log and trace along the request path, so the key travels in the body.
+ * :purpose: Domain API module for the three CardDemo card screens — ``CardListPage``
+ *     (``COCRDLI`` / CICS ``CCLI``, ``app/cbl/COCRDLIC.cbl``), ``CardDetailPage`` (``COCRDSL``
+ *     / CICS ``CCDL``, ``app/cbl/COCRDSLC.cbl``), and ``CardUpdatePage`` (``COCRDUP`` / CICS
+ *     ``CCUP``, ``app/cbl/COCRDUPC.cbl``). It re-expresses the legacy alternate-index browse
+ *     (``CXACAIX`` -> ``findByAccountId``), single-record read, and read-validate-rewrite
+ *     update as REST calls against the ``card-service`` card routes on the api-gateway, using
+ *     the shared axios instance so session, correlation-id, and error normalization are
+ *     applied uniformly.
+ * :output: The named async functions ``listCards`` (``GET /cards``, 7 rows per page),
+ *     ``getCard`` (``POST /cards/detail``), and ``updateCard`` (``PUT /cards``). Neither of
+ *     the latter two puts the card number in the URL: a PAN in a path or query string is
+ *     written verbatim into every access log, proxy log and trace along the request path, so
+ *     the key travels in the body.
  * :note: The 16-digit card number (PAN) is always a ``string``: it exceeds
- *   ``Number.MAX_SAFE_INTEGER`` and preserves leading zeros, so it is never
- *   typed as ``number``. Request/response DTOs are passed through untouched to
- *   preserve wire formats — money as ``string``, dates as ``YYYY-MM-DD``,
- *   single-character status flags, and the legacy misspelling
- *   ``cardExpiraionDate``.
- * :note: The 7-rows-per-page contract is enforced by ``card-service`` (the
- *   backend page size), so this module sends only the one-based ``page`` index
- *   and relies on the backend default rather than hard-coding a page size.
- * :note: The card number reaches these routes on the same-origin request path
- *   and query string only. It is never placed in an application URL, so it does
- *   not enter the address bar, the session history, or an outbound ``Referer``.
- *   The gateway masks PAN-shaped digit runs before a request path is logged and
- *   before it is echoed on an error envelope.
+ *     ``Number.MAX_SAFE_INTEGER`` and preserves leading zeros, so it is never typed as
+ *     ``number``. Request/response DTOs are passed through untouched to preserve wire formats
+ *     — money as ``string``, dates as ``YYYY-MM-DD``, single-character status flags, and the
+ *     legacy misspelling ``cardExpiraionDate``.
+ * :note: The 7-rows-per-page contract is enforced by ``card-service`` (the backend page
+ *     size), so this module sends only the one-based ``page`` index and relies on the backend
+ *     default rather than hard-coding a page size.
+ * :note: The card number reaches these routes on the same-origin request path and query
+ *     string only. It is never placed in an application URL, so it does not enter the address
+ *     bar, the session history, or an outbound ``Referer``. The gateway masks PAN-shaped digit
+ *     runs before a request path is logged and before it is echoed on an error envelope.
  */
 
 import apiClient from './client';

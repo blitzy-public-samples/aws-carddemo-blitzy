@@ -48,36 +48,30 @@ import java.util.Map;
 
 /**
  * Spring Batch configuration for the monthly interest-calculation job.
- *
- * :purpose: Wire the interest-calculation ``Job`` and its single per-account
- *     control-break chunk ``Step``, re-platforming the legacy JCL job stream
- *     ``app/jcl/INTCALC.jcl`` (which runs ``PGM=CBACT04C`` with
- *     ``PARM='2022071800'``) and the COBOL program ``app/cbl/CBACT04C.cbl``. The
- *     step reads transaction-category-balance rows in
- *     ``(trancatAcctId, trancatTypeCd, trancatCd)`` ascending order and sizes
- *     each chunk to exactly one account's rows so the per-account cycle roll-up
- *     runs once per account inside a single transaction. This class only
- *     assembles beans from the reader built here, the ``@StepScope``
- *     {@link InterestItemProcessor}, and the {@link InterestTransactionWriter} in
- *     ``com.carddemo.batch.batch``; the monthly-interest arithmetic
- *     ``(TRAN-CAT-BAL * DIS-INT-RATE) / 1200`` at scale 2 truncated toward zero
- *     ({@link java.math.RoundingMode#DOWN}, reproducing the COBOL ``COMPUTE``
- *     without a ``ROUNDED`` phrase), the
- *     disclosure-group ``DEFAULT`` fallback, the one-interest-transaction-per
- *     non-zero-rate-category emission, and the per-account balance update that
- *     adds accumulated interest to ``ACCT-CURR-BAL`` and zeroes
- *     ``ACCT-CURR-CYC-CREDIT`` / ``ACCT-CURR-CYC-DEBIT`` all live in those
- *     components and the service layer; the legacy ``1400-COMPUTE-FEES`` stub is
- *     a no-op and is not implemented.
+ * :purpose: Wire the interest-calculation ``Job`` and its single per-account control-break
+ *     chunk ``Step``, re-platforming the legacy JCL job stream ``app/jcl/INTCALC.jcl`` (which
+ *     runs ``PGM=CBACT04C`` with ``PARM='2022071800'``) and the COBOL program
+ *     ``app/cbl/CBACT04C.cbl``. The step reads transaction-category-balance rows in
+ *     ``(trancatAcctId, trancatTypeCd, trancatCd)`` ascending order and sizes each chunk to
+ *     exactly one account's rows so the per-account cycle roll-up runs once per account inside
+ *     a single transaction. This class only assembles beans from the reader built here, the
+ *     ``@StepScope`` {@link InterestItemProcessor}, and the {@link InterestTransactionWriter}
+ *     in ``com.carddemo.batch.batch``; the monthly-interest arithmetic ``(TRAN-CAT-BAL *
+ *     DIS-INT-RATE) / 1200`` at scale 2 truncated toward zero ({@link
+ *     java.math.RoundingMode#DOWN}, reproducing the COBOL ``COMPUTE`` without a ``ROUNDED``
+ *     phrase), the disclosure-group ``DEFAULT`` fallback, the one-interest-transaction-per
+ *     non-zero-rate-category emission, and the per-account balance update that adds
+ *     accumulated interest to ``ACCT-CURR-BAL`` and zeroes ``ACCT-CURR-CYC-CREDIT`` /
+ *     ``ACCT-CURR-CYC-DEBIT`` all live in those components and the service layer; the legacy
+ *     ``1400-COMPUTE-FEES`` stub is a no-op and is not implemented.
  * :output: The ``interestTranCatBalReader``, ``interestCalculationStep``, and
  *     ``interestCalculationJob`` beans. ``JobRepository`` and the batch
- *     ``PlatformTransactionManager`` are supplied by Spring Boot batch
- *     auto-configuration and taken as ``@Bean`` method parameters; no batch
- *     infrastructure is self-instantiated here, and ``@EnableBatchProcessing``
- *     with ``@EnableJdbcJobRepository`` is declared once for the module in
- *     ``JdbcBatchConfiguration`` so executions are persisted. The step
- *     runs single-threaded with no skip or retry so the writer's global,
- *     monotonic interest transaction-id suffix stays contiguous.
+ *     ``PlatformTransactionManager`` are supplied by Spring Boot batch auto-configuration and
+ *     taken as ``@Bean`` method parameters; no batch infrastructure is self-instantiated here,
+ *     and ``@EnableBatchProcessing`` with ``@EnableJdbcJobRepository`` is declared once for
+ *     the module in ``JdbcBatchConfiguration`` so executions are persisted. The step runs
+ *     single-threaded with no skip or retry so the writer's global, monotonic interest
+ *     transaction-id suffix stays contiguous.
  */
 @Configuration
 public class InterestCalculationJobConfig {
@@ -90,26 +84,24 @@ public class InterestCalculationJobConfig {
     private static final int READER_PAGE_SIZE = 100;
 
     /**
-     * :purpose: Provide the driving reader for the interest step: a paging reader
-     *     over transaction-category balances in account/type/category order,
-     *     wrapped so the control-break completion policy can peek the next row
-     *     without consuming it. The delegate uses the inherited
-     *     ``JpaRepository.findAll(Pageable)`` with an explicit multi-key sort so
-     *     ordering is defined solely by the sort map; all category-balance rows
-     *     for one account therefore arrive contiguously for the per-account
-     *     control break, reproducing the ``CBACT04C`` sequential read of
-     *     ``TCATBALF`` in ``TRANCAT-ACCT-ID`` / ``TRANCAT-TYPE-CD`` /
-     *     ``TRANCAT-CD`` key order.
-     * :param tranCatBalRepository: paging repository over the
-     *     ``tran_cat_bal`` table supplying category-balance rows.
-     * :returns: a ``SingleItemPeekableItemReader`` over {@link TranCatBal} rows in
-     *     ascending ``(trancatAcctId, trancatTypeCd, trancatCd)`` order.
-     * :note: ``@StepScope`` is required for correctness, not convenience: the reader is
-     *     an ``ItemStream`` carrying the run's page cursor and peeked row, so each
-     *     ``StepExecution`` must own its own instance. The step and the control-break
-     *     completion policy hold the scoped proxy, so every read and peek resolves to
-     *     the reader belonging to the execution that issued it. Rationale is in
-     *     docs/decision-log.md (batch beans holding per-run state).
+     * :purpose: Provide the driving reader for the interest step: a paging reader over
+     *     transaction-category balances in account/type/category order, wrapped so the
+     *     control-break completion policy can peek the next row without consuming it. The delegate
+     *     uses the inherited ``JpaRepository.findAll(Pageable)`` with an explicit multi-key sort
+     *     so ordering is defined solely by the sort map; all category-balance rows for one account
+     *     therefore arrive contiguously for the per-account control break, reproducing the
+     *     ``CBACT04C`` sequential read of ``TCATBALF`` in ``TRANCAT-ACCT-ID`` /
+     *     ``TRANCAT-TYPE-CD`` / ``TRANCAT-CD`` key order.
+     * :param tranCatBalRepository: paging repository over the ``tran_cat_bal`` table supplying
+     *     category-balance rows.
+     * :returns: a ``SingleItemPeekableItemReader`` over {@link TranCatBal} rows in ascending
+     *     ``(trancatAcctId, trancatTypeCd, trancatCd)`` order.
+     * :note: ``@StepScope`` is required for correctness, not convenience: the reader is an
+     *     ``ItemStream`` carrying the run's page cursor and peeked row, so each ``StepExecution``
+     *     must own its own instance. The step and the control-break completion policy hold the
+     *     scoped proxy, so every read and peek resolves to the reader belonging to the execution
+     *     that issued it. Rationale is in docs/decision-log.md (batch beans holding per-run
+     *     state).
      */
     @Bean
     @StepScope
@@ -170,36 +162,33 @@ public class InterestCalculationJobConfig {
     }
 
     /**
-     * :purpose: Assemble the interest-calculation chunk step. The chunk size is
-     *     governed by the per-account control-break completion policy rather than
-     *     a fixed integer, so all {@link TranCatBal} rows for one account form
-     *     exactly one chunk (one transaction); within that transaction the writer
-     *     persists one interest transaction per non-zero-rate category and applies
-     *     the account cycle roll-up once, mirroring ``CBACT04C``. The step is
+     * :purpose: Assemble the interest-calculation chunk step. The chunk size is governed by
+     *     the per-account control-break completion policy rather than a fixed integer, so all
+     *     {@link TranCatBal} rows for one account form exactly one chunk (one transaction); within
+     *     that transaction the writer persists one interest transaction per non-zero-rate category
+     *     and applies the account cycle roll-up once, mirroring ``CBACT04C``. The step is
      *     single-threaded with no skip or retry.
      * :param jobRepository: batch job repository (Spring Boot auto-configured).
-     * :param transactionManager: batch transaction manager (Spring Boot
-     *     auto-configured); defines the per-account chunk transaction boundary.
-     * :param interestTranCatBalReader: account-ordered peekable reader whose next
-     *     row the completion policy peeks to detect the account control break.
-     * :param interestItemProcessor: ``@StepScope`` processor that resolves the
-     *     disclosure rate and computes per-row monthly interest.
-     * :param interestTransactionWriter: writer that persists interest
-     *     transactions and performs the once-per-account balance roll-up.
+     * :param transactionManager: batch transaction manager (Spring Boot auto-configured);
+     *     defines the per-account chunk transaction boundary.
+     * :param interestTranCatBalReader: account-ordered peekable reader whose next row the
+     *     completion policy peeks to detect the account control break.
+     * :param interestItemProcessor: ``@StepScope`` processor that resolves the disclosure rate
+     *     and computes per-row monthly interest.
+     * :param interestTransactionWriter: writer that persists interest transactions and
+     *     performs the once-per-account balance roll-up.
      * :returns: the ``interestCalculationStep`` ``Step``.
      * :note: ``interestTranCatBalReader`` arrives here as a ``@StepScope`` proxy, so the
-     *     single policy instance held by this singleton step still peeks the reader
-     *     belonging to the calling ``StepExecution``; the policy itself keeps no
-     *     cross-execution state, deriving each chunk's account from a fresh
-     *     ``AccountChunkContext``.
-     * :note: The suppression covers exactly one call —
-     *     ``StepBuilder.chunk(CompletionPolicy, PlatformTransactionManager)``, which
-     *     Spring Batch 6 deprecates for removal. Spring Batch 6.0.4 offers no
-     *     non-deprecated replacement that accepts a ``CompletionPolicy``:
+     *     single policy instance held by this singleton step still peeks the reader belonging to
+     *     the calling ``StepExecution``; the policy itself keeps no cross-execution state,
+     *     deriving each chunk's account from a fresh ``AccountChunkContext``.
+     * :note: The suppression covers exactly one call — ``StepBuilder.chunk(CompletionPolicy,
+     *     PlatformTransactionManager)``, which Spring Batch 6 deprecates for removal. Spring Batch
+     *     6.0.4 offers no non-deprecated replacement that accepts a ``CompletionPolicy``:
      *     ``StepBuilder.chunk(int)`` yields a ``ChunkOrientedStepBuilder`` whose
-     *     ``ChunkOrientedStep`` carries a fixed integer chunk size, so the per-account
-     *     control break this step requires cannot be expressed through it. Retention is
-     *     therefore deliberate and recorded in docs/decision-log.md, section 39.3.
+     *     ``ChunkOrientedStep`` carries a fixed integer chunk size, so the per-account control
+     *     break this step requires cannot be expressed through it. Retention is therefore
+     *     deliberate and recorded in docs/decision-log.md, section 39.3.
      */
     @Bean
     @SuppressWarnings({"deprecation", "removal"})

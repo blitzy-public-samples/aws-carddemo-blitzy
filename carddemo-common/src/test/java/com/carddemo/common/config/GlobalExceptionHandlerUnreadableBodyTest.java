@@ -153,7 +153,9 @@ class GlobalExceptionHandlerUnreadableBodyTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.getBody()).isNotNull();
         assertThat(response.getBody().getMessage()).isEqualTo("Malformed request body");
-        assertThat(response.getBody().getFieldErrors()).isNull();
+        // The envelope always publishes a field-error OBJECT, empty when the failure is not
+        // attributable to a field, so a client has one shape to read rather than three.
+        assertThat(response.getBody().getFieldErrors()).isEmpty();
     }
 
     /**

@@ -37,6 +37,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 public class PasswordEncoderConfig {
 
     /**
+     * :purpose: Publish the shared delegating password encoder.
      * :returns: the shared ``PasswordEncoder`` bean (a delegating ``{bcrypt}``
      *           encoder from {@link PasswordEncoderFactory}) used to hash new
      *           passwords and to verify sign-on credentials.

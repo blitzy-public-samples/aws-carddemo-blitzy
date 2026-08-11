@@ -1,19 +1,18 @@
 /**
  * :module: ``frontend/src/api/messages.ts``
- * :purpose: Hold the one message the client puts on the BMS line-23 region for a
- *   failure that produced no application error envelope, in a module of its own so
- *   both the axios response interceptor and the request hook can read it without
- *   either of them depending on the other.
+ * :purpose: Hold the one message the client puts on the BMS line-23 region for a failure
+ *     that produced no application error envelope, in a module of its own so both the axios
+ *     response interceptor and the request hook can read it without either of them depending
+ *     on the other.
  * :output: The named ``GENERIC_ERROR_MESSAGE`` and ``SESSION_ENDED_MESSAGE``.
- * :note: Line 23 is a BMS field (``ERRMSG``, ``X(78)``) and carries only the
- *   application's own text. A failure that never reached a CardDemo service — an
- *   nginx or api-gateway rejection, a Spring Security ``StrictHttpFirewall``
- *   refusal, or a transport failure while the browser is offline — leaves a library
- *   diagnostic in ``AxiosError.message`` ("Request failed with status code 400",
- *   "Network Error"), which must never be rendered. This literal stands in for all
- *   of them, and is character-for-character the text the backend's own
- *   ``GlobalExceptionHandler`` emits for an unhandled fault, so the screen reads the
- *   same whichever side of the gateway the fault occurred on.
+ * :note: Line 23 is a BMS field (``ERRMSG``, ``X(78)``) and carries only the application's
+ *     own text. A failure that never reached a CardDemo service — an nginx or api-gateway
+ *     rejection, a Spring Security ``StrictHttpFirewall`` refusal, or a transport failure
+ *     while the browser is offline — leaves a library diagnostic in ``AxiosError.message``
+ *     ("Request failed with status code 400", "Network Error"), which must never be rendered.
+ *     This literal stands in for all of them, and is character-for-character the text the
+ *     backend's own ``GlobalExceptionHandler`` emits for an unhandled fault, so the screen
+ *     reads the same whichever side of the gateway the fault occurred on.
  */
 
 /** :purpose: Line-23 text for any failure that carried no application envelope. */

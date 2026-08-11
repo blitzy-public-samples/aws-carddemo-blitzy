@@ -409,7 +409,8 @@ class TransactionControllerTest {
                         .session(signedOnSession()))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("Account ID must be Numeric..."))
-                .andExpect(jsonPath("$.fieldErrors").doesNotExist());
+                // Always an object, empty when the failure names no field (never null, never absent).
+                .andExpect(jsonPath("$.fieldErrors").isEmpty());
 
         verify(transactionService).resolveAddKey(any(TransactionKeyDto.class));
     }

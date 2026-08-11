@@ -48,6 +48,19 @@ ENV VITE_SYS_ID=$VITE_SYS_ID
 
 RUN npm run build
 
+# Pre-compress the bundle. The runtime stage is stock nginx:alpine, built WITHOUT
+# ngx_brotli, so nginx cannot Brotli-compress a response on the fly and every asset
+# crossed the wire as gzip however good a Brotli the browser advertised. nginx CAN
+# serve an already-compressed file, which is exactly what its bundled gzip_static
+# module does for gzip, so the script writes a .br and a .gz sibling for every emitted
+# .js and .css and frontend/nginx.conf selects between them per request. Running it
+# here rather than per request also makes maximum effort affordable: Brotli quality 11
+# and gzip level 9 execute once per build instead of on every hit. The script exits
+# non-zero when the build output holds no script or stylesheet, so a change in the
+# bundle's shape fails this build instead of silently shipping assets whose compressed
+# siblings the served configuration expects to find.
+RUN node scripts/precompress.mjs dist
+
 # --- Stage 2: serve the static bundle with nginx -----------------------------
 # Pinned to an explicit version AND digest: `alpine` is a floating tag that
 # moves with every nginx release, so two builds of the same commit could ship
@@ -77,8 +90,41 @@ ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
 # than relying on the checkout's file mode.
 COPY --chmod=0755 docker-entrypoint.d/15-carddemo-resolver.sh /docker-entrypoint.d/15-carddemo-resolver.sh
 
-# nginx listens on container port 80; the root docker-compose.yml maps the host
-# port (3000) to this container port (3000:80).
-EXPOSE 80
+# OCI provenance metadata. Without it the image inherits the nginx base image's
+# labels and `docker inspect` cannot attribute the artifact to this source or
+# version.
+ARG CARDDEMO_IMAGE_VERSION=1.0.0
+ARG CARDDEMO_IMAGE_REVISION=unspecified
+ARG CARDDEMO_IMAGE_CREATED=unspecified
+LABEL org.opencontainers.image.title="carddemo-frontend" \
+      org.opencontainers.image.description="CardDemo React 19 SPA (17 BMS 3270 screens) served by nginx" \
+      org.opencontainers.image.vendor="CardDemo" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="${CARDDEMO_IMAGE_VERSION}" \
+      org.opencontainers.image.revision="${CARDDEMO_IMAGE_REVISION}" \
+      org.opencontainers.image.created="${CARDDEMO_IMAGE_CREATED}" \
+      org.opencontainers.image.source="https://github.com/aws-samples/aws-mainframe-modernization-carddemo" \
+      org.opencontainers.image.base.name="nginx:1.31.3-alpine" \
+      org.opencontainers.image.base.digest="sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752"
+
+# Unprivileged runtime. The nginx image starts its MASTER process as root and
+# only drops the workers to the `nginx` user, so the container's PID 1 held uid 0
+# with the whole static bundle and the proxy configuration in its address space.
+# Declaring the image's own nginx account (uid/gid 101) as the runtime user means
+# no process in this container ever holds uid 0; nginx.conf pairs with it by
+# listening on 8080, keeping its pid and scratch paths under /tmp, and omitting
+# the `user` directive a non-privileged master cannot honour.
+#
+# The base image's /docker-entrypoint.sh and the resolver hook below are
+# uid-agnostic (the hook writes only under /tmp), so the start-up contract is
+# unchanged. The bundle is copied read-only and needs no ownership change: it is
+# world-readable and nginx only ever reads it.
+USER 101:101
+
+# nginx listens on the unprivileged container port 8080 (binding 80 would need
+# CAP_NET_BIND_SERVICE, and every capability is dropped); the root
+# docker-compose.yml maps the host port 3000 to it (3000:8080), and
+# k8s/deployment-frontend.yaml declares the same containerPort.
+EXPOSE 8080
 
 CMD ["nginx", "-g", "daemon off;"]

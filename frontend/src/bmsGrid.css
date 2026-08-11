@@ -1,0 +1,1892 @@
+/*
+ * CardDemo SPA -- absolute BMS placement layer.
+ *
+ * Imported once by src/main.tsx, AFTER index.css so it places what that file styles.
+ *
+ * WHAT THIS FILE IS FOR
+ * The 17 screens are 24x80 BMS maps, and a map states WHERE every field is: each
+ * `DFHMDF` carries `POS=(row,col)` and `LENGTH=n`. index.css reproduces the character
+ * cell, the palette and the 24-row frame, but it laid every screen's body out in normal
+ * flow -- so content began at column 1 whatever column its mapset declared, source blank
+ * rows collapsed to nothing, and the header's right-hand group was pushed to the frame's
+ * right edge instead of standing at the column the mapset gives it. This file puts the
+ * body and the header onto the map's own 80-column, one-row-per-line grid and places each
+ * screen's regions at the coordinates their mapset states.
+ *
+ * HOW A COORDINATE BECOMES A RULE
+ *   grid-column: C / span L     <- POS=(r,C) and LENGTH=L, verbatim
+ *   grid-row:    r - H          <- POS=(r,c), where H is the rows the header occupies
+ * H is 2 for every mapset except COSGN00, whose row 3 carries `AppID:`/`SysID:` and is
+ * rendered by the shared Header, making its header three rows. So absolute row 4 is body
+ * grid row 2 on sixteen screens and absolute row 5 is body grid row 2 on the sign-on
+ * screen. Each rule below names the mapset row it came from, so every number here can be
+ * checked against app/bms/<mapset>.bms without running anything.
+ *
+ * SCOPE, STATED PLAINLY
+ * Placement is at the granularity of the REGIONS each page already exposes -- its screen
+ * title, its body block, its prompt row, its browse table. Within a placed region the
+ * page's own elements stay in flow, which is what the mapset does too wherever it puts a
+ * caption and its field adjacently on one row. Every region's ROW is exact, every region's
+ * START COLUMN is exact, and every blank row a mapset leaves between regions is an empty
+ * grid row rather than a collapsed one.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Header rows 1-2 (and row 3 on COSGN00)                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The sixteen sibling mapsets state the three header groups at these columns:
+ *   POS=(1,1)  'Tran:' LENGTH=5 + POS=(1,7)  TRNNAME LENGTH=4  -> columns 1-10
+ *   POS=(1,21) TITLE01 LENGTH=40                               -> columns 21-60
+ *   POS=(1,65) 'Date:' LENGTH=5 + POS=(1,71) CURDATE LENGTH=8   -> columns 65-78
+ * and row 2 repeats them with 'Prog:'/PGMNAME, TITLE02 and 'Time:'/CURTIME. COSGN00
+ * spells each caption with a space before the colon, one character longer
+ * (``'Tran :'`` LENGTH=6), and starts its right group one column earlier at
+ * ``POS=(1,64)`` so that group still ENDS on column 78 -- handled below.
+ *
+ * The row was a `1fr auto 1fr` grid with the right group set to `justify-self: end`, so
+ * that group's RIGHT edge sat on column 80 while the mapset ends it on column 78 -- the
+ * two-column offset the header showed on all 17 screens. Placing all three groups on the
+ * map's own columns removes the offset by construction.
+ */
+.appHeader__row {
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  column-gap: 0;
+  align-items: baseline;
+  width: 100%;
+}
+
+.appHeader__left {
+  grid-column: 1 / span 20;
+  justify-self: start;
+}
+
+/*
+ * The two title lines are NOT centred in their 40-column field: `CCDA-TITLE01` and
+ * `CCDA-TITLE02` are `PIC X(40)` literals that carry their own padding
+ * (app/cpy/COTTL01Y.cpy), and the field starts at column 21, so the padding decides the
+ * column and centring only approximates it -- it left title01 half a cell right of where
+ * the literal puts it.
+ *   '      AWS Mainframe Modernization       '  6 leading spaces -> columns 27-53
+ *   '              CardDemo                  ' 14 leading spaces -> columns 35-42
+ * The component renders each literal trimmed, so the start column is stated here and the
+ * text is left-aligned in it.
+ */
+.appHeader__center {
+  justify-self: start;
+  /*
+   * The literal's own leading spaces decide the column (see above), so the trimmed text
+   * is left-aligned in the field it is placed on. index.css centres it for the
+   * `1fr auto 1fr` header this file replaces, and centring inside the stated field moved
+   * title01 half a cell right of column 27.
+   */
+  text-align: left;
+}
+
+.appHeader__center[data-testid='title01'] {
+  grid-column: 27 / span 27;
+}
+
+.appHeader__center[data-testid='title02'] {
+  grid-column: 35 / span 8;
+}
+
+.appHeader__right {
+  grid-column: 65 / span 14;
+  justify-self: start;
+}
+
+/*
+ * COSGN00 only: the spaced captions are one character longer, so the mapset moves the
+ * whole right group one column left to keep it ending on column 78 --
+ * ``POS=(1,64) 'Date :' LENGTH=6`` + ``POS=(1,71) CURDATE LENGTH=8``, and the same for
+ * ``'Time :'`` on row 2 and ``'SysID:'`` on row 3.
+ */
+[data-map='COSGN00'] .appHeader__right {
+  grid-column: 64 / span 15;
+}
+
+/* ------------------------------------------------------------------ */
+/* The body region as the map's own grid                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Rows 3-22 of the map, as twenty single-line rows of eighty character columns.
+ *
+ * A direct child with no placement of its own spans the full width and takes the next
+ * row, which is what a page that predates this file expects; the per-screen rules below
+ * then move the regions that carry a coordinate. `align-content: start` keeps the rows at
+ * the top of the region rather than distributing the slack, so a screen that uses ten of
+ * its twenty rows leaves the other ten blank at the BOTTOM, exactly as an erased device
+ * does.
+ */
+.screen__body {
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  /*
+   * One map row per track, and a track that CANNOT clamp its item. A fixed
+   * `var(--term-line)` track gave every item a box exactly one line high whatever its
+   * content, and an item taller than its box does not grow the box -- it paints outside
+   * it, over the row beneath and, on the last row, over the message line. Measured on
+   * `/accounts`: `div.accountView` had `clientHeight` 33px against `scrollHeight` 603px
+   * and painted 8px across `.screen__status`. `minmax` keeps the one-line row -- every
+   * item whose content is one line still gets exactly `var(--term-line)` -- and lets the
+   * exceptional item state its real height instead of overflowing silently.
+   */
+  grid-auto-rows: minmax(var(--term-line), auto);
+  /*
+   * Explicitly zero, because a gap on an 80-track grid is applied 79 times. An inherited
+   * `column-gap: 1ch` doubled the column pitch to 2ch and made the eighty columns 2455px
+   * wide inside a 1236px region -- which is how `input#custLastName` came to be placed
+   * 447px past the right edge of the frame, invisible and un-hittable.
+   */
+  column-gap: 0;
+  row-gap: 0;
+  align-content: start;
+}
+
+.screen__body > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+/*
+ * A page whose root is a WRAPPER rather than a region puts its rows one or two levels
+ * down (`section.userAdd__screen > form.userAdd > .userAdd__row`). Each such wrapper is
+ * made the map's own 80-column grid below, so the rows inside it are grid items too and
+ * need the same full-width default before a per-screen rule narrows them. `min-width` is
+ * deliberately NOT restated here: at these depths the element is often a flex item
+ * carrying a caption literal, and zeroing its minimum would let the caption be squeezed
+ * below its own text instead of holding the columns the mapset gives it.
+ */
+.screen__body > * > *,
+.screen__body > * > * > * {
+  grid-column: 1 / -1;
+}
+
+/*
+ * A grid item placed on this grid gets its row height from the TRACK
+ * (`minmax(var(--term-line), auto)`), so it must not also declare a `min-height` of its
+ * own. Both were computed from `--term-line`, and Chrome rounds a used length to 1/64px
+ * in each place independently: the track came out one 64th taller than the row every
+ * time, and nineteen rows of that accumulated into an extra fraction of a line that
+ * pushed the frame past its 25-line budget (26.18 rows at 375x812).
+ */
+.screen__body > *,
+.screen__body > * > * {
+  min-height: 0;
+}
+
+/*
+ * Every literal and caption the placement layer puts on a stated span occupies exactly
+ * those columns and NEVER a second row. Chrome rounds each of the eighty tracks down to
+ * 1/64px, which leaves a literal of exactly its own `LENGTH` fractionally wider than the
+ * span holding it: `'View Account'` in `33 / span 12` and `'Customer Details'` in
+ * `32 / span 16` both wrapped to two rows, displacing every row below them by one and
+ * putting COACTVW's whole customer block two rows low. The sign-on screen's three
+ * literals did the same and carried its frame 1.84 rows over budget.
+ */
+.screen__body :where(h1, h2, h3, h4, h5, h6, label, dt, dd, legend, .prompt, .label, .title, .neutral, .screenNote) {
+  white-space: pre;
+}
+
+/* ------------------------------------------------------------------ */
+/* Pass-through page roots become the map's own grid                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Fourteen of the seventeen pages return a single wrapper element -- `<form>` on the
+ * sign-on screen, `<section class="tranList">` on the transaction list, and so on -- and
+ * the rows the mapset places are that wrapper's CHILDREN. The wrapper was a flex column
+ * (`.accountView, .billPay, ... { display: flex; flex-direction: column }` in
+ * index.css), which had two consequences, both measured in the browser:
+ *
+ *   1. Every per-screen column rule below was INERT. `grid-column` applies to a grid
+ *      ITEM, and a child of a flex column is not one, so `COTRN02`'s rows began at
+ *      column 1 instead of the column 6 its mapset declares -- on nine of the seventeen
+ *      screens.
+ *   2. The wrapper itself was ONE item in ONE row of the body, so all of its rows were
+ *      inside a single one-line track. `div.accountView` measured `clientHeight` 33px
+ *      against `scrollHeight` 603px and painted across the message line.
+ *
+ * Making each wrapper the same 80-column, one-row-per-line grid as the body fixes both
+ * at once: the wrapper's own track grows to its content (`minmax` above), and its
+ * children are grid items placed on the map's columns. The wrapper is named per mapset
+ * rather than by a shared selector so that a page whose root IS a region -- COACTUP's
+ * `section.accountUpdate` and COCRDUP's `div.cardUpdate`, both already grids of their
+ * own -- is not swept up by it.
+ */
+[data-map='COSGN00'] .screen__body > form,
+[data-map='COACTVW'] .screen__body > .accountView,
+[data-map='COCRDLI'] .screen__body > section,
+[data-map='COCRDSL'] .screen__body > section,
+[data-map='COTRN00'] .screen__body > .tranList,
+[data-map='COTRN01'] .screen__body > .tranViewPage,
+[data-map='COTRN02'] .screen__body > .tranAdd,
+[data-map='COBIL00'] .screen__body > .billPay,
+[data-map='CORPT00'] .screen__body > .reportPage,
+[data-map='COUSR00'] .screen__body > section,
+[data-map='COUSR01'] .screen__body > .userAdd__screen,
+[data-map='COUSR01'] .screen__body > .userAdd__screen > .userAdd,
+[data-map='COUSR02'] .screen__body > .userUpdate,
+[data-map='COUSR03'] .screen__body > .userDelete {
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  column-gap: 0;
+  row-gap: 0;
+  align-content: start;
+  width: 100%;
+}
+
+/*
+ * A region that holds one map row per item -- an option list, a browse table body -- is
+ * itself a stack of single-line rows, so item N lands on the mapset's Nth row.
+ */
+.screen__body [role='list'],
+.screen__body .accountView__details,
+.screen__body .accountUpdate,
+.screen__body .cardUpdate,
+.screen__body .userUpdate__form {
+  display: grid;
+  /* Non-clamping for the same reason as `.screen__body` above. */
+  grid-auto-rows: minmax(var(--term-line), auto);
+  /*
+   * And non-STRETCHING. A region placed on a stated span of rows is taller than its own
+   * content whenever the mapset reserves more slots than the screen fills, and the default
+   * `align-content` divides the slack among the tracks: the admin menu's four options were
+   * given a twelve-row span and each came out three rows high, landing on map rows 6, 9,
+   * 12 and 15 instead of 6, 7, 8 and 9. `start` keeps every row one character row and
+   * leaves the unfilled slots blank at the bottom, exactly as an erased device does.
+   */
+  align-content: start;
+  row-gap: 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* COSGN00 -- sign-on (transaction CC00)                              */
+/* Header is THREE rows here, so absolute row r is body row r-3.       */
+/* ------------------------------------------------------------------ */
+
+/* POS=(5,6) LENGTH=66 -- the one-line description. */
+[data-map='COSGN00'] .signon__description {
+  grid-row: 2;
+  grid-column: 6 / span 66;
+}
+
+/* POS=(7,21)..POS=(15,21) LENGTH=42 -- nine literal rows of the dollar-note block. */
+[data-map='COSGN00'] .signon__note {
+  grid-row: 4 / span 9;
+  grid-column: 21 / span 42;
+}
+
+/* POS=(17,16) LENGTH=49 -- 'Type your User ID and Password, then press ENTER'. */
+[data-map='COSGN00'] .signon__prompt {
+  grid-row: 14;
+  grid-column: 16 / span 49;
+}
+
+/*
+ * POS=(19,29) 'User ID     :' and POS=(20,29) 'Password    :', each 13 long, with the
+ * entry field at POS=(r,43) LENGTH=8 and the '(8 Char)' hint at POS=(r,52).
+ */
+/*
+ * Each row is its own 80-column grid, because flowing the three fields left the `(8 Char)`
+ * literal at columns 76-84 -- four columns outside the frame, clipped mid-word to `(8 Ch`
+ * and making the body horizontally scrollable at every viewport. The mapset states all
+ * three:
+ *   POS=(19,29) 'User ID     :' LENGTH=13   POS=(19,43) USERID LENGTH=8   POS=(19,52) '(8 Char)' LENGTH=8
+ *   POS=(20,29) 'Password    :' LENGTH=13   POS=(20,43) PASSWD LENGTH=8   POS=(20,52) '(8 Char)' LENGTH=8
+ * so the row ends on column 59, well inside the eighty.
+ */
+[data-map='COSGN00'] .signon__row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  column-gap: 0;
+  row-gap: 0;
+  align-items: baseline;
+}
+
+[data-map='COSGN00'] .signon__row > label {
+  grid-column: 29 / span 13;
+}
+
+[data-map='COSGN00'] .signon__row > input {
+  grid-column: 43 / span 8;
+}
+
+[data-map='COSGN00'] .signon__row > span {
+  grid-column: 52 / span 8;
+}
+
+[data-map='COSGN00'] .signon__row:first-of-type {
+  grid-row: 16;
+}
+
+[data-map='COSGN00'] .signon__row:last-of-type {
+  grid-row: 17;
+}
+
+/* ------------------------------------------------------------------ */
+/* COMEN01 / COADM01 -- main and admin menus (CM00 / CA00)            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * POS=(4,35) 'Main Menu' / POS=(4,35) 'Admin Menu'. The heading stood at column 1.
+ */
+[data-map='COMEN01'] .screen__body > h3,
+[data-map='COADM01'] .screen__body > h3 {
+  grid-row: 2;
+  grid-column: 35 / span 12;
+}
+
+/*
+ * POS=(6,20)..POS=(17,20) OPTN001..OPTN012, LENGTH=40 each: twelve consecutive rows
+ * starting at column 20, with row 5 left blank between the heading and the first option.
+ * The list began at column 1 and its rows collapsed to the height of their text.
+ */
+[data-map='COMEN01'] .screen__body > [role='list'],
+[data-map='COADM01'] .screen__body > [role='list'] {
+  grid-row: 4 / span 12;
+  grid-column: 20 / span 40;
+}
+
+/*
+ * POS=(20,15) 'Please select an option :' LENGTH=25 and POS=(20,41) OPTION LENGTH=2,
+ * with rows 18 and 19 blank above them.
+ */
+[data-map='COMEN01'] .screen__body > form,
+[data-map='COADM01'] .screen__body > form {
+  grid-row: 18;
+  grid-column: 15 / span 28;
+  /*
+   * The caption and its two-character field are ONE map row. The form was
+   * `display: block`, so they stacked and the field landed on row 21 -- outside the
+   * region, 8px past the bottom of the body. One blank column separates them
+   * (`POS=(20,15) LENGTH=25` ends at column 39, `POS=(20,41)` begins at 41), which is
+   * exactly one `1ch` gap.
+   */
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  column-gap: 1ch;
+}
+
+/* ------------------------------------------------------------------ */
+/* COACTVW / COACTUP -- account view and update (CAVW / CAUP)          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Both maps open at POS=(4,1) and run to row 20, then place their message on 22. Their
+ * search row and their detail block are placed on the map's own rows; the paired
+ * caption/field rows inside the block are one map row each through the
+ * `grid-auto-rows` rule above.
+ */
+[data-map='COACTUP'] .screen__body > form > .accountUpdate__row:first-child {
+  grid-row: 2;
+}
+
+/*
+ * COACTVW, region by region. Its two detail blocks were BOTH placed at
+ * `grid-row: 3 / span 17`, so the account block and the customer block occupied the same
+ * grid area and painted over each other -- nine measured text-over-text collisions at
+ * every viewport (the SSN over `Active Y/N:`, `Hayden` under `Expiry:`, `+ 3,175.00` over
+ * `Pfannerstill`, `+ .00` over `Country`/`USA`) -- and the `Customer Details` heading was
+ * pushed BELOW both of them to row 20. Each block now spans exactly the rows its own
+ * fields declare: `OutputField` already carries every field's `row`, `labelCol` and
+ * `valueCol`, and `.accountView__field { display: contents }` hands that placement to the
+ * block's own 80-column grid, so only the block's OUTER row span was ever wrong.
+ *
+ *   map row  4  'View Account' POS=(4,33) LENGTH=12          -> row 2
+ *   map row  5  'Account Number :' POS=(5,19) + ACCTSID(5,38) -> row 3, columns 19-48
+ *   map rows 5-10   block 1, six inner rows (Active Y/N .. Current Cycle Debit)
+ *   map row  11 'Customer Details' POS=(11,32) LENGTH=16      -> row 9
+ *   map rows 12-20  block 2, nine inner rows (Customer id .. Primary Card Holder Y/N)
+ *
+ * Block 1 spans row 3 as well, because map row 5 carries BOTH the keyed account number
+ * and `Active Y/N:`. The two share the row without colliding: the search form is narrowed
+ * to the columns its own two fields occupy (19-48) and the block paints nothing left of
+ * column 57 on that row.
+ */
+[data-map='COACTVW'] .accountView > h3 {
+  grid-row: 2;
+  grid-column: 33 / span 12;
+}
+
+/*
+ * Row only. The form is ALREADY an 80-column grid of its own, with
+ * `POS=(5,19) 'Account Number :'` and `POS=(5,38) ACCTSID` stated on it, so its box must
+ * keep the full eighty columns. Narrowing it to columns 19-48 left its internal
+ * `repeat(80, 1ch)` tracks overflowing the box, which put the entry field at column 56
+ * instead of 38 -- directly underneath the `Active Y/N:` caption at column 57. The two
+ * overprinted each other into an illegible pile, and because the caption painted last it
+ * also SWALLOWED THE CLICK: `document.elementFromPoint` at the field's centre returned
+ * `dt#acct-active-status-label`, so the account number could not be keyed by pointer at
+ * all.
+ */
+[data-map='COACTVW'] .accountView__search {
+  grid-row: 3;
+}
+
+[data-map='COACTVW'] .accountView__details:nth-of-type(1) {
+  grid-row: 3 / span 6;
+  grid-column: 1 / -1;
+}
+
+/*
+ * Map row 5 carries BOTH the keyed account number and `Active Y/N:`, so the search form and
+ * the first detail block share grid row 3 -- and the block, being later in document order
+ * with no stacking context of its own, won the hit test across its whole six-row band. Its
+ * boxes are transparent, so the screen LOOKED right while `input#acctsid` was completely
+ * unreachable by pointer: `document.elementFromPoint` returned `dl.accountView__details` at
+ * every point of the field, a click BLURRED it, and the empty submit answered
+ * `Account Filter must  be a non-zero 11 digit number`. The block is a layout container
+ * with nothing of its own to click, so it takes itself out of hit testing and hands it back
+ * to the terms and values that actually carry text -- which keeps them selectable.
+ */
+[data-map='COACTVW'] .accountView__details {
+  pointer-events: none;
+}
+
+[data-map='COACTVW'] .accountView__details dt,
+[data-map='COACTVW'] .accountView__details dd {
+  pointer-events: auto;
+}
+
+[data-map='COACTVW'] .accountView > h4 {
+  grid-row: 9;
+  grid-column: 32 / span 16;
+}
+
+[data-map='COACTVW'] .accountView__details:nth-of-type(2) {
+  grid-row: 10 / span 9;
+  grid-column: 1 / -1;
+}
+
+[data-map='COACTUP'] .accountUpdate {
+  grid-row: 3 / span 17;
+  grid-column: 1 / -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Screen titles that the mapset centres on row 4                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * POS=(4,30) on COTRN00 / COTRN01 / COTRN02 / CORPT00, POS=(4,35) on COBIL00 / COUSR00 /
+ * COUSR01 / COUSR02 / COUSR03. Each is the screen's own BRT title literal, and each stood
+ * at column 1.
+ */
+[data-map='COTRN00'] .screen__body > .screenTitleLine,
+[data-map='COTRN01'] .screen__body > .screenTitle,
+[data-map='COTRN02'] .screen__body > .screenTitle,
+[data-map='CORPT00'] .reportPage__heading {
+  grid-row: 2;
+  grid-column: 30 / span 22;
+}
+
+[data-map='COBIL00'] .screen__body > .screenTitle,
+[data-map='COUSR00'] .screen__body > .screenTitleLine,
+[data-map='COUSR01'] .screen__body > .screenTitle,
+[data-map='COUSR02'] .screen__body > .screenTitle,
+[data-map='COUSR03'] .screen__body > .screenTitle {
+  grid-row: 2;
+  grid-column: 35 / span 20;
+}
+
+/* ------------------------------------------------------------------ */
+/* Body blocks indented to the column their mapset declares           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Each of these screens states its leftmost body field at the column named in the
+ * comment, and the region below it holds the rest of the map's rows. The value is the
+ * minimum `POS` column across that mapset's body rows, so no field is placed left of
+ * where the map puts it.
+ */
+
+/*
+ * COCRDSL: leftmost body field at POS=(7,4); the heading and the info line state their own
+ * columns below.
+ */
+[data-map='COCRDSL'] .screen__body > section > * {
+  grid-column: 4 / -1;
+}
+
+/*
+ * The three browse bodies keep the full eighty columns and place their own regions, because
+ * their search rows and their table start at DIFFERENT columns -- COCRDLI states its
+ * filters at column 22 and its table at column 10 -- and narrowing the body to the
+ * leftmost of the two leaves everything inside it measured from the wrong origin.
+ */
+[data-map='COCRDLI'] .cardList__body,
+[data-map='COTRN00'] .tranList__body,
+[data-map='COUSR00'] .userList__body {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  align-content: start;
+  column-gap: 0;
+  row-gap: 0;
+}
+
+/* COBIL00 / COTRN01 / COTRN02 / COUSR01 / COUSR02 / COUSR03: POS=(r,6). */
+[data-map='COBIL00'] .billPay__row,
+[data-map='COTRN01'] .tranViewPage > dl,
+[data-map='COTRN01'] .tranViewPage > .screenLine,
+[data-map='COTRN02'] .tranAdd__row,
+[data-map='COTRN02'] .tranAdd__group,
+[data-map='COUSR01'] .userAdd__row,
+[data-map='COUSR02'] .userUpdate__row,
+[data-map='COUSR03'] .userDelete__row {
+  grid-column: 6 / -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* CORPT00 — every enterable row of the report-request map            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * This map leaves BLANK ROWS between its selectors (rows 7, 9 and 11) and between the
+ * date range and the confirmation (rows 13-14, then 19), so its rows are placed
+ * explicitly rather than stacked one after another. The two wrappers the markup groups
+ * them in become 80-column grids of their own, spanning the body's full width, so a row
+ * inside one still lands on the mapset's column.
+ *
+ * Body row r of the mapset is grid row r-2, because `.screen__body` begins at map row 3.
+ */
+
+/* The three selectors: rows 7, 9 and 11, field at column 10, caption at column 15. */
+[data-map='CORPT00'] .reportPage__types {
+  grid-row: 5 / span 5;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: var(--term-line);
+}
+
+/*
+ * Each selector row is its own 80-column grid so the caption lands on the column the
+ * mapset gives it. Flowed beside its field the caption started at column 12 -- the column
+ * of the zero-length ASKIP stopper field between them -- while `POS=(7,15)`, `POS=(9,15)`
+ * and `POS=(11,15)` all declare column 15.
+ */
+[data-map='CORPT00'] .reportPage__option {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  column-gap: 0;
+  row-gap: 0;
+  align-items: baseline;
+}
+
+[data-map='CORPT00'] .reportPage__option > input {
+  grid-column: 10 / span 1;
+}
+
+[data-map='CORPT00'] .reportPage__option > label {
+  grid-column: 15 / span 23;
+}
+
+[data-map='CORPT00'] .reportPage__option:nth-child(1) {
+  grid-row: 1;
+}
+
+[data-map='CORPT00'] .reportPage__option:nth-child(2) {
+  grid-row: 3;
+}
+
+[data-map='CORPT00'] .reportPage__option:nth-child(3) {
+  grid-row: 5;
+}
+
+/* The date range: rows 13 and 14, both captions at column 15. */
+[data-map='CORPT00'] .reportPage__range {
+  grid-row: 11 / span 2;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: var(--term-line);
+}
+
+[data-map='CORPT00'] .reportPage__dateRow {
+  grid-column: 15 / -1;
+}
+
+/* The confirmation prompt: row 19, caption at column 6. */
+[data-map='CORPT00'] .reportPage__confirm {
+  grid-row: 17;
+  grid-column: 6 / -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* COTRN02 -- the amount row and the format literals below it         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Row 14 flows: the three caption/field pairs occupy 64 columns from column 6, ending on
+ * column 69 against the mapset's 77, so the shared `grid-column: 6 / -1` indent above is
+ * enough and no pair needs its own column.
+ *
+ * Row 15 does NOT flow. Its three literals stand under the FIELDS rather than under the
+ * captions -- `POS=(15,13)`, `POS=(15,41)`, `POS=(15,67)` against fields at columns 14,
+ * 42 and 68 -- so the row is an 80-column grid and each literal is placed.
+ */
+/*
+ * Stated ahead of the shared `grid-column: 6 / -1` indent this row would otherwise
+ * inherit: the row is its own 80-column grid, and narrowing it to columns 6-80 would
+ * squeeze those eighty columns into seventy-five and move all three literals left.
+ */
+[data-map='COTRN02'] .tranAdd__amountHints {
+  grid-column: 1 / -1;
+}
+
+.tranAdd__amountHints {
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  column-gap: 0;
+  row-gap: 0;
+  align-items: baseline;
+}
+
+/*
+ * `(YYYY-MM-DD)` is twelve characters in a twelve-column span, and Chrome rounds each of
+ * the eighty tracks down to 1/64px -- leaving the span fractionally narrower than its own
+ * text and costing the row a second line. A BMS literal does not wrap.
+ */
+.tranAdd__amountHints > * {
+  white-space: pre;
+}
+
+.tranAdd__amountHints > *:nth-child(1) {
+  grid-column: 13 / span 14;
+}
+
+.tranAdd__amountHints > *:nth-child(2) {
+  grid-column: 41 / span 12;
+}
+
+.tranAdd__amountHints > *:nth-child(3) {
+  grid-column: 67 / span 12;
+}
+
+/* ------------------------------------------------------------------ */
+/* COACTUP -- the customer name pair of rows                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Map row 14 carries the three captions and row 15 the three `PIC X(25)` fields, both at
+ * columns 1, 28 and 55:
+ *   row 14  POS=(14,1) 'First Name'  POS=(14,28) 'Middle Name: '  POS=(14,55) 'Last Name : '
+ *   row 15  POS=(15,1) ACSFNAM/25    POS=(15,28) ACSMNAM/25       POS=(15,55) ACSLNAM/25
+ * Flow alone would place the second and third pair at columns 27 and 53, because a single
+ * blank column separates flowed items while this map leaves two, so the three columns are
+ * stated here. Both rows are 80-column grids of their own for that.
+ */
+.accountUpdate__nameCaptions,
+.accountUpdate__nameFields {
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  /*
+   * MUST be zero. Both rows also carry `.accountUpdate__row`, whose flex layout declares
+   * `column-gap: 1ch` -- and a gap on an 80-track grid is applied 79 times, doubling the
+   * column pitch to 2ch. The row then measured 2455px of columns inside a 1236px region,
+   * which placed the third field (`input#custLastName`, holding the customer's surname)
+   * 447px beyond the right edge of the frame: invisible, un-hittable
+   * (`document.elementFromPoint` returned null) and therefore un-editable, on a screen
+   * whose ENTER rewrites the CUSTOMER record.
+   */
+  column-gap: 0;
+  row-gap: 0;
+  align-items: baseline;
+}
+
+.accountUpdate__nameCaptions > *:nth-child(1),
+.accountUpdate__nameFields > *:nth-child(1) {
+  grid-column: 1 / span 27;
+}
+
+.accountUpdate__nameCaptions > *:nth-child(2),
+.accountUpdate__nameFields > *:nth-child(2) {
+  grid-column: 28 / span 27;
+}
+
+.accountUpdate__nameCaptions > *:nth-child(3),
+.accountUpdate__nameFields > *:nth-child(3) {
+  grid-column: 55 / span 26;
+}
+
+/* ------------------------------------------------------------------ */
+/* The remaining mapsets, region by region and row by row             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Body grid row r is map row r+2 on every mapset in this section (their headers are two
+ * rows), and each `grid-column` is the region's own `POS` column. Every number below is
+ * quoted from app/bms/<mapset>.bms alongside the rule.
+ *
+ * The four screens carrying a decorative literal rule -- COBIL00, COTRN01, COUSR02,
+ * COUSR03, all `LENGTH=70` at `POS=(8,6)` -- also drop the `margin-top: var(--term-line)`
+ * that index.css uses to reserve the blank row above it. With the rule placed on its own
+ * grid row the blank row is inherent, and the margin would push it one row further down.
+ */
+
+/* ---------------- COBIL00 (transaction CB00) ---------------- */
+/*  r4  c35 L12 'Bill Payment'
+ *  r6  c6  L14 'Enter Acct ID:' + c21 L11 ACTIDIN
+ *  r8  c6  L70 rule
+ *  r11 c6  L25 'Your current balance is:' + c32 L14 CURBAL
+ *  r15 c6  L53 'Do you want to pay...' + c60 L1 CONFIRM + c63 L5 '(Y/N)'
+ */
+[data-map='COBIL00'] .billPay > *:nth-child(1) {
+  grid-row: 2;
+  grid-column: 35 / span 12;
+}
+
+[data-map='COBIL00'] .billPay > *:nth-child(2) {
+  grid-row: 4;
+}
+
+[data-map='COBIL00'] .billPay > *:nth-child(3) {
+  grid-row: 6;
+  grid-column: 6 / span 70;
+  margin-top: 0;
+}
+
+[data-map='COBIL00'] .billPay > *:nth-child(4) {
+  grid-row: 9;
+}
+
+[data-map='COBIL00'] .billPay > *:nth-child(5) {
+  grid-row: 13;
+}
+
+/* ---------------- COTRN01 (transaction CT01) ---------------- */
+/*  r4  c30 L16 'View Transaction'
+ *  r6  c6  L14 'Enter Tran ID:' + c21 L16 TRNIDIN
+ *  r8  c6  L70 rule
+ *  r10 r12 r14 r16 r18 r20  the six detail rows, all from column 6
+ */
+[data-map='COTRN01'] .tranViewPage > *:nth-child(1) {
+  grid-row: 2;
+  grid-column: 30 / span 16;
+}
+
+[data-map='COTRN01'] .tranViewPage > *:nth-child(2) {
+  grid-row: 4;
+}
+
+[data-map='COTRN01'] .tranViewPage > *:nth-child(3) {
+  grid-row: 6;
+  grid-column: 6 / span 70;
+  margin-top: 0;
+}
+
+[data-map='COTRN01'] .tranViewPage > *:nth-child(4) {
+  grid-row: 8;
+}
+
+[data-map='COTRN01'] .tranViewPage > *:nth-child(5) {
+  grid-row: 10;
+}
+
+[data-map='COTRN01'] .tranViewPage > *:nth-child(6) {
+  grid-row: 12;
+}
+
+[data-map='COTRN01'] .tranViewPage > *:nth-child(7) {
+  grid-row: 14;
+}
+
+[data-map='COTRN01'] .tranViewPage > *:nth-child(8) {
+  grid-row: 16;
+}
+
+[data-map='COTRN01'] .tranViewPage > *:nth-child(9) {
+  grid-row: 18;
+}
+
+/* ---------------- COUSR01 (transaction CU01) ---------------- */
+/*  r4  c35 L9  'Add User'
+ *  r8  c6  First Name / Last Name      r11 c6  User ID / Password
+ *  r14 c6  User Type
+ */
+[data-map='COUSR01'] .userAdd__screen > *:nth-child(1) {
+  grid-row: 2;
+  grid-column: 35 / span 9;
+}
+
+[data-map='COUSR01'] .userAdd__screen > .userAdd {
+  grid-row: 6 / span 7;
+}
+
+[data-map='COUSR01'] .userAdd > .userAdd__row:nth-of-type(1) {
+  grid-row: 1;
+}
+
+[data-map='COUSR01'] .userAdd > .userAdd__row:nth-of-type(2) {
+  grid-row: 4;
+}
+
+[data-map='COUSR01'] .userAdd > .userAdd__row:nth-of-type(3) {
+  grid-row: 7;
+}
+
+/* ---------------- COUSR02 (transaction CU02) ---------------- */
+/*  r4  c35 L11 'Update User'      r6  c6 L14 'Enter User ID:' + c21 L8 USRIDIN
+ *  r8  c6  L70 rule               r11 c6  name row
+ *  r13 c6  password row           r15 c6  user-type row
+ */
+[data-map='COUSR02'] .userUpdate > *:nth-child(1) {
+  grid-row: 2;
+  grid-column: 35 / span 11;
+}
+
+[data-map='COUSR02'] .userUpdate > .userUpdate__form {
+  grid-row: 4 / span 10;
+  /*
+   * MUST restate the full eighty columns AND span them. This wrapper is the only
+   * intermediate level any of the four user screens has -- COUSR00/01/03 place their rows
+   * as direct children of the screen's own grid -- so without a template of its own its
+   * children resolved `grid-column: 6 / span 70` against a grid with NO explicit columns:
+   * `-1` collapsed onto line 1, every labelled row rendered on column 1 instead of the
+   * mapset's column 6, and the `LENGTH=70` rule at POS=(8,6) started on column 65 and was
+   * clipped by `overflow: hidden` to about sixteen of its seventy asterisks. The control is
+   * `/users/delete`, whose byte-identical rule renders correctly.
+   */
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  align-content: start;
+  column-gap: 0;
+  row-gap: 0;
+}
+
+[data-map='COUSR02'] .userUpdate__form > *:nth-child(1) {
+  grid-row: 1;
+}
+
+[data-map='COUSR02'] .userUpdate__form > *:nth-child(2) {
+  grid-row: 3;
+  grid-column: 6 / span 70;
+  margin-top: 0;
+}
+
+[data-map='COUSR02'] .userUpdate__form > *:nth-child(3) {
+  grid-row: 6;
+}
+
+[data-map='COUSR02'] .userUpdate__form > *:nth-child(4) {
+  grid-row: 8;
+}
+
+[data-map='COUSR02'] .userUpdate__form > *:nth-child(5) {
+  grid-row: 10;
+}
+
+/* ---------------- COUSR03 (transaction CU03) ---------------- */
+/*  r4  c35 L11 'Delete User'      r6  c6 L14 'Enter User ID:' + c21 L8 USRIDIN
+ *  r8  c6  L70 rule               r11 c18 FNAME   r13 c6 'Last Name:' + c18 LNAME
+ *  r15 c6  'User Type:' + c17 USRTYPE + c19 '(A=Admin, U=User)'
+ */
+[data-map='COUSR03'] .userDelete > *:nth-child(1) {
+  grid-row: 2;
+  grid-column: 35 / span 11;
+}
+
+[data-map='COUSR03'] .userDelete > .userDelete__lookup {
+  grid-row: 4;
+  grid-column: 6 / -1;
+}
+
+[data-map='COUSR03'] .userDelete > .userDelete__rule {
+  grid-row: 6;
+  grid-column: 6 / span 70;
+  margin-top: 0;
+}
+
+[data-map='COUSR03'] .userDelete > .userDelete__detail {
+  grid-row: 9 / span 5;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  align-content: start;
+  column-gap: 0;
+  row-gap: 0;
+}
+
+[data-map='COUSR03'] .userDelete__detail > *:nth-child(1) {
+  grid-row: 1;
+  grid-column: 6 / -1;
+}
+
+[data-map='COUSR03'] .userDelete__detail > *:nth-child(2) {
+  grid-row: 3;
+  grid-column: 6 / -1;
+}
+
+[data-map='COUSR03'] .userDelete__detail > *:nth-child(3) {
+  grid-row: 5;
+  grid-column: 6 / -1;
+}
+
+/* ---------------- COCRDSL (transaction CCDL) ---------------- */
+/*  r4  c30 L23 'View Credit Card Details'
+ *  r7  c23 L19 'Account Number' + c45 L11 ACCTSID
+ *  r8  c23 L19 'Card Number'    + c45 L16 CARDSID
+ *  r11 c4  L20 'Name on card'   + c25 L50 CRDNAME
+ *  r13 c4  L20 'Card Active Y/N' + c25 L1 CRDSTCD
+ *  r15 c4  L20 'Expiry Date'    + c25 EXPMON / c30 EXPYEAR
+ *  r20 c25 L40 INFOMSG
+ */
+[data-map='COCRDSL'] .screen__body > section > *:nth-child(1) {
+  grid-row: 2;
+  grid-column: 30 / span 23;
+}
+
+[data-map='COCRDSL'] .screen__body > section > form {
+  grid-row: 5 / span 2;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  align-content: start;
+  column-gap: 0;
+  row-gap: 0;
+}
+
+[data-map='COCRDSL'] .screen__body > section > form > * {
+  grid-column: 23 / -1;
+}
+
+[data-map='COCRDSL'] .screen__body > section > dl {
+  grid-row: 9 / span 7;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  align-content: start;
+  column-gap: 0;
+  row-gap: 0;
+}
+
+[data-map='COCRDSL'] .screen__body > section > dl > *:nth-child(1) {
+  grid-row: 1;
+  /*
+   * Full width, NOT column 4. This wrapper is a row of the map, and its own `dt` and
+   * `dd` carry the mapset columns (4 and 25) against the eighty tracks it restates
+   * below. Offsetting the wrapper as well applied column 4 twice -- the captions
+   * measured on column 7 and the values on 28 -- and pushed eighty cells of tracks
+   * three cells past the region, which is what made the body scroll horizontally.
+   * This `:nth-child` selector outranks the shared `dl > *` rule, so it has to say so.
+   */
+  grid-column: 1 / -1;
+}
+
+[data-map='COCRDSL'] .screen__body > section > dl > *:nth-child(2) {
+  grid-row: 3;
+  /*
+   * Full width, NOT column 4. This wrapper is a row of the map, and its own `dt` and
+   * `dd` carry the mapset columns (4 and 25) against the eighty tracks it restates
+   * below. Offsetting the wrapper as well applied column 4 twice -- the captions
+   * measured on column 7 and the values on 28 -- and pushed eighty cells of tracks
+   * three cells past the region, which is what made the body scroll horizontally.
+   * This `:nth-child` selector outranks the shared `dl > *` rule, so it has to say so.
+   */
+  grid-column: 1 / -1;
+}
+
+[data-map='COCRDSL'] .screen__body > section > dl > *:nth-child(3) {
+  grid-row: 5;
+  /*
+   * Full width, NOT column 4. This wrapper is a row of the map, and its own `dt` and
+   * `dd` carry the mapset columns (4 and 25) against the eighty tracks it restates
+   * below. Offsetting the wrapper as well applied column 4 twice -- the captions
+   * measured on column 7 and the values on 28 -- and pushed eighty cells of tracks
+   * three cells past the region, which is what made the body scroll horizontally.
+   * This `:nth-child` selector outranks the shared `dl > *` rule, so it has to say so.
+   */
+  grid-column: 1 / -1;
+}
+
+[data-map='COCRDSL'] .screen__body > section > p {
+  grid-row: 18;
+  grid-column: 25 / span 40;
+}
+
+/* ---------------- COCRDUP (transaction CCUP) ---------------- */
+/*
+ * Same field coordinates as COCRDSL, with EXPDAY added at r15 c36 and the line-24 legend
+ * split into FKEYS/FKEYSC. The page's root is a two-column caption/field grid of its own,
+ * which is replaced here by the map's eighty columns: on the two-column grid every caption
+ * and value took a row of its own, so the six pairs occupied twelve rows and the heading
+ * was pushed to the right-hand column.
+ */
+[data-map='COCRDUP'] .cardUpdate {
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  align-content: start;
+  column-gap: 0;
+  row-gap: 0;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__heading {
+  grid-row: 2;
+  grid-column: 30 / span 26;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__keys,
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__protected {
+  grid-row: 5 / span 2;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  align-content: start;
+  column-gap: 0;
+  row-gap: 0;
+}
+
+[data-map='COCRDUP'] .cardUpdate__keys > .cardUpdate__label,
+[data-map='COCRDUP'] .cardUpdate__protected dt {
+  grid-column: 23 / span 19;
+}
+
+[data-map='COCRDUP'] .cardUpdate__keys > .cardUpdate__value,
+[data-map='COCRDUP'] .cardUpdate__protected dd {
+  grid-column: 45 / -1;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__label:nth-of-type(1) {
+  grid-row: 9;
+  grid-column: 4 / span 20;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__value:nth-of-type(1) {
+  grid-row: 9;
+  grid-column: 25 / -1;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__label:nth-of-type(2) {
+  grid-row: 11;
+  grid-column: 4 / span 20;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__value:nth-of-type(2) {
+  grid-row: 11;
+  grid-column: 25 / -1;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__label:nth-of-type(3) {
+  grid-row: 13;
+  grid-column: 4 / span 20;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__value:nth-of-type(3) {
+  grid-row: 13;
+  grid-column: 25 / -1;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__infoMsg {
+  grid-row: 18;
+  grid-column: 25 / span 40;
+}
+
+/* ---------------- COCRDLI (transaction CCLI) ---------------- */
+/*  r4  c31 L17 'List Credit Cards' + c70 L5 'Page ' + c76 L3 PAGENO
+ *  r6  c22 L19 'Account Number' + c44 L11 ACCTSID
+ *  r7  c22 L19 'Credit Card Number' + c44 L16 CARDSID
+ *  r9  c10 column headings   r10 c10 the dashed rule   r11-17 the seven rows
+ *  r20 c19 L45 INFOMSG
+ */
+[data-map='COCRDLI'] .screen__body > section > .screenTitleLine {
+  grid-row: 2;
+}
+
+[data-map='COCRDLI'] .screen__body > section > .cardList__body {
+  grid-row: 4 / span 15;
+}
+
+[data-map='COCRDLI'] .cardList__body > .cardList__search:nth-of-type(1) {
+  grid-row: 1;
+  grid-column: 22 / -1;
+}
+
+[data-map='COCRDLI'] .cardList__body > .cardList__search:nth-of-type(2) {
+  grid-row: 2;
+  grid-column: 22 / -1;
+}
+
+[data-map='COCRDLI'] .cardList__body > .tableScroll {
+  grid-row: 5 / span 9;
+  grid-column: 10 / -1;
+}
+
+[data-map='COCRDLI'] .cardList__body > .cardList__infoMsg {
+  grid-row: 15;
+  grid-column: 19 / span 45;
+}
+
+/* ---------------- COTRN00 (transaction CT00) ---------------- */
+/*  r4  c30 L17 'List Transactions' + c65 L5 'Page:' + c71 L8 PAGENUM
+ *  r6  c5  L15 'Search Tran ID:' + c21 L16 TRNIDIN
+ *  r8  c2  column headings   r9 c2 the dashed rule   r10-19 the ten rows
+ *  r21 c12 L50 the selection hint
+ */
+[data-map='COTRN00'] .screen__body > .tranList > .screenTitleLine {
+  grid-row: 2;
+}
+
+[data-map='COTRN00'] .screen__body > .tranList > .tranList__body {
+  grid-row: 4 / span 14;
+}
+
+[data-map='COTRN00'] .tranList__body > .tranListSearch {
+  grid-row: 1;
+  grid-column: 5 / -1;
+}
+
+[data-map='COTRN00'] .tranList__body > .tableScroll {
+  grid-row: 3 / span 12;
+  grid-column: 2 / -1;
+}
+
+[data-map='COTRN00'] .screen__body > .tranList > .screenNote {
+  grid-row: 19;
+  grid-column: 12 / span 50;
+}
+
+/* ---------------- COUSR00 (transaction CU00) ---------------- */
+/*  r4  c35 L10 'List Users' + c65 L5 'Page:' + c71 L8 PAGENUM
+ *  r6  c5  L15 'Search User ID:' + c21 L8 USRIDIN
+ *  r8  c5  column headings   r9 c5 the dashed rule   r10-19 the ten rows
+ *  r21 c12 L56 the selection hint
+ */
+[data-map='COUSR00'] .screen__body > section > .screenTitleLine {
+  grid-row: 2;
+}
+
+[data-map='COUSR00'] .screen__body > section > .userList__body {
+  grid-row: 4 / span 16;
+}
+
+[data-map='COUSR00'] .userList__body > .userListSearch {
+  grid-row: 1;
+  grid-column: 5 / -1;
+}
+
+[data-map='COUSR00'] .userList__body > .tableScroll {
+  grid-row: 3 / span 12;
+  grid-column: 5 / -1;
+}
+
+[data-map='COUSR00'] .userList__body > .screenNote {
+  grid-row: 16;
+  grid-column: 12 / span 56;
+}
+
+/* ------------------------------------------------------------------ */
+/* Legacy flow indents the placement layer supersedes                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * index.css indents these regions with `padding-left`, which is how a screen laid out in
+ * normal flow reached the column its mapset declares. Each is now PLACED on that column,
+ * and the padding is applied on top of the placement -- so the region's box is on the
+ * right column while its TEXT is 5 to 29 cells to the right of it. It is invisible to a
+ * probe that measures boxes, and on the sign-on rows it was worse than cosmetic: the
+ * 28-cell padding shifted the row's own eighty tracks, so its three placed children came
+ * out at columns 57 / 71 / 80 instead of 29 / 43 / 52, put the `(8 Char)` literal outside
+ * the frame where it was clipped mid-word, and left the body horizontally scrollable at
+ * every viewport.
+ */
+.signon__description,
+.signon__note,
+.signon__prompt,
+.signon__row,
+.cardDetail__heading,
+.cardUpdate__heading,
+.cardDetail__infoMsg,
+.cardUpdate__infoMsg,
+.cardList__infoMsg {
+  padding-left: 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* The three browse tables, column by column                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A browse table's columns are the mapset's columns. The `<colgroup>` widths are the
+ * mapset's own column PITCH (the distance from one dashed rule to the next), so every
+ * column begins on the column its mapset gives it, and the cell padding is removed so a
+ * cell's content begins at the cell's own left edge rather than one cell inside it.
+ *
+ * Each column then states the offset its mapset puts between the column origin and the
+ * three things the column carries -- the row-8/9 heading literal, the row-9/10 dashed rule
+ * and the row-10+ field -- because the mapset does not put them all on the same column.
+ * `COTRN00` row 8 spells its heading `'     Descripti...'` with five leading spaces
+ * against a rule that starts at column 38, and `COCRDLI` places `CRDSEL1` at column 12
+ * inside a column whose rule starts at column 10. Every number below is the mapset's own
+ * arithmetic, quoted beside the rule.
+ */
+.dataTable--fixed th,
+.dataTable--fixed td,
+.dataTable--fixed .dataTable__rule td {
+  padding: 0;
+}
+
+/* ---- COTRN00: rules at c2 c8 c27 c38 c67; fields at c3 c8 c27 c38 c67 ---- */
+/*      headings 'Sel' c2, ' Transaction I' c8, '  Date   ' c27,
+ *               '     Descripti' c38, '   Amount   ' c67                     */
+[data-map='COTRN00'] .dataTable--fixed thead th:nth-child(2) {
+  padding-left: 1ch;
+}
+
+[data-map='COTRN00'] .dataTable--fixed thead th:nth-child(3) {
+  padding-left: 2ch;
+}
+
+[data-map='COTRN00'] .dataTable--fixed thead th:nth-child(4) {
+  padding-left: 5ch;
+}
+
+[data-map='COTRN00'] .dataTable--fixed thead th:nth-child(5) {
+  padding-left: 3ch;
+}
+
+[data-map='COTRN00'] .dataTable--fixed tbody td:nth-child(1) {
+  padding-left: 1ch;
+}
+
+/* ---- COUSR00: rules at c5 c12 c24 c48 c72; fields at c6 c12 c24 c48 c73 ---- */
+/*      headings 'Sel' c5, 'User ID  ' c12, '     First Nam' c24,
+ *               '     Last Name' c48, 'Type' c72                              */
+[data-map='COUSR00'] .dataTable--fixed thead th:nth-child(3),
+[data-map='COUSR00'] .dataTable--fixed thead th:nth-child(4) {
+  padding-left: 5ch;
+}
+
+[data-map='COUSR00'] .dataTable--fixed tbody td:nth-child(1),
+[data-map='COUSR00'] .dataTable--fixed tbody td:nth-child(5) {
+  padding-left: 1ch;
+}
+
+/* ---- COCRDLI: rules at c10 c20 c43 c65; fields at c12 c22 c43 c67 ---- */
+/*      headings 'Select     ' c10, 'Account Number' c21,
+ *               ' Card Number  ' c45, 'Active ' c66                     */
+[data-map='COCRDLI'] .dataTable--fixed thead th:nth-child(2) {
+  padding-left: 1ch;
+}
+
+[data-map='COCRDLI'] .dataTable--fixed thead th:nth-child(3) {
+  padding-left: 3ch;
+}
+
+[data-map='COCRDLI'] .dataTable--fixed thead th:nth-child(4) {
+  padding-left: 1ch;
+}
+
+[data-map='COCRDLI'] .dataTable--fixed tbody td:nth-child(1),
+[data-map='COCRDLI'] .dataTable--fixed tbody td:nth-child(2),
+[data-map='COCRDLI'] .dataTable--fixed tbody td:nth-child(4) {
+  padding-left: 2ch;
+}
+
+/* ------------------------------------------------------------------ */
+/* The attribute-byte column on the two card screens                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A 3270 field is preceded by an attribute byte that occupies the character position
+ * BEFORE its `POS`. Both card screens render that position as a one-cell marker span --
+ * `.cardUpdate__marker` and `.blankMarkerSlot`, the migration's substitute for the device's
+ * own field indicator -- so the marker stands on `POS - 1` and the field's first character
+ * on `POS`. Placing the pair from `POS` instead pushed every value one cell right on
+ * COCRDUP and, on COCRDSL, left the flowed marker one cell left of where it belongs. Both
+ * screens declare the same field coordinates (`app/bms/COCRDSL.bms`, `app/bms/COCRDUP.bms`)
+ * and now render them identically.
+ */
+
+/* COCRDSL: keys `POS=(7,45)` / `POS=(8,45)`, details `POS=(11,25)` / `(13,25)` / `(15,25)`. */
+[data-map='COCRDSL'] .screen__body > section > form > * {
+  /*
+   * MUST restate the full eighty columns. The wrapper inherited its container's mapset
+   * column (23 on the key rows, 4 on the detail rows) while ALSO declaring eighty tracks
+   * of its own, so every child's column was applied twice: the caption landed on 45
+   * instead of 23 and the entry field on 67 instead of 45, and the 1235px of tracks
+   * starting at column 4 pushed the region 45px past the frame -- which clipped the card
+   * number to `09238771932473` and left the body horizontally scrollable.
+   */
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  column-gap: 0;
+  row-gap: 0;
+  align-items: baseline;
+}
+
+[data-map='COCRDSL'] .screen__body > section > form > * > label {
+  grid-column: 23 / span 19;
+}
+
+[data-map='COCRDSL'] .screen__body > section > form > * > .blankMarkerSlot {
+  grid-column: 44 / span 1;
+}
+
+[data-map='COCRDSL'] .screen__body > section > form > * > input {
+  grid-column: 45 / -1;
+}
+
+[data-map='COCRDSL'] .screen__body > section > dl > * {
+  /* Full eighty columns, for the same reason as the key rows above. */
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  column-gap: 0;
+  row-gap: 0;
+  align-items: baseline;
+}
+
+[data-map='COCRDSL'] .screen__body > section > dl > * > dt {
+  grid-column: 4 / span 20;
+}
+
+[data-map='COCRDSL'] .screen__body > section > dl > * > dd {
+  grid-column: 25 / -1;
+}
+
+/*
+ * COCRDUP: the value group starts one cell before `POS` so its leading marker takes the
+ * attribute-byte column. The expiry group carries four fields of its own, and the mapset
+ * spaces them out -- `EXPMON POS=(15,25) LENGTH=2`, `'/' POS=(15,28)`,
+ * `EXPYEAR POS=(15,30) LENGTH=4` -- leaving column 27 and column 29 to the two attribute
+ * bytes, so that group is placed field by field rather than flowed.
+ */
+[data-map='COCRDUP'] .cardUpdate__keys > .cardUpdate__value {
+  grid-column: 44 / -1;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__value:nth-of-type(1),
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__value:nth-of-type(2) {
+  grid-column: 24 / -1;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__value:nth-of-type(3) {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  column-gap: 0;
+  row-gap: 0;
+  align-items: baseline;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__value:nth-of-type(3) > *:nth-child(1) {
+  grid-column: 24 / span 1;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__value:nth-of-type(3) > *:nth-child(2) {
+  grid-column: 25 / span 2;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__value:nth-of-type(3) > *:nth-child(3) {
+  grid-column: 28 / span 1;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__value:nth-of-type(3) > *:nth-child(4) {
+  grid-column: 29 / span 1;
+}
+
+[data-map='COCRDUP'] .cardUpdate > .cardUpdate__value:nth-of-type(3) > *:nth-child(5) {
+  grid-column: 30 / span 4;
+}
+
+/* ==================================================================== */
+/* Rows whose fields were laid out in NORMAL FLOW                       */
+/* ==================================================================== */
+/*
+ * Six screens place their ROW WRAPPER on a map row and then let the fields inside it
+ * flow, with the single column a 3270 attribute byte occupies supplied by the wrapper's
+ * `column-gap: 1ch` (or, inside `.tranAdd__group`, by a non-breaking space). Flow
+ * reproduces a mapset row EXACTLY wherever consecutive fields are one column apart --
+ * which is why nearly every field on these screens measured on its declared column --
+ * but it cannot reproduce a row where the mapset leaves a DELIBERATE multi-column gap,
+ * and every such row carried its right-hand group left by the width of that gap.
+ * Measured at 1280x900, declared column against rendered column:
+ *
+ *   COTRN01  'Source:'            46 -> 36.02   (-9.98)
+ *   COTRN01  'Proc Date:'         57 -> 49.04   (-7.96)
+ *   COTRN01  'Card Number:'       45 -> 39.03   (-5.97)
+ *   COUSR01  'Password:'          45 -> 33.02  (-11.98)
+ *   COUSR01  'Last Name:'         45 -> 39.03   (-5.97)
+ *   COUSR02  'Last Name:'         45 -> 39.03   (-5.97)
+ *   COUSR03  '(A=Admin, U=User)'  19 -> 20.01   (+1.01)
+ *   COBIL00  '(Y/N)'              63 -> 62.05   (-0.95)
+ *   COTRN02  every field on every row, and every row (see its own section)
+ *
+ * Each affected row therefore becomes its own eighty-column grid and states the column of
+ * every field on it, exactly as `.tranAdd__amountHints` above already does. Two laws apply
+ * to all of them. The row's OWN `grid-column` must become `1 / -1` and not the `6 / -1`
+ * indent the shared rule gives it, or the mapset column is applied twice. And the
+ * `column-gap: 1ch` the flow row carried must be reset to zero, because a gap between
+ * eighty tracks is applied seventy-nine times.
+ *
+ * The third law these rows would need -- a placed literal must not wrap, because Chrome
+ * rounds each track down to 1/64px and a literal of exactly its own LENGTH ends up
+ * fractionally wider than its span -- is already carried for all of them by the
+ * `.screen__body :where(h1..h6, label, dt, dd, .prompt, .label, .title, .neutral)` rule
+ * near the top of this file, so none of them restates it.
+ *
+ * A row whose flow already reproduces its mapset is deliberately left alone. It measured
+ * exact, and rewriting it would be change with no defect behind it.
+ */
+
+/* ---------------- COBIL00 row 15 (transaction CB00) ---------------- */
+/*
+ * POS=(15,6) LENGTH=53 the confirmation literal, POS=(15,60) LENGTH=1 CONFIRM, then
+ * POS=(15,66)... no: POS=(15,63) LENGTH=5 '(Y/N)'. Column 62 is blank -- CONFIRM ends on
+ * column 60 and the literal's own attribute byte takes 62 -- so flow, which leaves exactly
+ * one column, put '(Y/N)' one column left of the mapset.
+ */
+[data-map='COBIL00'] .billPay > .billPay__row:nth-child(5) {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  align-content: start;
+  align-items: baseline;
+  column-gap: 0;
+  row-gap: 0;
+}
+
+[data-map='COBIL00'] .billPay > .billPay__row:nth-child(5) > label {
+  grid-column: 6 / span 53;
+}
+
+[data-map='COBIL00'] .billPay > .billPay__row:nth-child(5) > input {
+  grid-column: 60 / span 1;
+}
+
+[data-map='COBIL00'] .billPay > .billPay__row:nth-child(5) > span {
+  grid-column: 63 / span 5;
+}
+
+/* ---------------- COUSR03 row 15 (transaction CU03) ---------------- */
+/*
+ * POS=(15,6) LENGTH=11 'User Type: ' -- the trailing column is part of the literal and is
+ * rendered, which is why this screen's caption is eleven characters where COUSR01's and
+ * COUSR02's are the trimmed ten -- then POS=(15,17) LENGTH=1 USRTYPE and POS=(15,19)
+ * LENGTH=17 '(A=Admin, U=User)'. The eleventh character plus the row's one-column gap put
+ * the value on column 18 and the hint on column 20. `.userDelete__typeRow` is already
+ * `display: contents`; `.detailField` becomes so too, so the caption and the value are
+ * placed on the row's own grid rather than boxed together inside it.
+ */
+[data-map='COUSR03'] .userDelete__detail > div.userDelete__row:nth-child(3) {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  align-content: start;
+  align-items: baseline;
+  column-gap: 0;
+  row-gap: 0;
+}
+
+[data-map='COUSR03'] .userDelete__detail > div.userDelete__row:nth-child(3) .detailField {
+  display: contents;
+}
+
+[data-map='COUSR03'] .userDelete__detail > div.userDelete__row:nth-child(3) dt,
+[data-map='COUSR03'] .userDelete__detail > div.userDelete__row:nth-child(3) dd,
+[data-map='COUSR03'] .userDelete__detail > div.userDelete__row:nth-child(3) > span {
+  overflow: hidden;
+}
+
+[data-map='COUSR03'] .userDelete__detail > div.userDelete__row:nth-child(3) dt {
+  grid-column: 6 / span 11;
+}
+
+[data-map='COUSR03'] .userDelete__detail > div.userDelete__row:nth-child(3) dd {
+  grid-column: 17 / span 1;
+}
+
+[data-map='COUSR03'] .userDelete__detail > div.userDelete__row:nth-child(3) > span {
+  grid-column: 19 / span 17;
+}
+
+/* ---------------- COUSR02 row 11 (transaction CU02) ---------------- */
+/*
+ * POS=(11,6) LENGTH=11 'First Name:', POS=(11,18) LENGTH=20 FNAME, then a zero-length
+ * ASKIP field at POS=(11,39) and only after it POS=(11,45) LENGTH=10 'Last Name:' with
+ * POS=(11,56) LENGTH=20 LNAME. FNAME ends on column 37, so the mapset leaves columns
+ * 38-44 blank and flow closed that seven-column gap to one.
+ */
+[data-map='COUSR02'] .userUpdate__form > div.userUpdate__row:nth-child(3) {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  align-content: start;
+  align-items: baseline;
+  column-gap: 0;
+  row-gap: 0;
+}
+
+[data-map='COUSR02'] .userUpdate__form > div.userUpdate__row:nth-child(3) > label:nth-of-type(1) {
+  grid-column: 6 / span 11;
+}
+
+[data-map='COUSR02'] .userUpdate__form > div.userUpdate__row:nth-child(3) > input:nth-of-type(1) {
+  grid-column: 18 / span 20;
+}
+
+[data-map='COUSR02'] .userUpdate__form > div.userUpdate__row:nth-child(3) > label:nth-of-type(2) {
+  grid-column: 45 / span 10;
+}
+
+[data-map='COUSR02'] .userUpdate__form > div.userUpdate__row:nth-child(3) > input:nth-of-type(2) {
+  grid-column: 56 / span 20;
+}
+
+/* ---------------- COUSR01 rows 8 and 11 (transaction CU01) ---------------- */
+/*
+ * Row 8 is COUSR02's name row at a different map row: POS=(8,6) LENGTH=11 'First Name:',
+ * POS=(8,18) LENGTH=20 FNAME, POS=(8,45) LENGTH=10 'Last Name:', POS=(8,56) LENGTH=20
+ * LNAME. Row 11 carries two captioned fields AND two '(8 Char)' hints: POS=(11,6)
+ * LENGTH=8 'User ID:', POS=(11,15) LENGTH=8 USERID, POS=(11,24) LENGTH=8 '(8 Char)',
+ * POS=(11,45) LENGTH=9 'Password:', POS=(11,55) LENGTH=8 PASSWD, POS=(11,64) LENGTH=8
+ * '(8 Char)'. Flow closed the twelve blank columns between the first hint and
+ * 'Password:', so the whole password group sat twelve columns left of the mapset.
+ */
+[data-map='COUSR01'] .userAdd > div.userAdd__row:nth-of-type(1),
+[data-map='COUSR01'] .userAdd > div.userAdd__row:nth-of-type(2) {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  align-content: start;
+  align-items: baseline;
+  column-gap: 0;
+  row-gap: 0;
+}
+
+[data-map='COUSR01'] .userAdd > div.userAdd__row:nth-of-type(1) > label:nth-of-type(1) {
+  grid-column: 6 / span 11;
+}
+
+[data-map='COUSR01'] .userAdd > div.userAdd__row:nth-of-type(1) > input:nth-of-type(1) {
+  grid-column: 18 / span 20;
+}
+
+[data-map='COUSR01'] .userAdd > div.userAdd__row:nth-of-type(1) > label:nth-of-type(2) {
+  grid-column: 45 / span 10;
+}
+
+[data-map='COUSR01'] .userAdd > div.userAdd__row:nth-of-type(1) > input:nth-of-type(2) {
+  grid-column: 56 / span 20;
+}
+
+[data-map='COUSR01'] .userAdd > div.userAdd__row:nth-of-type(2) > label:nth-of-type(1) {
+  grid-column: 6 / span 8;
+}
+
+[data-map='COUSR01'] .userAdd > div.userAdd__row:nth-of-type(2) > input:nth-of-type(1) {
+  grid-column: 15 / span 8;
+}
+
+[data-map='COUSR01'] .userAdd > div.userAdd__row:nth-of-type(2) > span:nth-of-type(1) {
+  grid-column: 24 / span 8;
+}
+
+[data-map='COUSR01'] .userAdd > div.userAdd__row:nth-of-type(2) > label:nth-of-type(2) {
+  grid-column: 45 / span 9;
+}
+
+[data-map='COUSR01'] .userAdd > div.userAdd__row:nth-of-type(2) > input:nth-of-type(2) {
+  grid-column: 55 / span 8;
+}
+
+[data-map='COUSR01'] .userAdd > div.userAdd__row:nth-of-type(2) > span:nth-of-type(2) {
+  grid-column: 64 / span 8;
+}
+
+/* ---------------- COTRN01 rows 10-20 (transaction CT01) ---------------- */
+/*
+ * Six detail rows, each carrying two or three captioned protected fields whose columns the
+ * mapset states individually:
+ *
+ *   r10  'Transaction ID:'(6,15) TRNID(22,16)   'Card Number:'(45,12) CARDNUM(58,16)
+ *   r12  'Type CD:'(6,8) TTYPCD(15,2)  'Category CD:'(23,12) TCATCD(36,4)
+ *        'Source:'(46,7) TRNSRC(54,10)
+ *   r14  'Description:'(6,12) TDESC(19,60)
+ *   r16  'Amount:'(6,7) TRNAMT(14,12)  'Orig Date:'(31,10) TORIGDT(42,10)
+ *        'Proc Date:'(57,10) TPROCDT(68,10)
+ *   r18  'Merchant ID:'(6,12) MID(19,9)  'Merchant Name:'(33,14) MNAME(48,30)
+ *   r20  'Merchant City:'(6,14) MCITY(21,25)  'Merchant Zip:'(53,13) MZIP(67,10)
+ *
+ * Every one of those coordinates now travels on the `OutputField` itself, through the
+ * `row`, `labelCol`, `labelWidth` and `valueCol` props COACTVW already uses, so the only
+ * thing this stylesheet owes them is a grid to be placed on: the row becomes eighty
+ * columns wide, and `.detailField` -- the wrapper a `dl` requires around each term/value
+ * pair -- becomes `display: contents` so the caption and the value are placed on the row
+ * rather than boxed together somewhere inside it.
+ *
+ * The lookup row above them is a `div`, not a `dl`, and is deliberately not converted:
+ * 'Enter Tran ID:'(6,14) and TRNIDIN(21,16) are one column apart, so its flow already
+ * lands both on the mapset's columns.
+ */
+[data-map='COTRN01'] .tranViewPage > dl.screenLine {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  align-content: start;
+  align-items: baseline;
+  column-gap: 0;
+  row-gap: 0;
+}
+
+[data-map='COTRN01'] .tranViewPage > dl.screenLine > .detailField {
+  display: contents;
+}
+
+[data-map='COTRN01'] .tranViewPage > dl.screenLine dt,
+[data-map='COTRN01'] .tranViewPage > dl.screenLine dd {
+  overflow: hidden;
+  min-height: 0;
+  line-height: var(--term-line);
+}
+
+/* ---------------- COTRN02 (transaction CT02) ---------------- */
+/*
+ * This mapset had NO placement at all -- neither rows nor columns -- so `.tranAdd`'s
+ * children auto-placed one after another and every BMS blank spacer row was collapsed.
+ * Measured at 1280x900, declared map row against rendered body row: 4 -> 3, 6 -> 4.01,
+ * 10 -> 7.01, 12 -> 8.02, 14 -> 9.03, 15 -> 10.03, 16 -> 11.04, 18 -> 12.04, 21 -> 13.04.
+ * The drift grew monotonically to -7.96 rows, the screen ended eight rows short with a
+ * blank gap above the legend, and 'Add Transaction' painted at row 3 column 1 across all
+ * eighty cells instead of centred at POS=(4,30) -- the `.screenTitle` selector further up
+ * cannot reach it, because this screen's title is a bare `h3`.
+ *
+ *   r4  c30 L15 'Add Transaction'
+ *   r6  c6  L13 'Enter Acct #:' + c21 L11 ACTIDIN + c37 L4 '(or)'
+ *             + c46 L7 'Card #:' + c55 L16 CARDNIN
+ *   r8  c6  L70 rule
+ *   r10 c6  L8  'Type CD:' + c15 L2 TTYPCD + c23 L12 'Category CD:' + c36 L4 TCATCD
+ *             + c46 L7 'Source:' + c54 L10 TRNSRC
+ *   r12 c6  L12 'Description:' + c19 L60 TDESC
+ *   r14 c6  L7  'Amount:' + c14 L12 TRNAMT + c31 L10 'Orig Date:' + c42 L10 TORIGDT
+ *             + c57 L10 'Proc Date:' + c68 L10 TPROCDT
+ *   r15 c13 L14 '(-99999999.99)' + c41 L12 '(YYYY-MM-DD)' + c67 L12 '(YYYY-MM-DD)'
+ *   r16 c6  L12 'Merchant ID:' + c19 L9 MID + c33 L14 'Merchant Name:' + c48 L30 MNAME
+ *   r18 c6  L14 'Merchant City:' + c21 L25 MCITY + c53 L13 'Merchant Zip:' + c67 L10 MZIP
+ *   r21 c6  L55 'You are about to add...' + c63 L1 CONFIRM + c66 L5 '(Y/N)'
+ *
+ * The non-breaking space that used to separate each caption from its field is gone from
+ * the markup. It was a flow device -- it kept a caption, its field and its hint on one
+ * line -- and U+00A0 is NOT collapsible white space, so inside a grid every one of the
+ * fifteen would have become an anonymous grid item competing for a cell. With every field
+ * placed, the column the 3270 attribute byte occupies is left blank by the placement
+ * itself, which is what the device was standing in for.
+ */
+[data-map='COTRN02'] .tranAdd > h3 {
+  grid-row: 2;
+  grid-column: 30 / span 15;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__rule {
+  grid-row: 6;
+  grid-column: 6 / span 70;
+  /* The blank row above the rule is inherent once the rule is placed on its own row. */
+  margin-top: 0;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__amountHints {
+  grid-row: 13;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(2),
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(4),
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(5),
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(6),
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(8),
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(9),
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(10) {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  align-content: start;
+  align-items: baseline;
+  column-gap: 0;
+  row-gap: 0;
+}
+
+/* r6 -- the account/card key row. */
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(2) {
+  grid-row: 4;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(2) > label:nth-of-type(1) {
+  grid-column: 6 / span 13;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(2) > input:nth-of-type(1) {
+  grid-column: 21 / span 11;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(2) > span:nth-of-type(1) {
+  grid-column: 37 / span 4;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(2) > label:nth-of-type(2) {
+  grid-column: 46 / span 7;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(2) > input:nth-of-type(2) {
+  grid-column: 55 / span 16;
+}
+
+/* r10 -- type, category and source. */
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(4) {
+  grid-row: 8;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(4) > label:nth-of-type(1) {
+  grid-column: 6 / span 8;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(4) > input:nth-of-type(1) {
+  grid-column: 15 / span 2;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(4) > label:nth-of-type(2) {
+  grid-column: 23 / span 12;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(4) > input:nth-of-type(2) {
+  grid-column: 36 / span 4;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(4) > label:nth-of-type(3) {
+  grid-column: 46 / span 7;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(4) > input:nth-of-type(3) {
+  grid-column: 54 / span 10;
+}
+
+/* r12 -- the description row. */
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(5) {
+  grid-row: 10;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(5) > label {
+  grid-column: 6 / span 12;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(5) > input {
+  grid-column: 19 / span 60;
+}
+
+/*
+ * r14 -- amount and the two dates. The markup groups each caption with its field in a
+ * `span.tranAdd__group`, so the group becomes `display: contents` and the caption and the
+ * field are placed on the row itself; boxed, the group would carry both to one column.
+ */
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(6) {
+  grid-row: 12;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(6) > .tranAdd__group {
+  display: contents;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(6) > .tranAdd__group:nth-of-type(1) > label {
+  grid-column: 6 / span 7;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(6) > .tranAdd__group:nth-of-type(1) > input {
+  grid-column: 14 / span 12;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(6) > .tranAdd__group:nth-of-type(2) > label {
+  grid-column: 31 / span 10;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(6) > .tranAdd__group:nth-of-type(2) > input {
+  grid-column: 42 / span 10;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(6) > .tranAdd__group:nth-of-type(3) > label {
+  grid-column: 57 / span 10;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(6) > .tranAdd__group:nth-of-type(3) > input {
+  grid-column: 68 / span 10;
+}
+
+/* r16 -- merchant id and name. */
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(8) {
+  grid-row: 14;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(8) > label:nth-of-type(1) {
+  grid-column: 6 / span 12;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(8) > input:nth-of-type(1) {
+  grid-column: 19 / span 9;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(8) > label:nth-of-type(2) {
+  grid-column: 33 / span 14;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(8) > input:nth-of-type(2) {
+  grid-column: 48 / span 30;
+}
+
+/* r18 -- merchant city and zip. */
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(9) {
+  grid-row: 16;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(9) > label:nth-of-type(1) {
+  grid-column: 6 / span 14;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(9) > input:nth-of-type(1) {
+  grid-column: 21 / span 25;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(9) > label:nth-of-type(2) {
+  grid-column: 53 / span 13;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(9) > input:nth-of-type(2) {
+  grid-column: 67 / span 10;
+}
+
+/* r21 -- the confirmation row. */
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(10) {
+  grid-row: 19;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(10) > label {
+  grid-column: 6 / span 55;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(10) > input {
+  grid-column: 63 / span 1;
+}
+
+[data-map='COTRN02'] .tranAdd > .tranAdd__row:nth-child(10) > span {
+  grid-column: 66 / span 5;
+}

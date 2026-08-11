@@ -39,31 +39,28 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * :purpose: Per-transaction-category-balance-row interest processor migrated from the
  *     legacy batch program ``CBACT04C`` (paragraphs ``1200-GET-INTEREST-RATE``,
- *     ``1300-COMPUTE-INTEREST`` and ``1300-B-WRITE-TX``). For each {@link TranCatBal}
- *     row it resolves the disclosure-group interest rate, and only when that rate is
- *     non-zero computes the monthly interest ``(TRAN-CAT-BAL * DIS-INT-RATE) / 1200`` and
- *     assembles the interest {@link Transaction} to be persisted, emitting an
- *     {@link InterestPostingItem} that carries the per-row result to the downstream
- *     {@code InterestTransactionWriter}.
+ *     ``1300-COMPUTE-INTEREST`` and ``1300-B-WRITE-TX``). For each {@link TranCatBal} row it
+ *     resolves the disclosure-group interest rate, and only when that rate is non-zero
+ *     computes the monthly interest ``(TRAN-CAT-BAL * DIS-INT-RATE) / 1200`` and assembles the
+ *     interest {@link Transaction} to be persisted, emitting an {@link InterestPostingItem}
+ *     that carries the per-row result to the downstream {@code InterestTransactionWriter}.
  * :output: A non-{@code null} {@link InterestPostingItem} for every input row — either
- *     {@link InterestPostingItem#withInterest} (rate non-zero: computed interest plus a
- *     built interest transaction) or {@link InterestPostingItem#zeroInterest} (rate zero:
- *     no transaction) — so that every owning account still reaches the writer and receives
- *     its once-per-account cycle roll-up (``1050-UPDATE-ACCOUNT``), which runs in
- *     ``CBACT04C`` for every account regardless of interest. The account-level running
- *     total accumulation and the cycle credit/debit zeroing are performed downstream by the
- *     writer, not here.
+ *     {@link InterestPostingItem#withInterest} (rate non-zero: computed interest plus a built
+ *     interest transaction) or {@link InterestPostingItem#zeroInterest} (rate zero: no
+ *     transaction) — so that every owning account still reaches the writer and receives its
+ *     once-per-account cycle roll-up (``1050-UPDATE-ACCOUNT``), which runs in ``CBACT04C`` for
+ *     every account regardless of interest. The account-level running total accumulation and
+ *     the cycle credit/debit zeroing are performed downstream by the writer, not here.
  * :note: The tran-id suffix ({@code tranIdSuffix}, the equivalent of ``WS-TRANID-SUFFIX``)
  *     is a step-global monotonic counter that starts at 0 and is incremented only when a
  *     transaction is actually written (non-zero rate), so the first written transaction is
  *     rendered ``000001`` and zero-rate rows consume no suffix number; it is never reset per
- *     account. The interest arithmetic and the disclosure-group ``DEFAULT`` fallback are
- *     owned by {@link InterestCalculationService}; this processor performs no inline math and
- *     no inline fallback.
+ *     account. The interest arithmetic and the disclosure-group ``DEFAULT`` fallback are owned
+ *     by {@link InterestCalculationService}; this processor performs no inline math and no
+ *     inline fallback.
  * :note: Coordination contract with the ``config/`` package (described here for reference;
- *     the wiring itself is built by that package): the interest step's reader supplies
- *     {@link TranCatBal} rows ordered by
- *     ``(trancatAcctId, trancatTypeCd, trancatCd)`` ascending (via
+ *     the wiring itself is built by that package): the interest step's reader supplies {@link
+ *     TranCatBal} rows ordered by ``(trancatAcctId, trancatTypeCd, trancatCd)`` ascending (via
  *     ``TranCatBalRepository.findAllByOrderByTrancatAcctIdAscTrancatTypeCdAscTrancatCdAsc``),
  *     the ``parmDate`` job parameter is passed to this ``@StepScope`` bean, and the step runs
  *     single-threaded with no retry/skip so the tran-id suffix stays contiguous and no row is

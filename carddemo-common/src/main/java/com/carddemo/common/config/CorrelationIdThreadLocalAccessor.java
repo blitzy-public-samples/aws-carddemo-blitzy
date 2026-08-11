@@ -18,18 +18,19 @@ package com.carddemo.common.config;
 import io.micrometer.context.ThreadLocalAccessor;
 
 /**
- * :purpose: Teach Micrometer's context-propagation library how to carry the CardDemo business
- *           correlation id across a thread boundary, so work handed to an executor keeps the
- *           correlation id of the request that submitted it.
- * :output: A ``ThreadLocalAccessor`` keyed on the MDC entry ``correlationId``. Registering it in
- *          the ``ContextRegistry`` makes every context-propagating construct — Spring's
- *          ``ContextPropagatingTaskDecorator`` (applied to the ``@Async`` executor and to the
- *          Spring Batch ``TaskExecutorJobOperator``) and Reactor/RxJava context capture — restore
- *          the id on the receiving thread and clear it afterwards.
- * :note: Without this accessor the batch and asynchronous log lines carried no ``correlationId``
- *        at all: the MDC is a plain ``ThreadLocal``, and the tracing library only propagates
- *        ``traceId``/``spanId``. The value is written through {@link CorrelationIdContext} so the
- *        same sanitization and length bound apply on the receiving thread as on the request thread.
+ * :purpose: Teach Micrometer's context-propagation library how to carry the CardDemo
+ *     business correlation id across a thread boundary, so work handed to an executor keeps
+ *     the correlation id of the request that submitted it.
+ * :output: A ``ThreadLocalAccessor`` keyed on the MDC entry ``correlationId``. Registering
+ *     it in the ``ContextRegistry`` makes every context-propagating construct — Spring's
+ *     ``ContextPropagatingTaskDecorator`` (applied to the ``@Async`` executor and to the
+ *     Spring Batch ``TaskExecutorJobOperator``) and Reactor/RxJava context capture — restore
+ *     the id on the receiving thread and clear it afterwards.
+ * :note: Without this accessor the batch and asynchronous log lines carried no
+ *     ``correlationId`` at all: the MDC is a plain ``ThreadLocal``, and the tracing library
+ *     only propagates ``traceId``/``spanId``. The value is written through {@link
+ *     CorrelationIdContext} so the same sanitization and length bound apply on the receiving
+ *     thread as on the request thread.
  */
 public final class CorrelationIdThreadLocalAccessor implements ThreadLocalAccessor<String> {
 

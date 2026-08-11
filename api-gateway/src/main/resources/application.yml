@@ -16,6 +16,18 @@ spring:
   application:
     name: api-gateway
 
+  # The Spring Boot ASCII banner is written straight to stdout by the banner printer,
+  # not through the logging system, so its seven lines are the only records in the
+  # stream that are not parseable JSON -- which breaks a collector that reads this
+  # container's stdout line-by-line as JSON, contradicting the structured-logging
+  # requirement of AAP 0.7.5. Turning the banner off is what makes EVERY line of
+  # startup output a log record; the version and application name it carried are
+  # already reported by /actuator/info and by the startup records themselves.
+  main:
+    # QUOTED deliberately: YAML 1.1 resolves a bare `off` to the boolean false, which
+    # the relaxed binder then cannot convert to the Banner.Mode enum.
+    banner-mode: "off"
+
   # Externalized pseudo-conversational session state (COMMAREA
   # replacement, AAP 0.6.3). Spring Session persists the shared
   # SessionContext in Redis so state survives across the stateless
@@ -100,39 +112,141 @@ spring:
           # records the peer address, neither of which consults these headers (see
           # RateLimitFilter and docs/decision-log.md).
           trusted-proxies: '127\.0\.0\.1|::1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}'
+          # TWO routes per service, in this order, because the first match wins:
+          #   <id>-reads  the idempotent methods, carrying a bounded Retry
+          #   <id>        every other method, carrying none
+          #
+          # The retry is what keeps a downstream instance's disappearance from reaching
+          # the caller as a 503: the failed attempt is re-issued, and the second attempt
+          # opens a NEW connection, which is resolved and balanced afresh - by kube-proxy
+          # across the Service's ready endpoints under Kubernetes (this document is the
+          # one the k8s profile uses, with the ConfigMap supplying each ${*_SERVICE_URI}),
+          # and by the load balancer's next instance choice under Compose (the profile
+          # below, where the uri names the `lb` scheme). On a workstation, where each
+          # service is a single process on its own port, a retry re-hits that same port
+          # and simply fails again - immediately, because the OS refuses the connection
+          # rather than timing out - so it costs nothing there.
+          #
+          # The split is what keeps the retry safe. The retry filter matches on the
+          # EXCEPTION the proxy exchange threw, and the RestClient raises the same
+          # ResourceAccessException whether the connection was never established (nothing
+          # was delivered, so re-issuing is safe) or the response timed out (the request
+          # WAS delivered and may have committed). Retrying a payment or an account update
+          # on the second of those could apply it twice, so only methods that are
+          # idempotent by contract are retried at all, and a write interrupted by an
+          # instance's death correctly surfaces 503 for the caller to decide about.
+          # Exception-based retry ignores the filter's own `methods` restriction, which is
+          # why the restriction is expressed as a route predicate instead.
           routes:
+            - id: auth-service-reads
+              uri: ${AUTH_SERVICE_URI:http://localhost:8081}
+              predicates:
+                - Path=/auth/**
+                - Method=GET,HEAD,OPTIONS
+              filters: &idempotentRetry
+                # retries: 2 - enough to pass over one departed instance and, with the
+                #   default SERVER_ERROR series, to ride out a single transient 5xx, while
+                #   bounding the amplification of a genuine failure at 3x.
+                # exceptions: replaces the filter's default set. IOException and
+                #   TimeoutException are the defaults, kept because they cost nothing;
+                #   ResourceAccessException is the addition that matters - it is what the
+                #   RestClient actually raises, and the default set never matched it, since
+                #   matching is `Class.isInstance(thrown)` with no cause traversal.
+                - name: Retry
+                  args:
+                    retries: 2
+                    exceptions:
+                      - org.springframework.web.client.ResourceAccessException
+                      - java.io.IOException
+                      - java.util.concurrent.TimeoutException
             - id: auth-service
               uri: ${AUTH_SERVICE_URI:http://localhost:8081}
               predicates:
                 - Path=/auth/**
+            - id: user-service-reads
+              uri: ${USER_SERVICE_URI:http://localhost:8082}
+              predicates:
+                - Path=/users/**
+                - Method=GET,HEAD,OPTIONS
+              filters: *idempotentRetry
             - id: user-service
               uri: ${USER_SERVICE_URI:http://localhost:8082}
               predicates:
                 - Path=/users/**
+            - id: account-service-reads
+              uri: ${ACCOUNT_SERVICE_URI:http://localhost:8083}
+              predicates:
+                - Path=/accounts/**
+                - Method=GET,HEAD,OPTIONS
+              filters: *idempotentRetry
             - id: account-service
               uri: ${ACCOUNT_SERVICE_URI:http://localhost:8083}
               predicates:
                 - Path=/accounts/**
+            - id: card-service-reads
+              uri: ${CARD_SERVICE_URI:http://localhost:8084}
+              predicates:
+                - Path=/cards/**
+                - Method=GET,HEAD,OPTIONS
+              filters: *idempotentRetry
             - id: card-service
               uri: ${CARD_SERVICE_URI:http://localhost:8084}
               predicates:
                 - Path=/cards/**
+            - id: transaction-service-reads
+              uri: ${TRANSACTION_SERVICE_URI:http://localhost:8085}
+              predicates:
+                - Path=/transactions/**
+                - Method=GET,HEAD,OPTIONS
+              filters: *idempotentRetry
             - id: transaction-service
               uri: ${TRANSACTION_SERVICE_URI:http://localhost:8085}
               predicates:
                 - Path=/transactions/**
+            - id: billpay-service-reads
+              uri: ${BILLPAY_SERVICE_URI:http://localhost:8086}
+              predicates:
+                - Path=/billpay/**
+                - Method=GET,HEAD,OPTIONS
+              filters: *idempotentRetry
             - id: billpay-service
               uri: ${BILLPAY_SERVICE_URI:http://localhost:8086}
               predicates:
                 - Path=/billpay/**
+            - id: reporting-service-reads
+              uri: ${REPORTING_SERVICE_URI:http://localhost:8087}
+              predicates:
+                - Path=/reports/**
+                - Method=GET,HEAD,OPTIONS
+              filters: *idempotentRetry
             - id: reporting-service
               uri: ${REPORTING_SERVICE_URI:http://localhost:8087}
               predicates:
                 - Path=/reports/**
+            - id: batch-service-reads
+              uri: ${BATCH_SERVICE_URI:http://localhost:8088}
+              predicates:
+                - Path=/batch/**
+                - Method=GET,HEAD,OPTIONS
+              filters: *idempotentRetry
             - id: batch-service
               uri: ${BATCH_SERVICE_URI:http://localhost:8088}
               predicates:
                 - Path=/batch/**
+
+    # ----------------------------------------------------------------
+    # Client-side load balancing. Spring Cloud LoadBalancer's own instance
+    # cache is switched OFF because nothing here uses it and, left on, it
+    # warns at start-up that a production deployment should add Caffeine.
+    # The cache decorates only a supplier assembled through
+    # ServiceInstanceListSupplierBuilder.withCaching();
+    # UpstreamInstanceSupplierConfiguration returns a bare supplier that keeps
+    # its OWN resolution for a bounded interval, so the cache manager would be
+    # an unused component and a second, longer-lived copy of the same state -
+    # exactly the staleness the short interval exists to avoid.
+    loadbalancer:
+      cache:
+        enabled: false
 
   # ------------------------------------------------------------------
   # Bounded upstream HTTP client (AVAILABILITY). Spring Cloud Gateway Server
@@ -299,37 +413,135 @@ spring:
           # docker topology's legitimate peer (the SPA nginx container on the compose
           # bridge) must stay trusted. Same pattern, same rationale as the default profile.
           trusted-proxies: '127\.0\.0\.1|::1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}'
+          # --------------------------------------------------------------
+          # Container route table. Every service is addressed through the `lb`
+          # scheme, NOT a fixed authority, because `docker compose up --scale`
+          # and a Kubernetes Deployment both put SEVERAL instances behind one
+          # name. A fixed authority is resolved once and then kept for the life
+          # of the gateway's pooled keep-alive connections: with account-service
+          # scaled to 2, 200 authenticated reads were served 200/0 by a single
+          # replica while the other sat idle, and stopping the serving replica
+          # surfaced HTTP 503 to the caller for ~11 s. `lb://<service>` instead
+          # chooses an instance per request, round robin, from the address set
+          # UpstreamLoadBalancerConfig resolves from the platform's DNS.
+          #
+          # TWO routes per service, in this order, because the first match wins:
+          #   <id>-reads  the idempotent methods, carrying a bounded Retry
+          #   <id>        every other method, carrying none
+          #
+          # The split is what keeps the retry safe. A retry is what makes a
+          # replica's disappearance invisible to the caller: the failed attempt
+          # is re-issued and the load balancer's next choice is a live instance.
+          # But the retry filter matches on the EXCEPTION the proxy exchange
+          # threw, and the RestClient raises the same ResourceAccessException
+          # whether the connection was never established (nothing was delivered,
+          # so re-issuing is safe) or the response timed out (the request WAS
+          # delivered and may have committed). Retrying a payment or an account
+          # update on the second of those could apply it twice, so only methods
+          # that are idempotent by contract are retried at all, and a write
+          # interrupted by a replica's death correctly surfaces 503 for the
+          # caller to decide about. Exception-based retry ignores the filter's
+          # own `methods` restriction, which is why the restriction is expressed
+          # as a route predicate instead.
+          #
+          # ${*_SERVICE_URI} still overrides a route, so a deployment that
+          # fronts a service with its own load balancer points at it directly.
+          # --------------------------------------------------------------
           routes:
-            - id: auth-service
-              uri: ${AUTH_SERVICE_URI:http://auth-service:8080}
+            - id: auth-service-reads
+              uri: ${AUTH_SERVICE_URI:lb://auth-service}
               predicates:
                 - Path=/auth/**
-            - id: user-service
-              uri: ${USER_SERVICE_URI:http://user-service:8080}
+                - Method=GET,HEAD,OPTIONS
+              filters: &idempotentRetryContainer
+                # retries: 2 - enough to pass over one departed replica and, with
+                #   the default SERVER_ERROR series, to ride out a single transient
+                #   5xx, while bounding the amplification of a genuine failure at 3x.
+                # exceptions: replaces the filter's default set. IOException and
+                #   TimeoutException are the defaults, kept because they cost nothing;
+                #   ResourceAccessException is the addition that matters - it is what
+                #   the RestClient actually raises, and the default set never matched
+                #   it, since matching is `Class.isInstance(thrown)` with no cause
+                #   traversal.
+                - name: Retry
+                  args:
+                    retries: 2
+                    exceptions:
+                      - org.springframework.web.client.ResourceAccessException
+                      - java.io.IOException
+                      - java.util.concurrent.TimeoutException
+            - id: auth-service
+              uri: ${AUTH_SERVICE_URI:lb://auth-service}
+              predicates:
+                - Path=/auth/**
+            - id: user-service-reads
+              uri: ${USER_SERVICE_URI:lb://user-service}
               predicates:
                 - Path=/users/**
-            - id: account-service
-              uri: ${ACCOUNT_SERVICE_URI:http://account-service:8080}
+                - Method=GET,HEAD,OPTIONS
+              filters: *idempotentRetryContainer
+            - id: user-service
+              uri: ${USER_SERVICE_URI:lb://user-service}
+              predicates:
+                - Path=/users/**
+            - id: account-service-reads
+              uri: ${ACCOUNT_SERVICE_URI:lb://account-service}
               predicates:
                 - Path=/accounts/**
-            - id: card-service
-              uri: ${CARD_SERVICE_URI:http://card-service:8080}
+                - Method=GET,HEAD,OPTIONS
+              filters: *idempotentRetryContainer
+            - id: account-service
+              uri: ${ACCOUNT_SERVICE_URI:lb://account-service}
+              predicates:
+                - Path=/accounts/**
+            - id: card-service-reads
+              uri: ${CARD_SERVICE_URI:lb://card-service}
               predicates:
                 - Path=/cards/**
-            - id: transaction-service
-              uri: ${TRANSACTION_SERVICE_URI:http://transaction-service:8080}
+                - Method=GET,HEAD,OPTIONS
+              filters: *idempotentRetryContainer
+            - id: card-service
+              uri: ${CARD_SERVICE_URI:lb://card-service}
+              predicates:
+                - Path=/cards/**
+            - id: transaction-service-reads
+              uri: ${TRANSACTION_SERVICE_URI:lb://transaction-service}
               predicates:
                 - Path=/transactions/**
-            - id: billpay-service
-              uri: ${BILLPAY_SERVICE_URI:http://billpay-service:8080}
+                - Method=GET,HEAD,OPTIONS
+              filters: *idempotentRetryContainer
+            - id: transaction-service
+              uri: ${TRANSACTION_SERVICE_URI:lb://transaction-service}
+              predicates:
+                - Path=/transactions/**
+            - id: billpay-service-reads
+              uri: ${BILLPAY_SERVICE_URI:lb://billpay-service}
               predicates:
                 - Path=/billpay/**
-            - id: reporting-service
-              uri: ${REPORTING_SERVICE_URI:http://reporting-service:8080}
+                - Method=GET,HEAD,OPTIONS
+              filters: *idempotentRetryContainer
+            - id: billpay-service
+              uri: ${BILLPAY_SERVICE_URI:lb://billpay-service}
+              predicates:
+                - Path=/billpay/**
+            - id: reporting-service-reads
+              uri: ${REPORTING_SERVICE_URI:lb://reporting-service}
               predicates:
                 - Path=/reports/**
+                - Method=GET,HEAD,OPTIONS
+              filters: *idempotentRetryContainer
+            - id: reporting-service
+              uri: ${REPORTING_SERVICE_URI:lb://reporting-service}
+              predicates:
+                - Path=/reports/**
+            - id: batch-service-reads
+              uri: ${BATCH_SERVICE_URI:lb://batch-service}
+              predicates:
+                - Path=/batch/**
+                - Method=GET,HEAD,OPTIONS
+              filters: *idempotentRetryContainer
             - id: batch-service
-              uri: ${BATCH_SERVICE_URI:http://batch-service:8080}
+              uri: ${BATCH_SERVICE_URI:lb://batch-service}
               predicates:
                 - Path=/batch/**
 

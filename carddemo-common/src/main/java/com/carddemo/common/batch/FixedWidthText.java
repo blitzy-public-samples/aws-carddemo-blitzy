@@ -18,25 +18,25 @@ package com.carddemo.common.batch;
 
 /**
  * :purpose: Keep the fixed-width batch artefacts BYTE-exact for any text the relational
- *  store can hold. Every legacy record layout CardDemo still has to produce is declared
- *  in bytes — ``DALYREJS`` is ``RECFM=F LRECL=430`` [app/jcl/POSTTRAN.jcl],
- *  ``FD-STMTFILE-REC`` is ``PIC X(80)``, ``HTML-FIXED-LN`` is ``PIC X(100)`` and
- *  ``FD-REPTFILE-REC`` is ``PIC X(133)`` — because each field held single-byte EBCDIC
- *  characters. A modern ``VARCHAR`` column holds arbitrary Unicode, so a character count
- *  is no longer a byte count and every downstream reader that parses by offset breaks.
+ *     store can hold. Every legacy record layout CardDemo still has to produce is declared in
+ *     bytes — ``DALYREJS`` is ``RECFM=F LRECL=430`` [app/jcl/POSTTRAN.jcl],
+ *     ``FD-STMTFILE-REC`` is ``PIC X(80)``, ``HTML-FIXED-LN`` is ``PIC X(100)`` and
+ *     ``FD-REPTFILE-REC`` is ``PIC X(133)`` — because each field held single-byte EBCDIC
+ *     characters. A modern ``VARCHAR`` column holds arbitrary Unicode, so a character count is
+ *     no longer a byte count and every downstream reader that parses by offset breaks.
  * :output: Text in which one character is guaranteed to encode to exactly one byte in
- *  ISO-8859-1, the encoding all fixed-width CardDemo writers pin.
- * :note: Two distinct effects are corrected here. Under UTF-8 an accented
- *  character occupies two bytes, so a record grew past its declared length and every
- *  field after it was byte-shifted. Pinning ISO-8859-1 fixes that but not the converse:
- *  a code point outside Latin-1 is unmappable, and a SUPPLEMENTARY code point such as an
- *  emoji is a surrogate PAIR — two Java characters — that the encoder replaces with a
- *  SINGLE byte, so the record came out SHORTER than its declared length. Substituting one
- *  ``?`` per unmappable code point before the value is padded restores the invariant in
- *  both directions.
+ *     ISO-8859-1, the encoding all fixed-width CardDemo writers pin.
+ * :note: Two distinct effects are corrected here. Under UTF-8 an accented character
+ *     occupies two bytes, so a record grew past its declared length and every field after it
+ *     was byte-shifted. Pinning ISO-8859-1 fixes that but not the converse: a code point
+ *     outside Latin-1 is unmappable, and a SUPPLEMENTARY code point such as an emoji is a
+ *     surrogate PAIR — two Java characters — that the encoder replaces with a SINGLE byte, so
+ *     the record came out SHORTER than its declared length. Substituting one ``?`` per
+ *     unmappable code point before the value is padded restores the invariant in both
+ *     directions.
  * :note: For pure ASCII or Latin-1 content — every legacy fixture and all normal
- *  production data — this is the identity transformation, so no byte of existing output
- *  changes.
+ *     production data — this is the identity transformation, so no byte of existing output
+ *     changes.
  */
 public final class FixedWidthText {
 

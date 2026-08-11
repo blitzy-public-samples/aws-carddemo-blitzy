@@ -27,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -38,6 +39,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -59,6 +61,19 @@ class TransactionAddInsertContractTest {
 
     /** :purpose: Cross-referenced card number resolved from the account id. */
     private static final String CARD_NUM = "9000000000000001";
+
+    /**
+     * :purpose: The ten-character date the ``LENGTH=10`` COTRN02 map field carries
+     *     (``TORIGDT`` / ``TPROCDT``).
+     */
+    private static final String ORIG_DATE_INPUT = "2026-08-01";
+
+    /**
+     * :purpose: The stored twenty-six-character form of that date: the field
+     *     left-justified and space-filled, which is what ``MOVE TORIGDTI TO
+     *     TRAN-ORIG-TS`` produces at ``COTRN02C`` L464-L465.
+     */
+    private static final String ORIG_DATE_STORED = "2026-08-01" + "                ";
 
     @Mock
     private TransactionRepository transactionRepository;
@@ -87,8 +102,11 @@ class TransactionAddInsertContractTest {
         request.setTranMerchantName("MERCHANT");
         request.setTranMerchantCity("CITY");
         request.setTranMerchantZip("ZIP");
-        request.setTranOrigTs("2026-08-01-10.00.00.000000");
-        request.setTranProcTs("2026-08-01-10.00.00.000000");
+        // TORIGDT / TPROCDT are DFHMDF LENGTH=10 [app/bms/COTRN02.bms:L187-L190, L200-L203],
+        // so the ten-character date is the WHOLE field the screen can send. COTRN02C L464
+        // widens it to the stored twenty-six characters; the service does the same.
+        request.setTranOrigTs(ORIG_DATE_INPUT);
+        request.setTranProcTs(ORIG_DATE_INPUT);
         request.setConfirm("Y");
 
         CardXref xref = new CardXref();
@@ -96,8 +114,10 @@ class TransactionAddInsertContractTest {
         xref.setXrefAcctId(1L);
         xref.setXrefCustId(1L);
         when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(1L)).thenReturn(Optional.of(xref));
-        when(transactionRepository.getNextTransactionId()).thenReturn(900L);
-        when(transactionMapper.toEntity(any(TransactionAddRequestDto.class)))
+        // Lenient: the id generator and the mapper are reached only AFTER every field edit
+        // passes, so a test that asserts a field is refused never gets this far.
+        lenient().when(transactionRepository.getNextTransactionId()).thenReturn(900L);
+        lenient().when(transactionMapper.toEntity(any(TransactionAddRequestDto.class)))
                 .thenAnswer(invocation -> new Transaction());
     }
 
@@ -114,7 +134,50 @@ class TransactionAddInsertContractTest {
                 .isEqualTo("Transaction added successfully.  Your Tran ID is 0000000000000900.");
         // saveAndFlush, never plain save: the INSERT must hit the database inside the
         // try block so a duplicate key becomes the COBOL rejection, not a silent UPDATE.
-        verify(transactionRepository).saveAndFlush(any(Transaction.class));
+        ArgumentCaptor<Transaction> inserted = ArgumentCaptor.forClass(Transaction.class);
+        verify(transactionRepository).saveAndFlush(inserted.capture());
+        verify(transactionRepository, never()).save(any(Transaction.class));
+        // The ten-character map field is widened to the stored twenty-six characters BEFORE
+        // the row is written, so every CT02 row has one stored shape (COTRN02C L464-L465).
+        assertThat(inserted.getValue().getTranOrigTs())
+                .isEqualTo(ORIG_DATE_STORED)
+                .hasSize(26);
+        assertThat(inserted.getValue().getTranProcTs())
+                .isEqualTo(ORIG_DATE_STORED)
+                .hasSize(26);
+    }
+
+    @Test
+    @DisplayName("A date submitted space-padded to the stored width is normalized identically")
+    void spacePaddedDateStoresTheSameBytes() {
+        when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        // COTRN02C L487-L488 moves the 26-character STORED value straight back into the
+        // 10-character map field on redisplay, so a resubmitted screen can legitimately
+        // present the date space-filled. It must store byte-identically to the bare date.
+        request.setTranOrigTs(ORIG_DATE_STORED);
+        request.setTranProcTs(ORIG_DATE_STORED);
+
+        transactionService.addTransaction(request, null);
+
+        ArgumentCaptor<Transaction> inserted = ArgumentCaptor.forClass(Transaction.class);
+        verify(transactionRepository).saveAndFlush(inserted.capture());
+        assertThat(inserted.getValue().getTranOrigTs()).isEqualTo(ORIG_DATE_STORED);
+        assertThat(inserted.getValue().getTranProcTs()).isEqualTo(ORIG_DATE_STORED);
+    }
+
+    @Test
+    @DisplayName("A date carrying a trailing suffix is refused, never stored verbatim")
+    void suffixedDateIsRefusedBeforeAnyWrite() {
+        // The pre-fix shape check read only positions one to ten, so this value passed and
+        // was persisted verbatim as a timestamp. Ten characters is the whole field.
+        request.setTranOrigTs("2026-08-01GARBAGE-SUFFIX!!");
+
+        assertThatThrownBy(() -> transactionService.addTransaction(request, null))
+                .isInstanceOf(CardDemoException.class)
+                .hasMessage("Orig Date should be in format YYYY-MM-DD");
+
+        verify(transactionRepository, never()).saveAndFlush(any(Transaction.class));
         verify(transactionRepository, never()).save(any(Transaction.class));
     }
 

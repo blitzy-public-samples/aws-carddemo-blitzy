@@ -1,21 +1,20 @@
 /**
  * :module: transaction
- * :purpose: Request/response DTO types exchanged with the ``transaction-service``
- *   REST API for the three online transaction screens — ``TranListPage`` (list,
- *   ``COTRN00`` / ``CT00``), ``TranViewPage`` (detail, ``COTRN01`` / ``CT01``), and
- *   ``TranAddPage`` (add, ``COTRN02`` / ``CT02``).
- * :output: The list item / request / response DTOs, the view response DTO, and the
- *   add request / response DTOs.
- * :note: Member names mirror the backend ``Transaction*Dto`` JSON contracts
- *   (camelCase) so axios payloads bind without field remapping.
- * :note: Every monetary, identifier and numeric field — ``tranAmt``, the
- *   transaction id, the card number, the account id, ``tranMerchantId`` and
- *   ``tranCatCd`` — is carried as ``string``: the services serialize them as
- *   strings so packed-decimal scale and fixed COBOL field widths (including leading
- *   zeros) survive the wire, and a 16-digit id exceeds
- *   ``Number.MAX_SAFE_INTEGER``. Timestamps are ``string`` in the 26-character
- *   ``YYYY-MM-DD-HH.MM.SS.mmmmmm`` form. No member of this module is a ``number``
- *   except the list paging counters.
+ * :purpose: Request/response DTO types exchanged with the ``transaction-service`` REST API
+ *     for the three online transaction screens — ``TranListPage`` (list, ``COTRN00`` /
+ *     ``CT00``), ``TranViewPage`` (detail, ``COTRN01`` / ``CT01``), and ``TranAddPage`` (add,
+ *     ``COTRN02`` / ``CT02``).
+ * :output: The list item / request / response DTOs, the view response DTO, and the add
+ *     request / response DTOs.
+ * :note: Member names mirror the backend ``Transaction*Dto`` JSON contracts (camelCase) so
+ *     axios payloads bind without field remapping.
+ * :note: Every monetary, identifier and numeric field — ``tranAmt``, the transaction id,
+ *     the card number, the account id, ``tranMerchantId`` and ``tranCatCd`` — is carried as
+ *     ``string``: the services serialize them as strings so packed-decimal scale and fixed
+ *     COBOL field widths (including leading zeros) survive the wire, and a 16-digit id exceeds
+ *     ``Number.MAX_SAFE_INTEGER``. Stored timestamps are ``string`` and exactly 26 characters,
+ *     of which only positions one to ten — the ``YYYY-MM-DD`` date — carry a shape common to
+ *     every writer. No member of this module is a ``number`` except the list paging counters.
  */
 
 /**
@@ -83,20 +82,24 @@ export interface TranListResponseDto {
 }
 
 /**
- * :purpose: Full transaction detail returned by the view screen ``COTRN01``,
- *   mirroring every persisted ``Transaction`` field under its backend camelCase name.
+ * :purpose: Full transaction detail returned by the view screen ``COTRN01``, mirroring
+ *     every persisted ``Transaction`` field under its backend camelCase name.
  * :field tranId: 16-character transaction identifier.
  * :field tranCardNum: 16-character card number / PAN.
  * :field tranTypeCd: two-character transaction type code.
  * :field tranCatCd: four-digit transaction category code (``TRAN-CAT-CD`` 9(04)) as a
- *   zero-padded string.
+ *     zero-padded string.
  * :field tranSource: origination source of the transaction.
  * :field tranDesc: transaction description.
  * :field tranAmt: signed monetary amount as a decimal string (``NUMERIC(11,2)``).
- * :field tranOrigTs: 26-character origination timestamp
- *   (``YYYY-MM-DD-HH.MM.SS.mmmmmm``).
- * :field tranProcTs: 26-character processing timestamp
- *   (``YYYY-MM-DD-HH.MM.SS.mmmmmm``).
+ * :field tranOrigTs: the stored 26-character origination timestamp. Positions one to ten
+ *     are always the ``YYYY-MM-DD`` date; what follows depends on which legacy program wrote
+ *     the row - a CT02 screen add leaves sixteen blanks (``COTRN02C`` L464), bill payment
+ *     writes ``YYYY-MM-DD HH:MM:SS.mmmmmm`` (``CSDAT01Y WS-TIMESTAMP``) and the posting and
+ *     interest batches write ``YYYY-MM-DD-HH.MM.SS.hh0000`` (``DB2-FORMAT-TS``). Read only the
+ *     date portion.
+ * :field tranProcTs: the stored 26-character processing timestamp, with the same
+ *     producer-dependent shape as ``tranOrigTs``.
  * :field tranMerchantId: 9-digit merchant identifier as a string.
  * :field tranMerchantName: merchant name.
  * :field tranMerchantCity: merchant city.
@@ -120,33 +123,30 @@ export interface TranViewResponseDto {
 
 /**
  * :purpose: Entry payload for the add-transaction screen ``COTRN02``. ``tranId`` is
- *   intentionally absent because the server assigns the 16-digit zero-padded id.
- * :field acctId: 11-digit account identifier. Optional: the service requires
- *   *either* ``acctId`` *or* ``tranCardNum`` ("Account or Card Number must be
- *   entered").
- * :field tranCardNum: 16-character card number. Optional under the same
- *   account-or-card rule as ``acctId``.
+ *     intentionally absent because the server assigns the 16-digit zero-padded id.
+ * :field acctId: 11-digit account identifier. Optional: the service requires *either*
+ *     ``acctId`` *or* ``tranCardNum`` ("Account or Card Number must be entered").
+ * :field tranCardNum: 16-character card number. Optional under the same account-or-card
+ *     rule as ``acctId``.
  * :field tranTypeCd: two-character transaction type code.
  * :field tranCatCd: four-digit transaction category code (``TRAN-CAT-CD`` 9(04)) as a
- *   zero-padded string. A blank value is reported with the legacy category-code
- *   message rather than being coerced to zero.
+ *     zero-padded string. A blank value is reported with the legacy category-code message
+ *     rather than being coerced to zero.
  * :field tranSource: origination source of the transaction.
  * :field tranDesc: transaction description.
  * :field tranAmt: signed monetary amount as a decimal string (``NUMERIC(11,2)``).
- * :field tranOrigTs: origination timestamp. The screen collects the ``YYYY-MM-DD``
- *   date portion (``TORIGDT``, ten characters) and the service stores the submitted
- *   value verbatim in the 26-character field, exactly as ``COTRN02C`` L464 moves the
- *   ten-character screen field into ``TRAN-ORIG-TS``; it is NOT expanded to a full
- *   timestamp.
- * :field tranProcTs: processing timestamp, collected as the ``YYYY-MM-DD`` date
- *   portion (``TPROCDT``) and stored verbatim on the same terms (``COTRN02C``
- *   L465).
+ * :field tranOrigTs: origination timestamp. The screen collects the ``YYYY-MM-DD`` date
+ *     portion (``TORIGDT``, ten characters) and the service stores the submitted value
+ *     verbatim in the 26-character field, exactly as ``COTRN02C`` L464 moves the ten-character
+ *     screen field into ``TRAN-ORIG-TS``; it is NOT expanded to a full timestamp.
+ * :field tranProcTs: processing timestamp, collected as the ``YYYY-MM-DD`` date portion
+ *     (``TPROCDT``) and stored verbatim on the same terms (``COTRN02C`` L465).
  * :field tranMerchantId: 9-digit merchant identifier as a string.
  * :field tranMerchantName: merchant name.
  * :field tranMerchantCity: merchant city.
  * :field tranMerchantZip: merchant postal code.
  * :field confirm: single-character confirmation flag (``'Y'`` / ``'N'``); optional,
- *   supplied on the confirmation pass.
+ *     supplied on the confirmation pass.
  */
 export interface TranAddRequestDto {
   acctId?: string;

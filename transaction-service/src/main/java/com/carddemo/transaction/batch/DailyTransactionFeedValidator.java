@@ -20,23 +20,22 @@ import com.carddemo.common.domain.DailyTransaction;
 import com.carddemo.common.exception.CardDemoException;
 
 /**
- * :purpose: Assert that a staged ``daily_transactions`` row really is a
- *     ``CVTRA06Y DALYTRAN-RECORD`` before the posting pipeline validates it, so a
- *     structurally unusable row is reported as an actionable feed fault naming the
- *     record and the offending field instead of aborting the step with a raw
- *     ``NullPointerException`` or ``StringIndexOutOfBoundsException``.
- * :output: Nothing on success; a {@link CardDemoException} carrying the
- *     ``DALYTRAN-ID`` and the offending field otherwise.
- * :note: ``DALYTRAN`` is a fixed-width 350-byte sequential data set, so ``CBTRN02C``
- *     can never see a record without ``DALYTRAN-AMT`` or with a truncated
- *     ``DALYTRAN-ORIG-TS``; the relational staging table is where such a row can
- *     appear at all. The schema refuses it at ingestion
- *     (``V1__create_schema.sql`` declares the mandatory feed columns ``NOT NULL``
- *     with a minimum ``dalytran_orig_ts`` length), and this validator is the
- *     matching in-process guard for a record assembled in memory: without it the
- *     over-limit computation dereferenced a null amount and the expiry check
- *     substringed a short timestamp, which aborted the step on the same row at every
- *     rerun and blocked every later record in the feed.
+ * :purpose: Assert that a staged ``daily_transactions`` row really is a ``CVTRA06Y
+ *     DALYTRAN-RECORD`` before the posting pipeline validates it, so a structurally unusable
+ *     row is reported as an actionable feed fault naming the record and the offending field
+ *     instead of aborting the step with a raw ``NullPointerException`` or
+ *     ``StringIndexOutOfBoundsException``.
+ * :output: Nothing on success; a {@link CardDemoException} carrying the ``DALYTRAN-ID``
+ *     and the offending field otherwise.
+ * :note: ``DALYTRAN`` is a fixed-width 350-byte sequential data set, so ``CBTRN02C`` can
+ *     never see a record without ``DALYTRAN-AMT`` or with a truncated ``DALYTRAN-ORIG-TS``;
+ *     the relational staging table is where such a row can appear at all. The schema refuses
+ *     it at ingestion (``V1__create_schema.sql`` declares the mandatory feed columns ``NOT
+ *     NULL`` with a minimum ``dalytran_orig_ts`` length), and this validator is the matching
+ *     in-process guard for a record assembled in memory: without it the over-limit computation
+ *     dereferenced a null amount and the expiry check substringed a short timestamp, which
+ *     aborted the step on the same row at every rerun and blocked every later record in the
+ *     feed.
  */
 final class DailyTransactionFeedValidator {
 

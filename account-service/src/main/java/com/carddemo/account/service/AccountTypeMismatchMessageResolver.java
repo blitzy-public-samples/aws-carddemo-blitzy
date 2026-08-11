@@ -23,18 +23,20 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * :purpose: Contribute the account service's own field messages to the shared error handling, so a
- *  request that carries a non-numeric value in a numeric account field reports the frozen
- *  ``COACTUPC`` literal for that field instead of a generic malformed-body message.
- * :output: For every numeric property of the account update request, the message its screen edit
- *  reports for an invalid value; ``null`` for any other property, which leaves the generic
- *  malformed-body message in place.
- * :note: The messages are read from {@link AccountUpdateValidator#typeMismatchMessages()} rather
- *  than restated here, so the message a field reports when it fails to BIND and the message it
- *  reports when it binds and then fails its EDIT are the same string by construction.
- * :note: Also covers the snapshot (``old*``) counterparts of those properties. A full-snapshot
- *  submission carries each amount twice, and a wrong-typed value in the snapshot half must name the
- *  field just as clearly as one in the new-value half.
+ * :purpose: Contribute the account service's own field messages to the shared error
+ *     handling, so a request that carries a non-numeric value in a numeric account field
+ *     reports the frozen ``COACTUPC`` literal for that field instead of a generic
+ *     malformed-body message.
+ * :output: For every numeric property of the account update request, the message its
+ *     screen edit reports for an invalid value; ``null`` for any other property, which leaves
+ *     the generic malformed-body message in place.
+ * :note: The messages are read from {@link AccountUpdateValidator#typeMismatchMessages()}
+ *     rather than restated here, so the message a field reports when it fails to BIND and the
+ *     message it reports when it binds and then fails its EDIT are the same string by
+ *     construction.
+ * :note: Also covers the snapshot (``old*``) counterparts of those properties. A
+ *     full-snapshot submission carries each amount twice, and a wrong-typed value in the
+ *     snapshot half must name the field just as clearly as one in the new-value half.
  */
 @Component
 public class AccountTypeMismatchMessageResolver implements TypeMismatchMessageResolver {

@@ -47,19 +47,19 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * :param acctId: the eleven-digit account identifier being updated.
      * :output: the number of rows advanced -- ``1`` for a resolved account, ``0`` otherwise.
      * :note: ``COACTUPC`` rewrites the account AND the customer as ONE logical unit, so the
-     *     account is the ROOT of that aggregate and its version has to change whenever any
-     *     part of the aggregate changes. When only customer fields change the account row
-     *     stays clean, so the provider never advances the counter, the ``version`` the caller
-     *     echoed back still matched, and a second writer working from the same display
-     *     silently overwrote the first writer's customer change. One atomic statement
-     *     advances the root token so that stale submission becomes the verbatim conflict
-     *     outcome instead (AAP 0.6.2) [app/cbl/COACTUPC.cbl:L517-523, L4066-4090].
+     *     account is the ROOT of that aggregate and its version has to change whenever any part of
+     *     the aggregate changes. When only customer fields change the account row stays clean, so
+     *     the provider never advances the counter, the ``version`` the caller echoed back still
+     *     matched, and a second writer working from the same display silently overwrote the first
+     *     writer's customer change. One atomic statement advances the root token so that stale
+     *     submission becomes the verbatim conflict outcome instead (AAP 0.6.2)
+     *     [app/cbl/COACTUPC.cbl:L517-523, L4066-4090].
      * :note: Expressed as a bulk statement rather than by mutating the managed entity's
-     *     ``@Version`` property: the entity is deliberately NOT dirty on this path, and
-     *     writing its version field would make the provider issue its own update with the
-     *     stale loaded version in the ``WHERE`` clause and fail spuriously. The statement is
-     *     flushed after the aggregate's own writes (``flushAutomatically``) so ordering is
-     *     preserved, and the persistence context is left untouched.
+     *     ``@Version`` property: the entity is deliberately NOT dirty on this path, and writing
+     *     its version field would make the provider issue its own update with the stale loaded
+     *     version in the ``WHERE`` clause and fail spuriously. The statement is flushed after the
+     *     aggregate's own writes (``flushAutomatically``) so ordering is preserved, and the
+     *     persistence context is left untouched.
      */
     @Modifying(flushAutomatically = true)
     @Query("update Account a set a.version = a.version + 1 where a.acctId = :acctId")

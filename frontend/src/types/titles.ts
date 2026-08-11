@@ -1,18 +1,18 @@
 /**
  * :module: ``frontend/src/types/titles.ts``
  * :purpose: The screen-title literals of ``app/cpy/COTTL01Y.cpy`` and the per-mapset
- *     screen names, held once so every screen shows the same two title lines the
- *     legacy screens showed. All seventeen online programs move ``CCDA-TITLE01`` and
- *     ``CCDA-TITLE02`` into the ``TITLE01``/``TITLE02`` header fields of their own
- *     mapset, so those two lines are shared by every screen; a screen's own name is a
- *     separate row-4 body literal of its mapset.
+ *     screen names, held once so every screen shows the same two title lines the legacy
+ *     screens showed. All seventeen online programs move ``CCDA-TITLE01`` and ``CCDA-TITLE02``
+ *     into the ``TITLE01``/``TITLE02`` header fields of their own mapset, so those two lines
+ *     are shared by every screen; a screen's own name is a separate row-4 body literal of its
+ *     mapset.
  * :output: The ``CCDA_TITLE01`` / ``CCDA_TITLE02`` header titles, their verbatim
- *     40-character ``PIC X(40)`` forms, and the ``SCREEN_NAMES`` map of per-mapset
- *     screen names.
+ *     40-character ``PIC X(40)`` forms, and the ``SCREEN_NAMES`` map of per-mapset screen
+ *     names.
  * :note: Every literal here is reproduced character for character from the source.
- *     ``CCDA_TITLE01`` / ``CCDA_TITLE02`` are the trimmed forms the header renders,
- *     because the shared header centres the title in its own 40-column region exactly
- *     as the copybook's internal padding centred it in the BMS field.
+ *     ``CCDA_TITLE01`` / ``CCDA_TITLE02`` are the trimmed forms the header renders, because
+ *     the shared header centres the title in its own 40-column region exactly as the
+ *     copybook's internal padding centred it in the BMS field.
  */
 
 /**

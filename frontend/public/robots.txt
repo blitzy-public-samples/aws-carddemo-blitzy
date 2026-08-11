@@ -1,0 +1,11 @@
+# CardDemo -- an internal credit-card administration terminal, reachable only behind
+# authentication. Nothing here is public content, and a crawler that indexed a sign-on
+# screen would publish an internal hostname for no benefit, so the whole origin is
+# disallowed for every agent.
+User-agent: *
+Disallow: /
+
+# No Sitemap directive: the protocol requires an absolute URL, and this bundle is built
+# once and served behind whatever host a deployment puts in front of it, so no absolute
+# URL is knowable at build time. /sitemap.xml is still served -- as a valid, empty url set
+# -- so the path answers as a sitemap rather than with the application's HTML document.

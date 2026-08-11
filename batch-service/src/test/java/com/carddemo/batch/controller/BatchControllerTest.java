@@ -165,19 +165,50 @@ class BatchControllerTest {
 
     /**
      * :purpose: A refused submission is surfaced as an error, so the caller can never
-     *     mistake a rejected launch for an accepted one.
+     *     mistake a rejected launch for an accepted one, and the refusal reads as a stable
+     *     domain sentence. The framework's own exception message publishes the whole
+     *     JobParameters map and the exception class name; a caller told only "unable to
+     *     submit" could not tell a duplicate submission from a broken one, and a caller
+     *     shown the framework text was reading internals.
      * :raises Exception: if the request fails.
      */
     @Test
-    @DisplayName("surfaces a refused submission instead of acknowledging it")
+    @DisplayName("a submission already running is refused with the duplicate-run sentence")
     void surfacesRefusedSubmission() throws Exception {
         when(jobSchedulingConfig.launchInterestCalculation(any()))
-                .thenThrow(new JobExecutionAlreadyRunningException("already running"));
+                .thenThrow(new JobExecutionAlreadyRunningException(
+                        "A job execution for this job is already running: JobInstance: id=7,"
+                                + " version=0, Job=[interestCalculationJob]"));
 
         mockMvc.perform(post("/batch/jobs/interestCalculationJob").param("parmDate", "2026-08-01"))
                 .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Batch job interestCalculationJob is"
+                        + " already running for these parameters. Wait for that execution to"
+                        + " finish before submitting again."))
                 .andExpect(jsonPath("$.message",
-                        org.hamcrest.Matchers.containsString("Unable to submit batch job")));
+                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("JobInstance"))));
+    }
+
+    /**
+     * :purpose: Resubmitting an instance that already completed is an ordinary outcome of
+     *     the launch contract, and the caller is told what to change rather than shown the
+     *     framework's parameter dump.
+     * :raises Exception: if the request fails.
+     */
+    @Test
+    @DisplayName("a completed instance is refused with the already-completed sentence")
+    void surfacesAlreadyCompletedInstance() throws Exception {
+        when(jobSchedulingConfig.launchInterestCalculation(any()))
+                .thenThrow(new org.springframework.batch.core.launch.JobInstanceAlreadyCompleteException(
+                        "A job instance already exists and is complete for parameters={parmDate=2026-08-01}"));
+
+        mockMvc.perform(post("/batch/jobs/interestCalculationJob").param("parmDate", "2026-08-01"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Batch job interestCalculationJob has"
+                        + " already completed for these parameters. A completed run cannot be"
+                        + " repeated: change a parameter to run a new instance."))
+                .andExpect(jsonPath("$.message",
+                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("parameters={"))));
     }
 
     /**

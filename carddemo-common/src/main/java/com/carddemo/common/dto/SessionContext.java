@@ -71,6 +71,7 @@ public class SessionContext implements Serializable {
         }
 
         /**
+         * :purpose: Read ``code``.
          * :returns: the single-character COMMAREA code ('A' for admin, 'U' for user).
          */
         public char getCode() {
@@ -240,6 +241,22 @@ public class SessionContext implements Serializable {
     private String lastMapset;
 
     /**
+     * :purpose: ``COCRDLIC`` ``WS-CA-LAST-PAGE-DISPLAYED`` — the card-list terminal-page
+     *  latch, ``true`` once a forward-paging key has already been answered with the last
+     *  page.
+     * :note: This is NOT a ``COCOM01Y`` field. ``COCRDLIC`` appends its own
+     *  ``WS-THIS-PROGCOMMAREA`` AFTER ``CARDDEMO-COMMAREA`` inside ``DFHCOMMAREA``
+     *  (written at L611-L618 before ``RETURN TRANSID``, read back at L329), so the latch is
+     *  genuine pseudo-conversational state that survives between turns, and it is carried
+     *  here for the same reason. It exists because ``1400-SETUP-MESSAGE`` distinguishes the
+     *  FIRST forward key that lands on the last page - which shows only the record-actions
+     *  line - from a REPEATED one, which is what earns
+     *  ``'NO MORE PAGES TO DISPLAY'`` (L905-L916). Without somewhere to remember that a
+     *  forward key has already been answered, the two presses are indistinguishable.
+     */
+    private boolean cardListLastPageDisplayed;
+
+    /**
      * :purpose: No-argument constructor required by (de)serialization frameworks
      *  (Spring Session / Redis) and by mapper assembly.
      */
@@ -247,6 +264,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``fromTranid``.
      * :returns: the originating transaction id (``CDEMO-FROM-TRANID``).
      */
     public String getFromTranid() {
@@ -254,6 +272,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``fromTranid``.
      * :param fromTranid: the originating transaction id (``CDEMO-FROM-TRANID``).
      */
     public void setFromTranid(String fromTranid) {
@@ -261,6 +280,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``fromProgram``.
      * :returns: the originating program name (``CDEMO-FROM-PROGRAM``).
      */
     public String getFromProgram() {
@@ -268,6 +288,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``fromProgram``.
      * :param fromProgram: the originating program name (``CDEMO-FROM-PROGRAM``).
      */
     public void setFromProgram(String fromProgram) {
@@ -275,6 +296,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``toTranid``.
      * :returns: the target transaction id (``CDEMO-TO-TRANID``).
      */
     public String getToTranid() {
@@ -282,6 +304,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``toTranid``.
      * :param toTranid: the target transaction id (``CDEMO-TO-TRANID``).
      */
     public void setToTranid(String toTranid) {
@@ -289,6 +312,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``toProgram``.
      * :returns: the target program name (``CDEMO-TO-PROGRAM``).
      */
     public String getToProgram() {
@@ -296,6 +320,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``toProgram``.
      * :param toProgram: the target program name (``CDEMO-TO-PROGRAM``).
      */
     public void setToProgram(String toProgram) {
@@ -303,6 +328,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``userId``.
      * :returns: the signed-on user id (``CDEMO-USER-ID``).
      */
     public String getUserId() {
@@ -310,6 +336,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``userId``.
      * :param userId: the signed-on user id (``CDEMO-USER-ID``).
      */
     public void setUserId(String userId) {
@@ -317,6 +344,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``userType``.
      * :returns: the user role (``CDEMO-USER-TYPE``), or {@code null} when unset.
      */
     public UserType getUserType() {
@@ -324,6 +352,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``userType``.
      * :param userType: the user role (``CDEMO-USER-TYPE``).
      */
     public void setUserType(UserType userType) {
@@ -331,6 +360,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``programContext``.
      * :returns: the entry/re-entry flag (``CDEMO-PGM-CONTEXT``), or {@code null} when unset.
      */
     public ProgramContext getProgramContext() {
@@ -338,6 +368,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``programContext``.
      * :param programContext: the entry/re-entry flag (``CDEMO-PGM-CONTEXT``).
      */
     public void setProgramContext(ProgramContext programContext) {
@@ -345,6 +376,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``custId``.
      * :returns: the customer identifier (``CDEMO-CUST-ID``).
      */
     public Long getCustId() {
@@ -352,6 +384,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``custId``.
      * :param custId: the customer identifier (``CDEMO-CUST-ID``).
      */
     public void setCustId(Long custId) {
@@ -359,6 +392,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``custFname``.
      * :returns: the customer first name (``CDEMO-CUST-FNAME``).
      */
     public String getCustFname() {
@@ -366,6 +400,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``custFname``.
      * :param custFname: the customer first name (``CDEMO-CUST-FNAME``).
      */
     public void setCustFname(String custFname) {
@@ -373,6 +408,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``custMname``.
      * :returns: the customer middle name (``CDEMO-CUST-MNAME``).
      */
     public String getCustMname() {
@@ -380,6 +416,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``custMname``.
      * :param custMname: the customer middle name (``CDEMO-CUST-MNAME``).
      */
     public void setCustMname(String custMname) {
@@ -387,6 +424,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``custLname``.
      * :returns: the customer last name (``CDEMO-CUST-LNAME``).
      */
     public String getCustLname() {
@@ -394,6 +432,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``custLname``.
      * :param custLname: the customer last name (``CDEMO-CUST-LNAME``).
      */
     public void setCustLname(String custLname) {
@@ -401,6 +440,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``acctId``.
      * :returns: the account identifier (``CDEMO-ACCT-ID``).
      */
     public Long getAcctId() {
@@ -408,6 +448,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``acctId``.
      * :param acctId: the account identifier (``CDEMO-ACCT-ID``).
      */
     public void setAcctId(Long acctId) {
@@ -415,6 +456,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``acctStatus``.
      * :returns: the account status flag (``CDEMO-ACCT-STATUS``).
      */
     public String getAcctStatus() {
@@ -422,6 +464,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``acctStatus``.
      * :param acctStatus: the account status flag (``CDEMO-ACCT-STATUS``).
      */
     public void setAcctStatus(String acctStatus) {
@@ -429,6 +472,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``cardNum``.
      * :returns: the sixteen-digit card number as a string (``CDEMO-CARD-NUM``).
      */
     public String getCardNum() {
@@ -436,6 +480,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``cardNum``.
      * :param cardNum: the sixteen-digit card number as a string (``CDEMO-CARD-NUM``).
      */
     public void setCardNum(String cardNum) {
@@ -443,6 +488,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``lastMap``.
      * :returns: the last BMS map name (``CDEMO-LAST-MAP``).
      */
     public String getLastMap() {
@@ -450,6 +496,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``lastMap``.
      * :param lastMap: the last BMS map name (``CDEMO-LAST-MAP``).
      */
     public void setLastMap(String lastMap) {
@@ -457,6 +504,7 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Read ``lastMapset``.
      * :returns: the last BMS mapset name (``CDEMO-LAST-MAPSET``).
      */
     public String getLastMapset() {
@@ -464,9 +512,28 @@ public class SessionContext implements Serializable {
     }
 
     /**
+     * :purpose: Set ``lastMapset``.
      * :param lastMapset: the last BMS mapset name (``CDEMO-LAST-MAPSET``).
      */
     public void setLastMapset(String lastMapset) {
         this.lastMapset = lastMapset;
+    }
+
+    /**
+     * :purpose: Read ``cardListLastPageDisplayed``.
+     * :returns: whether a forward-paging key has already been answered with the card
+     *  list's last page (``COCRDLIC`` ``CA-LAST-PAGE-SHOWN``).
+     */
+    public boolean isCardListLastPageDisplayed() {
+        return cardListLastPageDisplayed;
+    }
+
+    /**
+     * :purpose: Set ``cardListLastPageDisplayed``.
+     * :param cardListLastPageDisplayed: the card-list terminal-page latch
+     *  (``COCRDLIC`` ``WS-CA-LAST-PAGE-DISPLAYED``).
+     */
+    public void setCardListLastPageDisplayed(boolean cardListLastPageDisplayed) {
+        this.cardListLastPageDisplayed = cardListLastPageDisplayed;
     }
 }

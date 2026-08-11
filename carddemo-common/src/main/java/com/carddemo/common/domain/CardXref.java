@@ -96,6 +96,7 @@ public class CardXref {
     }
 
     /**
+     * :purpose: Read ``xrefCardNum``.
      * :returns: the 16-character card number (primary key).
      */
     public String getXrefCardNum() {
@@ -103,6 +104,7 @@ public class CardXref {
     }
 
     /**
+     * :purpose: Set ``xrefCardNum``.
      * :param xrefCardNum: the 16-character card number to set.
      */
     public void setXrefCardNum(String xrefCardNum) {
@@ -110,6 +112,7 @@ public class CardXref {
     }
 
     /**
+     * :purpose: Read ``xrefCustId``.
      * :returns: the owning customer identifier.
      */
     public Long getXrefCustId() {
@@ -117,6 +120,7 @@ public class CardXref {
     }
 
     /**
+     * :purpose: Set ``xrefCustId``.
      * :param xrefCustId: the owning customer identifier to set.
      */
     public void setXrefCustId(Long xrefCustId) {
@@ -124,6 +128,7 @@ public class CardXref {
     }
 
     /**
+     * :purpose: Read ``xrefAcctId``.
      * :returns: the owning account identifier.
      */
     public Long getXrefAcctId() {
@@ -131,6 +136,7 @@ public class CardXref {
     }
 
     /**
+     * :purpose: Set ``xrefAcctId``.
      * :param xrefAcctId: the owning account identifier to set.
      */
     public void setXrefAcctId(Long xrefAcctId) {
@@ -138,6 +144,7 @@ public class CardXref {
     }
 
     /**
+     * :purpose: Read ``customer``.
      * :returns: the read-only owning-customer association, or ``null`` when not
      *     loaded.
      */
@@ -146,6 +153,7 @@ public class CardXref {
     }
 
     /**
+     * :purpose: Read ``account``.
      * :returns: the read-only owning-account association, or ``null`` when not
      *     loaded.
      */
@@ -171,6 +179,7 @@ public class CardXref {
     }
 
     /**
+     * :purpose: Hash consistent with :java:meth:`equals`.
      * :returns: a proxy-stable hash code consistent with {@link #equals(Object)}.
      */
     @Override
@@ -179,6 +188,7 @@ public class CardXref {
     }
 
     /**
+     * :purpose: Diagnostic rendering that never discloses unmasked PII.
      * :returns: a string representation with the card number masked to its last four digits so
      *     the full primary account number is never logged.
      */
@@ -191,6 +201,7 @@ public class CardXref {
     }
 
     /**
+     * :purpose: Render the card number with only its last four digits visible.
      * :returns: the card number with every digit except the final four replaced by ``*``; the
      *     literal ``null`` when the card number is unset.
      */

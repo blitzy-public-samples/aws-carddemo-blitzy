@@ -77,17 +77,14 @@ export const CDEMO_PGM_ENTER: ProgramContext = 0;
 export const CDEMO_PGM_REENTER: ProgramContext = 1;
 
 /**
- * Externalized replacement for the CICS COMMAREA ``CARDDEMO-COMMAREA``
- * (copybook ``COCOM01Y``).
- *
- * Carries routing plus user / customer / account / card context across stateless
- * REST calls, persisted server-side via Spring Session (Redis) / JWT claims.
- * Member names and order mirror the backend
- * ``com.carddemo.common.dto.SessionContext`` JSON contract exactly. Before
- * sign-on the context is largely empty: only :ts:member:`userId` and
- * :ts:member:`userType` are guaranteed once authenticated, so the routing and
- * customer / account / card members are optional.
- *
+ * Externalized replacement for the CICS COMMAREA ``CARDDEMO-COMMAREA`` (copybook
+ *     ``COCOM01Y``). Carries routing plus user / customer / account / card context across
+ *     stateless REST calls, persisted server-side via Spring Session (Redis) / JWT claims.
+ *     Member names and order mirror the backend ``com.carddemo.common.dto.SessionContext``
+ *     JSON contract exactly. Before sign-on the context is largely empty: only
+ *     :ts:member:`userId` and
+ * :ts: member:`userType` are guaranteed once authenticated, so the routing and customer /
+ *     account / card members are optional.
  * :member fromTranid: originating CICS transaction id (``CDEMO-FROM-TRANID`` X(04))
  * :member fromProgram: originating program name (``CDEMO-FROM-PROGRAM`` X(08))
  * :member toTranid: target CICS transaction id (``CDEMO-TO-TRANID`` X(04))

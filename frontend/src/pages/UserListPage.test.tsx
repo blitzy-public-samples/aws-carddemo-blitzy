@@ -837,15 +837,16 @@ describe('UserListPage — the BMS row-9 runs are the column widths', () => {
 
     const table = screen.getByTestId('user-list-table');
     expect(table.className).toContain('dataTable--fixed');
-    // 3 + 8 + 20 + 20 + 4 characters, one separator column each.
-    expect(table).toHaveStyle({ minWidth: '65ch' });
+    // 7 + 12 + 24 + 24 + 4 -- the mapset's own column PITCH, the distance from one row-9
+    // dashed rule to the next (POS=(9,5), (9,12), (9,24), (9,48), (9,72)).
+    expect(table).toHaveStyle({ minWidth: '71ch' });
 
     const cols = table.querySelectorAll('colgroup col');
     expect(cols).toHaveLength(5);
-    expect(cols[0]).toHaveStyle({ width: '5ch' });
-    expect(cols[1]).toHaveStyle({ width: '10ch' });
-    expect(cols[2]).toHaveStyle({ width: '22ch' });
-    expect(cols[3]).toHaveStyle({ width: '22ch' });
+    expect(cols[0]).toHaveStyle({ width: '7ch' });
+    expect(cols[1]).toHaveStyle({ width: '12ch' });
+    expect(cols[2]).toHaveStyle({ width: '24ch' });
+    expect(cols[3]).toHaveStyle({ width: '24ch' });
     // The last column carries no width so a wider frame hands it the slack.
     expect(cols[4].getAttribute('style')).toBeNull();
   });

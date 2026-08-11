@@ -1,24 +1,24 @@
 /**
  * :module: card
- * :purpose: Request/response DTO types for the three card screens —
- *   ``CardListPage`` (``COCRDLI`` / ``CCLI``, account-scoped browse, 7 rows per
- *   page), ``CardDetailPage`` (``COCRDSL`` / ``CCDL``, read-only detail), and
- *   ``CardUpdatePage`` (``COCRDUP`` / ``CCUP``, editable record).
- * :output: The card list item / request / response DTOs, the detail response DTO,
- *   and the update request / response DTOs.
- * :note: Member names mirror the backend ``Card*Dto`` JSON contracts (camelCase) so
- *   axios payloads bind without field remapping. Card numbers, account ids, and the
- *   customer id are carried as ``string`` to preserve fixed field widths and leading
- *   zeros (a 16-digit PAN also exceeds ``Number.MAX_SAFE_INTEGER``).
- * :note: The misspelling ``cardExpiraionDate`` (missing the second ``T``) is
- *   preserved verbatim from the COBOL field ``CARD-EXPIRAION-DATE`` and must not be
- *   "corrected" (spec-literal fidelity rule).
- * :note: The sensitive ``cardCvvCd`` is never serialized to clients and is
- *   deliberately absent from every DTO here, including the update request.
+ * :purpose: Request/response DTO types for the three card screens — ``CardListPage``
+ *     (``COCRDLI`` / ``CCLI``, account-scoped browse, 7 rows per page), ``CardDetailPage``
+ *     (``COCRDSL`` / ``CCDL``, read-only detail), and ``CardUpdatePage`` (``COCRDUP`` /
+ *     ``CCUP``, editable record).
+ * :output: The card list item / request / response DTOs, the detail response DTO, and the
+ *     update request / response DTOs.
+ * :note: Member names mirror the backend ``Card*Dto`` JSON contracts (camelCase) so axios
+ *     payloads bind without field remapping. Card numbers, account ids, and the customer id
+ *     are carried as ``string`` to preserve fixed field widths and leading zeros (a 16-digit
+ *     PAN also exceeds ``Number.MAX_SAFE_INTEGER``).
+ * :note: The misspelling ``cardExpiraionDate`` (missing the second ``T``) is preserved
+ *     verbatim from the COBOL field ``CARD-EXPIRAION-DATE`` and must not be "corrected"
+ *     (spec-literal fidelity rule).
+ * :note: The sensitive ``cardCvvCd`` is never serialized to clients and is deliberately
+ *     absent from every DTO here, including the update request.
  * :note: Mirroring the account contract, the card record carries the optimistic-lock
- *   ``version`` read at display time; the update screen echoes it back so a
- *   concurrent modification is reported as a conflict (``COCRDUPC``
- *   ``DATA-WAS-CHANGED-BEFORE-UPDATE``, AAP 0.6.2) instead of silently overwriting.
+ *     ``version`` read at display time; the update screen echoes it back so a concurrent
+ *     modification is reported as a conflict (``COCRDUPC`` ``DATA-WAS-CHANGED-BEFORE-UPDATE``,
+ *     AAP 0.6.2) instead of silently overwriting.
  */
 
 /**
@@ -117,23 +117,23 @@ export interface CardDetailResponseDto {
 }
 
 /**
- * :purpose: Editable card fields submitted by the ``COCRDUP`` update screen. Mirrors
- *   the backend ``CardUpdateRequestDto``, which carries only the mutable fields; the
- *   target card number travels in the request path. ``cardCvvCd`` is absent because
- *   the ``COCRDUP`` mapset has no CVV field — ``COCRDUPC`` copies the stored CVV
- *   into its own snapshot (L1354) and never reads one from the screen.
+ * :purpose: Editable card fields submitted by the ``COCRDUP`` update screen. Mirrors the
+ *     backend ``CardUpdateRequestDto``, which carries only the mutable fields; the target card
+ *     number travels in the request path. ``cardCvvCd`` is absent because the ``COCRDUP``
+ *     mapset has no CVV field — ``COCRDUPC`` copies the stored CVV into its own snapshot
+ *     (L1354) and never reads one from the screen.
  * :field cardEmbossedName: updated embossed cardholder name.
  * :field cardActiveStatus: updated single-character active-status flag.
  * :field cardExpiraionDate: updated expiration date in ``YYYY-MM-DD`` form.
- * :field version: the optimistic-lock version read at display time; a value that no
- *   longer matches the stored record yields HTTP 409 rather than a lost update.
+ * :field version: the optimistic-lock version read at display time; a value that no longer
+ *     matches the stored record yields HTTP 409 rather than a lost update.
  * :field oldCardEmbossedName: the embossed name read at display time.
  * :field oldCardActiveStatus: the active-status flag read at display time.
  * :field oldCardExpiraionDate: the expiration date read at display time.
  * :note: The three ``old*`` members are optional. Supplying them enables the
- *   field-by-field snapshot comparison ``COCRDUPC`` performs before its ``REWRITE``
- *   (L1503), which reports ``Record changed by some one else. Please review``;
- *   omitting them leaves the ``version`` check as the sole concurrency guard.
+ *     field-by-field snapshot comparison ``COCRDUPC`` performs before its ``REWRITE`` (L1503),
+ *     which reports ``Record changed by some one else. Please review``; omitting them leaves
+ *     the ``version`` check as the sole concurrency guard.
  */
 export interface CardUpdateRequestDto {
   cardEmbossedName: string;

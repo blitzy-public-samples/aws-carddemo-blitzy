@@ -33,21 +33,23 @@ import jakarta.persistence.PersistenceContext;
 
 /**
  * :purpose: Spring Batch item processor that resolves the descriptive fields of the
- *  transaction-detail report for one posted {@link Transaction}. It is the Java analogue of
- *  ``CBTRN03C``'s per-record lookups ``1500-A-LOOKUP-XREF`` (card cross-reference to account id),
- *  ``1500-B-LOOKUP-TRANTYPE`` (transaction-type description), and ``1500-C-LOOKUP-TRANCATG``
- *  (transaction-category description), whose results ``1120-WRITE-DETAIL`` assembles into a detail
- *  row. Each COBOL lookup performs ``9999-ABEND-PROGRAM`` on ``INVALID KEY``; the Java equivalent
- *  throws the unchecked {@link RecordNotFoundException} when any of the three lookups misses, so the
- *  step halts exactly as the COBOL program abends. The {@code config} package builds the reader via
- *  ``TransactionRepository.findByProcTsDateRangeOrderByCardNum(startDate, endDate, pageable)`` (which
- *  filters on ``SUBSTRING(tranProcTs,1,10)`` inclusively and orders by ``tranCardNum`` ascending) and
- *  supplies the ``startDate``/``endDate``/``reportFile`` job parameters, so this processor assumes
- *  records arrive already date-range-filtered and card-number-ordered.
- * :output: A fully-populated {@link TransactionReportItem} carrier for every input transaction; the
- *  processor never returns ``null`` because the reader has already applied the date-range filter, so
- *  every record that reaches this processor is an in-range detail row. Not-found messages reference
- *  only the transaction id, never the card number/PAN.
+ *     transaction-detail report for one posted {@link Transaction}. It is the Java analogue of
+ *     ``CBTRN03C``'s per-record lookups ``1500-A-LOOKUP-XREF`` (card cross-reference to
+ *     account id), ``1500-B-LOOKUP-TRANTYPE`` (transaction-type description), and
+ *     ``1500-C-LOOKUP-TRANCATG`` (transaction-category description), whose results
+ *     ``1120-WRITE-DETAIL`` assembles into a detail row. Each COBOL lookup performs
+ *     ``9999-ABEND-PROGRAM`` on ``INVALID KEY``; the Java equivalent throws the unchecked
+ *     {@link RecordNotFoundException} when any of the three lookups misses, so the step halts
+ *     exactly as the COBOL program abends. The {@code config} package builds the reader via
+ *     ``TransactionRepository.findByProcTsDateRangeOrderByCardNum(startDate, endDate,
+ *     pageable)`` (which filters on ``SUBSTRING(tranProcTs,1,10)`` inclusively and orders by
+ *     ``tranCardNum`` ascending) and supplies the ``startDate``/``endDate``/``reportFile`` job
+ *     parameters, so this processor assumes records arrive already date-range-filtered and
+ *     card-number-ordered.
+ * :output: A fully-populated {@link TransactionReportItem} carrier for every input
+ *     transaction; the processor never returns ``null`` because the reader has already applied
+ *     the date-range filter, so every record that reaches this processor is an in-range detail
+ *     row. Not-found messages reference only the transaction id, never the card number/PAN.
  */
 @Component
 public class TransactionReportItemProcessor implements ItemProcessor<Transaction, TransactionReportItem> {

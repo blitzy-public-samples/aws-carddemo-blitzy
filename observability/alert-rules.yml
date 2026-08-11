@@ -20,9 +20,13 @@
 #     dashboard's latency panels.
 #   * the 4-hour batch window — AAP 0.7.1, and the dashboard's
 #     "Batch Job Duration vs 4h Window" threshold (14400 s).
-#   * `up`, `http_server_requests_seconds`, `hikaricp_connections_*` and
-#     `spring_batch_job_seconds_*` are the metric families the scrape config
-#     collects and the dashboard queries.
+#   * `up`, `http_server_requests_seconds`, `hikaricp_connections_*`,
+#     `spring_batch_job_seconds_*` and the tracing backend's own `otelcol_*`
+#     families are the metric families the scrape config collects and the
+#     dashboard queries.
+#   * the 768 MiB memory limit of the tracing backend — the figure declared in
+#     docker-compose.yml and k8s/deployment-jaeger.yaml, and the ceiling the
+#     dashboard's Tracing backend row draws.
 #
 # `for:` durations are deliberately longer than one scrape interval (15 s) so a
 # single missed scrape or one slow request cannot page anyone.
@@ -191,3 +195,75 @@ groups:
             window the migration commits to (AAP 0.7.1). The dashboard's "Batch Job
             Duration vs 4h Window" panel plots the same series against the
             threshold.
+
+  # --- Tracing backend ------------------------------------------------------
+  # AAP 0.7.5 requires distributed tracing across service boundaries. A collector
+  # that restarts, or that accepts spans and then discards them, satisfies none of
+  # that while still reporting a bare "Up" — the failure mode that let this
+  # container restart ten times under load unnoticed. These rules read the
+  # collector's own telemetry (the `jaeger` scrape job in prometheus.yml) and are
+  # visualised by the dashboard's "Tracing backend (Jaeger)" row. `up == 0` in the
+  # availability group already covers the collector being gone entirely.
+  - name: carddemo-tracing
+    interval: 30s
+    rules:
+      - alert: CardDemoTracingBackendRestarted
+        # otelcol_process_uptime climbs while the process lives and returns to ~0
+        # when it is replaced, so a reset in the window IS a restart — the signal
+        # the container's own ExitCode 0 / OOMKilled false hid. Reported even
+        # though span export is best-effort, because an in-memory store loses
+        # every trace it holds on restart.
+        expr: resets(otelcol_process_uptime[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          application: carddemo
+        annotations:
+          summary: "Tracing backend restarted ({{ $labels.job }})"
+          description: >-
+            The Jaeger collector restarted in the last fifteen minutes and every
+            trace held in its in-memory store was lost. Check its memory headroom
+            against the container limit (the JaegerMemoryHigh rule and the
+            dashboard's Tracing backend row plot the same series) and the
+            max_traces bound in observability/jaeger-config.yaml.
+
+      - alert: CardDemoTracingSpansLost
+        # Three distinct loss paths, any one of which breaks the trace graph:
+        # a receiver that refused the push, a receiver that failed it, and an
+        # exporter that could not hand the batch to storage. Counted over ten
+        # minutes so a single blip during a restart does not alert on its own.
+        expr: >-
+          increase(otelcol_exporter_send_failed_spans[10m]) > 0
+          or increase(otelcol_receiver_refused_spans[10m]) > 0
+          or increase(otelcol_receiver_failed_spans[10m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          application: carddemo
+        annotations:
+          summary: "Tracing backend is losing spans ({{ $labels.job }})"
+          description: >-
+            The Jaeger collector refused, failed or could not export spans in the
+            last ten minutes, so traces crossing service boundaries are
+            incomplete. Sustained loss means the pipeline is saturated: the
+            exporter queue and batch bounds are in
+            observability/jaeger-config.yaml.
+
+      - alert: CardDemoTracingBackendMemoryHigh
+        # 805306368 bytes is the 768 MiB limit this project already declares for
+        # the container, in docker-compose.yml (limits.memory 768m) and in
+        # k8s/deployment-jaeger.yaml (limits.memory 768Mi). Alerting at 85% of it
+        # turns the condition that used to end in a silent kill into a warning
+        # while there is still headroom to act.
+        expr: otelcol_process_memory_rss > 0.85 * 805306368
+        for: 5m
+        labels:
+          severity: warning
+          application: carddemo
+        annotations:
+          summary: "Tracing backend resident memory above 85% of its limit"
+          description: >-
+            The Jaeger collector has held more than 85% of its 768 MiB memory
+            limit for five minutes. Left to grow it is killed and restarted with
+            no OOM attribution; lower JAEGER_MAX_TRACES (default 6000) or raise
+            the limit and GOMEMLIMIT together.

@@ -69,6 +69,18 @@
         <logback.version>1.5.37</logback.version>
         <log4j2.version>2.25.5</log4j2.version>
         <!--
+          Fourth security override, same mechanism. The Boot BOM selects Netty
+          4.2.15.Final, whose netty-codec-dns carries GHSA-mfg7-5gfp-c4w3 (the DNS
+          record decoder over-reads a malformed compression pointer). Netty reaches
+          the tree through the Lettuce Redis client (session store) and reactor-netty
+          (the gateway's HTTP client); neither resolves DNS through netty-codec-dns in
+          this deployment - Lettuce uses the JDK resolver and the gateway resolves
+          service names through the platform DNS - but a fixed release exists, and
+          shipping a vulnerable dependency that has one is a release failure
+          regardless of reachability. 4.2.16.Final is the fix version.
+        -->
+        <netty.version>4.2.16.Final</netty.version>
+        <!--
           OWASP dependency-check scanner, pinned because it is NOT managed by the
           Spring Boot BOM. Consumed only by the non-default `dependency-scan` profile
           declared below, so this property is inert in an ordinary build.

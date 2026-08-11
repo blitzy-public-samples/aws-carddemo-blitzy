@@ -68,27 +68,26 @@ import java.util.Set;
 
 
 /**
- * :purpose: Centralized ``@RestControllerAdvice`` that translates the CardDemo
- *     domain exceptions (``com.carddemo.common.exception``) and Jakarta
- *     bean-validation failures into the shared {@link ErrorResponse} JSON body
- *     with a consistent HTTP status and a correlation/trace id, so every
- *     CardDemo web service returns one uniform, non-sensitive error contract.
- *     Re-expresses the legacy COBOL error outcomes -- CICS ``RESP(NOTFND)``, the
- *     ``COACTUPC`` optimistic-lock conflict, and the ``CBTRN02C`` posting reject
- *     codes -- as HTTP responses; the frozen messages and codes are carried by
- *     the domain exception classes, not by this advice.
+ * :purpose: Centralized ``@RestControllerAdvice`` that translates the CardDemo domain
+ *     exceptions (``com.carddemo.common.exception``) and Jakarta bean-validation failures into
+ *     the shared {@link ErrorResponse} JSON body with a consistent HTTP status and a
+ *     correlation/trace id, so every CardDemo web service returns one uniform, non-sensitive
+ *     error contract. Re-expresses the legacy COBOL error outcomes -- CICS ``RESP(NOTFND)``,
+ *     the ``COACTUPC`` optimistic-lock conflict, and the ``CBTRN02C`` posting reject codes --
+ *     as HTTP responses; the frozen messages and codes are carried by the domain exception
+ *     classes, not by this advice.
  * :note: Effective only inside a Spring MVC web context. This library ships no
- *     auto-configuration import, so a web-enabled service activates the advice
- *     via ``@Import(GlobalExceptionHandler.class)`` or by component-scanning
- *     ``com.carddemo.common``; import it only into web-enabled services, not the
- *     pure batch module.
- * :note: Framework MVC failures keep their native statuses (405, 415, and an
- *     unmapped path's 404 among them) but are still rendered through the shared
- *     error body so that every response carries a trace id; an unreadable request
- *     body is additionally split into ``413`` and ``400`` because the shared
- *     request-size cap surfaces through it. Spring Security authentication and
- *     authorization failures are re-thrown untouched so the security filter chain
- *     keeps producing the configured ``401``/``403`` and its audit record.
+ *     auto-configuration import, so a web-enabled service activates the advice via
+ *     ``@Import(GlobalExceptionHandler.class)`` or by component-scanning
+ *     ``com.carddemo.common``; import it only into web-enabled services, not the pure batch
+ *     module.
+ * :note: Framework MVC failures keep their native statuses (405, 415, and an unmapped
+ *     path's 404 among them) but are still rendered through the shared error body so that
+ *     every response carries a trace id; an unreadable request body is additionally split into
+ *     ``413`` and ``400`` because the shared request-size cap surfaces through it. Spring
+ *     Security authentication and authorization failures are re-thrown untouched so the
+ *     security filter chain keeps producing the configured ``401``/``403`` and its audit
+ *     record.
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
@@ -457,15 +456,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
      *     rather than a declared constraint.
      * :param error: the field error the legacy evaluation order selected.
      * :returns: the constraint's own message for a constraint violation; otherwise the legacy
-     *     message the owning service registered for the field, or {@link #MSG_PARAMETER_MALFORMED}.
-     * :note: A constraint message is authored by this project and is safe to report verbatim. A
-     *     type-conversion message is authored by Spring, and it both quotes the submitted value and
-     *     names the internal Java types involved — for example
-     *     ``Failed to convert property value of type 'java.lang.String' to required type 'int' for
-     *     property 'pageNumber'; For input string: "abc"`` — so it is never reported. This is the
-     *     same substitution {@link #handleParameterTypeMismatch} makes for a ``@RequestParam``; the
-     *     two exist separately only because a parameter bound into a command OBJECT fails through
-     *     the binding result instead of through its own exception.
+     *     message the owning service registered for the field, or {@link
+     *     #MSG_PARAMETER_MALFORMED}.
+     * :note: A constraint message is authored by this project and is safe to report verbatim.
+     *     A type-conversion message is authored by Spring, and it both quotes the submitted value
+     *     and names the internal Java types involved — for example ``Failed to convert property
+     *     value of type 'java.lang.String' to required type 'int' for property 'pageNumber'; For
+     *     input string: "abc"`` — so it is never reported. This is the same substitution {@link
+     *     #handleParameterTypeMismatch} makes for a ``@RequestParam``; the two exist separately
+     *     only because a parameter bound into a command OBJECT fails through the binding result
+     *     instead of through its own exception.
      */
     private String fieldErrorMessage(FieldError error) {
         if (!TYPE_MISMATCH_ERROR_CODE.equals(error.getCode())) {
@@ -550,23 +550,26 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * :purpose: Map a request PARAMETER whose submitted value could not be converted to the type
-     *     the endpoint declares onto HTTP 400 with a CardDemo message, mirroring the treatment
-     *     {@link #handleUnreadableRequestBody} already gives a wrong-typed body property.
-     * :param ex: the type-mismatch failure raised while binding a query, path or header parameter.
+     * :purpose: Map a request PARAMETER whose submitted value could not be converted to the
+     *     type the endpoint declares onto HTTP 400 with a CardDemo message, mirroring the
+     *     treatment {@link #handleUnreadableRequestBody} already gives a wrong-typed body
+     *     property.
+     * :param ex: the type-mismatch failure raised while binding a query, path or header
+     *     parameter.
      * :param request: the current web request.
-     * :returns: a ``400 Bad Request`` {@link ResponseEntity} carrying the legacy message the owning
-     *     service registered for that parameter, or {@link #MSG_PARAMETER_MALFORMED} when it
-     *     registered none, plus {@link #ERROR_CODE_VALIDATION} and the parameter's field entry.
-     * :note: Declared for the ``MethodArgumentTypeMismatchException`` SUBTYPE so it outranks the
-     *     inherited handling of ``TypeMismatchException`` without duplicating a mapping for the
-     *     same type. Without it the failure fell through to the framework's ``ProblemDetail``,
+     * :returns: a ``400 Bad Request`` {@link ResponseEntity} carrying the legacy message the
+     *     owning service registered for that parameter, or {@link #MSG_PARAMETER_MALFORMED} when
+     *     it registered none, plus {@link #ERROR_CODE_VALIDATION} and the parameter's field entry.
+     * :note: Declared for the ``MethodArgumentTypeMismatchException`` SUBTYPE so it outranks
+     *     the inherited handling of ``TypeMismatchException`` without duplicating a mapping for
+     *     the same type. Without it the failure fell through to the framework's ``ProblemDetail``,
      *     whose detail reads ``Failed to convert 'page' with value: 'abc'`` — Spring's wording,
      *     carrying the caller's own submitted value back into the envelope's ``message`` and
      *     leaving ``errorCode`` null, so the failure was neither describable to an operator nor
      *     branchable by a client.
-     * :note: Only the parameter NAME is read from the exception. Its ``getValue()`` and its message
-     *     both quote the submitted content, which is never reflected to the caller or logged.
+     * :note: Only the parameter NAME is read from the exception. Its ``getValue()`` and its
+     *     message both quote the submitted content, which is never reflected to the caller or
+     *     logged.
      */
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     public ResponseEntity<ErrorResponse> handleParameterTypeMismatch(
@@ -585,12 +588,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * :purpose: Guarantee that every failure reaching the web layer answers with the
-     *     shared {@link ErrorResponse} body, instead of the container's default error page
-     *     which carries no trace id at all. A failure that already declares its own HTTP
-     *     status keeps it (405, 415, and an unmapped path's 404 among them, together with
-     *     any response headers such as ``Allow``); anything else is an internal fault and
-     *     reports ``500``.
+     * :purpose: Guarantee that every failure reaching the web layer answers with the shared
+     *     {@link ErrorResponse} body, instead of the container's default error page which carries
+     *     no trace id at all. A failure that already declares its own HTTP status keeps it (405,
+     *     415, and an unmapped path's 404 among them, together with any response headers such as
+     *     ``Allow``); anything else is an internal fault and reports ``500``.
      * :param ex: the exception no more specific handler claimed.
      * :param request: the current web request.
      * :returns: a {@link ResponseEntity} carrying the preserved or ``500`` status and the
@@ -598,14 +600,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
      * :raises Exception: re-thrown for a Spring Security authentication or authorization
      *     failure, which must continue to the security filter chain so the configured
      *     ``401``/``403`` handling and its audit record still apply.
-     * :note: A body refused by the shared request-size cap reports ``413`` here as well as
-     *     in {@link #handleUnreadableRequestBody}. At the api-gateway the proxy streams the
-     *     request body downstream from its own publisher thread, so the size signal is
-     *     raised inside ``RestClientProxyExchange.copyBody`` and reaches the web layer
-     *     unwrapped rather than inside a message-converter exception; without this branch
-     *     an oversized chunked request at the edge would report ``500``.
-     * :note: An internal fault reports a fixed message only; the diagnostic detail and
-     *     stack trace go to the log, never to the caller.
+     * :note: A body refused by the shared request-size cap reports ``413`` here as well as in
+     *     {@link #handleUnreadableRequestBody}. At the api-gateway the proxy streams the request
+     *     body downstream from its own publisher thread, so the size signal is raised inside
+     *     ``RestClientProxyExchange.copyBody`` and reaches the web layer unwrapped rather than
+     *     inside a message-converter exception; without this branch an oversized chunked request
+     *     at the edge would report ``500``.
+     * :note: An internal fault reports a fixed message only; the diagnostic detail and stack
+     *     trace go to the log, never to the caller.
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleUnhandled(Exception ex, WebRequest request) throws Exception {
@@ -632,17 +634,17 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     /**
      * :purpose: Classify a request that declares a multipart content type. No CardDemo
-     *     endpoint consumes multipart -- every write takes a JSON document -- so the outcome
-     *     is ``415 Unsupported Media Type``, which is what the framework already answered for
-     *     a WELL-FORMED multipart body. A MALFORMED one took a different path: the multipart
-     *     resolver raises {@link MultipartException} while the dispatcher is still resolving
-     *     the request, before any handler is matched, and nothing mapped that type -- only its
-     *     ``MaxUploadSizeExceededException`` subclass is mapped by the inherited advice -- so
-     *     it fell through to the catch-all and reported ``500`` with an ERROR log and a stack
-     *     trace. Seven such requests produced nineteen ERROR lines across seven services, so
-     *     an unauthenticated client could flood the operator's alerting with a content-type
-     *     header alone, and the same refusal was reported under two different statuses
-     *     depending only on whether the body's boundary happened to be well formed.
+     *     endpoint consumes multipart -- every write takes a JSON document -- so the outcome is
+     *     ``415 Unsupported Media Type``, which is what the framework already answered for a
+     *     WELL-FORMED multipart body. A MALFORMED one took a different path: the multipart
+     *     resolver raises {@link MultipartException} while the dispatcher is still resolving the
+     *     request, before any handler is matched, and nothing mapped that type -- only its
+     *     ``MaxUploadSizeExceededException`` subclass is mapped by the inherited advice -- so it
+     *     fell through to the catch-all and reported ``500`` with an ERROR log and a stack trace.
+     *     Seven such requests produced nineteen ERROR lines across seven services, so an
+     *     unauthenticated client could flood the operator's alerting with a content-type header
+     *     alone, and the same refusal was reported under two different statuses depending only on
+     *     whether the body's boundary happened to be well formed.
      * :param ex: the multipart failure raised while resolving the request.
      * :param request: the current web request.
      * :returns: a ``415 Unsupported Media Type`` {@link ResponseEntity} carrying the shared
@@ -651,8 +653,8 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
      *     condition is a caller mistake, and an ERROR with a trace per request is the flooding
      *     channel this handler closes.
      * :note: The size-exceeded subclass is answered ``413`` explicitly rather than left to
-     *     handler precedence, so the shared request-size cap keeps reporting one status
-     *     wherever the signal surfaces.
+     *     handler precedence, so the shared request-size cap keeps reporting one status wherever
+     *     the signal surfaces.
      */
     @ExceptionHandler(MultipartException.class)
     public ResponseEntity<ErrorResponse> handleMultipart(MultipartException ex, WebRequest request) {
@@ -667,11 +669,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * :purpose: Classify a request body the framework could not read. A body refused by
-     *     the shared request-size cap reports ``413``; a genuinely malformed body reports
-     *     ``400``. Without this classification the size signal reaches the default
-     *     resolver wrapped in a converter exception and is reported as ``400``, hiding the
-     *     fact that the request was refused for its size.
+     * :purpose: Classify a request body the framework could not read. A body refused by the
+     *     shared request-size cap reports ``413``; a genuinely malformed body reports ``400``.
+     *     Without this classification the size signal reaches the default resolver wrapped in a
+     *     converter exception and is reported as ``400``, hiding the fact that the request was
+     *     refused for its size.
      * :param ex: the unreadable-body exception raised by the message converter.
      * :param request: the current web request.
      * :returns: a ``413 Content Too Large`` or ``400 Bad Request`` {@link ResponseEntity}
@@ -679,9 +681,9 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
      * :note: Reached through the inherited {@code handleHttpMessageNotReadable} hook rather
      *     than through a second ``@ExceptionHandler`` for the same type, which would be an
      *     ambiguous mapping in this class.
-     * :note: Neither message echoes the submitted content: the converter's own message
-     *     quotes the offending payload, which must never be reflected to the caller or
-     *     written to the log.
+     * :note: Neither message echoes the submitted content: the converter's own message quotes
+     *     the offending payload, which must never be reflected to the caller or written to the
+     *     log.
      */
     public ResponseEntity<ErrorResponse> handleUnreadableRequestBody(HttpMessageNotReadableException ex,
                                                                     WebRequest request) {
@@ -819,18 +821,17 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     /**
      * :purpose: Answer a request that matched no handler and no static resource with the
-     *     documented envelope carrying only the status reason phrase. The framework's own
-     *     detail for this failure names its internal resource-resolution machinery (for
-     *     example ``No static resource admin.``), which is an implementation detail of the
-     *     server rather than an outcome of the API, so it is replaced.
+     *     documented envelope carrying only the status reason phrase. The framework's own detail
+     *     for this failure names its internal resource-resolution machinery (for example ``No
+     *     static resource admin.``), which is an implementation detail of the server rather than
+     *     an outcome of the API, so it is replaced.
      * :param ex: the resource-not-found failure raised by the resource handler.
      * :param headers: the response headers the framework assembled.
      * :param status: the resolved HTTP status (``404``).
      * :param request: the current web request.
      * :returns: a ``404 Not Found`` {@link ResponseEntity} wrapping the error body.
-     * :note: Overrides the inherited hook rather than declaring a second
-     *     ``@ExceptionHandler`` for the same type, which would be an ambiguous mapping in
-     *     this class.
+     * :note: Overrides the inherited hook rather than declaring a second ``@ExceptionHandler``
+     *     for the same type, which would be an ambiguous mapping in this class.
      * :note: The status was never wrong; the MESSAGE was. ``NoResourceFoundException`` is a
      *     ``org.springframework.web.ErrorResponse``, so the generic path copied its framework
      *     detail text and ``GET /billpay/90000000001`` answered ``"No static resource
@@ -935,9 +936,9 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * :purpose: Map a framework-level optimistic-locking failure that was not already translated
-     *     into {@link OptimisticLockConflictException} to HTTP 409, carrying the frozen legacy
-     *     message so the caller sees the same outcome as the COBOL
+     * :purpose: Map a framework-level optimistic-locking failure that was not already
+     *     translated into {@link OptimisticLockConflictException} to HTTP 409, carrying the frozen
+     *     legacy message so the caller sees the same outcome as the COBOL
      *     ``DATA-WAS-CHANGED-BEFORE-UPDATE`` path.
      * :param ex: the Spring optimistic-locking failure (for example an
      *     ``ObjectOptimisticLockingFailureException`` raised while flushing at commit time, after
@@ -967,21 +968,21 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
      * :purpose: Map a datastore or session-store that timed out or could not be reached to
      *     HTTP 503 with a ``Retry-After`` hint, rather than to the 500 the generic data-access
      *     mapping below would report. A Redis command timeout on the session read, or an
-     *     exhausted/unreachable connection pool, is a transient dependency outage that the
-     *     caller may retry -- not a fault in the request or in the application.
+     *     exhausted/unreachable connection pool, is a transient dependency outage that the caller
+     *     may retry -- not a fault in the request or in the application.
      * :param ex: the timeout or resource-failure exception raised by the datastore or the
      *     session store; both are ``DataAccessException`` subtypes.
      * :param request: the current web request.
      * :returns: a ``503 Service Unavailable`` {@link ResponseEntity} carrying the same generic
-     *     detail the pre-dispatcher {@link DatastoreOutageErrorFilter} writes, the correlation
-     *     id, and the trace id, so a caller sees ONE outage contract wherever in the chain the
-     *     failure was detected.
+     *     detail the pre-dispatcher {@link DatastoreOutageErrorFilter} writes, the correlation id,
+     *     and the trace id, so a caller sees ONE outage contract wherever in the chain the failure
+     *     was detected.
      * :note: The two ``org.springframework.dao`` types are named rather than the Redis or JDBC
      *     specific ones: Spring's exception translation maps a Lettuce command timeout to
      *     ``QueryTimeoutException`` and a connection failure to
-     *     ``RedisConnectionFailureException`` (a ``DataAccessResourceFailureException``), so
-     *     this advice stays compilable in the api-gateway, which carries neither spring-orm nor
-     *     a JDBC driver.
+     *     ``RedisConnectionFailureException`` (a ``DataAccessResourceFailureException``), so this
+     *     advice stays compilable in the api-gateway, which carries neither spring-orm nor a JDBC
+     *     driver.
      */
     @ExceptionHandler({QueryTimeoutException.class, DataAccessResourceFailureException.class})
     public ResponseEntity<ErrorResponse> handleInfrastructureUnavailable(DataAccessException ex,
@@ -994,42 +995,42 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 .body(buildBody(status, DatastoreOutageErrorFilter.MESSAGE, request));
     }
 
-    /**
-     * :purpose: Map an infrastructure data-access failure -- ``JpaSystemException`` and every other
-     *     ``DataAccessException`` raised while reading or writing PostgreSQL -- to a uniform HTTP 500
-     *     {@link ErrorResponse} instead of Spring Boot's generic ``/error`` body.
-     * :param ex: the data-access exception thrown by the repository or the persistence provider.
-     * :param request: the current web request.
-     * :returns: a ``500 Internal Server Error`` {@link ResponseEntity} whose body carries the
-     *     correlation and trace ids of the failing request and a generic, non-sensitive message.
-     * :note: Logged at ERROR with the stack trace because, unlike the business outcomes above, an
-     *     infrastructure failure is never expected.
-     * :note: ``DataAccessException`` (spring-tx) is referenced rather than ``JpaSystemException``
-     *     (spring-orm) on purpose: this advice is also imported by the api-gateway, which has no
-     *     spring-orm on its classpath. ``JpaSystemException`` is a ``DataAccessException``, so it is
-     *     handled here in every JPA service.
-     * :note: An UNREACHABLE datastore is answered by {@link #handleDatastoreUnavailable}
-     *     below with a ``503`` instead, which Spring selects for those narrower types.
-     */
+         /**
+          * :purpose: Map an infrastructure data-access failure -- ``JpaSystemException`` and every
+          *     other ``DataAccessException`` raised while reading or writing PostgreSQL -- to a uniform
+          *     HTTP 500 {@link ErrorResponse} instead of Spring Boot's generic ``/error`` body.
+          * :param ex: the data-access exception thrown by the repository or the persistence
+          *     provider.
+          * :param request: the current web request.
+          * :returns: a ``500 Internal Server Error`` {@link ResponseEntity} whose body carries the
+          *     correlation and trace ids of the failing request and a generic, non-sensitive message.
+          * :note: Logged at ERROR with the stack trace because, unlike the business outcomes above,
+          *     an infrastructure failure is never expected.
+          * :note: ``DataAccessException`` (spring-tx) is referenced rather than
+          *     ``JpaSystemException`` (spring-orm) on purpose: this advice is also imported by the
+          *     api-gateway, which has no spring-orm on its classpath. ``JpaSystemException`` is a
+          *     ``DataAccessException``, so it is handled here in every JPA service.
+          * :note: An UNREACHABLE datastore is answered by {@link #handleDatastoreUnavailable} below
+          *     with a ``503`` instead, which Spring selects for those narrower types.
+          */
 
     /**
      * :purpose: Map a transaction-infrastructure failure -- most often
      *     ``CannotCreateTransactionException`` ("Could not open JPA EntityManager for
-     *     transaction") when the database is unreachable and the connection pool times out --
-     *     to the SAME ``500`` body a data-access failure produces.
+     *     transaction") when the database is unreachable and the connection pool times out -- to
+     *     the SAME ``500`` body a data-access failure produces.
      * :param ex: the transaction failure raised while beginning, committing or rolling back.
      * :param request: the current web request.
-     * :returns: a ``500 Internal Server Error`` {@link ResponseEntity} carrying
-     *     {@link #DEPENDENCY_FAILURE_MESSAGE}.
+     * :returns: a ``500 Internal Server Error`` {@link ResponseEntity} carrying {@link
+     *     #DEPENDENCY_FAILURE_MESSAGE}.
      * :note: ``TransactionException`` is NOT a ``DataAccessException``, so one PostgreSQL
      *     outage answered with two different messages depending on whether the read happened
-     *     inside a transaction: a repository call that failed on its own reported the
-     *     data-access text, while ``@Transactional`` reads reported the generic "An unexpected
-     *     error occurred". A caller could not tell the two apart, and neither could an
-     *     operator grepping for one string.
+     *     inside a transaction: a repository call that failed on its own reported the data-access
+     *     text, while ``@Transactional`` reads reported the generic "An unexpected error
+     *     occurred". A caller could not tell the two apart, and neither could an operator grepping
+     *     for one string.
      * :note: ``OptimisticLockingFailureException`` is a ``DataAccessException`` and keeps its
-     *     own ``409`` mapping above; a concurrency conflict is a business outcome, not an
-     *     outage.
+     *     own ``409`` mapping above; a concurrency conflict is a business outcome, not an outage.
      */
     @ExceptionHandler(TransactionException.class)
     public ResponseEntity<ErrorResponse> handleTransactionInfrastructure(TransactionException ex,
@@ -1057,20 +1058,20 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     /**
      * :purpose: Map a transaction that could not be STARTED to HTTP status. A request that
      *     never obtained a database connection within the pool's acquisition timeout is a
-     *     transient capacity refusal and reports ``503`` with ``Retry-After``; any other
-     *     failure to begin a transaction remains a ``500``.
+     *     transient capacity refusal and reports ``503`` with ``Retry-After``; any other failure
+     *     to begin a transaction remains a ``500``.
      * :param ex: the transaction-creation failure raised by the transaction manager.
      * :param request: the current web request.
-     * :returns: a ``503 Service Unavailable`` or ``500 Internal Server Error``
-     *     {@link ResponseEntity} wrapping the shared error body.
+     * :returns: a ``503 Service Unavailable`` or ``500 Internal Server Error`` {@link
+     *     ResponseEntity} wrapping the shared error body.
      * :note: ``CannotCreateTransactionException`` is a ``TransactionException``, NOT a
      *     ``DataAccessException``, so it reached the generic handler and every pool-timeout
-     *     refusal was reported as ``500`` with no retry signal -- telling the caller the
-     *     service is broken when it is merely saturated, and giving load shedders and
-     *     clients nothing to act on.
+     *     refusal was reported as ``500`` with no retry signal -- telling the caller the service
+     *     is broken when it is merely saturated, and giving load shedders and clients nothing to
+     *     act on.
      * :note: ``org.springframework.transaction`` ships in the same artifact as
-     *     ``org.springframework.dao``, so referencing it keeps this shared advice compilable
-     *     in the api-gateway, which has no ``spring-orm`` on its classpath.
+     *     ``org.springframework.dao``, so referencing it keeps this shared advice compilable in
+     *     the api-gateway, which has no ``spring-orm`` on its classpath.
      */
     @ExceptionHandler(org.springframework.transaction.CannotCreateTransactionException.class)
     public ResponseEntity<ErrorResponse> handleCannotCreateTransaction(

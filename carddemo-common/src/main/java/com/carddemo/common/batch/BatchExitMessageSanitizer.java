@@ -22,23 +22,24 @@ import org.slf4j.LoggerFactory;
 
 /**
  * :purpose: Decide what a batch job execution may publish as its exit description, so a
- *  caller polling a run learns its OUTCOME without being handed the service's internals.
- *  Spring Batch stores the exit description of a failed job as the full stack trace of the
- *  cause: a single ``FAILED`` run wrote 2,500 characters naming the exception type, the
- *  generated SQL statement with its column list, the entity class and identifier, and
- *  nineteen framework frames with file names and line numbers. That is the batch tier's
- *  equivalent of an unsanitized error body (CWE-209, CWE-497), and it was being serialized
- *  verbatim by every execution-status endpoint.
- * :output: A sanitizing function used by the batch launch and execution-status endpoints of
- *  the batch, reporting and transaction services, so all three publish the same contract.
- * :note: The decision is an ALLOW list, not a blocklist of known-bad markers: a description
- *  is published only when it looks like the single-line, legacy-visible return-code text the
- *  application's own listeners produce -- ``Return code 4: 38 transaction(s) rejected``, the
- *  ``CBTRN02C`` tally -- and anything else is replaced. A blocklist would publish the next
- *  diagnostic shape nobody thought to exclude.
+ *     caller polling a run learns its OUTCOME without being handed the service's internals.
+ *     Spring Batch stores the exit description of a failed job as the full stack trace of the
+ *     cause: a single ``FAILED`` run wrote 2,500 characters naming the exception type, the
+ *     generated SQL statement with its column list, the entity class and identifier, and
+ *     nineteen framework frames with file names and line numbers. That is the batch tier's
+ *     equivalent of an unsanitized error body (CWE-209, CWE-497), and it was being serialized
+ *     verbatim by every execution-status endpoint.
+ * :output: A sanitizing function used by the batch launch and execution-status endpoints
+ *     of the batch, reporting and transaction services, so all three publish the same
+ *     contract.
+ * :note: The decision is an ALLOW list, not a blocklist of known-bad markers: a
+ *     description is published only when it looks like the single-line, legacy-visible
+ *     return-code text the application's own listeners produce -- ``Return code 4: 38
+ *     transaction(s) rejected``, the ``CBTRN02C`` tally -- and anything else is replaced. A
+ *     blocklist would publish the next diagnostic shape nobody thought to exclude.
  * :note: The withheld text is NOT re-logged here. Spring Batch has already written the
- *  cause, with its stack trace, to the service log under the job's own correlation id, which
- *  is where an operator reads it; repeating it would only duplicate the record.
+ *     cause, with its stack trace, to the service log under the job's own correlation id,
+ *     which is where an operator reads it; repeating it would only duplicate the record.
  */
 public final class BatchExitMessageSanitizer {
 

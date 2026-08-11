@@ -1,20 +1,17 @@
 /**
- * AdminMenuPage
- * =============
- *
- * :purpose: Administrator menu screen — the React replacement for BMS mapset
- *     ``COADM01`` (map ``COADM1A``, 24x80) and program ``COADM01C`` under CICS
- *     transaction ``CA00``. It lists the administrator-only options returned by
- *     ``GET /admin/menu`` in the mapset's option slots (``OPTN001``-``OPTN012``,
- *     ``L=40``), accepts a two-character numeric option (``OPTIONI PIC X(2)``), and
- *     submits it to the gateway's own selection endpoint, navigating to the
- *     administration screen the gateway dispatched to. The ``PROCESS-ENTER-KEY``
- *     validation is therefore applied by the server, not re-implemented here; the
- *     line-24 ``ENTER=Continue`` / ``F3=Exit`` key semantics are preserved.
- * :output: The screen body only — heading, option slots, and the ``OPTION``
- *     entry field. The header, the line-23 message region and the line-24
- *     function-key bar are rendered by the shared ``Layout`` shell from the
- *     chrome this page publishes through :func:`useScreenChrome`.
+ * AdminMenuPage =============
+ * :purpose: Administrator menu screen — the React replacement for BMS mapset ``COADM01``
+ *     (map ``COADM1A``, 24x80) and program ``COADM01C`` under CICS transaction ``CA00``. It
+ *     lists the administrator-only options returned by ``GET /admin/menu`` in the mapset's
+ *     option slots (``OPTN001``-``OPTN012``, ``L=40``), accepts a two-character numeric option
+ *     (``OPTIONI PIC X(2)``), and submits it to the gateway's own selection endpoint,
+ *     navigating to the administration screen the gateway dispatched to. The
+ *     ``PROCESS-ENTER-KEY`` validation is therefore applied by the server, not re-implemented
+ *     here; the line-24 ``ENTER=Continue`` / ``F3=Exit`` key semantics are preserved.
+ * :output: The screen body only — heading, option slots, and the ``OPTION`` entry field.
+ *     The header, the line-23 message region and the line-24 function-key bar are rendered by
+ *     the shared ``Layout`` shell from the chrome this page publishes through
+ *     :func:`useScreenChrome`.
  */
 import { useCallback, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import type { ReactElement } from 'react';

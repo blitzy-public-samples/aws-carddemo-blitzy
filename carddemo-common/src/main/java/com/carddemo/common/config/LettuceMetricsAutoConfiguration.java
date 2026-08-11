@@ -30,30 +30,27 @@ import org.springframework.boot.data.redis.autoconfigure.ClientResourcesBuilderC
 import org.springframework.context.annotation.Bean;
 
 /**
- * :purpose: Publish Redis (Lettuce) command metrics to the service's Micrometer
- *  registry, so the Redis row of the CardDemo Grafana dashboard has data. Spring
- *  Boot wires a Lettuce ``ClientResources`` with Lettuce's default *no-op*
- *  command-latency recorder, so ``lettuce_command_completion_seconds_*`` and
- *  ``lettuce_command_firstresponse_seconds_*`` were never produced and the three
- *  Redis panels could only ever read "No data". This
- *  auto-configuration installs Lettuce's Micrometer recorder on that same
- *  ``ClientResources`` instead of replacing the bean, so every other Boot-managed
- *  Lettuce setting is preserved.
- * :output: One {@link ClientResourcesBuilderCustomizer} bean that attaches a
- *  {@link MicrometerCommandLatencyRecorder} to the Lettuce client resources. The
- *  recorder emits two timers per (command, remote endpoint) pair -
- *  ``lettuce.command.completion`` and ``lettuce.command.firstresponse`` - which
- *  Micrometer exports as the ``_count``, ``_sum`` and ``_max`` series the
- *  dashboard queries.
- * :note: Applies only where Lettuce and Boot's Redis auto-configuration are both
- *  on the classpath, so ``batch-service`` (which has no Redis dependency at all)
- *  is unaffected. The {@link MeterRegistry} is resolved lazily through an
- *  {@link ObjectProvider} inside the customizer: the customizer runs when Boot
- *  builds the client resources, which is strictly after the registry bean is
- *  available, and resolving it lazily avoids forcing an auto-configuration
- *  ordering constraint on the metrics infrastructure. Latency percentiles and
- *  histogram buckets are deliberately left off ({@link MicrometerOptions#create()}
- *  defaults) so the added cardinality stays negligible.
+ * :purpose: Publish Redis (Lettuce) command metrics to the service's Micrometer registry,
+ *     so the Redis row of the CardDemo Grafana dashboard has data. Spring Boot wires a Lettuce
+ *     ``ClientResources`` with Lettuce's default *no-op* command-latency recorder, so
+ *     ``lettuce_command_completion_seconds_*`` and ``lettuce_command_firstresponse_seconds_*``
+ *     were never produced and the three Redis panels could only ever read "No data". This
+ *     auto-configuration installs Lettuce's Micrometer recorder on that same
+ *     ``ClientResources`` instead of replacing the bean, so every other Boot-managed Lettuce
+ *     setting is preserved.
+ * :output: One {@link ClientResourcesBuilderCustomizer} bean that attaches a {@link
+ *     MicrometerCommandLatencyRecorder} to the Lettuce client resources. The recorder emits
+ *     two timers per (command, remote endpoint) pair - ``lettuce.command.completion`` and
+ *     ``lettuce.command.firstresponse`` - which Micrometer exports as the ``_count``, ``_sum``
+ *     and ``_max`` series the dashboard queries.
+ * :note: Applies only where Lettuce and Boot's Redis auto-configuration are both on the
+ *     classpath, so ``batch-service`` (which has no Redis dependency at all) is unaffected.
+ *     The {@link MeterRegistry} is resolved lazily through an {@link ObjectProvider} inside
+ *     the customizer: the customizer runs when Boot builds the client resources, which is
+ *     strictly after the registry bean is available, and resolving it lazily avoids forcing an
+ *     auto-configuration ordering constraint on the metrics infrastructure. Latency
+ *     percentiles and histogram buckets are deliberately left off ({@link
+ *     MicrometerOptions#create()} defaults) so the added cardinality stays negligible.
  */
 @AutoConfiguration
 @ConditionalOnClass({MicrometerCommandLatencyRecorder.class, ClientResourcesBuilderCustomizer.class})

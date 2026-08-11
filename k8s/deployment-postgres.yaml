@@ -78,7 +78,11 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: postgres
-          image: postgres:18@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+          # Built from db/Dockerfile by `docker compose build postgres`: the
+          # official postgres:18 image with the unreachable `gosu` helper removed,
+          # which is where every fixable CRITICAL/HIGH finding on postgres:18
+          # lives. runAsUser: 999 above is what makes that helper unreachable.
+          image: carddemo/postgres:1.0.0
           imagePullPolicy: IfNotPresent
           # Connection budget. Each JPA service now holds a bounded
           # HikariCP pool (steady state 15 connections in total, ceiling 68 for a
@@ -95,6 +99,13 @@ spec:
             - max_connections=200
           securityContext:
             allowPrivilegeEscalation: false
+            # The cluster's ONLY writable location is the PersistentVolume mounted
+            # at PGDATA. Everything else the server touches at run time - the unix
+            # socket directory and its lock files, and the temporary files initdb
+            # writes - is an explicit emptyDir below, so the image layers themselves
+            # can be immutable. Without this a compromised backend could rewrite
+            # binaries, extensions or the entrypoint inside the running container.
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
@@ -185,6 +196,14 @@ spec:
             - name: postgres-init
               mountPath: /docker-entrypoint-initdb.d
               readOnly: true
+            # Writable scratch demanded by readOnlyRootFilesystem above. The server
+            # creates its unix socket and lock file in /var/run/postgresql on every
+            # start, and initdb/pg_ctl use /tmp; both are pod-scoped and hold no
+            # durable state, so an emptyDir is the correct backing.
+            - name: postgres-run
+              mountPath: /var/run/postgresql
+            - name: postgres-tmp
+              mountPath: /tmp
           # Sized for the raised max_connections above: the shared
           # structures scale with max_connections and each established backend adds
           # a few MB of private memory, so the 68-connection ceiling of a
@@ -237,3 +256,8 @@ spec:
           configMap:
             name: carddemo-postgres-init
             defaultMode: 0555
+        # Pod-scoped scratch for the read-only root filesystem (see volumeMounts).
+        - name: postgres-run
+          emptyDir: {}
+        - name: postgres-tmp
+          emptyDir: {}

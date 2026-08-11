@@ -21,6 +21,7 @@ import com.carddemo.common.dto.TransactionAddRequestDto;
 import com.carddemo.common.dto.TransactionListItemDto;
 import com.carddemo.common.dto.TransactionViewResponseDto;
 import com.carddemo.common.util.DateUtil;
+import com.carddemo.common.util.LegacyTimestamp;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -161,8 +162,15 @@ public class TransactionMapper {
         entity.setTranMerchantName(request.getTranMerchantName());
         entity.setTranMerchantCity(request.getTranMerchantCity());
         entity.setTranMerchantZip(request.getTranMerchantZip());
-        entity.setTranOrigTs(request.getTranOrigTs());
-        entity.setTranProcTs(request.getTranProcTs());
+        // The screen sends the ten-character COTRN02 date field; the column is PIC X(26).
+        // Normalizing HERE, at the one point that builds the entity, is what gives every CT02
+        // row a single stored shape - the date left-justified and space-filled, exactly as
+        // ``MOVE TORIGDTI TO TRAN-ORIG-TS`` leaves it (COTRN02C L464-L465). Copying the
+        // request value through unchanged made the stored bytes depend on how many characters
+        // the caller happened to send. The service validates the shape before calling this,
+        // so a value that is not the map field can only mean a programming error.
+        entity.setTranOrigTs(storedTimestamp(request.getTranOrigTs()));
+        entity.setTranProcTs(storedTimestamp(request.getTranProcTs()));
         return entity;
     }
 
@@ -186,13 +194,27 @@ public class TransactionMapper {
      * :param tranOrigTs: the 26-character origination timestamp; may be ``null``.
      * :returns: the ``MM/DD/YY`` date, or an empty string when the timestamp is
      *   null, too short, or not a valid ISO date.
+     * :note: Positions one to ten are the only part of the stored value any reader may
+     *   depend on, because the three legacy producers differ after them
+     *   ({@link LegacyTimestamp}).
      */
     private static String formatShortDate(String tranOrigTs) {
-        if (tranOrigTs == null || tranOrigTs.length() < 10) {
+        String date = LegacyTimestamp.storedDatePortion(tranOrigTs);
+        if (date == null) {
             return "";
         }
-        return DateUtil.parse(tranOrigTs.substring(0, 10), DateUtil.MASK_ISO)
+        return DateUtil.parse(date, DateUtil.MASK_ISO)
                 .map(SHORT_DATE::format)
                 .orElse("");
+    }
+
+    /**
+     * :purpose: Render a validated COTRN02 date map field in the stored 26-character form.
+     * :param value: the ten-character map field value, optionally space-filled; may be
+     *     ``null``.
+     * :returns: the canonical stored value, or ``null`` when ``value`` is ``null``.
+     */
+    private static String storedTimestamp(String value) {
+        return value == null ? null : LegacyTimestamp.fromMapDateField(value);
     }
 }

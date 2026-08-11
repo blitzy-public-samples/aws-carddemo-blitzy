@@ -23,20 +23,20 @@ import org.springframework.jdbc.core.RowMapper;
 
 /**
  * :purpose: Map one ``daily_transactions`` row to a {@link DailyTransaction}, the
- *     ``CVTRA06Y DALYTRAN-RECORD`` value object the posting job validates. The feed is
- *     read through JDBC rather than JPA because ``DailyTransaction`` is deliberately a
- *     non-entity value object shared by every service, so it carries no
- *     ``@Entity``/``@Table``/``@Id`` mapping.
+ *     ``CVTRA06Y DALYTRAN-RECORD`` value object the posting job validates. The feed is read
+ *     through JDBC rather than JPA because ``DailyTransaction`` is deliberately a non-entity
+ *     value object shared by every service, so it carries no ``@Entity``/``@Table``/``@Id``
+ *     mapping.
  * :output: A fully populated {@link DailyTransaction} for the current result-set row.
  * :note: ``dalytran_amt`` is read as a ``BigDecimal`` so the ``NUMERIC(11,2)`` scale of
- *     the ``TRAN-AMT`` COMP-3 field survives unchanged, and ``dalytran_merchant_id`` is
- *     read through ``getObject`` so a SQL ``NULL`` stays ``null`` rather than becoming
- *     zero, which would alter the value the validation rules see.
+ *     the ``TRAN-AMT`` COMP-3 field survives unchanged, and ``dalytran_merchant_id`` is read
+ *     through ``getObject`` so a SQL ``NULL`` stays ``null`` rather than becoming zero, which
+ *     would alter the value the validation rules see.
  * :note: Every mapped row is checked by {@link DailyTransactionFeedValidator} before it
- *     leaves the mapper, so a staged row that is not a usable fixed-width
- *     ``DALYTRAN`` record fails with an actionable message naming the record and the
- *     offending column instead of aborting the step later with a raw
- *     ``NullPointerException`` or ``StringIndexOutOfBoundsException``.
+ *     leaves the mapper, so a staged row that is not a usable fixed-width ``DALYTRAN`` record
+ *     fails with an actionable message naming the record and the offending column instead of
+ *     aborting the step later with a raw ``NullPointerException`` or
+ *     ``StringIndexOutOfBoundsException``.
  */
 public class DailyTransactionRowMapper implements RowMapper<DailyTransaction> {
 

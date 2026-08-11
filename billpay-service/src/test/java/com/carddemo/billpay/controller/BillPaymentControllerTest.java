@@ -296,7 +296,8 @@ class BillPaymentControllerTest {
                         .content("{\"accountId\":\"123456789012\",\"confirm\":\"\"}"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.message").value(MSG_ACCOUNT_NOT_FOUND))
-                .andExpect(jsonPath("$.fieldErrors").doesNotExist());
+                // Always an object, empty when the failure names no field (never null, never absent).
+                .andExpect(jsonPath("$.fieldErrors").isEmpty());
 
         verify(billPaymentService).processBillPayment(any(BillPaymentRequestDto.class),
                 any(SessionContext.class));

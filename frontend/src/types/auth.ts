@@ -30,20 +30,19 @@ export interface SignonRequestDto {
 }
 
 /**
- * :purpose: Success response body for ``POST /auth/signon`` representing a
- *   completed authentication. Mirrors the backend
- *   ``com.carddemo.auth.dto.SignonResponseDto`` JSON contract exactly — a focused
- *   three-field result rather than the full :ts:type:`SessionContext`, which this
- *   endpoint does not return.
+ * :purpose: Success response body for ``POST /auth/signon`` representing a completed
+ *     authentication. Mirrors the backend ``com.carddemo.auth.dto.SignonResponseDto`` JSON
+ *     contract exactly — a focused three-field result rather than the full
+ *     :ts:type:`SessionContext`, which this endpoint does not return.
  * :field userId: authenticated user id echoed back (legacy ``CDEMO-USER-ID`` /
- *   ``WS-USER-ID``); 8 characters maximum.
- * :field userType: granted role as the frozen one-character ``SEC-USR-TYPE`` wire
- *   code (:ts:type:`Role` — ``'A'`` administrator / ``'U'`` standard user). The
- *   client derives the ``ROLE_ADMIN`` / ``ROLE_USER`` authority from this code.
- * :field redirectTarget: post-login navigation target as the legacy CICS menu
- *   transaction id — ``'CA00'`` (administrator menu, legacy ``COADM01C``) or
- *   ``'CM00'`` (standard-user menu, legacy ``COMEN01C``) — derived from the
- *   ``COSGN00C`` ``XCTL`` routing. Always populated on the success path.
+ *     ``WS-USER-ID``); 8 characters maximum.
+ * :field userType: granted role as the frozen one-character ``SEC-USR-TYPE`` wire code
+ *     (:ts:type:`Role` — ``'A'`` administrator / ``'U'`` standard user). The client derives
+ *     the ``ROLE_ADMIN`` / ``ROLE_USER`` authority from this code.
+ * :field redirectTarget: post-login navigation target as the legacy CICS menu transaction
+ *     id — ``'CA00'`` (administrator menu, legacy ``COADM01C``) or ``'CM00'`` (standard-user
+ *     menu, legacy ``COMEN01C``) — derived from the ``COSGN00C`` ``XCTL`` routing. Always
+ *     populated on the success path.
  */
 export interface SignonResponseDto {
   userId: string;

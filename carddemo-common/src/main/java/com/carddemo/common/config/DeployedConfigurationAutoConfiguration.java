@@ -32,28 +32,28 @@ import org.springframework.core.env.Environment;
 import org.springframework.core.env.PropertySource;
 
 /**
- * :purpose: Refuse to start a DEPLOYED CardDemo service on packaged developer defaults, and make an
- *           unrecognised active profile visible instead of silent.
- * :output: Either a started context whose critical connection settings genuinely came from the
- *          environment, or an {@link IllegalStateException} naming exactly which settings are
- *          missing; plus a WARN for every active profile outside the supported set.
- * :note: Two defects motivate this. A service launched with ``SPRING_PROFILES_ACTIVE=docker`` but
- *        WITHOUT ``SPRING_DATASOURCE_URL`` started happily against the in-file
- *        ``jdbc:postgresql://postgres:5432/carddemo`` default and reported healthy, hiding a broken
- *        deployment; and a service launched with an unknown profile started with no warning at all
- *        while its configuration and its logging format silently changed. Validating here covers
- *        docker, k8s and prod with ONE implementation instead of duplicating a profile document per
- *        service.
- * :note: The datasource requirement applies only to services that declare a ``DataSource``; the
- *        api-gateway is therefore exempt. "Supplied by the environment" means the property is
- *        contributed by a property source OTHER than the packaged ``application.yml`` — an
- *        environment variable, a system property, a command-line argument or an external config
- *        file all satisfy it.
- * :note: Implemented as a ``BeanFactoryPostProcessor`` so it runs before ANY singleton is created.
- *        Ordinary beans are created after the datasource and Flyway beans, so a missing
- *        ``SPRING_DATASOURCE_URL`` was reported by HikariCP as "Driver org.postgresql.Driver claims
- *        to not accept jdbcUrl, ${SPRING_DATASOURCE_URL}" - technically a fail-fast, but not a
- *        message that names the missing setting.
+ * :purpose: Refuse to start a DEPLOYED CardDemo service on packaged developer defaults,
+ *     and make an unrecognised active profile visible instead of silent.
+ * :output: Either a started context whose critical connection settings genuinely came from
+ *     the environment, or an {@link IllegalStateException} naming exactly which settings are
+ *     missing; plus a WARN for every active profile outside the supported set.
+ * :note: Two defects motivate this. A service launched with
+ *     ``SPRING_PROFILES_ACTIVE=docker`` but WITHOUT ``SPRING_DATASOURCE_URL`` started happily
+ *     against the in-file ``jdbc:postgresql://postgres:5432/carddemo`` default and reported
+ *     healthy, hiding a broken deployment; and a service launched with an unknown profile
+ *     started with no warning at all while its configuration and its logging format silently
+ *     changed. Validating here covers docker, k8s and prod with ONE implementation instead of
+ *     duplicating a profile document per service.
+ * :note: The datasource requirement applies only to services that declare a
+ *     ``DataSource``; the api-gateway is therefore exempt. "Supplied by the environment" means
+ *     the property is contributed by a property source OTHER than the packaged
+ *     ``application.yml`` — an environment variable, a system property, a command-line
+ *     argument or an external config file all satisfy it.
+ * :note: Implemented as a ``BeanFactoryPostProcessor`` so it runs before ANY singleton is
+ *     created. Ordinary beans are created after the datasource and Flyway beans, so a missing
+ *     ``SPRING_DATASOURCE_URL`` was reported by HikariCP as "Driver org.postgresql.Driver
+ *     claims to not accept jdbcUrl, ${SPRING_DATASOURCE_URL}" - technically a fail-fast, but
+ *     not a message that names the missing setting.
  */
 @AutoConfiguration
 public class DeployedConfigurationAutoConfiguration {

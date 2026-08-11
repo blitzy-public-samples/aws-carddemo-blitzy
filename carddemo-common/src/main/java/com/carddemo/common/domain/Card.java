@@ -15,26 +15,23 @@ import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
 /**
- * JPA entity mapping the legacy COBOL ``CARD-RECORD`` layout (copybook
- * ``CVACT02Y``, RECLN 150) onto the PostgreSQL ``cards`` table.
- *
- * Each instance represents a single payment card in the CardDemo domain. The
- * entity carries the 16-character card number (PAN) as its primary key, a
- * scalar foreign key to the owning account, the sensitive card verification
- * value (CVV), the embossed cardholder name, the card expiration date, and the
- * single-character active-status flag. The trailing COBOL ``FILLER PIC X(59)``
- * is intentionally not mapped.
- *
- * The card number and CVV are persisted as ``String`` (not numeric) so that
- * exact digit sequences and leading zeros are preserved. The CVV is a sensitive
- * value and is never emitted by {@link #toString()}; the card number is masked
- * to its last four characters there.
- *
+ * JPA entity mapping the legacy COBOL ``CARD-RECORD`` layout (copybook ``CVACT02Y``, RECLN
+ *     150) onto the PostgreSQL ``cards`` table. Each instance represents a single payment card
+ *     in the CardDemo domain. The entity carries the 16-character card number (PAN) as its
+ *     primary key, a scalar foreign key to the owning account, the sensitive card verification
+ *     value (CVV), the embossed cardholder name, the card expiration date, and the
+ *     single-character active-status flag. The trailing COBOL ``FILLER PIC X(59)`` is
+ *     intentionally not mapped. The card number and CVV are persisted as ``String`` (not
+ *     numeric) so that exact digit sequences and leading zeros are preserved. The CVV is a
+ *     sensitive value and is never emitted by {@link #toString()}; the card number is masked
+ *     to its last four characters there.
  * :ivar cardNum: 16-character primary account number; primary key (``card_num``).
- * :ivar cardAcctId: owning account identifier; scalar foreign key to ``accounts.acct_id`` (``card_acct_id``).
+ * :ivar cardAcctId: owning account identifier; scalar foreign key to ``accounts.acct_id``
+ *     (``card_acct_id``).
  * :ivar cardCvvCd: sensitive 3-digit card verification value (``card_cvv_cd``).
  * :ivar cardEmbossedName: name embossed on the card (``card_embossed_name``).
- * :ivar cardExpiraionDate: expiration date in ``YYYY-MM-DD`` form (``card_expiraion_date``).
+ * :ivar cardExpiraionDate: expiration date in ``YYYY-MM-DD`` form
+ *     (``card_expiraion_date``).
  * :ivar cardActiveStatus: single-character active-status flag (``card_active_status``).
  */
 @Entity
@@ -136,6 +133,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Read ``version``.
      * :returns: the optimistic-locking version, or ``null`` before the row is first persisted.
      */
     public Long getVersion() {
@@ -143,6 +141,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Set ``version``.
      * :param version: the optimistic-locking version to carry; normally managed by the provider.
      */
     public void setVersion(Long version) {
@@ -150,6 +149,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Read ``cardNum``.
      * :returns: the card number (PAN).
      */
     public String getCardNum() {
@@ -157,6 +157,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Set ``cardNum``.
      * :param cardNum: the card number (PAN) to set.
      */
     public void setCardNum(String cardNum) {
@@ -164,6 +165,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Read ``cardAcctId``.
      * :returns: the owning account identifier.
      */
     public Long getCardAcctId() {
@@ -171,6 +173,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Set ``cardAcctId``.
      * :param cardAcctId: the owning account identifier to set.
      */
     public void setCardAcctId(Long cardAcctId) {
@@ -178,6 +181,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Read ``cardCvvCd``.
      * :returns: the sensitive card verification value (CVV); never serialized to
      *     clients.
      */
@@ -187,6 +191,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Read ``account``.
      * :returns: the read-only owning-account association, or ``null`` when not
      *     loaded.
      */
@@ -195,6 +200,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Set ``cardCvvCd``.
      * :param cardCvvCd: the sensitive card verification value (CVV) to set.
      */
     public void setCardCvvCd(String cardCvvCd) {
@@ -202,6 +208,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Read ``cardEmbossedName``.
      * :returns: the embossed cardholder name.
      */
     public String getCardEmbossedName() {
@@ -209,6 +216,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Set ``cardEmbossedName``.
      * :param cardEmbossedName: the embossed cardholder name to set.
      */
     public void setCardEmbossedName(String cardEmbossedName) {
@@ -216,6 +224,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Read ``cardExpiraionDate``.
      * :returns: the card expiration date (``YYYY-MM-DD``).
      */
     public String getCardExpiraionDate() {
@@ -223,6 +232,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Set ``cardExpiraionDate``.
      * :param cardExpiraionDate: the card expiration date (``YYYY-MM-DD``) to set.
      */
     public void setCardExpiraionDate(String cardExpiraionDate) {
@@ -230,6 +240,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Read ``cardActiveStatus``.
      * :returns: the single-character active-status flag.
      */
     public String getCardActiveStatus() {
@@ -237,6 +248,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Set ``cardActiveStatus``.
      * :param cardActiveStatus: the single-character active-status flag to set.
      */
     public void setCardActiveStatus(String cardActiveStatus) {
@@ -261,6 +273,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Hash consistent with :java:meth:`equals`.
      * :returns: a proxy-stable hash code consistent with {@link #equals(Object)}.
      */
     @Override
@@ -269,6 +282,7 @@ public class Card {
     }
 
     /**
+     * :purpose: Diagnostic rendering that never discloses unmasked PII.
      * Renders a diagnostic representation that OMITS the sensitive CVV and masks
      * the card number to its last four characters.
      *

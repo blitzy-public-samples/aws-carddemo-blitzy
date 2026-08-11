@@ -15,6 +15,7 @@
  */
 package com.carddemo.common.dto;
 
+import com.carddemo.common.validation.SingleByteText;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.Size;
 
@@ -30,6 +31,16 @@ import jakarta.validation.constraints.Size;
  *     accepted as a query parameter, because a URL is recorded verbatim by access logs and
  *     by tracing spans (CWE-598).
  */
+/*
+ * Boundary encoding guard. The fields of this request are persisted and then
+ * rendered into the 80-byte USRSEC record (CSUSR01Y),
+ * every one of which is a BYTE-width contract a downstream consumer parses by
+ * offset. Text that needs more than one byte per character therefore cannot
+ * survive that rendering intact - it either loses the character or shifts every
+ * following field - so it is refused here, at the only point where the operator
+ * can still be told which field to correct.
+ */
+@SingleByteText
 public class UpdateUserRequestDto {
 
     /** :purpose: the new first name (``SEC-USR-FNAME`` ``PIC X(20)``). */

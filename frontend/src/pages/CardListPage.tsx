@@ -14,7 +14,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import type { ReactElement } from 'react';
-import { useNavigate } from 'react-router';
+import { useLocation, useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import { isBrowseNotice } from '../components/browseNotices';
 import { faultedFieldProps, invalidValueProps } from '../components/ErrorBanner';
@@ -33,7 +33,12 @@ import {
   useInitialFocus,
   useScreenAction,
 } from '../hooks';
-import { CARD_DETAIL_ROUTE, CARD_LIST_ROUTE, CARD_UPDATE_ROUTE } from './cardSelection';
+import {
+  CARD_DETAIL_ROUTE,
+  CARD_LIST_ROUTE,
+  CARD_UPDATE_ROUTE,
+  readCardBrowse,
+} from './cardSelection';
 import { isFilterAllDigits, isFilterNotSupplied } from './screenFilters';
 
 /** Width of the account filter (``COCRDLI`` ``ACCTSIDI PIC X(11)``). */
@@ -54,6 +59,15 @@ const ROW_ACTION_LENGTH = 1;
 const COLUMN_RULES: readonly number[] = [6, 15, 15, 8];
 
 /**
+ * :purpose: The mapset's own column pitch for each browse column of ``COCRDLI``.
+ * :note: The dashed rules stand at ``POS=(10,10) (10,20) (10,43) (10,65)``, so the pitches
+ *     are 10, 23, 22 and 8. They are what the ``<colgroup>`` declares: sizing a column to
+ *     its RULE length instead is short of the pitch by the blank cells the mapset leaves
+ *     after the rule, and the shortfall accumulated across the four columns.
+ */
+const COLUMN_PITCHES: readonly number[] = [10, 23, 22, 8];
+
+/**
  * :purpose: The table's floor width in character cells: every declared column width plus
  *     the one blank separator cell each carries.
  * :note: Without a floor the columns are content-derived, so the trailing column's fit
@@ -61,7 +75,7 @@ const COLUMN_RULES: readonly number[] = [6, 15, 15, 8];
  *     cleared its container by a twentieth of a character cell. Holding the table to this
  *     floor puts any shortfall into the scroll range instead.
  */
-const TABLE_MIN_WIDTH_CH = COLUMN_RULES.reduce((total, run) => total + run + 2, 0);
+const TABLE_MIN_WIDTH_CH = COLUMN_PITCHES.reduce((total, pitch) => total + pitch, 0);
 
 /** The accepted row-action code (``COCRDLIC`` ``SELECT-OK``). */
 const SELECT_ACTION_VIEW = 'S';
@@ -163,12 +177,37 @@ function buildBrowseRequest(
  */
 export default function CardListPage(): ReactElement {
   const navigate = useNavigate();
+  // The browse position a screen hands back with PF3, read once on mount. It is the
+  // COCRDLIC WS-THIS-PROGCOMMAREA the outgoing transfer carried.
+  const restoredBrowse = (useLocation().state as { browse?: unknown } | null)?.browse;
   const { setChrome } = useScreenChrome();
 
   const [accountId, setAccountId] = useState('');
   const [cardNumber, setCardNumber] = useState('');
   const [screenMessage, setScreenMessage] = useState('');
   const [rowActions, setRowActions] = useState<Record<string, string>>({});
+  /**
+   * :purpose: ``COCRDLIC`` ``FLG-ACCTFILTER-NOT-OK`` / ``FLG-CARDFILTER-NOT-OK`` — which
+   *     filter field failed its edit, so that field turns RED and takes the cursor
+   *     (``MOVE DFHRED TO ACCTSIDC`` / ``CARDSIDC`` plus ``MOVE -1 TO ...L``, L872-L880).
+   */
+  const [filterInError, setFilterInError] = useState<'account' | 'card' | null>(null);
+  /**
+   * :purpose: ``COCRDLIC`` ``WS-ROW-CRDSELECT-ERROR`` — the card numbers whose row
+   *     selector the array edit faulted, so each one turns RED
+   *     (``MOVE DFHRED TO CRDSELnC``, L755-L827). The multi-selection branch faults EVERY
+   *     selected row (L1090-L1105), not just the second one, so this is a set rather than
+   *     a single row.
+   */
+  const [faultedRows, setFaultedRows] = useState<readonly string[]>([]);
+  /**
+   * :purpose: ``COCRDLIC`` ``FLG-PROTECT-SELECT-ROWS-YES`` — set by either filter edit
+   *     when it fails (L1019-L1021, L1053-L1055) and read by ``1250-SETUP-ARRAY-ATTRIBS``,
+   *     which then moves ``DFHBMPRF`` into every row selector (L751-L753). A screen whose
+   *     filter is wrong does not accept a row action, so the selectors stop accepting
+   *     entry until the filter is corrected.
+   */
+  const selectorsProtected = filterInError !== null;
 
   const { data, error, loading, isInFlight, run } = useApi<
     CardListResponseDto,
@@ -180,11 +219,58 @@ export default function CardListPage(): ReactElement {
   const pageNumber = data?.pageNumber ?? FIRST_PAGE;
   const hasNextPage = data?.nextPage === true;
 
-  // First entry into the transaction browses the card file from the start with
-  // no filters. `run` is stable for a stable api function, so this fires once.
+  // First entry browses the card file from the start with no filters. When a screen hands
+  // control back it also hands back the two COMMAREA filters it was given, and the browse
+  // re-runs UNDER THOSE FILTERS from the FIRST page -- which is exactly what COCRDLIC does
+  // on re-entry: L840-L867 repaints ACCTSIDO and CARDSIDO from CDEMO-ACCT-ID and
+  // CDEMO-CARD-NUM, while WS-CA-SCREEN-NUM does not survive the XCTL (the program-private
+  // area is not passed) so there is no page to resume. `run` is stable for a stable api
+  // function, so this fires once.
   useEffect(() => {
+    const resumed = readCardBrowse(restoredBrowse);
+    if (resumed !== undefined) {
+      setAccountId(resumed.accountId);
+      setCardNumber(resumed.cardNumber);
+      void run(
+        buildBrowseRequest(resumed.accountId, resumed.cardNumber, FIRST_PAGE),
+      );
+      return;
+    }
     void run(buildBrowseRequest('', '', FIRST_PAGE));
-  }, [run]);
+  }, [restoredBrowse, run]);
+
+  /**
+   * :purpose: Whether a row's selector carries the ``WS-ROW-CRDSELECT-ERROR`` flag, which
+   *     is what ``1250-SETUP-ARRAY-ATTRIBS`` reddens. A row is faulted either because the
+   *     array edit named it (an unusable code, or one of several selections) or because the
+   *     code currently in it is not one the source accepts.
+   * :param cardNum: the row's card number, which is its identity on the screen.
+   * :returns: ``true`` when the selector must be shown in the error attribute.
+   */
+  const isRowFaulted = useCallback(
+    (cardNum: string): boolean =>
+      faultedRows.includes(cardNum) || isRowActionInvalid(rowActions[cardNum]),
+    [faultedRows, rowActions],
+  );
+
+  /**
+   * :purpose: The character a row selector displays. ``1250-SETUP-ARRAY-ATTRIBS`` moves
+   *     ``'*'`` into a faulted selector that arrived blank (L757-L760), so a row the
+   *     program faulted is never shown as an empty field with no indication of why it is
+   *     red.
+   * :param cardNum: the row's card number.
+   * :returns: the entered code, or ``'*'`` for a faulted row that holds none.
+   */
+  const displayedRowAction = useCallback(
+    (cardNum: string): string => {
+      const entered = rowActions[cardNum] ?? '';
+      if (entered.trim() === '' && faultedRows.includes(cardNum)) {
+        return '*';
+      }
+      return entered;
+    },
+    [faultedRows, rowActions],
+  );
 
   const handleRowActionChange = useCallback(
     (cardNum: string, action: string): void => {
@@ -206,14 +292,20 @@ export default function CardListPage(): ReactElement {
       !isFilterNotSupplied(accountId) &&
       !isFilterNumeric(accountId, ACCOUNT_FILTER_LENGTH)
     ) {
+      setFilterInError('account');
       return ACCOUNT_FILTER_MESSAGE;
     }
     if (
       !isFilterNotSupplied(cardNumber) &&
       !isFilterNumeric(cardNumber, CARD_FILTER_LENGTH)
     ) {
+      setFilterInError('card');
       return CARD_FILTER_MESSAGE;
     }
+    // Every pass through 2000-PROCESS-INPUTS re-runs both edits from a cleared flag, so a
+    // field that has since been corrected stops being reported as the faulted one. Without
+    // this the red attribute and the row protection outlived the error that raised them.
+    setFilterInError(null);
     return null;
   }, [accountId, cardNumber]);
 
@@ -261,16 +353,31 @@ export default function CardListPage(): ReactElement {
     // ``2250-EDIT-ARRAY``: the multi-selection guard is raised before the
     // per-row action-code edit, and either one blocks the transfer.
     if (selectedRows.length > 1) {
+      // 2250-EDIT-ARRAY copies the whole flag array into WS-EDIT-SELECT-ERROR-FLAGS and
+      // replaces every 'S' and 'U' with '1' (L1088-L1095), then 1250-SETUP-ARRAY-ATTRIBS
+      // reddens each flagged selector. So EVERY selected row is marked, which is what tells
+      // the operator which selections are in conflict rather than merely that one exists.
+      setFaultedRows(selectedRows.map((entry) => entry.cardNum));
       setScreenMessage(MULTIPLE_ACTIONS_MESSAGE);
       return;
     }
 
     if (selectedRows.length < enteredActions.length) {
+      // WHEN OTHER (L1107-L1113) faults the offending row and, first message wins, reports
+      // INVALID ACTION CODE. The rows carrying a code that is neither 'S' nor 'U' are
+      // precisely those the selection filter dropped.
+      const canonicalSelections = new Set(selectedRows.map((entry) => entry.cardNum));
+      setFaultedRows(
+        enteredActions
+          .filter((entry) => !canonicalSelections.has(entry.cardNum))
+          .map((entry) => entry.cardNum),
+      );
       setScreenMessage(INVALID_ACTION_MESSAGE);
       return;
     }
 
     if (selectedRows.length === 1) {
+      setFaultedRows([]);
       setScreenMessage('');
       const [selected] = selectedRows;
       // 'S' transfers to COCRDSLC and 'U' to COCRDUPC, each carrying the row's
@@ -282,11 +389,15 @@ export default function CardListPage(): ReactElement {
           : CARD_DETAIL_ROUTE;
       void navigate(target, {
         // `from` carries what CDEMO-FROM-PROGRAM carries, so PF3 on the receiving screen
-        // returns here rather than to the main menu.
+        // returns here rather than to the main menu. `browse` carries what COCRDLIC's own
+        // WS-THIS-PROGCOMMAREA carries — the filters and the page this browse is on — so
+        // the screen PF3 comes back to is the screen the operator left, rather than an
+        // unfiltered first page they then have to re-key.
         state: {
           cardNumber: selected.cardNum,
           accountId: selected.cardAcctId,
           from: CARD_LIST_ROUTE,
+          browse: { accountId: accountFilter, cardNumber: cardFilter },
         },
       });
       return;
@@ -296,6 +407,7 @@ export default function CardListPage(): ReactElement {
     // action fields blank, from the first page.
     setScreenMessage('');
     setRowActions({});
+    setFaultedRows([]);
     void run(buildBrowseRequest(accountFilter, cardFilter, FIRST_PAGE));
   }, [
     accountId,
@@ -329,19 +441,22 @@ export default function CardListPage(): ReactElement {
     }
     setScreenMessage('');
     setRowActions({});
-    // ``CA-FIRST-PAGE`` is the state of the screen BEFORE the transition, so it is
-    // evaluated here, against the page currently displayed. The AID travels with the
-    // browse only when that test holds — the one case in which ``1400-SETUP-MESSAGE``
-    // publishes ``NO PREVIOUS PAGES TO DISPLAY`` — so a page-back that succeeds is
-    // never annotated with the literal that refuses one.
-    const atFirstPage = pageNumber <= FIRST_PAGE;
-    const target = atFirstPage ? FIRST_PAGE : pageNumber - 1;
+    // The AID travels on EVERY turn, exactly as ``EIBAID`` does: it is what the program
+    // dispatches on, and ``1400-SETUP-MESSAGE`` evaluates ``CCARD-AID-PFK07`` on the same
+    // pass that moved. Withholding it on a page-back that succeeds left the service unable
+    // to tell a backward key from plain entry, and L408-L414 — which clears the
+    // terminal-page latch for any AID that is NOT the forward key — then never ran.
+    // ``CA-FIRST-PAGE`` is the state of the screen BEFORE the transition, so the target
+    // page stays at the first page when there is nothing behind it and the service answers
+    // ``NO PREVIOUS PAGES TO DISPLAY`` from the page it was asked for.
+    const target =
+      pageNumber <= FIRST_PAGE ? FIRST_PAGE : pageNumber - 1;
     void run(
       buildBrowseRequest(
         suppliedFilter(accountId),
         suppliedFilter(cardNumber),
         target,
-        atFirstPage ? 'PF7' : undefined,
+        'PF7',
       ),
     );
   }, [accountId, cardNumber, editFilters, isInFlight, pageNumber, run]);
@@ -362,17 +477,23 @@ export default function CardListPage(): ReactElement {
     }
     setScreenMessage('');
     setRowActions({});
-    // ``CA-NEXT-PAGE-NOT-EXISTS AND CA-LAST-PAGE-SHOWN`` is likewise the state before
-    // the transition, so the AID travels with the browse only when the screen already
-    // holds the last page and the advance is therefore refused.
-    const atLastPage = !hasNextPage;
-    const target = atLastPage ? pageNumber : pageNumber + 1;
+    // The forward key travels on EVERY turn, for the same reason PF7 does — and here it is
+    // load-bearing twice over. ``1400-SETUP-MESSAGE`` branch (4) SETS the terminal-page
+    // latch on the very pass that advances onto a page with no successor (L910-L916), and
+    // branch (3) reads that latch to tell a REPEATED forward key from a first one
+    // (L905-L909). Sending the AID only when the advance was already impossible inverted
+    // both: the advancing turn arrived as plain entry, so it cleared the latch and answered
+    // the short-page ``NO MORE RECORDS TO SHOW``, and the next press — seeing a cleared
+    // latch — read as a first press and answered nothing at all.
+    // ``CA-NEXT-PAGE-NOT-EXISTS`` is the state before the transition, so the target page
+    // stays put when there is nothing ahead of it.
+    const target = hasNextPage ? pageNumber + 1 : pageNumber;
     void run(
       buildBrowseRequest(
         suppliedFilter(accountId),
         suppliedFilter(cardNumber),
         target,
-        atLastPage ? 'PF8' : undefined,
+        'PF8',
       ),
     );
   }, [
@@ -421,7 +542,44 @@ export default function CardListPage(): ReactElement {
   // The activators published to the shared frame are identity-stable and always
   // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
   // every keystroke and an AID can never act on a value the screen has replaced.
+  /**
+   * :purpose: ``COCRDLIC``'s dispatch ``WHEN OTHER`` (L572-L580) — the branch an attention
+   *     identifier the screen does not advertise falls through to. It re-reads from
+   *     ``WS-CA-FIRST-CARD-NUM``, the first key of the page ON DISPLAY, and re-sends the map:
+   *     the same page comes back, with no error line and no transfer. The filter edits still
+   *     run, because ``2000-PROCESS-INPUTS`` runs on every pass and ``WHEN INPUT-ERROR`` is
+   *     tested first, so a wrong filter is still reported.
+   * :returns: nothing; the outcome is the same page re-sent, or the filter's message.
+   * :note: Routing this to the ENTER action instead re-drove the browse from page ONE and
+   *     could act on a row selection, so an unadvertised key silently moved the operator off the
+   *     page they were reading. Four of the other screens DO remap an unadvertised key to ENTER,
+   *     and correctly so: ``COACTVWC`` L307-L315, ``COCRDSLC``, ``COCRDUPC`` L413-L424 and
+   *     ``COACTUPC`` L906-L916 each set ``PFK-INVALID`` and then ``SET CCARD-AID-ENTER TO
+   *     TRUE``. This screen is the one that does not.
+   */
+  const redisplayCurrentPage = useCallback((): void => {
+    if (isInFlight()) {
+      return;
+    }
+    const filterError = editFilters();
+    if (filterError !== null) {
+      setScreenMessage(filterError);
+      return;
+    }
+    setScreenMessage('');
+    setRowActions({});
+    setFaultedRows([]);
+    void run(
+      buildBrowseRequest(
+        suppliedFilter(accountId),
+        suppliedFilter(cardNumber),
+        pageNumber,
+      ),
+    );
+  }, [accountId, cardNumber, editFilters, isInFlight, pageNumber, run]);
+
   const activateSubmitScreen = useScreenAction(submitScreen);
+  const activateUnhandledAid = useScreenAction(redisplayCurrentPage);
   const activatePageBackward = useScreenAction(pageBackward);
   const activatePageForward = useScreenAction(pageForward);
 
@@ -475,7 +633,7 @@ export default function CardListPage(): ReactElement {
       // unhandled AID with a message: they ``SET PFK-INVALID TO TRUE``, and when the
       // struck key is not in the valid set they ``SET CCARD-AID-ENTER TO TRUE`` -- the
       // key is REWRITTEN to ENTER and the ENTER path runs.
-      onUnhandledKey: activateSubmitScreen,
+      onUnhandledKey: activateUnhandledAid,
       // COCRDLI declares its line-24 legend field COLOR=TURQUOISE, not the YELLOW
       // fifteen of the seventeen mapsets declare.
       pfKeyTone: 'turquoise',
@@ -485,6 +643,7 @@ export default function CardListPage(): ReactElement {
     activatePageBackward,
     activatePageForward,
     activateSubmitScreen,
+    activateUnhandledAid,
     alertMessage,
     noticeMessage,
     loading,
@@ -510,14 +669,16 @@ export default function CardListPage(): ReactElement {
           {/*
             COCRDLIC L873 moves DFHRED into ACCTSIDC when the account filter is refused,
             so this control is PAINTED as well as marked: it takes `faultedFieldProps`
-            rather than `invalidFieldProps`.
+            rather than `invalidFieldProps`. The flag is read from the edit's own outcome
+            (FLG-ACCTFILTER-NOT-OK) rather than inferred from the displayed message, so the
+            attribute and the row protection it also drives can never disagree.
           */}
           <input
             className="field charField charField--acctId"
             data-testid="acctsid"
             disabled={loading}
             id="acctsid"
-            {...faultedFieldProps(screenMessage === ACCOUNT_FILTER_MESSAGE)}
+            {...faultedFieldProps(filterInError === 'account')}
             maxLength={ACCOUNT_FILTER_LENGTH}
             name="acctsid"
             onChange={(event) => {
@@ -539,7 +700,7 @@ export default function CardListPage(): ReactElement {
             data-testid="cardsid"
             disabled={loading}
             id="cardsid"
-            {...faultedFieldProps(screenMessage === CARD_FILTER_MESSAGE)}
+            {...faultedFieldProps(filterInError === 'card')}
             maxLength={CARD_FILTER_LENGTH}
             name="cardsid"
             onChange={(event) => {
@@ -575,7 +736,7 @@ export default function CardListPage(): ReactElement {
                 style={
                   index === COLUMN_RULES.length - 1
                     ? undefined
-                    : { width: `${String(run + 2)}ch` }
+                    : { width: `${String(COLUMN_PITCHES[index] ?? run + 2)}ch` }
                 }
               />
             ))}
@@ -614,12 +775,11 @@ export default function CardListPage(): ReactElement {
                       stylesheet enlarges its hit area to the adopted 24x24 WCAG
                       2.5.8 minimum. */}
                   <input
-                    {...invalidValueProps(isRowActionInvalid(rowActions[row.cardNum]))}
+                    {...invalidValueProps(isRowFaulted(row.cardNum))}
                     aria-label={'Select card in row ' + String(rowIndex + 1)}
+                    aria-readonly={selectorsProtected ? true : undefined}
                     className={
-                      isRowActionInvalid(rowActions[row.cardNum])
-                        ? 'field fieldError'
-                        : 'field'
+                      isRowFaulted(row.cardNum) ? 'field fieldError' : 'field'
                     }
                     data-testid={'card-select-' + String(rowIndex + 1)}
                     disabled={loading}
@@ -629,9 +789,10 @@ export default function CardListPage(): ReactElement {
                     onChange={(event) => {
                       handleRowActionChange(row.cardNum, event.target.value);
                     }}
+                    readOnly={selectorsProtected}
                     size={ROW_ACTION_LENGTH}
                     type="text"
-                    value={rowActions[row.cardNum] ?? ''}
+                    value={displayedRowAction(row.cardNum)}
                   />
                 </td>
                 <td>{row.cardAcctId}</td>

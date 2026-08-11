@@ -17,7 +17,6 @@
 package com.carddemo.transaction.batch;
 
 import com.carddemo.common.batch.BatchOutputPathResolver;
-import com.carddemo.common.batch.FailedOutputCleanupListener;
 import com.carddemo.common.domain.DailyTransaction;
 import com.carddemo.transaction.repository.DailyTransactionRepository;
 
@@ -131,30 +130,28 @@ public class TransactionPostingJob {
     }
 
     /**
-     * :purpose: Define the single chunk-size-one posting step: read, validate,
-     *     then write each daily-transaction record within its own chunk
-     *     transaction so a record is posted and committed before the next record
-     *     is validated against the running balances.
+     * :purpose: Define the single chunk-size-one posting step: read, validate, then write each
+     *     daily-transaction record within its own chunk transaction so a record is posted and
+     *     committed before the next record is validated against the running balances.
      * :param jobRepository: the Boot auto-configured Spring Batch job repository.
-     * :param transactionManager: the Boot auto-configured platform transaction
-     *     manager bounding each single-record chunk.
+     * :param transactionManager: the Boot auto-configured platform transaction manager
+     *     bounding each single-record chunk.
      * :param dailyTransactionReader: the step-scoped ``DALYTRAN`` feed reader.
-     * :param transactionValidationProcessor: the validation processor producing a
-     *     valid or rejected {@link PostingItem} for each record.
-     * :param postingClassifierWriter: the classifier writer routing valid and
-     *     rejected items.
-     * :param rejectFileItemWriter: the reject writer, registered as a stream so its
-     *     file lifecycle is managed by the step.
-     * :param dailyTransactionRepository: feed repository, consulted only for the
-     *     staged record count that distinguishes a genuinely empty ``DALYTRAN`` feed
-     *     from a restart that has already consumed every record.
-     * :param rejectFileCleanupListener: listener removing the reject generation when
-     *     the step does not complete successfully.
+     * :param transactionValidationProcessor: the validation processor producing a valid or
+     *     rejected {@link PostingItem} for each record.
+     * :param postingClassifierWriter: the classifier writer routing valid and rejected items.
+     * :param rejectFileItemWriter: the reject writer, registered as a stream so its file
+     *     lifecycle is managed by the step.
+     * :param dailyTransactionRepository: feed repository, consulted only for the staged record
+     *     count that distinguishes a genuinely empty ``DALYTRAN`` feed from a restart that has
+     *     already consumed every record.
+     * :param rejectFileCleanupListener: listener removing the reject generation when the step
+     *     does not complete successfully.
      * :returns: the ``transactionPostingStep`` {@link Step}.
-     * :note: The cleanup listener is registered FIRST and the reject-counting listener
-     *     second because Spring Batch runs ``afterStep`` in REVERSE registration order
-     *     (``CompositeStepExecutionListener`` iterates its composite in reverse), so the
-     *     cleanup runs LAST and observes the final status the other listeners left.
+     * :note: The cleanup listener is registered FIRST and the reject-counting listener second
+     *     because Spring Batch runs ``afterStep`` in REVERSE registration order
+     *     (``CompositeStepExecutionListener`` iterates its composite in reverse), so the cleanup
+     *     runs LAST and observes the final status the other listeners left.
      */
     @Bean
     public Step transactionPostingStep(JobRepository jobRepository,
@@ -163,8 +160,7 @@ public class TransactionPostingJob {
                                        TransactionValidationProcessor transactionValidationProcessor,
                                        ClassifierCompositeItemWriter<PostingItem> postingClassifierWriter,
                                        RejectFileItemWriter rejectFileItemWriter,
-                                       DailyTransactionRepository dailyTransactionRepository,
-                                       FailedOutputCleanupListener rejectFileCleanupListener) {
+                                       DailyTransactionRepository dailyTransactionRepository) {
         RejectCountingStepListener rejectCountingStepListener =
                 new RejectCountingStepListener(dailyTransactionRepository::count);
         return new StepBuilder("transactionPostingStep", jobRepository)
@@ -174,82 +170,57 @@ public class TransactionPostingJob {
                 .processor(transactionValidationProcessor)
                 .writer(postingClassifierWriter)
                 .stream(rejectFileItemWriter)
-                .listener((StepExecutionListener) rejectFileCleanupListener)
                 .listener((StepExecutionListener) rejectCountingStepListener)
                 .listener((ItemWriteListener<PostingItem>) rejectCountingStepListener)
                 .build();
     }
 
     /**
-     * :purpose: Remove THIS RUN's ``DALYREJS`` reject generation when the posting step does
-     *     not complete successfully, so a failed run leaves no reject file that a downstream
-     *     reader could mistake for a completed one — the legacy job stream allocated a new
-     *     GDG generation per run with ``DISP=(NEW,CATLG,DELETE)``, so an abending step left
-     *     its own generation deleted and every earlier generation untouched
-     *     [app/jcl/POSTTRAN.jcl].
-     * :param rejectFileName: the configured reject BASE file name, the same property the
-     *     {@link RejectFileItemWriter} reads.
-     * :param jobExecutionId: id of the job execution, the generation number of the file this
-     *     run writes.
-     * :param pathResolver: resolver confining the name to the batch output root, so the
-     *     listener addresses exactly the file the writer opened.
-     * :returns: the cleanup listener for ``transactionPostingStep``.
-     * :note: ``@StepScope`` and the SAME generation qualifier as the writer. Bound to one
-     *     fixed name instead, this listener deleted whatever run had written that name last —
-     *     so a failing run erased the reject records a PREVIOUS run had delivered, and the
-     *     restart of the failing instance could then never open the file it needed.
-     * :note: A run that rejected records completes ``COMPLETED_WITH_REJECTS``, a qualified
-     *     SUCCESS code, so its reject generation is retained.
-     */
-    @Bean
-    @StepScope
-    public FailedOutputCleanupListener rejectFileCleanupListener(
-            @Value("${carddemo.batch.reject-file:dalyrejs.txt}") String rejectFileName,
-            @Value("#{stepExecution.jobExecutionId}") Long jobExecutionId,
-            BatchOutputPathResolver pathResolver) {
-        return new FailedOutputCleanupListener(
-                pathResolver.resolveOutputGeneration(rejectFileName, jobExecutionId));
-    }
-
-    /**
-     * :purpose: Define the on-demand daily transaction-posting job as a single
-     *     posting step, with the completion listener reporting the processed and
-     *     rejected tallies and mapping the legacy return code.
+     * :purpose: Define the on-demand daily transaction-posting job as a single posting step,
+     *     with the completion listener reporting the processed and rejected tallies and mapping
+     *     the legacy return code.
      * :param jobRepository: the Boot auto-configured Spring Batch job repository.
      * :param transactionPostingStep: the single step of this job.
-     * :param postingJobCompletionListener: the end-of-run tally and return-code
-     *     listener.
+     * :param postingJobCompletionListener: the end-of-run tally and return-code listener.
+     * :param rejectFilePublishListener: publishes the instance's reject generation with a
+     *     single atomic rename once the instance completes, and retains the staging file for a
+     *     restart otherwise.
      * :returns: the ``transactionPostingJob`` {@link Job}.
+     * :note: Listener order is deliberate. The tally listener runs FIRST so the exit status
+     *     already carries ``COMPLETED_WITH_REJECTS`` before the publish listener decides what to
+     *     do, and so a publication failure - which downgrades the exit status - can never be
+     *     overwritten by the tally.
      */
     @Bean
     public Job transactionPostingJob(JobRepository jobRepository,
                                      Step transactionPostingStep,
-                                     PostingJobCompletionListener postingJobCompletionListener) {
+                                     PostingJobCompletionListener postingJobCompletionListener,
+                                     RejectFilePublishListener rejectFilePublishListener) {
         return new JobBuilder("transactionPostingJob", jobRepository)
                 .listener(postingJobCompletionListener)
+                .listener(rejectFilePublishListener)
                 .start(transactionPostingStep)
                 .build();
     }
 
     /**
-     * :purpose: Tally the rejected items of the posting step, publish the count
-     *     into the step execution context under
-     *     {@link PostingJobCompletionListener#REJECT_COUNT_KEY} for the job
-     *     completion listener to read back, and render the end-of-step verdict on
-     *     an empty ``DALYTRAN`` feed.
-     * :output: The running reject count is reset at step start, incremented per
-     *     write, and stored on the step execution context at step end; the step exit
-     *     status is always returned unchanged.
-     * :note: An empty feed COMPLETES with return code 0 and the legacy zero tallies,
-     *     matching ``CBTRN02C``: its read loop simply ends, both DISPLAY lines report
-     *     zero, and ``RETURN-CODE`` is only raised to 4 when records were rejected —
-     *     return code 12 belongs to the OPEN/READ failure paths that ABEND the program
-     *     [app/cbl/CBTRN02C.cbl L202-L234]. The condition is logged at WARN so an absent
-     *     feed stays visible to an operator without being reported as an incident.
+     * :purpose: Tally the rejected items of the posting step, publish the count into the step
+     *     execution context under {@link PostingJobCompletionListener#REJECT_COUNT_KEY} for the
+     *     job completion listener to read back, and render the end-of-step verdict on an empty
+     *     ``DALYTRAN`` feed.
+     * :output: The running reject count is reset at step start, incremented per write, and
+     *     stored on the step execution context at step end; the step exit status is always
+     *     returned unchanged.
+     * :note: An empty feed COMPLETES with return code 0 and the legacy zero tallies, matching
+     *     ``CBTRN02C``: its read loop simply ends, both DISPLAY lines report zero, and
+     *     ``RETURN-CODE`` is only raised to 4 when records were rejected — return code 12 belongs
+     *     to the OPEN/READ failure paths that ABEND the program [app/cbl/CBTRN02C.cbl L202-L234].
+     *     The condition is logged at WARN so an absent feed stays visible to an operator without
+     *     being reported as an incident.
      * :note: Reading nothing is not by itself an empty feed. A restarted execution that
-     *     resumes past the last consumed record legitimately reads zero rows, so the
-     *     staged record count is consulted as well and the WARN is emitted only when the
-     *     feed itself holds no record.
+     *     resumes past the last consumed record legitimately reads zero rows, so the staged record
+     *     count is consulted as well and the WARN is emitted only when the feed itself holds no
+     *     record.
      */
     static final class RejectCountingStepListener
             implements StepExecutionListener, ItemWriteListener<PostingItem> {

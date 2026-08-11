@@ -17,6 +17,8 @@
 package com.carddemo.reporting.controller;
 
 import com.carddemo.common.batch.BatchExitMessageSanitizer;
+import com.carddemo.common.batch.BatchLaunchRequestGuard;
+import jakarta.servlet.http.HttpServletRequest;
 import com.carddemo.common.dto.BatchJobExecutionDto;
 import com.carddemo.common.dto.ReportRequestDto;
 import com.carddemo.common.dto.ReportResponseDto;
@@ -65,21 +67,19 @@ public class ReportController {
     }
 
     /**
-     * :purpose: Submit a transaction-report request (CICS ``CR00``, legacy
-     *     program ``CORPT00C``). Report-type resolution, date validation, the
-     *     confirmation gate, and asynchronous job launch are delegated to
-     *     {@link ReportService}.
-     * :param request: the report-request payload (report-type selector, optional
-     *     custom start/end date parts, and the confirmation flag).
-     * :returns: the report-response DTO carrying the confirmation prompt, a
-     *     validation message, or the submission acknowledgement (HTTP 200).
-     * :raises com.carddemo.common.exception.CardDemoException: when the
-     *     asynchronous report job cannot be launched; mapped to HTTP 400 by the
-     *     shared ``GlobalExceptionHandler`` and therefore not caught here.
-     * :raises org.springframework.web.bind.MethodArgumentNotValidException: when a
-     *     submitted field exceeds the CORPT00 screen field width declared on
-     *     {@link ReportRequestDto}; mapped to HTTP 400 by the shared
-     *     ``GlobalExceptionHandler``.
+     * :purpose: Submit a transaction-report request (CICS ``CR00``, legacy program
+     *     ``CORPT00C``). Report-type resolution, date validation, the confirmation gate, and
+     *     asynchronous job launch are delegated to {@link ReportService}.
+     * :param request: the report-request payload (report-type selector, optional custom
+     *     start/end date parts, and the confirmation flag).
+     * :returns: the report-response DTO carrying the confirmation prompt, a validation
+     *     message, or the submission acknowledgement (HTTP 200).
+     * :raises com.carddemo.common.exception.CardDemoException: when the asynchronous report
+     *     job cannot be launched; mapped to HTTP 400 by the shared ``GlobalExceptionHandler`` and
+     *     therefore not caught here.
+     * :raises org.springframework.web.bind.MethodArgumentNotValidException: when a submitted
+     *     field exceeds the CORPT00 screen field width declared on {@link ReportRequestDto};
+     *     mapped to HTTP 400 by the shared ``GlobalExceptionHandler``.
      */
     @PostMapping
     public ReportResponseDto requestReport(@Valid @RequestBody ReportRequestDto request) {
@@ -87,33 +87,34 @@ public class ReportController {
     }
 
     /**
-     * :purpose: Submit the ``CREASTMT`` statement-generation job stream (legacy
-     *     ``CBSTM03A``), which produces the plain-text and HTML account statements. It is
-     *     the entry point for the statement path, kept distinct from the ``CORPT00C``
-     *     report request that submits the transaction-detail report; without it the
-     *     statement job stream would have no caller at all.
-     * :param stmtFile: optional plain-text statement output file name (the ``STMTFILE``
-     *     DD name); the configured default is used when omitted.
-     * :param htmlFile: optional HTML statement output file name (the ``HTMLFILE`` DD
+     * :purpose: Submit the ``CREASTMT`` statement-generation job stream (legacy ``CBSTM03A``),
+     *     which produces the plain-text and HTML account statements. It is the entry point for the
+     *     statement path, kept distinct from the ``CORPT00C`` report request that submits the
+     *     transaction-detail report; without it the statement job stream would have no caller at
+     *     all.
+     * :param stmtFile: optional plain-text statement output file name (the ``STMTFILE`` DD
      *     name); the configured default is used when omitted.
+     * :param htmlFile: optional HTML statement output file name (the ``HTMLFILE`` DD name);
+     *     the configured default is used when omitted.
      * :returns: the accepted run's durable execution handle (HTTP 202).
      * :raises com.carddemo.common.exception.CardDemoException: when the job cannot be
      *     submitted; mapped by the shared ``GlobalExceptionHandler``.
-     * :note: The endpoint takes no report type and no date window. ``CREASTMT`` carries
-     *     no ``PARM``: its SORT step re-keys the entire ``TRANSACT`` file by card number
-     *     and transaction id with no date filter, so ``CBSTM03A`` always statements a
-     *     card's full history [app/jcl/CREASTMT.JCL]. A mandatory
-     *     ``reportType``/``startDate``/``endDate`` triple used to be accepted and
-     *     recorded as identifying job parameters even though nothing in the job could
-     *     read them, which told the caller a windowed statement had been produced and
-     *     keyed duplicate detection on values that could not change the output. Callers
-     *     that still send them are unaffected: unknown query parameters are ignored.
+     * :note: The endpoint takes no report type and no date window. ``CREASTMT`` carries no
+     *     ``PARM``: its SORT step re-keys the entire ``TRANSACT`` file by card number and
+     *     transaction id with no date filter, so ``CBSTM03A`` always statements a card's full
+     *     history [app/jcl/CREASTMT.JCL]. A mandatory ``reportType``/``startDate``/``endDate``
+     *     triple used to be accepted and recorded as identifying job parameters even though
+     *     nothing in the job could read them, which told the caller a windowed statement had been
+     *     produced and keyed duplicate detection on values that could not change the output.
+     *     Callers that still send them are unaffected: unknown query parameters are ignored.
      */
     @PostMapping("/statements")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public BatchJobExecutionDto generateStatements(
             @RequestParam(required = false) String stmtFile,
-            @RequestParam(required = false) String htmlFile) {
+            @RequestParam(required = false) String htmlFile,
+            HttpServletRequest request) {
+        BatchLaunchRequestGuard.requireNoRequestBody(request);
         JobExecution execution = jobSchedulingConfig.launchStatementGeneration(stmtFile, htmlFile);
         // The exit description passes through BatchExitMessageSanitizer: Spring Batch records
         // the stack trace of the cause there for a failed run, and publishing it verbatim

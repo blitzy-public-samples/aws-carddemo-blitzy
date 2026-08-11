@@ -31,20 +31,19 @@ import org.springframework.context.annotation.Import;
 
 
 /**
- * :purpose: Executable entry point for the CardDemo API Gateway, a Spring Cloud
- *     Gateway Server WebMVC (servlet) edge router that also serves the
- *     menu-navigation endpoints re-platforming legacy CICS transactions
- *     CM00 (COMEN01C) and CA00 (COADM01C).
- * :note: Explicitly imports the shared carddemo-common configurations it needs rather
- *     than broadening the component scan into that library, which ships no
- *     auto-configuration imports file: ObservabilityConfig, WebObservabilityConfig (the
- *     shared correlation-id filter and the datastore-outage filter), GlobalExceptionHandler,
- *     and -- as every other service already does -- CardDemoErrorController with
- *     ContainerErrorReportConfig. Those last two matter most here, because the gateway is
- *     the only member of the estate a browser talks to: without them a container-level
- *     error dispatch at the edge fell through to Boot's BasicErrorController and answered
- *     an abbreviated {timestamp,status,error,path} document, so one request could be
- *     refused in two different shapes depending on which component refused it.
+ * :purpose: Executable entry point for the CardDemo API Gateway, a Spring Cloud Gateway
+ *     Server WebMVC (servlet) edge router that also serves the menu-navigation endpoints
+ *     re-platforming legacy CICS transactions CM00 (COMEN01C) and CA00 (COADM01C).
+ * :note: Explicitly imports the shared carddemo-common configurations it needs rather than
+ *     broadening the component scan into that library, which ships no auto-configuration
+ *     imports file: ObservabilityConfig, WebObservabilityConfig (the shared correlation-id
+ *     filter and the datastore-outage filter), GlobalExceptionHandler, and -- as every other
+ *     service already does -- CardDemoErrorController with ContainerErrorReportConfig. Those
+ *     last two matter most here, because the gateway is the only member of the estate a
+ *     browser talks to: without them a container-level error dispatch at the edge fell through
+ *     to Boot's BasicErrorController and answered an abbreviated {timestamp,status,error,path}
+ *     document, so one request could be refused in two different shapes depending on which
+ *     component refused it.
  * :note: SecurityExceptionHandler covers an authorization failure raised inside the
  *     application rather than by the filter chain.
  */
@@ -62,6 +61,7 @@ import org.springframework.context.annotation.Import;
 public class GatewayApplication {
 
     /**
+     * :purpose: Boot the API gateway.
      * :param args: standard JVM command-line arguments.
      */
     public static void main(String[] args) {

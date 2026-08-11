@@ -1,21 +1,19 @@
 /**
- * BillPayPage
- * ===========
- *
+ * BillPayPage ===========
  * :purpose: Bill-payment screen — the 1:1 React replacement for BMS mapset
- *     ``app/bms/COBIL00.bms`` (map ``COBIL0A``), CICS transaction ``CB00``,
- *     program ``app/cbl/COBIL00C.cbl``. The operator enters an account id, the
- *     screen displays that account's current balance, and a single-character
- *     ``Y``/``N`` confirmation pays the outstanding balance in full against the
- *     account's available credit (credit limit minus current balance).
- * :output: The screen body for route ``/billpay``. The header, line-23 message
- *     region and line-24 function-key bar are published to the shared shell
- *     through ``useScreenChrome`` and are rendered by ``Layout``, never here.
- * :note: Field widths, labels and the function-key legend are taken verbatim
- *     from ``COBIL00.bms`` / ``app/cpy-bms/COBIL00.CPY``: ``ACTIDIN`` ``X(11)``,
- *     ``CURBAL`` ``X(14)`` (protected), ``CONFIRM`` ``X(1)``, ``ERRMSG``
- *     ``X(78)``. Money is carried and displayed as the server-supplied decimal
- *     ``string`` — it is never parsed, rounded or reformatted here.
+ *     ``app/bms/COBIL00.bms`` (map ``COBIL0A``), CICS transaction ``CB00``, program
+ *     ``app/cbl/COBIL00C.cbl``. The operator enters an account id, the screen displays that
+ *     account's current balance, and a single-character ``Y``/``N`` confirmation pays the
+ *     outstanding balance in full against the account's available credit (credit limit minus
+ *     current balance).
+ * :output: The screen body for route ``/billpay``. The header, line-23 message region and
+ *     line-24 function-key bar are published to the shared shell through ``useScreenChrome``
+ *     and are rendered by ``Layout``, never here.
+ * :note: Field widths, labels and the function-key legend are taken verbatim from
+ *     ``COBIL00.bms`` / ``app/cpy-bms/COBIL00.CPY``: ``ACTIDIN`` ``X(11)``, ``CURBAL``
+ *     ``X(14)`` (protected), ``CONFIRM`` ``X(1)``, ``ERRMSG`` ``X(78)``. Money is carried and
+ *     displayed as the server-supplied decimal ``string`` — it is never parsed, rounded or
+ *     reformatted here.
  */
 
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
@@ -71,19 +69,16 @@ const MSG_PAYMENT_SUCCESSFUL = 'Payment successful. ';
 
 /**
  * :purpose: The line-23 messages that take the cursor WITHOUT faulting the control it
- *     lands on, because none of them says that the control's content was refused:
- *
- *     - ``Confirm to make a bill payment...`` — published by ``COBIL00C`` L237 as soon as
- *       the balance is on screen, over an EMPTY confirm field. It reports what the screen
- *       is waiting for, and an entry the operator has not made yet cannot be wrong.
- *     - ``You have nothing to pay...`` — L200-201 refuses the account's zero BALANCE, not
- *       the account id the cursor returns to; the id it was keyed with is correct.
- *     - ``Invalid key pressed. Please see below...`` — the ``WHEN OTHER`` branch of
- *       ``EVALUATE EIBAID`` (L138-142) rejects an attention identifier, not a field.
- *
- *     Every other message on this screen — this screen's own value edits and the ones the
- *     service produces, which no client-side table could enumerate — does refuse a value,
- *     and faults the control the cursor lands on.
+ *     lands on, because none of them says that the control's content was refused: - ``Confirm
+ *     to make a bill payment...`` — published by ``COBIL00C`` L237 as soon as the balance is
+ *     on screen, over an EMPTY confirm field. It reports what the screen is waiting for, and
+ *     an entry the operator has not made yet cannot be wrong. - ``You have nothing to pay...``
+ *     — L200-201 refuses the account's zero BALANCE, not the account id the cursor returns to;
+ *     the id it was keyed with is correct. - ``Invalid key pressed. Please see below...`` —
+ *     the ``WHEN OTHER`` branch of ``EVALUATE EIBAID`` (L138-142) rejects an attention
+ *     identifier, not a field. Every other message on this screen — this screen's own value
+ *     edits and the ones the service produces, which no client-side table could enumerate —
+ *     does refuse a value, and faults the control the cursor lands on.
  */
 const UNFAULTED_MESSAGES: ReadonlySet<string> = new Set([
   MSG_CONFIRM_PAYMENT,

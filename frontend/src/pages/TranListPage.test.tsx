@@ -761,17 +761,18 @@ describe('TranListPage — row selection validation', () => {
     await renderScreen();
 
     const table = document.querySelector('table.dataTable');
-    // 3+2, 16+2, 8+2, 26+2, 12+2 -- the mapset's own row-9 runs plus one padding cell
-    // either side, which is the same arithmetic the <colgroup> uses.
-    expect(table).toHaveStyle({ minWidth: '75ch' });
+    // 6, 19, 11, 29, 12 -- the mapset's own column PITCH, the distance from one row-9
+    // dashed rule to the next (POS=(9,2), (9,8), (9,27), (9,38), (9,67)), which is the
+    // same arithmetic the <colgroup> uses.
+    expect(table).toHaveStyle({ minWidth: '77ch' });
 
     const cols = Array.from(document.querySelectorAll('colgroup col'));
     expect(cols).toHaveLength(5);
     expect(cols.slice(0, 4).map((col) => col.getAttribute('style'))).toEqual([
-      'width: 5ch;',
-      'width: 18ch;',
-      'width: 10ch;',
-      'width: 28ch;',
+      'width: 6ch;',
+      'width: 19ch;',
+      'width: 11ch;',
+      'width: 29ch;',
     ]);
     // The last column stays width-less on purpose: a container wider than the floor
     // hands it the slack, keeping the right-aligned amount against the frame's edge.

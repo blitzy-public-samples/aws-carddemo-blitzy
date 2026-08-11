@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A VALID BUT EMPTY url set, and deliberately so.
+
+  Every screen of this application requires an authenticated session, and /robots.txt
+  disallows the whole origin for every agent, so there is no URL here that a crawler
+  should be told to fetch. The document exists because the path used to fall through to
+  the SPA history fallback and answer with the application's HTML document under HTTP 200,
+  which told a sitemap consumer that markup was a sitemap.
+
+  An entry would also have to be wrong to be written at all: the sitemap protocol requires
+  <loc> to be a fully-qualified URL, and this bundle is built once and served behind
+  whatever host a deployment puts in front of it, so no absolute URL is knowable here. The
+  same reason is why /robots.txt names no Sitemap directive, which the protocol likewise
+  requires to be absolute.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" />

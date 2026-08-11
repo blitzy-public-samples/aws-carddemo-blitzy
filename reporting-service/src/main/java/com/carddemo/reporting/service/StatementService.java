@@ -35,19 +35,20 @@ import java.util.List;
 
 /**
  * :purpose: Read-only statement assembly orchestration re-platformed from the legacy batch
- *   statement engine ``CBSTM03A`` (paragraph ``1000-MAINLINE`` with its
- *   ``2000-CUSTFILE-GET`` / ``3000-ACCTFILE-GET`` / ``4000-TRNXFILE-GET`` /
- *   ``5000-CREATE-STATEMENT`` reads). For a single card, or for every card in card-number
- *   order, it reads the card cross-reference, then the owning customer and account, then the
- *   card's transactions, and delegates statement construction to {@link StatementMapper}. The
- *   ordered lookups and the abend-on-missing-referenced-record behavior of the source program
- *   are preserved as ``cross-reference -> customer -> account -> transactions`` reads that raise
- *   {@link RecordNotFoundException} rather than silently skipping.
- * :output: The assembled {@link StatementMapper.StatementModel} for one card, or an ordered
- *   list of models (one per cross-reference) for the all-cards sweep. Bulk plain-text and HTML
- *   file output is handled by the sibling ``batch/StatementGenerationJob``; line-by-line layout,
- *   total accumulation and name/address concatenation live in {@link StatementMapper}. This
- *   service owns no tables and performs no writes, formatting, file I/O or job launching.
+ *     statement engine ``CBSTM03A`` (paragraph ``1000-MAINLINE`` with its
+ *     ``2000-CUSTFILE-GET`` / ``3000-ACCTFILE-GET`` / ``4000-TRNXFILE-GET`` /
+ *     ``5000-CREATE-STATEMENT`` reads). For a single card, or for every card in card-number
+ *     order, it reads the card cross-reference, then the owning customer and account, then the
+ *     card's transactions, and delegates statement construction to {@link StatementMapper}.
+ *     The ordered lookups and the abend-on-missing-referenced-record behavior of the source
+ *     program are preserved as ``cross-reference -> customer -> account -> transactions``
+ *     reads that raise {@link RecordNotFoundException} rather than silently skipping.
+ * :output: The assembled {@link StatementMapper.StatementModel} for one card, or an
+ *     ordered list of models (one per cross-reference) for the all-cards sweep. Bulk
+ *     plain-text and HTML file output is handled by the sibling
+ *     ``batch/StatementGenerationJob``; line-by-line layout, total accumulation and
+ *     name/address concatenation live in {@link StatementMapper}. This service owns no tables
+ *     and performs no writes, formatting, file I/O or job launching.
  */
 @Service
 @Transactional(readOnly = true)

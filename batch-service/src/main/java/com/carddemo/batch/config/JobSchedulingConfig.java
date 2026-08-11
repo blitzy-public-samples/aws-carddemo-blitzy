@@ -18,6 +18,11 @@ package com.carddemo.batch.config;
 
 import com.carddemo.common.batch.BatchOutputPathResolver;
 import com.carddemo.common.config.CorrelationIdContext;
+import com.carddemo.common.exception.CardDemoException;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.JobExecution;
@@ -70,11 +75,8 @@ import java.util.UUID;
  * :note: Every ``launch*`` method that drives a file-producing or file-consuming job
  *     accepts an optional explicit path and otherwise falls back to a configured
  *     default, and validates it through {@link BatchOutputPathResolver} *before*
- *     submitting. Previously six of the nine launchers submitted empty
- *     ``JobParameters`` while their jobs required a ``outputFile``/``inputFile``
- *     parameter, so every one of those jobs failed asynchronously with "Batch file
- *     path must not be blank" while the caller was handed a ``STARTING``
- *     ``JobExecution`` and believed the submission had succeeded.
+ *     submitting, so a path fault is answered to the caller rather than surfacing
+ *     asynchronously after a ``STARTING`` ``JobExecution`` has been handed back.
  * :note: ``REPROC.prc`` — the generic IDCAMS REPRO VSAM unload/load utility
  *     invoked by ``TRANREPT.prc`` ``STEP01R`` [app/proc/REPROC.prc,
  *     app/proc/TRANREPT.prc] — is a database backup / point-in-time-recovery
@@ -86,13 +88,10 @@ public class JobSchedulingConfig {
 
     /**
      * :purpose: The job-parameter key holding a per-launch unique run token, recorded
-     *     for traceability as a NON-identifying parameter. It was previously
-     *     identifying, which made every submission a brand-new ``JobInstance``: a
-     *     failed run could never be restarted and re-submitting an already-completed
-     *     run was never rejected, defeating both guarantees the durable job
-     *     repository exists to provide. Job identity now derives solely from the
-     *     business parameters, exactly as the legacy JCL identified a run by its
-     *     ``PARM`` values.
+     *     for traceability as a NON-identifying parameter, so job identity derives
+     *     solely from the business parameters — exactly as the legacy JCL identified a
+     *     run by its ``PARM`` values. A failed instance is therefore restartable and a
+     *     duplicate completed instance is refused.
      */
     private static final String RUN_ID_KEY = "run.id";
 
@@ -186,6 +185,12 @@ public class JobSchedulingConfig {
      *     job the mainframe operator submitted.
      */
     public static final String DEFAULT_PARM_DATE = "2022071800";
+
+    /** Length of the legacy ``YYYYMMDDHH`` interest PARM. */
+    private static final int PARM_DATE_LENGTH = 10;
+
+    /** Highest hour the two trailing PARM digits may carry. */
+    private static final int MAX_PARM_HOUR = 23;
 
     /**
      * :purpose: Default inclusive start of the reporting window used by
@@ -282,11 +287,10 @@ public class JobSchedulingConfig {
     private final Job combineTransactionsJob;
 
     /**
-     * :purpose: Build the asynchronous operator from the batch job repository and
-     *     capture the nine job beans so each ``launch*`` method can submit its
-     *     job.
-     * :param jobRepository: batch job repository (Spring Boot auto-configured);
-     *     wired into the operator.
+     * :purpose: Build the asynchronous operator from the batch job repository and capture the
+     *     nine job beans so each ``launch*`` method can submit its job.
+     * :param jobRepository: batch job repository (Spring Boot auto-configured); wired into the
+     *     operator.
      * :param interestCalculationJob: the ``interestCalculationJob`` bean.
      * :param accountReadJob: the ``accountReadJob`` bean.
      * :param cardReadJob: the ``cardReadJob`` bean.
@@ -296,9 +300,9 @@ public class JobSchedulingConfig {
      * :param categoryBalanceReportJob: the ``categoryBalanceReportJob`` bean.
      * :param transactionDetailReportJob: the ``transactionDetailReportJob`` bean.
      * :param combineTransactionsJob: the ``combineTransactionsJob`` bean.
-     * :param pathResolver: resolver used to validate a requested batch file path
-     *     before submission, so an unusable path is reported to the caller
-     *     synchronously instead of failing the job asynchronously.
+     * :param pathResolver: resolver used to validate a requested batch file path before
+     *     submission, so an unusable path is reported to the caller synchronously instead of
+     *     failing the job asynchronously.
      * :param accountReportFile: default output file name for ``accountReadJob``.
      * :param cardReportFile: default output file name for ``cardReadJob``.
      * :param cardXrefReportFile: default output file name for ``cardXrefReadJob``.
@@ -307,8 +311,7 @@ public class JobSchedulingConfig {
      *     ``categoryBalanceReportJob``.
      * :param transactionDetailReportFile: default output file name for
      *     ``transactionDetailReportJob``.
-     * :param combinedTransactionFile: default output file name for
-     *     ``combineTransactionsJob``.
+     * :param combinedTransactionFile: default output file name for ``combineTransactionsJob``.
      * :param dailyTransactionFile: default input file name for
      *     ``dailyTransactionValidationJob``.
      */
@@ -451,18 +454,17 @@ public class JobSchedulingConfig {
     }
 
     /**
-     * :purpose: Enrich a job's business parameters with observability and
-     *     uniqueness parameters, then submit the job on the asynchronous
-     *     operator. A ``correlationId`` obtained from the static
-     *     {@link CorrelationIdContext} is added as a non-identifying parameter
-     *     (also seeded into the launching thread's MDC), as is a random ``run.id``
-     *     recorded purely for traceability. Neither participates in job identity, so
-     *     a ``JobInstance`` is identified by its business parameters alone and both
-     *     restart of a failed instance and rejection of a duplicate completed
-     *     instance behave as Spring Batch intends.
+     * :purpose: Enrich a job's business parameters with observability and uniqueness
+     *     parameters, then submit the job on the asynchronous operator. A ``correlationId``
+     *     obtained from the static {@link CorrelationIdContext} is added as a non-identifying
+     *     parameter (also seeded into the launching thread's MDC), as is a random ``run.id``
+     *     recorded purely for traceability. Neither participates in job identity, so a
+     *     ``JobInstance`` is identified by its business parameters alone and both restart of a
+     *     failed instance and rejection of a duplicate completed instance behave as Spring Batch
+     *     intends.
      * :param job: the batch job to submit.
-     * :param businessParameters: the job-specific parameters already assembled by
-     *     the calling ``launch*`` method.
+     * :param businessParameters: the job-specific parameters already assembled by the calling
+     *     ``launch*`` method.
      * :returns: the {@link JobExecution} returned by the asynchronous operator.
      * :throws JobExecutionException: if the operator cannot start the job.
      */
@@ -475,11 +477,11 @@ public class JobSchedulingConfig {
      * :purpose: Submit a job that only reads business data and (re)writes its own output, so
      *     every submission is a run in its own right. A print or read request is a repeatable
      *     operation on the mainframe: ``CORPT00C`` writes a TDQ 'JOBS' record and JES runs the
-     *     stream on EVERY request, so an operator may print the monthly report as often as
-     *     they like. Deriving identity from the business parameters alone made the report
-     *     window itself the instance key, which let the monthly report be printed once per
-     *     calendar month -- and never again -- so the whole workflow became unusable after its
-     *     first run [app/cbl/CORPT00C.cbl, app/proc/TRANREPT.prc].
+     *     stream on EVERY request, so an operator may print the monthly report as often as they
+     *     like. Deriving identity from the business parameters alone made the report window itself
+     *     the instance key, which let the monthly report be printed once per calendar month -- and
+     *     never again -- so the whole workflow became unusable after its first run
+     *     [app/cbl/CORPT00C.cbl, app/proc/TRANREPT.prc].
      * :param job: the batch job to submit.
      * :param businessParameters: the parameters assembled by the calling ``launch*`` method.
      * :returns: the {@link JobExecution} returned by the asynchronous operator.
@@ -538,10 +540,101 @@ public class JobSchedulingConfig {
      * :throws JobExecutionException: if the operator cannot start the job.
      */
     public JobExecution launchInterestCalculation(String parmDate) throws JobExecutionException {
+        requireParmDate(parmDate);
         JobParameters businessParameters = new JobParametersBuilder()
                 .addString("parmDate", parmDate)
                 .toJobParameters();
         return launch(interestCalculationJob, businessParameters);
+    }
+
+    /**
+     * :purpose: Reject a transaction-detail report window that is not a valid, ordered pair of
+     *     ``YYYY-MM-DD`` dates, BEFORE a JobInstance is created.
+     * :param startDate: inclusive range start.
+     * :param endDate: inclusive range end.
+     * :raises CardDemoException: when either bound is missing or malformed, or the start is
+     *     later than the end.
+     * :note: Both bounds are required TOGETHER. An inverted window is refused for the same
+     *     reason: it silently reports nothing.
+     */
+    private static void requireReportWindow(String startDate, String endDate) {
+        LocalDate start = parseReportDate(startDate, "startDate");
+        LocalDate end = parseReportDate(endDate, "endDate");
+        if (start.isAfter(end)) {
+            throw new CardDemoException("startDate " + startDate + " is after endDate " + endDate
+                    + "; the report window must be ordered, as the legacy DATEPARM control card is.");
+        }
+    }
+
+    /**
+     * :purpose: Parse one bound of the report window strictly.
+     * :param value: the caller-supplied date.
+     * :param name: the parameter name, for the message.
+     * :returns: the parsed date.
+     * :raises CardDemoException: when the value is absent or not a real ``YYYY-MM-DD`` date.
+     */
+    private static LocalDate parseReportDate(String value, String name) {
+        String trimmed = value == null ? "" : value.trim();
+        if (trimmed.isEmpty()) {
+            throw new CardDemoException(name + " is required: the transaction detail report takes a"
+                    + " startDate and endDate pair in YYYY-MM-DD form, exactly as the legacy"
+                    + " DATEPARM control card carries both bounds.");
+        }
+        try {
+            return LocalDate.parse(trimmed,
+                    DateTimeFormatter.ofPattern("uuuu-MM-dd").withResolverStyle(ResolverStyle.STRICT));
+        } catch (DateTimeParseException e) {
+            throw new CardDemoException(name + " must be a real calendar date in YYYY-MM-DD form"
+                    + " (received '" + trimmed + "').");
+        }
+    }
+
+    /**
+     * :purpose: Reject an interest-calculation business date that is not the legacy
+     *     ``YYYYMMDDHH`` PARM shape, BEFORE a JobInstance is created or a single interest
+     *     transaction is written.
+     * :param parmDate: the caller-supplied business date.
+     * :raises CardDemoException: when the value is not exactly ten digits, or does not denote
+     *     a real calendar date with an hour of 00-23.
+     * :note: This is not defensive tidying. The value becomes the first ten characters of
+     *     every transaction id the run generates (``TRAN-ID`` is ``PIC X(16)``, filled as
+     *     ``parmDate`` + a 6-digit sequence), so ``parmDate=NOTADATE00`` produced transaction ids
+     *     such as ``NOTADATE00000001`` - non-numeric values in a field whose frozen contract is 16
+     *     digits (AAP 0.6.5) - and the run reported COMPLETED while doing it. An invalid PARM on
+     *     the legacy ``EXEC`` card could not reach the file either: the program moved it into a
+     *     numeric working-storage field.
+     */
+    private static void requireParmDate(String parmDate) {
+        String value = parmDate == null ? "" : parmDate.trim();
+        boolean shaped = value.length() == PARM_DATE_LENGTH;
+        if (shaped) {
+            for (int i = 0; i < value.length(); i++) {
+                if (!Character.isDigit(value.charAt(i))) {
+                    shaped = false;
+                    break;
+                }
+            }
+        }
+        if (shaped) {
+            int hour = Integer.parseInt(value.substring(8, 10));
+            shaped = hour <= MAX_PARM_HOUR;
+            if (shaped) {
+                try {
+                    // STRICT so 2022-02-30 is refused rather than shifted, matching the
+                    // CEEDAYS-based validation DateUtil performs for every other date.
+                    LocalDate.parse(value.substring(0, 8),
+                            DateTimeFormatter.ofPattern("uuuuMMdd").withResolverStyle(ResolverStyle.STRICT));
+                } catch (DateTimeParseException e) {
+                    shaped = false;
+                }
+            }
+        }
+        if (!shaped) {
+            throw new CardDemoException("parmDate must be a 10-character YYYYMMDDHH business date"
+                    + " with a real calendar date and an hour of 00-23, as the legacy INTCALC PARM"
+                    + " carries (for example " + DEFAULT_PARM_DATE + "); it prefixes every generated"
+                    + " transaction id, which must stay 16 digits.");
+        }
     }
 
     /**
@@ -573,6 +666,7 @@ public class JobSchedulingConfig {
      */
     public JobExecution launchTransactionDetailReport(String startDate, String endDate, String reportFile)
             throws JobExecutionException {
+        requireReportWindow(startDate, endDate);
         JobParameters businessParameters = new JobParametersBuilder()
                 .addString("startDate", startDate)
                 .addString("endDate", endDate)

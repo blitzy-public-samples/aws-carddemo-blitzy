@@ -25,18 +25,18 @@ import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.AuthenticationEntryPoint;
 
 /**
- * :purpose: Answer an unauthenticated request to a protected resource with HTTP
- *     ``401 Unauthorized`` and write one audit record for it. It replaces Spring
- *     Security's default ``Http403ForbiddenEntryPoint`` (which returns an empty
- *     ``403`` and hides genuine failures from operators) on every CardDemo chain.
+ * :purpose: Answer an unauthenticated request to a protected resource with HTTP ``401
+ *     Unauthorized`` and write one audit record for it. It replaces Spring Security's default
+ *     ``Http403ForbiddenEntryPoint`` (which returns an empty ``403`` and hides genuine
+ *     failures from operators) on every CardDemo chain.
  * :output: A ``401`` response carrying the shared refusal envelope, plus one ``WARN``
  *     audit record naming the source address, method, path, and correlation id.
  * :note: The envelope is minimal in CONTENT and identical in SHAPE to every other error
  *     response: a fixed message, the request path with any PAN redacted, and the trace and
  *     correlation ids. It names no resource and gives no reason beyond the status, so an
- *     unauthenticated caller still learns nothing it did not already know — while a client
- *     can finally say why the screen was returned to sign-on, and an operator has the id
- *     that ties the refusal to the audit record above.
+ *     unauthenticated caller still learns nothing it did not already know — while a client can
+ *     finally say why the screen was returned to sign-on, and an operator has the id that ties
+ *     the refusal to the audit record above.
  */
 public class AuditingAuthenticationEntryPoint implements AuthenticationEntryPoint {
 

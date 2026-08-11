@@ -53,6 +53,7 @@ public class TranCatBalId implements Serializable {
     }
 
     /**
+     * :purpose: Read ``trancatAcctId``.
      * :return: the account identifier component.
      */
     public Long getTrancatAcctId() {
@@ -60,6 +61,7 @@ public class TranCatBalId implements Serializable {
     }
 
     /**
+     * :purpose: Set ``trancatAcctId``.
      * :param trancatAcctId: the account identifier component to set.
      */
     public void setTrancatAcctId(Long trancatAcctId) {
@@ -67,6 +69,7 @@ public class TranCatBalId implements Serializable {
     }
 
     /**
+     * :purpose: Read ``trancatTypeCd``.
      * :return: the transaction type code component.
      */
     public String getTrancatTypeCd() {
@@ -74,6 +77,7 @@ public class TranCatBalId implements Serializable {
     }
 
     /**
+     * :purpose: Set ``trancatTypeCd``.
      * :param trancatTypeCd: the transaction type code component to set.
      */
     public void setTrancatTypeCd(String trancatTypeCd) {
@@ -81,6 +85,7 @@ public class TranCatBalId implements Serializable {
     }
 
     /**
+     * :purpose: Read ``trancatCd``.
      * :return: the transaction category code component.
      */
     public Integer getTrancatCd() {
@@ -88,6 +93,7 @@ public class TranCatBalId implements Serializable {
     }
 
     /**
+     * :purpose: Set ``trancatCd``.
      * :param trancatCd: the transaction category code component to set.
      */
     public void setTrancatCd(Integer trancatCd) {
@@ -117,6 +123,7 @@ public class TranCatBalId implements Serializable {
     }
 
     /**
+     * :purpose: Hash consistent with :java:meth:`equals`.
      * :return: a hash code derived from all three key components,
      *          consistent with {@link #equals(Object)}.
      */

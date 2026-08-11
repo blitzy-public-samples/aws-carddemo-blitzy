@@ -31,6 +31,7 @@ import com.carddemo.common.dto.TransactionViewResponseDto;
 import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.exception.RecordNotFoundException;
 import com.carddemo.common.util.DateUtil;
+import com.carddemo.common.util.LegacyTimestamp;
 import com.carddemo.transaction.mapper.TransactionMapper;
 import com.carddemo.transaction.repository.CardXrefRepository;
 import com.carddemo.transaction.repository.TransactionRepository;
@@ -156,6 +157,8 @@ public class TransactionService {
     private static final int CSUTLDTC_OK_MSG_NO = 2513;
     /** :purpose: Width of the zero-padded transaction-id and account/card key form. */
     private static final int TRAN_ID_WIDTH = 16;
+
+
 
     /** Declared width of ``XREF-ACCT-ID`` / ``ACTIDIN`` (``PIC 9(11)``). */
     private static final int ACCT_ID_WIDTH = 11;
@@ -608,16 +611,20 @@ public class TransactionService {
         BigDecimal amount = scale2(request.getTranAmt());
 
         // (E) Origination date character shape, then (F) processing date character shape.
-        if (!matchesIsoDateShape(request.getTranOrigTs())) {
+        if (!LegacyTimestamp.isMapDateField(request.getTranOrigTs())) {
             throw new CardDemoException(MSG_ORIG_DATE_FORMAT);
         }
-        if (!matchesIsoDateShape(request.getTranProcTs())) {
+        if (!LegacyTimestamp.isMapDateField(request.getTranProcTs())) {
             throw new CardDemoException(MSG_PROC_DATE_FORMAT);
         }
 
         // (G) Origination date validity, then (H) processing date validity (CSUTLDTC).
-        validateDateOrThrow(request.getTranOrigTs().substring(0, 10), MSG_ORIG_DATE_INVALID);
-        validateDateOrThrow(request.getTranProcTs().substring(0, 10), MSG_PROC_DATE_INVALID);
+        validateDateOrThrow(LegacyTimestamp.stripTrailingBlanks(request.getTranOrigTs()),
+                MSG_ORIG_DATE_INVALID);
+        validateDateOrThrow(LegacyTimestamp.stripTrailingBlanks(request.getTranProcTs()),
+                MSG_PROC_DATE_INVALID);
+
+
 
         // (I) Merchant id numeric check.
         // MIDI is nine characters wide (TRAN-MERCHANT-ID PIC 9(09)); the same reasoning as the
@@ -639,6 +646,12 @@ public class TransactionService {
         Transaction entity = transactionMapper.toEntity(request);
         entity.setTranCardNum(resolvedCardNum);
         entity.setTranAmt(amount);
+        // Stamp the dates in the canonical stored form the same way the amount is stamped at
+        // its fixed scale just above: the mapper renders it and this method restates it, both
+        // through the ONE helper that owns the contract, so the value that reaches the column
+        // is the same whichever path built the entity (COTRN02C L464-L465).
+        entity.setTranOrigTs(LegacyTimestamp.fromMapDateField(request.getTranOrigTs()));
+        entity.setTranProcTs(LegacyTimestamp.fromMapDateField(request.getTranProcTs()));
         String tranId = nextUnusedTransactionId();
         entity.setTranId(tranId);
 
@@ -895,24 +908,6 @@ public class TransactionService {
     }
 
     /**
-     * :purpose: Report whether the first ten characters of a value form the
-     *  ``YYYY-MM-DD`` character shape (COTRN02C date character-position check).
-     * :param value: the candidate string; may be ``null``.
-     * :returns: ``true`` when positions one to ten match ``NNNN-NN-NN``.
-     */
-    private static boolean matchesIsoDateShape(String value) {
-        if (value == null || value.length() < 10) {
-            return false;
-        }
-        return isAsciiDigit(value, 0) && isAsciiDigit(value, 1) && isAsciiDigit(value, 2)
-                && isAsciiDigit(value, 3)
-                && value.charAt(4) == '-'
-                && isAsciiDigit(value, 5) && isAsciiDigit(value, 6)
-                && value.charAt(7) == '-'
-                && isAsciiDigit(value, 8) && isAsciiDigit(value, 9);
-    }
-
-    /**
      * :purpose: Report whether the character at an index is an ASCII digit.
      * :param value: the string to inspect.
      * :param index: the character index.
@@ -923,13 +918,7 @@ public class TransactionService {
         return c >= '0' && c <= '9';
     }
 
-    /**
-     * :purpose: Normalize a key to the sixteen-character zero-padded stored form; a
-     *  numeric value is left-padded with zeros, otherwise the trimmed value is used.
-     * :param value: the raw key; may be ``null``.
-     * :returns: the sixteen-character zero-padded key, or the trimmed value when it
-     *  is not numeric.
-     */
+    /** :purpose: Navigation action requesting the previous page (COBOL ``DFHPF7``). */
     /**
      * :purpose: Left-pad a digit string to the stored key width without parsing it. The
      *  key is a fixed-width digit string, so padding is a string operation; parsing it
@@ -1017,11 +1006,7 @@ public class TransactionService {
         return value == null || value.trim().isEmpty();
     }
 
-    /**
-     * :purpose: Trim a string and collapse blank values to ``null``.
-     * :param value: the candidate string; may be ``null``.
-     * :returns: the trimmed value, or ``null`` when blank.
-     */
+    /** :purpose: Navigation action requesting the previous page (COBOL ``DFHPF7``). */
     /**
      * :purpose: ``IF <field> EQUAL LOW-VALUES OR EQUAL SPACES`` — the "not supplied" test
      *  a filter edit opens with. An untouched map field arrives as LOW-VALUES, whose wire

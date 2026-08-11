@@ -200,23 +200,21 @@ public class JobSchedulingConfig {
     }
 
     /**
-     * :purpose: Construct a {@link TaskExecutorJobOperator} bound to the batch job
-     *  repository and a bounded {@link ThreadPoolTaskExecutor} whose threads are named
-     *  ``statement-N``. The executor is decorated so the submitting request's correlation
-     *  id follows the job onto its worker thread and so the run's admission permit is
-     *  returned when it ends.
+     * :purpose: Construct a {@link TaskExecutorJobOperator} bound to the batch job repository
+     *     and a bounded {@link ThreadPoolTaskExecutor} whose threads are named ``statement-N``.
+     *     The executor is decorated so the submitting request's correlation id follows the job
+     *     onto its worker thread and so the run's admission permit is returned when it ends.
      * :param jobRepository: batch job repository the operator records executions in.
      * :param admissions: permits governing how many submissions may be in flight.
      * :returns: a fully initialized asynchronous {@link JobOperator}.
-     * :raises IllegalStateException: if the operator cannot be initialized, which would
-     *  leave the statement job with no reachable submission surface.
-     * :note: A ``SimpleAsyncTaskExecutor`` with ``setConcurrencyLimit`` was used before.
-     *  Its limit is a THROTTLE, not a queue: ``execute`` BLOCKS the calling thread until a
-     *  slot frees, so a burst of submissions parked the HTTP request threads for tens of
-     *  seconds (measured p95 27.6 s, max 40.5 s) and neither returned promptly nor
-     *  refused. A pooled executor with a bounded queue never blocks the submitter, and the
-     *  admission permits turn an over-capacity submission into an immediate, frozen
-     *  refusal.
+     * :raises IllegalStateException: if the operator cannot be initialized, which would leave
+     *     the statement job with no reachable submission surface.
+     * :note: A ``SimpleAsyncTaskExecutor`` with ``setConcurrencyLimit`` was used before. Its
+     *     limit is a THROTTLE, not a queue: ``execute`` BLOCKS the calling thread until a slot
+     *     frees, so a burst of submissions parked the HTTP request threads for tens of seconds
+     *     (measured p95 27.6 s, max 40.5 s) and neither returned promptly nor refused. A pooled
+     *     executor with a bounded queue never blocks the submitter, and the admission permits turn
+     *     an over-capacity submission into an immediate, frozen refusal.
      */
     private static JobOperator buildAsyncJobOperator(JobRepository jobRepository, Semaphore admissions) {
         TaskExecutorJobOperator operator = new TaskExecutorJobOperator();
@@ -297,11 +295,9 @@ public class JobSchedulingConfig {
      *  when blank.
      * :return: the accepted run's {@link JobExecution}.
      * :raises CardDemoException: when the job cannot be submitted to the operator.
-     * :note: Both file names are always passed as job parameters. They were previously
-     *  omitted entirely, so the writer fell back to the working-directory-relative
-     *  ``output/statements.txt``, which is unwritable in the delivered read-only
-     *  container; the writer now resolves every name through the shared batch output
-     *  resolver.
+     * :note: Both file names are always passed as job parameters and resolved through
+     *  the shared batch output resolver, so neither can fall back to a
+     *  working-directory-relative path on the container's read-only root.
      * :note: The two file names are the whole BUSINESS parameter set. A
      *  ``reportType``/``startDate``/``endDate`` triple used to be recorded as
      *  identifying, but ``CREASTMT`` carries no ``PARM`` at all and its SORT step
@@ -371,23 +367,23 @@ public class JobSchedulingConfig {
     }
 
     /**
-     * :purpose: Refuse an output name that does not resolve inside the configured batch
-     *  output root, SYNCHRONOUSLY, before a job instance is created.
+     * :purpose: Refuse an output name that does not resolve inside the configured batch output
+     *     root, SYNCHRONOUSLY, before a job instance is created.
      * :param fileName: the effective output name.
      * :param parameterName: the job-parameter name, quoted in the refusal.
      * :returns: the same name once it is proven resolvable.
-     * :raises CardDemoException: when the name escapes the root, names a directory, or
-     *  cannot be created — reported to the caller as a domain refusal.
+     * :raises CardDemoException: when the name escapes the root, names a directory, or cannot
+     *     be created — reported to the caller as a domain refusal.
      * :note: The containment rule itself was already enforced, but only later, inside the
-     *  step-scoped writer factory. The caller therefore received ``202 ACCEPTED`` and the
-     *  run then failed with ``BeanCreationException: Error creating bean with name
-     *  'scopedTarget.statementCleanupListener' ...`` and a full stack trace persisted into
-     *  ``BATCH_JOB_EXECUTION.exit_message`` — internal Spring plumbing as the
-     *  operator-visible outcome of a bad parameter, and a spurious execution row for a run
-     *  that could never have produced a statement. Validating here refuses it the way every
-     *  other launch refusal is refused, and writes nothing to the batch metadata.
+     *     step-scoped writer factory. The caller therefore received ``202 ACCEPTED`` and the run
+     *     then failed with ``BeanCreationException: Error creating bean with name
+     *     'scopedTarget.statementCleanupListener' ...`` and a full stack trace persisted into
+     *     ``BATCH_JOB_EXECUTION.exit_message`` — internal Spring plumbing as the operator-visible
+     *     outcome of a bad parameter, and a spurious execution row for a run that could never have
+     *     produced a statement. Validating here refuses it the way every other launch refusal is
+     *     refused, and writes nothing to the batch metadata.
      * :note: The resolver's own message is surfaced because it names the rejected VALUE and
-     *  nothing internal, so an operator can see which parameter was wrong.
+     *     nothing internal, so an operator can see which parameter was wrong.
      */
     private String validatedFile(String fileName, String parameterName) {
         try {

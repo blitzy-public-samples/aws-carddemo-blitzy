@@ -31,22 +31,22 @@ import java.util.Map;
 
 /**
  * :purpose: Reproduce the field-level input edits of the legacy account-update program
- *     ``COACTUPC`` paragraph ``1200-EDIT-MAP-INPUTS`` (``app/cbl/COACTUPC.cbl``
- *     L1429-1678), fail-fast and in the exact COBOL ``PERFORM`` order: account status,
- *     open date, credit limit, expiry date, cash credit limit, reissue date, current
- *     balance, current cycle credit, current cycle debit, SSN, date of birth, FICO
- *     score, first/middle/last name, address line 1, state, zip, address line 2, city,
- *     country, phone 1, phone 2, EFT account id and primary card holder.
- * :output: Returns normally when every edit passes; otherwise raises
- *     {@link CardDemoException} (HTTP 400) carrying the first failing message exactly
- *     as the legacy program would have moved it to ``WS-RETURN-MSG``. Only ONE message
- *     is ever produced, preserving the single-message screen contract.
- * :note: Every message literal is reproduced character-for-character from the source:
- *     the static forms come from the ``WS-RETURN-MSG`` 88-levels (COACTUPC L480-530)
- *     and the composed forms from the generic edit paragraphs
- *     (``1215``/``1220``/``1225``/``1235``/``1245``/``1250``/``1260``/``1265``/``1270``
- *     and ``app/cpy/CSUTLDPY.cpy``), which build
- *     ``FUNCTION TRIM(WS-EDIT-VARIABLE-NAME)`` followed by the fixed suffix.
+ *     ``COACTUPC`` paragraph ``1200-EDIT-MAP-INPUTS`` (``app/cbl/COACTUPC.cbl`` L1429-1678),
+ *     fail-fast and in the exact COBOL ``PERFORM`` order: account status, open date, credit
+ *     limit, expiry date, cash credit limit, reissue date, current balance, current cycle
+ *     credit, current cycle debit, SSN, date of birth, FICO score, first/middle/last name,
+ *     address line 1, state, zip, address line 2, city, country, phone 1, phone 2, EFT account
+ *     id and primary card holder.
+ * :output: Returns normally when every edit passes; otherwise raises {@link
+ *     CardDemoException} (HTTP 400) carrying the first failing message exactly as the legacy
+ *     program would have moved it to ``WS-RETURN-MSG``. Only ONE message is ever produced,
+ *     preserving the single-message screen contract.
+ * :note: Every message literal is reproduced character-for-character from the source: the
+ *     static forms come from the ``WS-RETURN-MSG`` 88-levels (COACTUPC L480-530) and the
+ *     composed forms from the generic edit paragraphs
+ *     (``1215``/``1220``/``1225``/``1235``/``1245``/``1250``/``1260``/``1265``/``1270`` and
+ *     ``app/cpy/CSUTLDPY.cpy``), which build ``FUNCTION TRIM(WS-EDIT-VARIABLE-NAME)`` followed
+ *     by the fixed suffix.
  */
 @Component
 public class AccountUpdateValidator {

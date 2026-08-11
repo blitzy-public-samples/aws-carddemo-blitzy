@@ -45,25 +45,25 @@ import java.util.Optional;
  *     resulting interest transactions and account balance roll-ups, re-platformed from the
  *     batch program ``CBACT04C``. Exposes the interest formula, the disclosure-group
  *     resolution with ``DEFAULT`` fallback, the account and card cross-reference reads, the
- *     interest-transaction assembly, the transaction write, the per-account cycle roll-up
- *     and the account-ordered category-balance read as stateless, independently testable
+ *     interest-transaction assembly, the transaction write, the per-account cycle roll-up and
+ *     the account-ordered category-balance read as stateless, independently testable
  *     operations that hold no per-run state.
- * :output: Scale-2 monetary results and persisted interest {@link Transaction} and
- *     {@link Account} rows; the driving read yields {@link TranCatBal} rows in account-key
- *     order so a downstream control-break sees contiguous per-account rows.
+ * :output: Scale-2 monetary results and persisted interest {@link Transaction} and {@link
+ *     Account} rows; the driving read yields {@link TranCatBal} rows in account-key order so a
+ *     downstream control-break sees contiguous per-account rows.
  * :composition: The ``batch/`` chunk components (``InterestItemProcessor`` /
- *     ``InterestTransactionWriter``) and the ``config/`` job hold the iteration state and
- *     the ``PARM-DATE`` job parameter and drive these methods to reproduce the ``CBACT04C``
- *     MAIN control-break loop: read category-balance rows in account order via
- *     {@link #readAccountOrderedBalances}; on each ``trancatAcctId`` control break flush the
- *     prior account with {@link #updateAccount} (skipping the first account), reset the
- *     running interest total to {@link java.math.BigDecimal#ZERO}, then call
- *     {@link #loadAccount} and {@link #resolveCardNumber} once for the new account; for each
- *     row resolve the rate with {@link #resolveDiscGroup} and, only when the rate is non-zero
- *     (via {@code compareTo} against zero), compute interest with
- *     {@link #computeMonthlyInterest}, add it to the running total, assemble the row with
- *     {@link #buildInterestTransaction} and persist it with {@link #saveTransaction}; after
- *     the reader is exhausted flush the last account with {@link #updateAccount}.
+ *     ``InterestTransactionWriter``) and the ``config/`` job hold the iteration state and the
+ *     ``PARM-DATE`` job parameter and drive these methods to reproduce the ``CBACT04C`` MAIN
+ *     control-break loop: read category-balance rows in account order via {@link
+ *     #readAccountOrderedBalances}; on each ``trancatAcctId`` control break flush the prior
+ *     account with {@link #updateAccount} (skipping the first account), reset the running
+ *     interest total to {@link java.math.BigDecimal#ZERO}, then call {@link #loadAccount} and
+ *     {@link #resolveCardNumber} once for the new account; for each row resolve the rate with
+ *     {@link #resolveDiscGroup} and, only when the rate is non-zero (via {@code compareTo}
+ *     against zero), compute interest with {@link #computeMonthlyInterest}, add it to the
+ *     running total, assemble the row with {@link #buildInterestTransaction} and persist it
+ *     with {@link #saveTransaction}; after the reader is exhausted flush the last account with
+ *     {@link #updateAccount}.
  * :note: The tran-id suffix is a job-run-global monotonic counter (starting at 0, first
  *     written transaction using ``000001``) that is incremented only when a transaction is
  *     written (non-zero rate), so zero-rate categories consume no suffix number and suffixes
@@ -129,22 +129,21 @@ public class InterestCalculationService {
     }
 
     /**
-     * :purpose: Compute the monthly interest for one transaction-category balance,
-     *     reproducing ``1300-COMPUTE-INTEREST`` (``CBACT04C`` lines 462-466):
-     *     ``(TRAN-CAT-BAL * DIS-INT-RATE) / 1200``. The multiplication is performed before
-     *     the division to match the COBOL parenthesization, and the quotient is TRUNCATED
-     *     toward zero at the receiver's scale.
+     * :purpose: Compute the monthly interest for one transaction-category balance, reproducing
+     *     ``1300-COMPUTE-INTEREST`` (``CBACT04C`` lines 462-466): ``(TRAN-CAT-BAL * DIS-INT-RATE)
+     *     / 1200``. The multiplication is performed before the division to match the COBOL
+     *     parenthesization, and the quotient is TRUNCATED toward zero at the receiver's scale.
      * :param categoryBalance: the transaction-category balance (``TRAN-CAT-BAL``).
      * :param interestRate: the disclosure-group annual interest rate (``DIS-INT-RATE``).
      * :returns: the monthly interest at scale 2.
      * :note: The rounding mode is {@link RoundingMode#DOWN}, not ``HALF_UP``. The COBOL
      *     ``COMPUTE`` carries no ``ROUNDED`` phrase, so the excess fractional digits of the
-     *     quotient are simply dropped as it is stored into ``WS-MONTHLY-INT``
-     *     (``PIC S9(09)V99``): ``0.41666… -> 0.41``, ``0.125 -> 0.12`` (never ``0.13``),
-     *     and for a credit balance ``-0.41666… -> -0.41``. Rounding half up instead added a
-     *     cent to every non-terminating quotient and that error propagated into
-     *     ``accounts.acct_curr_bal`` through ``1050-UPDATE-ACCOUNT``, diverging financial
-     *     output in breach of AAP 0.6.1, 0.7.1 and 0.7.6.
+     *     quotient are simply dropped as it is stored into ``WS-MONTHLY-INT`` (``PIC S9(09)V99``):
+     *     ``0.41666… -> 0.41``, ``0.125 -> 0.12`` (never ``0.13``), and for a credit balance
+     *     ``-0.41666… -> -0.41``. Rounding half up instead added a cent to every non-terminating
+     *     quotient and that error propagated into ``accounts.acct_curr_bal`` through
+     *     ``1050-UPDATE-ACCOUNT``, diverging financial output in breach of AAP 0.6.1, 0.7.1 and
+     *     0.7.6.
      */
     public BigDecimal computeMonthlyInterest(BigDecimal categoryBalance, BigDecimal interestRate) {
         return categoryBalance
@@ -188,18 +187,17 @@ public class InterestCalculationService {
 
     /**
      * :purpose: Resolve the card number for an account through the card cross-reference
-     *     alternate index, reproducing ``1110-GET-XREF-DATA`` (``CBACT04C`` lines 393-413).
-     *     The resolved card number becomes ``TRAN-CARD-NUM`` on every interest transaction for
-     *     the account. A missing cross-reference is unrecoverable and fails the step.
+     *     alternate index, reproducing ``1110-GET-XREF-DATA`` (``CBACT04C`` lines 393-413). The
+     *     resolved card number becomes ``TRAN-CARD-NUM`` on every interest transaction for the
+     *     account. A missing cross-reference is unrecoverable and fails the step.
      * :param acctId: the account id used as the ``FD-XREF-ACCT-ID`` alternate key.
      * :returns: the 16-character card number.
-     * :note: The read is ordered by ``XREF-CARD-NUM`` ascending. A VSAM alternate-index
-     *     read returns the records sharing an alternate key in PRIMARY-key order, so for an
-     *     account holding several cards ``1110-GET-XREF-DATA`` always yielded the lowest
-     *     card number. An unordered ``findFirst`` returned whichever row PostgreSQL
-     *     happened to reach first, so the same data and the same parameters could stamp a
-     *     DIFFERENT ``TRAN-CARD-NUM`` on the interest transaction from run to run
-     *.
+     * :note: The read is ordered by ``XREF-CARD-NUM`` ascending. A VSAM alternate-index read
+     *     returns the records sharing an alternate key in PRIMARY-key order, so for an account
+     *     holding several cards ``1110-GET-XREF-DATA`` always yielded the lowest card number. An
+     *     unordered ``findFirst`` returned whichever row PostgreSQL happened to reach first, so
+     *     the same data and the same parameters could stamp a DIFFERENT ``TRAN-CARD-NUM`` on the
+     *     interest transaction from run to run .
      */
     public String resolveCardNumber(Long acctId) {
         return cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(acctId)

@@ -13,22 +13,20 @@ import java.math.BigDecimal;
 
 /**
  * JPA entity for a posted transaction.
- *
- * :purpose: Maps the legacy COBOL ``TRAN-RECORD`` layout (copybook ``CVTRA05Y``,
- *     fixed record length 350 bytes) onto the relational ``transactions`` table.
- * :output: A persistent transaction row keyed by the 16-character transaction id.
- *     The monetary ``tran_amt`` column is declared ``NUMERIC(11,2)`` and backed by
- *     {@link BigDecimal} so that the COBOL ``S9(09)V99`` packed-decimal scale is
- *     preserved exactly; timestamp fields retain their 26-character wire format as
- *     {@link String} values, and the card number is a scalar foreign-key column
- *     rather than a mapped association.
+ * :purpose: Maps the legacy COBOL ``TRAN-RECORD`` layout (copybook ``CVTRA05Y``, fixed
+ *     record length 350 bytes) onto the relational ``transactions`` table.
+ * :output: A persistent transaction row keyed by the 16-character transaction id. The
+ *     monetary ``tran_amt`` column is declared ``NUMERIC(11,2)`` and backed by {@link
+ *     BigDecimal} so that the COBOL ``S9(09)V99`` packed-decimal scale is preserved exactly;
+ *     timestamp fields retain their 26-character wire format as {@link String} values, and the
+ *     card number is a scalar foreign-key column rather than a mapped association.
  * :note: The entity implements {@link Persistable} because ``tran_id`` is an
- *     APPLICATION-ASSIGNED key drawn from the ``transaction_id_seq`` database
- *     sequence rather than a generated identity. Without it Spring Data's default
- *     ``isNew`` rule (id is null) reports every instance as already persisted, so
- *     ``save`` performs a ``merge`` that turns an id collision into a silent UPDATE
- *     over an existing financial record instead of the duplicate-key rejection the
- *     legacy ``WRITE`` produced (``COTRN02C`` ``DUPKEY``/``DUPREC``, ``COBIL00C``).
+ *     APPLICATION-ASSIGNED key drawn from the ``transaction_id_seq`` database sequence rather
+ *     than a generated identity. Without it Spring Data's default ``isNew`` rule (id is null)
+ *     reports every instance as already persisted, so ``save`` performs a ``merge`` that turns
+ *     an id collision into a silent UPDATE over an existing financial record instead of the
+ *     duplicate-key rejection the legacy ``WRITE`` produced (``COTRN02C``
+ *     ``DUPKEY``/``DUPREC``, ``COBIL00C``).
  */
 @Entity
 @Table(name = "transactions")

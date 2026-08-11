@@ -55,9 +55,10 @@ type LayoutModule = typeof import('./Layout');
 
 let Layout: LayoutModule['default'];
 let useScreenChrome: LayoutModule['useScreenChrome'];
+let usePublishedChrome: LayoutModule['usePublishedChrome'];
 
 beforeAll(async () => {
-  ({ default: Layout, useScreenChrome } = await import('./Layout'));
+  ({ default: Layout, useScreenChrome, usePublishedChrome } = await import('./Layout'));
 });
 
 beforeEach(() => {
@@ -156,6 +157,58 @@ function EntryFieldPublisher({
       }}
     />
   );
+}
+
+/** Every chrome value the frame has published, newest last. */
+const publishedChrome: unknown[] = [];
+
+/**
+ * :purpose: Record the chrome the frame currently holds, so a test can tell a
+ *     publication that replaced it from one the frame declined.
+ * :returns: nothing rendered.
+ */
+function ChromeObserver(): ReactElement {
+  publishedChrome.push(usePublishedChrome());
+  return <span data-testid="chrome-observer" />;
+}
+
+/**
+ * :purpose: A page that republishes on every render with a FRESH handler closure, the
+ *     way a real screen does — its ``onActivate`` identity turns over whenever any of
+ *     its own state changes, so the layout effect re-runs and publishes again even when
+ *     nothing on the screen has changed.
+ * :param generation: bumped by the test to force a republication.
+ * :param label: the ENTER legend text, so a test can make one republication carry a
+ *     genuine change.
+ * :param onSubmit: notified with the generation that was current when ENTER was struck.
+ * :returns: the rendered page body.
+ */
+function RepublishingPage({
+  generation,
+  label,
+  onSubmit,
+}: {
+  generation: number;
+  label: string;
+  onSubmit?: (generation: number) => void;
+}): ReactElement {
+  const { setChrome } = useScreenChrome();
+  useLayoutEffect(() => {
+    setChrome({
+      transactionId: 'CAUP',
+      programName: 'COACTUPC',
+      pfKeys: [
+        {
+          action: PfKeyAction.Enter,
+          label,
+          onActivate: () => {
+            onSubmit?.(generation);
+          },
+        },
+      ],
+    });
+  }, [setChrome, generation, label, onSubmit]);
+  return <ChromeObserver />;
 }
 
 /**
@@ -545,5 +598,91 @@ describe('Layout — the frame is navigable and identifiable', () => {
     await waitFor(() => {
       expect(document.title).toBe('CAUP COACTUPC - CardDemo');
     });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* A publication that would paint the same screen is declined         */
+/* ------------------------------------------------------------------ */
+
+describe('Layout — a publication that paints nothing new is declined', () => {
+  beforeEach(() => {
+    publishedChrome.length = 0;
+  });
+
+  it('keeps the chrome it holds when a republication carries the same values', () => {
+    const { rerender } = render(
+      <MemoryRouter>
+        <Layout>
+          <RepublishingPage generation={1} label="ENTER=Process" />
+        </Layout>
+      </MemoryRouter>,
+    );
+    const first = publishedChrome[publishedChrome.length - 1];
+
+    // A new generation gives the page a new handler closure, so its layout effect
+    // re-runs and publishes again — carrying exactly the same values.
+    rerender(
+      <MemoryRouter>
+        <Layout>
+          <RepublishingPage generation={2} label="ENTER=Process" />
+        </Layout>
+      </MemoryRouter>,
+    );
+
+    expect(publishedChrome[publishedChrome.length - 1]).toBe(first);
+  });
+
+  it('replaces the chrome as soon as a republication changes the legend', () => {
+    const { rerender } = render(
+      <MemoryRouter>
+        <Layout>
+          <RepublishingPage generation={1} label="ENTER=Process" />
+        </Layout>
+      </MemoryRouter>,
+    );
+    const first = publishedChrome[publishedChrome.length - 1];
+
+    rerender(
+      <MemoryRouter>
+        <Layout>
+          <RepublishingPage generation={2} label="ENTER=Fetch" />
+        </Layout>
+      </MemoryRouter>,
+    );
+
+    expect(publishedChrome[publishedChrome.length - 1]).not.toBe(first);
+    expect(screen.getByRole('button', { name: 'ENTER=Fetch' })).toBeInTheDocument();
+  });
+
+  it('dispatches the newest handler even when the publication was declined', () => {
+    const submitted: number[] = [];
+    const onSubmit = (generation: number): void => {
+      submitted.push(generation);
+    };
+    const { rerender } = render(
+      <MemoryRouter>
+        <Layout>
+          <RepublishingPage generation={1} label="ENTER=Process" onSubmit={onSubmit} />
+        </Layout>
+      </MemoryRouter>,
+    );
+    const first = publishedChrome[publishedChrome.length - 1];
+
+    rerender(
+      <MemoryRouter>
+        <Layout>
+          <RepublishingPage generation={2} label="ENTER=Process" onSubmit={onSubmit} />
+        </Layout>
+      </MemoryRouter>,
+    );
+    // The frame declined the publication, and must still act on the handler it carried.
+    expect(publishedChrome[publishedChrome.length - 1]).toBe(first);
+
+    act(() => {
+      fireEvent.keyDown(document, { key: 'Enter' });
+    });
+
+    expect(submitted).toEqual([2]);
   });
 });

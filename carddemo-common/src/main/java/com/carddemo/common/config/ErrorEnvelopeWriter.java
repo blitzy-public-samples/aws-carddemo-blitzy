@@ -32,20 +32,20 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 
 /**
- * :purpose: Render the documented {@link ErrorResponse} envelope for the failures that
- *  are answered OUTSIDE Spring MVC's exception handling and therefore cannot go
- *  through {@link GlobalExceptionHandler}: a security filter-chain denial, a request
- *  refused by the shared size cap, and a rejection the servlet container answers on
- *  its own. Without one writer those paths answered with an empty body or with the
- *  container's own markup, so a client faced several error shapes for one API.
+ * :purpose: Render the documented {@link ErrorResponse} envelope for the failures that are
+ *     answered OUTSIDE Spring MVC's exception handling and therefore cannot go through {@link
+ *     GlobalExceptionHandler}: a security filter-chain denial, a request refused by the shared
+ *     size cap, and a rejection the servlet container answers on its own. Without one writer
+ *     those paths answered with an empty body or with the container's own markup, so a client
+ *     faced several error shapes for one API.
  * :output: Static helpers that serialize the envelope -- status, reason phrase as both
- *  ``error`` and ``message``, PAN-masked path, correlation id, trace id -- and write it
- *  to a servlet response.
- * :note: The envelope is written by hand rather than through an ``ObjectMapper``
- *  because these callers are filters, valves, and security handlers that are
- *  constructed outside the application context and hold no serializer. Only the status
- *  reason phrase is ever used as the message: no exception detail, resource name, or
- *  framework internal is disclosed.
+ *     ``error`` and ``message``, PAN-masked path, correlation id, trace id -- and write it to
+ *     a servlet response.
+ * :note: The envelope is written by hand rather than through an ``ObjectMapper`` because
+ *     these callers are filters, valves, and security handlers that are constructed outside
+ *     the application context and hold no serializer. Only the status reason phrase is ever
+ *     used as the message: no exception detail, resource name, or framework internal is
+ *     disclosed.
  */
 public final class ErrorEnvelopeWriter {
 

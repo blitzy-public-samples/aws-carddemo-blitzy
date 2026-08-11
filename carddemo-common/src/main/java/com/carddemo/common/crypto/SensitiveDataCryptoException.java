@@ -18,20 +18,18 @@ package com.carddemo.common.crypto;
 
 /**
  * :purpose: Signals that a regulated attribute could not be protected on write or
- *     recovered on read - a misconfigured encryption key, a value that is not an
- *     AES-GCM ciphertext token (for example a column still holding unencrypted
- *     data), or a token that fails integrity verification. It exists so the
- *     failure is reported as an explicit, self-describing condition instead of a
- *     low-level ``ArrayIndexOutOfBoundsException`` or ``BadPaddingException``
- *     escaping the persistence layer.
- * :output: An unchecked exception whose message names the fault category and, at
- *     most, the length of the offending token. The protected value, the key, and
- *     any derived material are NEVER included, so neither logs nor an error
- *     response can disclose them.
- * :note: This is deliberately NOT a {@code CardDemoException}: it is a
- *     server-side data-at-rest or configuration fault rather than a legacy RESP
- *     or reject condition, and it is mapped to ``500`` (never ``400``) so a caller
- *     is never told that a request was malformed when the stored data was.
+ *     recovered on read - a misconfigured encryption key, a value that is not an AES-GCM
+ *     ciphertext token (for example a column still holding unencrypted data), or a token that
+ *     fails integrity verification. It exists so the failure is reported as an explicit,
+ *     self-describing condition instead of a low-level ``ArrayIndexOutOfBoundsException`` or
+ *     ``BadPaddingException`` escaping the persistence layer.
+ * :output: An unchecked exception whose message names the fault category and, at most, the
+ *     length of the offending token. The protected value, the key, and any derived material
+ *     are NEVER included, so neither logs nor an error response can disclose them.
+ * :note: This is deliberately NOT a {@code CardDemoException}: it is a server-side
+ *     data-at-rest or configuration fault rather than a legacy RESP or reject condition, and
+ *     it is mapped to ``500`` (never ``400``) so a caller is never told that a request was
+ *     malformed when the stored data was.
  */
 public class SensitiveDataCryptoException extends RuntimeException {
 

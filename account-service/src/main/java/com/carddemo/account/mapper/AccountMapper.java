@@ -30,36 +30,35 @@ import java.math.RoundingMode;
 
 /**
  * :purpose: Hand-written, stateless mapper that translates between the shared
- *   ``carddemo-common`` JPA entities (``Account``, ``Customer``, ``CardXref``)
- *   and the account view/update DTOs (``com.carddemo.common.dto``). It
- *   re-expresses the field-assembly logic of the legacy CICS programs
- *   ``COACTVWC`` (transaction ``CAVW``, account view SEND-MAP assembly) and
- *   ``COACTUPC`` (transaction ``CAUP``, update-record preparation). Reads copy
- *   entity fields into the read-only view response and post-update echo; writes
- *   apply the inbound update-request fields onto the caller-supplied managed
- *   entities so JPA ``@Version`` optimistic locking is preserved. The five
- *   monetary account fields are normalized to ``BigDecimal`` scale 2 by
- *   truncation toward zero. Performs a pure field copy only: no validation, no
- *   persistence, no reformatting, no logging, and no other business logic
- *   (those responsibilities belong to ``AccountService`` and the DTO layer).
+ *     ``carddemo-common`` JPA entities (``Account``, ``Customer``, ``CardXref``) and the
+ *     account view/update DTOs (``com.carddemo.common.dto``). It re-expresses the
+ *     field-assembly logic of the legacy CICS programs ``COACTVWC`` (transaction ``CAVW``,
+ *     account view SEND-MAP assembly) and ``COACTUPC`` (transaction ``CAUP``, update-record
+ *     preparation). Reads copy entity fields into the read-only view response and post-update
+ *     echo; writes apply the inbound update-request fields onto the caller-supplied managed
+ *     entities so JPA ``@Version`` optimistic locking is preserved. The five monetary account
+ *     fields are normalized to ``BigDecimal`` scale 2 by truncation toward zero. Performs a
+ *     pure field copy only: no validation, no persistence, no reformatting, no logging, and no
+ *     other business logic (those responsibilities belong to ``AccountService`` and the DTO
+ *     layer).
  */
 @Component
 public class AccountMapper {
 
     /**
-     * :purpose: Assemble the read-only account view response echoing the account
-     *   and customer master fields rendered on the legacy ``CACTVWA`` screen
-     *   (``COACTVWC``). Monetary fields are carried as ``BigDecimal`` at scale 2;
-     *   sensitive customer fields (SSN, government-issued id) are copied verbatim
-     *   for the DTO layer to mask. Pure field copy with no business logic.
-     * :param account: the account entity to read; account fields are copied only
-     *   when it is non-{@code null}.
-     * :param customer: the customer entity to read; customer fields are copied
-     *   only when it is non-{@code null}.
+     * :purpose: Assemble the read-only account view response echoing the account and customer
+     *     master fields rendered on the legacy ``CACTVWA`` screen (``COACTVWC``). Monetary fields
+     *     are carried as ``BigDecimal`` at scale 2; sensitive customer fields (SSN,
+     *     government-issued id) are copied verbatim for the DTO layer to mask. Pure field copy
+     *     with no business logic.
+     * :param account: the account entity to read; account fields are copied only when it is
+     *     non-{@code null}.
+     * :param customer: the customer entity to read; customer fields are copied only when it is
+     *     non-{@code null}.
      * :param cardXref: the resolved card cross-reference (CVACT03Y) supplying the
-     *   card-to-customer-to-account linkage; the read-only account view assembly
-     *   (COACTVWC ``CACTVWA``) surfaces no card-number field, so it is accepted
-     *   for contract stability and may be {@code null}.
+     *     card-to-customer-to-account linkage; the read-only account view assembly (COACTVWC
+     *     ``CACTVWA``) surfaces no card-number field, so it is accepted for contract stability and
+     *     may be {@code null}.
      * :returns: a populated {@link AccountViewResponseDto}.
      */
     public AccountViewResponseDto toViewResponse(Account account, Customer customer, CardXref cardXref) {
@@ -70,19 +69,18 @@ public class AccountMapper {
     }
 
     /**
-     * :purpose: Assemble the post-update echo response reflecting the freshly
-     *   persisted account and customer state, using the same field set as the
-     *   view response (``COACTUPC`` confirmation). Monetary fields are carried as
-     *   ``BigDecimal`` at scale 2; sensitive customer fields are copied verbatim
-     *   for the DTO layer to mask. Pure field copy with no business logic.
-     * :param account: the persisted account entity to read; account fields are
-     *   copied only when it is non-{@code null}.
-     * :param customer: the persisted customer entity to read; customer fields are
-     *   copied only when it is non-{@code null}.
+     * :purpose: Assemble the post-update echo response reflecting the freshly persisted
+     *     account and customer state, using the same field set as the view response (``COACTUPC``
+     *     confirmation). Monetary fields are carried as ``BigDecimal`` at scale 2; sensitive
+     *     customer fields are copied verbatim for the DTO layer to mask. Pure field copy with no
+     *     business logic.
+     * :param account: the persisted account entity to read; account fields are copied only
+     *     when it is non-{@code null}.
+     * :param customer: the persisted customer entity to read; customer fields are copied only
+     *     when it is non-{@code null}.
      * :param cardXref: the resolved card cross-reference (CVACT03Y) supplying the
-     *   card-to-customer-to-account linkage; the account update echo (COACTUPC)
-     *   surfaces no card-number field, so it is accepted for contract stability
-     *   and may be {@code null}.
+     *     card-to-customer-to-account linkage; the account update echo (COACTUPC) surfaces no
+     *     card-number field, so it is accepted for contract stability and may be {@code null}.
      * :returns: a populated {@link AccountUpdateResponseDto}.
      */
     public AccountUpdateResponseDto toUpdateResponse(Account account, Customer customer, CardXref cardXref) {
@@ -93,20 +91,18 @@ public class AccountMapper {
     }
 
     /**
-     * :purpose: Apply the editable screen fields carried by an account update
-     *   request onto the caller-supplied managed ``Account`` and ``Customer``
-     *   entities, re-expressing the ``COACTUPC`` update-record preparation. The
-     *   entities are mutated in place so their JPA ``@Version`` value is retained
-     *   for optimistic-lock conflict detection; the primary keys (``acctId`` /
-     *   ``custId``) and the version are never assigned from the request. Monetary
-     *   account fields are normalized to scale 2; all other values are copied as
-     *   submitted with no reformatting. Pure field copy with no business logic.
-     * :param request: the update request DTO; when {@code null} the method is a
-     *   no-op.
-     * :param account: the managed account entity to mutate; account fields are
-     *   applied only when it is non-{@code null}.
-     * :param customer: the managed customer entity to mutate; customer fields are
-     *   applied only when it is non-{@code null}.
+     * :purpose: Apply the editable screen fields carried by an account update request onto the
+     *     caller-supplied managed ``Account`` and ``Customer`` entities, re-expressing the
+     *     ``COACTUPC`` update-record preparation. The entities are mutated in place so their JPA
+     *     ``@Version`` value is retained for optimistic-lock conflict detection; the primary keys
+     *     (``acctId`` / ``custId``) and the version are never assigned from the request. Monetary
+     *     account fields are normalized to scale 2; all other values are copied as submitted with
+     *     no reformatting. Pure field copy with no business logic.
+     * :param request: the update request DTO; when {@code null} the method is a no-op.
+     * :param account: the managed account entity to mutate; account fields are applied only
+     *     when it is non-{@code null}.
+     * :param customer: the managed customer entity to mutate; customer fields are applied only
+     *     when it is non-{@code null}.
      */
     public void applyUpdate(AccountUpdateRequestDto request, Account account, Customer customer) {
         if (request == null) {

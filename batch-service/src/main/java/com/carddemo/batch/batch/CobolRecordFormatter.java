@@ -16,6 +16,7 @@
 
 package com.carddemo.batch.batch;
 
+import com.carddemo.common.batch.FixedWidthText;
 import com.carddemo.common.domain.Account;
 import com.carddemo.common.domain.Card;
 import com.carddemo.common.domain.CardXref;
@@ -196,15 +197,25 @@ public final class CobolRecordFormatter {
     }
 
     /**
-     * :purpose: Render a text value into a fixed-width field, left-justified and
-     *  space-padded on the right (or truncated), reproducing a COBOL ``PIC X(n)``
-     *  field.
+     * :purpose: Render a text value into a fixed-width field, left-justified and space-padded
+     *     on the right (or truncated), reproducing a COBOL ``PIC X(n)`` field.
      * :param value: the source value; a ``null`` value is treated as empty.
      * :param width: the exact output width in characters.
-     * :returns: a string of exactly ``width`` characters.
+     * :returns: a string of exactly ``width`` characters, every one of which encodes to
+     *     exactly one byte in the ISO-8859-1 the writers use - so the record is exactly ``width``
+     *     BYTES wide, which is what the downstream fixed-width contract requires.
+     * :note: The value is reduced through {@link FixedWidthText#toSingleByteText} FIRST.
+     *     Padding a raw value counts CHARACTERS, and a code point outside ISO-8859-1 does not
+     *     encode to one byte: a customer name holding one emoji produced a 499-byte row in a
+     *     500-byte record, because the surrogate pair counted as two characters and encoded as one
+     *     substitute byte. Reducing before padding makes the character count and the byte count
+     *     the same number again.
      */
     static String padText(String value, int width) {
-        String safe = (value == null) ? "" : value;
+        String safe = FixedWidthText.toSingleByteText(value);
+        if (safe == null) {
+            safe = "";
+        }
         if (safe.length() > width) {
             return safe.substring(0, width);
         }

@@ -19,17 +19,17 @@ import java.util.List;
 
 /**
  * :purpose: Signals that one named request field failed an input edit, carrying both the
- *  legacy message the screen shows on its error line and the identity of the field the
- *  edit rejected. The legacy online programs ran every edit inside the screen program, so
- *  a failed edit set both ``WS-RETURN-MSG`` and the field's own ``FLG-*-NOT-OK`` flag, and
- *  ``3300-SETUP-SCREEN-ATTRS`` then painted that field ``DFHRED`` and parked the cursor on
- *  it. Splitting the edits into a REST service loses the flag unless the field identity
- *  travels with the message, which is what this exception adds: the global handler copies
- *  {@link #getField()} into the ``fieldErrors`` member of the error body so the client can
- *  reproduce the highlight and the cursor placement.
+ *     legacy message the screen shows on its error line and the identity of the field the edit
+ *     rejected. The legacy online programs ran every edit inside the screen program, so a
+ *     failed edit set both ``WS-RETURN-MSG`` and the field's own ``FLG-*-NOT-OK`` flag, and
+ *     ``3300-SETUP-SCREEN-ATTRS`` then painted that field ``DFHRED`` and parked the cursor on
+ *     it. Splitting the edits into a REST service loses the flag unless the field identity
+ *     travels with the message, which is what this exception adds: the global handler copies
+ *     {@link #getField()} into the ``fieldErrors`` member of the error body so the client can
+ *     reproduce the highlight and the cursor placement.
  * :note: The field identity is the name of the member of the REQUEST body that failed, not
- *  a screen widget id — a screen that splits one request field across several 3270 fields
- *  (a date, an SSN, a phone number) owns that mapping.
+ *     a screen widget id — a screen that splits one request field across several 3270 fields
+ *     (a date, an SSN, a phone number) owns that mapping.
  */
 public class FieldValidationException extends CardDemoException {
 

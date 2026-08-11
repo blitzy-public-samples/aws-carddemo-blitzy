@@ -22,9 +22,12 @@
 #      k8s/secret.yaml supplies it from carddemo-monitoring-secret.
 #   2. NETWORK ISOLATION (defence in depth). No service publishes its management
 #      port. In Docker Compose only the api-gateway binds a host port and it does
-#      not proxy /actuator; in Kubernetes k8s/networkpolicy.yaml restricts ingress
-#      on the service port to the gateway and the monitoring namespace. Scrape
-#      traffic therefore never leaves the private network.
+#      not proxy /actuator; in Kubernetes the namespace-wide default-deny of
+#      k8s/networkpolicy.yaml admits the service port from the api-gateway pod
+#      ALONE, and no monitoring backend is deployed in-cluster, so this scrape
+#      config is a Compose-only artefact and an in-cluster scrape would require
+#      an explicit allow rule to be added there first. Scrape traffic therefore
+#      never leaves the private network.
 #
 # Confidentiality of the sensitive part of the health payload is preserved
 # independently by management.endpoint.health.show-details=when-authorized, which
@@ -119,3 +122,25 @@ scrape_configs:
     basic_auth: *carddemo_scrape_auth
     static_configs:
       - targets: ["batch-service:8080"]
+
+  # --- Tracing backend (Jaeger v2 internal telemetry) -----------------------
+  # The collector publishes its OWN telemetry — spans accepted, spans exported,
+  # spans refused or dropped, process uptime and resident memory — on port 8888.
+  # Unscraped, a tracing backend that is discarding spans, or restarting and
+  # taking its whole in-memory store with it, is indistinguishable from a healthy
+  # one: that is precisely how ten restarts under load went unnoticed. Scraping it
+  # also extends the generic `up == 0` availability rule to cover the collector,
+  # and feeds the carddemo-tracing rules in alert-rules.yml.
+  #
+  # No basic_auth: this is the OpenTelemetry Collector's telemetry endpoint, which
+  # supports no authentication and carries no business data — only counters about
+  # its own pipeline. Network isolation is the control, exactly as for the
+  # datastores: port 8888 is neither published to the host nor named in
+  # k8s/service-jaeger.yaml, so the scrape stays on the private carddemo-net
+  # bridge.
+  - job_name: jaeger
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["jaeger:8888"]
+        labels:
+          service: jaeger

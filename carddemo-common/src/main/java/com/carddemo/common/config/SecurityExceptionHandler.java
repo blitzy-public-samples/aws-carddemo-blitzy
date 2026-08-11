@@ -29,23 +29,21 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 
 /**
- * :purpose: Translate the Spring Security failures that surface INSIDE the
- *  application - an authorization denial raised by a method-security or service
- *  check, and an authentication failure raised while handling a request - into the
- *  documented {@link ErrorResponse} envelope, so a denied or unauthenticated
- *  request is never answered with an empty body.
- * :output: A ``@RestControllerAdvice`` mapping
- *  {@link AccessDeniedException} to ``403 Forbidden`` and
- *  {@link AuthenticationException} to ``401 Unauthorized``, both carrying the
- *  shared envelope with the status reason phrase and the current trace id. No
- *  exception message is echoed, so an authorization probe learns nothing.
- * :note: Guarded by ``@ConditionalOnClass`` because five CardDemo services
- *  deliberately carry no Spring Security on their classpath (the gateway performs
- *  authorization and the shared session holds no security types); the advice
- *  registers only where Spring Security is present. Import it alongside
- *  {@link GlobalExceptionHandler}; it is not auto-configured. Denials produced by
- *  the security FILTER chain never reach an advice and are answered by the chain's
- *  own entry point / access-denied handler.
+ * :purpose: Translate the Spring Security failures that surface INSIDE the application -
+ *     an authorization denial raised by a method-security or service check, and an
+ *     authentication failure raised while handling a request - into the documented {@link
+ *     ErrorResponse} envelope, so a denied or unauthenticated request is never answered with
+ *     an empty body.
+ * :output: A ``@RestControllerAdvice`` mapping {@link AccessDeniedException} to ``403
+ *     Forbidden`` and {@link AuthenticationException} to ``401 Unauthorized``, both carrying
+ *     the shared envelope with the status reason phrase and the current trace id. No exception
+ *     message is echoed, so an authorization probe learns nothing.
+ * :note: Guarded by ``@ConditionalOnClass`` because five CardDemo services deliberately
+ *     carry no Spring Security on their classpath (the gateway performs authorization and the
+ *     shared session holds no security types); the advice registers only where Spring Security
+ *     is present. Import it alongside {@link GlobalExceptionHandler}; it is not
+ *     auto-configured. Denials produced by the security FILTER chain never reach an advice and
+ *     are answered by the chain's own entry point / access-denied handler.
  */
 @RestControllerAdvice
 @ConditionalOnClass(name = "org.springframework.security.access.AccessDeniedException")

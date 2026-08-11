@@ -39,26 +39,26 @@ import org.springframework.security.web.SecurityFilterChain;
 
 /**
  * :purpose: Protect the Micrometer/Prometheus telemetry endpoints of every CardDemo
- *     service with a dedicated, least-privilege ``monitoring`` principal, so metrics
- *     are never anonymously readable (CWE-200) while the Prometheus scrape configured
- *     in ``observability/prometheus.yml`` (HTTP basic, ``username: monitoring``,
- *     password from a mounted secret file) keeps working.
+ *     service with a dedicated, least-privilege ``monitoring`` principal, so metrics are never
+ *     anonymously readable (CWE-200) while the Prometheus scrape configured in
+ *     ``observability/prometheus.yml`` (HTTP basic, ``username: monitoring``, password from a
+ *     mounted secret file) keeps working.
  * :output: A highest-precedence {@link SecurityFilterChain} covering
  *     ``/actuator/prometheus`` and ``/actuator/metrics/**`` that requires the
- *     ``ROLE_MONITORING`` authority over HTTP basic, plus the read-only in-memory
- *     {@link UserDetailsService} that backs that principal.
+ *     ``ROLE_MONITORING`` authority over HTTP basic, plus the read-only in-memory {@link
+ *     UserDetailsService} that backs that principal.
  * :note: Declaring this {@link UserDetailsService} also stops Spring Boot's
- *     ``UserDetailsServiceAutoConfiguration`` from creating an undocumented ``user``
- *     principal and printing its generated password to the log (CWE-798 / CWE-532).
- * :note: The credential is supplied by the environment
- *     (``carddemo.monitoring.password`` / ``MONITORING_PASSWORD``) and is never
- *     committed. When no password is configured the principal is created with a
- *     random, unguessable credential, so the endpoints stay closed instead of opening.
+ *     ``UserDetailsServiceAutoConfiguration`` from creating an undocumented ``user`` principal
+ *     and printing its generated password to the log (CWE-798 / CWE-532).
+ * :note: The credential is supplied by the environment (``carddemo.monitoring.password`` /
+ *     ``MONITORING_PASSWORD``) and is never committed. When no password is configured the
+ *     principal is created with a random, unguessable credential, so the endpoints stay closed
+ *     instead of opening.
  * :note: A service activates this configuration with
- *     ``@Import(ManagementSecurityConfig.class)``, matching the ``@Import`` convention
- *     of the other ``carddemo-common`` configurations. The encoder is created locally
- *     rather than exposed as a bean so services that already publish a
- *     ``PasswordEncoder`` bean are unaffected.
+ *     ``@Import(ManagementSecurityConfig.class)``, matching the ``@Import`` convention of the
+ *     other ``carddemo-common`` configurations. The encoder is created locally rather than
+ *     exposed as a bean so services that already publish a ``PasswordEncoder`` bean are
+ *     unaffected.
  */
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)

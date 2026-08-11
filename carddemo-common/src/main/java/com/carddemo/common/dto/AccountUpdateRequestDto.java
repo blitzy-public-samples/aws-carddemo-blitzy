@@ -15,12 +15,23 @@
  */
 package com.carddemo.common.dto;
 
+import com.carddemo.common.validation.SingleByteText;
 import java.math.BigDecimal;
 
 /**
  * :purpose: Inbound DTO for the account update screen (COACTUPC, CICS CAUP). Carries the editable account and customer master fields plus the optimistic-lock ``version`` snapshot the client read when the screen was displayed; the account id and customer id primary keys are never carried here (the account id identifies the target through the request path and the customer id is derived server-side). Monetary fields are BigDecimal.
  * :output: A mutable carrier of the editable account and customer master fields and the version snapshot the server compares before rewriting.
  */
+/*
+ * Boundary encoding guard. The fields of this request are persisted and then
+ * rendered into the 500-byte CUSTOMER record (CVCUS01Y), the 300-byte ACCOUNT record (CVACT01Y) and the statement files,
+ * every one of which is a BYTE-width contract a downstream consumer parses by
+ * offset. Text that needs more than one byte per character therefore cannot
+ * survive that rendering intact - it either loses the character or shifts every
+ * following field - so it is refused here, at the only point where the operator
+ * can still be told which field to correct.
+ */
+@SingleByteText
 public class AccountUpdateRequestDto {
 
     /**

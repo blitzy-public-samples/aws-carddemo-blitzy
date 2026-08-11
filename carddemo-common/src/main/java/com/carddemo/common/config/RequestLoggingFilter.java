@@ -26,25 +26,26 @@ import org.slf4j.LoggerFactory;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * :purpose: Emit exactly one structured access-log record per HTTP request so every request the
- *           service handles is observable, and so an unhandled failure is reported while the
- *           correlation id and trace id are still in scope.
- * :output: One log event per request carrying the HTTP method, the request URI (query string
- *          excluded), the response status and the wall-clock duration in milliseconds. Because it
- *          runs inside {@link CorrelationIdFilter}'s scope, the structured encoder attaches the
- *          ``correlationId``, ``traceId`` and ``spanId`` MDC entries to the record automatically.
- *          Level is INFO for a 1xx-4xx outcome and ERROR for 5xx or for an escaping exception.
- * :note: Two defects motivate this filter. First, no service logged anything at all for a request,
- *        so a correlation id only ever appeared when some application code happened to log.
- *        Second, an exception escaping the dispatcher was reported by the container AFTER the
- *        correlation filter's ``finally`` had already cleared the MDC, so the single most
- *        diagnostic line in the whole system carried no correlation id. Catching, logging and
- *        rethrowing here produces that diagnostic line inside the MDC scope; the container's own
- *        duplicate line is left untouched.
- * :note: The Kubernetes/Compose probe endpoints (``/actuator/health`` and its groups) are skipped.
- *        They are polled every few seconds by three separate probes per service and carry no
- *        diagnostic value, so logging them would bury real traffic. Every other path — including
- *        ``/actuator/prometheus`` and every business route — is logged.
+ * :purpose: Emit exactly one structured access-log record per HTTP request so every
+ *     request the service handles is observable, and so an unhandled failure is reported while
+ *     the correlation id and trace id are still in scope.
+ * :output: One log event per request carrying the HTTP method, the request URI (query
+ *     string excluded), the response status and the wall-clock duration in milliseconds.
+ *     Because it runs inside {@link CorrelationIdFilter}'s scope, the structured encoder
+ *     attaches the ``correlationId``, ``traceId`` and ``spanId`` MDC entries to the record
+ *     automatically. Level is INFO for a 1xx-4xx outcome and ERROR for 5xx or for an escaping
+ *     exception.
+ * :note: Two defects motivate this filter. First, no service logged anything at all for a
+ *     request, so a correlation id only ever appeared when some application code happened to
+ *     log. Second, an exception escaping the dispatcher was reported by the container AFTER
+ *     the correlation filter's ``finally`` had already cleared the MDC, so the single most
+ *     diagnostic line in the whole system carried no correlation id. Catching, logging and
+ *     rethrowing here produces that diagnostic line inside the MDC scope; the container's own
+ *     duplicate line is left untouched.
+ * :note: The Kubernetes/Compose probe endpoints (``/actuator/health`` and its groups) are
+ *     skipped. They are polled every few seconds by three separate probes per service and
+ *     carry no diagnostic value, so logging them would bury real traffic. Every other path —
+ *     including ``/actuator/prometheus`` and every business route — is logged.
  */
 public class RequestLoggingFilter extends OncePerRequestFilter {
 

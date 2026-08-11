@@ -27,23 +27,22 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
- * :purpose: Reproduce the RACF revoke-after-N-failures control that protected the
- *     legacy ``USRSEC`` sign-on: after a configured number of consecutive failed
- *     attempts for one ``SEC-USR-ID``, further attempts for that id are refused for a
- *     configured period, so unlimited credential guessing against a known account is
- *     no longer possible (CWE-307).
+ * :purpose: Reproduce the RACF revoke-after-N-failures control that protected the legacy
+ *     ``USRSEC`` sign-on: after a configured number of consecutive failed attempts for one
+ *     ``SEC-USR-ID``, further attempts for that id are refused for a configured period, so
+ *     unlimited credential guessing against a known account is no longer possible (CWE-307).
  * :output: A per-user-id failure counter with an expiring lock window.
- * :note: Keyed on the upper-cased user id, matching the case handling of
- *     ``COSGN00C``, and held in memory: it adds no infrastructure dependency and
- *     cannot fail open when an external store is unavailable. The per-source-address
- *     request budget in ``RateLimitFilter`` bounds distributed guessing across many
- *     accounts, which a per-account counter cannot see.
- * :note: The tracked-id map is bounded by {@link #MAX_TRACKED_USERS}; expired entries
- *     are purged as they are touched and the map is cleared if the bound is reached,
- *     so the counter cannot become a memory-exhaustion vector.
- * :note: A locked attempt is answered ``429`` with the legacy "Unable to verify the
- *     User ..." text and deliberately carries no ``Retry-After``: like the RACF revoke
- *     it replaces, the control does not advertise when guessing may resume.
+ * :note: Keyed on the upper-cased user id, matching the case handling of ``COSGN00C``, and
+ *     held in memory: it adds no infrastructure dependency and cannot fail open when an
+ *     external store is unavailable. The per-source-address request budget in
+ *     ``RateLimitFilter`` bounds distributed guessing across many accounts, which a
+ *     per-account counter cannot see.
+ * :note: The tracked-id map is bounded by {@link #MAX_TRACKED_USERS}; expired entries are
+ *     purged as they are touched and the map is cleared if the bound is reached, so the
+ *     counter cannot become a memory-exhaustion vector.
+ * :note: A locked attempt is answered ``429`` with the legacy "Unable to verify the User
+ *     ..." text and deliberately carries no ``Retry-After``: like the RACF revoke it replaces,
+ *     the control does not advertise when guessing may resume.
  */
 @Service
 public class LoginAttemptService {

@@ -1,21 +1,20 @@
 /**
  * :module: ``frontend/src/pages/programRoutes.ts``
  * :purpose: Resolve the legacy program a menu selection dispatched to into the single
- *     screen of this application that replaces it — the presentation half of the
- *     ``XCTL PROGRAM(CDEMO-TO-PROGRAM)`` transfer the two menu programs perform.
+ *     screen of this application that replaces it — the presentation half of the ``XCTL
+ *     PROGRAM(CDEMO-TO-PROGRAM)`` transfer the two menu programs perform.
  * :output: The named :ts:type:`PROGRAM_SCREEN_ROUTES` map and the
- *     :func:`resolveProgramRoute` reader.
- * :note: This module carries no authorization data and makes no authorization
- *     decision. Whether a selection is valid, whether the option exists, and whether
- *     the signed-on user may have it are decided solely by the ``/menu/select`` and
- *     ``/admin/menu/select`` endpoints; only a selection the server already
- *     dispatched reaches this map.
+ * :func: `resolveProgramRoute` reader.
+ * :note: This module carries no authorization data and makes no authorization decision.
+ *     Whether a selection is valid, whether the option exists, and whether the signed-on user
+ *     may have it are decided solely by the ``/menu/select`` and ``/admin/menu/select``
+ *     endpoints; only a selection the server already dispatched reaches this map.
  * :note: This map is the ONLY route authority. The gateway publishes the dispatched
- *     program name and nothing else, because a program name is what ``XCTL`` carries and
- *     the only routes a gateway could name are its own downstream service prefixes --
- *     which are not screens. Three card programs and four user programs would each
- *     collapse onto one prefix, so a route published there would contradict where this
- *     application actually navigates.
+ *     program name and nothing else, because a program name is what ``XCTL`` carries and the
+ *     only routes a gateway could name are its own downstream service prefixes -- which are
+ *     not screens. Three card programs and four user programs would each collapse onto one
+ *     prefix, so a route published there would contradict where this application actually
+ *     navigates.
  */
 
 /**

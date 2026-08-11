@@ -64,25 +64,24 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * :purpose: Re-platforms the legacy batch statement engine (``CBSTM03A`` /
- *  ``CBSTM03B`` with the ``COSTM01`` record layout and the ``CREASTMT`` job
- *  flow) as a self-contained Spring Batch job. It walks the card cross-reference
- *  in ascending card-number order and, for each card, produces a plain-text
- *  statement (80-column fixed-width lines) and an HTML statement (100-column
- *  lines) from the shared JPA repositories via the sibling {@link StatementMapper};
- *  the per-card documents are concatenated into two output files.
- * :output: Registers the ``statementGenerationJob`` job and its single chunk
- *  step, launched on demand by the reporting-service job scheduler; the step
- *  writes the concatenated text and HTML statement files.
- * :note: Both files are written in ISO-8859-1 and every field is reduced to
- *  single-byte text before it is padded, so the ``FD-STMTFILE-REC PIC X(80)`` and
- *  ``HTML-FIXED-LN PIC X(100)`` layouts are BYTE contracts, matching the
- *  ``LRECL=80`` and ``LRECL=100`` DD cards of ``CREASTMT``.
- * :note: The job takes only the two output file names (``stmtFile`` and
- *  ``htmlFile``, the ``STMTFILE`` and ``HTMLFILE`` DD names of ``CREASTMT``).
- *  There is no date window: the ``CREASTMT`` SORT step re-keys the WHOLE
- *  ``TRANSACT`` file by card number and transaction id with no date filter, so
- *  ``CBSTM03A`` statements a card's full history [app/jcl/CREASTMT.JCL].
+ * :purpose: Re-platforms the legacy batch statement engine (``CBSTM03A`` / ``CBSTM03B``
+ *     with the ``COSTM01`` record layout and the ``CREASTMT`` job flow) as a self-contained
+ *     Spring Batch job. It walks the card cross-reference in ascending card-number order and,
+ *     for each card, produces a plain-text statement (80-column fixed-width lines) and an HTML
+ *     statement (100-column lines) from the shared JPA repositories via the sibling {@link
+ *     StatementMapper}; the per-card documents are concatenated into two output files.
+ * :output: Registers the ``statementGenerationJob`` job and its single chunk step,
+ *     launched on demand by the reporting-service job scheduler; the step writes the
+ *     concatenated text and HTML statement files.
+ * :note: Both files are written in ISO-8859-1 and every field is reduced to single-byte
+ *     text before it is padded, so the ``FD-STMTFILE-REC PIC X(80)`` and ``HTML-FIXED-LN PIC
+ *     X(100)`` layouts are BYTE contracts, matching the ``LRECL=80`` and ``LRECL=100`` DD
+ *     cards of ``CREASTMT``.
+ * :note: The job takes only the two output file names (``stmtFile`` and ``htmlFile``, the
+ *     ``STMTFILE`` and ``HTMLFILE`` DD names of ``CREASTMT``). There is no date window: the
+ *     ``CREASTMT`` SORT step re-keys the WHOLE ``TRANSACT`` file by card number and
+ *     transaction id with no date filter, so ``CBSTM03A`` statements a card's full history
+ *     [app/jcl/CREASTMT.JCL].
  */
 @Configuration("statementGenerationJobConfig")
 public class StatementGenerationJob {
@@ -155,20 +154,18 @@ public class StatementGenerationJob {
     private static final String HTML_L80 = "</html>";
 
     /**
-     * :purpose: Read the card cross-reference sequentially in ascending
-     *  card-number order, reproducing the ``CBSTM03A`` ``1000-MAINLINE`` walk of
-     *  the keyed ``XREFFILE``.
-     * :param cardXrefRepository: the shared card cross-reference repository that
-     *  supplies the paged, sorted ``findAll`` used as the reader source.
-     * :returns: a paging repository reader over {@link CardXref} sorted by
-     *  ``xrefCardNum`` ascending.
-     * :note: ``@StepScope`` is required, not merely convenient: a
-     *  ``RepositoryItemReader`` is an ``ItemStream`` that holds the page cursor of
-     *  the read it is performing, so a singleton instance would be ONE cursor
-     *  shared by every concurrent step execution and two statement runs launched
-     *  together would consume each other's pages - one statement file repeating
-     *  cards, another missing them - while both executions still reported
-     *  COMPLETED. A step-scoped bean gives each execution its own cursor.
+     * :purpose: Read the card cross-reference sequentially in ascending card-number order,
+     *     reproducing the ``CBSTM03A`` ``1000-MAINLINE`` walk of the keyed ``XREFFILE``.
+     * :param cardXrefRepository: the shared card cross-reference repository that supplies the
+     *     paged, sorted ``findAll`` used as the reader source.
+     * :returns: a paging repository reader over {@link CardXref} sorted by ``xrefCardNum``
+     *     ascending.
+     * :note: ``@StepScope`` is required, not merely convenient: a ``RepositoryItemReader`` is
+     *     an ``ItemStream`` that holds the page cursor of the read it is performing, so a
+     *     singleton instance would be ONE cursor shared by every concurrent step execution and two
+     *     statement runs launched together would consume each other's pages - one statement file
+     *     repeating cards, another missing them - while both executions still reported COMPLETED.
+     *     A step-scoped bean gives each execution its own cursor.
      */
     @Bean
     @StepScope
@@ -268,15 +265,10 @@ public class StatementGenerationJob {
      *  ``..`` traversal and symlink escapes (CWE-22), and creating the directory
      *  so the flat-file writers can open their files.
      * :returns: the configured statement item writer.
-     * :note: The names are deliberately bare file names now. They
-     *  were previously the relative paths ``output/statements.txt`` and
-     *  ``output/statements.html``, which ``FileSystemResource`` resolved against
-     *  the process working directory - ``/app`` inside the container, on the
-     *  read-only root filesystem - so every run failed at
-     *  ``statementGenerationStep`` with ``Unable to create file`` /
-     *  ``java.io.IOException: No such file or directory`` and the job was recorded
-     *  FAILED. Resolving through the shared root makes the output land in the
-     *  writable, mounted batch directory.
+     * :note: Both names are bare file names, never relative paths: they are resolved
+     *  through the shared output root so the files land in the writable, mounted
+     *  batch directory rather than against the process working directory, which is
+     *  on the container's read-only root filesystem.
      */
     @Bean
     @StepScope
@@ -462,21 +454,20 @@ public class StatementGenerationJob {
     }
 
     /**
-     * :purpose: Render one statement model to its HTML lines, reproducing the
-     *  ``CBSTM03A`` ``5100``/``5200``/``6000``/``4000`` ``HTMLFILE`` emission.
-     *  Each card yields one complete HTML document; every returned line is
-     *  exactly 100 characters. Name and address lines copy characters up to the
-     *  first double-space (COBOL ``DELIMITED BY '  '``); the basic-detail and
-     *  per-transaction lines use the whole fixed-width field (``DELIMITED BY '*'``).
+     * :purpose: Render one statement model to its HTML lines, reproducing the ``CBSTM03A``
+     *     ``5100``/``5200``/``6000``/``4000`` ``HTMLFILE`` emission. Each card yields one complete
+     *     HTML document; every returned line is exactly 100 characters. Name and address lines
+     *     copy characters up to the first double-space (COBOL ``DELIMITED BY ' '``); the
+     *     basic-detail and per-transaction lines use the whole fixed-width field (``DELIMITED BY
+     *     '*'``).
      * :param model: the assembled statement model for one card.
      * :returns: the ordered list of 100-character HTML statement lines.
-     * :note: Every value interpolated into a line is HTML-escaped first. The
-     *  legacy program wrote customer text into the document unescaped, which in a
-     *  browser-rendered target makes any name, address or transaction description
-     *  containing markup executable script (stored XSS). Escaping is applied to
-     *  the VALUE, before the fixed-width ``MOVE``, so ``HTML-FIXED-LN PIC X(100)``
-     *  still holds; escaping is the identity transformation for text without
-     *  ``& < > " '``, so no byte of normal statement output changes.
+     * :note: Every value interpolated into a line is HTML-escaped first. The legacy program
+     *     wrote customer text into the document unescaped, which in a browser-rendered target
+     *     makes any name, address or transaction description containing markup executable script
+     *     (stored XSS). Escaping is applied to the VALUE, before the fixed-width ``MOVE``, so
+     *     ``HTML-FIXED-LN PIC X(100)`` still holds; escaping is the identity transformation for
+     *     text without ``& < > " '``, so no byte of normal statement output changes.
      */
     static List<String> renderHtml(StatementMapper.StatementModel model) {
         long accountIdValue = model.getAccountId() == null ? 0L : model.getAccountId();

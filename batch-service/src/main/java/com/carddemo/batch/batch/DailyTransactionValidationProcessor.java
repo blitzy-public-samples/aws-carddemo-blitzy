@@ -31,22 +31,21 @@ import org.springframework.stereotype.Component;
 import java.util.Optional;
 
 /**
- * :purpose: Validates each daily-transaction feed record by confirming that its
- *  card cross-reference exists and, when it does, that the referenced account
- *  exists; migrated from the legacy batch program ``CBTRN01C``. This is a
- *  validation-read step only — it performs no posting, no balance update and
- *  writes no reject file (the posting program ``CBTRN02C``, reject codes and the
- *  430-byte reject layout are owned by the ``transaction-service`` module).
- *  Every record is logged as validated, cross-reference-missing or
- *  account-missing and then passed through unchanged; no record is removed or
- *  rejected.
- * :output: A Spring {@link Component} implementing
- *  {@link ItemProcessor}&lt;{@link DailyTransaction}, {@link DailyTransaction}&gt;;
- *  each invocation returns the input record (never {@code null}). The sibling
- *  {@code config} package wires a fixed-width {@code FlatFileItemReader<DailyTransaction>}
- *  over the daily-transaction feed to this processor and forwards the returned
- *  record to a {@code LoggingItemWriter<DailyTransaction>} count-only sink; there
- *  is no {@code DailyTransactionRepository}.
+ * :purpose: Validates each daily-transaction feed record by confirming that its card
+ *     cross-reference exists and, when it does, that the referenced account exists; migrated
+ *     from the legacy batch program ``CBTRN01C``. This is a validation-read step only — it
+ *     performs no posting, no balance update and writes no reject file (the posting program
+ *     ``CBTRN02C``, reject codes and the 430-byte reject layout are owned by the
+ *     ``transaction-service`` module). Every record is logged as validated,
+ *     cross-reference-missing or account-missing and then passed through unchanged; no record
+ *     is removed or rejected.
+ * :output: A Spring {@link Component} implementing {@link ItemProcessor}&lt;{@link
+ *     DailyTransaction}, {@link DailyTransaction}&gt;; each invocation returns the input
+ *     record (never {@code null}). The sibling {@code config} package wires a fixed-width
+ *     {@code FlatFileItemReader<DailyTransaction>} over the daily-transaction feed to this
+ *     processor and forwards the returned record to a {@code
+ *     LoggingItemWriter<DailyTransaction>} count-only sink; there is no {@code
+ *     DailyTransactionRepository}.
  */
 @Component
 public class DailyTransactionValidationProcessor

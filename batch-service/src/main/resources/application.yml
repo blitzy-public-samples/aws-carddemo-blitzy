@@ -16,6 +16,18 @@ spring:
   application:
     name: batch-service
 
+  # The Spring Boot ASCII banner is written straight to stdout by the banner printer,
+  # not through the logging system, so its seven lines are the only records in the
+  # stream that are not parseable JSON -- which breaks a collector that reads this
+  # container's stdout line-by-line as JSON, contradicting the structured-logging
+  # requirement of AAP 0.7.5. Turning the banner off is what makes EVERY line of
+  # startup output a log record; the version and application name it carried are
+  # already reported by /actuator/info and by the startup records themselves.
+  main:
+    # QUOTED deliberately: YAML 1.1 resolves a bare `off` to the boolean false, which
+    # the relaxed binder then cannot convert to the Banner.Mode enum.
+    banner-mode: "off"
+
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
     username: ${SPRING_DATASOURCE_USERNAME:carddemo}

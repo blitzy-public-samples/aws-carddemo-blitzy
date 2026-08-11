@@ -57,7 +57,7 @@ class SchemaMigrationInventoryIT {
      *     migration must be added here deliberately, which is the point of the class.
      */
     private static final List<String> EXPECTED_VERSIONS =
-            List.of("1", "2", "3", "4", "5", "6", "7", "8", "9");
+            List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "10");
 
     /**
      * :purpose: The description Flyway derives from each migration (the file-name suffix
@@ -72,7 +72,8 @@ class SchemaMigrationInventoryIT {
             "security users optimistic lock",
             "cards optimistic lock",
             "transactions card fk",
-            "security users id charset");
+            "security users id charset",
+            "lock seeded credentials");
 
     /** :purpose: One row of the applied history. */
     private record AppliedMigration(String version, String description, boolean success) {
@@ -111,7 +112,7 @@ class SchemaMigrationInventoryIT {
      *     renumbered migration, or an unrecorded extra one, breaks this assertion.
      */
     @Test
-    @DisplayName("the applied versions are exactly V1-V9 in installed order")
+    @DisplayName("the applied versions are exactly V1-V10 in installed order")
     void appliedVersionsAreTheCommittedSet() {
         assertThat(applied).extracting(AppliedMigration::version)
                 .containsExactlyElementsOf(EXPECTED_VERSIONS);

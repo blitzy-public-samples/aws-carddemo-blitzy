@@ -60,12 +60,19 @@ class SecurityUserRepositoryIT extends AbstractIntegrationTest {
      */
     private static final String BCRYPT_PREFIX = "{bcrypt}";
 
-    /** :purpose: Bare 60-char BCrypt hash of ``PASSWORD`` seeded for all users. */
-    private static final String EXPECTED_BCRYPT_HASH =
-            "$2a$10$ucIRth.iIafhA4MgE1RXZ.0whYamgfRIpJebWmPswpnxmLKA/peYm";
+    /**
+     * :purpose: Stored credential every seeded row carries after the migration set is
+     *     applied. ``V3__seed_test_data.sql`` inserts a BCrypt hash of the legacy
+     *     fixture string 'PASSWORD' and ``V10__lock_seeded_credentials.sql``
+     *     immediately replaces it with this sentinel, because a known, shared,
+     *     documented administrator credential must not be active on a deployment.
+     *     It is deliberately NOT a syntactically valid BCrypt hash.
+     */
+    private static final String EXPECTED_STORED_PASSWORD =
+            BCRYPT_PREFIX + "$2a$10$locked-seeded-credential-not-provisioned!";
 
-    /** :purpose: Stored credential exactly as the seed migration writes it. */
-    private static final String EXPECTED_STORED_PASSWORD = BCRYPT_PREFIX + EXPECTED_BCRYPT_HASH;
+    /** :purpose: The legacy fixture password the sentinel retired. */
+    private static final String RETIRED_DEFAULT_PASSWORD = "PASSWORD";
 
     /**
      * :purpose: Repository under test; the Spring Data JPA re-platforming of the
@@ -148,54 +155,50 @@ class SecurityUserRepositoryIT extends AbstractIntegrationTest {
     }
 
     /**
-     * :purpose: Verify the seeded credential is a ``{bcrypt}``-prefixed BCrypt hash
-     *     that the WIRED delegating encoder can verify against ``PASSWORD`` and
-     *     rejects for ``password``, that the hash carries the cost factor declared
-     *     by {@link PasswordEncoderFactory#BCRYPT_STRENGTH}, and that every one of
-     *     the ten seeded rows stores the same credential. The prefix is what makes
-     *     sign-on possible at all: ``DelegatingPasswordEncoder`` throws
-     *     ``IllegalArgumentException`` for an unprefixed hash.
+     * :purpose: Verify the seeded credential is the LOCKED sentinel that no input can
+     *     match, and that the WIRED delegating encoder refuses it rather than throwing
+     *     - a locked account must answer "wrong password", not fail the request with a
+     *     500. The encoding POLICY (``{bcrypt}`` prefix, declared cost factor,
+     *     case-sensitivity) is asserted against a freshly encoded credential, which is
+     *     what the application actually writes.
+     * :note: This is the assertion that keeps the shared-default-credential finding
+     *     closed: if V10 is dropped or a future seed re-introduces a usable shared
+     *     hash, the first two assertions fail.
      */
     @Test
-    @DisplayName("Seeded password is a {bcrypt}-prefixed BCrypt hash verifiable by the wired encoder")
-    void seededPasswordIsPrefixedBcryptAndCaseSensitive() {
+    @DisplayName("Seeded credential is the locked sentinel; the wired encoder refuses every input")
+    void seededCredentialIsLockedAndUnmatchable() {
         SecurityUser admin = securityUserRepository.findBySecUsrId("ADMIN001").orElseThrow();
         String storedCredential = admin.getSecUsrPwd();
 
         assertThat(storedCredential).isEqualTo(EXPECTED_STORED_PASSWORD);
-        assertThat(storedCredential).startsWith(BCRYPT_PREFIX + "$2a$");
-        assertThat(storedCredential).hasSize(BCRYPT_PREFIX.length() + 60);
+        assertThat(passwordEncoder.matches(RETIRED_DEFAULT_PASSWORD, storedCredential)).isFalse();
+        assertThat(passwordEncoder.matches("", storedCredential)).isFalse();
+        assertThat(passwordEncoder.matches("locked", storedCredential)).isFalse();
 
-        // The cost factor must match the encoding policy, otherwise a rehash is
-        // silently triggered on every successful sign-on.
-        assertThat(storedCredential.substring(BCRYPT_PREFIX.length() + 4, BCRYPT_PREFIX.length() + 6))
-                .isEqualTo(String.format("%02d", PasswordEncoderFactory.BCRYPT_STRENGTH));
-
-        // The WIRED encoder (the one the service actually injects) must verify the
-        // stored credential; this is the assertion that catches a prefix mismatch.
-        assertThat(passwordEncoder.matches("PASSWORD", storedCredential)).isTrue();
-        assertThat(passwordEncoder.matches("password", storedCredential)).isFalse();
-        assertThat(passwordEncoder.upgradeEncoding(storedCredential)).isFalse();
-
-        assertThat(storedCredential).startsWith("{bcrypt}$2a$");
-        assertThat(storedCredential).hasSize("{bcrypt}".length() + 60);
-
-        // The encoder the service is wired with must verify the stored credential directly.
-        assertThat(passwordEncoder.matches("PASSWORD", storedCredential)).isTrue();
-        assertThat(passwordEncoder.matches("password", storedCredential)).isFalse();
-
-        // The hash itself is an unchanged BCrypt hash of PASSWORD.
-        assertThat(bcryptPasswordEncoder.matches("PASSWORD", EXPECTED_BCRYPT_HASH)).isTrue();
-        assertThat(bcryptPasswordEncoder.matches("password", EXPECTED_BCRYPT_HASH)).isFalse();
-
-        String encoded = passwordEncoder.encode("PASSWORD");
-        assertThat(encoded).startsWith(BCRYPT_PREFIX);
-        assertThat(encoded).startsWith("{bcrypt}");
-        assertThat(passwordEncoder.matches("PASSWORD", encoded)).isTrue();
-        assertThat(passwordEncoder.matches("password", encoded)).isFalse();
-
+        // Every seeded row is locked, not just the first administrator.
         assertThat(securityUserRepository.findAll())
                 .allSatisfy(u -> assertThat(u.getSecUsrPwd()).isEqualTo(EXPECTED_STORED_PASSWORD))
-                .allSatisfy(u -> assertThat(passwordEncoder.matches("PASSWORD", u.getSecUsrPwd())).isTrue());
+                .allSatisfy(u -> assertThat(
+                        passwordEncoder.matches(RETIRED_DEFAULT_PASSWORD, u.getSecUsrPwd())).isFalse());
+
+        // The encoding policy, asserted on what the application writes. The prefix is
+        // what makes sign-on possible at all: DelegatingPasswordEncoder throws
+        // IllegalArgumentException for an unprefixed hash.
+        String encoded = passwordEncoder.encode(RETIRED_DEFAULT_PASSWORD);
+        assertThat(encoded).startsWith(BCRYPT_PREFIX + "$2a$");
+        assertThat(encoded).hasSize(BCRYPT_PREFIX.length() + 60);
+        assertThat(encoded.substring(BCRYPT_PREFIX.length() + 4, BCRYPT_PREFIX.length() + 6))
+                .isEqualTo(String.format("%02d", PasswordEncoderFactory.BCRYPT_STRENGTH));
+        assertThat(passwordEncoder.matches(RETIRED_DEFAULT_PASSWORD, encoded)).isTrue();
+        assertThat(passwordEncoder.matches("password", encoded)).isFalse();
+        assertThat(passwordEncoder.upgradeEncoding(encoded)).isFalse();
+
+        // The bare BCrypt encoder behaves the same way on the same value, so the
+        // delegating wrapper is not what makes the comparison case-sensitive.
+        assertThat(bcryptPasswordEncoder.matches(
+                RETIRED_DEFAULT_PASSWORD, encoded.substring(BCRYPT_PREFIX.length()))).isTrue();
+        assertThat(bcryptPasswordEncoder.matches(
+                "password", encoded.substring(BCRYPT_PREFIX.length()))).isFalse();
     }
 }

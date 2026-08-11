@@ -47,23 +47,19 @@ import org.springframework.transaction.annotation.Transactional;
 
 
 /**
- * :purpose: Business-logic service for the CardDemo Account feature. Re-expresses
- *  the ``PROCEDURE DIVISION`` logic of the two legacy CICS account programs while
- *  preserving complete functional equivalence:
- *
- *  - ``COACTVWC`` (transaction ``CAVW``, read-only account view) becomes
- *    {@link #viewAccount(Long, SessionContext)}, reproducing the strict,
- *    ordered, short-circuit-on-first-miss read of the card cross-reference,
- *    the account master, and the customer master.
- *  - ``COACTUPC`` (transaction ``CAUP``, optimistic-locked account update)
- *    becomes {@link #updateAccount(Long, AccountUpdateRequestDto, SessionContext)},
- *    reproducing the read-snapshot-compare-rewrite pattern as a single atomic
- *    transaction guarded by JPA ``@Version`` optimistic locking.
- *
- *  The customer id is always derived from the card cross-reference, never taken
- *  as a separate input, mirroring the legacy ``MOVE XREF-CUST-ID TO CDEMO-CUST-ID``.
- * :note: This service performs no monetary arithmetic and never logs sensitive
- *  customer data (SSN, government-issued id, or full card number).
+ * :purpose: Business-logic service for the CardDemo Account feature. Re-expresses the
+ *     ``PROCEDURE DIVISION`` logic of the two legacy CICS account programs while preserving
+ *     complete functional equivalence: - ``COACTVWC`` (transaction ``CAVW``, read-only account
+ *     view) becomes {@link #viewAccount(Long, SessionContext)}, reproducing the strict,
+ *     ordered, short-circuit-on-first-miss read of the card cross-reference, the account
+ *     master, and the customer master. - ``COACTUPC`` (transaction ``CAUP``, optimistic-locked
+ *     account update) becomes {@link #updateAccount(Long, AccountUpdateRequestDto,
+ *     SessionContext)}, reproducing the read-snapshot-compare-rewrite pattern as a single
+ *     atomic transaction guarded by JPA ``@Version`` optimistic locking. The customer id is
+ *     always derived from the card cross-reference, never taken as a separate input, mirroring
+ *     the legacy ``MOVE XREF-CUST-ID TO CDEMO-CUST-ID``.
+ * :note: This service performs no monetary arithmetic and never logs sensitive customer
+ *     data (SSN, government-issued id, or full card number).
  */
 @Service
 public class AccountService {
@@ -188,18 +184,18 @@ public class AccountService {
     }
 
     /**
-     * :purpose: Run the ``COACTUPC`` edit pass over a submission WITHOUT rewriting anything
-     *  -- the ENTER half of the legacy screen. ``1200-EDIT-MAP-INPUTS`` runs inside the
-     *  program, so the edits and their frozen literals live here rather than being
-     *  reproduced a second time in the client; this exposes that same pass so the screen can
-     *  only report ``Changes validated`` once the edits it names have actually run.
-     *  Nothing is read for update, no lock is taken and no record is written.
+     * :purpose: Run the ``COACTUPC`` edit pass over a submission WITHOUT rewriting anything --
+     *     the ENTER half of the legacy screen. ``1200-EDIT-MAP-INPUTS`` runs inside the program,
+     *     so the edits and their frozen literals live here rather than being reproduced a second
+     *     time in the client; this exposes that same pass so the screen can only report ``Changes
+     *     validated`` once the edits it names have actually run. Nothing is read for update, no
+     *     lock is taken and no record is written.
      * :param acctId: the account id the submission is aimed at, edited as for a rewrite.
      * :param request: the editable account and customer fields as currently entered.
-     * :raises CardDemoException: when the submission carries no field at all, when it
-     *  matches the display-time snapshot (``No change detected with respect to values
-     *  fetched.``), or when any field edit fails; the first failing edit's message and
-     *  field are reported, in COBOL ``PERFORM`` order.
+     * :raises CardDemoException: when the submission carries no field at all, when it matches
+     *     the display-time snapshot (``No change detected with respect to values fetched.``), or
+     *     when any field edit fails; the first failing edit's message and field are reported, in
+     *     COBOL ``PERFORM`` order.
      */
     @Transactional(readOnly = true)
     public void validateAccountUpdate(Long acctId, AccountUpdateRequestDto request) {
@@ -220,29 +216,29 @@ public class AccountService {
 
     /**
      * :purpose: Apply an account update as a single atomic transaction, reproducing
-     *  ``COACTUPC`` (transaction ``CAUP``). Re-reads the same three records in the
-     *  same ordered short-circuit fashion as the view path, compares the version the
-     *  client read at display time against the freshly loaded record, applies the
-     *  editable account and customer fields onto the managed entities, and persists
-     *  both within one transactional unit of work. Concurrent modification is detected
-     *  twice over, exactly reproducing the legacy read-snapshot-compare-rewrite: the
-     *  submitted version snapshot is compared before anything is written, and JPA
-     *  ``@Version`` optimistic locking covers a commit landing between that read and
-     *  the flush. Both the account and customer changes commit together or roll back
-     *  together, replacing the legacy dual ``REWRITE`` plus ``SYNCPOINT ROLLBACK``.
+     *     ``COACTUPC`` (transaction ``CAUP``). Re-reads the same three records in the same ordered
+     *     short-circuit fashion as the view path, compares the version the client read at display
+     *     time against the freshly loaded record, applies the editable account and customer fields
+     *     onto the managed entities, and persists both within one transactional unit of work.
+     *     Concurrent modification is detected twice over, exactly reproducing the legacy
+     *     read-snapshot-compare-rewrite: the submitted version snapshot is compared before
+     *     anything is written, and JPA ``@Version`` optimistic locking covers a commit landing
+     *     between that read and the flush. Both the account and customer changes commit together
+     *     or roll back together, replacing the legacy dual ``REWRITE`` plus ``SYNCPOINT
+     *     ROLLBACK``.
      * :param acctId: the 11-digit account identifier to update.
-     * :param request: the editable account and customer master fields to apply, carrying
-     *  the mandatory ``version`` snapshot read when the screen was displayed.
-     * :param sessionContext: externalized session context to update with the resolved
-     *  account and customer identifiers; ignored when {@code null}.
+     * :param request: the editable account and customer master fields to apply, carrying the
+     *     mandatory ``version`` snapshot read when the screen was displayed.
+     * :param sessionContext: externalized session context to update with the resolved account
+     *     and customer identifiers; ignored when {@code null}.
      * :returns: the post-update echo response reflecting the persisted state.
      * :raises RecordNotFoundException: (HTTP 404) when the cross-reference, the account
-     *  master, or the customer master holds no matching record.
-     * :raises OptimisticLockConflictException: (HTTP 409) when the submitted version no
-     *  longer matches the stored record, or when the account is modified concurrently
-     *  between load and flush.
+     *     master, or the customer master holds no matching record.
+     * :raises OptimisticLockConflictException: (HTTP 409) when the submitted version no longer
+     *     matches the stored record, or when the account is modified concurrently between load and
+     *     flush.
      * :note: Persists customer first, then account - the reverse of the legacy
-     *  account-then-customer ``REWRITE`` order. See docs/decision-log.md.
+     *     account-then-customer ``REWRITE`` order. See docs/decision-log.md.
      */
     @Transactional
     public AccountUpdateResponseDto updateAccount(Long acctId,
@@ -407,19 +403,19 @@ public class AccountService {
 
     /**
      * :purpose: Reproduce the ``COACTUPC`` compare step of the read-snapshot-compare-rewrite
-     *  pattern: the version the client read when the screen was displayed must still be the
-     *  version stored on the record, otherwise another user changed the record in the
-     *  meantime and the rewrite must be abandoned rather than overwrite that change
-     *  (``DATA-WAS-CHANGED-BEFORE-UPDATE``, AAP 0.6.2). An absent version snapshot is
-     *  treated as "not compared" rather than as a conflict, because a caller may instead
-     *  carry the ACUP-OLD-* field snapshot, which
-     *  :meth:`hasDataChangedSinceSnapshot` compares field by field.
+     *     pattern: the version the client read when the screen was displayed must still be the
+     *     version stored on the record, otherwise another user changed the record in the meantime
+     *     and the rewrite must be abandoned rather than overwrite that change
+     *     (``DATA-WAS-CHANGED-BEFORE-UPDATE``, AAP 0.6.2). An absent version snapshot is treated
+     *     as "not compared" rather than as a conflict, because a caller may instead carry the
+     *     ACUP-OLD-* field snapshot, which
+     * :meth: `hasDataChangedSinceSnapshot` compares field by field.
      * :param acctId: the account identifier being updated, for the conflict log line.
      * :param request: the update request carrying the client's version snapshot.
      * :param account: the freshly loaded managed account record.
      * :returns: nothing; the method either passes silently or raises.
-     * :raises OptimisticLockConflictException: (HTTP 409, message "Record changed by some
-     *  one else. Please review") when the submitted version does not match the stored one.
+     * :raises OptimisticLockConflictException: (HTTP 409, message "Record changed by some one
+     *     else. Please review") when the submitted version does not match the stored one.
      */
     private void assertVersionUnchanged(Long acctId, AccountUpdateRequestDto request, Account account) {
         Long submitted = request == null ? null : request.getVersion();
@@ -623,16 +619,16 @@ public class AccountService {
 
     /**
      * :purpose: Compare a submitted regulated identifier (SSN, government-issued id, EFT
-     *  account id) against the stored one, honouring the fact that the view and update
-     *  responses only ever emit these three fields in masked form
-     *  (``AccountMapper``/``PiiMasker``, AAP 0.6.7).
+     *     account id) against the stored one, honouring the fact that the view and update
+     *     responses only ever emit these three fields in masked form
+     *     (``AccountMapper``/``PiiMasker``, AAP 0.6.7).
      * :note: A mask carries no cleartext, so comparing it against the stored value the way
-     *  ``textChanged`` does would report drift on every request a client can actually
-     *  build from what it was shown, refusing every update with
-     *  ``DATA-WAS-CHANGED-BEFORE-UPDATE``. A mask-shaped value is therefore weighed by
-     *  ``PiiMasker.isMaskOf``: it matches only when it is the mask of the value now
-     *  stored, so a concurrent change that alters the visible digits is still reported as
-     *  drift. This mirrors ``AccountMapper.retainWhenMasked`` on the submitted-value side.
+     *     ``textChanged`` does would report drift on every request a client can actually build
+     *     from what it was shown, refusing every update with ``DATA-WAS-CHANGED-BEFORE-UPDATE``. A
+     *     mask-shaped value is therefore weighed by ``PiiMasker.isMaskOf``: it matches only when
+     *     it is the mask of the value now stored, so a concurrent change that alters the visible
+     *     digits is still reported as drift. This mirrors ``AccountMapper.retainWhenMasked`` on
+     *     the submitted-value side.
      * :param submitted: the submitted or snapshotted value; ``null`` means "not compared".
      * :param stored: the value currently held in the record.
      * :returns: ``true`` when the two are present and differ.

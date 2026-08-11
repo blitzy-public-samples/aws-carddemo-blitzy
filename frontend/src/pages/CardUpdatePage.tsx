@@ -778,8 +778,13 @@ export default function CardUpdatePage(): ReactElement {
    *     recorded, so the operator is returned to the screen they actually came from.
    */
   const handleExit = useCallback((): void => {
-    void navigate(resolveExitRoute(handover.from));
-  }, [handover.from, navigate]);
+    // The browse position handed in travels straight back, so the list screen PF3
+    // returns to is the one the operator left rather than an unfiltered first page.
+    // This is COCRDUPC returning the COMMAREA it was passed.
+    void navigate(resolveExitRoute(handover.from), {
+      state: { browse: handover.browse },
+    });
+  }, [handover.browse, handover.from, navigate]);
 
   /**
    * :purpose: F12 — abandon the edits. ``COCRDUPC`` L958-966 answers PF12 by re-running
@@ -968,7 +973,7 @@ export default function CardUpdatePage(): ReactElement {
             labelClassName="cardUpdate__label prompt"
             testId="acctsid"
             value={accountId}
-            valueClassName="cardUpdate__value label"
+            valueClassName="cardUpdate__value label protectedValue--underline"
             width={11}
           />
           <OutputField
@@ -977,7 +982,7 @@ export default function CardUpdatePage(): ReactElement {
             labelClassName="cardUpdate__label prompt"
             testId="cardsid"
             value={cardNumber}
-            valueClassName="cardUpdate__value label"
+            valueClassName="cardUpdate__value label protectedValue--underline"
             width={16}
           />
         </dl>

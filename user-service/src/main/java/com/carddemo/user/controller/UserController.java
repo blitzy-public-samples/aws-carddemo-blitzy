@@ -78,28 +78,28 @@ public class UserController {
     }
 
     /**
-     * :purpose: List users (10 per page, ascending by id) exactly as ``COUSR00C`` /
-     *     ``CU00`` does: keyset paging driven by the legacy ``PF7``/``PF8`` actions with a
-     *     ``cursor``, otherwise a browse positioned at ``userId`` or page-based via
-     *     ``page``, plus the row-selection handling that the legacy screen uses to reach
-     *     the update and delete programs.
-     * :param userId: optional browse-start user id, the ``Search User ID`` field
-     *     (``USRIDIN``) the legacy screen positions its ``STARTBR`` with (L218-L221).
-     *     Honoured only when no paging action is supplied, because ``PF7``/``PF8`` browse
-     *     from the COMMAREA cursors rather than from the search field.
+     * :purpose: List users (10 per page, ascending by id) exactly as ``COUSR00C`` / ``CU00``
+     *     does: keyset paging driven by the legacy ``PF7``/``PF8`` actions with a ``cursor``,
+     *     otherwise a browse positioned at ``userId`` or page-based via ``page``, plus the
+     *     row-selection handling that the legacy screen uses to reach the update and delete
+     *     programs.
+     * :param userId: optional browse-start user id, the ``Search User ID`` field (``USRIDIN``)
+     *     the legacy screen positions its ``STARTBR`` with (L218-L221). Honoured only when no
+     *     paging action is supplied, because ``PF7``/``PF8`` browse from the COMMAREA cursors
+     *     rather than from the search field.
      * :param page: zero-based page index for page-based listing; defaults to ``0``.
-     * :param direction: optional paging action. The legacy vocabulary is ``"PF7"``
-     *     (page back) and ``"PF8"`` (page forward); ``"backward"`` and ``"forward"`` are
-     *     accepted aliases. Any other non-blank value is an unrecognised key press.
+     * :param direction: optional paging action. The legacy vocabulary is ``"PF7"`` (page back)
+     *     and ``"PF8"`` (page forward); ``"backward"`` and ``"forward"`` are accepted aliases. Any
+     *     other non-blank value is an unrecognised key press.
      * :param cursor: optional user id anchoring keyset paging when ``direction`` is supplied.
      * :param selection: optional row-selection flag, ``U`` (update, ``COUSR02C``) or ``D``
      *     (delete, ``COUSR03C``), matching ``CDEMO-CU00-USR-SEL-FLG``.
      * :param selectedUserId: the user id of the selected row (``CDEMO-CU00-USR-SELECTED``).
      * :returns: the page of users with its paging cursors, the resolved selection, and the
      *     legacy banner when one applies.
-     * :raises CardDemoException: when a paging boundary is reached, the paging action is not
-     *     a recognised key, the row selection is neither ``U`` nor ``D``, or the ordered
-     *     browse fails.
+     * :raises CardDemoException: when a paging boundary is reached, the paging action is not a
+     *     recognised key, the row selection is neither ``U`` nor ``D``, or the ordered browse
+     *     fails.
      * :raises RecordNotFoundException: when a selected row names a user that does not exist.
      */
     @GetMapping

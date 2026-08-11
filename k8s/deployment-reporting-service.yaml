@@ -33,6 +33,25 @@
 #           via ``envFrom``. The companion service-reporting-service.yaml
 #           selects these pods through the ``app: reporting-service`` label.
 # =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: reporting-service-output-pvc
+  labels:
+    app.kubernetes.io/name: reporting-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: batch-output
+spec:
+  # ReadWriteOnce is the honest access mode for the default storage classes. It
+  # constrains this Deployment to ONE writer, which is why replicas stays 1 in the
+  # Deployment below - a second replica writing the same generation names would
+  # corrupt a downstream deliverable regardless of the volume.
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -236,10 +255,12 @@ spec:
         - name: tmp
           emptyDir: {}
         - name: batch-work
-          # Writable batch working directory for the read-only root filesystem.
-          # Deliberately an emptyDir in the reference manifests:
-          # batch output is operational evidence rather than durable data, and an
-          # emptyDir carries no ReadWriteOnce single-writer constraint, so the
-          # Deployment stays scalable. A durable deployment substitutes a
-          # PersistentVolumeClaim here and leaves everything else unchanged.
-          emptyDir: {}
+          # DURABLE batch output. The statement text and HTML files written here are
+          # deliverables a downstream consumer reads, so they must outlive a pod. An
+          # emptyDir is deleted with the pod, which meant a COMPLETED run's output
+          # vanished on any routine restart or reschedule while the JobRepository
+          # still reported success - a zero-data-loss violation (AAP 0.7.1) that no
+          # application error surfaced. The claim's ReadWriteOnce access mode is why
+          # this Deployment keeps a single replica.
+          persistentVolumeClaim:
+            claimName: reporting-service-output-pvc

@@ -24,34 +24,30 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * :purpose: Central factory for the single, tuned password-encoding policy shared
- *     by every CardDemo service that authenticates users, replacing the legacy
- *     RACF/USRSEC plaintext comparison. It returns a Spring Security
- *     {@link DelegatingPasswordEncoder} that stores an algorithm identifier
- *     prefix (for example ``{bcrypt}``) with every hash, so the encoding
- *     algorithm can be rotated over time without invalidating existing
- *     credentials.
- * :note: Encoding always uses BCrypt at {@link #BCRYPT_STRENGTH}, the same cost
- *     factor carried by every stored credential, so verification cost does not
- *     reveal whether a user id exists; the map also
- *     registers PBKDF2 so credentials persisted under that identifier can still
- *     be verified and are transparently rehashed to the default algorithm on the
- *     next successful authentication (Spring Security calls
- *     {@link PasswordEncoder#upgradeEncoding(String)} and re-encodes when it
- *     returns ``true``). Only algorithms whose implementations are on the default
- *     classpath (BCrypt, PBKDF2) are registered, so no optional cryptographic
- *     provider is required.
- * :note: Callers must enforce the frozen ``PIC X(8)`` password width at the DTO
- *     boundary before invoking the encoder, so oversized input never reaches the
- *     adaptive hashing routine.
- * :note: Credentials migrated from the legacy ``USRSEC`` file are stored as BARE
- *     BCrypt hashes carrying no ``{id}`` prefix (see the ``security_users`` seed
- *     migration). A {@link DelegatingPasswordEncoder} rejects an unprefixed stored
- *     value with {@link IllegalArgumentException} unless a match-only fallback
- *     encoder is registered, so BCrypt is installed as that fallback through
- *     {@link DelegatingPasswordEncoder#setDefaultPasswordEncoderForMatches}.
- *     Without it no migrated user can sign on at all. Encoding is unaffected: new
- *     hashes are still written with the ``{bcrypt}`` prefix.
+ * :purpose: Central factory for the single, tuned password-encoding policy shared by every
+ *     CardDemo service that authenticates users, replacing the legacy RACF/USRSEC plaintext
+ *     comparison. It returns a Spring Security {@link DelegatingPasswordEncoder} that stores
+ *     an algorithm identifier prefix (for example ``{bcrypt}``) with every hash, so the
+ *     encoding algorithm can be rotated over time without invalidating existing credentials.
+ * :note: Encoding always uses BCrypt at {@link #BCRYPT_STRENGTH}, the same cost factor
+ *     carried by every stored credential, so verification cost does not reveal whether a user
+ *     id exists; the map also registers PBKDF2 so credentials persisted under that identifier
+ *     can still be verified and are transparently rehashed to the default algorithm on the
+ *     next successful authentication (Spring Security calls {@link
+ *     PasswordEncoder#upgradeEncoding(String)} and re-encodes when it returns ``true``). Only
+ *     algorithms whose implementations are on the default classpath (BCrypt, PBKDF2) are
+ *     registered, so no optional cryptographic provider is required.
+ * :note: Callers must enforce the frozen ``PIC X(8)`` password width at the DTO boundary
+ *     before invoking the encoder, so oversized input never reaches the adaptive hashing
+ *     routine.
+ * :note: Credentials migrated from the legacy ``USRSEC`` file are stored as BARE BCrypt
+ *     hashes carrying no ``{id}`` prefix (see the ``security_users`` seed migration). A {@link
+ *     DelegatingPasswordEncoder} rejects an unprefixed stored value with {@link
+ *     IllegalArgumentException} unless a match-only fallback encoder is registered, so BCrypt
+ *     is installed as that fallback through {@link
+ *     DelegatingPasswordEncoder#setDefaultPasswordEncoderForMatches}. Without it no migrated
+ *     user can sign on at all. Encoding is unaffected: new hashes are still written with the
+ *     ``{bcrypt}`` prefix.
  */
 public final class PasswordEncoderFactory {
 

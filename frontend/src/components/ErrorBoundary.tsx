@@ -1,27 +1,24 @@
 /**
- * ErrorBoundary
- * =============
- *
+ * ErrorBoundary =============
  * :purpose: Contain an unrecoverable client-side failure and report it. A render-time
- *     exception in any of the seventeen screens is caught here and answered with the
- *     24x80 frame carrying the legacy abend text on the line-23 message region,
- *     instead of React unmounting the tree to a blank device. The module also
- *     registers the browser-level telemetry for the two faults no boundary can see —
- *     an uncaught ``error`` event and an ``unhandledrejection`` — so both are reported
- *     with the same ``X-Correlation-Id`` correlation reference every REST call carries.
+ *     exception in any of the seventeen screens is caught here and answered with the 24x80
+ *     frame carrying the legacy abend text on the line-23 message region, instead of React
+ *     unmounting the tree to a blank device. The module also registers the browser-level
+ *     telemetry for the two faults no boundary can see — an uncaught ``error`` event and an
+ *     ``unhandledrejection`` — so both are reported with the same ``X-Correlation-Id``
+ *     correlation reference every REST call carries.
  * :output: The default export :class:`ErrorBoundary`, the reported-payload type
- *     :class:`UncaughtErrorReport`, the reporter :func:`reportUncaughtError`, the
- *     browser-hook registrar :func:`registerGlobalErrorTelemetry`, and the line-23
- *     literal :data:`ABEND_MESSAGE`.
- * :note: The legacy analogue is ``ABEND-ROUTINE``, which moves
- *     ``'UNEXPECTED ABEND OCCURRED.'`` into ``ABEND-MSG`` and sends it to the erased
- *     device before ``EXEC CICS ABEND ABCODE('9999')``
- *     [app/cbl/COCRDUPC.cbl:L1531-L1552; app/cpy/CSMSG02Y.cpy]. The message is the
- *     verbatim legacy literal, so the failure notice invents no wording, and the
- *     correlation reference is reported to the telemetry channel only — no screen
- *     surfaces it, so the frame gains no output beyond the notice itself.
+ * :class: `UncaughtErrorReport`, the reporter :func:`reportUncaughtError`, the
+ *     browser-hook registrar :func:`registerGlobalErrorTelemetry`, and the line-23 literal
+ *     :data:`ABEND_MESSAGE`.
+ * :note: The legacy analogue is ``ABEND-ROUTINE``, which moves ``'UNEXPECTED ABEND
+ *     OCCURRED.'`` into ``ABEND-MSG`` and sends it to the erased device before ``EXEC CICS
+ *     ABEND ABCODE('9999')`` [app/cbl/COCRDUPC.cbl:L1531-L1552; app/cpy/CSMSG02Y.cpy]. The
+ *     message is the verbatim legacy literal, so the failure notice invents no wording, and
+ *     the correlation reference is reported to the telemetry channel only — no screen surfaces
+ *     it, so the frame gains no output beyond the notice itself.
  * :note: Rationale for the containment boundary, its placement and the reuse of
- *     :func:`ErrorBanner` is in docs/decision-log.md (SPA entry point).
+ * :func: `ErrorBanner` is in docs/decision-log.md (SPA entry point).
  */
 import { Component } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';

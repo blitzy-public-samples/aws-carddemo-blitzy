@@ -33,20 +33,20 @@ import java.util.Map;
 /**
  * :purpose: Spring Batch {@link ItemWriter} that completes the monthly interest job by
  *     persisting each computed interest {@link com.carddemo.common.domain.Transaction} and
- *     then applying the per-account balance roll-up with current-cycle zeroing. It is the
- *     Java re-platforming of ``CBACT04C``'s ``1300-B-WRITE-TX`` (write the interest
- *     transaction) together with ``1050-UPDATE-ACCOUNT`` (``ADD WS-TOTAL-INT TO
- *     ACCT-CURR-BAL``; ``MOVE 0 TO ACCT-CURR-CYC-CREDIT``; ``MOVE 0 TO ACCT-CURR-CYC-DEBIT``;
- *     ``REWRITE``).
- * :output: For every delivered chunk, each carried interest transaction is persisted before
- *     any account roll-up, and every distinct account id in the chunk — including accounts
- *     whose category rows all carried a zero interest rate — receives one cycle roll-up that
- *     adds the accumulated interest to the current balance and zeroes the current-cycle
- *     credit and debit figures. All monetary arithmetic, rounding and JPA ``@Version``
- *     optimistic-lock handling are performed by {@link InterestCalculationService}.
- * :note: The writer is not annotated ``@Transactional``; Spring Batch wraps each chunk in its
- *     own transaction, so all transaction writes and account roll-ups for a chunk commit or
- *     roll back together (the ``@Transactional``-per-account unit). The ``config`` package
+ *     then applying the per-account balance roll-up with current-cycle zeroing. It is the Java
+ *     re-platforming of ``CBACT04C``'s ``1300-B-WRITE-TX`` (write the interest transaction)
+ *     together with ``1050-UPDATE-ACCOUNT`` (``ADD WS-TOTAL-INT TO ACCT-CURR-BAL``; ``MOVE 0
+ *     TO ACCT-CURR-CYC-CREDIT``; ``MOVE 0 TO ACCT-CURR-CYC-DEBIT``; ``REWRITE``).
+ * :output: For every delivered chunk, each carried interest transaction is persisted
+ *     before any account roll-up, and every distinct account id in the chunk — including
+ *     accounts whose category rows all carried a zero interest rate — receives one cycle
+ *     roll-up that adds the accumulated interest to the current balance and zeroes the
+ *     current-cycle credit and debit figures. All monetary arithmetic, rounding and JPA
+ *     ``@Version`` optimistic-lock handling are performed by {@link
+ *     InterestCalculationService}.
+ * :note: The writer is not annotated ``@Transactional``; Spring Batch wraps each chunk in
+ *     its own transaction, so all transaction writes and account roll-ups for a chunk commit
+ *     or roll back together (the ``@Transactional``-per-account unit). The ``config`` package
  *     sizes each chunk to one account's category rows so that a chunk boundary is an account
  *     control break, yielding one transaction per account — the analogue of
  *     ``1050-UPDATE-ACCOUNT`` firing on account change — and configures the interest step

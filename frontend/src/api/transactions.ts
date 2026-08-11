@@ -1,29 +1,27 @@
 /**
  * :module: ``frontend/src/api/transactions.ts``
- * :purpose: Domain API module for the three online transaction screens —
- *   ``TranListPage`` (paginated list), ``TranViewPage`` (detail), and
- *   ``TranAddPage`` (add). It wraps the transaction routes exposed by the
- *   api-gateway and re-expresses the legacy CICS pseudo-conversational
- *   programs ``COTRN00C`` (transaction ``CT00``, list), ``COTRN01C``
- *   (transaction ``CT01``, view), and ``COTRN02C`` (transaction ``CT02``, add)
- *   as stateless REST calls issued through the shared axios instance.
- * :output: The named exports ``listTransactions`` (``GET /transactions``,
- *   ten rows per page), ``getTransaction`` (``GET /transactions/detail?tranId=``),
- *   ``getLastTransaction`` (``GET /transactions/last``), ``addTransaction``
- *   (``POST /transactions``) and the key-resolution step ``resolveAddKey`` /
- *   ``resolveTransactionKeys`` (``POST /transactions/key``).
+ * :purpose: Domain API module for the three online transaction screens — ``TranListPage``
+ *     (paginated list), ``TranViewPage`` (detail), and ``TranAddPage`` (add). It wraps the
+ *     transaction routes exposed by the api-gateway and re-expresses the legacy CICS
+ *     pseudo-conversational programs ``COTRN00C`` (transaction ``CT00``, list), ``COTRN01C``
+ *     (transaction ``CT01``, view), and ``COTRN02C`` (transaction ``CT02``, add) as stateless
+ *     REST calls issued through the shared axios instance.
+ * :output: The named exports ``listTransactions`` (``GET /transactions``, ten rows per
+ *     page), ``getTransaction`` (``GET /transactions/detail?tranId=``), ``getLastTransaction``
+ *     (``GET /transactions/last``), ``addTransaction`` (``POST /transactions``) and the
+ *     key-resolution step ``resolveAddKey`` / ``resolveTransactionKeys`` (``POST
+ *     /transactions/key``).
  * :note: Wire formats are preserved untouched — the 16-digit transaction id, the
- *   ``NUMERIC(11,2)`` monetary amount, the four-digit category code, the nine-digit
- *   merchant id and the origination and processing timestamps all travel as
- *   ``string`` with no numeric coercion in either direction.
- * :note: On the add path the two timestamps carry the ten-character ``YYYY-MM-DD``
- *   date the screen collects and are stored in their 26-character fields verbatim,
- *   exactly as ``COTRN02C`` L464-L465 moves ``TORIGDT`` / ``TPROCDT`` into
- *   ``TRAN-ORIG-TS`` / ``TRAN-PROC-TS``; no value is expanded to a full timestamp.
- * :note: The add path never carries a client-supplied ``tranId``; the server
- *   assigns the 16-digit zero-padded id from a database sequence, replacing the
- *   legacy browse-last-then-increment scheme (rationale in
- *   ``docs/decision-log.md``).
+ *     ``NUMERIC(11,2)`` monetary amount, the four-digit category code, the nine-digit merchant
+ *     id and the origination and processing timestamps all travel as ``string`` with no
+ *     numeric coercion in either direction.
+ * :note: On the add path the two timestamps carry the ten-character ``YYYY-MM-DD`` date
+ *     the screen collects and are stored in their 26-character fields verbatim, exactly as
+ *     ``COTRN02C`` L464-L465 moves ``TORIGDT`` / ``TPROCDT`` into ``TRAN-ORIG-TS`` /
+ *     ``TRAN-PROC-TS``; no value is expanded to a full timestamp.
+ * :note: The add path never carries a client-supplied ``tranId``; the server assigns the
+ *     16-digit zero-padded id from a database sequence, replacing the legacy
+ *     browse-last-then-increment scheme (rationale in ``docs/decision-log.md``).
  */
 
 import apiClient from './client';

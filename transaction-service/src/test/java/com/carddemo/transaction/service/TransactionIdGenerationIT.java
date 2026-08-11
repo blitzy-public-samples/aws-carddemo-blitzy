@@ -67,6 +67,12 @@ class TransactionIdGenerationIT {
     /** Seeded account that owns {@link #CARD_NUM} and is cross-referenced to it. */
     private static final long ACCT_ID = 2L;
 
+    /** The ten-character date the ``LENGTH=10`` COTRN02 map fields carry. */
+    private static final String ORIG_DATE_INPUT = "2026-08-01";
+
+    /** That date in the stored 26-character form: left-justified, space-filled. */
+    private static final String ORIG_DATE_STORED = "2026-08-01" + "                ";
+
     private static final PostgreSQLContainer POSTGRES =
             new PostgreSQLContainer(DockerImageName.parse("postgres:18"));
 
@@ -144,6 +150,20 @@ class TransactionIdGenerationIT {
         assertThat(response.getTranId()).matches("\\d{16}");
         assertThat(response.getMessage())
                 .isEqualTo("Transaction added successfully.  Your Tran ID is " + response.getTranId() + ".");
+        // The stored timestamp round-trips through the real VARCHAR(26) column in the
+        // canonical form the COBOL MOVE produces: the ten-character date left-justified and
+        // space-filled to twenty-six (COTRN02C L464-L465). VARCHAR keeps trailing blanks, so
+        // this is a byte-for-byte check of what CT02 writes.
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT tran_orig_ts FROM transactions WHERE tran_id = ?",
+                String.class, response.getTranId()))
+                .isEqualTo(ORIG_DATE_STORED)
+                .hasSize(26);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT tran_proc_ts FROM transactions WHERE tran_id = ?",
+                String.class, response.getTranId()))
+                .isEqualTo(ORIG_DATE_STORED)
+                .hasSize(26);
     }
 
     /**
@@ -218,8 +238,11 @@ class TransactionIdGenerationIT {
         request.setTranMerchantName("Store");
         request.setTranMerchantCity("Seattle");
         request.setTranMerchantZip("98101");
-        request.setTranOrigTs("2026-08-01-10.00.00.000000");
-        request.setTranProcTs("2026-08-01-10.00.00.000000");
+        // TORIGDT / TPROCDT are DFHMDF LENGTH=10 [app/bms/COTRN02.bms:L187-L190, L200-L203]:
+        // the screen can only ever send the ten-character date, and COTRN02C L464-L465
+        // widens it to the stored PIC X(26) receiver.
+        request.setTranOrigTs(ORIG_DATE_INPUT);
+        request.setTranProcTs(ORIG_DATE_INPUT);
         request.setConfirm("Y");
         return request;
     }

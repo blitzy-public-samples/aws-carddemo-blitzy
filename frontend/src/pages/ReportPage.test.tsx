@@ -194,12 +194,35 @@ function renderReportScreen(): void {
   );
 }
 
+/** The three selector captions, in the order CORPT00.bms lists their fields. */
+const REPORT_TYPE_CAPTIONS = [MONTHLY_CAPTION, YEARLY_CAPTION, CUSTOM_CAPTION] as const;
+
 /**
- * :purpose: Choose a report window by its verbatim caption.
- * :param caption: the mapset caption of the selector.
+ * :purpose: Key a character into one report-window selector, leaving the other two
+ *     exactly as they are. Each selector is a single-character entry field
+ *     (``LENGTH=1``, ``UNPROT``) and the program tests it only for being non-blank, so
+ *     any character marks it.
+ * :param caption: the mapset caption beside the selector.
+ * :param value: the character to key; defaults to ``'X'``.
+ */
+function markReportType(caption: string, value = 'X'): void {
+  fireEvent.change(screen.getByLabelText(caption), { target: { value } });
+}
+
+/**
+ * :purpose: Choose exactly one report window: clear the other two selector fields and
+ *     key a character into this one. The clearing is explicit because the map does not
+ *     do it -- three independent fields can all carry a mark at once, and CORPT00C
+ *     resolves that by map order rather than by refusing the screen.
+ * :param caption: the mapset caption of the selector to choose.
  */
 function selectReportType(caption: string): void {
-  fireEvent.click(screen.getByRole('radio', { name: caption }));
+  for (const other of REPORT_TYPE_CAPTIONS) {
+    if (other !== caption) {
+      fireEvent.change(screen.getByLabelText(other), { target: { value: '' } });
+    }
+  }
+  markReportType(caption);
 }
 
 /**
@@ -308,8 +331,9 @@ describe('ReportPage — screen (CORPT00 / transaction CR00)', () => {
     expect(
       screen.getByRole('heading', { level: 3, name: SCREEN_HEADING }),
     ).toBeInTheDocument();
-    // The body heading of row 4 labels the report-window group.
-    expect(screen.getByRole('radiogroup', { name: SCREEN_HEADING })).toBeInTheDocument();
+    // The body heading of row 4 labels the report-window group. It is a plain group,
+    // not a radiogroup: the three selectors are three independent entry fields.
+    expect(screen.getByRole('group', { name: SCREEN_HEADING })).toBeInTheDocument();
   });
 
   it('opens with an empty line-23 region and the signed-on session on the frame', () => {
@@ -328,28 +352,52 @@ describe('ReportPage — screen (CORPT00 / transaction CR00)', () => {
     );
   });
 
-  it('renders the three report-window selectors with the mapset captions', () => {
+  it('renders the three report-window selectors as the mapset declares them', () => {
+    // MONTHLY POS=(7,10), YEARLY POS=(9,10), CUSTOM POS=(11,10): three separate
+    // single-character UNPROT fields, each with its caption at column 15. Not a radio
+    // group -- a group would be one tab stop of which exactly one member can be set.
     renderReportScreen();
 
-    const monthly = screen.getByRole('radio', { name: MONTHLY_CAPTION });
-    const yearly = screen.getByRole('radio', { name: YEARLY_CAPTION });
-    const custom = screen.getByRole('radio', { name: CUSTOM_CAPTION });
-
-    expect(monthly).not.toBeChecked();
-    expect(yearly).not.toBeChecked();
-    expect(custom).not.toBeChecked();
-    expect(screen.getAllByRole('radio')).toHaveLength(3);
+    for (const caption of REPORT_TYPE_CAPTIONS) {
+      const selector = screen.getByLabelText(caption);
+      expect(selector.tagName).toBe('INPUT');
+      expect(selector).toHaveAttribute('type', 'text');
+      expect(selector).toHaveAttribute('maxlength', '1');
+      expect(selector).toHaveAttribute('size', '1');
+      expect(selector).toHaveValue('');
+    }
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
   });
 
-  it('keeps the report-window selectors mutually exclusive', () => {
+  it('keeps each selector a tab stop of its own, in map order', () => {
     renderReportScreen();
 
-    selectReportType(MONTHLY_CAPTION);
-    expect(screen.getByRole('radio', { name: MONTHLY_CAPTION })).toBeChecked();
+    const stops = [
+      screen.getByLabelText(MONTHLY_CAPTION),
+      screen.getByLabelText(YEARLY_CAPTION),
+      screen.getByLabelText(CUSTOM_CAPTION),
+      screen.getByLabelText(START_MONTH_FIELD),
+    ];
+    for (const stop of stops) {
+      expect(stop).not.toHaveAttribute('tabindex', '-1');
+    }
+    // The document order the tab sequence follows IS the mapset's row order.
+    const body = screen.getByRole('main');
+    const entered = Array.from(body.querySelectorAll('input'));
+    expect(entered.slice(0, 4)).toEqual(stops);
+  });
 
-    selectReportType(YEARLY_CAPTION);
-    expect(screen.getByRole('radio', { name: YEARLY_CAPTION })).toBeChecked();
-    expect(screen.getByRole('radio', { name: MONTHLY_CAPTION })).not.toBeChecked();
+  it('keeps a character in every selector the operator marks', () => {
+    // The map protects nothing and clears nothing: an operator can key a character into
+    // all three fields, and each keeps what was keyed.
+    renderReportScreen();
+
+    markReportType(MONTHLY_CAPTION, '1');
+    markReportType(YEARLY_CAPTION, '2');
+
+    expect(screen.getByLabelText(MONTHLY_CAPTION)).toHaveValue('1');
+    expect(screen.getByLabelText(YEARLY_CAPTION)).toHaveValue('2');
+    expect(screen.getByLabelText(CUSTOM_CAPTION)).toHaveValue('');
   });
 
   it('renders the date-range captions and both (MM/DD/YYYY) hints verbatim', () => {
@@ -429,7 +477,12 @@ describe('ReportPage — screen (CORPT00 / transaction CR00)', () => {
     enterConfirmation('Y');
     await pressEnter();
 
-    expect(requestReportMock).toHaveBeenCalledWith({ monthly: 'Y', confirm: 'Y' });
+    expect(requestReportMock).toHaveBeenCalledWith({
+      monthly: 'X',
+      yearly: '',
+      custom: '',
+      confirm: 'Y',
+    });
   });
 });
 
@@ -724,7 +777,7 @@ describe('ReportPage — confirmation gate (SUBMIT-JOB-TO-INTRDR)', () => {
     enterConfirmation('N');
     await pressEnter();
 
-    expect(screen.getByRole('radio', { name: CUSTOM_CAPTION })).not.toBeChecked();
+    expect(screen.getByLabelText(CUSTOM_CAPTION)).toHaveValue('');
     expect(screen.getByLabelText(START_MONTH_FIELD)).toHaveValue('');
     expect(screen.getByLabelText(END_YEAR_FIELD)).toHaveValue('');
     expect(screen.getByLabelText(CONFIRM_CAPTION.trim())).toHaveValue('');
@@ -739,7 +792,7 @@ describe('ReportPage — confirmation gate (SUBMIT-JOB-TO-INTRDR)', () => {
     enterConfirmation('n');
     await pressEnter();
 
-    expect(screen.getByRole('radio', { name: MONTHLY_CAPTION })).not.toBeChecked();
+    expect(screen.getByLabelText(MONTHLY_CAPTION)).toHaveValue('');
     expect(screen.getByTestId('error-banner-empty')).toBeInTheDocument();
     expect(requestReportMock).not.toHaveBeenCalled();
   });
@@ -753,7 +806,15 @@ describe('ReportPage — asynchronous report launch (POST /reports)', () => {
     enterConfirmation('Y');
     await pressEnter();
 
-    const expected: ReportRequestDto = { monthly: 'Y', confirm: 'Y' };
+    // All three selector fields travel exactly as keyed: the map sends every field, the
+    // program reads each only for being non-blank, and the service applies the same
+    // first-non-blank rule. `markReportType` keys `X`, so `X` is what crosses the wire.
+    const expected: ReportRequestDto = {
+      monthly: 'X',
+      yearly: '',
+      custom: '',
+      confirm: 'Y',
+    };
     expect(requestReportMock).toHaveBeenCalledTimes(1);
     expect(requestReportMock).toHaveBeenCalledWith(expected);
     expect(infoText()).toBe(`Monthly${SUBMIT_SUCCESS_SUFFIX}`);
@@ -767,10 +828,48 @@ describe('ReportPage — asynchronous report launch (POST /reports)', () => {
     enterConfirmation('y');
     await pressEnter();
 
-    const expected: ReportRequestDto = { yearly: 'Y', confirm: 'y' };
+    const expected: ReportRequestDto = {
+      monthly: '',
+      yearly: 'X',
+      custom: '',
+      confirm: 'y',
+    };
     expect(requestReportMock).toHaveBeenCalledTimes(1);
     expect(requestReportMock).toHaveBeenCalledWith(expected);
     expect(infoText()).toBe(`Yearly${SUBMIT_SUCCESS_SUFFIX}`);
+  });
+
+  it('runs the earlier window when two selectors carry a mark', async () => {
+    // CORPT00C L212-256 evaluates MONTHLY, then YEARLY, then CUSTOM and takes the FIRST
+    // that is non-blank, so a screen with two marks runs the earlier one rather than being
+    // refused. A radio group could not express this state at all.
+    renderReportScreen();
+
+    markReportType(YEARLY_CAPTION);
+    markReportType(CUSTOM_CAPTION);
+    enterCustomWindow(VALID_START, VALID_END);
+    enterConfirmation('Y');
+    await pressEnter();
+
+    // Yearly is what ran, and the custom date parts are NOT read under that branch.
+    expect(requestReportMock).toHaveBeenCalledWith({
+      monthly: '',
+      yearly: 'X',
+      custom: 'X',
+      confirm: 'Y',
+    });
+    expect(infoText()).toBe(`Yearly${SUBMIT_SUCCESS_SUFFIX}`);
+  });
+
+  it('prompts with the earlier window name when two selectors carry a mark', async () => {
+    renderReportScreen();
+
+    markReportType(MONTHLY_CAPTION);
+    markReportType(CUSTOM_CAPTION);
+    await pressEnter();
+
+    expect(errorText()).toBe(`${CONFIRM_PROMPT_PREFIX}Monthly${CONFIRM_PROMPT_SUFFIX}`);
+    expect(requestReportMock).not.toHaveBeenCalled();
   });
 
   it('launches the Custom report with the date components as entered', async () => {
@@ -782,7 +881,9 @@ describe('ReportPage — asynchronous report launch (POST /reports)', () => {
     await pressEnter();
 
     const expected: ReportRequestDto = {
-      custom: 'Y',
+      monthly: '',
+      yearly: '',
+      custom: 'X',
       startDateMonth: '01',
       startDateDay: '01',
       startDateYear: '2024',
@@ -804,7 +905,7 @@ describe('ReportPage — asynchronous report launch (POST /reports)', () => {
     enterConfirmation('Y');
     await pressEnter();
 
-    expect(screen.getByRole('radio', { name: CUSTOM_CAPTION })).not.toBeChecked();
+    expect(screen.getByLabelText(CUSTOM_CAPTION)).toHaveValue('');
     expect(screen.getByLabelText(START_YEAR_FIELD)).toHaveValue('');
     expect(screen.getByLabelText(CONFIRM_CAPTION.trim())).toHaveValue('');
   });
@@ -819,7 +920,7 @@ describe('ReportPage — asynchronous report launch (POST /reports)', () => {
     await pressEnter();
 
     expect(errorText()).toBe(rejected);
-    expect(screen.getByRole('radio', { name: MONTHLY_CAPTION })).toBeChecked();
+    expect(screen.getByLabelText(MONTHLY_CAPTION)).toHaveValue('X');
   });
 
   it('surfaces the service message when the launch fails', async () => {
@@ -840,7 +941,7 @@ describe('ReportPage — asynchronous report launch (POST /reports)', () => {
     await waitFor(() => {
       expect(errorText()).toBe(body.message);
     });
-    expect(screen.getByRole('radio', { name: MONTHLY_CAPTION })).toBeChecked();
+    expect(screen.getByLabelText(MONTHLY_CAPTION)).toHaveValue('X');
   });
 
   it('falls back to the transport message when the failure has no body', async () => {
@@ -985,25 +1086,27 @@ describe('ReportPage — the message channel carries the colour (CORPT00C MOVE D
     expect(infoBanner()).toBeNull();
   });
 
-  it('clears a standing rejection, its marking and the cursor when the type changes', async () => {
-    // A rejection belongs to the turn that produced it. Changing the selection changes the
-    // very input that turn rejected, so the message and the marking derived from it go
-    // with it -- and the cursor lands on the control just chosen rather than being
-    // dropped onto the document body.
+  it('holds a standing rejection and its marking until the next AID', async () => {
+    // CORPT00C writes line 23 only on a SEND MAP, and a keystroke transmits nothing, so
+    // marking a window does not silently withdraw the report of the turn that rejected
+    // the screen. The next AID is what replaces both.
     renderReportScreen();
 
     enterConfirmation('Y');
     await pressEnter();
     expect(errorText()).toBe(MSG_SELECT_REPORT_TYPE);
-    const group = screen.getByRole('radiogroup');
-    expect(group).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByLabelText(MONTHLY_CAPTION)).toBeInvalid();
 
-    selectReportType(YEARLY_CAPTION);
+    markReportType(YEARLY_CAPTION);
+
+    expect(errorText()).toBe(MSG_SELECT_REPORT_TYPE);
+    expect(screen.getByLabelText(MONTHLY_CAPTION)).toBeInvalid();
+
+    await pressEnter();
 
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(group).not.toHaveAttribute('aria-invalid');
-    expect(screen.getByRole('radio', { name: YEARLY_CAPTION })).toHaveFocus();
-    expect(document.activeElement).not.toBe(document.body);
+    expect(infoText()).toBe(`Yearly${SUBMIT_SUCCESS_SUFFIX}`);
+    expect(screen.getByLabelText(MONTHLY_CAPTION)).not.toBeInvalid();
   });
 
   /*
@@ -1020,7 +1123,7 @@ describe('ReportPage — the message channel carries the colour (CORPT00C MOVE D
     });
 
     expect(errorText()).toBe(CCDA_MSG_INVALID_KEY);
-    expect(screen.getByRole('radiogroup')).not.toHaveAttribute('aria-invalid');
+    expect(screen.getByLabelText(MONTHLY_CAPTION)).not.toHaveAttribute('aria-invalid');
     expect(document.querySelectorAll('[aria-invalid="true"]')).toHaveLength(0);
     expect(document.querySelectorAll('[data-faulted]')).toHaveLength(0);
   });

@@ -75,6 +75,14 @@ spec:
       # One retry: a transient connection failure is worth repeating, an
       # authentication or disk-space failure is not worth repeating indefinitely.
       backoffLimit: 1
+      # Wall-clock ceiling for one dump. `concurrencyPolicy: Forbid` means a hung
+      # pg_dump would suppress every subsequent nightly dump indefinitely and leave
+      # the backup silently stale; one hour is far beyond the observed dump time and
+      # turns that failure mode into a visible DeadlineExceeded condition.
+      activeDeadlineSeconds: 3600
+      # Reap the finished Job an hour after completion so the history limits above
+      # bound what an operator sees.
+      ttlSecondsAfterFinished: 3600
       template:
         metadata:
           labels:

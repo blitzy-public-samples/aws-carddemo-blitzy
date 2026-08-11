@@ -25,23 +25,22 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * :purpose: Bound the size of an inbound request body so an unauthenticated caller
- *     cannot exhaust heap, threads, or log volume with an oversized payload
- *     (CWE-770). CardDemo request bodies model 3270 screen fields and are at most a
- *     few kilobytes, so the default cap is generous while still rejecting abusive
- *     payloads immediately.
- * :output: The original response for a request within the cap, or an empty
- *     ``413 Content Too Large`` for a request that declares or streams more than the
- *     configured number of bytes.
- * :note: Both shapes are covered: a declared ``Content-Length`` is checked before the
- *     body is read at all, and a chunked request (no declared length) is counted while
- *     it streams, so the limit cannot be bypassed by omitting the header.
+ * :purpose: Bound the size of an inbound request body so an unauthenticated caller cannot
+ *     exhaust heap, threads, or log volume with an oversized payload (CWE-770). CardDemo
+ *     request bodies model 3270 screen fields and are at most a few kilobytes, so the default
+ *     cap is generous while still rejecting abusive payloads immediately.
+ * :output: The original response for a request within the cap, or an empty ``413 Content
+ *     Too Large`` for a request that declares or streams more than the configured number of
+ *     bytes.
+ * :note: Both shapes are covered: a declared ``Content-Length`` is checked before the body
+ *     is read at all, and a chunked request (no declared length) is counted while it streams,
+ *     so the limit cannot be bypassed by omitting the header.
  * :note: A streamed body is normally consumed by a message converter inside the
- *     dispatcher, which wraps the abort signal in its own exception and lets Spring
- *     resolve it there, so it never reaches this filter. {@link GlobalExceptionHandler}
- *     therefore classifies that wrapped form through {@link #isSizeExceededSignal} and
- *     reports the same ``413``; this filter's own handler covers the remaining case
- *     where the signal escapes the dispatcher.
+ *     dispatcher, which wraps the abort signal in its own exception and lets Spring resolve it
+ *     there, so it never reaches this filter. {@link GlobalExceptionHandler} therefore
+ *     classifies that wrapped form through {@link #isSizeExceededSignal} and reports the same
+ *     ``413``; this filter's own handler covers the remaining case where the signal escapes
+ *     the dispatcher.
  */
 public class RequestSizeLimitFilter extends OncePerRequestFilter {
 

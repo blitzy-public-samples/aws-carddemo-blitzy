@@ -39,32 +39,28 @@ import java.text.DecimalFormatSymbols;
 import java.util.Locale;
 
 /**
- * :purpose: {@code @StepScope} {@link ItemStreamWriter} that produces the
- *  CardDemo Transaction Category Balance report, one fixed-format line per
- *  {@link TranCatBal} record. It is the Java analogue of the legacy
- *  ``PRTCATBL`` job's ``STEP10R`` DFSORT step, whose
- *  ``OUTREC FIELDS=(TRANCAT-ACCT-ID, X, TRANCAT-TYPE-CD, X, TRANCAT-CD, X,
- *  TRAN-CAT-BAL, EDIT=(TTTTTTTTT.TT), 9X)`` renders the unloaded ``TCATBALF``
- *  file (record layout ``CVTRA01Y``). It is a report-only writer: it never
- *  mutates a {@link TranCatBal}, never calls a repository, and produces no
- *  control breaks or totals.
- * :output: A newly created flat file at the ``outputFile`` job-parameter path
- *  containing one line per input record. Each line is the account id
- *  (11 digits), a single space, the transaction type code (2 characters), a
- *  single space, the transaction category code (4 digits), a single space, the
- *  edited category balance (12 characters), and 9 trailing spaces, matching the
- *  DFSORT ``OUTREC`` field order and spacing.
+ * :purpose: {@code @StepScope} {@link ItemStreamWriter} that produces the CardDemo
+ *     Transaction Category Balance report, one fixed-format line per {@link TranCatBal}
+ *     record. It is the Java analogue of the legacy ``PRTCATBL`` job's ``STEP10R`` DFSORT
+ *     step, whose ``OUTREC FIELDS=(TRANCAT-ACCT-ID, X, TRANCAT-TYPE-CD, X, TRANCAT-CD, X,
+ *     TRAN-CAT-BAL, EDIT=(TTTTTTTTT.TT), 9X)`` renders the unloaded ``TCATBALF`` file (record
+ *     layout ``CVTRA01Y``). It is a report-only writer: it never mutates a {@link TranCatBal},
+ *     never calls a repository, and produces no control breaks or totals.
+ * :output: A newly created flat file at the ``outputFile`` job-parameter path containing
+ *     one line per input record. Each line is the account id (11 digits), a single space, the
+ *     transaction type code (2 characters), a single space, the transaction category code (4
+ *     digits), a single space, the edited category balance (12 characters), and 9 trailing
+ *     spaces, matching the DFSORT ``OUTREC`` field order and spacing.
  * :note: The reader
- *  (``TranCatBalRepository.findAllByOrderByTrancatAcctIdAscTrancatTypeCdAscTrancatCdAsc(pageable)``,
- *  the full composite-key ascending order equivalent of DFSORT
- *  ``SORT FIELDS=(TRANCAT-ACCT-ID,A,TRANCAT-TYPE-CD,A,TRANCAT-CD,A)``), the
- *  ``outputFile`` job parameter, and the wiring of this writer as the step's
- *  {@link ItemStreamWriter} are supplied by the batch ``config/`` package;
- *  because this is the step's main writer, Spring Batch automatically manages
- *  {@link #open}, {@link #update}, and {@link #close} without an explicit
- *  ``.stream(...)`` registration.
+ *     (``TranCatBalRepository.findAllByOrderByTrancatAcctIdAscTrancatTypeCdAscTrancatCdAsc(pageable)``,
+ *     the full composite-key ascending order equivalent of DFSORT ``SORT
+ *     FIELDS=(TRANCAT-ACCT-ID,A,TRANCAT-TYPE-CD,A,TRANCAT-CD,A)``), the ``outputFile`` job
+ *     parameter, and the wiring of this writer as the step's {@link ItemStreamWriter} are
+ *     supplied by the batch ``config/`` package; because this is the step's main writer,
+ *     Spring Batch automatically manages {@link #open}, {@link #update}, and {@link #close}
+ *     without an explicit ``.stream(...)`` registration.
  * :note: {@code @StepScope} is required so that the ``#{jobParameters[...]}``
- *  ``outputFile`` value is bound lazily per step execution.
+ *     ``outputFile`` value is bound lazily per step execution.
  */
 @Component
 @StepScope

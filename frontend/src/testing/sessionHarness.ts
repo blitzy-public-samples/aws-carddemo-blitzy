@@ -1,22 +1,21 @@
 /**
  * :module: ``frontend/src/testing/sessionHarness.ts``
- * :purpose: Place the SPA session store in a signed-on or a server-confirmed
- *     signed-out state for a test, by driving the SAME path the application drives
- *     — the ``GET /session`` identity probe the session store exposes as
- *     ``useSession().refresh`` — so a suite never forges an identity and the
- *     shipped session module carries no seam that could.
+ * :purpose: Place the SPA session store in a signed-on or a server-confirmed signed-out
+ *     state for a test, by driving the SAME path the application drives — the ``GET /session``
+ *     identity probe the session store exposes as ``useSession().refresh`` — so a suite never
+ *     forges an identity and the shipped session module carries no seam that could.
  * :output: The named ``resolveSessionFromServer``, ``seedSignedOnSession``,
  *     ``seedSignedOutSession`` and ``withdrawSessionNotice`` helpers.
- * :note: Test-only. Nothing in ``frontend/src`` outside a ``*.test.ts(x)`` file
- *     imports this module, so it reaches no production bundle. Because it binds to
- *     the ``../api`` barrel the calling suite has registered, the identity it
- *     publishes is whatever that suite's ``getSessionIdentity`` double answers
- *     with — the store is still only ever written by the production probe.
- * :note: Both helpers leave the probe answering "no session". The identity is
- *     published through the production call and then the server goes back to
- *     reporting no session, so a LATER probe — after a sign-out, or after a
- *     revoked session drops the local authority — gets the server's real answer
- *     instead of a standing identity that would silently sign the caller back in.
+ * :note: Test-only. Nothing in ``frontend/src`` outside a ``*.test.ts(x)`` file imports
+ *     this module, so it reaches no production bundle. Because it binds to the ``../api``
+ *     barrel the calling suite has registered, the identity it publishes is whatever that
+ *     suite's ``getSessionIdentity`` double answers with — the store is still only ever
+ *     written by the production probe.
+ * :note: Both helpers leave the probe answering "no session". The identity is published
+ *     through the production call and then the server goes back to reporting no session, so a
+ *     LATER probe — after a sign-out, or after a revoked session drops the local authority —
+ *     gets the server's real answer instead of a standing identity that would silently sign
+ *     the caller back in.
  */
 import { act, renderHook } from '@testing-library/react';
 import { getSessionIdentity } from '../api';

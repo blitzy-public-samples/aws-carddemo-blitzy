@@ -10,7 +10,7 @@
 # NodePort reachable on every node.
 #
 # It selects the frontend pods via `app: frontend` (matching the Deployment
-# pod template labels) and forwards port 80 -> targetPort 80, the port the
+# pod template labels) and forwards port 80 -> targetPort 8080, the port the
 # nginx static server listens on inside the container (frontend/Dockerfile).
 # =============================================================================
 apiVersion: v1
@@ -33,5 +33,5 @@ spec:
     # nginx serves the static Vite bundle on container port 80 (named http).
     - name: http
       port: 80
-      targetPort: 80
+      targetPort: 8080
       protocol: TCP

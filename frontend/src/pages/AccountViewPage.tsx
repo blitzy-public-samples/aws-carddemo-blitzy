@@ -28,7 +28,12 @@ import {
   useFocusOnSettled,
   useScreenAction,
 } from '../hooks';
-import { displayField, displayText, SSN_MASK_PREFIX } from '../components/display';
+import {
+  displayField,
+  displayText,
+  toSuppressedAmountPicture,
+  SSN_MASK_PREFIX,
+} from '../components/display';
 import OutputField from '../components/OutputField';
 
 /**
@@ -48,6 +53,18 @@ const ACCOUNT_ID_PATTERN = /^\d{11}$/u;
 
 /** :purpose: An all-zero account number is rejected like a non-numeric one. */
 const ZERO_ACCOUNT_PATTERN = /^0+$/u;
+
+/**
+ * :purpose: Render one of ``COACTVW``'s five amount fields through the numeric edit
+ *     picture its map declares, ``PICOUT='+ZZZ,ZZZ,ZZZ.99'``.
+ * :param value: the wire value, absent until an account has been read.
+ * :returns: the 15-character edited value, or the empty string while the field is unread --
+ *     an unread amount field is BLANK on the terminal, not ``+        0.00``.
+ */
+function editedAmount(value: string | null | undefined): string {
+  const text = displayText(value);
+  return text === '' ? '' : toSuppressedAmountPicture(text);
+}
 
 /**
  * :purpose: Apply the ``COACTVWC`` 2210-EDIT-ACCOUNT filter edit to an entered
@@ -286,7 +303,7 @@ export default function AccountViewPage(): ReactElement {
           className="accountView__field"
           valueClassName="field"
           label="Credit Limit        :"
-          value={displayText(account?.acctCreditLimit)}
+          value={editedAmount(account?.acctCreditLimit)}
           testId="acct-credit-limit"
           justifyRight
           row={2}
@@ -311,7 +328,7 @@ export default function AccountViewPage(): ReactElement {
           className="accountView__field"
           valueClassName="field"
           label="Cash credit Limit   :"
-          value={displayText(account?.acctCashCreditLimit)}
+          value={editedAmount(account?.acctCashCreditLimit)}
           testId="acct-cash-credit-limit"
           justifyRight
           row={3}
@@ -336,7 +353,7 @@ export default function AccountViewPage(): ReactElement {
           className="accountView__field"
           valueClassName="field"
           label="Current Balance     :"
-          value={displayText(account?.acctCurrBal)}
+          value={editedAmount(account?.acctCurrBal)}
           testId="acct-curr-bal"
           justifyRight
           row={4}
@@ -349,7 +366,7 @@ export default function AccountViewPage(): ReactElement {
           className="accountView__field"
           valueClassName="field"
           label="Current Cycle Credit:"
-          value={displayText(account?.acctCurrCycCredit)}
+          value={editedAmount(account?.acctCurrCycCredit)}
           testId="acct-curr-cyc-credit"
           justifyRight
           row={5}
@@ -374,7 +391,7 @@ export default function AccountViewPage(): ReactElement {
           className="accountView__field"
           valueClassName="field"
           label="Current Cycle Debit :"
-          value={displayText(account?.acctCurrCycDebit)}
+          value={editedAmount(account?.acctCurrCycDebit)}
           testId="acct-curr-cyc-debit"
           justifyRight
           row={6}

@@ -38,34 +38,31 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 /**
- * :purpose: Render the documented {@link ErrorResponse} envelope, with status
- *  ``503 Service Unavailable``, for a datastore failure raised OUTSIDE the reach of
- *  the Spring dispatcher. The session store is the case this exists for: Spring
- *  Session's ``SessionRepositoryFilter`` runs at ``Integer.MIN_VALUE + 50``, ahead of
- *  the dispatcher and of Spring Security, so when Redis is unreachable the failure
- *  never reaches {@link GlobalExceptionHandler}; the container's own ERROR dispatch
- *  then re-enters the same failing filter, so not even
- *  {@link CardDemoErrorController} can render for it and the caller receives the
- *  servlet container's status page instead of the JSON contract.
+ * :purpose: Render the documented {@link ErrorResponse} envelope, with status ``503
+ *     Service Unavailable``, for a datastore failure raised OUTSIDE the reach of the Spring
+ *     dispatcher. The session store is the case this exists for: Spring Session's
+ *     ``SessionRepositoryFilter`` runs at ``Integer.MIN_VALUE + 50``, ahead of the dispatcher
+ *     and of Spring Security, so when Redis is unreachable the failure never reaches {@link
+ *     GlobalExceptionHandler}; the container's own ERROR dispatch then re-enters the same
+ *     failing filter, so not even {@link CardDemoErrorController} can render for it and the
+ *     caller receives the servlet container's status page instead of the JSON contract.
  * :output: The envelope written directly to the response — status 503, content type
- *  ``application/json``, the generic {@link #MESSAGE} detail, the PAN-redacted request
- *  path, and the trace and correlation ids of the failing request — with the response
- *  headers already set by the outer filters (notably ``X-Correlation-Id``) preserved,
- *  because only the response BUFFER is reset. No exception message, stack frame,
- *  driver detail or datastore address is disclosed.
- * :note: Registered by {@link WebObservabilityConfig} at
- *  ``HIGHEST_PRECEDENCE + 20``: inside {@link CorrelationIdFilter} and
- *  {@link RequestLoggingFilter}, so the MDC that supplies ``correlationId`` and
- *  ``traceId`` is populated, and OUTSIDE the session-store filter, so the failure is
- *  caught rather than escaping to the container.
- * :note: Only the two failures that mean the datastore could not be REACHED are converted --
- *  ``DataAccessResourceFailureException`` (which is what Spring Data Redis'
- *  ``RedisConnectionFailureException`` is) and ``QueryTimeoutException`` (a Lettuce or JDBC
- *  command that timed out). Anything else propagates untouched, so this filter can neither
- *  mask an application defect as an outage nor downgrade a statement the datastore REJECTED
- *  from ``500`` to ``503``; a ``TransactionException`` is answered by
- *  {@link GlobalExceptionHandler} because a transaction is only ever begun inside the
- *  dispatcher.
+ *     ``application/json``, the generic {@link #MESSAGE} detail, the PAN-redacted request
+ *     path, and the trace and correlation ids of the failing request — with the response
+ *     headers already set by the outer filters (notably ``X-Correlation-Id``) preserved,
+ *     because only the response BUFFER is reset. No exception message, stack frame, driver
+ *     detail or datastore address is disclosed.
+ * :note: Registered by {@link WebObservabilityConfig} at ``HIGHEST_PRECEDENCE + 20``:
+ *     inside {@link CorrelationIdFilter} and {@link RequestLoggingFilter}, so the MDC that
+ *     supplies ``correlationId`` and ``traceId`` is populated, and OUTSIDE the session-store
+ *     filter, so the failure is caught rather than escaping to the container.
+ * :note: Only the two failures that mean the datastore could not be REACHED are converted
+ *     -- ``DataAccessResourceFailureException`` (which is what Spring Data Redis'
+ *     ``RedisConnectionFailureException`` is) and ``QueryTimeoutException`` (a Lettuce or JDBC
+ *     command that timed out). Anything else propagates untouched, so this filter can neither
+ *     mask an application defect as an outage nor downgrade a statement the datastore REJECTED
+ *     from ``500`` to ``503``; a ``TransactionException`` is answered by {@link
+ *     GlobalExceptionHandler} because a transaction is only ever begun inside the dispatcher.
  */
 public class DatastoreOutageErrorFilter extends OncePerRequestFilter {
 

@@ -488,11 +488,13 @@ describe('CardListPage — F7 backward and F8 forward paging', () => {
     expect(renderedCardNumbers()[0]).toBe(cardNumberOf(1));
   });
 
-  it('sends the PF7 attention identifier only when the page-back is refused', async () => {
-    // ``1400-SETUP-MESSAGE`` publishes NO PREVIOUS PAGES TO DISPLAY on
-    // ``WHEN CCARD-AID-PFK07 AND CA-FIRST-PAGE``: CA-FIRST-PAGE is the state of the
-    // screen BEFORE the transition, so a page-back that actually moves must not carry
-    // the AID that asks the service for the refusal banner.
+  it('carries the PF7 attention identifier on every page-back, moving or refused', async () => {
+    // ``EIBAID`` travels on every turn: it is what the program dispatches on, and
+    // ``1400-SETUP-MESSAGE`` evaluates ``CCARD-AID-PFK07`` on the same pass that moved.
+    // L408-L414 also clears the terminal-page latch for any AID that is not the forward
+    // key, which can only happen if the backward key actually reaches the service.
+    // ``CA-FIRST-PAGE`` is the state BEFORE the transition, so the page asked for stays at
+    // the first page when there is nothing behind it.
     await renderCardListScreen();
 
     await pressPfKey('F8=Forward');
@@ -500,8 +502,7 @@ describe('CardListPage — F7 backward and F8 forward paging', () => {
 
     await pressPfKey('F7=Backward');
     expect(listCardsMock).toHaveBeenCalledTimes(1);
-    expect(listCardsMock.mock.calls[0][0]).toMatchObject({ page: 1 });
-    expect(listCardsMock.mock.calls[0][0].aid).toBeUndefined();
+    expect(listCardsMock.mock.calls[0][0]).toMatchObject({ page: 1, aid: 'PF7' });
     expect(screen.getByTestId('page-number')).toHaveTextContent('Page 1');
 
     listCardsMock.mockClear();
@@ -510,17 +511,23 @@ describe('CardListPage — F7 backward and F8 forward paging', () => {
     expect(listCardsMock.mock.calls[0][0]).toMatchObject({ page: 1, aid: 'PF7' });
   });
 
-  it('sends the PF8 attention identifier only when the advance is refused', async () => {
+  it('carries the PF8 attention identifier on every page-forward, moving or refused', async () => {
+    // The advancing turn is exactly the one that must carry the forward key: branch (4) of
+    // ``1400-SETUP-MESSAGE`` (L910-L916) SETS ``CA-LAST-PAGE-SHOWN`` on the pass that lands
+    // on a page with no successor, and branch (3) (L905-L909) reads that latch to tell a
+    // REPEATED press from a first one. An advance sent as plain entry cleared the latch
+    // instead of setting it, so the repeated press could never produce
+    // ``NO MORE PAGES TO DISPLAY``.
     await renderCardListScreen();
 
     listCardsMock.mockClear();
     await pressPfKey('F8=Forward');
-    expect(listCardsMock.mock.calls[0][0]).toMatchObject({ page: 2 });
-    expect(listCardsMock.mock.calls[0][0].aid).toBeUndefined();
+    expect(listCardsMock.mock.calls[0][0]).toMatchObject({ page: 2, aid: 'PF8' });
 
     await pressPfKey('F8=Forward');
     expect(screen.getByTestId('page-number')).toHaveTextContent('Page 3');
 
+    // The last page is on display: the target stops advancing but the key still travels.
     listCardsMock.mockClear();
     await pressPfKey('F8=Forward');
     expect(listCardsMock.mock.calls[0][0]).toMatchObject({ page: 3, aid: 'PF8' });
@@ -798,22 +805,23 @@ describe('CardListPage — verbatim COCRDLI body captions', () => {
   });
 
   it('declares the four column widths and holds the table to their total', async () => {
-    // COCRDLI row 10 paints runs of 6, 15, 15 and 8 hyphens under the captions, and on a
-    // 3270 those runs ARE the column widths. Laid out from its content instead, the table's
-    // trailing column fit depended on the data rather than on the mapset -- at the
-    // narrowest tier it cleared its container by a twentieth of a character cell.
+    // COCRDLI row 10 paints its dashed rules at POS=(10,10), (10,20), (10,43) and (10,65),
+    // so the column PITCH is 10, 23, 22 and 8 -- and on a 3270 the pitch is the column
+    // width. The rule LENGTH (6, 15, 15, 8) is shorter than the pitch by the blank cells
+    // the mapset leaves after it, and sizing the columns to the runs instead accumulated a
+    // shortfall that put the Active column four cells left of its own POS in the browser.
     await renderCardListScreen();
 
     const table = screen.getByTestId('card-list-table');
     expect(table.className).toContain('dataTable--fixed');
-    // 6 + 15 + 15 + 8 characters, one separator column each.
-    expect(table).toHaveStyle({ minWidth: '52ch' });
+    // 10 + 23 + 22 + 8, the mapset's own column pitches.
+    expect(table).toHaveStyle({ minWidth: '63ch' });
 
     const cols = table.querySelectorAll('colgroup col');
     expect(cols).toHaveLength(4);
-    expect(cols[0]).toHaveStyle({ width: '8ch' });
-    expect(cols[1]).toHaveStyle({ width: '17ch' });
-    expect(cols[2]).toHaveStyle({ width: '17ch' });
+    expect(cols[0]).toHaveStyle({ width: '10ch' });
+    expect(cols[1]).toHaveStyle({ width: '23ch' });
+    expect(cols[2]).toHaveStyle({ width: '22ch' });
     // The last column carries no width so a wider frame hands it the slack.
     expect(cols[3].getAttribute('style')).toBeNull();
 

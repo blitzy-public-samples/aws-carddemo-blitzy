@@ -15,6 +15,7 @@
  */
 package com.carddemo.common.dto;
 
+import com.carddemo.common.validation.SingleByteText;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -25,22 +26,30 @@ import jakarta.validation.constraints.Size;
  *  input map ``COBIL0AI``.
  * :output: A mutable carrier with the entered account id and confirmation flag.
  */
+/*
+ * Boundary encoding guard. The fields of this request are persisted and then
+ * rendered into the 350-byte TRANSACT record (CVTRA05Y) written by COBIL00C,
+ * every one of which is a BYTE-width contract a downstream consumer parses by
+ * offset. Text that needs more than one byte per character therefore cannot
+ * survive that rendering intact - it either loses the character or shifts every
+ * following field - so it is refused here, at the only point where the operator
+ * can still be told which field to correct.
+ */
+@SingleByteText
 public class BillPaymentRequestDto {
 
     /**
-     * :purpose: Account id being paid (COBIL00 ``ACTIDIN``, ``LENGTH=11`` / ``ACCT-ID``
-     *  ``PIC 9(11)``, VSAM ``KEYLEN 11``). Deliberately carries NO bean-validation
-     *  width constraint: ``COBIL00C`` performs no numeric or width edit on this field
-     *  at all -- ``PROCESS-ENTER-KEY`` tests only for blank, then ``MOVE ACTIDINI TO
-     *  ACCT-ID`` and reads -- so every value the operator can enter that is not a
-     *  stored key produces exactly one outcome, ``Account ID NOT found...``. A width
-     *  constraint here answered a subset of those values with a second, different
-     *  message on a different status, and that message
-     *  (``'Account number must be a non zero 11 digit number'``) is an 88-level
-     *  ``COACTVWC``/``COACTUPC`` declare and neither program ever SETs, so it is not a
-     *  literal this screen -- or any screen -- can emit. ``BillPaymentService``
-     *  requires exactly eleven ASCII digits and raises the one reachable literal for
-     *  everything else.
+     * :purpose: Account id being paid (COBIL00 ``ACTIDIN``, ``LENGTH=11`` / ``ACCT-ID`` ``PIC
+     *     9(11)``, VSAM ``KEYLEN 11``). Deliberately carries NO bean-validation width constraint:
+     *     ``COBIL00C`` performs no numeric or width edit on this field at all --
+     *     ``PROCESS-ENTER-KEY`` tests only for blank, then ``MOVE ACTIDINI TO ACCT-ID`` and reads
+     *     -- so every value the operator can enter that is not a stored key produces exactly one
+     *     outcome, ``Account ID NOT found...``. A width constraint here answered a subset of those
+     *     values with a second, different message on a different status, and that message
+     *     (``'Account number must be a non zero 11 digit number'``) is an 88-level
+     *     ``COACTVWC``/``COACTUPC`` declare and neither program ever SETs, so it is not a literal
+     *     this screen -- or any screen -- can emit. ``BillPaymentService`` requires exactly eleven
+     *     ASCII digits and raises the one reachable literal for everything else.
      */
     private String accountId;
 

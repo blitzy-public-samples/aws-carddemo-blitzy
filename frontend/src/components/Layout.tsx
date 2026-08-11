@@ -51,45 +51,43 @@ import { PfKeyAction } from '../types';
 
 /**
  * :purpose: The per-screen frame values a routed page publishes into the shell.
- * :param transactionId: 4-char CICS transaction id shown after the transaction
- *     caption.
+ * :param transactionId: 4-char CICS transaction id shown after the transaction caption.
  * :param programName: Legacy program / screen name shown after the program caption.
  * :param title01: First title line (screen title), rendered YELLOW.
  * :param title02: Second title line, rendered YELLOW.
- * :param currentDate: Authoritative server ``MM/DD/YY`` date; omitted uses the
+ * :param currentDate: Authoritative server ``MM/DD/YY`` date; omitted uses the header's
+ *     own mount snapshot.
+ * :param currentTime: Authoritative server 24-hour ``HH:MM:SS`` time; omitted uses the
  *     header's own mount snapshot.
- * :param currentTime: Authoritative server 24-hour ``HH:MM:SS`` time; omitted
- *     uses the header's own mount snapshot.
- * :param captionStyle: Which mapset's header caption literals the screen uses;
- *     omitted renders the spelling shared by sixteen of the seventeen mapsets.
+ * :param captionStyle: Which mapset's header caption literals the screen uses; omitted
+ *     renders the spelling shared by sixteen of the seventeen mapsets.
  * :param appId: Application id shown after ``AppID:`` on the sign-on frame.
  * :param sysId: System id shown after ``SysID:`` on the sign-on frame.
  * :param errorMessage: Line-23 error text, rendered RED with ``role="alert"``.
  * :param infoMessage: Informational text in the line-23 ``ERRMSG`` field itself, rendered
  *     GREEN with ``role="status"`` for the programs that move ``DFHGREEN`` into it.
  * :param infoFieldMessage: Text of the separate ``INFOMSG`` field the five detail mapsets
- *     declare ABOVE their ``ERRMSG`` region, rendered NEUTRAL. Publishing the key at all
- *     -- even as an empty string -- reserves the row that field occupies.
+ *     declare ABOVE their ``ERRMSG`` region, rendered NEUTRAL. Publishing the key at all --
+ *     even as an empty string -- reserves the row that field occupies.
  * :param pfKeys: Line-24 function keys and handlers declared for the screen.
  * :param onUnhandledKey: What the screen does with an attention identifier it does NOT
- *     declare — the ``WHEN OTHER`` arm of its program's ``EVALUATE EIBAID``. Twelve
- *     programs publish ``CCDA-MSG-INVALID-KEY`` on line 23 and place the cursor; the
- *     five account and card screens instead remap the key to ENTER
- *     (``IF PFK-INVALID SET CCARD-AID-ENTER TO TRUE``), so those publish their ENTER
- *     activator here. A screen that publishes nothing discards the key, which no
- *     program does.
+ *     declare — the ``WHEN OTHER`` arm of its program's ``EVALUATE EIBAID``. Twelve programs
+ *     publish ``CCDA-MSG-INVALID-KEY`` on line 23 and place the cursor; the five account and
+ *     card screens instead remap the key to ENTER (``IF PFK-INVALID SET CCARD-AID-ENTER TO
+ *     TRUE``), so those publish their ENTER activator here. A screen that publishes nothing
+ *     discards the key, which no program does.
  * :param pfKeyTone: Colour the screen's mapset declares on its line-24 legend field;
  *     omitted renders the YELLOW that fifteen of the seventeen mapsets declare.
  * :param noticeMessage: a non-failure condition -- the end of a browse, an empty page --
  *     reported on line 23 in the RED the mapset declares, but announced politely.
- * :param busy: ``true`` while the screen waits for the server, which marks the body
- *     region ``aria-busy`` and announces the wait in a polite live region.
+ * :param busy: ``true`` while the screen waits for the server, which marks the body region
+ *     ``aria-busy`` and announces the wait in a polite live region.
  * :param locked: ``true`` while a write the screen issued is outstanding. Every declared
- *     function key stays legended but stops acting, reproducing the 3270 keyboard lock, so
- *     the screen cannot be left before the write it started reports back.
- * :param plainText: When set, the frame renders this single line of text and nothing
- *     else, reproducing ``EXEC CICS SEND TEXT ... ERASE``: the header, the body, the
- *     line-23 region and the line-24 legend are all cleared.
+ *     function key stays legended but stops acting, reproducing the 3270 keyboard lock, so the
+ *     screen cannot be left before the write it started reports back.
+ * :param plainText: When set, the frame renders this single line of text and nothing else,
+ *     reproducing ``EXEC CICS SEND TEXT ... ERASE``: the header, the body, the line-23 region
+ *     and the line-24 legend are all cleared.
  */
 export interface ScreenChrome {
   transactionId?: string;
@@ -140,6 +138,78 @@ const EMPTY_CHROME: ScreenChrome = {};
 const NO_PF_KEYS: PFKeyDef[] = [];
 
 /**
+ * :purpose: Every value member of :class:`ScreenChrome` — the whole interface except
+ *     ``pfKeys``, which is an array compared element by element, and
+ *     ``onUnhandledKey``, which is a handler the frame records in a ref rather than a
+ *     value it paints.
+ */
+const CHROME_VALUE_KEYS = [
+  'transactionId',
+  'programName',
+  'title01',
+  'title02',
+  'currentDate',
+  'currentTime',
+  'captionStyle',
+  'appId',
+  'sysId',
+  'errorMessage',
+  'noticeMessage',
+  'infoMessage',
+  'infoFieldMessage',
+  'messageReference',
+  'pfKeyTone',
+  'busy',
+  'locked',
+  'plainText',
+] as const satisfies readonly (keyof ScreenChrome)[];
+
+/**
+ * :purpose: Whether two published legends would paint the same line 24.
+ * :param current: the legend already published.
+ * :param incoming: the legend being published.
+ * :returns: ``true`` when both declare the same keys, in the same order, with the same label
+ *     and the same enabled/darkened state.
+ */
+function isSameLegend(current: PFKeyDef[], incoming: PFKeyDef[]): boolean {
+  if (current.length !== incoming.length) {
+    return false;
+  }
+  return current.every((key, index) => {
+    const other = incoming[index];
+    return (
+      other !== undefined &&
+      key.action === other.action &&
+      key.label === other.label &&
+      key.enabled === other.enabled &&
+      key.dark === other.dark
+    );
+  });
+}
+
+/**
+ * :purpose: Whether a publication would paint the screen exactly as it is painted now, so
+ *     the frame can keep the chrome it holds instead of replacing it.
+ * :param current: the chrome already published.
+ * :param incoming: the chrome being published, with its legend handlers already replaced
+ *     by the frame's stable indirections.
+ * :returns: ``true`` when every painted member and the whole legend are unchanged.
+ * :note: This is what keeps a keystroke from repainting the frame. A page republishes from
+ *     a layout effect whenever any dependency of that effect changes, and its dependencies
+ *     include the ``useCallback`` handlers it publishes — whose identity turns over on every
+ *     edit to a field. The published VALUES are almost always unchanged across those
+ *     republications, and replacing the chrome anyway re-rendered the header, the message
+ *     region and the key legend on every character the operator keyed. A 3270 ``SEND MAP`` of
+ *     identical content leaves an identical screen, so declining the update is unobservable.
+ */
+function isSameChrome(current: ScreenChrome, incoming: ScreenChrome): boolean {
+  if (!CHROME_VALUE_KEYS.every((key) => current[key] === incoming[key])) {
+    return false;
+  }
+  return isSameLegend(current.pfKeys ?? NO_PF_KEYS, incoming.pfKeys ?? NO_PF_KEYS);
+}
+
+/**
  * :purpose: The 3270 input-inhibited indicator, shown in the Operator Information
  *     Area while a transaction is outstanding and the keyboard is locked. The OIA is
  *     the terminal's own status line below the 24 application rows, so this replaces no
@@ -179,6 +249,24 @@ function buildDocumentTitle(transactionId?: string, programName?: string): strin
   return parts.length === 0
     ? APPLICATION_TITLE
     : `${parts.join(' ')} - ${APPLICATION_TITLE}`;
+}
+
+/**
+ * :purpose: Name the BMS mapset a screen is the migration of, so the absolute placement
+ *     rules in ``bmsGrid.css`` can address one screen's regions without any page needing
+ *     to carry coordinates of its own.
+ * :param programName: The legacy program name a screen publishes on its header row
+ *     (``COMEN01C``).
+ * :returns: The seven-character mapset name (``COMEN01``), or ``undefined`` before a
+ *     screen has published a program name or when the name is not an eight-character
+ *     ``CO*C`` program.
+ * :note: Seven characters is the mapset name's own width, which the COMMAREA fixes at
+ *     ``CDEMO-LAST-MAP PIC X(7)``; the eighth character of a program name is the ``C``
+ *     suffix every online program carries.
+ */
+function mapsetName(programName?: string): string | undefined {
+  const name = (programName ?? '').trim().toUpperCase();
+  return /^CO[A-Z0-9]{5}C$/.test(name) ? name.slice(0, 7) : undefined;
 }
 
 /**
@@ -297,15 +385,23 @@ function ScreenFrame({ children }: LayoutProps): ReactElement {
   const setChrome = useCallback(
     (next: ScreenChrome): void => {
       const incoming = next.pfKeys ?? NO_PF_KEYS;
+      // Recorded UNCONDITIONALLY, and before the comparison below. These two refs are
+      // what a struck key resolves through, so the newest publication's handlers must
+      // take effect even when nothing on the screen changes -- an unchanged legend
+      // still has to act on the values the operator has since keyed.
       latestKeysRef.current = incoming;
       latestUnhandledRef.current = next.onUnhandledKey;
-      setChromeState({
+      const published: ScreenChrome = {
         ...next,
         pfKeys: incoming.map((key) => ({
           ...key,
           onActivate: stableDispatcher(key.action),
         })),
-      });
+      };
+      // Returning the state it already holds is how React is told a publication paints
+      // nothing new: it compares the two references, finds them identical and schedules
+      // no render at all.
+      setChromeState((current) => (isSameChrome(current, published) ? current : published));
     },
     [stableDispatcher],
   );
@@ -379,7 +475,11 @@ function ScreenFrame({ children }: LayoutProps): ReactElement {
     <ScreenChromeActionsContext.Provider value={actions}>
       <SendCountContext.Provider value={sendCount}>
         <ScreenChromeContext.Provider value={chrome}>
-          <div className="screen" data-authenticated={String(isAuthenticated)}>
+          <div
+            className="screen"
+            data-authenticated={String(isAuthenticated)}
+            data-map={mapsetName(chrome.programName)}
+          >
             <a className="screen__skipLink" href={`#${SCREEN_STATUS_REGION_ID}`}>
               Skip to message line and function keys
             </a>

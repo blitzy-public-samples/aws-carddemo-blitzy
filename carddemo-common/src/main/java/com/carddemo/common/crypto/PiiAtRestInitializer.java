@@ -26,26 +26,23 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * :purpose: Bring the sensitive columns of already-loaded seed data up to the
- *     at-rest encryption contract that {@link CryptoConverter} enforces (AAP 0.6.7 —
- *     "Sensitive fields (SSN, government id, CVV) are masked and encrypted"). The
- *     Flyway seed scripts derive their values from the legacy ASCII fixtures under
- *     ``app/data/ASCII`` and insert them with raw SQL, which bypasses the JPA
- *     attribute converter; a ciphertext literal cannot be committed to a migration
- *     because the AES key is environment-specific. This runner closes that gap by
- *     encrypting any value that is still plaintext, using the key configured for the
- *     environment it starts in.
- * :output: For every configured column, rows whose stored value is not already
- *     AES-GCM ciphertext are rewritten in place as ``Base64(IV || ciphertext)``.
- *     Rows that already decrypt are left untouched, so the runner is idempotent and
- *     safe to run on every start and in every replica: it never double-encrypts,
- *     because a value is only rewritten when it fails to decrypt, and two replicas
- *     racing on the same plaintext each write valid ciphertext of that same
- *     plaintext.
- * :note: Deliberately implemented with plain SQL through {@link JdbcTemplate} rather
- *     than JPA, so the read observes the RAW column value instead of the converted
- *     attribute — reading through the entity is exactly what fails when the column
- *     holds plaintext.
+ * :purpose: Bring the sensitive columns of already-loaded seed data up to the at-rest
+ *     encryption contract that {@link CryptoConverter} enforces (AAP 0.6.7 — "Sensitive fields
+ *     (SSN, government id, CVV) are masked and encrypted"). The Flyway seed scripts derive
+ *     their values from the legacy ASCII fixtures under ``app/data/ASCII`` and insert them
+ *     with raw SQL, which bypasses the JPA attribute converter; a ciphertext literal cannot be
+ *     committed to a migration because the AES key is environment-specific. This runner closes
+ *     that gap by encrypting any value that is still plaintext, using the key configured for
+ *     the environment it starts in.
+ * :output: For every configured column, rows whose stored value is not already AES-GCM
+ *     ciphertext are rewritten in place as ``Base64(IV || ciphertext)``. Rows that already
+ *     decrypt are left untouched, so the runner is idempotent and safe to run on every start
+ *     and in every replica: it never double-encrypts, because a value is only rewritten when
+ *     it fails to decrypt, and two replicas racing on the same plaintext each write valid
+ *     ciphertext of that same plaintext.
+ * :note: Deliberately implemented with plain SQL through {@link JdbcTemplate} rather than
+ *     JPA, so the read observes the RAW column value instead of the converted attribute —
+ *     reading through the entity is exactly what fails when the column holds plaintext.
  */
 public class PiiAtRestInitializer implements ApplicationRunner {
 

@@ -41,49 +41,44 @@ import java.text.DecimalFormatSymbols;
 import java.util.Locale;
 
 /**
- * :purpose: Stateful {@link ItemStreamWriter} that produces the CardDemo Daily
- *  Transaction Report as a fixed-width, paginated text file. It is the Java
- *  analogue of the report-writing paragraphs of the legacy batch program
- *  ``CBTRN03C`` (``1100-WRITE-TRANSACTION-REPORT``, ``1120-WRITE-HEADERS``,
- *  ``1120-WRITE-DETAIL``, ``1110-WRITE-PAGE-TOTALS``,
- *  ``1120-WRITE-ACCOUNT-TOTALS``, ``1110-WRITE-GRAND-TOTALS``,
- *  ``1111-WRITE-REPORT-REC``); every emitted record is a 133-character line
- *  whose field layout is defined by the ``CVTRA07Y`` copybook. The writer
- *  consumes an already-ordered stream of {@link TransactionReportItem} (sorted
- *  by card number and filtered to the report date range by the reader) and
- *  drives a per-card control break, 20-line pagination, and running page,
- *  account, and grand totals.
- * :output: A newly created report file at the ``reportFile`` job-parameter path
- *  containing the report-name and column headers, one detail line per input
- *  item, per-page and per-account subtotal lines, and the closing page-total and
- *  grand-total block; each amount is edited with the ``CVTRA07Y``
- *  ``-ZZZ,ZZZ,ZZZ.ZZ`` (detail) or ``+ZZZ,ZZZ,ZZZ.ZZ`` (totals) mask. An empty
- *  selection window still produces the closing block, exactly as the source
- *  program's end-of-file path does. The control-break card number is never
- *  written to the file or to any log line.
- * :note: The end-of-report block reproduces the ``CBTRN03C`` end-of-file branch
- *  literally: ``ADD TRAN-AMT TO WS-PAGE-TOTAL WS-ACCOUNT-TOTAL`` runs against
- *  the record area, which at end of file still holds the LAST record read — so
- *  the final record contributes to the closing page and grand totals a second
- *  time — followed by ``1110-WRITE-PAGE-TOTALS`` and
- *  ``1110-WRITE-GRAND-TOTALS`` and by no closing account-total line. The
- *  reproduction is deliberate: the report is a frozen downstream layout, so the
- *  arithmetic and the line set are preserved rather than corrected.
- * :note: The file is written in ISO-8859-1 and every field value is reduced to
- *  single-byte text before it is padded, so ``FD-REPTFILE-REC PIC X(133)`` is a
- *  BYTE contract for any text the relational store can hold, not merely a
- *  character count (see {@link FixedWidthText}).
+ * :purpose: Stateful {@link ItemStreamWriter} that produces the CardDemo Daily Transaction
+ *     Report as a fixed-width, paginated text file. It is the Java analogue of the
+ *     report-writing paragraphs of the legacy batch program ``CBTRN03C``
+ *     (``1100-WRITE-TRANSACTION-REPORT``, ``1120-WRITE-HEADERS``, ``1120-WRITE-DETAIL``,
+ *     ``1110-WRITE-PAGE-TOTALS``, ``1120-WRITE-ACCOUNT-TOTALS``, ``1110-WRITE-GRAND-TOTALS``,
+ *     ``1111-WRITE-REPORT-REC``); every emitted record is a 133-character line whose field
+ *     layout is defined by the ``CVTRA07Y`` copybook. The writer consumes an already-ordered
+ *     stream of {@link TransactionReportItem} (sorted by card number and filtered to the
+ *     report date range by the reader) and drives a per-card control break, 20-line
+ *     pagination, and running page, account, and grand totals.
+ * :output: A newly created report file at the ``reportFile`` job-parameter path containing
+ *     the report-name and column headers, one detail line per input item, per-page and
+ *     per-account subtotal lines, and the closing page-total and grand-total block; each
+ *     amount is edited with the ``CVTRA07Y`` ``-ZZZ,ZZZ,ZZZ.ZZ`` (detail) or
+ *     ``+ZZZ,ZZZ,ZZZ.ZZ`` (totals) mask. An empty selection window still produces the closing
+ *     block, exactly as the source program's end-of-file path does. The control-break card
+ *     number is never written to the file or to any log line.
+ * :note: The end-of-report block reproduces the ``CBTRN03C`` end-of-file branch literally:
+ *     ``ADD TRAN-AMT TO WS-PAGE-TOTAL WS-ACCOUNT-TOTAL`` runs against the record area, which
+ *     at end of file still holds the LAST record read — so the final record contributes to the
+ *     closing page and grand totals a second time — followed by ``1110-WRITE-PAGE-TOTALS`` and
+ *     ``1110-WRITE-GRAND-TOTALS`` and by no closing account-total line. The reproduction is
+ *     deliberate: the report is a frozen downstream layout, so the arithmetic and the line set
+ *     are preserved rather than corrected.
+ * :note: The file is written in ISO-8859-1 and every field value is reduced to single-byte
+ *     text before it is padded, so ``FD-REPTFILE-REC PIC X(133)`` is a BYTE contract for any
+ *     text the relational store can hold, not merely a character count (see {@link
+ *     FixedWidthText}).
  * :note: The reader
- *  (``TransactionRepository.findByProcTsDateRangeOrderByCardNum(startDate,
- *  endDate, pageable)``), the ``startDate``/``endDate``/``reportFile`` job
- *  parameters, and the wiring of this writer as the step's
- *  {@link ItemStreamWriter} are supplied by the batch ``config/`` package;
- *  Spring Batch then invokes {@link #open}, {@link #update}, and {@link #close}
- *  around the chunk loop. The owning step must run single-threaded so the
- *  control-break and pagination state remain coherent.
+ *     (``TransactionRepository.findByProcTsDateRangeOrderByCardNum(startDate, endDate,
+ *     pageable)``), the ``startDate``/``endDate``/``reportFile`` job parameters, and the
+ *     wiring of this writer as the step's {@link ItemStreamWriter} are supplied by the batch
+ *     ``config/`` package; Spring Batch then invokes {@link #open}, {@link #update}, and
+ *     {@link #close} around the chunk loop. The owning step must run single-threaded so the
+ *     control-break and pagination state remain coherent.
  * :note: {@code @StepScope} is required both for late binding of the
- *  ``#{jobParameters[...]}`` values and so the mutable report state is fresh
- *  for each step execution.
+ *     ``#{jobParameters[...]}`` values and so the mutable report state is fresh for each step
+ *     execution.
  */
 @Component
 @StepScope

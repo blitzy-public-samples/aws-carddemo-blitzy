@@ -37,32 +37,29 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
 /**
  * Spring Boot entry point for the ``batch-service`` microservice.
- *
- * :purpose: Bootstraps the CardDemo batch tier (interest calculation and
- *     data-management jobs) as a resident Spring Boot application that also
- *     exposes Actuator HTTP endpoints for health and metrics.
- * :output: A running application context with Spring Batch auto-configuration,
- *     JPA repositories under ``com.carddemo.batch.repository`` and shared
- *     entities under ``com.carddemo.common.domain``.
- * :note: {@link BatchPathConfig} is imported from ``carddemo-common`` to supply
- *     the shared ``BatchOutputPathResolver``, which confines every file a job
- *     opens to the allowlisted ``carddemo.batch`` roots and proves the output
- *     root writable while the context refreshes.
+ * :purpose: Bootstraps the CardDemo batch tier (interest calculation and data-management
+ *     jobs) as a resident Spring Boot application that also exposes Actuator HTTP endpoints
+ *     for health and metrics.
+ * :output: A running application context with Spring Batch auto-configuration, JPA
+ *     repositories under ``com.carddemo.batch.repository`` and shared entities under
+ *     ``com.carddemo.common.domain``.
+ * :note: {@link BatchPathConfig} is imported from ``carddemo-common`` to supply the shared
+ *     ``BatchOutputPathResolver``, which confines every file a job opens to the allowlisted
+ *     ``carddemo.batch`` roots and proves the output root writable while the context
+ *     refreshes.
  * :note: {@link JdbcBatchConfiguration} is imported so job and step executions are
  *     persisted in the ``BATCH_*`` metadata tables instead of the in-memory
- *     ``ResourcelessJobRepository`` that Spring Batch 6 makes the default; without
- *     it the job-execution status endpoint had nothing to read and no job history
- *     existed at all.
- * :note: {@link GlobalExceptionHandler} is imported so the on-demand job-launch
- *     endpoints of ``BatchController`` answer with the same error envelope as
- *     every other CardDemo service (unknown job to HTTP 404, missing job
- *     parameter or rejected submission to HTTP 400) instead of a bare Boot
- *     ``/error`` body.
+ *     ``ResourcelessJobRepository`` that Spring Batch 6 makes the default; without it the
+ *     job-execution status endpoint had nothing to read and no job history existed at all.
+ * :note: {@link GlobalExceptionHandler} is imported so the on-demand job-launch endpoints
+ *     of ``BatchController`` answer with the same error envelope as every other CardDemo
+ *     service (unknown job to HTTP 404, missing job parameter or rejected submission to HTTP
+ *     400) instead of a bare Boot ``/error`` body.
  * :note: {@link CardDemoErrorController} and {@link ContainerErrorReportConfig} cover the
- *     failures ``GlobalExceptionHandler`` cannot reach — a container-level error dispatch
- *     such as a request that matched no handler, or a refusal decided before the dispatcher
- *     servlet — so those answer in the same envelope here as in every other service instead
- *     of Boot's abbreviated ``{timestamp,status,error,path}`` document.
+ *     failures ``GlobalExceptionHandler`` cannot reach — a container-level error dispatch such
+ *     as a request that matched no handler, or a refusal decided before the dispatcher servlet
+ *     — so those answer in the same envelope here as in every other service instead of Boot's
+ *     abbreviated ``{timestamp,status,error,path}`` document.
  */
 // UserDetailsServiceAutoConfiguration is excluded: this service authenticates from the
 // shared CardDemo session, never from an in-memory user. Left enabled, Spring Boot

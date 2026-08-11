@@ -24,23 +24,21 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 
 /**
- * :purpose: Servlet filter that establishes a bounded, trace-safe correlation id
- *     in the SLF4J MDC for the whole lifetime of every HTTP request so that all
- *     structured log lines for that request carry the same ``%X{correlationId}``,
- *     and echoes the resolved id back on the response so callers and downstream
- *     services can propagate it. Realizes the correlation-propagation half of the
- *     CardDemo Observability rule.
- * :note: The id is resolved with the following precedence: an inbound
- *     ``X-Correlation-Id`` header; otherwise the 32-hex trace-id parsed from a
- *     W3C ``traceparent`` header; otherwise a freshly generated id. Every
- *     candidate is passed through {@link CorrelationIdContext#sanitize} so
- *     CR/LF injection and unbounded high-cardinality tokens cannot reach the log
- *     stream or the response header.
- * :note: The MDC key is always cleared in a ``finally`` block so correlation ids
- *     never leak across requests served by a pooled container thread. This class
- *     is registered as a bean only in web applications by
- *     {@link WebObservabilityConfig}; non-web modules (for example the batch
- *     service) never load it.
+ * :purpose: Servlet filter that establishes a bounded, trace-safe correlation id in the
+ *     SLF4J MDC for the whole lifetime of every HTTP request so that all structured log lines
+ *     for that request carry the same ``%X{correlationId}``, and echoes the resolved id back
+ *     on the response so callers and downstream services can propagate it. Realizes the
+ *     correlation-propagation half of the CardDemo Observability rule.
+ * :note: The id is resolved with the following precedence: an inbound ``X-Correlation-Id``
+ *     header; otherwise the 32-hex trace-id parsed from a W3C ``traceparent`` header;
+ *     otherwise a freshly generated id. Every candidate is passed through {@link
+ *     CorrelationIdContext#sanitize} so CR/LF injection and unbounded high-cardinality tokens
+ *     cannot reach the log stream or the response header.
+ * :note: The MDC key is always cleared in a ``finally`` block so correlation ids never
+ *     leak across requests served by a pooled container thread. The bean is contributed by
+ *     {@link WebObservabilityConfig}, which is conditional on a web application context -- a
+ *     condition every service in this deployment satisfies, batch-service included, because
+ *     each one serves an HTTP port. A module built without a web context would not load it.
  */
 public class CorrelationIdFilter extends OncePerRequestFilter {
 

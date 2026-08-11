@@ -29,25 +29,25 @@ import org.springframework.security.web.SecurityFilterChain;
 
 /**
  * :purpose: Declares the HTTP security policy for the Bill Payment microservice
- *     (re-platforming COBOL ``COBIL00C``, CICS transaction ``CB00``). Authentication is performed once by ``auth-service``; the shared
- *     ``SessionContextAuthenticationFilter`` installed by {@link SecurityHardening}
- *     rebuilds the authenticated principal and its ``ROLE_ADMIN`` / ``ROLE_USER``
- *     authority from the shared, Redis-backed ``SessionContext`` (the CICS COMMAREA
- *     replacement) on every request, so this service enforces authorization itself.
- * :note: Defence in depth: the api-gateway is NOT a trust boundary. A request that
- *     reaches this service directly over the internal network - a published port, a
- *     sidecar, a compromised pod, or an unapplied NetworkPolicy - is still refused
- *     without a valid signed-on session, so no unauthenticated caller can read
- *     customer data or mutate financial state.
- * :note: The anonymous surface is deliberately limited to the Actuator health status
- *     and the Kubernetes liveness/readiness probes (health detail still requires an
- *     authorized principal through ``show-details: when-authorized``).
- *     ``/actuator/prometheus`` and ``/actuator/metrics/**`` are restricted to the
- *     dedicated ``monitoring`` principal by the imported
- *     {@link ManagementSecurityConfig} chain.
+ *     (re-platforming COBOL ``COBIL00C``, CICS transaction ``CB00``). Authentication is
+ *     performed once by ``auth-service``; the shared ``SessionContextAuthenticationFilter``
+ *     installed by {@link SecurityHardening} rebuilds the authenticated principal and its
+ *     ``ROLE_ADMIN`` / ``ROLE_USER`` authority from the shared, Redis-backed
+ *     ``SessionContext`` (the CICS COMMAREA replacement) on every request, so this service
+ *     enforces authorization itself.
+ * :note: Defence in depth: the api-gateway is NOT a trust boundary. A request that reaches
+ *     this service directly over the internal network - a published port, a sidecar, a
+ *     compromised pod, or an unapplied NetworkPolicy - is still refused without a valid
+ *     signed-on session, so no unauthenticated caller can read customer data or mutate
+ *     financial state.
+ * :note: The anonymous surface is deliberately limited to the Actuator health status and
+ *     the Kubernetes liveness/readiness probes (health detail still requires an authorized
+ *     principal through ``show-details: when-authorized``). ``/actuator/prometheus`` and
+ *     ``/actuator/metrics/**`` are restricted to the dedicated ``monitoring`` principal by the
+ *     imported {@link ManagementSecurityConfig} chain.
  * :note: CSRF is enforced once, at the api-gateway (the only browser-facing surface);
- *     enforcing it again here would demand a token this service never issues. The
- *     single coherent model is recorded in docs/decision-log.md.
+ *     enforcing it again here would demand a token this service never issues. The single
+ *     coherent model is recorded in docs/decision-log.md.
  */
 @Configuration
 @EnableWebSecurity

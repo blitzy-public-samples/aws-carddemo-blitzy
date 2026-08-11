@@ -1,0 +1,104 @@
+# =============================================================================
+# .trivyignore - explicit, time-boxed risk acceptances for the CardDemo images.
+#
+# Read this as a register, not as a mute button. Every entry names a finding for
+# which NO published upstream image carries a fix, states where the vulnerable
+# code sits, why it is not reachable from an attacker's position in this
+# deployment, and what event retires the entry. Nothing that CAN be fixed appears
+# here: the delivered application images (the nine Spring Boot services and the
+# frontend) and the PostgreSQL image report ZERO fixable CRITICAL/HIGH findings
+# without any suppression, and the one fixable application-layer advisory
+# (netty-codec-dns GHSA-mfg7-5gfp-c4w3) was closed by raising the dependency in
+# the root pom.xml rather than being listed here.
+#
+# Scanned to establish that no fix exists (Trivy 0.72.0, database of
+# 2026-08-10):
+#   grafana/grafana:13.1.2, 13.1.3 and :latest - identical residual findings
+#   jaegertracing/jaeger:2.20.0 and :latest    - :latest IS 2.20.0
+#
+# Both remaining images are LOCAL OBSERVABILITY SIDECARS, not delivered
+# application artefacts:
+#   * docker-compose.yml publishes them on the host LOOPBACK only
+#     (127.0.0.1:3001 for Grafana, 127.0.0.1:16686 for Jaeger); neither is
+#     reachable from a routable interface and neither is fronted by the gateway.
+#   * Their only inbound traffic on the private carddemo-net bridge is the OTLP
+#     span stream the nine services export and Grafana's own scrape of Prometheus.
+#     No end-user request, and no request carrying user-supplied data, reaches
+#     either process.
+#   * Neither holds business data. Jaeger's span storage is in-memory by design
+#     and Grafana persists only dashboards and its own admin account.
+#
+# Full rationale, the CVE-by-CVE exposure analysis and the remediation trigger
+# are recorded in docs/decision-log.md. Re-run
+#   trivy image --scanners vuln --ignore-unfixed --severity CRITICAL,HIGH <image>
+# WITHOUT this file to see the raw residual at any time.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Grafana server binary (usr/share/grafana/bin/grafana).
+#
+# Both findings are against the github.com/grafana/tempo revision Grafana vendors
+# into its server binary for the Tempo datasource. CardDemo provisions the
+# Prometheus and Jaeger datasources only (see the grafana_datasource config in
+# docker-compose.yml), so no Tempo query path is ever constructed. Grafana
+# publishes no release whose bin/grafana links a fixed revision.
+#
+# Retire when: an upstream Grafana release links tempo >= 2.10.3; then remove
+# these two lines, rebuild observability/Dockerfile.grafana against it and rescan.
+# -----------------------------------------------------------------------------
+CVE-2026-21728 exp:2026-11-10
+CVE-2026-28377 exp:2026-11-10
+
+# -----------------------------------------------------------------------------
+# Jaeger all-in-one binary (cmd/jaeger/jaeger-linux).
+#
+# golang.org/x/text 0.38.0 (CVE-2026-56852) and google.golang.org/grpc 1.81.1
+# (GHSA-hrxh-6v49-42gf) are compiled into the single-binary Jaeger v2 image.
+# 2.20.0 is the newest published release AND is what :latest resolves to, so no
+# tag or digest carries the fixed libraries. The gRPC surface is the OTLP receiver
+# on the private bridge, spoken to only by the nine services' Micrometer/OTel
+# exporters; the x/text path is language-tag parsing in the query UI, which is
+# published on loopback only.
+#
+# Retire when: Jaeger publishes a release built with x/text >= 0.39.0 and
+# grpc-go >= 1.82.1; then remove these two lines, re-pin the image digest in
+# docker-compose.yml and k8s/deployment-jaeger.yaml, and rescan.
+# -----------------------------------------------------------------------------
+CVE-2026-56852 exp:2026-11-10
+GHSA-hrxh-6v49-42gf exp:2026-11-10
+
+# =============================================================================
+# Kubernetes manifest checks (`trivy config k8s/`). Both entries below are
+# accepted with reasons, not deferred; every other check the scan raises has been
+# fixed in the manifests themselves.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# KSV-0125 "Restrict container images to trusted registries" - 13 manifests.
+#
+# The check compares every image reference against an allow-list of public
+# registries. CardDemo's nine services, the frontend, the PostgreSQL image and the
+# Grafana image are built FROM THIS REPOSITORY by `docker compose build` and are
+# referenced by their local names (carddemo/<service>:1.0.0), which no public
+# registry allow-list can match. Substituting a registry host would name a
+# location the repository does not publish to, so the reference would become
+# wrong rather than safer. Every reference is either locally built or, for the
+# upstream bases, digest-pinned.
+#
+# Retire when: the deployment gains a real registry; set CARDDEMO_IMAGE_REGISTRY
+# to it, re-run the scan and drop this entry.
+# -----------------------------------------------------------------------------
+KSV-0125
+
+# -----------------------------------------------------------------------------
+# KSV-01010 "ConfigMap with sensitive content" - k8s/configmap.yaml.
+#
+# The finding names the keys SERVER_PORT and SPRING_DATA_REDIS_PORT, matched
+# purely on the substring "PORT". Their values are the TCP port numbers 8080 and
+# 6379. A port number is not a credential, and it must stay in the ConfigMap
+# because every Deployment reads it with configMapKeyRef. Every actual secret in
+# this deployment (database passwords, the Redis password, the PII key, the
+# Grafana admin credential, the monitoring credential) is in k8s/secret.yaml and
+# is injected from the environment - none is in a ConfigMap.
+# -----------------------------------------------------------------------------
+KSV-01010

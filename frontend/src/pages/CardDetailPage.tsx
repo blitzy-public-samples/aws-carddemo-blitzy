@@ -189,19 +189,19 @@ function normalizeFilter(value: string): string {
 
 /**
  * :purpose: Reproduce ``2200-EDIT-MAP-INPUTS`` exactly -- ``2210-EDIT-ACCOUNT``, then
- *     ``2220-EDIT-CARD``, then the cross-field edit. Both keys are mandatory here: each
- *     ``Not supplied`` branch sets ``INPUT-ERROR``, so a search missing either one is
- *     refused rather than widened. Only the first edit to find the message line free
- *     publishes its own (``IF WS-RETURN-MSG-OFF``), except that the cross-field edit's
- *     ``SET NO-SEARCH-CRITERIA-RECEIVED`` is unconditional and therefore overwrites it
- *     when BOTH filters are blank.
+ *     ``2220-EDIT-CARD``, then the cross-field edit. Both keys are mandatory here: each ``Not
+ *     supplied`` branch sets ``INPUT-ERROR``, so a search missing either one is refused rather
+ *     than widened. Only the first edit to find the message line free publishes its own (``IF
+ *     WS-RETURN-MSG-OFF``), except that the cross-field edit's ``SET
+ *     NO-SEARCH-CRITERIA-RECEIVED`` is unconditional and therefore overwrites it when BOTH
+ *     filters are blank.
  * :param accountFilter: The raw ``ACCTSID`` entry.
  * :param cardFilter: The raw ``CARDSID`` entry.
  * :returns: The line-23 message, or an empty string when the search may proceed.
- * :note: ``CC-ACCT-ID`` is ``PIC X(11)`` and ``CC-CARD-NUM`` ``PIC X(16)``, so COBOL
- *     ``IS NUMERIC`` holds only when every character of the full field width is a digit.
- *     A short numeric entry such as ``123`` is space-padded and therefore fails it,
- *     which is why one test covers both "not numeric" and "not 11 characters".
+ * :note: ``CC-ACCT-ID`` is ``PIC X(11)`` and ``CC-CARD-NUM`` ``PIC X(16)``, so COBOL ``IS
+ *     NUMERIC`` holds only when every character of the full field width is a digit. A short
+ *     numeric entry such as ``123`` is space-padded and therefore fails it, which is why one
+ *     test covers both "not numeric" and "not 11 characters".
  */
 function validateSearchFilters(accountFilter: string, cardFilter: string): string {
   const account = normalizeFilter(accountFilter);
@@ -280,6 +280,7 @@ export default function CardDetailPage(): ReactElement {
     cardNumber: selectedCardNumber,
     accountId: selectedAccountId,
     from: selectionFrom,
+    browse: selectionBrowse,
   } = readCardSelection(location.state);
 
   const [acctInput, setAcctInput] = useState(selectedAccountId);
@@ -386,7 +387,12 @@ export default function CardDetailPage(): ReactElement {
         action: PfKeyAction.PF3,
         label: PF_EXIT_LABEL,
         onActivate: () => {
-          void navigate(resolveExitRoute(selectionFrom));
+          // The browse position handed in travels straight back, so the list screen
+          // PF3 returns to is the one the operator left rather than an unfiltered
+          // first page. This is COCRDSLC returning the COMMAREA it was passed.
+          void navigate(resolveExitRoute(selectionFrom), {
+            state: { browse: selectionBrowse },
+          });
         },
       },
     ];
@@ -404,7 +410,15 @@ export default function CardDetailPage(): ReactElement {
       onUnhandledKey: activateSearch,
       busy: loading,
     });
-  }, [activateSearch, errorMessage, loading, navigate, selectionFrom, setChrome]);
+  }, [
+    activateSearch,
+    errorMessage,
+    loading,
+    navigate,
+    selectionBrowse,
+    selectionFrom,
+    setChrome,
+  ]);
 
   const { expiryMonth, expiryYear } = splitExpiraionDate(card?.cardExpiraionDate);
   const cardName = (card?.cardEmbossedName ?? '').slice(0, CARD_NAME_LENGTH);
@@ -486,13 +500,13 @@ export default function CardDetailPage(): ReactElement {
           label={LABEL_NAME_ON_CARD}
           testId="crdname"
           value={cardName}
-          valueClassName="neutral"
+          valueClassName="neutral protectedValue--underline"
         />
         <OutputField
           label={LABEL_CARD_ACTIVE}
           testId="crdstcd"
           value={cardStatus}
-          valueClassName="neutral"
+          valueClassName="neutral protectedValue--underline"
         />
         <OutputField
           label={LABEL_EXPIRY_DATE}
@@ -506,7 +520,7 @@ export default function CardDetailPage(): ReactElement {
               <span data-testid="expyear">{expiryYear}</span>
             </>
           }
-          valueClassName="neutral"
+          valueClassName="neutral protectedValue--underline"
         />
       </dl>
 

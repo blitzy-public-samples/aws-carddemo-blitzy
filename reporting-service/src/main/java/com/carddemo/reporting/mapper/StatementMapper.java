@@ -46,25 +46,24 @@ import java.util.List;
 public class StatementMapper {
 
     /**
-     * :purpose: Build one complete account statement for a single account/card,
-     *   re-expressing ``CBSTM03A`` ``5000-CREATE-STATEMENT`` together with the
-     *   per-card loop that invokes ``6000-WRITE-TRANS`` and accumulates
-     *   ``WS-TOTAL-AMT``. The customer name and address line 3 reproduce the
-     *   COBOL ``STRING ... DELIMITED BY ' '`` assemblies (first whitespace token
-     *   of each part joined by single spaces); the final trailing space produced
-     *   by the COBOL move is removed while inner single-space joins are preserved.
-     *   The running total starts at scale-2 zero, adds each transaction's scale-2
-     *   amount, and is returned at scale 2.
-     * :param account: the owning account supplying the account id and current
-     *   balance; when ``null`` those fields are left unset.
-     * :param customer: the owning customer supplying the assembled name, address
-     *   lines and FICO score; when ``null`` those fields are left unset.
-     * :param cardXref: the card cross-reference supplying the grouping card
-     *   number; may be ``null``.
-     * :param transactions: the transactions belonging to this account/card; may
-     *   be ``null`` or empty, in which case the total is scale-2 zero.
-     * :returns: the assembled ``StatementModel`` with its transaction lines and
-     *   scale-2 running total.
+     * :purpose: Build one complete account statement for a single account/card, re-expressing
+     *     ``CBSTM03A`` ``5000-CREATE-STATEMENT`` together with the per-card loop that invokes
+     *     ``6000-WRITE-TRANS`` and accumulates ``WS-TOTAL-AMT``. The customer name and address
+     *     line 3 reproduce the COBOL ``STRING ... DELIMITED BY ' '`` assemblies (first whitespace
+     *     token of each part joined by single spaces); the final trailing space produced by the
+     *     COBOL move is removed while inner single-space joins are preserved. The running total
+     *     starts at scale-2 zero, adds each transaction's scale-2 amount, and is returned at scale
+     *     2.
+     * :param account: the owning account supplying the account id and current balance; when
+     *     ``null`` those fields are left unset.
+     * :param customer: the owning customer supplying the assembled name, address lines and
+     *     FICO score; when ``null`` those fields are left unset.
+     * :param cardXref: the card cross-reference supplying the grouping card number; may be
+     *     ``null``.
+     * :param transactions: the transactions belonging to this account/card; may be ``null`` or
+     *     empty, in which case the total is scale-2 zero.
+     * :returns: the assembled ``StatementModel`` with its transaction lines and scale-2
+     *     running total.
      */
     public StatementModel toStatement(Account account,
                                       Customer customer,
@@ -216,102 +215,162 @@ public class StatementMapper {
         public StatementModel() {
         }
 
-        /** :returns: the assembled customer name. */
+        /**
+         * :purpose: Read ``customerName``.
+         * :returns: the assembled customer name.
+         */
         public String getCustomerName() {
             return customerName;
         }
 
-        /** :param customerName: the assembled customer name to set. */
+        /**
+         * :purpose: Set ``customerName``.
+         * :param customerName: the assembled customer name to set.
+         */
         public void setCustomerName(String customerName) {
             this.customerName = customerName;
         }
 
-        /** :returns: the first address line. */
+        /**
+         * :purpose: Read ``addressLine1``.
+         * :returns: the first address line.
+         */
         public String getAddressLine1() {
             return addressLine1;
         }
 
-        /** :param addressLine1: the first address line to set. */
+        /**
+         * :purpose: Set ``addressLine1``.
+         * :param addressLine1: the first address line to set.
+         */
         public void setAddressLine1(String addressLine1) {
             this.addressLine1 = addressLine1;
         }
 
-        /** :returns: the second address line. */
+        /**
+         * :purpose: Read ``addressLine2``.
+         * :returns: the second address line.
+         */
         public String getAddressLine2() {
             return addressLine2;
         }
 
-        /** :param addressLine2: the second address line to set. */
+        /**
+         * :purpose: Set ``addressLine2``.
+         * :param addressLine2: the second address line to set.
+         */
         public void setAddressLine2(String addressLine2) {
             this.addressLine2 = addressLine2;
         }
 
-        /** :returns: the assembled third address line. */
+        /**
+         * :purpose: Read ``addressLine3``.
+         * :returns: the assembled third address line.
+         */
         public String getAddressLine3() {
             return addressLine3;
         }
 
-        /** :param addressLine3: the assembled third address line to set. */
+        /**
+         * :purpose: Set ``addressLine3``.
+         * :param addressLine3: the assembled third address line to set.
+         */
         public void setAddressLine3(String addressLine3) {
             this.addressLine3 = addressLine3;
         }
 
-        /** :returns: the account identifier. */
+        /**
+         * :purpose: Read ``accountId``.
+         * :returns: the account identifier.
+         */
         public Long getAccountId() {
             return accountId;
         }
 
-        /** :param accountId: the account identifier to set. */
+        /**
+         * :purpose: Set ``accountId``.
+         * :param accountId: the account identifier to set.
+         */
         public void setAccountId(Long accountId) {
             this.accountId = accountId;
         }
 
-        /** :returns: the grouping card number. */
+        /**
+         * :purpose: Read ``cardNumber``.
+         * :returns: the grouping card number.
+         */
         public String getCardNumber() {
             return cardNumber;
         }
 
-        /** :param cardNumber: the grouping card number to set. */
+        /**
+         * :purpose: Set ``cardNumber``.
+         * :param cardNumber: the grouping card number to set.
+         */
         public void setCardNumber(String cardNumber) {
             this.cardNumber = cardNumber;
         }
 
-        /** :returns: the current account balance at scale 2. */
+        /**
+         * :purpose: Read ``currentBalance``.
+         * :returns: the current account balance at scale 2.
+         */
         public BigDecimal getCurrentBalance() {
             return currentBalance;
         }
 
-        /** :param currentBalance: the current account balance at scale 2 to set. */
+        /**
+         * :purpose: Set ``currentBalance``.
+         * :param currentBalance: the current account balance at scale 2 to set.
+         */
         public void setCurrentBalance(BigDecimal currentBalance) {
             this.currentBalance = currentBalance;
         }
 
-        /** :returns: the customer FICO credit score. */
+        /**
+         * :purpose: Read ``ficoScore``.
+         * :returns: the customer FICO credit score.
+         */
         public Integer getFicoScore() {
             return ficoScore;
         }
 
-        /** :param ficoScore: the customer FICO credit score to set. */
+        /**
+         * :purpose: Set ``ficoScore``.
+         * :param ficoScore: the customer FICO credit score to set.
+         */
         public void setFicoScore(Integer ficoScore) {
             this.ficoScore = ficoScore;
         }
 
-        /** :returns: the statement transaction lines. */
+        /**
+         * :purpose: Read ``transactions``.
+         * :returns: the statement transaction lines.
+         */
         public List<StatementTransaction> getTransactions() {
             return transactions;
         }
 
-        /** :param transactions: the statement transaction lines to set. */
+        /**
+         * :purpose: Set ``transactions``.
+         * :param transactions: the statement transaction lines to set.
+         */
         public void setTransactions(List<StatementTransaction> transactions) {
             this.transactions = transactions;
         }
 
-        /** :returns: the scale-2 running total of the transaction amounts. */
+        /**
+         * :purpose: Read ``totalAmount``.
+         * :returns: the scale-2 running total of the transaction amounts.
+         */
         public BigDecimal getTotalAmount() {
             return totalAmount;
         }
 
-        /** :param totalAmount: the scale-2 running total to set. */
+        /**
+         * :purpose: Set ``totalAmount``.
+         * :param totalAmount: the scale-2 running total to set.
+         */
         public void setTotalAmount(BigDecimal totalAmount) {
             this.totalAmount = totalAmount;
         }
@@ -344,132 +403,210 @@ public class StatementMapper {
         public StatementTransaction() {
         }
 
-        /** :returns: the transaction identifier. */
+        /**
+         * :purpose: Read ``tranId``.
+         * :returns: the transaction identifier.
+         */
         public String getTranId() {
             return tranId;
         }
 
-        /** :param tranId: the transaction identifier to set. */
+        /**
+         * :purpose: Set ``tranId``.
+         * :param tranId: the transaction identifier to set.
+         */
         public void setTranId(String tranId) {
             this.tranId = tranId;
         }
 
-        /** :returns: the transaction description. */
+        /**
+         * :purpose: Read ``description``.
+         * :returns: the transaction description.
+         */
         public String getDescription() {
             return description;
         }
 
-        /** :param description: the transaction description to set. */
+        /**
+         * :purpose: Set ``description``.
+         * :param description: the transaction description to set.
+         */
         public void setDescription(String description) {
             this.description = description;
         }
 
-        /** :returns: the transaction amount at scale 2. */
+        /**
+         * :purpose: Read ``amount``.
+         * :returns: the transaction amount at scale 2.
+         */
         public BigDecimal getAmount() {
             return amount;
         }
 
-        /** :param amount: the transaction amount at scale 2 to set. */
+        /**
+         * :purpose: Set ``amount``.
+         * :param amount: the transaction amount at scale 2 to set.
+         */
         public void setAmount(BigDecimal amount) {
             this.amount = amount;
         }
 
-        /** :returns: the transaction type code. */
+        /**
+         * :purpose: Read ``typeCd``.
+         * :returns: the transaction type code.
+         */
         public String getTypeCd() {
             return typeCd;
         }
 
-        /** :param typeCd: the transaction type code to set. */
+        /**
+         * :purpose: Set ``typeCd``.
+         * :param typeCd: the transaction type code to set.
+         */
         public void setTypeCd(String typeCd) {
             this.typeCd = typeCd;
         }
 
-        /** :returns: the transaction category code. */
+        /**
+         * :purpose: Read ``catCd``.
+         * :returns: the transaction category code.
+         */
         public Integer getCatCd() {
             return catCd;
         }
 
-        /** :param catCd: the transaction category code to set. */
+        /**
+         * :purpose: Set ``catCd``.
+         * :param catCd: the transaction category code to set.
+         */
         public void setCatCd(Integer catCd) {
             this.catCd = catCd;
         }
 
-        /** :returns: the transaction origination source. */
+        /**
+         * :purpose: Read ``source``.
+         * :returns: the transaction origination source.
+         */
         public String getSource() {
             return source;
         }
 
-        /** :param source: the transaction origination source to set. */
+        /**
+         * :purpose: Set ``source``.
+         * :param source: the transaction origination source to set.
+         */
         public void setSource(String source) {
             this.source = source;
         }
 
-        /** :returns: the card number associated with the transaction. */
+        /**
+         * :purpose: Read ``cardNum``.
+         * :returns: the card number associated with the transaction.
+         */
         public String getCardNum() {
             return cardNum;
         }
 
-        /** :param cardNum: the card number associated with the transaction to set. */
+        /**
+         * :purpose: Set ``cardNum``.
+         * :param cardNum: the card number associated with the transaction to set.
+         */
         public void setCardNum(String cardNum) {
             this.cardNum = cardNum;
         }
 
-        /** :returns: the merchant identifier. */
+        /**
+         * :purpose: Read ``merchantId``.
+         * :returns: the merchant identifier.
+         */
         public Long getMerchantId() {
             return merchantId;
         }
 
-        /** :param merchantId: the merchant identifier to set. */
+        /**
+         * :purpose: Set ``merchantId``.
+         * :param merchantId: the merchant identifier to set.
+         */
         public void setMerchantId(Long merchantId) {
             this.merchantId = merchantId;
         }
 
-        /** :returns: the merchant name. */
+        /**
+         * :purpose: Read ``merchantName``.
+         * :returns: the merchant name.
+         */
         public String getMerchantName() {
             return merchantName;
         }
 
-        /** :param merchantName: the merchant name to set. */
+        /**
+         * :purpose: Set ``merchantName``.
+         * :param merchantName: the merchant name to set.
+         */
         public void setMerchantName(String merchantName) {
             this.merchantName = merchantName;
         }
 
-        /** :returns: the merchant city. */
+        /**
+         * :purpose: Read ``merchantCity``.
+         * :returns: the merchant city.
+         */
         public String getMerchantCity() {
             return merchantCity;
         }
 
-        /** :param merchantCity: the merchant city to set. */
+        /**
+         * :purpose: Set ``merchantCity``.
+         * :param merchantCity: the merchant city to set.
+         */
         public void setMerchantCity(String merchantCity) {
             this.merchantCity = merchantCity;
         }
 
-        /** :returns: the merchant postal code. */
+        /**
+         * :purpose: Read ``merchantZip``.
+         * :returns: the merchant postal code.
+         */
         public String getMerchantZip() {
             return merchantZip;
         }
 
-        /** :param merchantZip: the merchant postal code to set. */
+        /**
+         * :purpose: Set ``merchantZip``.
+         * :param merchantZip: the merchant postal code to set.
+         */
         public void setMerchantZip(String merchantZip) {
             this.merchantZip = merchantZip;
         }
 
-        /** :returns: the 26-character origination timestamp string. */
+        /**
+         * :purpose: Read ``origTs``.
+         * :returns: the 26-character origination timestamp string.
+         */
         public String getOrigTs() {
             return origTs;
         }
 
-        /** :param origTs: the 26-character origination timestamp string to set. */
+        /**
+         * :purpose: Set ``origTs``.
+         * :param origTs: the 26-character origination timestamp string to set.
+         */
         public void setOrigTs(String origTs) {
             this.origTs = origTs;
         }
 
-        /** :returns: the 26-character processing timestamp string. */
+        /**
+         * :purpose: Read ``procTs``.
+         * :returns: the 26-character processing timestamp string.
+         */
         public String getProcTs() {
             return procTs;
         }
 
-        /** :param procTs: the 26-character processing timestamp string to set. */
+        /**
+         * :purpose: Set ``procTs``.
+         * :param procTs: the 26-character processing timestamp string to set.
+         */
         public void setProcTs(String procTs) {
             this.procTs = procTs;
         }

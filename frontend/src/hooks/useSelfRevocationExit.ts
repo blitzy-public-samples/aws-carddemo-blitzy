@@ -1,24 +1,24 @@
 /**
  * :module: ``frontend/src/hooks/useSelfRevocationExit.ts``
  * :purpose: Close the gap a web session opens that a 3270 terminal could not: an
- *   administrator maintaining the ``COUSR*`` screens may act on their OWN security
- *   record, and ``UserService`` answers a changed authority by revoking every live
- *   session of the affected user (``ROLE_CHANGED``, ``CREDENTIAL_CHANGED``,
- *   ``USER_DELETED``). The maintenance request itself still succeeds, so the screen
- *   published its confirmation while the operator's own session had already stopped
- *   authorizing — and the operator only discovered it on their next action, which was
- *   answered ``401`` and bounced them to the sign-on screen with nothing said.
- *   This hook makes that consequence part of the action that caused it.
- * :output: The named ``useSelfRevocationExit`` hook and the
- *   ``SESSION_REVOKED_SENTENCE`` it appends.
- * :note: The probe is issued ONLY when the maintained record is the signed-on
- *   operator's own, so an ordinary maintenance action on somebody else's record costs
- *   no additional request.
+ *     administrator maintaining the ``COUSR*`` screens may act on their OWN security record,
+ *     and ``UserService`` answers a changed authority by revoking every live session of the
+ *     affected user (``ROLE_CHANGED``, ``CREDENTIAL_CHANGED``, ``USER_DELETED``). The
+ *     maintenance request itself still succeeds, so the screen published its confirmation
+ *     while the operator's own session had already stopped authorizing — and the operator only
+ *     discovered it on their next action, which was answered ``401`` and bounced them to the
+ *     sign-on screen with nothing said. This hook makes that consequence part of the action
+ *     that caused it.
+ * :output: The named ``useSelfRevocationExit`` hook and the ``SESSION_REVOKED_SENTENCE``
+ *     it appends.
+ * :note: The probe is issued ONLY when the maintained record is the signed-on operator's
+ *     own, so an ordinary maintenance action on somebody else's record costs no additional
+ *     request.
  * :note: The probe deliberately uses :func:`getSessionIdentity`, which carries
- *   ``skipAuthRedirect``, so asking the question cannot itself mutate the session
- *   store. Mutating it here would hand the answer to whichever route guard re-rendered
- *   first, and the guard's generic wording would replace the confirmation that names
- *   what actually happened.
+ *     ``skipAuthRedirect``, so asking the question cannot itself mutate the session store.
+ *     Mutating it here would hand the answer to whichever route guard re-rendered first, and
+ *     the guard's generic wording would replace the confirmation that names what actually
+ *     happened.
  */
 
 import { useCallback } from 'react';

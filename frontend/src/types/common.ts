@@ -68,30 +68,28 @@ export interface FieldErrorState {
 export type FieldErrorMap = Record<string, FieldErrorState>;
 
 /**
- * :purpose: Standardized JSON error body returned by the CardDemo REST APIs,
- *   mirroring the backend ``ErrorResponse`` DTO so axios responses deserialize
- *   cleanly.
+ * :purpose: Standardized JSON error body returned by the CardDemo REST APIs, mirroring the
+ *     backend ``ErrorResponse`` DTO so axios responses deserialize cleanly.
  * :field timestamp: ISO-8601 instant at which the error was produced.
  * :field status: HTTP status code.
  * :field error: HTTP reason phrase.
- * :field errorCode: stable, non-sensitive application/domain error code that is
- *   decoupled from the HTTP status, mirroring ``ErrorResponse.errorCode``. It
- *   carries domain reject codes such as the batch posting codes ``100``-``103``
- *   so callers can branch on a precise code instead of parsing ``message``;
- *   absent when the error has no domain-specific code.
+ * :field errorCode: stable, non-sensitive application/domain error code that is decoupled
+ *     from the HTTP status, mirroring ``ErrorResponse.errorCode``. It carries domain reject
+ *     codes such as the batch posting codes ``100``-``103`` so callers can branch on a precise
+ *     code instead of parsing ``message``; absent when the error has no domain-specific code.
  * :field message: human-readable error description.
  * :field path: request path that produced the error.
- * :field traceId: distributed-trace id of the failing request, resolvable in the
- *   trace backend; absent when the request was not traced. It is never a
- *   substitute for ``correlationId``.
- * :field correlationId: business correlation id of the failing request — the
- *   value echoed on the ``X-Correlation-Id`` response header and stamped on every
- *   log record for the request, so it resolves in the log stream even when
- *   tracing is disabled or the request was not sampled.
- * :field fieldErrors: field name to message map driving per-field messages,
- *   combined by pages with the client ``FieldErrorMap`` highlight state. Serialised
- *   as an explicit ``null`` -- not omitted -- when the refusal names no field, which
- *   is every whole-submission refusal, so a consumer must read it as nullable.
+ * :field traceId: distributed-trace id of the failing request, resolvable in the trace
+ *     backend; absent when the request was not traced. It is never a substitute for
+ *     ``correlationId``.
+ * :field correlationId: business correlation id of the failing request — the value echoed
+ *     on the ``X-Correlation-Id`` response header and stamped on every log record for the
+ *     request, so it resolves in the log stream even when tracing is disabled or the request
+ *     was not sampled.
+ * :field fieldErrors: field name to message map driving per-field messages, combined by
+ *     pages with the client ``FieldErrorMap`` highlight state. Serialised as an explicit
+ *     ``null`` -- not omitted -- when the refusal names no field, which is every
+ *     whole-submission refusal, so a consumer must read it as nullable.
  */
 export interface ApiErrorResponse {
   timestamp: string;

@@ -22,7 +22,6 @@ import { invalidFieldProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
 import {
   PfKeyAction,
-  REPORT_TYPES,
   CCDA_TITLE01,
   CCDA_TITLE02,
   CCDA_MSG_INVALID_KEY,
@@ -55,8 +54,6 @@ const REPORT_TYPE_LABELS: Record<ReportType, string> = {
   CUSTOM: 'Custom (Date Range)',
 };
 
-/** :purpose: Value carried by the chosen report-window flag (``PIC X(01)``). */
-const SELECTED_FLAG = 'Y';
 
 /** :purpose: Highest accepted month (COBOL ``> '12'`` range edit). */
 const MAX_MONTH = 12;
@@ -97,7 +94,7 @@ const SUBMIT_SUCCESS_SUFFIX = ' report submitted for printing ...';
  *     mapset's eight enterable fields; the values are the control ids.
  */
 type ReportCursorField =
-  | 'reportType-MONTHLY'
+  | 'monthly'
   | 'startDateMonth'
   | 'startDateDay'
   | 'startDateYear'
@@ -230,38 +227,83 @@ function validateCustomWindow(
 }
 
 /**
- * :purpose: Assemble the ``POST /reports`` body: the chosen report-window flag,
- *     the custom date parts exactly as entered (custom window only) and the
- *     confirmation flag.
- * :param reportType: the chosen report window.
+ * :purpose: The three report-window selector characters exactly as keyed, one per
+ *     mapset field.
+ * :param monthly: ``MONTHLY`` (``POS=(7,10)``, ``LENGTH=1``).
+ * :param yearly: ``YEARLY`` (``POS=(9,10)``, ``LENGTH=1``).
+ * :param custom: ``CUSTOM`` (``POS=(11,10)``, ``LENGTH=1``).
+ */
+interface ReportSelectors {
+  monthly: string;
+  yearly: string;
+  custom: string;
+}
+
+/**
+ * :purpose: Resolve which window a screen has selected. ``CORPT00C`` L212-256
+ *     evaluates the three fields in the order the map lists them and takes the FIRST
+ *     that is neither ``SPACES`` nor ``LOW-VALUES``, so a screen carrying marks in two
+ *     of them runs the earlier one rather than being rejected.
+ * :param selectors: the three selector characters as keyed.
+ * :returns: the selected window, or ``''`` when all three are blank.
+ */
+function selectedReportType(selectors: ReportSelectors): ReportType | '' {
+  if (selectors.monthly.trim() !== '') {
+    return 'MONTHLY';
+  }
+  if (selectors.yearly.trim() !== '') {
+    return 'YEARLY';
+  }
+  if (selectors.custom.trim() !== '') {
+    return 'CUSTOM';
+  }
+  return '';
+}
+
+/**
+ * :purpose: Assemble the ``POST /reports`` body: all three report-window selector
+ *     characters exactly as keyed, the custom date parts exactly as entered (custom window
+ *     only) and the confirmation flag.
+ * :param selectors: the three selector characters as keyed.
+ * :param reportType: the window those selectors resolve to.
  * :param start: the entered start-date parts.
  * :param end: the entered end-date parts.
  * :param confirmValue: the entered confirmation flag.
  * :returns: the request payload.
+ * :note: The selectors travel VERBATIM rather than as a synthesized ``'Y'``. The mapset
+ *     offers three independent single-character fields and the program tests each only for
+ *     being non-blank, so the character the operator keyed -- ``X``, ``1``, anything -- is
+ *     what selects the window, and the service applies the same first-non-blank rule to the
+ *     same three fields (``ReportService.requestReport``). Sending one derived flag discarded
+ *     both the keyed character and the fact that a second field was marked.
  */
 function buildReportRequest(
+  selectors: ReportSelectors,
   reportType: ReportType,
   start: ReportDateParts,
   end: ReportDateParts,
   confirmValue: string,
 ): ReportRequestDto {
-  switch (reportType) {
-    case 'MONTHLY':
-      return { monthly: SELECTED_FLAG, confirm: confirmValue };
-    case 'YEARLY':
-      return { yearly: SELECTED_FLAG, confirm: confirmValue };
-    case 'CUSTOM':
-      return {
-        custom: SELECTED_FLAG,
-        startDateMonth: start.month,
-        startDateDay: start.day,
-        startDateYear: start.year,
-        endDateMonth: end.month,
-        endDateDay: end.day,
-        endDateYear: end.year,
-        confirm: confirmValue,
-      };
+  const request: ReportRequestDto = {
+    monthly: selectors.monthly,
+    yearly: selectors.yearly,
+    custom: selectors.custom,
+    confirm: confirmValue,
+  };
+  // The date parts are read under the custom branch alone (CORPT00C L256-303), so they
+  // are sent only when that branch is the one the selectors resolve to.
+  if (reportType !== 'CUSTOM') {
+    return request;
   }
+  return {
+    ...request,
+    startDateMonth: start.month,
+    startDateDay: start.day,
+    startDateYear: start.year,
+    endDateMonth: end.month,
+    endDateDay: end.day,
+    endDateYear: end.year,
+  };
 }
 
 /**
@@ -293,7 +335,15 @@ export default function ReportPage(): ReactElement {
     error: submitError,
   } = useApi<ReportResponseDto, [ReportRequestDto]>(requestReport);
 
-  const [reportType, setReportType] = useState<ReportType | ''>('');
+  // Three INDEPENDENT single-character entry fields, one per mapset selector
+  // (``MONTHLY`` POS=(7,10), ``YEARLY`` POS=(9,10), ``CUSTOM`` POS=(11,10), each
+  // ``ATTRB=(FSET,NORM,UNPROT) LENGTH=1 INITIAL=' '``). They are not one control with
+  // three states: the map lets an operator mark any combination and the program resolves
+  // it by taking the first non-blank in map order, so each keeps its own value and its
+  // own tab stop.
+  const [monthlyFlag, setMonthlyFlag] = useState('');
+  const [yearlyFlag, setYearlyFlag] = useState('');
+  const [customFlag, setCustomFlag] = useState('');
   const [startMonth, setStartMonth] = useState('');
   const [startDay, setStartDay] = useState('');
   const [startYear, setStartYear] = useState('');
@@ -314,10 +364,16 @@ export default function ReportPage(): ReactElement {
   // is set returns without launching the report job again.
   const submissionInFlight = useRef(false);
 
+  const reportType = selectedReportType({
+    monthly: monthlyFlag,
+    yearly: yearlyFlag,
+    custom: customFlag,
+  });
+
   const [cursor, setCursor] = useState<{
     field: ReportCursorField;
     seq: number;
-  }>({ field: 'reportType-MONTHLY', seq: 0 });
+  }>({ field: 'monthly', seq: 0 });
 
   /**
    * :purpose: ``MOVE -1 TO <field>L`` — name the control the next screen send
@@ -370,7 +426,9 @@ export default function ReportPage(): ReactElement {
 
   // Clears every entry field, as ``INITIALIZE-ALL-FIELDS`` does.
   const resetFields = useCallback((): void => {
-    setReportType('');
+    setMonthlyFlag('');
+    setYearlyFlag('');
+    setCustomFlag('');
     setStartMonth('');
     setStartDay('');
     setStartYear('');
@@ -395,10 +453,15 @@ export default function ReportPage(): ReactElement {
     if (reportType === '') {
       setInfoMessage('');
       setErrorMessage(MSG_SELECT_REPORT_TYPE);
-      requestCursor('reportType-MONTHLY');
+      requestCursor('monthly');
       return;
     }
 
+    const selectors: ReportSelectors = {
+      monthly: monthlyFlag,
+      yearly: yearlyFlag,
+      custom: customFlag,
+    };
     const start: ReportDateParts = {
       month: startMonth,
       day: startDay,
@@ -429,7 +492,7 @@ export default function ReportPage(): ReactElement {
       resetFields();
       setInfoMessage('');
       setErrorMessage('');
-      requestCursor('reportType-MONTHLY');
+      requestCursor('monthly');
       return;
     }
     if (confirmValue !== 'Y' && confirmValue !== 'y') {
@@ -443,14 +506,14 @@ export default function ReportPage(): ReactElement {
     let response: ReportResponseDto | undefined;
     try {
       response = await submitReport(
-        buildReportRequest(reportType, start, end, confirmValue),
+        buildReportRequest(selectors, reportType, start, end, confirmValue),
       );
     } finally {
       submissionInFlight.current = false;
     }
     if (response === undefined) {
       // The normalized failure reaches line 23 through the submission effect.
-      requestCursor('reportType-MONTHLY');
+      requestCursor('monthly');
       return;
     }
 
@@ -464,7 +527,7 @@ export default function ReportPage(): ReactElement {
       setInfoMessage('');
       setErrorMessage(refusal);
       setMessageReference(null);
-      requestCursor('reportType-MONTHLY');
+      requestCursor('monthly');
       return;
     }
     const acknowledgement = response.message?.trim() ?? '';
@@ -476,12 +539,14 @@ export default function ReportPage(): ReactElement {
         : `${reportName}${SUBMIT_SUCCESS_SUFFIX}`,
     );
     setMessageReference(response.jobExecutionId ?? null);
-    requestCursor('reportType-MONTHLY');
+    requestCursor('monthly');
   }, [
     confirmInput,
+    customFlag,
     endDay,
     endMonth,
     endYear,
+    monthlyFlag,
     requestCursor,
     reportType,
     resetFields,
@@ -489,6 +554,7 @@ export default function ReportPage(): ReactElement {
     startMonth,
     startYear,
     submitReport,
+    yearlyFlag,
   ]);
 
   // F3 leaves the screen for the main menu, as ``XCTL PROGRAM('COMEN01C')`` does.
@@ -520,7 +586,7 @@ export default function ReportPage(): ReactElement {
     setInfoMessage('');
     setMessageReference(null);
     setErrorMessage(CCDA_MSG_INVALID_KEY);
-    requestCursor('reportType-MONTHLY');
+    requestCursor('monthly');
   }, [requestCursor]);
 
   const activateExit = useScreenAction(handleExit);
@@ -571,44 +637,68 @@ export default function ReportPage(): ReactElement {
     submitting,
   ]);
 
+  /**
+   * The three selector fields in map order, each with the state it holds and whether it
+   * carries the rejection marking.
+   */
+  const selectorFields: {
+    type: ReportType;
+    id: string;
+    value: string;
+    setValue: (next: string) => void;
+    invalid: boolean;
+  }[] = [
+    {
+      type: 'MONTHLY',
+      id: 'monthly',
+      value: monthlyFlag,
+      setValue: setMonthlyFlag,
+      invalid: faultedField === 'monthly',
+    },
+    { type: 'YEARLY', id: 'yearly', value: yearlyFlag, setValue: setYearlyFlag, invalid: false },
+    { type: 'CUSTOM', id: 'custom', value: customFlag, setValue: setCustomFlag, invalid: false },
+  ];
+
   return (
     <div className="reportPage">
       <h3 className="neutral reportPage__heading" id="reportHeading">
         Transaction Reports
       </h3>
 
-      <div
-        className="reportPage__types"
-        role="radiogroup"
-        aria-labelledby="reportHeading"
-        {...invalidFieldProps(faultedField === 'reportType-MONTHLY')}
-      >
-        {REPORT_TYPES.map((type) => (
-          <div className="reportPage__option" key={type}>
+      {/*
+        Three separate single-character entry fields, exactly as CORPT00.bms declares
+        them: MONTHLY POS=(7,10), YEARLY POS=(9,10) and CUSTOM POS=(11,10), each
+        ``ATTRB=(FSET,NORM,UNPROT) COLOR=GREEN HILIGHT=UNDERLINE LENGTH=1 INITIAL=' '``,
+        with its TURQUOISE caption beside it at column 15. They are deliberately NOT one
+        radio group: a group is a single tab stop whose members move under the arrow keys
+        and of which exactly one can be set, and the map is three independent tab stops in
+        which an operator may key a character into any combination -- CORPT00C then takes
+        the first non-blank in map order (L212-256) rather than refusing the screen. The
+        container carries ``role="group"``, which associates the three fields with the
+        screen heading without collapsing them into one stop.
+
+        Only MONTHLY carries the rejection marking, because ``MOVE -1 TO MONTHLYL`` is the
+        only cursor move CORPT00C makes among the three -- on the no-selection message and
+        on every path that ends the turn.
+      */}
+      <div className="reportPage__types" role="group" aria-labelledby="reportHeading">
+        {selectorFields.map((selector) => (
+          <div className="reportPage__option" key={selector.type}>
             <input
-              type="radio"
-              id={`reportType-${type}`}
-              name="reportType"
-              value={type}
-              checked={reportType === type}
+              type="text"
+              id={selector.id}
+              className="field"
+              maxLength={1}
+              size={1}
+              value={selector.value}
               disabled={submitting}
-              {...invalidFieldProps(faultedField === `reportType-${type}`)}
-              onChange={() => {
-                setReportType(type);
-                // A rejection belongs to the turn that produced it. Changing the
-                // selection changes the very input that turn rejected, so the message,
-                // the invalid marking derived from it, and the cursor placement all
-                // have to go with it -- CORPT00C clears WS-MESSAGE at the top of every
-                // turn and never redisplays a previous one. The cursor is re-placed on
-                // the control the operator just chose rather than left where the
-                // rejection put it, so it is never dropped onto the document body.
-                setErrorMessage('');
-                setInfoMessage('');
-                requestCursor(`reportType-${type}` as ReportCursorField);
+              {...invalidFieldProps(selector.invalid)}
+              onChange={(event) => {
+                selector.setValue(event.target.value);
               }}
             />{' '}
-            <label className="prompt" htmlFor={`reportType-${type}`}>
-              {REPORT_TYPE_LABELS[type]}
+            <label className="prompt" htmlFor={selector.id}>
+              {REPORT_TYPE_LABELS[selector.type]}
             </label>
           </div>
         ))}

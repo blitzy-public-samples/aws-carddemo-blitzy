@@ -25,30 +25,24 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * :purpose: Bind Lettuce's Redis command-latency instrumentation to the
- *           Micrometer registry so the session store (the Spring Session Redis
- *           replacement for the CICS COMMAREA) is measurable at
- *           ``/actuator/prometheus``. Lettuce keeps its command-latency
- *           recorder disabled unless a recorder is supplied through
- *           ``ClientResources``; with the recorder installed each service
- *           publishes the ``lettuce.command.completion`` and
- *           ``lettuce.command.firstresponse`` timers, which Prometheus exposes
- *           as ``lettuce_command_completion_seconds_{count,sum,max}`` and
- *           ``lettuce_command_firstresponse_seconds_{count,sum,max}`` — the
- *           Redis series the Grafana dashboard template in
- *           ``observability/grafana-dashboard.json`` queries.
- * :output: A ``ClientResourcesBuilderCustomizer`` bean that Spring Boot's
- *          Lettuce connection configuration applies to the
- *          ``DefaultClientResources`` builder backing the shared
- *          ``LettuceConnectionFactory``.
- * :note: Following the ``ObservabilityConfig`` and ``SessionRedisConfig``
- *        convention, this class ships no ``META-INF`` auto-configuration import
- *        entry; a service activates it with
- *        ``@Import(RedisCommandMetricsConfig.class)`` or by broadening component
- *        scanning to ``com.carddemo.common``. The ``@ConditionalOnClass`` guard
- *        keeps the class inert in modules without Lettuce and Spring Boot's
- *        Redis auto-configuration on the classpath, such as the non-web batch
- *        service. Design rationale lives in docs/decision-log.md.
+ * :purpose: Bind Lettuce's Redis command-latency instrumentation to the Micrometer
+ *     registry so the session store (the Spring Session Redis replacement for the CICS
+ *     COMMAREA) is measurable at ``/actuator/prometheus``. Lettuce keeps its command-latency
+ *     recorder disabled unless a recorder is supplied through ``ClientResources``; with the
+ *     recorder installed each service publishes the ``lettuce.command.completion`` and
+ *     ``lettuce.command.firstresponse`` timers, which Prometheus exposes as
+ *     ``lettuce_command_completion_seconds_{count,sum,max}`` and
+ *     ``lettuce_command_firstresponse_seconds_{count,sum,max}`` — the Redis series the Grafana
+ *     dashboard template in ``observability/grafana-dashboard.json`` queries.
+ * :output: A ``ClientResourcesBuilderCustomizer`` bean that Spring Boot's Lettuce
+ *     connection configuration applies to the ``DefaultClientResources`` builder backing the
+ *     shared ``LettuceConnectionFactory``.
+ * :note: Following the ``ObservabilityConfig`` and ``SessionRedisConfig`` convention, this
+ *     class ships no ``META-INF`` auto-configuration import entry; a service activates it with
+ *     ``@Import(RedisCommandMetricsConfig.class)`` or by broadening component scanning to
+ *     ``com.carddemo.common``. The ``@ConditionalOnClass`` guard keeps the class inert in
+ *     modules without Lettuce and Spring Boot's Redis auto-configuration on the classpath,
+ *     such as the non-web batch service. Design rationale lives in docs/decision-log.md.
  */
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnClass(name = {

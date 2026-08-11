@@ -187,23 +187,22 @@ public class MenuController {
 
     /**
      * Shared selection handler backing both ``/menu/select`` and ``/admin/menu/select``,
-     * mirroring the legacy ``EVALUATE EIBAID`` plus ``PROCESS-ENTER-KEY`` flow.
-     *
-     * :param request: the inbound selection (may be ``null``); supplies the entered
-     *  option and the action key.
-     * :param httpRequest: the current servlet request; its already-established session,
-     *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
+     *     mirroring the legacy ``EVALUATE EIBAID`` plus ``PROCESS-ENTER-KEY`` flow.
+     * :param request: the inbound selection (may be ``null``); supplies the entered option and
+     *     the action key.
+     * :param httpRequest: the current servlet request; its already-established session, when
+     *     present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :param table: the option table to select from (main or admin).
      * :param count: the declared option count used to bound-check the entered option.
      * :param tranid: the originating transaction id recorded on the session context.
      * :param program: the originating program name recorded on the session context.
      * :param roleGate: whether to apply the main-menu admin-only role gate.
-     * :param includeNameInComingSoon: whether the coming-soon message embeds the option
-     *  name (main) or omits it (admin).
-     * :returns: a :java:type:`MenuSelectionResponse` for dispatch, PF3 back navigation, or
-     *  a coming-soon message.
+     * :param includeNameInComingSoon: whether the coming-soon message embeds the option name
+     *     (main) or omits it (admin).
+     * :returns: a :java:type:`MenuSelectionResponse` for dispatch, PF3 back navigation, or a
+     *     coming-soon message.
      * :raises CardDemoException: for an unsupported action key, an invalid option, or a
-     *  role-gated option.
+     *     role-gated option.
      */
     private MenuSelectionResponse processSelection(
             MenuSelectionRequest request,

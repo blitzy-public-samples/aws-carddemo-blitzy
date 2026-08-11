@@ -23,37 +23,40 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 
 /**
- * :purpose: Resolve a job-parameter file name supplied to a data-management
- *  batch job to a concrete filesystem path that is confined to a configured,
- *  allowlisted root directory. It exists so that the report, dump, combine, and
- *  feed-reader writers/readers never open an attacker-influenced absolute path,
- *  ``..`` traversal, or symlink that escapes the batch working area (CWE-22).
- *  Two independent roots are managed: an output root for files the jobs write
- *  (reports, record dumps, the combined transaction file) and an input root for
- *  the daily-transaction feed the jobs read.
- * :output: A shared resolver exposing {@link #resolveOutput(String)} and
- *  {@link #resolveInput(String)}. Each returns a canonical {@link Path} proven
- *  to reside within the matching real (symlink-resolved) root; the output
- *  variant additionally creates the parent directory. Any request that is blank,
- *  escapes the root, or traverses a symlink out of the root raises
- *  {@link IllegalArgumentException} (or {@link UncheckedIOException} on an
- *  underlying I/O failure), so a rejected path is never opened.
- * :note: Roots come from ``carddemo.batch.output-dir`` and
- *  ``carddemo.batch.input-dir``; when a property is blank a workstation default
- *  under the JVM temporary directory is used. Both roots are created,
- *  canonicalized and (for the output root) proven writable once at construction,
- *  so a container whose batch directory is missing or read-only aborts startup
- *  with a precise message instead of failing every job mid-step with a bare
- *  ``java.io.IOException: No such file or directory``.
- * :note: This type lives in ``carddemo-common`` because BOTH batch-capable
- *  services need it - ``batch-service`` for its nine data-management jobs and
- *  ``reporting-service`` for the ``CBSTM03A`` statement writer - and a second
- *  copy would be free to drift away from this one's containment rules. It
- *  carries no stereotype annotation: the library is not component-scanned, so
- *  each batch-capable service declares the bean explicitly and the other seven
- *  services never create a batch working directory.
+ * :purpose: Resolve a job-parameter file name supplied to a data-management batch job to a
+ *     concrete filesystem path that is confined to a configured, allowlisted root directory.
+ *     It exists so that the report, dump, combine, and feed-reader writers/readers never open
+ *     an attacker-influenced absolute path, ``..`` traversal, or symlink that escapes the
+ *     batch working area (CWE-22). Two independent roots are managed: an output root for files
+ *     the jobs write (reports, record dumps, the combined transaction file) and an input root
+ *     for the daily-transaction feed the jobs read.
+ * :output: A shared resolver exposing {@link #resolveOutput(String)} and {@link
+ *     #resolveInput(String)}. Each returns a canonical {@link Path} proven to reside within
+ *     the matching real (symlink-resolved) root; the output variant additionally creates the
+ *     parent directory. Any request that is blank, escapes the root, or traverses a symlink
+ *     out of the root raises {@link IllegalArgumentException} (or {@link UncheckedIOException}
+ *     on an underlying I/O failure), so a rejected path is never opened.
+ * :note: Roots come from ``carddemo.batch.output-dir`` and ``carddemo.batch.input-dir``;
+ *     when a property is blank a workstation default under the JVM temporary directory is
+ *     used. Both roots are created, canonicalized and (for the output root) proven writable
+ *     once at construction, so a container whose batch directory is missing or read-only
+ *     aborts startup with a precise message instead of failing every job mid-step with a bare
+ *     ``java.io.IOException: No such file or directory``.
+ * :note: This type lives in ``carddemo-common`` because BOTH batch-capable services need
+ *     it - ``batch-service`` for its nine data-management jobs and ``reporting-service`` for
+ *     the ``CBSTM03A`` statement writer - and a second copy would be free to drift away from
+ *     this one's containment rules. It carries no stereotype annotation: the library is not
+ *     component-scanned, so each batch-capable service declares the bean explicitly and the
+ *     other seven services never create a batch working directory.
  */
 public class BatchOutputPathResolver {
+
+    /**
+     * Longest accepted batch file name. A legacy data-set name is at most 44
+     * characters; this leaves room for the generation qualifier and an extension
+     * while still bounding what a caller can put on a file system.
+     */
+    private static final int MAX_FILE_NAME_LENGTH = 64;
 
     /** Canonical (symlink-resolved) root that every written file must reside within. */
     private final Path outputRoot;
@@ -92,24 +95,24 @@ public class BatchOutputPathResolver {
 
     /**
      * :purpose: Resolve a requested file name to a PER-RUN generation of it, reproducing the
-     *  generation-data-group allocation the legacy job streams used for their deliverables.
+     *     generation-data-group allocation the legacy job streams used for their deliverables.
      * :param requested: the configured base file name (for example ``dalyrejs.txt``).
      * :param generation: the run's generation number; the job execution id is used, so the
-     *  name is unique for all time, ordered by run, and directly resolvable in
-     *  ``BATCH_JOB_EXECUTION``.
+     *     name is unique for all time, ordered by run, and directly resolvable in
+     *     ``BATCH_JOB_EXECUTION``.
      * :returns: the canonical {@link Path} of that generation, confined to the output root.
      * :throws IllegalArgumentException: when the request is blank, escapes the root, or
-     *  resolves through a symlink that leaves the root.
+     *     resolves through a symlink that leaves the root.
      * :note: The generation is inserted BEFORE the extension - ``dalyrejs.txt`` with
-     *  generation 33 becomes ``dalyrejs.G0033V00.txt`` - so the name carries the legacy
-     *  ``Gnnnnvnn`` generation shape (``AWS.M2.CARDDEMO.DALYREJS.G0001V00``) while keeping
-     *  the extension the repository's ``.gitignore`` matches. A run's own generation is
-     *  still removed when its step fails, exactly as ``DISP=(NEW,CATLG,DELETE)`` deletes the
-     *  generation it created on an abend; what can no longer happen is one run destroying
-     *  ANOTHER run's generation [app/jcl/POSTTRAN.jcl].
+     *     generation 33 becomes ``dalyrejs.G0033V00.txt`` - so the name carries the legacy
+     *     ``Gnnnnvnn`` generation shape (``AWS.M2.CARDDEMO.DALYREJS.G0001V00``) while keeping the
+     *     extension the repository's ``.gitignore`` matches. A run's own generation is still
+     *     removed when its step fails, exactly as ``DISP=(NEW,CATLG,DELETE)`` deletes the
+     *     generation it created on an abend; what can no longer happen is one run destroying
+     *     ANOTHER run's generation [app/jcl/POSTTRAN.jcl].
      * :note: A negative or zero generation is not special-cased: Spring Batch execution ids
-     *  start at 1, and formatting is width-4 minimum without truncation, so a five-digit id
-     *  widens the field rather than wrapping onto an earlier generation.
+     *     start at 1, and formatting is width-4 minimum without truncation, so a five-digit id
+     *     widens the field rather than wrapping onto an earlier generation.
      */
     public Path resolveOutputGeneration(String requested, long generation) {
         if (requested == null || requested.isBlank()) {
@@ -166,6 +169,7 @@ public class BatchOutputPathResolver {
         if (requested == null || requested.isBlank()) {
             throw new IllegalArgumentException("Batch file path must not be blank");
         }
+        requireSafeName(requested);
 
         Path candidate = Paths.get(requested);
         Path resolved = (candidate.isAbsolute() ? candidate : root.resolve(candidate)).normalize();
@@ -200,6 +204,57 @@ public class BatchOutputPathResolver {
         } catch (IOException e) {
             throw new UncheckedIOException(
                     "Failed to resolve batch file path: " + requested, e);
+        }
+    }
+
+    /**
+     * :purpose: Reject a requested batch file name that is not drawn from the safe character
+     *     set, before it is ever resolved against a root or opened.
+     * :param requested: the raw requested file name.
+     * :raises IllegalArgumentException: when the value contains a character outside the
+     *     allow-list, or is longer than the accepted maximum.
+     * :note: The path guards below already prevent traversal and symlink escape, so a name
+     *     like ``$(touch /tmp/pwned)`` or ``;id #.txt`` created a file with that literal name
+     *     INSIDE the batch root and no command ever ran. It is still refused here: such a name is
+     *     a deliverable that a downstream consumer must handle, and every consumer of these files
+     *     is a shell script, an operator command line or a JCL-equivalent scheduler step. A
+     *     literal ``$(...)``/backtick/``;``/newline in the name is a command-injection primitive
+     *     the moment it is interpolated by any of them (CWE-78 at the consuming hop), and quoting
+     *     is not something this service can enforce on its consumers.
+     * :note: The allow-list is deliberately narrower than "not dangerous": letters, digits,
+     *     dot, dash and underscore is the whole vocabulary a legacy data-set name could hold, so
+     *     nothing an operator could legitimately have asked the mainframe for is refused. The
+     *     generation-qualified names the writers derive (``dalyrejs.G0033V00.txt``) are inside it.
+     * :note: Applied per PATH ELEMENT, not to the whole string, so the existing contract is
+     *     preserved exactly: an absolute path that already lies inside the root stays acceptable,
+     *     and a ``.``/``..`` element is passed through to the containment check so a traversal
+     *     attempt is still reported as one.
+     */
+    private static void requireSafeName(String requested) {
+        for (Path element : Paths.get(requested)) {
+            String name = element.toString();
+            // '.' and '..' are left to the containment check below, which reports a
+            // traversal attempt in the terms an operator needs ("escapes the allowed
+            // directory") rather than as a character-set violation.
+            if (name.equals(".") || name.equals("..")) {
+                continue;
+            }
+            if (name.length() > MAX_FILE_NAME_LENGTH) {
+                throw new IllegalArgumentException("Batch file name element must be at most "
+                        + MAX_FILE_NAME_LENGTH + " characters: " + name);
+            }
+            for (int i = 0; i < name.length(); i++) {
+                char c = name.charAt(i);
+                boolean allowed = (c >= 'a' && c <= 'z')
+                        || (c >= 'A' && c <= 'Z')
+                        || (c >= '0' && c <= '9')
+                        || c == '.' || c == '-' || c == '_';
+                if (!allowed) {
+                    throw new IllegalArgumentException(
+                            "Batch file name may contain only letters, digits, '.', '-' and '_': "
+                                    + requested);
+                }
+            }
         }
     }
 

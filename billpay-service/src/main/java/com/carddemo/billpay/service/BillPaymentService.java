@@ -118,27 +118,27 @@ public class BillPaymentService {
 
     /**
      * :purpose: Re-platform the ``COBIL00C`` (``CB00``) ``PROCESS-ENTER-KEY`` bill-payment
-     *  flow. Validate the account id and confirm flag, read the account, and — when the
-     *  payment is confirmed — record a bill-payment transaction and decrement the account
-     *  balance in full, atomically.
-     * :param request: the bill-payment request carrying the account id (``ACTIDIN``) and
-     *  the confirm flag (``CONFIRM``); must not be null.
-     * :param sessionContext: the externalized pseudo-conversational session context; may
-     *  be null (for example in unit tests), in which case no session state is propagated.
-     * :returns: the bill-payment response — the confirm prompt with the current balance
-     *  (blank confirm), the nothing-to-pay message with that balance (balance at or below
-     *  zero), a cleared response (confirm ``N``), or the payment-success message with the
-     *  generated transaction id and the post-payment balance (confirm ``Y``).
-     * :raises CardDemoException: (HTTP 400) when the account id is empty, the confirm flag
-     *  is invalid, or the generated transaction id already exists. A zero-or-negative
-     *  balance is NOT an exception: the legacy screen displays the balance beside that
-     *  message, so it is returned on the response's error channel instead.
-     * :raises RecordNotFoundException: (HTTP 404) when the account or its card
-     *  cross-reference does not exist.
+     *     flow. Validate the account id and confirm flag, read the account, and — when the payment
+     *     is confirmed — record a bill-payment transaction and decrement the account balance in
+     *     full, atomically.
+     * :param request: the bill-payment request carrying the account id (``ACTIDIN``) and the
+     *     confirm flag (``CONFIRM``); must not be null.
+     * :param sessionContext: the externalized pseudo-conversational session context; may be
+     *     null (for example in unit tests), in which case no session state is propagated.
+     * :returns: the bill-payment response — the confirm prompt with the current balance (blank
+     *     confirm), the nothing-to-pay message with that balance (balance at or below zero), a
+     *     cleared response (confirm ``N``), or the payment-success message with the generated
+     *     transaction id and the post-payment balance (confirm ``Y``).
+     * :raises CardDemoException: (HTTP 400) when the account id is empty, the confirm flag is
+     *     invalid, or the generated transaction id already exists. A zero-or-negative balance is
+     *     NOT an exception: the legacy screen displays the balance beside that message, so it is
+     *     returned on the response's error channel instead.
+     * :raises RecordNotFoundException: (HTTP 404) when the account or its card cross-reference
+     *     does not exist.
      * :raises OptimisticLockConflictException: (HTTP 409) when the account was modified
-     *  concurrently between read and update.
-     * :note: The transaction id is drawn from the database sequence ``transaction_id_seq``
-     *  and rendered as the 16-digit zero-padded wire form.
+     *     concurrently between read and update.
+     * :note: The transaction id is drawn from the database sequence ``transaction_id_seq`` and
+     *     rendered as the 16-digit zero-padded wire form.
      */
     @Transactional
     public BillPaymentResponseDto processBillPayment(BillPaymentRequestDto request,
@@ -333,22 +333,22 @@ public class BillPaymentService {
 
     /**
      * :purpose: Parse the entered account id to the numeric key used for the repository
-     *  lookup, accepting ONLY the exact stored key shape: eleven ASCII digits.
+     *     lookup, accepting ONLY the exact stored key shape: eleven ASCII digits.
      * :param accountId: the trimmed, non-empty account id.
      * :returns: the account id as a ``Long``.
      * :raises RecordNotFoundException: when the value is not exactly eleven ASCII digits.
-     * :note: ``COBIL00C`` carries no numeric edit at all — its only entry guard is the
-     *  blank test — so a malformed entry reaches the read and fails it. ``ACTIDIN`` is an
-     *  eleven-column map field and ``ACCT-ID`` is ``PIC 9(11)``, so a shorter entry keeps
-     *  its trailing spaces through the ``MOVE`` and cannot equal a zero-padded key: the
-     *  legacy read MISSES, which is why the not-found literal is the faithful outcome and
-     *  no numeric-format message is invented here.
-     * :note: The width and character-set test is what makes that outcome correct rather
-     *  than incidental. ``Long.parseLong`` alone accepted three classes of value the
-     *  legacy key could never hold: an unpadded id (``1`` and ``01`` both resolved to
-     *  account ``00000000001`` and disclosed its balance), any Unicode decimal digit
-     *  (``Character.digit`` accepts the full-width forms, so a run of them resolved to the
-     *  same account), and a run wide enough to overflow ``long``.
+     * :note: ``COBIL00C`` carries no numeric edit at all — its only entry guard is the blank
+     *     test — so a malformed entry reaches the read and fails it. ``ACTIDIN`` is an
+     *     eleven-column map field and ``ACCT-ID`` is ``PIC 9(11)``, so a shorter entry keeps its
+     *     trailing spaces through the ``MOVE`` and cannot equal a zero-padded key: the legacy read
+     *     MISSES, which is why the not-found literal is the faithful outcome and no numeric-format
+     *     message is invented here.
+     * :note: The width and character-set test is what makes that outcome correct rather than
+     *     incidental. ``Long.parseLong`` alone accepted three classes of value the legacy key
+     *     could never hold: an unpadded id (``1`` and ``01`` both resolved to account
+     *     ``00000000001`` and disclosed its balance), any Unicode decimal digit
+     *     (``Character.digit`` accepts the full-width forms, so a run of them resolved to the same
+     *     account), and a run wide enough to overflow ``long``.
      */
     private Long parseAccountId(String accountId) {
         if (accountId.length() != ACCT_ID_WIDTH || !isAsciiDigits(accountId)) {

@@ -38,26 +38,24 @@ import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 
 /**
- * :purpose: Servlet Spring Security filter chain performing application-layer
- *     route authorization for the API gateway, the single browser-facing surface of
- *     CardDemo. The legacy CICS resource definitions set ``RESSEC(NO)`` /
- *     ``CMDSEC(NO)`` on every transaction, so transaction-level security is disabled
- *     and gating is enforced in application logic (AAP 0.6.7); this chain reproduces
- *     that model by matching path prefixes to role authorities. Authentication is
- *     performed by ``auth-service``; the authenticated principal is rebuilt on every
- *     request from the shared Redis-backed ``SessionContext`` by the
- *     ``SessionContextAuthenticationFilter`` installed by
- *     {@link SecurityHardening}, so this chain declares only the authority rules and
- *     the browser-facing protections.
- * :note: CSRF is enforced here with the cookie double-submit pattern
- *     (``XSRF-TOKEN`` cookie echoed as the ``X-XSRF-TOKEN`` header, the axios
- *     default). ``/auth/**`` is exempt because it is unauthenticated and carries
- *     explicit credentials rather than ambient authority: a fresh client cannot yet
- *     hold a token, sign-on rotates the session id so login CSRF cannot fix a
- *     session, and requiring a token there would turn a genuine ``405`` or ``415``
- *     into a misleading ``403``. Because CSRF is enabled, Spring Security's logout
- *     matcher accepts ``POST /logout`` only, which closes the cross-site
- *     forced-logout vector.
+ * :purpose: Servlet Spring Security filter chain performing application-layer route
+ *     authorization for the API gateway, the single browser-facing surface of CardDemo. The
+ *     legacy CICS resource definitions set ``RESSEC(NO)`` / ``CMDSEC(NO)`` on every
+ *     transaction, so transaction-level security is disabled and gating is enforced in
+ *     application logic (AAP 0.6.7); this chain reproduces that model by matching path
+ *     prefixes to role authorities. Authentication is performed by ``auth-service``; the
+ *     authenticated principal is rebuilt on every request from the shared Redis-backed
+ *     ``SessionContext`` by the ``SessionContextAuthenticationFilter`` installed by {@link
+ *     SecurityHardening}, so this chain declares only the authority rules and the
+ *     browser-facing protections.
+ * :note: CSRF is enforced here with the cookie double-submit pattern (``XSRF-TOKEN``
+ *     cookie echoed as the ``X-XSRF-TOKEN`` header, the axios default). ``/auth/**`` is exempt
+ *     because it is unauthenticated and carries explicit credentials rather than ambient
+ *     authority: a fresh client cannot yet hold a token, sign-on rotates the session id so
+ *     login CSRF cannot fix a session, and requiring a token there would turn a genuine
+ *     ``405`` or ``415`` into a misleading ``403``. Because CSRF is enabled, Spring Security's
+ *     logout matcher accepts ``POST /logout`` only, which closes the cross-site forced-logout
+ *     vector.
  */
 @Import({
         ManagementSecurityConfig.class,
@@ -86,23 +84,22 @@ public class SecurityConfig {
     public static final String CSRF_COOKIE_SAME_SITE = "Strict";
 
     /**
-     * :purpose: Defines the gateway authorization rules, the browser CSRF protection,
-     *     and a ``401`` entry point. ``/auth/**``, ``/csrf`` and the Actuator
-     *     health/info endpoints are permitted (``/actuator/prometheus`` is restricted
-     *     to the ``monitoring`` principal by the shared management chain);
-     *     ``/admin/**`` and ``/users/**`` require ``ROLE_ADMIN``; the menu and business
-     *     route prefixes require ``ROLE_USER`` or ``ROLE_ADMIN``; every other request
-     *     must be authenticated.
+     * :purpose: Defines the gateway authorization rules, the browser CSRF protection, and a
+     *     ``401`` entry point. ``/auth/**``, ``/csrf`` and the Actuator health/info endpoints are
+     *     permitted (``/actuator/prometheus`` is restricted to the ``monitoring`` principal by the
+     *     shared management chain); ``/admin/**`` and ``/users/**`` require ``ROLE_ADMIN``; the
+     *     menu and business route prefixes require ``ROLE_USER`` or ``ROLE_ADMIN``; every other
+     *     request must be authenticated.
      * :param http: the Spring Security ``HttpSecurity`` builder.
      * :param requestsPerMinute: per-signed-on-caller request budget for the public edge.
      * :param signonRequestsPerMinute: per-source-address budget for ``/auth/**``.
-     * :param anonymousRequestsPerMinute: per-source-address budget for requests that carry
-     *     no established session.
+     * :param anonymousRequestsPerMinute: per-source-address budget for requests that carry no
+     *     established session.
      * :param cookieSecure: whether cookies are marked ``Secure``; bound to the same
-     *     ``server.servlet.session.cookie.secure`` switch as the session cookie so the
-     *     CSRF cookie can never be laxer than the credential it protects.
-     * :param sessionPrincipalIndex: principal-to-session index the logout chain de-indexes,
-     *     so the index lists only sessions that can still authorize.
+     *     ``server.servlet.session.cookie.secure`` switch as the session cookie so the CSRF cookie
+     *     can never be laxer than the credential it protects.
+     * :param sessionPrincipalIndex: principal-to-session index the logout chain de-indexes, so
+     *     the index lists only sessions that can still authorize.
      * :returns: the built ``SecurityFilterChain``.
      * :throws: Exception propagated by the ``HttpSecurity`` builder.
      */

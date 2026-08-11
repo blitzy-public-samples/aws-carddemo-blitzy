@@ -18,15 +18,20 @@ package com.carddemo.batch.controller;
 
 import com.carddemo.batch.config.JobSchedulingConfig;
 import com.carddemo.common.batch.BatchExitMessageSanitizer;
+import com.carddemo.common.batch.BatchLaunchRequestGuard;
 import com.carddemo.common.dto.BatchJobExecutionDto;
 import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.exception.RecordNotFoundException;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.dao.EmptyResultDataAccessException;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.launch.JobInstanceAlreadyCompleteException;
+import org.springframework.batch.core.launch.JobExecutionAlreadyRunningException;
+import org.springframework.batch.core.launch.JobRestartException;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -101,21 +106,23 @@ public class BatchController {
     }
 
     /**
-     * :purpose: Launch one job by name, passing through the parameters that job requires
-     *  and letting the launcher apply its configured defaults for the rest.
+     * :purpose: Launch one job by name, passing through the parameters that job requires and
+     *     letting the launcher apply its configured defaults for the rest.
      * :param jobName: the job bean name, one of {@link #LAUNCHABLE_JOBS}.
-     * :param parmDate: business date for ``interestCalculationJob``
-     *  (``INTCALC`` ``PARM``); ignored by the other jobs.
+     * :param parmDate: business date for ``interestCalculationJob`` (``INTCALC`` ``PARM``);
+     *     ignored by the other jobs.
      * :param startDate: inclusive start of the reporting window for
-     *  ``transactionDetailReportJob``.
+     *     ``transactionDetailReportJob``.
      * :param endDate: inclusive end of the reporting window for
-     *  ``transactionDetailReportJob``.
+     *     ``transactionDetailReportJob``.
      * :param file: explicit output file name, or input feed name for
-     *  ``dailyTransactionValidationJob``; when absent the launcher's configured default
-     *  for that job is used.
+     *     ``dailyTransactionValidationJob``; when absent the launcher's configured default for
+     *     that job is used.
+     * :param request: the current servlet request, consulted only to refuse a body this
+     *     endpoint does not read (see {@link BatchLaunchRequestGuard}).
      * :returns: the accepted execution's durable handle and current status.
-     * :raises CardDemoException: when the job name is unknown or the submission is
-     *  rejected, so a rejected submission never reads as an accepted one.
+     * :raises CardDemoException: when the job name is unknown or the submission is rejected,
+     *     so a rejected submission never reads as an accepted one.
      */
     @PostMapping("/jobs/{jobName}")
     @ResponseStatus(HttpStatus.ACCEPTED)
@@ -123,17 +130,38 @@ public class BatchController {
                                           @RequestParam(required = false) String parmDate,
                                           @RequestParam(required = false) String startDate,
                                           @RequestParam(required = false) String endDate,
-                                          @RequestParam(required = false) String file) {
+                                          @RequestParam(required = false) String file,
+                                          HttpServletRequest request) {
+        BatchLaunchRequestGuard.requireNoRequestBody(request);
         LOGGER.info("Batch launch requested for job {}", jobName);
         try {
             JobExecution execution = dispatch(jobName, parmDate, startDate, endDate, file);
             return toDto(jobName, execution);
         } catch (CardDemoException e) {
             throw e;
+        } catch (JobInstanceAlreadyCompleteException e) {
+            // A resubmission of a completed instance is an ordinary, expected outcome of
+            // the launch contract, not an internal fault. The framework's own message
+            // publishes the whole JobParameters map and its class name; a stable domain
+            // sentence says the same thing without handing the caller the internals.
+            LOGGER.info("Batch launch refused for job {}: the instance for these parameters has"
+                    + " already completed", jobName);
+            throw new CardDemoException("Batch job " + jobName + " has already completed for these"
+                    + " parameters. A completed run cannot be repeated: change a parameter to run"
+                    + " a new instance.", e);
+        } catch (JobExecutionAlreadyRunningException e) {
+            LOGGER.info("Batch launch refused for job {}: an execution for these parameters is"
+                    + " already running", jobName);
+            throw new CardDemoException("Batch job " + jobName + " is already running for these"
+                    + " parameters. Wait for that execution to finish before submitting again.", e);
+        } catch (JobRestartException e) {
+            LOGGER.info("Batch launch refused for job {}: the instance cannot be restarted", jobName);
+            throw new CardDemoException("Batch job " + jobName + " cannot be restarted for these"
+                    + " parameters.", e);
         } catch (Exception e) {
-            // Covers an already-running instance, an already-complete instance, a
-            // restart violation and unusable parameters. Raising synchronously is the
-            // point: the caller must not be told a rejected submission was accepted.
+            // Anything else: unusable parameters, or a launcher that could not start.
+            // Raising synchronously is the point: the caller must not be told a rejected
+            // submission was accepted.
             LOGGER.error("Batch launch rejected for job {}: {}", jobName, e.getMessage());
             throw new CardDemoException("Unable to submit batch job " + jobName
                     + ": " + e.getMessage(), e);
@@ -165,6 +193,15 @@ public class BatchController {
         }
         String jobName = execution.getJobInstance() == null
                 ? "" : execution.getJobInstance().getJobName();
+        if (!LAUNCHABLE_JOBS.contains(jobName)) {
+            // The BATCH_JOB_EXECUTION table is SHARED by every service in this
+            // deployment, so a bare id lookup answered for executions this service does
+            // not own - a caller authorized for the batch jobs could read the status,
+            // exit code and sanitized exit description of a transaction-posting or
+            // statement run. An execution of another service's job is not found HERE.
+            throw new RecordNotFoundException(
+                    "No batch job execution found for id " + jobExecutionId);
+        }
         return toDto(jobName, execution);
     }
 
@@ -205,9 +242,18 @@ public class BatchController {
                     ? jobSchedulingConfig.launchInterestCalculation()
                     : jobSchedulingConfig.launchInterestCalculation(parmDate);
             case "transactionDetailReportJob" -> {
-                if (startDate == null || endDate == null) {
-                    // Neither window bound was supplied, so the JCL PARM defaults apply.
+                if (startDate == null && endDate == null) {
+                    // NEITHER bound was supplied, so the JCL DATEPARM defaults apply -
+                    // the run the mainframe operator submitted.
                     yield jobSchedulingConfig.launchTransactionDetailReport();
+                }
+                if (startDate == null || endDate == null) {
+                    // HALF a window is not a request for the defaults. Treating it as one
+                    // ran the report over the JCL range while the caller believed it had
+                    // named its own, and the resulting report reads as authoritative.
+                    throw new CardDemoException("transactionDetailReportJob takes startDate and"
+                            + " endDate together: supply both bounds in YYYY-MM-DD form, or"
+                            + " neither to run the legacy DATEPARM window.");
                 }
                 yield file == null
                         ? jobSchedulingConfig.launchTransactionDetailReport(startDate, endDate)

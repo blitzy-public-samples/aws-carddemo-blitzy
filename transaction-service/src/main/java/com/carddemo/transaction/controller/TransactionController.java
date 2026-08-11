@@ -22,6 +22,7 @@ import com.carddemo.common.dto.TransactionAddRequestDto;
 import com.carddemo.common.dto.TransactionAddResponseDto;
 import com.carddemo.common.dto.TransactionKeyResponseDto;
 import com.carddemo.common.dto.TransactionListRequestDto;
+import com.carddemo.common.web.PageParameterGuard;
 import com.carddemo.common.dto.TransactionKeyDto;
 import com.carddemo.common.dto.TransactionListResponseDto;
 import com.carddemo.common.dto.TransactionViewResponseDto;
@@ -80,7 +81,16 @@ public class TransactionController {
      */
     @GetMapping
     public TransactionListResponseDto listTransactions(@ModelAttribute TransactionListRequestDto request,
+                                                        @RequestParam(name = "pageNumber", required = false)
+                                                        Integer suppliedPageNumber,
                                                         HttpServletRequest httpRequest) {
+        // The bound DTO cannot distinguish an omitted pageNumber from an explicit 0 (the
+        // field is a primitive int, so both arrive as 0). The raw parameter is bound
+        // alongside it purely to tell those cases apart: omitted resolves to the first
+        // page, while a supplied 0 or negative value identifies no screen and is refused
+        // rather than silently clamped to the first page.
+        request.setPageNumber(
+                PageParameterGuard.requirePositivePage(suppliedPageNumber, "pageNumber"));
         SessionContext sessionContext = resolveSessionContext(httpRequest);
         TransactionListResponseDto response = transactionService.listTransactions(request, sessionContext);
         storeSessionContext(httpRequest, sessionContext);
@@ -102,19 +112,19 @@ public class TransactionController {
 
     /**
      * :purpose: Run the add screen's key-field edit on its own (``COTRN02C``
-     *  ``VALIDATE-INPUT-KEY-FIELDS``) and report the account/card pair it resolves.
-     *  ``PROCESS-ENTER-KEY`` performs that paragraph before the data-field checks, so the
-     *  screen needs the same lookup available before it examines its own fields; the
-     *  paragraph also writes the counterpart key back onto the map, which is why the
-     *  resolved pair is returned. Declared before the ``/{id}`` template so the literal
-     *  segment wins the mapping.
+     *     ``VALIDATE-INPUT-KEY-FIELDS``) and report the account/card pair it resolves.
+     *     ``PROCESS-ENTER-KEY`` performs that paragraph before the data-field checks, so the
+     *     screen needs the same lookup available before it examines its own fields; the paragraph
+     *     also writes the counterpart key back onto the map, which is why the resolved pair is
+     *     returned. Declared before the ``/{id}`` template so the literal segment wins the
+     *     mapping.
      * :param acctId: the ``ACTIDIN`` entry value; optional.
      * :param tranCardNum: the ``CARDNIN`` entry value; optional.
      * :returns: the resolved account id and card number (HTTP 200).
-     * :raises CardDemoException: when a key is non-numeric or neither key is present
-     *  (mapped to HTTP 400 by the shared ``GlobalExceptionHandler``).
-     * :raises RecordNotFoundException: when the cross-reference holds no such account or
-     *  card (mapped to HTTP 404).
+     * :raises CardDemoException: when a key is non-numeric or neither key is present (mapped
+     *     to HTTP 400 by the shared ``GlobalExceptionHandler``).
+     * :raises RecordNotFoundException: when the cross-reference holds no such account or card
+     *     (mapped to HTTP 404).
      */
     @GetMapping("/keys")
     public TransactionKeyResponseDto resolveKeys(
@@ -124,25 +134,25 @@ public class TransactionController {
     }
 
     /**
-     * :purpose: View a single transaction by its 16-character zero-padded id (CICS
-     *  ``CT01`` / ``COTRN01C``). The empty/blank-id guard and the not-found lookup are
-     *  business logic owned by the service; the raw parameter is passed straight through
-     *  without local validation, so the service's own literals answer every value.
+     * :purpose: View a single transaction by its 16-character zero-padded id (CICS ``CT01`` /
+     *     ``COTRN01C``). The empty/blank-id guard and the not-found lookup are business logic
+     *     owned by the service; the raw parameter is passed straight through without local
+     *     validation, so the service's own literals answer every value.
      * :param tranId: the 16-character zero-padded transaction id in its String wire form,
-     *  carried as a REQUEST PARAMETER rather than a path segment. ``TRNIDIN`` is an
-     *  ``X(16)`` field an operator may fill with any characters, and a value holding a
-     *  path separator does not survive as a path segment: an intermediary normalizes the
-     *  encoded form back into ``/..`` before it routes, which lifted the request out of
-     *  the API prefix and answered it with the SPA document instead of this endpoint --
-     *  a silently dead screen. A query parameter is not path-normalized, so the value
-     *  arrives verbatim and misses the read, which is what the legacy READ does too.
-     * :param httpRequest: the current servlet request; its already-established session,
-     *  when present, backs the externalized session context.
+     *     carried as a REQUEST PARAMETER rather than a path segment. ``TRNIDIN`` is an ``X(16)``
+     *     field an operator may fill with any characters, and a value holding a path separator
+     *     does not survive as a path segment: an intermediary normalizes the encoded form back
+     *     into ``/..`` before it routes, which lifted the request out of the API prefix and
+     *     answered it with the SPA document instead of this endpoint -- a silently dead screen. A
+     *     query parameter is not path-normalized, so the value arrives verbatim and misses the
+     *     read, which is what the legacy READ does too.
+     * :param httpRequest: the current servlet request; its already-established session, when
+     *     present, backs the externalized session context.
      * :returns: the view response DTO serialized as JSON (HTTP 200).
-     * :raises CardDemoException: for an empty or blank id (mapped to HTTP 400 by the
-     *  shared ``GlobalExceptionHandler``).
-     * :raises RecordNotFoundException: when no transaction exists for the id (mapped to
-     *  HTTP 404 by the shared ``GlobalExceptionHandler``).
+     * :raises CardDemoException: for an empty or blank id (mapped to HTTP 400 by the shared
+     *     ``GlobalExceptionHandler``).
+     * :raises RecordNotFoundException: when no transaction exists for the id (mapped to HTTP
+     *     404 by the shared ``GlobalExceptionHandler``).
      */
     @GetMapping("/detail")
     public TransactionViewResponseDto viewTransaction(
@@ -156,22 +166,21 @@ public class TransactionController {
 
     /**
      * :purpose: Resolve the add screen's two key fields from either one (``COTRN02C``
-     *  ``VALIDATE-INPUT-KEY-FIELDS``). The legacy program runs that paragraph BEFORE its
-     *  eleven data-field blank guards, and the cross-reference read inside it is what
-     *  publishes ``Account ID NOT found...`` and ``Card Number NOT found...``; exposing
-     *  it as its own step is what keeps those two literals reachable while a data field
-     *  is still empty. It is also the first thing ``COPY-LAST-TRAN-DATA`` performs, which
-     *  is why the copy-last action fills BOTH key fields.
-     * :param request: the key entry, carrying an account id, a card number, or neither.
-     *  It is a request BODY because one of the two members is a card number, and a URL
-     *  is recorded verbatim by every intermediary on the path.
-     * :param httpRequest: the current servlet request; its already-established session,
-     *  when present, backs the externalized session context.
+     *     ``VALIDATE-INPUT-KEY-FIELDS``). The legacy program runs that paragraph BEFORE its eleven
+     *     data-field blank guards, and the cross-reference read inside it is what publishes
+     *     ``Account ID NOT found...`` and ``Card Number NOT found...``; exposing it as its own
+     *     step is what keeps those two literals reachable while a data field is still empty. It is
+     *     also the first thing ``COPY-LAST-TRAN-DATA`` performs, which is why the copy-last action
+     *     fills BOTH key fields.
+     * :param request: the key entry, carrying an account id, a card number, or neither. It is
+     *     a request BODY because one of the two members is a card number, and a URL is recorded
+     *     verbatim by every intermediary on the path.
+     * :param httpRequest: the current servlet request; its already-established session, when
+     *     present, backs the externalized session context.
      * :returns: both keys at their declared widths (HTTP 200).
-     * :raises CardDemoException: when a key is non-numeric or neither key is present
-     *  (HTTP 400).
-     * :raises RecordNotFoundException: when the cross-reference holds no such key
-     *  (HTTP 404).
+     * :raises CardDemoException: when a key is non-numeric or neither key is present (HTTP
+     *     400).
+     * :raises RecordNotFoundException: when the cross-reference holds no such key (HTTP 404).
      */
     @PostMapping("/key")
     public TransactionKeyDto resolveAddKey(@Valid @RequestBody TransactionKeyDto request,

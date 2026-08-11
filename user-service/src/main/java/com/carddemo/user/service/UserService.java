@@ -55,27 +55,25 @@ import jakarta.persistence.OptimisticLockException;
 
 /**
  * Administrator-only user-CRUD business logic.
- *
  * :purpose: Re-platforms the legacy CICS COBOL programs ``COUSR00C``/``COUSR01C``/
- *     ``COUSR02C``/``COUSR03C`` (transactions ``CU00``-``CU03``) that manage the
- *     ``USRSEC`` security-user file: list/paging, add, read-for-display, update, and
- *     delete. Persists through {@link UserRepository}, maps entities and DTOs through
- *     {@link UserMapper}, and hashes credentials through the injected BCrypt-family
- *     {@link PasswordEncoder}; the raw password is handled only here and never stored
- *     or logged in clear text.
- * :output: {@link UserResponseDto} projections (id, first name, last name, user type)
- *     and verbatim outcome messages; failures surface as {@link RecordNotFoundException}
- *     (not found) or {@link CardDemoException} (all other rejections).
- * :note: Administration that changes what a user is allowed to do, or the credential
- *     that proves who they are, also revokes that user's live sessions through
- *     {@link SessionPrincipalIndex}. On the 3270 the next transaction re-read
- *     ``USRSEC``, so a maintenance action took effect immediately; a cached session
- *     context would otherwise keep a deleted user signed on, or keep a demoted
- *     administrator's authority alive, until the session timeout elapsed. Revocation is
- *     deliberately performed while the unit of work is still open: should the commit
- *     then fail, an already-revoked user is merely asked to sign on again, whereas
- *     revoking only after commit would leave a window in which the stale authority is
- *     still honoured. Renaming a user changes no authority and revokes nothing.
+ *     ``COUSR02C``/``COUSR03C`` (transactions ``CU00``-``CU03``) that manage the ``USRSEC``
+ *     security-user file: list/paging, add, read-for-display, update, and delete. Persists
+ *     through {@link UserRepository}, maps entities and DTOs through {@link UserMapper}, and
+ *     hashes credentials through the injected BCrypt-family {@link PasswordEncoder}; the raw
+ *     password is handled only here and never stored or logged in clear text.
+ * :output: {@link UserResponseDto} projections (id, first name, last name, user type) and
+ *     verbatim outcome messages; failures surface as {@link RecordNotFoundException} (not
+ *     found) or {@link CardDemoException} (all other rejections).
+ * :note: Administration that changes what a user is allowed to do, or the credential that
+ *     proves who they are, also revokes that user's live sessions through {@link
+ *     SessionPrincipalIndex}. On the 3270 the next transaction re-read ``USRSEC``, so a
+ *     maintenance action took effect immediately; a cached session context would otherwise
+ *     keep a deleted user signed on, or keep a demoted administrator's authority alive, until
+ *     the session timeout elapsed. Revocation is deliberately performed while the unit of work
+ *     is still open: should the commit then fail, an already-revoked user is merely asked to
+ *     sign on again, whereas revoking only after commit would leave a window in which the
+ *     stale authority is still honoured. Renaming a user changes no authority and revokes
+ *     nothing.
  */
 @Service
 public class UserService {
@@ -391,20 +389,19 @@ public class UserService {
 
     /**
      * :purpose: Add a new security user (``COUSR01C`` / ``CU01``): validate the entered
-     *     fields, reject a duplicate id, encode the credential, and persist as one unit of
-     *     work.
+     *     fields, reject a duplicate id, encode the credential, and persist as one unit of work.
      * :param request: the entered user id, first name, last name, user type, and the raw
-     *     password, which is encoded here before persistence and never stored or logged in
-     *     clear text.
-     * :returns: the persisted user projection plus the verbatim ``COUSR01C`` outcome
-     *     message ``'User <id> has been added ...'``.
+     *     password, which is encoded here before persistence and never stored or logged in clear
+     *     text.
+     * :returns: the persisted user projection plus the verbatim ``COUSR01C`` outcome message
+     *     ``'User <id> has been added ...'``.
      * :raises CardDemoException: when a required field is empty, the user type is not a
      *     recognised code, the user id already exists, or the insert fails unexpectedly.
      * :note: The duplicate-id check is written twice over. The pre-check keeps the verbatim
      *     legacy literal for the ordinary case, and the primary-key violation raised by a
-     *     concurrent inserter that won the race between the pre-check and the flush is
-     *     translated to the SAME literal, so two simultaneous creates yield exactly one row
-     *     and one 400 -- never two "created" answers for one stored row.
+     *     concurrent inserter that won the race between the pre-check and the flush is translated
+     *     to the SAME literal, so two simultaneous creates yield exactly one row and one 400 --
+     *     never two "created" answers for one stored row.
      */
     @Transactional
     public UserWriteResponseDto addUser(AddUserRequestDto request) {
@@ -542,26 +539,26 @@ public class UserService {
 
     /**
      * :purpose: Update an existing security user (``COUSR02C`` / ``CU02``): validate the
-     *     entered fields, read the current record, apply only the changed fields, re-encode
-     *     the credential when it changes, and persist as one unit of work.
-     * :param userId: the user id to update (the lookup key, supplied in the path); folded to its
-     *     canonical stored form, so the user may be addressed under any casing.
+     *     entered fields, read the current record, apply only the changed fields, re-encode the
+     *     credential when it changes, and persist as one unit of work.
+     * :param userId: the user id to update (the lookup key, supplied in the path); folded to
+     *     its canonical stored form, so the user may be addressed under any casing.
      * :param request: the entered first name, last name, user type, and OPTIONALLY the raw
      *     password. A supplied password is compared against the stored hash and re-encoded only
      *     when it differs; an absent or blank one leaves the stored credential untouched, so a
-     *     name or role change is not also a forced credential reset. The raw value is never
-     *     stored or logged in clear text.
-     * :returns: the updated user projection plus the verbatim ``COUSR02C`` outcome
-     *     message ``'User <id> has been updated ...'``.
-     * :note: The password is optional on this call: an absent or blank value leaves the
-     *     stored credential untouched, so a name-only or role-only edit is possible even
-     *     though the hash is never sent to the client. A supplied value replaces the
-     *     credential only when it does not already match it.
+     *     name or role change is not also a forced credential reset. The raw value is never stored
+     *     or logged in clear text.
+     * :returns: the updated user projection plus the verbatim ``COUSR02C`` outcome message
+     *     ``'User <id> has been updated ...'``.
+     * :note: The password is optional on this call: an absent or blank value leaves the stored
+     *     credential untouched, so a name-only or role-only edit is possible even though the hash
+     *     is never sent to the client. A supplied value replaces the credential only when it does
+     *     not already match it.
      * :raises RecordNotFoundException: when no user exists for ``userId``.
      * :raises CardDemoException: when a required field is empty, no field changed, or the
-     *     update fails unexpectedly. A user type outside the two codes the role model
-     *     recognises is refused by the ``chk_sec_usr_type`` database constraint and
-     *     reported with the legacy write-failure literal.
+     *     update fails unexpectedly. A user type outside the two codes the role model recognises
+     *     is refused by the ``chk_sec_usr_type`` database constraint and reported with the legacy
+     *     write-failure literal.
      * :raises OptimisticLockConflictException: when another writer changed the same record
      *     between this read and the flush, so the two edits cannot both be applied.
      */

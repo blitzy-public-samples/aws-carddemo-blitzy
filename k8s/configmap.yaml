@@ -65,6 +65,18 @@ data:
   # definitions (${AUTH_SERVICE_URI} ...). Every service resolves the others by
   # their Kubernetes Service name on the internal port 8080. Harmless for
   # non-gateway services (only the gateway reads them).
+  #
+  # A PLAIN http:// authority here, and deliberately not the `lb://` scheme the Compose
+  # profile uses: each of these names resolves to its Service's single ClusterIP, and
+  # kube-proxy is what distributes across the Deployment's ready pods. Client-side
+  # balancing would see exactly one address and add nothing. What the gateway DOES
+  # contribute in this topology is the bounded retry on the idempotent routes: the k8s
+  # profile binds the default route document, whose read routes carry it, so a request
+  # that reaches a pod as it terminates is re-issued on a new connection and kube-proxy
+  # sends it to a ready endpoint instead of the caller seeing 503. Balancing across pods
+  # from the gateway itself would need a headless Service (clusterIP: None) so DNS
+  # published pod addresses; that is a topology change, not a gateway change, and is not
+  # made here.
   AUTH_SERVICE_URI: "http://auth-service:8080"
   USER_SERVICE_URI: "http://user-service:8080"
   ACCOUNT_SERVICE_URI: "http://account-service:8080"
@@ -73,3 +85,170 @@ data:
   BILLPAY_SERVICE_URI: "http://billpay-service:8080"
   REPORTING_SERVICE_URI: "http://reporting-service:8080"
   BATCH_SERVICE_URI: "http://batch-service:8080"
+---
+# The Jaeger v2 collector configuration document, mounted at /etc/jaeger/config.yaml
+# by k8s/deployment-jaeger.yaml (which names it on the command line through
+# --config=file:...). It is a SEPARATE ConfigMap from carddemo-config above because
+# every Deployment consumes that one with envFrom, where a file-shaped value would
+# be injected into all of them as an environment variable.
+#
+# THIS DOCUMENT MUST STAY BYTE-IDENTICAL TO observability/jaeger-config.yaml, the
+# copy docker-compose.yml bind-mounts, so the collector behaves the same in both
+# runtimes; that file carries the full rationale for every value. There is no
+# kustomization.yaml in this directory (the manifests are applied with
+# `kubectl apply -f k8s/`), so the document is embedded rather than generated.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carddemo-jaeger-config
+  labels:
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: tracing
+data:
+  config.yaml: |
+    # ------------------------------------------------------------------------------
+    # CardDemo — Jaeger v2 collector configuration
+    #
+    # Rule-mandated observability infrastructure (Observability rule, AAP 0.7.5; no
+    # legacy analogue). Mounted read-only into the jaegertracing/jaeger container by
+    # the repository-root docker-compose.yml at /etc/jaeger/config.yaml and named on
+    # the command line as `--config=file:/etc/jaeger/config.yaml`; the identical
+    # document is carried in the `carddemo-jaeger-config` ConfigMap in
+    # k8s/configmap.yaml and mounted at the same path by k8s/deployment-jaeger.yaml.
+    #
+    # WHY THIS FILE EXISTS — THE BUILT-IN DEFAULT RETENTION EXCEEDS THE CONTAINER.
+    # Jaeger v2 ships an embedded default configuration whose in-memory trace store
+    # is bounded at `max_traces: 100000`. That bound counts TRACES, not bytes, so
+    # what it costs depends entirely on the shape of the traces the application
+    # produces — and this application's are large: one `GET /accounts/{id}` through
+    # the gateway is a 21-span trace. Measured (4800 successful requests, 101732
+    # spans, a store pinned at a known 2000 traces): the live Go heap settled at
+    # ~34 KB per stored trace. The embedded default therefore permits roughly 3.4 GB
+    # of live heap — about 4.2x the 768 MiB memory limit the container runs under. It
+    # is not a bound at all in this deployment: under load the store grows past the
+    # cgroup and the process is killed and restarted, losing every span it holds.
+    # There is no environment variable for `max_traces`, so bounding it requires
+    # owning the configuration document. Every other value here reproduces the
+    # embedded default so that the only behavioural deltas are the deliberate ones.
+    #
+    # THE BOUND AND THE SOFT MEMORY LIMIT ARE ONE CONTROL, NOT TWO. `max_traces`
+    # caps the LIVE set; GOMEMLIMIT (set alongside GOGC and GOMAXPROCS on the
+    # container, since the Go runtime otherwise sizes its heap from the HOST rather
+    # than from the cgroup) caps total heap. Setting only GOMEMLIMIT would trade the
+    # restart loop for a continuous-GC death spiral once the live set alone reached
+    # the soft limit; setting only `max_traces` would leave every other allocation
+    # path unbounded. Sized together from the measurements above:
+    #   6000 traces x 34 KB          ~= 204 MB live      (38% of GOMEMLIMIT)
+    #   x (1 + GOGC/100) = x 1.8     ~= 367 MB peak heap (68% of GOMEMLIMIT), so the
+    #                                   collection cycle is driven by GOGC and never
+    #                                   by the soft limit
+    #   + the measured ~1.3x/+40 MB non-heap and retained-span overhead
+    #                                ~= 520 MB resident  (65% of the 768 MiB limit,
+    #                                   below the 85% alert line in alert-rules.yml)
+    # The cost of the bound is retention depth: 6000 traces is minutes of traffic,
+    # not hours. That is the right trade for a store the deployment already declares
+    # ephemeral — a restart loses 100% of it, so a smaller window that always
+    # survives beats a larger one that is periodically destroyed, and a production
+    # deployment swaps in a durable backend rather than raising this number.
+    #
+    # COMPONENT SURFACE. The embedded default also starts the legacy `jaeger`
+    # (thrift/gRPC) and `zipkin` receivers, the `remote_sampling` extension (whose
+    # default file path is EMPTY yet is re-read every second), `expvar` and `zpages`,
+    # and the MCP AI gateway. Nothing in this repository references any of their
+    # ports: every service exports OTLP/HTTP to http://jaeger:4318/v1/traces, Grafana
+    # queries http://jaeger:16686, and the only other ports named anywhere are 4317
+    # (k8s/service-jaeger.yaml, k8s/networkpolicy.yaml) and 13133 (the probes). Each
+    # unused component costs listeners, goroutines and buffers inside a 0.5 CPU /
+    # 768 MiB budget that a restart loop has already proved to be tight, so the
+    # pipeline below keeps exactly the surface this deployment contracts for and
+    # drops the rest. Trace data remains ephemeral by design (AAP: traces are
+    # development evidence, not durable data), so no storage volume is mounted.
+    #
+    # Rationale: docs/decision-log.md.
+    # ------------------------------------------------------------------------------
+
+    service:
+      # jaeger_storage owns the trace store, jaeger_query serves the query API and UI
+      # on 16686, healthcheckv2 answers the container healthcheck and the Kubernetes
+      # probes on 13133.
+      extensions: [jaeger_storage, jaeger_query, healthcheckv2]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [jaeger_storage_exporter]
+      telemetry:
+        resource:
+          service.name: jaeger
+        metrics:
+          # `normal` rather than the embedded default's `detailed`. The counters this
+          # stack alerts on — otelcol_receiver_accepted_spans,
+          # otelcol_receiver_refused_spans, otelcol_exporter_sent_spans,
+          # otelcol_exporter_send_failed_spans and the otelcol_process_* gauges — are
+          # all emitted at basic level and below, so nothing observable is lost,
+          # while the high-cardinality per-signal series that `detailed` adds no
+          # longer occupy heap in the very process this file is bounding.
+          level: normal
+          readers:
+            - pull:
+                exporter:
+                  prometheus:
+                    # JAEGER_LISTEN_HOST is 0.0.0.0 in the image; the default keeps a
+                    # bare `docker run` on loopback exactly as upstream does.
+                    host: "${env:JAEGER_LISTEN_HOST:-localhost}"
+                    port: 8888
+        logs:
+          level: info
+
+    extensions:
+      jaeger_query:
+        storage:
+          traces: some_storage
+
+      jaeger_storage:
+        backends:
+          some_storage:
+            memory:
+              # The bound that makes the container limit survivable (see header).
+              # Overridable for a host with a different budget without editing this
+              # file; the default is the value this stack is verified against. A
+              # non-numeric override fails `jaeger validate` loudly rather than
+              # silently reverting to the unbounded default.
+              max_traces: ${env:JAEGER_MAX_TRACES:-6000}
+
+      healthcheckv2:
+        # use_v2 selects the structured status document at /status, which reports the
+        # aggregate health of every pipeline component as {"healthy":true,...} rather
+        # than merely proving a socket is bound.
+        use_v2: true
+        http:
+          endpoint: "${env:JAEGER_LISTEN_HOST:-localhost}:13133"
+
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "${env:JAEGER_LISTEN_HOST:-localhost}:4317"
+          http:
+            endpoint: "${env:JAEGER_LISTEN_HOST:-localhost}:4318"
+
+    processors:
+      # Explicit batch bounds. The processor's own defaults allow 8192 spans per
+      # batch with no maximum, so a burst is held whole in memory before it reaches
+      # the store; 512/1024 keeps peak batch occupancy at a fraction of that while
+      # staying far above this stack's measured p99 batch size.
+      batch:
+        send_batch_size: 512
+        send_batch_max_size: 1024
+        timeout: 5s
+
+    exporters:
+      jaeger_storage_exporter:
+        trace_storage: some_storage
+        # Explicit sending queue. Left unset, exporterhelper's default queue holds up
+        # to 1000 batches — another unbounded-in-practice buffer inside a bounded
+        # container. A 64-batch queue drained by 4 consumers applies backpressure to
+        # the receiver instead of accumulating heap.
+        queue:
+          num_consumers: 4
+          queue_size: 64

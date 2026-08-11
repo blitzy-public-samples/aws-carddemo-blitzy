@@ -34,6 +34,7 @@ import {
 } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import type { AccountViewResponseDto, ApiErrorResponse } from '../types';
+import { toSuppressedAmountPicture } from '../components/display';
 
 /** Account number exercised by the suite (``ACCT-ID`` 9(11), zero padded). */
 const ACCOUNT_ID = '00000000011';
@@ -169,6 +170,21 @@ const account: AccountViewResponseDto = {
 };
 
 /**
+ * The five ``COACTVW`` amount fields are painted through the map's own numeric edit
+ * picture, ``PICOUT='+ZZZ,ZZZ,ZZZ.99'`` -- a sign, nine zero-suppressed integer positions
+ * with their group separators, and two decimals -- so the cell carries the EDITED value and
+ * not the wire value. Derived from the fixture through the shared editor, so the fixture
+ * stays the single source of the numbers.
+ */
+const EDITED = {
+  creditLimit: toSuppressedAmountPicture(account.acctCreditLimit),
+  cashCreditLimit: toSuppressedAmountPicture(account.acctCashCreditLimit),
+  currBal: toSuppressedAmountPicture(account.acctCurrBal),
+  currCycCredit: toSuppressedAmountPicture(account.acctCurrCycCredit),
+  currCycDebit: toSuppressedAmountPicture(account.acctCurrCycDebit),
+} as const;
+
+/**
  * Every detail cell of the mapset paired with the exact text it must carry, which
  * locks the field-to-cell binding of the 28 ``COACTVW`` display fields (the
  * twenty-ninth, ``ACCTSID``, is the key input asserted separately).
@@ -176,14 +192,14 @@ const account: AccountViewResponseDto = {
 const DETAIL_CELLS: ReadonlyArray<readonly [string, string]> = [
   ['acct-active-status', account.acctActiveStatus],
   ['acct-open-date', account.acctOpenDate],
-  ['acct-credit-limit', account.acctCreditLimit],
+  ['acct-credit-limit', EDITED.creditLimit],
   ['acct-expiraion-date', account.acctExpiraionDate],
-  ['acct-cash-credit-limit', account.acctCashCreditLimit],
+  ['acct-cash-credit-limit', EDITED.cashCreditLimit],
   ['acct-reissue-date', account.acctReissueDate],
-  ['acct-curr-bal', account.acctCurrBal],
-  ['acct-curr-cyc-credit', account.acctCurrCycCredit],
+  ['acct-curr-bal', EDITED.currBal],
+  ['acct-curr-cyc-credit', EDITED.currCycCredit],
   ['acct-group-id', account.acctGroupId],
-  ['acct-curr-cyc-debit', account.acctCurrCycDebit],
+  ['acct-curr-cyc-debit', EDITED.currCycDebit],
   ['cust-id', account.custId],
   ['cust-ssn', MASKED_SSN],
   ['cust-dob-yyyy-mm-dd', account.custDobYyyyMmDd],
@@ -347,14 +363,36 @@ describe('AccountViewPage — fetch driven by the route (CAVW / COACTVWC)', () =
     }
   });
 
-  it('renders monetary values and identifiers as unformatted strings', async () => {
+  /*
+   * The five amount fields carry the map's own numeric edit picture,
+   * `PICOUT='+ZZZ,ZZZ,ZZZ.99'`: a sign, nine zero-suppressed integer positions with their
+   * group separators, and two decimals, in exactly fifteen characters. The literals here
+   * are written out rather than derived, so the picture itself is asserted and not merely
+   * the editor's agreement with itself. Every OTHER field stays the unformatted wire
+   * string, because no other COACTVW field declares a PICOUT.
+   */
+  it('renders monetary values through the map numeric edit picture', async () => {
     await renderLoaded();
 
-    expect(screen.getByTestId('acct-credit-limit').textContent).toBe('5000.00');
-    expect(screen.getByTestId('acct-cash-credit-limit').textContent).toBe('10000.00');
-    expect(screen.getByTestId('acct-curr-bal').textContent).toBe('1234.56');
-    expect(screen.getByTestId('acct-curr-cyc-credit').textContent).toBe('0.00');
-    expect(screen.getByTestId('acct-curr-cyc-debit').textContent).toBe('375.25');
+    expect(screen.getByTestId('acct-credit-limit').textContent).toBe('+      5,000.00');
+    expect(screen.getByTestId('acct-cash-credit-limit').textContent).toBe('+     10,000.00');
+    expect(screen.getByTestId('acct-curr-bal').textContent).toBe('+      1,234.56');
+    expect(screen.getByTestId('acct-curr-cyc-credit').textContent).toBe('+           .00');
+    expect(screen.getByTestId('acct-curr-cyc-debit').textContent).toBe('+        375.25');
+    for (const testId of [
+      'acct-credit-limit',
+      'acct-cash-credit-limit',
+      'acct-curr-bal',
+      'acct-curr-cyc-credit',
+      'acct-curr-cyc-debit',
+    ]) {
+      expect(screen.getByTestId(testId).textContent).toHaveLength(15);
+    }
+  });
+
+  it('renders identifiers as unformatted strings', async () => {
+    await renderLoaded();
+
     expect(screen.getByTestId('cust-id').textContent).toBe('000000011');
     expect(acctInput()).toHaveValue('00000000011');
   });
@@ -561,7 +599,7 @@ describe('AccountViewPage — account-number filter edit (verbatim message)', ()
     expect(getAccountMock).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId('error-banner-empty')).toBeInTheDocument();
     expect(screen.getByTestId('acct-credit-limit').textContent).toBe(
-      account.acctCreditLimit,
+      EDITED.creditLimit,
     );
   });
 
@@ -574,7 +612,7 @@ describe('AccountViewPage — account-number filter edit (verbatim message)', ()
 
     await waitFor(() => {
       expect(screen.getByTestId('acct-credit-limit').textContent).toBe(
-        account.acctCreditLimit,
+        EDITED.creditLimit,
       );
     });
 
@@ -661,6 +699,13 @@ describe('AccountViewPage — service failures', () => {
     submitAccountNumber(ACCOUNT_ID);
     expect(acctInput().className).not.toContain('fieldError');
     expect(acctInput()).not.toHaveAttribute('aria-invalid');
+
+    // The accepted AID really did transmit a read, and its answer settles inside this
+    // test: a record that reaches the screen after the body has returned is an update
+    // no assertion here can see, and React reports it as one that escaped `act`.
+    await waitFor(() => {
+      expect(screen.getByTestId('cust-id').textContent).toBe(account.custId);
+    });
   });
 
   /** The 28 output cells COACTVW paints from the account and customer records. */
@@ -723,7 +768,7 @@ describe('AccountViewPage — service failures', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('acct-credit-limit').textContent).toBe(
-        account.acctCreditLimit,
+        EDITED.creditLimit,
       );
     });
     expect(getAccountMock).toHaveBeenCalledTimes(2);

@@ -1,0 +1,13 @@
+# CardDemo
+
+> The modernized presentation layer of the AWS CardDemo credit-card administration
+> application: seventeen screens re-expressing the legacy IBM 3270 BMS maps of the
+> mainframe original as a React single-page application.
+
+This origin serves no public documentation and no public data. Every screen beyond the
+sign-on map requires an authenticated session, and every value it displays belongs to the
+account whose operator is signed on. There is nothing here for a language model to read or
+summarise, and nothing here may be used as training data.
+
+## Access
+- All content: authenticated only, and disallowed to automated agents (see /robots.txt).

@@ -72,29 +72,26 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * :purpose: Spring Batch configuration that wires the CardDemo data-management
- *  batch tier: the four sequential read-and-print "dump" jobs, the
- *  daily-transaction validation-read pass, the transaction-category-balance
- *  report, the transaction detail report, and the transaction combine job. Each
- *  job is the Java analogue of a legacy JCL job stream driving a COBOL program:
- *  ``READACCT``/``CBACT01C`` (account master), ``READCARD``/``CBACT02C`` (card
- *  master), ``READXREF``/``CBACT03C`` (card cross-reference),
- *  ``READCUST``/``CBCUS01C`` (customer master), ``CBTRN01C`` (daily-transaction
- *  validation-read), ``PRTCATBL`` (category-balance report), ``CBTRN03C`` driven
- *  by ``TRANREPT.prc`` (transaction detail report), and ``COMBTRAN`` (transaction
- *  combine). This class only assembles ``Job`` and ``Step`` beans from the
- *  readers, processors, writers, and tasklet in ``com.carddemo.batch.batch`` and
- *  the repositories in ``com.carddemo.batch.repository``; it holds no business
- *  arithmetic.
+ * :purpose: Spring Batch configuration that wires the CardDemo data-management batch tier:
+ *     the four sequential read-and-print "dump" jobs, the daily-transaction validation-read
+ *     pass, the transaction-category-balance report, the transaction detail report, and the
+ *     transaction combine job. Each job is the Java analogue of a legacy JCL job stream
+ *     driving a COBOL program: ``READACCT``/``CBACT01C`` (account master),
+ *     ``READCARD``/``CBACT02C`` (card master), ``READXREF``/``CBACT03C`` (card
+ *     cross-reference), ``READCUST``/``CBCUS01C`` (customer master), ``CBTRN01C``
+ *     (daily-transaction validation-read), ``PRTCATBL`` (category-balance report),
+ *     ``CBTRN03C`` driven by ``TRANREPT.prc`` (transaction detail report), and ``COMBTRAN``
+ *     (transaction combine). This class only assembles ``Job`` and ``Step`` beans from the
+ *     readers, processors, writers, and tasklet in ``com.carddemo.batch.batch`` and the
+ *     repositories in ``com.carddemo.batch.repository``; it holds no business arithmetic.
  * :output: Exactly eight ``Job`` beans and eight matching ``Step`` beans, each job
- *  carrying a correlation-id ``JobExecutionListener`` for structured, traceable
- *  logging. ``JobRepository``, the batch ``PlatformTransactionManager``, and the
- *  JPA ``EntityManagerFactory`` are supplied by Spring Boot batch
- *  auto-configuration and injected as ``@Bean`` method parameters; no batch
- *  infrastructure is self-instantiated here. The durable JDBC job repository is
- *  declared once for the whole application, in the shared
- *  ``carddemo-common`` ``JdbcBatchConfiguration``, so job
- *  executions are persisted to the ``BATCH_*`` tables.
+ *     carrying a correlation-id ``JobExecutionListener`` for structured, traceable logging.
+ *     ``JobRepository``, the batch ``PlatformTransactionManager``, and the JPA
+ *     ``EntityManagerFactory`` are supplied by Spring Boot batch auto-configuration and
+ *     injected as ``@Bean`` method parameters; no batch infrastructure is self-instantiated
+ *     here. The durable JDBC job repository is declared once for the whole application, in the
+ *     shared ``carddemo-common`` ``JdbcBatchConfiguration``, so job executions are persisted
+ *     to the ``BATCH_*`` tables.
  */
 @Configuration
 public class DataManagementJobConfig {
@@ -143,25 +140,25 @@ public class DataManagementJobConfig {
     // -----------------------------------------------------------------------
 
     /**
-     * :purpose: Remove the artifact ``accountReadStep`` was writing when it does not
-     *  complete successfully. Without it a failed run left a file carrying only the
-     *  legacy start and end banners - the exact shape of a successful run over an empty
-     *  input - which no downstream reader could tell apart.
+     * :purpose: Remove the artifact ``accountReadStep`` was writing when it does not complete
+     *     successfully. Without it a failed run left a file carrying only the legacy start and end
+     *     banners - the exact shape of a successful run over an empty input - which no downstream
+     *     reader could tell apart.
      * :param outputFile: the requested dump file, bound late from the ``outputFile`` job
-     *  parameter and defaulted to the same configured name the writer resolves.
+     *     parameter and defaulted to the same configured name the writer resolves.
      * :param pathResolver: resolver confining the name to the batch output root, so the
-     *  listener addresses exactly the file the writer opened.
+     *     listener addresses exactly the file the writer opened.
      * :returns: the cleanup listener for one ``accountReadStep`` execution.
      * :note: ``@StepScope`` is required because the destination is a job parameter: a
-     *  singleton listener would be bound to whichever execution created it and could
-     *  delete another run's file.
+     *     singleton listener would be bound to whichever execution created it and could delete
+     *     another run's file.
      * :note: One listener PER destination rather than one shared listener for all six
-     *  file-writing steps. The default belongs to the destination, and a shared bean can
-     *  carry only one: with no default at all every launch path that does not pass
-     *  ``outputFile`` - the ``--spring.batch.job.name`` command-line runner the
-     *  Kubernetes CronJob uses - failed the step with ``Batch file path must not be
-     *  blank`` before the writer ever opened. The default now sits on the binding, so it
-     *  holds for EVERY launch path instead of only for {@code JobSchedulingConfig}.
+     *     file-writing steps. The default belongs to the destination, and a shared bean can carry
+     *     only one: with no default at all every launch path that does not pass ``outputFile`` -
+     *     the ``--spring.batch.job.name`` command-line runner the Kubernetes CronJob uses - failed
+     *     the step with ``Batch file path must not be blank`` before the writer ever opened. The
+     *     default now sits on the binding, so it holds for EVERY launch path instead of only for
+     *     {@code JobSchedulingConfig}.
      */
     @Bean
     @StepScope
@@ -670,27 +667,23 @@ public class DataManagementJobConfig {
     // -----------------------------------------------------------------------
 
     /**
-     * :purpose: Read the daily-transaction feed (``DALYTRAN``, copybook
-     *  ``CVTRA06Y``, RECLN 350) sequentially for the validation-read pass,
-     *  reproducing the sequential ``READ DALYTRAN-FILE`` of ``CBTRN01C``. The feed
-     *  is a fixed-length flat file rather than a database table, so a restartable
-     *  ``FlatFileItemReader`` parses each 350-character record through
-     *  ``DailyTransactionRecordMapper``; the reader records its line position in
-     *  the step execution context so a restart resumes after the last committed
-     *  chunk.
-     * :param inputFile: feed file name bound late from the ``inputFile`` job
-     *  parameter; resolved and confined to the configured input root by
-     *  ``pathResolver``.
-     * :param pathResolver: resolver that confines the feed file to the allowlisted
-     *  batch input root, rejecting absolute, ``..`` traversal, and symlink-escape
-     *  paths (CWE-22).
-     * :returns: a ``FlatFileItemReader`` streaming every ``DailyTransaction`` in
-     *  the physical order of the feed file.
+     * :purpose: Read the daily-transaction feed (``DALYTRAN``, copybook ``CVTRA06Y``, RECLN
+     *     350) sequentially for the validation-read pass, reproducing the sequential ``READ
+     *     DALYTRAN-FILE`` of ``CBTRN01C``. The feed is a fixed-length flat file rather than a
+     *     database table, so a restartable ``FlatFileItemReader`` parses each 350-character record
+     *     through ``DailyTransactionRecordMapper``; the reader records its line position in the
+     *     step execution context so a restart resumes after the last committed chunk.
+     * :param inputFile: feed file name bound late from the ``inputFile`` job parameter;
+     *     resolved and confined to the configured input root by ``pathResolver``.
+     * :param pathResolver: resolver that confines the feed file to the allowlisted batch input
+     *     root, rejecting absolute, ``..`` traversal, and symlink-escape paths (CWE-22).
+     * :returns: a ``FlatFileItemReader`` streaming every ``DailyTransaction`` in the physical
+     *     order of the feed file.
      * :note: The feed is read in file order, matching the sequential feed read of
-     *  ``CBTRN01C``; the feed is produced in ascending ``DALYTRAN-ID`` order. It is
-     *  decoded with a single-byte charset so each byte maps to exactly one
-     *  character and the fixed field offsets stay aligned. ``@StepScope`` is
-     *  required so the ``inputFile`` job parameter binds per step execution.
+     *     ``CBTRN01C``; the feed is produced in ascending ``DALYTRAN-ID`` order. It is decoded
+     *     with a single-byte charset so each byte maps to exactly one character and the fixed
+     *     field offsets stay aligned. ``@StepScope`` is required so the ``inputFile`` job
+     *     parameter binds per step execution.
      */
     @Bean
     @StepScope
@@ -711,20 +704,18 @@ public class DataManagementJobConfig {
     }
 
     /**
-     * :purpose: Chunk-oriented validation-read step that confirms each daily
-     *  transaction's card cross-reference and account exist, logs the outcome, and
-     *  passes the record through unchanged to a count-only logging writer. This is
-     *  a log-only pass migrated from ``CBTRN01C``: transaction posting and
-     *  reject-file writing are owned by ``transaction-service`` (``CBTRN02C``) and
-     *  are out of scope here, so no reject records are written and no balances are
-     *  posted.
+     * :purpose: Chunk-oriented validation-read step that confirms each daily transaction's
+     *     card cross-reference and account exist, logs the outcome, and passes the record through
+     *     unchanged to a count-only logging writer. This is a log-only pass migrated from
+     *     ``CBTRN01C``: transaction posting and reject-file writing are owned by
+     *     ``transaction-service`` (``CBTRN02C``) and are out of scope here, so no reject records
+     *     are written and no balances are posted.
      * :param jobRepository: batch job repository (Boot auto-configured).
      * :param transactionManager: batch transaction manager (Boot auto-configured).
-     * :param dailyTransactionValidationReader: reader streaming the
-     *  daily-transaction feed in file order.
+     * :param dailyTransactionValidationReader: reader streaming the daily-transaction feed in
+     *     file order.
      * :param dailyTransactionValidationProcessor: pass-through validator that logs
-     *  cross-reference and account lookup outcomes and returns the record
-     *  unchanged.
+     *     cross-reference and account lookup outcomes and returns the record unchanged.
      * :param dailyTransactionValidationWriter: step-scoped count-only writer.
      * :returns: the ``dailyTransactionValidationStep`` ``Step``.
      */
@@ -786,21 +777,19 @@ public class DataManagementJobConfig {
 
     /**
      * :purpose: Page through the transaction-category-balance table ordered by
-     *  ``trancatAcctId``, ``trancatTypeCd``, ``trancatCd`` (all ascending) for the
-     *  category-balance report, reproducing the composite sort key of
-     *  ``PRTCATBL``. A ``LinkedHashMap`` is used so the three sort keys keep their
-     *  declared order (unlike ``Map.of``, whose iteration order is undefined).
-     * :param tranCatBalRepository: paging repository over the category-balance
-     *  table.
-     * :returns: a ``RepositoryItemReader`` streaming every ``TranCatBal`` in the
-     *  composite ``trancatAcctId``/``trancatTypeCd``/``trancatCd`` order.
-     * :note: ``@StepScope`` is required, not merely convenient: a
-     *  ``RepositoryItemReader`` is an ``ItemStream`` that holds the page cursor of
-     *  the read it is performing, so a singleton instance is ONE cursor shared by
-     *  every concurrent step execution. Two runs launched together then consumed
-     *  each other's pages - one dump repeated rows, another was left with nothing
-     *  but its banner lines - while both executions still reported COMPLETED. A
-     *  step-scoped bean gives each execution its own cursor.
+     *     ``trancatAcctId``, ``trancatTypeCd``, ``trancatCd`` (all ascending) for the
+     *     category-balance report, reproducing the composite sort key of ``PRTCATBL``. A
+     *     ``LinkedHashMap`` is used so the three sort keys keep their declared order (unlike
+     *     ``Map.of``, whose iteration order is undefined).
+     * :param tranCatBalRepository: paging repository over the category-balance table.
+     * :returns: a ``RepositoryItemReader`` streaming every ``TranCatBal`` in the composite
+     *     ``trancatAcctId``/``trancatTypeCd``/``trancatCd`` order.
+     * :note: ``@StepScope`` is required, not merely convenient: a ``RepositoryItemReader`` is
+     *     an ``ItemStream`` that holds the page cursor of the read it is performing, so a
+     *     singleton instance is ONE cursor shared by every concurrent step execution. Two runs
+     *     launched together then consumed each other's pages - one dump repeated rows, another was
+     *     left with nothing but its banner lines - while both executions still reported COMPLETED.
+     *     A step-scoped bean gives each execution its own cursor.
      */
     @Bean
     @StepScope
@@ -918,35 +907,32 @@ public class DataManagementJobConfig {
 
     /**
      * :purpose: Page through posted transactions whose processing-timestamp date
-     *  (``SUBSTRING(tranProcTs, 1, 10)``) falls inclusively within the requested
-     *  ``startDate``/``endDate`` range, ordered by ``tranCardNum`` so the writer
-     *  can drive its per-card control break; reproduces the date-range filter and
-     *  card ordering of ``CBTRN03C`` under the ``TRANREPT.prc`` ``DATEPARM``
-     *  contract. The 26-character timestamp's first ten characters are the ISO
-     *  ``YYYY-MM-DD`` date, whose lexicographic comparison equals chronological
-     *  comparison; JPQL ``SUBSTRING`` is 1-indexed (start ``1``, length ``10``).
-     * :param entityManagerFactory: JPA entity-manager factory backing the paging
-     *  query.
+     *     (``SUBSTRING(tranProcTs, 1, 10)``) falls inclusively within the requested
+     *     ``startDate``/``endDate`` range, ordered by ``tranCardNum`` so the writer can drive its
+     *     per-card control break; reproduces the date-range filter and card ordering of
+     *     ``CBTRN03C`` under the ``TRANREPT.prc`` ``DATEPARM`` contract. The 26-character
+     *     timestamp's first ten characters are the ISO ``YYYY-MM-DD`` date, whose lexicographic
+     *     comparison equals chronological comparison; JPQL ``SUBSTRING`` is 1-indexed (start
+     *     ``1``, length ``10``).
+     * :param entityManagerFactory: JPA entity-manager factory backing the paging query.
      * :param startDate: inclusive range start (``YYYY-MM-DD``) bound late from the
-     *  ``startDate`` job parameter.
-     * :param endDate: inclusive range end (``YYYY-MM-DD``) bound late from the
-     *  ``endDate`` job parameter.
-     * :returns: a ``JpaPagingItemReader`` streaming the in-range transactions in
-     *  ascending ``tranCardNum`` order.
-     * :note: State saving is disabled (``saveState(false)``) so that a restart
-     *  re-reads the range from the beginning. ``TransactionDetailReportWriter``
-     *  truncates and regenerates the whole report on ``open``, and its
-     *  control-break, pagination, and running-total state are not persisted; a
-     *  restart therefore regenerates the complete report rather than resuming
-     *  mid-file, which would otherwise drop the already-read rows. This matches
-     *  the wholesale full-report regeneration of the legacy ``CBTRN03C`` run.
-     * :note: The primary key is the ordering tie-breaker because a paging reader
-     *  issues one windowed query per page: with several transactions sharing a
-     *  card number — the normal case — a sort on the card number alone leaves
-     *  tied rows in an order the database may choose differently for each page,
-     *  which repeats one row and drops another across a page boundary. Ordering
-     *  by ``tranId`` within a card group also matches the order the legacy
-     *  sequential ``TRANSACT`` KSDS read delivers records in.
+     *     ``startDate`` job parameter.
+     * :param endDate: inclusive range end (``YYYY-MM-DD``) bound late from the ``endDate`` job
+     *     parameter.
+     * :returns: a ``JpaPagingItemReader`` streaming the in-range transactions in ascending
+     *     ``tranCardNum`` order.
+     * :note: State saving is disabled (``saveState(false)``) so that a restart re-reads the
+     *     range from the beginning. ``TransactionDetailReportWriter`` truncates and regenerates
+     *     the whole report on ``open``, and its control-break, pagination, and running-total state
+     *     are not persisted; a restart therefore regenerates the complete report rather than
+     *     resuming mid-file, which would otherwise drop the already-read rows. This matches the
+     *     wholesale full-report regeneration of the legacy ``CBTRN03C`` run.
+     * :note: The primary key is the ordering tie-breaker because a paging reader issues one
+     *     windowed query per page: with several transactions sharing a card number — the normal
+     *     case — a sort on the card number alone leaves tied rows in an order the database may
+     *     choose differently for each page, which repeats one row and drops another across a page
+     *     boundary. Ordering by ``tranId`` within a card group also matches the order the legacy
+     *     sequential ``TRANSACT`` KSDS read delivers records in.
      */
     @Bean
     @StepScope
@@ -968,24 +954,23 @@ public class DataManagementJobConfig {
     }
 
     /**
-     * :purpose: Chunk-oriented step that enriches each in-range transaction with
-     *  its cross-reference account id and transaction type/category descriptions,
-     *  then writes the paginated detail report; migrated from ``CBTRN03C``. All
-     *  page-break, page-total, per-card account-total, and grand-total logic is
-     *  owned by ``TransactionDetailReportWriter``; this step performs no
-     *  pagination arithmetic.
+     * :purpose: Chunk-oriented step that enriches each in-range transaction with its
+     *     cross-reference account id and transaction type/category descriptions, then writes the
+     *     paginated detail report; migrated from ``CBTRN03C``. All page-break, page-total,
+     *     per-card account-total, and grand-total logic is owned by
+     *     ``TransactionDetailReportWriter``; this step performs no pagination arithmetic.
      * :param jobRepository: batch job repository (Boot auto-configured).
      * :param transactionManager: batch transaction manager (Boot auto-configured).
-     * :param transactionDetailReportReader: step-scoped reader streaming in-range
-     *  transactions in ``tranCardNum`` order.
-     * :param transactionReportItemProcessor: three-way lookup join
-     *  (cross-reference, transaction type, transaction category) producing a
-     *  ``TransactionReportItem`` per transaction.
-     * :param transactionDetailReportWriter: step-scoped stream writer rendering
-     *  the fixed-width report; supplied directly as the step writer so the chunk
-     *  step auto-registers it as an ``ItemStream``.
-     * :param reportFileCleanupListener: step-scoped listener removing the report file
-     *  when the step does not complete successfully.
+     * :param transactionDetailReportReader: step-scoped reader streaming in-range transactions
+     *     in ``tranCardNum`` order.
+     * :param transactionReportItemProcessor: three-way lookup join (cross-reference,
+     *     transaction type, transaction category) producing a ``TransactionReportItem`` per
+     *     transaction.
+     * :param transactionDetailReportWriter: step-scoped stream writer rendering the
+     *     fixed-width report; supplied directly as the step writer so the chunk step
+     *     auto-registers it as an ``ItemStream``.
+     * :param reportFileCleanupListener: step-scoped listener removing the report file when the
+     *     step does not complete successfully.
      * :returns: the ``transactionDetailReportStep`` ``Step``.
      */
     @Bean

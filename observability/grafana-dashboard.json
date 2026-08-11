@@ -93,7 +93,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(up{job!=\"prometheus\"})",
+          "expr": "sum(up{job!~\"prometheus|jaeger\"})",
           "legendFormat": "",
           "range": true,
           "instant": false,
@@ -412,7 +412,7 @@
     {
       "id": 8,
       "type": "timeseries",
-      "title": "Latency Quantiles — Global (p50/p95/p99)",
+      "title": "Latency Quantiles \u2014 Global (p50/p95/p99)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1025,7 +1025,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "up{job=~\"$job\", job!=\"prometheus\"}",
+          "expr": "up{job=~\"$job\", job!~\"prometheus|jaeger\"}",
           "legendFormat": "{{job}}",
           "range": true,
           "instant": false,
@@ -1222,7 +1222,7 @@
     {
       "id": 18,
       "type": "row",
-      "title": "PostgreSQL — HikariCP (pool / latency / errors)",
+      "title": "PostgreSQL \u2014 HikariCP (pool / latency / errors)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1235,7 +1235,7 @@
     {
       "id": 19,
       "type": "timeseries",
-      "title": "DB Pool — Connections Active",
+      "title": "DB Pool \u2014 Connections Active",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1328,7 +1328,7 @@
     {
       "id": 20,
       "type": "timeseries",
-      "title": "DB Pool — Pending (threads waiting)",
+      "title": "DB Pool \u2014 Pending (threads waiting)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1607,7 +1607,7 @@
     {
       "id": 23,
       "type": "row",
-      "title": "Redis — Lettuce (rate / latency)",
+      "title": "Redis \u2014 Lettuce (rate / latency)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1995,7 +1995,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (spring_batch_job_name, spring_batch_job_status) (spring_batch_job_seconds_count{job=~\"$job\"})",
-          "legendFormat": "{{spring_batch_job_name}} — {{spring_batch_job_status}}",
+          "legendFormat": "{{spring_batch_job_name}} \u2014 {{spring_batch_job_status}}",
           "range": true,
           "instant": false,
           "refId": "A"
@@ -2495,6 +2495,374 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 35,
+      "type": "row",
+      "title": "Tracing backend (Jaeger)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 68
+      },
+      "panels": []
+    },
+    {
+      "id": 36,
+      "type": "timeseries",
+      "title": "Tracing \u2014 Spans Accepted vs Exported (loss visible)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 69
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(otelcol_receiver_accepted_spans{job=\"jaeger\"}[5m]))",
+          "legendFormat": "accepted",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(otelcol_exporter_sent_spans{job=\"jaeger\"}[5m]))",
+          "legendFormat": "exported to store",
+          "range": true,
+          "instant": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(otelcol_receiver_refused_spans{job=\"jaeger\"}[5m]))",
+          "legendFormat": "refused",
+          "range": true,
+          "instant": false,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(otelcol_receiver_failed_spans{job=\"jaeger\"}[5m]))",
+          "legendFormat": "receiver failed",
+          "range": true,
+          "instant": false,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(otelcol_exporter_send_failed_spans{job=\"jaeger\"}[5m]))",
+          "legendFormat": "export failed",
+          "range": true,
+          "instant": false,
+          "refId": "E"
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "type": "timeseries",
+      "title": "Tracing \u2014 Collector Memory vs 768 MiB Limit",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 69
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 684510413
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "otelcol_process_memory_rss{job=\"jaeger\"}",
+          "legendFormat": "resident (RSS)",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "otelcol_process_runtime_heap_alloc_bytes{job=\"jaeger\"}",
+          "legendFormat": "live heap",
+          "range": true,
+          "instant": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "otelcol_process_runtime_total_sys_memory_bytes{job=\"jaeger\"}",
+          "legendFormat": "reserved from OS",
+          "range": true,
+          "instant": false,
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 38,
+      "type": "timeseries",
+      "title": "Tracing \u2014 Collector Uptime (a reset is a restart)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 69
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "min"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "otelcol_process_uptime{job=\"jaeger\"}",
+          "legendFormat": "uptime",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
@@ -2527,10 +2895,10 @@
           "uid": "${DS_PROMETHEUS}"
         },
         "query": {
-          "query": "label_values(up{job!=\"prometheus\"}, job)",
+          "query": "label_values(up{job!~\"prometheus|jaeger\"}, job)",
           "refId": "StandardVariableQuery"
         },
-        "definition": "label_values(up{job!=\"prometheus\"}, job)",
+        "definition": "label_values(up{job!~\"prometheus|jaeger\"}, job)",
         "current": {
           "text": [
             "All"
@@ -2555,8 +2923,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "CardDemo — Services Observability",
+  "title": "CardDemo \u2014 Services Observability",
   "uid": "carddemo-observability",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

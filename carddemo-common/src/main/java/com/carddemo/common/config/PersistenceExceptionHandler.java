@@ -31,23 +31,21 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 
 /**
- * :purpose: Translate persistence-layer concurrency failures that escape a service's
- *     own catch block into the legacy CICS concurrency outcome. ``COACTUPC``
- *     implements a read-snapshot-compare-rewrite pattern whose
- *     ``DATA-WAS-CHANGED-BEFORE-UPDATE`` condition reports
- *     ``'Record changed by some one else. Please review'``
- *     (``app/cbl/COACTUPC.cbl`` L522); the migrated services express that with JPA
- *     ``@Version`` optimistic locking (AAP 0.6.2). When the version mismatch is only
- *     detected at transaction commit — after the service method has returned — the
- *     resulting {@link OptimisticLockingFailureException} would otherwise surface as
- *     an unexpected HTTP 500 instead of that outcome.
- * :output: HTTP 409 carrying the standard {@code ErrorResponse} envelope — the frozen COBOL
- *     message, the conflict error code, the trace id and the correlation id — for every service
- *     whose classpath includes Spring's ORM support.
- * :note: Declared separately from {@link GlobalExceptionHandler} and guarded by
- *     {@link ConditionalOnClass} because the API gateway carries no persistence
- *     dependencies; loading a handler whose signature references a Spring ORM type
- *     there would fail context initialization.
+ * :purpose: Translate persistence-layer concurrency failures that escape a service's own
+ *     catch block into the legacy CICS concurrency outcome. ``COACTUPC`` implements a
+ *     read-snapshot-compare-rewrite pattern whose ``DATA-WAS-CHANGED-BEFORE-UPDATE`` condition
+ *     reports ``'Record changed by some one else. Please review'`` (``app/cbl/COACTUPC.cbl``
+ *     L522); the migrated services express that with JPA ``@Version`` optimistic locking (AAP
+ *     0.6.2). When the version mismatch is only detected at transaction commit — after the
+ *     service method has returned — the resulting {@link OptimisticLockingFailureException}
+ *     would otherwise surface as an unexpected HTTP 500 instead of that outcome.
+ * :output: HTTP 409 carrying the standard {@code ErrorResponse} envelope — the frozen
+ *     COBOL message, the conflict error code, the trace id and the correlation id — for every
+ *     service whose classpath includes Spring's ORM support.
+ * :note: Declared separately from {@link GlobalExceptionHandler} and guarded by {@link
+ *     ConditionalOnClass} because the API gateway carries no persistence dependencies; loading
+ *     a handler whose signature references a Spring ORM type there would fail context
+ *     initialization.
  */
 @RestControllerAdvice
 @ConditionalOnClass(name = "org.springframework.orm.ObjectOptimisticLockingFailureException")
@@ -60,20 +58,20 @@ public class PersistenceExceptionHandler {
     /**
      * :purpose: Map any Spring data-access optimistic-locking failure — including the
      *     ``ObjectOptimisticLockingFailureException`` Hibernate raises from a
-     *     ``StaleStateException`` at flush or commit — onto HTTP 409 and the frozen
-     *     COBOL concurrency message.
+     *     ``StaleStateException`` at flush or commit — onto HTTP 409 and the frozen COBOL
+     *     concurrency message.
      * :param ex: the optimistic-locking failure raised by the persistence layer.
      * :param request: the current web request, used for the ``path`` field.
-     * :returns: HTTP 409 with the standard error envelope, carrying
-     *     {@link GlobalExceptionHandler#ERROR_CODE_CONFLICT}.
+     * :returns: HTTP 409 with the standard error envelope, carrying {@link
+     *     GlobalExceptionHandler#ERROR_CODE_CONFLICT}.
      * :note: The envelope is assembled by the shared {@link ErrorResponseFactory}, exactly as
      *     {@link GlobalExceptionHandler} assembles its own conflict response. Building it here by
      *     hand left ``correlationId`` and ``errorCode`` null on this path alone, so an account or
      *     bill-payment conflict — which reaches THIS advice, because the version mismatch is only
      *     detected when the transaction flushes at commit, after the service's catch has already
-     *     returned — answered with a thinner envelope than a card conflict, which reaches the other
-     *     advice. The message was right either way; what a caller could not do was branch on the
-     *     conflict or correlate the response with its request.
+     *     returned — answered with a thinner envelope than a card conflict, which reaches the
+     *     other advice. The message was right either way; what a caller could not do was branch on
+     *     the conflict or correlate the response with its request.
      */
     @ExceptionHandler(OptimisticLockingFailureException.class)
     public ResponseEntity<ErrorResponse> handleOptimisticLockingFailure(
@@ -89,17 +87,17 @@ public class PersistenceExceptionHandler {
 
     /**
      * :purpose: Recover the at-rest encryption failure that Hibernate hides. When an
-     *     ``AttributeConverter`` throws while a column is being read or written, Hibernate
-     *     wraps the cause in its own ``HibernateException`` and Spring re-wraps that as a
-     *     {@link JpaSystemException}, so the {@link PiiEncryptionException} raised by
-     *     ``CryptoConverter`` never reaches the handler registered for it. This handler walks
-     *     the cause chain and, when it finds that domain type, answers with the standard
-     *     envelope and the frozen non-disclosing message instead of an opaque ORM error.
+     *     ``AttributeConverter`` throws while a column is being read or written, Hibernate wraps
+     *     the cause in its own ``HibernateException`` and Spring re-wraps that as a {@link
+     *     JpaSystemException}, so the {@link PiiEncryptionException} raised by ``CryptoConverter``
+     *     never reaches the handler registered for it. This handler walks the cause chain and,
+     *     when it finds that domain type, answers with the standard envelope and the frozen
+     *     non-disclosing message instead of an opaque ORM error.
      * :param ex: the ORM system failure raised by the persistence layer.
      * :param request: the current web request, used for the ``path`` field.
      * :returns: HTTP 500 with the standard error envelope.
-     * :raises JpaSystemException: rethrown unchanged when the cause chain carries no
-     *     at-rest encryption failure, so unrelated ORM faults keep their own handling.
+     * :raises JpaSystemException: rethrown unchanged when the cause chain carries no at-rest
+     *     encryption failure, so unrelated ORM faults keep their own handling.
      */
     @ExceptionHandler(JpaSystemException.class)
     public ResponseEntity<ErrorResponse> handleJpaSystemException(JpaSystemException ex,

@@ -65,13 +65,24 @@ class PostingJobCompletionListenerTest {
 
     private PostingJobCompletionListener listener;
 
+    /**
+     * :purpose: Stands in for the durable metadata store the listener consults to find the
+     *     OTHER executions of the same job instance. Stubbed empty by default, so a fixture
+     *     that registers only the current execution tallies only that execution.
+     */
+    private org.springframework.batch.core.repository.JobRepository jobRepository;
+
     private ch.qos.logback.classic.Logger listenerLogger;
 
     private ListAppender<ILoggingEvent> logAppender;
 
     @BeforeEach
     void attachLogAppender() {
-        listener = new PostingJobCompletionListener();
+        jobRepository =
+                org.mockito.Mockito.mock(org.springframework.batch.core.repository.JobRepository.class);
+        org.mockito.Mockito.when(jobRepository.getJobExecutions(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of());
+        listener = new PostingJobCompletionListener(jobRepository);
         LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
         listenerLogger = context.getLogger(PostingJobCompletionListener.class);
         logAppender = new ListAppender<>();
@@ -220,27 +231,33 @@ class PostingJobCompletionListenerTest {
         }
 
         @Test
-        @DisplayName("a non-COMPLETED step execution is excluded from both tallies")
-        void incompleteStepExecutionsAreNotTallied() {
+        @DisplayName("a step execution that ended abnormally contributes exactly what it committed")
+        void abnormalStepExecutionContributesItsCommittedWork() {
             JobExecution execution = jobExecution(BatchStatus.COMPLETED);
             StepExecution failed = new StepExecution(1L, STEP_NAME, execution);
             if (!execution.getStepExecutions().contains(failed)) {
                 execution.addStepExecution(failed);
             }
             failed.setStatus(BatchStatus.FAILED);
+            // The observed shape of a partially committed posting step: it READ one more
+            // record than it committed, because the in-flight chunk rolled back.
             failed.setReadCount(50L);
+            failed.setWriteCount(49L);
             failed.getExecutionContext()
                     .putLong(PostingJobCompletionListener.REJECT_COUNT_KEY, 9L);
 
             listener.afterJob(execution);
 
-            // The failed partial execution's 50 reads and 9 rejects are excluded, so a
-            // restarted run can never double-count them.
+            // 49 committed, not the 50 read: counting the read of the rolled-back chunk
+            // would report one more record than the feed holds once a restart adds its
+            // own reads. The 9 rejects WERE committed - the execution context is persisted
+            // in the chunk transaction - and they are already in the instance's reject
+            // generation, so dropping them would under-report the delivered file.
             assertThat(loggedLines()).containsExactly(
-                    "TRANSACTIONS PROCESSED :0",
-                    "TRANSACTIONS REJECTED  :0");
+                    "TRANSACTIONS PROCESSED :49",
+                    "TRANSACTIONS REJECTED  :9");
             assertThat(execution.getExitStatus().getExitCode())
-                    .isEqualTo(ExitStatus.COMPLETED.getExitCode());
+                    .isEqualTo("COMPLETED_WITH_REJECTS");
         }
 
         @Test
@@ -306,6 +323,113 @@ class PostingJobCompletionListenerTest {
                     "TRANSACTIONS PROCESSED :10",
                     "TRANSACTIONS REJECTED  :0");
             assertThat(execution.getExitStatus().getExitCode()).isEqualTo("COMPLETED");
+        }
+    }
+
+    @Nested
+    @DisplayName("Tally across every execution of a restarted instance")
+    class RestartedInstanceTally {
+
+        /**
+         * Builds an EARLIER execution of the same job instance, as the metadata store returns
+         * it on a restart.
+         *
+         * :param executionId: id of the earlier execution, distinct from the current one.
+         * :param status: the status that earlier execution ended in.
+         * :param readCount: records its step committed.
+         * :param rejectCount: rejects its step published.
+         * :output: the earlier execution, with one registered step execution.
+         */
+        private JobExecution earlierExecution(long executionId, BatchStatus status,
+                                              long readCount, long rejectCount) {
+            JobExecution earlier =
+                    new JobExecution(executionId, new JobInstance(1L, JOB_NAME), new JobParameters());
+            earlier.setStatus(status);
+            StepExecution stepExecution = new StepExecution(executionId, STEP_NAME, earlier);
+            if (!earlier.getStepExecutions().contains(stepExecution)) {
+                earlier.addStepExecution(stepExecution);
+            }
+            // The step row of a failed execution carries the FAILED status, and its
+            // counters describe what it committed before failing: it read one record more
+            // than it committed, because the in-flight chunk rolled back. This is the
+            // shape observed in BATCH_STEP_EXECUTION for the reproduced failure
+            // (status FAILED, read 5, write 4, commit 4, rollback 1).
+            stepExecution.setStatus(status == BatchStatus.COMPLETED
+                    ? BatchStatus.COMPLETED : BatchStatus.FAILED);
+            stepExecution.setReadCount(status == BatchStatus.COMPLETED ? readCount : readCount + 1);
+            stepExecution.setWriteCount(readCount);
+            stepExecution.getExecutionContext()
+                    .putLong(PostingJobCompletionListener.REJECT_COUNT_KEY, rejectCount);
+            return earlier;
+        }
+
+        /**
+         * :purpose: A restart resumes after the last committed record, so the rejects the
+         *     failed execution already committed are NOT reprocessed by the restart. Tallying
+         *     only the current execution therefore under-reported the instance: the run
+         *     announced fewer rejected transactions than the published reject file contained,
+         *     and the difference was silent. The tally must span the whole instance.
+         */
+        @Test
+        @DisplayName("the tally spans the failed execution and the restart that completed it")
+        void tallySpansEveryExecutionOfTheInstance() {
+            JobExecution restart =
+                    new JobExecution(2L, new JobInstance(1L, JOB_NAME), new JobParameters());
+            restart.setStatus(BatchStatus.COMPLETED);
+            restart.setExitStatus(ExitStatus.COMPLETED);
+            step(restart, BatchStatus.COMPLETED, 100L, 3L);
+            org.mockito.Mockito.when(jobRepository.getJobExecutions(restart.getJobInstance()))
+                    .thenReturn(List.of(earlierExecution(1L, BatchStatus.FAILED, 200L, 5L), restart));
+
+            listener.afterJob(restart);
+
+            // 200 committed by the failed execution (it read 201; the 201st chunk rolled
+            // back) plus the restart's 100, and 5 + 3 rejected across the instance. The
+            // return code reflects the instance total rather than the restart's own share.
+            assertThat(loggedLines()).containsExactly(
+                    "TRANSACTIONS PROCESSED :300",
+                    "TRANSACTIONS REJECTED  :8");
+            assertThat(restart.getExitStatus().getExitCode()).isEqualTo("COMPLETED_WITH_REJECTS");
+            assertThat(restart.getExitStatus().getExitDescription())
+                    .isEqualTo("Return code 4: 8 transaction(s) rejected");
+        }
+
+        /**
+         * :purpose: The metadata store returns the CURRENT execution among the instance's
+         *     executions, so it must be counted exactly once however it arrives.
+         */
+        @Test
+        @DisplayName("the current execution is counted once even when the store also returns it")
+        void currentExecutionIsNeverDoubleCounted() {
+            JobExecution execution = jobExecution(BatchStatus.COMPLETED);
+            step(execution, BatchStatus.COMPLETED, 40L, 2L);
+            org.mockito.Mockito.when(jobRepository.getJobExecutions(execution.getJobInstance()))
+                    .thenReturn(List.of(execution));
+
+            listener.afterJob(execution);
+
+            assertThat(loggedLines()).containsExactly(
+                    "TRANSACTIONS PROCESSED :40",
+                    "TRANSACTIONS REJECTED  :2");
+        }
+
+        /**
+         * :purpose: The listener must still report when the metadata store cannot be
+         *     consulted, because a tally is the only record of the run's outcome.
+         */
+        @Test
+        @DisplayName("a metadata-store failure leaves the current execution's own tally intact")
+        void storeFailureStillReportsTheCurrentExecution() {
+            JobExecution execution = jobExecution(BatchStatus.COMPLETED);
+            step(execution, BatchStatus.COMPLETED, 12L, 1L);
+            org.mockito.Mockito.when(jobRepository.getJobExecutions(execution.getJobInstance()))
+                    .thenThrow(new org.springframework.dao.DataAccessResourceFailureException("down"));
+
+            listener.afterJob(execution);
+
+            assertThat(loggedLines()).contains(
+                    "TRANSACTIONS PROCESSED :12",
+                    "TRANSACTIONS REJECTED  :1");
         }
     }
 

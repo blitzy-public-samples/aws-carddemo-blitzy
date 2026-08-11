@@ -16,12 +16,15 @@
 #           ``carddemo-config`` ConfigMap. Span export is deliberately
 #           BEST-EFFORT: no service gates its own startup or readiness on this
 #           workload, so a tracing outage can never take the application down.
-#           Storage is the in-memory default, so traces are transient
-#           observability data held on an ephemeral ``emptyDir`` rather than a
-#           PersistentVolumeClaim — a production deployment swaps in a durable
-#           backing store. Hardened like the other workloads: non-root,
-#           RuntimeDefault seccomp, all capabilities dropped, read-only root
-#           filesystem with writable scratch mounted in.
+#           Storage is in-memory, so traces are transient observability data held
+#           on an ephemeral ``emptyDir`` rather than a PersistentVolumeClaim — a
+#           production deployment swaps in a durable backing store. The retention
+#           bound and the Go runtime limits below are what keep that store inside
+#           ``resources.limits.memory``; the collector's embedded default bound
+#           does not (see the ``carddemo-jaeger-config`` ConfigMap). Hardened like
+#           the other workloads: non-root, RuntimeDefault seccomp, all
+#           capabilities dropped, read-only root filesystem with writable scratch
+#           mounted in.
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -54,6 +57,30 @@ spec:
         - name: jaeger
           image: jaegertracing/jaeger:2.20.0@sha256:46a886260e04002d8f45e213fc39063fa11a50446048fdaa64786fc0840cb9f8
           imagePullPolicy: IfNotPresent
+          # Explicit configuration document instead of the binary's embedded
+          # default, whose in-memory store is bounded at max_traces 100000 —
+          # roughly 1.25 GB of live heap at this application's measured ~12.5 KB
+          # per trace, i.e. 1.6x the memory limit below. Under load the default
+          # therefore grows past the cgroup and the container is killed and
+          # restarted, losing every span it holds. No environment variable
+          # controls max_traces, so the bound requires owning the document.
+          args:
+            - --config=file:/etc/jaeger/config.yaml
+          # The Go runtime sizes its heap from the HOST unless told otherwise, so
+          # a cgroup-limited collector allocates past limits.memory and is killed
+          # with no OOM attribution. GOMEMLIMIT is a SOFT limit at 67% of the
+          # 768 Mi below, leaving the balance for non-heap RSS; the store's own
+          # max_traces bound holds the live set (~250 MB) well under it so the
+          # runtime never settles into continuous GC at the soft limit.
+          # GOMAXPROCS 1 is the value go1.26's cgroup-aware default computes for
+          # the 500m CPU limit, pinned so the figure is auditable beside it.
+          env:
+            - name: GOMEMLIMIT
+              value: 512MiB
+            - name: GOGC
+              value: "80"
+            - name: GOMAXPROCS
+              value: "1"
           ports:
             - name: otlp-grpc
               containerPort: 4317
@@ -76,24 +103,50 @@ spec:
             limits:
               cpu: 500m
               memory: 768Mi
-          # The admin port serves the collector's own health, so the probes use a
-          # TCP check on it rather than an HTTP path (the minimal image ships no
-          # shell utilities and the admin endpoint is not versioned).
+          # The admin port serves the healthcheckv2 extension, whose /status path
+          # returns the AGGREGATE status of every pipeline component as a document
+          # ({"healthy":true,"status":"StatusOK",...}) and answers 503 when a
+          # component is not serving. The probes therefore assert that the
+          # collector can still receive and store spans, where the TCP checks they
+          # replace only proved that a socket was bound — which is how this
+          # container previously restarted ten times under load while reporting
+          # nothing. A kubelet httpGet needs no in-container tooling at all; the
+          # image is Alpine-based and ships /bin/sh, wget and nc besides.
+          startupProbe:
+            httpGet:
+              path: /status
+              port: 13133
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /status
               port: 13133
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
           readinessProbe:
-            tcpSocket:
-              port: 4318
+            httpGet:
+              path: /status
+              port: 13133
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
           volumeMounts:
+            - name: config
+              mountPath: /etc/jaeger
+              readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
+        # Projected read-only; the collector reads the document once at start-up
+        # and the read-only root filesystem is unaffected.
+        - name: config
+          configMap:
+            name: carddemo-jaeger-config
+            items:
+              - key: config.yaml
+                path: config.yaml
         - name: tmp
           emptyDir: {}

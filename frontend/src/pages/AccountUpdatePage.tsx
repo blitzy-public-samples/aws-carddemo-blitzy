@@ -987,16 +987,16 @@ function toRequestDto(
 
 /**
  * :purpose: Run the SHAPE half of ``COACTUPC`` ``1200-EDIT-MAP-INPUTS`` over the fields
- *     the screen presents, in the legacy ``PERFORM`` order: presence, numeric and
- *     alphabetic form, calendar validity, and the fixed segment widths. Every edit runs so
- *     each failing field is highlighted, while only the first failure sets the message —
- *     the behaviour of the ``IF WS-RETURN-MSG-OFF`` guard.
+ *     the screen presents, in the legacy ``PERFORM`` order: presence, numeric and alphabetic
+ *     form, calendar validity, and the fixed segment widths. Every edit runs so each failing
+ *     field is highlighted, while only the first failure sets the message — the behaviour of
+ *     the ``IF WS-RETURN-MSG-OFF`` guard.
  * :note: The SEMANTIC edits of the same paragraph — the FICO range, the US state-code and
- *     phone area-code lookups, and the state/zip combination — are NOT reproduced here.
- *     They are performed by the service, against the one copy of those lookup tables, and
- *     the screen reaches them through :func:`validateAccountUpdate` before it publishes
- *     PROMPT-FOR-CONFIRMATION. Keeping a second copy of the tables in the browser would
- *     give a frozen contract two sources of truth that could silently drift apart.
+ *     phone area-code lookups, and the state/zip combination — are NOT reproduced here. They
+ *     are performed by the service, against the one copy of those lookup tables, and the
+ *     screen reaches them through :func:`validateAccountUpdate` before it publishes
+ *     PROMPT-FOR-CONFIRMATION. Keeping a second copy of the tables in the browser would give a
+ *     frozen contract two sources of truth that could silently drift apart.
  * :param accountNumber: the ``ACCTSID`` entry value.
  * :param form: the current entry state.
  * :returns: the first failing message and the highlight state of every failed field.
@@ -1242,18 +1242,18 @@ export default function AccountUpdatePage(): ReactElement {
   );
 
   /**
-   * :purpose: Put the record on display for the review the concurrency message demands.
-   *     The rewrite's concurrency branch sets ``ACUP-SHOW-DETAILS`` rather than a failure
-   *     state (L2611-2612), and ``3200-SETUP-SCREEN-VARS`` paints that state through
-   *     ``3202-SHOW-ORIGINAL-VALUES`` (L2715-2717) — from ``ACUP-OLD-DETAILS``, the
-   *     snapshot, not from the edited ``ACUP-NEW-DETAILS``. So the map that follows a
-   *     conflict shows the record, and the operator's keystrokes are not carried over it.
-   *     Reading the record here is the same read ``PFK12`` performs (L2571-2580 into
-   *     ``9000-READ-ACCT``, which begins ``INITIALIZE ACUP-OLD-DETAILS``): it makes the
-   *     values on display, the no-change comparison and the version echoed by a retry one
-   *     consistent set. Reviewing the record as it now stands is the only way the operator
-   *     can see the change that beat them, and re-applying an edit on top of what they can
-   *     see is what keeps the winner's write from being silently undone.
+   * :purpose: Put the record on display for the review the concurrency message demands. The
+   *     rewrite's concurrency branch sets ``ACUP-SHOW-DETAILS`` rather than a failure state
+   *     (L2611-2612), and ``3200-SETUP-SCREEN-VARS`` paints that state through
+   *     ``3202-SHOW-ORIGINAL-VALUES`` (L2715-2717) — from ``ACUP-OLD-DETAILS``, the snapshot,
+   *     not from the edited ``ACUP-NEW-DETAILS``. So the map that follows a conflict shows the
+   *     record, and the operator's keystrokes are not carried over it. Reading the record here
+   *     is the same read ``PFK12`` performs (L2571-2580 into ``9000-READ-ACCT``, which begins
+   *     ``INITIALIZE ACUP-OLD-DETAILS``): it makes the values on display, the no-change
+   *     comparison and the version echoed by a retry one consistent set. Reviewing the record as
+   *     it now stands is the only way the operator can see the change that beat them, and
+   *     re-applying an edit on top of what they can see is what keeps the winner's write from
+   *     being silently undone.
    * :param identifier: the account key the rewrite was aimed at.
    * :returns: ``true`` when the record was put on display.
    */
@@ -1963,10 +1963,32 @@ export default function AccountUpdatePage(): ReactElement {
         {entryField({ field: 'custFicoCreditScore', label: 'FICO Score:', maxLength: FICO_LENGTH })}
       </div>
 
-      <div className="accountUpdate__row">
-        {entryField({ field: 'custFirstName', label: 'First Name', maxLength: NAME_LENGTH })}{' '}
-        {entryField({ field: 'custMiddleName', label: 'Middle Name:', maxLength: NAME_LENGTH })}{' '}
-        {entryField({ field: 'custLastName', label: 'Last Name :', maxLength: NAME_LENGTH })}
+      {/*
+        COACTUP puts the three name CAPTIONS on map row 14 and the three name FIELDS on
+        row 15, at the same three columns: 1, 28 and 55. They are two rows here for that
+        reason and not for a layout one -- a caption and its `PIC X(25)` field beside it
+        three times over needs 116 columns of a row that has 80, so rendering them as one
+        row could only end in the third pair falling off it. It did: `Last Name :` and its
+        field were painted over `Address:` and its field on the row below, and the last
+        name became both unreadable and unhittable. Each `label` still names its field
+        through `htmlFor`, so the pairing is unchanged for a screen reader.
+      */}
+      <div className="accountUpdate__row accountUpdate__nameCaptions">
+        <label className="prompt" htmlFor="custFirstName">
+          First Name
+        </label>{' '}
+        <label className="prompt" htmlFor="custMiddleName">
+          Middle Name:
+        </label>{' '}
+        <label className="prompt" htmlFor="custLastName">
+          Last Name :
+        </label>
+      </div>
+
+      <div className="accountUpdate__row accountUpdate__nameFields">
+        {entryField({ field: 'custFirstName', maxLength: NAME_LENGTH })}{' '}
+        {entryField({ field: 'custMiddleName', maxLength: NAME_LENGTH })}{' '}
+        {entryField({ field: 'custLastName', maxLength: NAME_LENGTH })}
       </div>
 
       <div className="accountUpdate__row">

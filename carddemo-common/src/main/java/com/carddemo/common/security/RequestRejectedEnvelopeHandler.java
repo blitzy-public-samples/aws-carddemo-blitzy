@@ -29,20 +29,20 @@ import org.springframework.security.web.firewall.RequestRejectedHandler;
 /**
  * :purpose: Answer a request the Spring Security request firewall refuses with the same
  *     error envelope every other failure carries. ``FilterChainProxy`` catches the
- *     ``RequestRejectedException`` itself and delegates to whichever
- *     {@link RequestRejectedHandler} is installed, so this — not a wrapping servlet filter
- *     — is the point where the refusal can still be answered.
+ *     ``RequestRejectedException`` itself and delegates to whichever {@link
+ *     RequestRejectedHandler} is installed, so this — not a wrapping servlet filter — is the
+ *     point where the refusal can still be answered.
  * :output: A ``400`` response carrying the shared refusal envelope.
  * :note: Replaces Spring Security's default ``HttpStatusRequestRejectedHandler``, which
  *     calls ``sendError``. That defers the body to the container's ERROR dispatch, which
  *     Tomcat runs after the filter chain has unwound — by which point the correlation-id
  *     filter has cleared the MDC, so the refusal arrived with no ``message``, no
- *     ``errorCode``, no ``traceId`` and no ``correlationId``: a four-member document
- *     produced by a component that knows nothing about this application. Completing the
- *     response here keeps it inside the request scope where those ids still exist.
- * :note: The envelope names nothing about WHY the request was refused. A firewall rejection
- *     means the request was malformed at a level the application never interprets — an
- *     encoded path traversal, a control character in the URL, a header the parser would not
+ *     ``errorCode``, no ``traceId`` and no ``correlationId``: a four-member document produced
+ *     by a component that knows nothing about this application. Completing the response here
+ *     keeps it inside the request scope where those ids still exist.
+ * :note: The envelope names nothing about WHY the request was refused. A firewall
+ *     rejection means the request was malformed at a level the application never interprets —
+ *     an encoded path traversal, a control character in the URL, a header the parser would not
  *     accept — and naming the check that refused it would let a caller map the boundary one
  *     probe at a time. The reason is logged instead.
  */

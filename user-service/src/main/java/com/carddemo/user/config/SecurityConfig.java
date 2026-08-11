@@ -32,36 +32,34 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 
 /**
- * :purpose: Declares the HTTP security policy for the User Management
- *     microservice, re-platforming the administrator-only CICS/RACF
- *     transaction-security model of the legacy user programs
- *     ``COUSR00C``-``COUSR03C`` (transactions ``CU00``-``CU03``). Every
- *     user-CRUD route requires an authenticated principal bearing the
- *     ``ROLE_ADMIN`` authority.
+ * :purpose: Declares the HTTP security policy for the User Management microservice,
+ *     re-platforming the administrator-only CICS/RACF transaction-security model of the legacy
+ *     user programs ``COUSR00C``-``COUSR03C`` (transactions ``CU00``-``CU03``). Every
+ *     user-CRUD route requires an authenticated principal bearing the ``ROLE_ADMIN``
+ *     authority.
  * :note: Session topology — this service performs no sign-on; the ``auth-service``
- *     authenticates and writes the shared, Redis-backed ``SessionContext`` (the
- *     COMMAREA replacement). The shared ``SessionContextAuthenticationFilter``
- *     installed by {@link SecurityHardening} rebuilds the authenticated principal and
- *     its role from that context on every request, using an EXISTING session only, so
- *     an unauthenticated caller can neither authenticate here nor cause a session to be
- *     created. ``httpBasic`` and ``formLogin`` stay disabled because the principal
- *     always arrives through the shared session.
- * :note: CSRF — this service is never called directly by a browser: the api-gateway is
- *     the only browser-facing surface and enforces cookie double-submit CSRF for every
- *     state-changing request. Enforcing CSRF a second time here would require a token
- *     this service never issues, which is what made every administrator write fail.
- *     The single, coherent model is recorded in docs/decision-log.md.
- * :note: Management-endpoint exposure — the anonymous surface is the health status and
- *     the Kubernetes liveness/readiness probes (status only; detail still requires an
- *     authorized principal via ``show-details: when-authorized``). This matches the
- *     other eight services and lets the Compose/Kubernetes probe on
- *     ``/actuator/health`` succeed. ``/actuator/prometheus`` and
- *     ``/actuator/metrics/**`` are restricted to the dedicated ``monitoring``
- *     principal by the shared ``ManagementSecurityConfig`` chain, and every remaining
- *     management endpoint requires ``ROLE_ADMIN``.
- * :note: This configuration also supplies the shared delegating password encoder
- *     ({@link PasswordEncoderFactory}) used to hash security-user credentials at
- *     rest, replacing the legacy plaintext comparison.
+ *     authenticates and writes the shared, Redis-backed ``SessionContext`` (the COMMAREA
+ *     replacement). The shared ``SessionContextAuthenticationFilter`` installed by {@link
+ *     SecurityHardening} rebuilds the authenticated principal and its role from that context
+ *     on every request, using an EXISTING session only, so an unauthenticated caller can
+ *     neither authenticate here nor cause a session to be created. ``httpBasic`` and
+ *     ``formLogin`` stay disabled because the principal always arrives through the shared
+ *     session.
+ * :note: CSRF — this service is never called directly by a browser: the api-gateway is the
+ *     only browser-facing surface and enforces cookie double-submit CSRF for every
+ *     state-changing request. Enforcing CSRF a second time here would require a token this
+ *     service never issues, which is what made every administrator write fail. The single,
+ *     coherent model is recorded in docs/decision-log.md.
+ * :note: Management-endpoint exposure — the anonymous surface is the health status and the
+ *     Kubernetes liveness/readiness probes (status only; detail still requires an authorized
+ *     principal via ``show-details: when-authorized``). This matches the other eight services
+ *     and lets the Compose/Kubernetes probe on ``/actuator/health`` succeed.
+ *     ``/actuator/prometheus`` and ``/actuator/metrics/**`` are restricted to the dedicated
+ *     ``monitoring`` principal by the shared ``ManagementSecurityConfig`` chain, and every
+ *     remaining management endpoint requires ``ROLE_ADMIN``.
+ * :note: This configuration also supplies the shared delegating password encoder ({@link
+ *     PasswordEncoderFactory}) used to hash security-user credentials at rest, replacing the
+ *     legacy plaintext comparison.
  * :note: Method security is enabled so the class-level
  *     ``@PreAuthorize("hasRole('ADMIN')")`` on ``UserController`` is enforced as a second,
  *     independent gate behind the filter chain and the gateway route rule. A request-less

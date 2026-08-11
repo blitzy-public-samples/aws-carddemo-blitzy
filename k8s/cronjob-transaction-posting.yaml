@@ -56,6 +56,18 @@ spec:
       # A posting cycle is restarted deliberately (same business date, so Spring
       # Batch resumes the instance); Kubernetes must not retry it blindly.
       backoffLimit: 0
+      # Wall-clock ceiling for one run. Without it a pod that hangs - a wedged
+      # JDBC connection, a feed read that never returns - holds `concurrencyPolicy:
+      # Forbid` open forever and every later schedule is skipped in silence, which
+      # is how a batch window is missed without a single alert. Two hours is half
+      # the four-hour batch window the whole job stream must fit inside (AAP 0.7.1),
+      # so a run that exceeds it has already failed its own budget and is killed
+      # with a visible DeadlineExceeded condition.
+      activeDeadlineSeconds: 7200
+      # Reap the finished Job (and its pod) an hour after completion, so the
+      # history limits above bound the objects an operator sees rather than
+      # competing with an unbounded set of Completed pods.
+      ttlSecondsAfterFinished: 3600
       template:
         metadata:
           labels:

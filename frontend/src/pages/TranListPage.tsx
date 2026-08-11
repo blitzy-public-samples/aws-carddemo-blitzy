@@ -85,12 +85,26 @@ const SELECTION_VALUE = 'S';
  *     class it carries; the amount column is right-aligned like its ``TAMT00n``
  *     numeric-edited source field.
  */
-const COLUMNS: ReadonlyArray<{ caption: string; rule: string; className?: string }> = [
-  { caption: 'Sel', rule: '-'.repeat(3) },
-  { caption: 'Transaction ID', rule: '-'.repeat(16) },
-  { caption: 'Date', rule: '-'.repeat(8) },
-  { caption: 'Description', rule: '-'.repeat(26) },
-  { caption: 'Amount', rule: '-'.repeat(12), className: 'amount' },
+/**
+ * :purpose: The browse columns of ``COTRN00``, each with the mapset's own column pitch.
+ * :note: ``pitch`` is the distance from one dashed rule to the next in the mapset --
+ *     ``POS=(9,2) (9,8) (9,27) (9,38) (9,67)`` gives 6, 19, 11, 29 and 12 -- and it is
+ *     what the ``<colgroup>`` declares, so every column begins on the column the mapset
+ *     places it on. It is NOT the rule length: a rule is shorter than its pitch by the
+ *     blank cells the mapset leaves after it, and sizing a column to the rule instead
+ *     accumulated a shortfall that moved the last column four cells left of its `POS`.
+ */
+const COLUMNS: ReadonlyArray<{
+  caption: string;
+  rule: string;
+  pitch: number;
+  className?: string;
+}> = [
+  { caption: 'Sel', rule: '-'.repeat(3), pitch: 6 },
+  { caption: 'Transaction ID', rule: '-'.repeat(16), pitch: 19 },
+  { caption: 'Date', rule: '-'.repeat(8), pitch: 11 },
+  { caption: 'Description', rule: '-'.repeat(26), pitch: 29 },
+  { caption: 'Amount', rule: '-'.repeat(12), pitch: 12, className: 'amount' },
 ];
 
 /**
@@ -115,7 +129,7 @@ const TABLE_REGION_LABEL = 'Transaction list columns';
  *     frame, where the mapset puts it.
  */
 const TABLE_MIN_WIDTH_CH = COLUMNS.reduce(
-  (total, column) => total + column.rule.length + 2,
+  (total, column) => total + column.pitch,
   0,
 );
 
@@ -511,7 +525,7 @@ export default function TranListPage(): ReactElement {
                 style={
                   index === COLUMNS.length - 1
                     ? undefined
-                    : { width: `${String(column.rule.length + 2)}ch` }
+                    : { width: `${String(column.pitch)}ch` }
                 }
               />
             ))}

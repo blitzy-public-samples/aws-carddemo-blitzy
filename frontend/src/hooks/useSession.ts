@@ -1,24 +1,22 @@
 /**
  * :module: ``frontend/src/hooks/useSession.ts``
- * :purpose: Single source of truth for the authenticated user and role across
- *     the CardDemo single-page application. Re-expresses the CICS
- *     pseudo-conversational COMMAREA session / role field ``CDEMO-USER-TYPE``
- *     (``'A'`` administrator / ``'U'`` standard user) and the ``COSGN00C``
- *     sign-on routing as an externalized cookie session, surfaced to the route
+ * :purpose: Single source of truth for the authenticated user and role across the CardDemo
+ *     single-page application. Re-expresses the CICS pseudo-conversational COMMAREA session /
+ *     role field ``CDEMO-USER-TYPE`` (``'A'`` administrator / ``'U'`` standard user) and the
+ *     ``COSGN00C`` sign-on routing as an externalized cookie session, surfaced to the route
  *     guards and menu gating through the :func:`useSession` hook.
- * :output: The named ``useSession`` hook and its :ts:type:`UseSessionResult`
- *     return contract.
- * :note: The SERVER is the authority. Identity and role are published only by
- *     ``POST /auth/signon`` and by the ``GET /session`` probe that reads the
- *     server-held session, and sign-out is not complete until
- *     ``POST /logout`` has revoked that session. Browser storage holds no
- *     authority: the store is in memory only, so editing storage cannot grant a
- *     role.
- * :note: Provider-free — state lives in a module-level observable store consumed
- *     via React ``useSyncExternalStore``, so every caller shares one store with
- *     no surrounding React Context provider. Logic only; no UI, no design
- *     system. All browser globals are guarded and no build-time environment is
- *     read here, so the module imports cleanly under Jest (jsdom).
+ * :output: The named ``useSession`` hook and its :ts:type:`UseSessionResult` return
+ *     contract.
+ * :note: The SERVER is the authority. Identity and role are published only by ``POST
+ *     /auth/signon`` and by the ``GET /session`` probe that reads the server-held session, and
+ *     sign-out is not complete until ``POST /logout`` has revoked that session. Browser
+ *     storage holds no authority: the store is in memory only, so editing storage cannot grant
+ *     a role.
+ * :note: Provider-free — state lives in a module-level observable store consumed via React
+ *     ``useSyncExternalStore``, so every caller shares one store with no surrounding React
+ *     Context provider. Logic only; no UI, no design system. All browser globals are guarded
+ *     and no build-time environment is read here, so the module imports cleanly under Jest
+ *     (jsdom).
  */
 
 import { useEffect, useSyncExternalStore } from 'react';
@@ -198,23 +196,21 @@ function signedOutState(notice: string | null = null): SessionState {
 }
 
 /**
- * :purpose: Authenticate a user against ``POST /auth/signon`` (legacy
- *     ``COSGN00C`` / transaction ``CC00``) and establish the session on success.
- * :param userId: the user id, sent verbatim — never upper-cased, transformed,
- *     or logged.
- * :param password: the password, sent verbatim — never upper-cased, stored, or
- *     logged.
- * :returns: a promise resolving to the :ts:type:`SignonResponseDto`; a rejected
- *     ``signon`` (for example a ``401`` wrong-password ``ApiError``) propagates
- *     unchanged to the caller and leaves ANY session already held exactly as it was.
+ * :purpose: Authenticate a user against ``POST /auth/signon`` (legacy ``COSGN00C`` /
+ *     transaction ``CC00``) and establish the session on success.
+ * :param userId: the user id, sent verbatim — never upper-cased, transformed, or logged.
+ * :param password: the password, sent verbatim — never upper-cased, stored, or logged.
+ * :returns: a promise resolving to the :ts:type:`SignonResponseDto`; a rejected ``signon``
+ *     (for example a ``401`` wrong-password ``ApiError``) propagates unchanged to the caller
+ *     and leaves ANY session already held exactly as it was.
  * :note: Nothing is revoked before the answer is known. ``COSGN00C`` decides what a
- *     sign-on costs the terminal by reading the credential store and comparing the
- *     password -- a refusal publishes a literal on line 23 and the operator keeps the
- *     screen they were on. Ending the current session first would make a mistyped
- *     password destroy a session the operator is still signed on to, and it would do so
- *     silently, since the only thing the screen then reports is the refusal. The
- *     take-over of a live session belongs to the service that verified the credential,
- *     which reuses the session record and re-indexes the principal in one place.
+ *     sign-on costs the terminal by reading the credential store and comparing the password --
+ *     a refusal publishes a literal on line 23 and the operator keeps the screen they were on.
+ *     Ending the current session first would make a mistyped password destroy a session the
+ *     operator is still signed on to, and it would do so silently, since the only thing the
+ *     screen then reports is the refusal. The take-over of a live session belongs to the
+ *     service that verified the credential, which reuses the session record and re-indexes the
+ *     principal in one place.
  */
 async function signIn(
   userId: string,
@@ -352,22 +348,21 @@ function probeIdentityOnce(): Promise<void> {
  * :field role: user role (``'A'`` / ``'U'``), or ``null`` when signed out.
  * :field session: externalized session context, or ``null`` when signed out.
  * :field isAuthenticated: ``true`` when both ``user`` and ``role`` are present.
- * :field isSessionResolved: ``true`` once the server has answered the identity probe
- *     (or an explicit sign-in / sign-out has settled it). ``false`` only in the
- *     window before that answer, during which a route guard must wait rather than
- *     treat the caller as signed out.
+ * :field isSessionResolved: ``true`` once the server has answered the identity probe (or
+ *     an explicit sign-in / sign-out has settled it). ``false`` only in the window before that
+ *     answer, during which a route guard must wait rather than treat the caller as signed out.
  * :field isAdmin: ``true`` only for the administrator role (``'A'``).
  * :field sessionNotice: text the sign-on screen must report because the session ended
- *     without the operator ending it (an expired cookie session), or ``null`` when
- *     there is nothing to report. It survives the identity probe that follows the
- *     expiry and is withdrawn by :func:`clearSessionNotice`.
+ *     without the operator ending it (an expired cookie session), or ``null`` when there is
+ *     nothing to report. It survives the identity probe that follows the expiry and is
+ *     withdrawn by :func:`clearSessionNotice`.
  * :field clearSessionNotice: withdraw the published notice once it has been reported.
  * :field signIn: authenticate and establish the session.
  * :field signOut: revoke the server session, then clear the local session.
  * :field refresh: re-resolve the identity from the server-held session.
  * :field revalidate: discard the last conclusion and re-ask the server, clearing the
- *     published identity for the duration so a restored screen is not left on display
- *     under an identity that may already be gone.
+ *     published identity for the duration so a restored screen is not left on display under an
+ *     identity that may already be gone.
  */
 export interface UseSessionResult {
   user: string | null;

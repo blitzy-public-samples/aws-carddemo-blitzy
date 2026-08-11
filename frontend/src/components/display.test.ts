@@ -13,6 +13,7 @@ import {
   guardScreenMessage,
   resolveApiErrorMessage,
   resolveFaultedField,
+  toSuppressedAmountPicture,
 } from './display';
 
 /**
@@ -141,5 +142,42 @@ describe('guardScreenMessage', () => {
     expect(guardScreenMessage('a string')).toBe('');
     expect(guardScreenMessage({})).toBe('');
     expect(guardScreenMessage({ screenMessage: 42 })).toBe('');
+  });
+});
+
+describe('toSuppressedAmountPicture (COACTVW PICOUT=+ZZZ,ZZZ,ZZZ.99)', () => {
+  it('edits a positive value with grouping and leading-zero suppression', () => {
+    expect(toSuppressedAmountPicture('4998.00')).toBe('+      4,998.00');
+  });
+
+  it('carries the minus sign for a negative value', () => {
+    expect(toSuppressedAmountPicture('-919.50')).toBe('-        919.50');
+  });
+
+  it('suppresses every integer position of a zero value, group separators included', () => {
+    expect(toSuppressedAmountPicture('0.00')).toBe('+           .00');
+  });
+
+  it('keeps a zero that follows a significant digit', () => {
+    expect(toSuppressedAmountPicture('1000000.05')).toBe('+  1,000,000.05');
+  });
+
+  it('fills all nine integer positions when the value needs them', () => {
+    expect(toSuppressedAmountPicture('999999999.99')).toBe('+999,999,999.99');
+  });
+
+  it('loses the high-order digits a nine-position receiver cannot hold', () => {
+    expect(toSuppressedAmountPicture('9999999999.99')).toBe('+999,999,999.99');
+  });
+
+  it('pads a value that carries fewer decimals than the picture', () => {
+    expect(toSuppressedAmountPicture('12.5')).toBe('+         12.50');
+    expect(toSuppressedAmountPicture('7')).toBe('+          7.00');
+  });
+
+  it('is always exactly the fifteen characters the map field declares', () => {
+    for (const value of ['0.00', '1.00', '-1.00', '123456789.99', '9999999999.99', '-0.01']) {
+      expect(toSuppressedAmountPicture(value)).toHaveLength(15);
+    }
   });
 });

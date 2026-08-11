@@ -291,12 +291,20 @@ export default function TranViewPage(): ReactElement {
       <dl className="screenLine">
         <OutputField
           testId="tranId"
+          row={1}
+          labelCol={6}
+          labelWidth={15}
+          valueCol={22}
           label="Transaction ID:"
           width={TRAN_ID_WIDTH}
           value={displayField(data?.tranId, TRAN_ID_WIDTH)}
         />
         <OutputField
           testId="tranCardNum"
+          row={1}
+          labelCol={45}
+          labelWidth={12}
+          valueCol={58}
           label="Card Number:"
           width={16}
           value={displayField(data?.tranCardNum, 16)}
@@ -306,18 +314,30 @@ export default function TranViewPage(): ReactElement {
       <dl className="screenLine">
         <OutputField
           testId="tranTypeCd"
+          row={1}
+          labelCol={6}
+          labelWidth={8}
+          valueCol={15}
           label="Type CD:"
           width={2}
           value={displayField(data?.tranTypeCd, 2)}
         />
         <OutputField
           testId="tranCatCd"
+          row={1}
+          labelCol={23}
+          labelWidth={12}
+          valueCol={36}
           label="Category CD:"
           width={4}
           value={displayField(data?.tranCatCd, 4)}
         />
         <OutputField
           testId="tranSource"
+          row={1}
+          labelCol={46}
+          labelWidth={7}
+          valueCol={54}
           label="Source:"
           width={10}
           value={displayField(data?.tranSource, 10)}
@@ -327,6 +347,10 @@ export default function TranViewPage(): ReactElement {
       <dl className="screenLine">
         <OutputField
           testId="tranDesc"
+          row={1}
+          labelCol={6}
+          labelWidth={12}
+          valueCol={19}
           label="Description:"
           width={60}
           value={displayField(data?.tranDesc, 60)}
@@ -336,18 +360,30 @@ export default function TranViewPage(): ReactElement {
       <dl className="screenLine">
         <OutputField
           testId="tranAmt"
+          row={1}
+          labelCol={6}
+          labelWidth={7}
+          valueCol={14}
           label="Amount:"
           width={12}
           value={displayField(data?.tranAmt, 12)}
         />
         <OutputField
           testId="tranOrigTs"
+          row={1}
+          labelCol={31}
+          labelWidth={10}
+          valueCol={42}
           label="Orig Date:"
           width={10}
           value={displayField(data?.tranOrigTs, 10)}
         />
         <OutputField
           testId="tranProcTs"
+          row={1}
+          labelCol={57}
+          labelWidth={10}
+          valueCol={68}
           label="Proc Date:"
           width={10}
           value={displayField(data?.tranProcTs, 10)}
@@ -357,12 +393,20 @@ export default function TranViewPage(): ReactElement {
       <dl className="screenLine">
         <OutputField
           testId="tranMerchantId"
+          row={1}
+          labelCol={6}
+          labelWidth={12}
+          valueCol={19}
           label="Merchant ID:"
           width={9}
           value={displayField(data?.tranMerchantId, 9)}
         />
         <OutputField
           testId="tranMerchantName"
+          row={1}
+          labelCol={33}
+          labelWidth={14}
+          valueCol={48}
           label="Merchant Name:"
           width={30}
           value={displayField(data?.tranMerchantName, 30)}
@@ -372,12 +416,20 @@ export default function TranViewPage(): ReactElement {
       <dl className="screenLine">
         <OutputField
           testId="tranMerchantCity"
+          row={1}
+          labelCol={6}
+          labelWidth={14}
+          valueCol={21}
           label="Merchant City:"
           width={25}
           value={displayField(data?.tranMerchantCity, 25)}
         />
         <OutputField
           testId="tranMerchantZip"
+          row={1}
+          labelCol={53}
+          labelWidth={13}
+          valueCol={67}
           label="Merchant Zip:"
           width={10}
           value={displayField(data?.tranMerchantZip, 10)}

@@ -250,8 +250,30 @@ const ADMIN_SCREENS: ReadonlyArray<ScreenCase> = [
  * :returns: the expected read log.
  */
 function expectedReads(entryRead: string | null): string[] {
-  return entryRead === null ? [] : [entryRead, entryRead];
+  if (entryRead === null) {
+    return [];
+  }
+  // The two menu listings are memoized for the life of the signed-on session, so the
+  // second pass of the StrictMode double mount is served from that memo and issues no
+  // second request. One read is therefore the CORRECT log for these two screens, and a
+  // second would be the redundant identical fetch the cache exists to remove. StrictMode
+  // is still proven engaged for them by the double-mount render itself and by the
+  // `mutations` assertion that follows, which only has meaning if both passes ran.
+  if (MEMOIZED_ENTRY_READS.has(entryRead)) {
+    return [entryRead];
+  }
+  return [entryRead, entryRead];
 }
+
+/**
+ * :purpose: The entry reads whose responses are memoized for the signed-on session, so a
+ *     repeated mount reads them once rather than twice.
+ * :note: ``GET /menu`` and ``GET /admin/menu`` are pure functions of ``CDEMO-USER-TYPE``
+ *     and the static ``COMEN02Y`` / ``COADM02Y`` option tables, so their answer cannot
+ *     change while one principal holds the session. ``api/menu.ts`` memoizes them and drops
+ *     the memo explicitly on sign-on, sign-off and a rejected session.
+ */
+const MEMOIZED_ENTRY_READS = new Set(['/menu', '/admin/menu']);
 
 /**
  * :purpose: Replace the header clock with a fixed token so two renders taken moments
@@ -282,7 +304,8 @@ describe('StrictMode double mount — every screen', () => {
         // StrictMode runs the entry effect twice, so the read log is the SAME path
         // twice -- no drift between the passes, no third read, and nothing at all for
         // a screen that waits for a key. A single entry would mean StrictMode was not
-        // engaged at all.
+        // engaged at all, EXCEPT for the two memoized menu listings, where the second
+        // pass is answered from the session memo (see `expectedReads`).
         expect(screenReads()).toEqual(expectedReads(entryRead));
         // No screen may write from a mount effect: the double invocation would then
         // post, put or delete twice on entry.

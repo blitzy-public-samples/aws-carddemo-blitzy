@@ -89,22 +89,22 @@ public final class SensitiveDataMasker {
     }
 
     /**
-     * :purpose: Mask a request path, redacting a PAN only where a card number can
-     *     actually appear: the path segment that follows a ``cards`` segment, which is
-     *     the ``/cards/{cardNumber}`` variable of the card detail and card update
-     *     endpoints. Every other segment is returned verbatim.
+     * :purpose: Mask a request path, redacting a PAN only where a card number can actually
+     *     appear: the path segment that follows a ``cards`` segment, which is the
+     *     ``/cards/{cardNumber}`` variable of the card detail and card update endpoints. Every
+     *     other segment is returned verbatim.
      * :param path: the request URI (query string excluded), possibly ``null``.
-     * :returns: the path with a card-number segment reduced to its last four digits and
-     *     all other segments unchanged.
-     * :note: Applying {@link #maskPan} to a whole request path over-redacted: the
-     *     16-character transaction id of ``/transactions/{id}`` matches the PAN shape, so
-     *     a ``404`` reported ``"/transactions/QS**********0001"`` - a path that never
-     *     existed - while ``/accounts/{id}`` (11 digits) came back intact. A support
-     *     engineer could not match the reported path to the request. Only the card-number
-     *     position carries a PAN, so only it is masked.
-     * :note: {@link #maskPan} remains the right helper for free text (an exception
-     *     message, a driver message, an audited field value), where a PAN can appear
-     *     anywhere and no positional rule applies.
+     * :returns: the path with a card-number segment reduced to its last four digits and all
+     *     other segments unchanged.
+     * :note: Applying {@link #maskPan} to a whole request path over-redacted: the 16-character
+     *     transaction id of ``/transactions/{id}`` matches the PAN shape, so a ``404`` reported
+     *     ``"/transactions/QS**********0001"`` - a path that never existed - while
+     *     ``/accounts/{id}`` (11 digits) came back intact. A support engineer could not match the
+     *     reported path to the request. Only the card-number position carries a PAN, so only it is
+     *     masked.
+     * :note: {@link #maskPan} remains the right helper for free text (an exception message, a
+     *     driver message, an audited field value), where a PAN can appear anywhere and no
+     *     positional rule applies.
      */
     public static String maskPath(String path) {
         if (path == null || path.isEmpty()) {

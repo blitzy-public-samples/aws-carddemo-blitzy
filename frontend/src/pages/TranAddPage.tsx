@@ -85,9 +85,6 @@ const DATE_HINT = '(YYYY-MM-DD)';
 /** Decorative rule drawn on BMS line 8 (``LENGTH=70``). */
 const SEPARATOR_RULE = '-'.repeat(70);
 
-/** Non-breaking gap that keeps a caption, its field and its hint on one line. */
-const NBSP = '\u00a0';
-
 /**
  * :purpose: The editable ``COTRN2AI`` symbolic-map fields held as screen state. Every
  *     member is a character field, as on the 3270 map, and its name doubles as the
@@ -751,7 +748,7 @@ export default function TranAddPage(): ReactElement {
       <div className="tranAdd__row">
         <label className="prompt" htmlFor="acctId">
           Enter Acct #:
-        </label>{NBSP}
+        </label>
         <input
           className="field"
           disabled={adding}
@@ -768,7 +765,7 @@ export default function TranAddPage(): ReactElement {
         <span className="neutral">(or)</span>{' '}
         <label className="prompt" htmlFor="tranCardNum">
           Card #:
-        </label>{NBSP}
+        </label>
         <input
           className="field"
           disabled={adding}
@@ -791,7 +788,7 @@ export default function TranAddPage(): ReactElement {
       <div className="tranAdd__row">
         <label className="prompt" htmlFor="tranTypeCd">
           Type CD:
-        </label>{NBSP}
+        </label>
         <input
           className="field"
           disabled={adding}
@@ -807,7 +804,7 @@ export default function TranAddPage(): ReactElement {
         />{' '}
         <label className="prompt" htmlFor="tranCatCd">
           Category CD:
-        </label>{NBSP}
+        </label>
         <input
           className="field"
           disabled={adding}
@@ -823,7 +820,7 @@ export default function TranAddPage(): ReactElement {
         />{' '}
         <label className="prompt" htmlFor="tranSource">
           Source:
-        </label>{NBSP}
+        </label>
         <input
           className="field"
           disabled={adding}
@@ -841,7 +838,7 @@ export default function TranAddPage(): ReactElement {
       <div className="tranAdd__row">
         <label className="prompt" htmlFor="tranDesc">
           Description:
-        </label>{NBSP}
+        </label>
         <input
           className="field"
           disabled={adding}
@@ -856,14 +853,20 @@ export default function TranAddPage(): ReactElement {
         />
       </div>
 
-      <div className="tranAdd__row">
+      {/*
+       * COTRN02 row 14: `Amount:` POS=(14,6) with TRNAMT POS=(14,14) LENGTH=12,
+       * `Orig Date:` POS=(14,31) with TORIGDT POS=(14,42) LENGTH=10, and
+       * `Proc Date:` POS=(14,57) with TPROCDT POS=(14,68) LENGTH=10 -- three
+       * caption/field pairs ending on column 77.
+       */}
+      <div className="tranAdd__row tranAdd__amountRow">
         <span className="tranAdd__group">
           <label className="prompt" htmlFor="tranAmt">
             Amount:
-          </label>{NBSP}
+          </label>
           <input
             className="field"
-          disabled={adding}
+            disabled={adding}
             id="tranAmt"
             name="tranAmt"
             type="text"
@@ -872,18 +875,15 @@ export default function TranAddPage(): ReactElement {
             {...invalidFieldProps(faultedField === 'tranAmt', 'tranAmtHint')}
             value={form.tranAmt}
             onChange={(event) => updateField('tranAmt', event.target.value)}
-          />{NBSP}
-          <span className="label" id="tranAmtHint">
-            {AMOUNT_HINT}
-          </span>
+          />
         </span>{' '}
         <span className="tranAdd__group">
           <label className="prompt" htmlFor="tranOrigTs">
             Orig Date:
-          </label>{NBSP}
+          </label>
           <input
             className="field"
-          disabled={adding}
+            disabled={adding}
             id="tranOrigTs"
             name="tranOrigTs"
             type="text"
@@ -892,18 +892,15 @@ export default function TranAddPage(): ReactElement {
             {...invalidFieldProps(faultedField === 'tranOrigTs', 'tranOrigTsHint')}
             value={form.tranOrigTs}
             onChange={(event) => updateField('tranOrigTs', event.target.value)}
-          />{NBSP}
-          <span className="label" id="tranOrigTsHint">
-            {DATE_HINT}
-          </span>
+          />
         </span>{' '}
         <span className="tranAdd__group">
           <label className="prompt" htmlFor="tranProcTs">
             Proc Date:
-          </label>{NBSP}
+          </label>
           <input
             className="field"
-          disabled={adding}
+            disabled={adding}
             id="tranProcTs"
             name="tranProcTs"
             type="text"
@@ -912,17 +909,35 @@ export default function TranAddPage(): ReactElement {
             {...invalidFieldProps(faultedField === 'tranProcTs', 'tranProcTsHint')}
             value={form.tranProcTs}
             onChange={(event) => updateField('tranProcTs', event.target.value)}
-          />{NBSP}
-          <span className="label" id="tranProcTsHint">
-            {DATE_HINT}
-          </span>
+          />
+        </span>
+      </div>
+
+      {/*
+       * COTRN02 row 15, a row of its OWN: the three format literals stand BELOW their
+       * fields, at `POS=(15,13) LENGTH=14`, `POS=(15,41) LENGTH=12` and
+       * `POS=(15,67) LENGTH=12`. Rendering them inline beside their fields made this one
+       * row 93 columns wide in an 80-column frame, which clipped 60% of the Proc Date
+       * field off the right edge and left its centre un-clickable
+       * (`document.elementFromPoint` returned the frame, not the input). They stay the
+       * `aria-describedby` targets of the three fields above wherever they are placed.
+       */}
+      <div className="tranAdd__row tranAdd__amountHints">
+        <span className="label" id="tranAmtHint">
+          {AMOUNT_HINT}
+        </span>
+        <span className="label" id="tranOrigTsHint">
+          {DATE_HINT}
+        </span>
+        <span className="label" id="tranProcTsHint">
+          {DATE_HINT}
         </span>
       </div>
 
       <div className="tranAdd__row">
         <label className="prompt" htmlFor="tranMerchantId">
           Merchant ID:
-        </label>{NBSP}
+        </label>
         <input
           className="field"
           disabled={adding}
@@ -938,7 +953,7 @@ export default function TranAddPage(): ReactElement {
         />{' '}
         <label className="prompt" htmlFor="tranMerchantName">
           Merchant Name:
-        </label>{NBSP}
+        </label>
         <input
           className="field"
           disabled={adding}
@@ -956,7 +971,7 @@ export default function TranAddPage(): ReactElement {
       <div className="tranAdd__row">
         <label className="prompt" htmlFor="tranMerchantCity">
           Merchant City:
-        </label>{NBSP}
+        </label>
         <input
           className="field"
           disabled={adding}
@@ -971,7 +986,7 @@ export default function TranAddPage(): ReactElement {
         />{' '}
         <label className="prompt" htmlFor="tranMerchantZip">
           Merchant Zip:
-        </label>{NBSP}
+        </label>
         <input
           className="field"
           disabled={adding}
@@ -989,7 +1004,7 @@ export default function TranAddPage(): ReactElement {
       <div className="tranAdd__row tranAdd__confirm">
         <label className="prompt" htmlFor="confirm">
           You are about to add this transaction. Please confirm :
-        </label>{NBSP}
+        </label>
         <input
           className="field"
           disabled={adding}
@@ -1001,7 +1016,7 @@ export default function TranAddPage(): ReactElement {
           {...invalidFieldProps(faultedField === 'confirm', 'confirmValues')}
           value={form.confirm}
           onChange={(event) => updateField('confirm', event.target.value)}
-        />{NBSP}
+        />
         <span className="neutral" id="confirmValues">
           (Y/N)
         </span>

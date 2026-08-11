@@ -35,23 +35,21 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * :purpose: Replace Spring Boot's ``BasicErrorController`` so that a container-level
- *  error dispatch -- an error raised outside any ``@RestControllerAdvice`` reach,
- *  such as a servlet ``sendError``, an exception escaping a filter, or a request
- *  that never matched a handler -- answers with exactly the same
- *  {@link ErrorResponse} envelope as every handled failure. Without it two
- *  mutually inconsistent error shapes coexist: the documented envelope for handled
- *  exceptions and Boot's abbreviated ``{timestamp,status,error,path}`` body for
- *  everything else.
- * :output: A ``@RestController`` mapped to the configured error path (``/error``)
- *  that returns the populated envelope with the dispatched status, the original
- *  request URI, and the current trace/correlation id. No exception message,
- *  stack trace, or framework internal is disclosed - only the status reason
- *  phrase - so the response cannot leak implementation detail.
- * :note: Registering a bean of type {@link ErrorController} makes Boot's own
- *  controller back off. Import it alongside
- *  {@link GlobalExceptionHandler} in every web-enabled service; it is not
- *  auto-configured.
+ * :purpose: Replace Spring Boot's ``BasicErrorController`` so that a container-level error
+ *     dispatch -- an error raised outside any ``@RestControllerAdvice`` reach, such as a
+ *     servlet ``sendError``, an exception escaping a filter, or a request that never matched a
+ *     handler -- answers with exactly the same {@link ErrorResponse} envelope as every handled
+ *     failure. Without it two mutually inconsistent error shapes coexist: the documented
+ *     envelope for handled exceptions and Boot's abbreviated ``{timestamp,status,error,path}``
+ *     body for everything else.
+ * :output: A ``@RestController`` mapped to the configured error path (``/error``) that
+ *     returns the populated envelope with the dispatched status, the original request URI, and
+ *     the current trace/correlation id. No exception message, stack trace, or framework
+ *     internal is disclosed - only the status reason phrase - so the response cannot leak
+ *     implementation detail.
+ * :note: Registering a bean of type {@link ErrorController} makes Boot's own controller
+ *     back off. Import it alongside {@link GlobalExceptionHandler} in every web-enabled
+ *     service; it is not auto-configured.
  */
 @RestController
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)

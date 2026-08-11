@@ -15,6 +15,7 @@
  */
 package com.carddemo.common.dto;
 
+import com.carddemo.common.validation.SingleByteText;
 import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
@@ -32,6 +33,16 @@ import java.math.BigDecimal;
  *  description, amount, card number, merchant id/name/city/zip, and the
  *  origination/processing timestamps.
  */
+/*
+ * Boundary encoding guard. The fields of this request are persisted and then
+ * rendered into the 350-byte TRANSACT record (CVTRA05Y), the combined transaction file and the statement files,
+ * every one of which is a BYTE-width contract a downstream consumer parses by
+ * offset. Text that needs more than one byte per character therefore cannot
+ * survive that rendering intact - it either loses the character or shifts every
+ * following field - so it is refused here, at the only point where the operator
+ * can still be told which field to correct.
+ */
+@SingleByteText
 public class TransactionAddRequestDto {
 
     /** :purpose: Transaction type code (COTRN02 ``TTYPCDI`` / ``TRAN-TYPE-CD`` PIC X(02)). */
@@ -79,11 +90,23 @@ public class TransactionAddRequestDto {
     @Size(max = 10, message = "Merchant Zip must be at most 10 characters")
     private String tranMerchantZip;
 
-    /** :purpose: Origination timestamp (COTRN02 ``TORIGDTI`` / ``TRAN-ORIG-TS`` PIC X(26)). */
+    /**
+     * :purpose: Origination date as the ``COTRN02`` map field carries it: ten characters
+     *  ``YYYY-MM-DD`` (``TORIGDT`` is ``DFHMDF LENGTH=10``), optionally space-filled to the
+     *  stored width because ``COTRN02C`` L487-L488 redisplays the stored value in that same
+     *  ten-character field. The service normalizes it to the canonical stored 26-character
+     *  form (``com.carddemo.common.util.LegacyTimestamp``); a value carrying anything else
+     *  after the date is refused.
+     */
     @Size(max = 26, message = "Orig Date should be in format YYYY-MM-DD")
     private String tranOrigTs;
 
-    /** :purpose: Processing timestamp (COTRN02 ``TPROCDTI`` / ``TRAN-PROC-TS`` PIC X(26)). */
+    /**
+     * :purpose: Processing date as the ``COTRN02`` map field carries it: ten characters
+     *  ``YYYY-MM-DD`` (``TPROCDT`` is ``DFHMDF LENGTH=10``), optionally space-filled to the
+     *  stored width. Normalized to the canonical stored 26-character form exactly as
+     *  {@link #getTranOrigTs()} is.
+     */
     @Size(max = 26, message = "Proc Date should be in format YYYY-MM-DD")
     private String tranProcTs;
 
@@ -276,32 +299,34 @@ public class TransactionAddRequestDto {
     }
 
     /**
-     * :purpose: Return the origination timestamp.
-     * :output: the 26-character ``tranOrigTs`` value.
+     * :purpose: Return the origination date.
+     * :output: the ten-character ``YYYY-MM-DD`` map field value, optionally space-filled.
      */
     public String getTranOrigTs() {
         return tranOrigTs;
     }
 
     /**
-     * :purpose: Set the origination timestamp.
-     * :param tranOrigTs: the 26-character ``tranOrigTs`` value.
+     * :purpose: Set the origination date.
+     * :param tranOrigTs: the ten-character ``YYYY-MM-DD`` map field value, optionally
+     *  space-filled to the stored width.
      */
     public void setTranOrigTs(String tranOrigTs) {
         this.tranOrigTs = tranOrigTs;
     }
 
     /**
-     * :purpose: Return the processing timestamp.
-     * :output: the 26-character ``tranProcTs`` value.
+     * :purpose: Return the processing date.
+     * :output: the ten-character ``YYYY-MM-DD`` map field value, optionally space-filled.
      */
     public String getTranProcTs() {
         return tranProcTs;
     }
 
     /**
-     * :purpose: Set the processing timestamp.
-     * :param tranProcTs: the 26-character ``tranProcTs`` value.
+     * :purpose: Set the processing date.
+     * :param tranProcTs: the ten-character ``YYYY-MM-DD`` map field value, optionally
+     *  space-filled to the stored width.
      */
     public void setTranProcTs(String tranProcTs) {
         this.tranProcTs = tranProcTs;

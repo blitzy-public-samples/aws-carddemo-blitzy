@@ -278,17 +278,52 @@ class DockerBuildContextHygieneTest {
     }
 
     @Test
-    @DisplayName("each module-context ignore file excludes everything but the repackaged boot jar")
+    @DisplayName("each module-context ignore file admits exactly the inputs its Dockerfile copies")
     void moduleIgnoreFilesAdmitOnlyTheBootJar() {
         for (BuildEntry entry : buildEntries()) {
             if (entry.isRootContext() || "frontend".equals(entry.service())) {
                 continue;
             }
             String ignorePath = entry.context().replaceFirst("^\\./", "") + "/" + IGNORE_FILE;
-            assertThat(ignorePatterns(ignorePath))
-                    .as("%s admits only target/*.jar, which is the single input its Dockerfile copies",
-                            entry.service())
-                    .containsExactly("*", "!target", "target/*", "!target/*.jar");
+            if (copiesNothing(entry)) {
+                // A derived-image context (db, observability) has no build input at all:
+                // its Dockerfile only changes the base image. The correct policy is a
+                // total exclusion, and re-admitting a target/ tree that does not exist
+                // would be dead configuration.
+                assertThat(ignorePatterns(ignorePath))
+                        .as("%s copies nothing, so its whole context is excluded", entry.service())
+                        .containsExactly("*");
+            } else {
+                assertThat(ignorePatterns(ignorePath))
+                        .as("%s admits only target/*.jar, which is the single input its "
+                                + "Dockerfile copies", entry.service())
+                        .containsExactly("*", "!target", "target/*", "!target/*.jar");
+            }
         }
+    }
+
+    /**
+     * :purpose: Decide whether a build entry's Dockerfile reads anything from its
+     *     context, so the ignore-file policy asserted above matches the real inputs.
+     * :param entry: the compose build entry.
+     * :returns: ``true`` when the Dockerfile declares no ``COPY``/``ADD`` from the
+     *     context (a stage-to-stage ``COPY --from`` is not a context read).
+     */
+    private static boolean copiesNothing(BuildEntry entry) {
+        String context = entry.context().replaceFirst("^\\./", "");
+        // Compose resolves `dockerfile` relative to the CONTEXT, so a repository-root
+        // path is only produced by prefixing the context (which is "." for the single
+        // root-context build, already excluded by the caller).
+        String dockerfile = entry.dockerfile() == null
+                ? context + "/Dockerfile"
+                : context + "/" + entry.dockerfile();
+        for (String line : lines(dockerfile)) {
+            String stripped = line.strip();
+            boolean isCopy = stripped.startsWith("COPY ") || stripped.startsWith("ADD ");
+            if (isCopy && !stripped.contains("--from=")) {
+                return false;
+            }
+        }
+        return true;
     }
 }

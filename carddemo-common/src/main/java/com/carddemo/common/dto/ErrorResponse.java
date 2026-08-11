@@ -74,8 +74,12 @@ public class ErrorResponse {
      */
     private String correlationId;
 
-    /** :purpose: Optional per-field validation messages (field name to message); null or empty otherwise. */
-    private Map<String, String> fieldErrors;
+    /**
+     * :purpose: Per-field validation messages (field name to message), EMPTY when the failure
+     *     is not attributable to individual fields.
+     * :note: Never null. One shape, always an object, removes the null case from every caller.
+     */
+    private Map<String, String> fieldErrors = new LinkedHashMap<>();
 
     /**
      * :purpose: Create an empty error body and default the timestamp to the current
@@ -252,8 +256,9 @@ public class ErrorResponse {
     }
 
     /**
-     * :purpose: Return the optional per-field validation messages.
-     * :output: a field-name-to-message map, or ``null``/empty when there are none.
+     * :purpose: Return the per-field validation messages.
+     * :output: a field-name-to-message map, EMPTY when the failure carries no field detail;
+     *  never ``null``.
      */
     public Map<String, String> getFieldErrors() {
         return fieldErrors;
@@ -261,22 +266,19 @@ public class ErrorResponse {
 
     /**
      * :purpose: Set the per-field validation messages.
-     * :param fieldErrors: a field-name-to-message map.
+     * :param fieldErrors: a field-name-to-message map; ``null`` is normalized to an empty
+     *  map so the published envelope always carries an object.
      */
     public void setFieldErrors(Map<String, String> fieldErrors) {
-        this.fieldErrors = fieldErrors;
+        this.fieldErrors = fieldErrors == null ? new LinkedHashMap<>() : fieldErrors;
     }
 
     /**
-     * :purpose: Add a single field-level validation message, lazily initializing the
-     *  backing map as an insertion-ordered LinkedHashMap on first use.
+     * :purpose: Add a single field-level validation message to the insertion-ordered map.
      * :param field: name of the field that failed validation.
      * :param message: validation message describing the failure.
      */
     public void addFieldError(String field, String message) {
-        if (this.fieldErrors == null) {
-            this.fieldErrors = new LinkedHashMap<>();
-        }
         this.fieldErrors.put(field, message);
     }
 

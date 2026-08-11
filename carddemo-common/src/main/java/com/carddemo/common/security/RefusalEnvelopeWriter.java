@@ -31,19 +31,19 @@ import org.springframework.http.MediaType;
  * :purpose: Write the shared error envelope for a request refused BEFORE it reached a
  *     controller — an unauthenticated call, a denied call, or a call the request firewall
  *     rejected. Those three refusals are produced by servlet-layer components that the
- *     ``@ControllerAdvice`` never sees, so each one used to answer in a shape of its own:
- *     a zero-byte body for the two security refusals and the container's four-field error
- *     page for the firewall. A caller could therefore be told nothing at all about why it
- *     was refused, and an operator had no id to correlate the refusal with.
+ *     ``@ControllerAdvice`` never sees, so each one used to answer in a shape of its own: a
+ *     zero-byte body for the two security refusals and the container's four-field error page
+ *     for the firewall. A caller could therefore be told nothing at all about why it was
+ *     refused, and an operator had no id to correlate the refusal with.
  * :output: The named ``write`` method, and the two error codes the refusals carry.
- * :note: The envelope is deliberately minimal in CONTENT while identical in SHAPE: a
- *     fixed message per status, the request path with any PAN redacted, and the two ids.
- *     It names no resource, no principal and no reason beyond the status, so a refused
- *     caller still learns nothing it did not already know.
+ * :note: The envelope is deliberately minimal in CONTENT while identical in SHAPE: a fixed
+ *     message per status, the request path with any PAN redacted, and the two ids. It names no
+ *     resource, no principal and no reason beyond the status, so a refused caller still learns
+ *     nothing it did not already know.
  * :note: The JSON is written directly rather than through an ``ObjectMapper`` because
- *     these components are plain collaborators of the security chain, constructed before
- *     any bean is available; the envelope has seven scalar members and one of them is a
- *     fixed literal, so there is nothing here a mapper would get more right.
+ *     these components are plain collaborators of the security chain, constructed before any
+ *     bean is available; the envelope has seven scalar members and one of them is a fixed
+ *     literal, so there is nothing here a mapper would get more right.
  */
 public final class RefusalEnvelopeWriter {
 
@@ -108,10 +108,10 @@ public final class RefusalEnvelopeWriter {
      * :param errorCode: the machine-readable code for the refusal.
      * :param message: the fixed operator-facing text.
      * :raises IOException: if the body cannot be written.
-     * :note: For a refusal decided before or around ``FilterChainProxy`` — the request firewall
-     *     and the source-address budget — ``HeaderWriterFilter`` never runs, so nothing supplies
-     *     a cache directive or the sniffing guard. Observed on both paths: the response carried
-     *     only the correlation id. Setting them here therefore cannot suppress a stronger
+     * :note: For a refusal decided before or around ``FilterChainProxy`` — the request
+     *     firewall and the source-address budget — ``HeaderWriterFilter`` never runs, so nothing
+     *     supplies a cache directive or the sniffing guard. Observed on both paths: the response
+     *     carried only the correlation id. Setting them here therefore cannot suppress a stronger
      *     directive, which is exactly why {@link #write} does not set them for the in-chain
      *     callers, where the security writer owns them and returns early if anything is present.
      */

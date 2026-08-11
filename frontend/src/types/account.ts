@@ -1,26 +1,23 @@
 /**
  * :module: ``frontend/src/types/account.ts``
  * :purpose: Request / response DTO interfaces for the CardDemo account screens —
- *   ``AccountViewPage`` (read-only account + customer detail; BMS mapset
- *   ``COACTVW``, program ``COACTVWC``, CICS transaction ``CAVW``,
- *   ``GET /accounts/{id}``) and ``AccountUpdatePage`` (optimistic-lock update;
- *   BMS mapset ``COACTUP``, program ``COACTUPC``, CICS transaction ``CAUP``,
- *   ``PUT /accounts/{id}``).
- * :output: The :ts:type:`AccountViewResponseDto`, :ts:type:`AccountUpdateRequestDto`
- *   and :ts:type:`AccountUpdateResponseDto` wire contracts, plus the optional
- *   page helpers :ts:type:`AccountUpdateFormParts` and
- *   :ts:type:`OptimisticLockConflict`.
- * :note: Member names use the backend camelCase JSON property names so REST
- *   payloads bind without field remapping. Per the account optimistic-locking
- *   design (AAP 0.6.2) the contract carries the ``version`` snapshot. Every
- *   monetary, identifier and numeric field is typed ``string`` because the
- *   services serialize them as strings, preserving ``NUMERIC(p,s)`` scale and
- *   zero-padded COBOL field width on the wire; ``version`` is the sole numeric
- *   member.
- * :note: The identifier ``acctExpiraionDate`` retains the legacy copybook
- *   misspelling (missing the second ``T``, from COBOL ``ACCT-EXPIRAION-DATE``)
- *   verbatim as a frozen contract; it must NOT be "corrected" by inserting the
- *   missing ``T``.
+ *     ``AccountViewPage`` (read-only account + customer detail; BMS mapset ``COACTVW``,
+ *     program ``COACTVWC``, CICS transaction ``CAVW``, ``GET /accounts/{id}``) and
+ *     ``AccountUpdatePage`` (optimistic-lock update; BMS mapset ``COACTUP``, program
+ *     ``COACTUPC``, CICS transaction ``CAUP``, ``PUT /accounts/{id}``).
+ * :output: The :ts:type:`AccountViewResponseDto`, :ts:type:`AccountUpdateRequestDto` and
+ *     :ts:type:`AccountUpdateResponseDto` wire contracts, plus the optional page helpers
+ *     :ts:type:`AccountUpdateFormParts` and
+ * :ts: type:`OptimisticLockConflict`.
+ * :note: Member names use the backend camelCase JSON property names so REST payloads bind
+ *     without field remapping. Per the account optimistic-locking design (AAP 0.6.2) the
+ *     contract carries the ``version`` snapshot. Every monetary, identifier and numeric field
+ *     is typed ``string`` because the services serialize them as strings, preserving
+ *     ``NUMERIC(p,s)`` scale and zero-padded COBOL field width on the wire; ``version`` is the
+ *     sole numeric member.
+ * :note: The identifier ``acctExpiraionDate`` retains the legacy copybook misspelling
+ *     (missing the second ``T``, from COBOL ``ACCT-EXPIRAION-DATE``) verbatim as a frozen
+ *     contract; it must NOT be "corrected" by inserting the missing ``T``.
  */
 
 import type { ActiveStatus } from './common';
@@ -112,23 +109,22 @@ export type AccountUpdateSnapshotFields = {
 
 /**
  * :purpose: Request body for ``PUT /accounts/{id}`` (``AccountUpdatePage``, CICS
- *   transaction ``CAUP``, program ``COACTUPC``, BMS mapset ``COACTUP``). Carries
- *   the editable account + customer fields the client echoes back after editing,
- *   together with the optimistic-lock ``version`` read at display time.
- * :output: The account / customer attributes to persist together in one
- *   ``@Transactional`` unit.
- * :note: ``acctId`` is not part of the body — it identifies the target through the
- *   request path; ``custId`` is derived server-side. The misspelled
- *   ``acctExpiraionDate`` is preserved verbatim.
- * :param version: the account optimistic-lock version snapshot the client read
- *   when the screen was displayed. The server compares it against the current
- *   record; a mismatch raises ``OptimisticLockException``, surfaced as the
- *   ``ApiErrorResponse`` message "Record changed by some one else. Please review"
- *   (see :ts:type:`OptimisticLockConflict`), reproducing the legacy
- *   read-snapshot-compare-rewrite concurrency check.
- * :note: The :ts:type:`AccountUpdateSnapshotFields` members are optional. Supplying
- *   them enables the field-by-field comparison ``COACTUPC`` performs in addition to
- *   the ``version`` check; omitting them leaves ``version`` as the sole guard.
+ *     transaction ``CAUP``, program ``COACTUPC``, BMS mapset ``COACTUP``). Carries the
+ *     editable account + customer fields the client echoes back after editing, together with
+ *     the optimistic-lock ``version`` read at display time.
+ * :output: The account / customer attributes to persist together in one ``@Transactional``
+ *     unit.
+ * :note: ``acctId`` is not part of the body — it identifies the target through the request
+ *     path; ``custId`` is derived server-side. The misspelled ``acctExpiraionDate`` is
+ *     preserved verbatim.
+ * :param version: the account optimistic-lock version snapshot the client read when the
+ *     screen was displayed. The server compares it against the current record; a mismatch
+ *     raises ``OptimisticLockException``, surfaced as the ``ApiErrorResponse`` message "Record
+ *     changed by some one else. Please review" (see :ts:type:`OptimisticLockConflict`),
+ *     reproducing the legacy read-snapshot-compare-rewrite concurrency check.
+ * :note: The :ts:type:`AccountUpdateSnapshotFields` members are optional. Supplying them
+ *     enables the field-by-field comparison ``COACTUPC`` performs in addition to the
+ *     ``version`` check; omitting them leaves ``version`` as the sole guard.
  */
 export interface AccountUpdateRequestDto
   extends AccountMutableFields,

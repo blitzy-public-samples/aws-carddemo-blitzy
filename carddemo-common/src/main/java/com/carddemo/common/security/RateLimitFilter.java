@@ -34,26 +34,25 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * :purpose: Bound the request rate a single caller may sustain, so credential
- *     guessing and endpoint probing cannot run at full speed (CWE-307). It is the
- *     modern counterpart of the RACF throttling that protected the legacy ``USRSEC``
- *     sign-on, and it complements the per-account lockout applied inside the
- *     authentication service.
- * :output: The original response while the client is within budget, or a
- *     ``429 Too Many Requests`` carrying ``Retry-After`` and the shared ``ErrorResponse``
- *     envelope once the budget is exhausted, so a throttled caller is told that waiting is
- *     the remedy instead of receiving a zero-byte response it cannot act on.
+ * :purpose: Bound the request rate a single caller may sustain, so credential guessing and
+ *     endpoint probing cannot run at full speed (CWE-307). It is the modern counterpart of the
+ *     RACF throttling that protected the legacy ``USRSEC`` sign-on, and it complements the
+ *     per-account lockout applied inside the authentication service.
+ * :output: The original response while the client is within budget, or a ``429 Too Many
+ *     Requests`` carrying ``Retry-After`` and the shared ``ErrorResponse`` envelope once the
+ *     budget is exhausted, so a throttled caller is told that waiting is the remedy instead of
+ *     receiving a zero-byte response it cannot act on.
  * :note: The counter is a fixed one-minute window held in memory per instance. That is
- *     deliberate: it adds no infrastructure dependency, cannot fail open when a store
- *     is unavailable, and each replica enforces the budget for the traffic it actually
- *     serves. The map is bounded by {@link #MAX_TRACKED_CLIENTS}; when the bound is
- *     reached the window is reset rather than allowed to grow without limit.
+ *     deliberate: it adds no infrastructure dependency, cannot fail open when a store is
+ *     unavailable, and each replica enforces the budget for the traffic it actually serves.
+ *     The map is bounded by {@link #MAX_TRACKED_CLIENTS}; when the bound is reached the window
+ *     is reset rather than allowed to grow without limit.
  * :note: Several instances may be stacked in one chain to apply a broad budget and a
- *     tighter budget for a sensitive prefix at the same time. Each therefore scopes its
- *     own {@code OncePerRequestFilter} marker by path prefix
- *     ({@link #getAlreadyFilteredAttributeName()}); without that scoping the first
- *     instance to run would mark the request as already filtered and every later
- *     instance would silently skip itself, leaving the tighter budget unenforced.
+ *     tighter budget for a sensitive prefix at the same time. Each therefore scopes its own
+ *     {@code OncePerRequestFilter} marker by path prefix ({@link
+ *     #getAlreadyFilteredAttributeName()}); without that scoping the first instance to run
+ *     would mark the request as already filtered and every later instance would silently skip
+ *     itself, leaving the tighter budget unenforced.
  * :note: The counted identity is selectable. An address-keyed budget is a SHARED budget:
  *     every caller behind one NAT or load-balancer address divides it, so a 150-user
  *     population from a single source received a fraction of the budget each. An

@@ -59,23 +59,21 @@ public class BillPaymentController {
     }
 
     /**
-     * :purpose: Process an online bill payment (CICS ``CB00``, program ``COBIL00C``) —
-     *  pay the account balance in full and record the payment transaction. Validates the
-     *  request body, resolves and re-persists the externalized session, and delegates the
-     *  entire flow to {@link BillPaymentService}.
-     * :param request: the validated bill-payment request carrying the account id
-     *  (``ACTIDIN``) and the confirm flag (``CONFIRM``).
-     * :param httpRequest: the current servlet request; its already-established session,
-     *  when present, carries the externalized {@link SessionContext}.
-     * :returns: the bill-payment response carrying the account id, the balance to
-     *  display, the generated 16-digit transaction id (on a posted payment) and the
-     *  outcome message (HTTP 200).
-     * :raises CardDemoException: (HTTP 400) empty account id, invalid confirm value,
-     *  a zero-or-negative balance, or a duplicate transaction id.
-     * :raises RecordNotFoundException: (HTTP 404) account or card cross-reference not
-     *  found.
-     * :raises OptimisticLockConflictException: (HTTP 409) concurrent account
-     *  modification.
+     * :purpose: Process an online bill payment (CICS ``CB00``, program ``COBIL00C``) — pay the
+     *     account balance in full and record the payment transaction. Validates the request body,
+     *     resolves and re-persists the externalized session, and delegates the entire flow to
+     *     {@link BillPaymentService}.
+     * :param request: the validated bill-payment request carrying the account id (``ACTIDIN``)
+     *     and the confirm flag (``CONFIRM``).
+     * :param httpRequest: the current servlet request; its already-established session, when
+     *     present, carries the externalized {@link SessionContext}.
+     * :returns: the bill-payment response carrying the account id, the balance to display, the
+     *     generated 16-digit transaction id (on a posted payment) and the outcome message (HTTP
+     *     200).
+     * :raises CardDemoException: (HTTP 400) empty account id, invalid confirm value, a
+     *     zero-or-negative balance, or a duplicate transaction id.
+     * :raises RecordNotFoundException: (HTTP 404) account or card cross-reference not found.
+     * :raises OptimisticLockConflictException: (HTTP 409) concurrent account modification.
      */
     @PostMapping
     public BillPaymentResponseDto processBillPayment(@Valid @RequestBody BillPaymentRequestDto request,

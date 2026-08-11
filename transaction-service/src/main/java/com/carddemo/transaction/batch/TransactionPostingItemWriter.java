@@ -37,20 +37,18 @@ import java.util.Optional;
 
 /**
  * Spring Batch writer that posts validated daily transactions.
- *
  * :purpose: Post a validated daily transaction as one atomic unit — update the
- *     transaction-category running balance, update the account balances, then
- *     insert the transaction-master row — mirroring the ``CBTRN02C``
- *     ``2000-POST-TRANSACTION`` paragraph and its ``2700-UPDATE-TCATBAL``,
- *     ``2800-UPDATE-ACCOUNT-REC`` and ``2900-WRITE-TRANSACTION-FILE`` sub-updates
- *     (``app/cbl/CBTRN02C.cbl`` L424-L579). The three updates run in the legacy
- *     order within the step's chunk transaction (chunk size one, configured by
- *     the posting job), so they commit or roll back together.
+ *     transaction-category running balance, update the account balances, then insert the
+ *     transaction-master row — mirroring the ``CBTRN02C`` ``2000-POST-TRANSACTION`` paragraph
+ *     and its ``2700-UPDATE-TCATBAL``, ``2800-UPDATE-ACCOUNT-REC`` and
+ *     ``2900-WRITE-TRANSACTION-FILE`` sub-updates (``app/cbl/CBTRN02C.cbl`` L424-L579). The
+ *     three updates run in the legacy order within the step's chunk transaction (chunk size
+ *     one, configured by the posting job), so they commit or roll back together.
  * :output: For each valid {@link PostingItem}, a created-or-updated
  *     transaction-category-balance row, an updated account aggregate, and a new
  *     transaction-master row whose ``tranId`` is the daily id verbatim and whose
- *     ``tranProcTs`` is the write-time DB2-format timestamp. Rejected items are
- *     skipped defensively (they are routed to the reject writer by the classifier).
+ *     ``tranProcTs`` is the write-time DB2-format timestamp. Rejected items are skipped
+ *     defensively (they are routed to the reject writer by the classifier).
  */
 @Component
 public class TransactionPostingItemWriter implements ItemWriter<PostingItem> {

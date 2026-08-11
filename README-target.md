@@ -412,10 +412,54 @@ cp .env.example .env
 #   GRAFANA_ADMIN_USER / GRAFANA_ADMIN_PASSWORD        dashboard login
 #   MONITORING_PASSWORD                                Prometheus scrape principal
 #   CARDDEMO_PII_KEY                                   AES-256 key for PII at rest
+#   CARDDEMO_SEED_USER_PASSWORD                        the ten seeded logins (max 8 chars)
 #   CARDDEMO_COOKIE_SECURE                             leave false for plain-HTTP local runs
 openssl rand -base64 24     # for each password
 openssl rand -base64 32     # for CARDDEMO_PII_KEY — see below
+openssl rand -base64 9 | tr -dc 'A-Z0-9' | cut -c1-8    # CARDDEMO_SEED_USER_PASSWORD
 ```
+
+**Image provenance.** Every image carries OCI `revision` and `created` labels, sourced
+from `CARDDEMO_IMAGE_REVISION` and `CARDDEMO_IMAGE_CREATED`. `docker-compose.yml` wires
+both into each service's `build.args`, so an ordinary `docker compose build` stamps them
+and **no `--build-arg` is needed**. Export them first, or the labels build empty:
+
+```bash
+export CARDDEMO_IMAGE_REVISION=$(git rev-parse --short HEAD)
+export CARDDEMO_IMAGE_CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+docker compose build
+docker inspect carddemo/account-service:1.0.0 \
+  --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+```
+
+The revision is only as accurate as the working tree — a build from a dirty tree stamps
+the parent commit.
+
+**Horizontal scaling.** `docker compose up -d --scale account-service=2` now
+distributes traffic. The gateway resolves each upstream through the platform's DNS on a
+short interval and load-balances across the records it returns, so a scaled service
+shares work and the loss of one replica does not surface `503`s to a caller. Three knobs
+tune it, all with working defaults:
+
+| Setting | Default | Effect |
+| :------ | :------ | :----- |
+| `carddemo.gateway.upstream.dns-refresh-millis` | `2000` | how often each upstream's DNS records are re-resolved (floored at 100 ms) |
+| `carddemo.gateway.upstream.<service-id>.host` | the service id | the name resolved for that upstream |
+| `carddemo.gateway.upstream.<service-id>.port` | `8080` | the port every containerised service listens on |
+| `CARDDEMO_GATEWAY_CONNECT_TIMEOUT` | `2s` | how long a connection attempt to a replica waits before failing over |
+| `Retry` filter `retries` (in the route table) | `2` | retry budget, on the `<id>-reads` route of each pair only |
+
+The JVM's own DNS cache is overridden to 2 s to match the refresh interval — the default
+caches a positive answer for the life of the process, which would defeat re-resolution
+entirely.
+
+Each service has a route **pair**: `<id>-reads` carries the bounded `Retry` filter and
+matches the idempotent methods, while the write route carries none. The split is by route
+predicate rather than by the retry filter's own `methods` option, because exception-based
+retry ignores that option — so a non-idempotent request still surfaces `503` rather than
+being replayed, which is what stops a `POST /billpay` paying a bill twice. Worst-case
+failover latency is about three seconds; decision log §57.7 records why the connect
+timeout is not lower.
 
 > **Cookie transport (`CARDDEMO_COOKIE_SECURE`).** The session cookie and the
 > gateway's `XSRF-TOKEN` cookie default to `Secure`, and a browser never returns a
@@ -564,9 +608,27 @@ service listens on the single internal port **8080** and publishes nothing:
 A workstation run still needs the datastores and the schema. The simplest route is to
 start just those from Compose and point the services at them:
 
+A workstation run also needs the same secrets the containers get from `.env` — most
+importantly `CARDDEMO_PII_KEY`, without which start-up **fails closed** with
+`IllegalStateException: PII encryption key is not configured`, because the customer
+converter has no key to decrypt the seeded PII with. Sourcing `.env` supplies that key
+along with the datasource and Redis credentials:
+
 ```bash
 docker compose up -d postgres redis batch-service   # datastores + the schema owner
+set -a && . ./.env && set +a                        # CARDDEMO_PII_KEY + datastore creds
 cd account-service && mvn spring-boot:run           # binds 8083
+```
+
+`.env` points the datasource and Redis at the container hostnames `postgres` and
+`redis`, which do not resolve from the workstation. Either add both to `/etc/hosts` as
+`127.0.0.1`, or override the two URLs on the command line:
+
+```bash
+cd account-service && mvn spring-boot:run \
+  -Dspring-boot.run.arguments="\
+--spring.datasource.url=jdbc:postgresql://localhost:5432/carddemo \
+--spring.data.redis.host=localhost"
 ```
 
 ### Reachable URLs
@@ -590,24 +652,37 @@ over that private network, not via a host port.
 
 ### Default Login Credentials
 
-Ten users are seeded by Flyway (`carddemo-common`
-`V3__seed_test_data.sql`) from the legacy security data, as `{bcrypt}` hashes. The
-credentials match the legacy application:
+Ten users are seeded by Flyway (`carddemo-common` `V3__seed_test_data.sql`) from the
+legacy security data, as `{bcrypt}` hashes. Their ids and roles match the legacy
+application; their password does **not** — it is yours to set.
+
+> **`CARDDEMO_SEED_USER_PASSWORD` is a prerequisite, not an option.**
+> `V10__lock_seeded_credentials.sql` replaces every seeded hash with a sentinel that
+> matches no input, and `auth-service`'s `SeedCredentialProvisioner` re-hashes the ten
+> rows at start-up from `CARDDEMO_SEED_USER_PASSWORD`. Until you set it, all ten
+> accounts exist and **none of them can sign on** — the deployment fails closed rather
+> than shipping a working shared administrator credential. `.env.example` carries the
+> key; generate a value with `openssl rand -base64 9 | tr -dc 'A-Z0-9' | cut -c1-8`
+> (the field is `PIC X(08)`, so eight characters is the maximum the screen accepts).
 
 | User ID | Password | `SEC-USR-TYPE` | Role | Post-login menu |
 | :------ | :------- | :------------- | :--- | :-------------- |
-| `ADMIN001` … `ADMIN005` | `PASSWORD` | `A` | `ROLE_ADMIN` | Admin menu — `CA00` |
-| `USER0001` … `USER0005` | `PASSWORD` | `U` | `ROLE_USER` | Main menu — `CM00` |
+| `ADMIN001` … `ADMIN005` | `$CARDDEMO_SEED_USER_PASSWORD` | `A` | `ROLE_ADMIN` | Admin menu — `CA00` |
+| `USER0001` … `USER0005` | `$CARDDEMO_SEED_USER_PASSWORD` | `U` | `ROLE_USER` | Main menu — `CM00` |
 
 Sign on through the gateway and keep the session cookie for subsequent calls:
 
 ```bash
 curl -s -c cookies.txt -X POST http://localhost:8080/auth/signon \
   -H 'Content-Type: application/json' \
-  -d '{"userId":"ADMIN001","password":"PASSWORD"}'
+  -d "{\"userId\":\"ADMIN001\",\"password\":\"$CARDDEMO_SEED_USER_PASSWORD\"}"
 # -> 200 {"userId":"ADMIN001","userType":"A","redirectTarget":"CA00"}
 
-curl -s -b cookies.txt http://localhost:8080/accounts/1     # 200 (accounts 1-50 are seeded)
+# The account key is ACCT-ID PIC 9(11) -- eleven digits, zero-padded. The screens and
+# the API both take the padded form, so `/accounts/1` is a validation fault (400
+# VALIDATION_FAILED, "Account Filter must be a non-zero 11 digit number"), not a lookup
+# for account 1. Fifty accounts are seeded: 00000000001 through 00000000050.
+curl -s -b cookies.txt http://localhost:8080/accounts/00000000001     # 200
 ```
 
 Every credential in the table above is exercised against the seeded database by
@@ -626,7 +701,7 @@ answers **`403` with an empty body** and no error envelope:
 # 1. Sign on (exempt from CSRF) and keep the session cookie.
 curl -s -c cookies.txt -X POST http://localhost:8080/auth/signon \
   -H 'Content-Type: application/json' \
-  -d '{"userId":"ADMIN001","password":"PASSWORD"}'
+  -d "{\"userId\":\"ADMIN001\",\"password\":\"$CARDDEMO_SEED_USER_PASSWORD\"}"
 
 # 2. Ask for a token. This also materializes the XSRF-TOKEN cookie.
 curl -s -b cookies.txt -c cookies.txt http://localhost:8080/csrf
@@ -635,11 +710,25 @@ curl -s -b cookies.txt -c cookies.txt http://localhost:8080/csrf
 # 3. Send the token back in the X-XSRF-TOKEN header on the write.
 TOKEN=$(curl -s -b cookies.txt -c cookies.txt http://localhost:8080/csrf \
   | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-curl -s -b cookies.txt -X PUT http://localhost:8080/accounts/1 \
+# A PUT carries the whole screen, exactly as COACTUPC receives the whole map, so build
+# the body from the current GET rather than by hand. Three seeded values on account 1
+# fail the update screen's own edits -- the legacy file predates them -- so correct
+# those three and the round trip succeeds:
+#   custFicoCreditScore  274            -> 700     (edit: 300-850)
+#   custPhoneNum2        (373)...       -> (908)... (edit: valid NANP area code)
+#   custAddrZip          12546 with NC  -> 27601    (edit: zip must match the state)
+curl -s -b cookies.txt http://localhost:8080/accounts/00000000001 \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); d.update({"custFicoCreditScore":"700","custPhoneNum2":"(908)693-8684","custAddrZip":"27601","acctCreditLimit":"2500.00"}); print(json.dumps(d))' > account-update.json
+
+curl -s -b cookies.txt -X PUT http://localhost:8080/accounts/00000000001 \
   -H 'Content-Type: application/json' -H "X-XSRF-TOKEN: $TOKEN" \
   -d @account-update.json
-# -> 200, and the account's "version" advances by one
+# -> 200, and the account's "version" advances by one (0 -> 1)
 ```
+
+The masked members the GET returns (`custSsn`, `custGovtIssuedId`,
+`custEftAccountId`) round-trip as-is: the service treats a masked value as "unchanged"
+rather than as a new value, so echoing the GET does not overwrite the PII it hid.
 
 The token is issued by `GET /csrf` and also written to the non-`HttpOnly`
 `XSRF-TOKEN` cookie, which is why the browser SPA needs no special handling — axios
@@ -706,6 +795,17 @@ rationale.
 | `V6__security_users_optimistic_lock.sql` | Adds the `version` column to `security_users` (`BIGINT NOT NULL DEFAULT 0`) that backs JPA `@Version` optimistic locking on user maintenance. |
 | `V7__cards_optimistic_lock.sql` | Adds the same `version` column to `cards`, so a card update detects a concurrent modification exactly as the account update does. |
 | `V8__transactions_card_fk.sql` | Adds the `fk_transactions_card` foreign key from `transactions.tran_card_num` to `cards.card_num`, completing the declarative referential integrity the legacy programs enforced by read order. |
+| `V9__security_users_id_charset.sql` | Adds `chk_sec_usr_id_charset CHECK (sec_usr_id ~ '^[A-Z0-9]{1,8}$')` — the charset the fixed-width EBCDIC `SEC-USR-ID PIC X(8)` field implied, enforced at the schema so a homoglyph cannot reach the identity primitive. |
+| `V10__lock_seeded_credentials.sql` | Replaces the ten seeded `{bcrypt}` hashes with a sentinel that matches no input, so no seeded account can sign on until `CARDDEMO_SEED_USER_PASSWORD` is supplied and `auth-service`'s `SeedCredentialProvisioner` re-hashes the rows at start-up. |
+
+**There is no `V4__*.sql`, and that is not a gap.** Version 4 is a *Java* migration —
+`com.carddemo.common.migration.SeededPiiEncryptionMigration`, which Flyway records with
+the description `encrypt seeded pii`. It encrypts the seeded PII columns in place, which
+needs the same key resolution and converter the application uses and so cannot be
+expressed in SQL. Applying the committed set therefore yields **ten** migrations,
+versions 1 through 10 with no gap at all. `SchemaMigrationInventoryIT` pins that
+ten-version inventory and each description in installed order, so a migration cannot be
+added, renumbered or re-described silently.
 
 Beyond the migration set, `carddemo-common`'s `SeededPiiEncryptionMigrator` runs one
 idempotent sweep over the same four columns during context initialization. Migration
@@ -736,17 +836,25 @@ container, and is a deployment decision this reference stack does not make for y
 Take a compressed logical backup of the running stack (custom format, so a selective
 restore is possible):
 
+`pg_dump` authenticates like any other client, and the container's own
+`POSTGRES_PASSWORD` is not on your shell's environment — so source `.env` first and pass
+the password through as `PGPASSWORD`. Without it the command stops at an interactive
+`Password:` prompt and fails with `fe_sendauth: no password supplied`:
+
 ```bash
-# Compose. POSTGRES_USER / POSTGRES_DB come from your .env.
-docker compose exec -T postgres \
+# Compose. POSTGRES_USER / POSTGRES_DB / POSTGRES_PASSWORD come from your .env.
+set -a && . ./.env && set +a
+docker compose exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" postgres \
   pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc \
   > "carddemo-$(date -u +%Y%m%dT%H%M%SZ).dump"
 ```
 
 ```bash
-# Kubernetes: the same command, in the postgres pod.
-kubectl exec deploy/postgres -- \
-  pg_dump -U carddemo_owner -d carddemo -Fc > carddemo.dump
+# Kubernetes: the same command in the postgres pod, taking the password from the
+# Secret the deployment already mounts.
+kubectl exec deploy/postgres -- sh -c \
+  'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -U carddemo_owner -d carddemo -Fc' \
+  > carddemo.dump
 ```
 
 Restore into the running database. `--clean --if-exists` drops the objects the dump
@@ -755,7 +863,7 @@ through the restore:
 
 ```bash
 docker compose stop $(docker compose config --services | grep -- -service) api-gateway
-docker compose exec -T postgres \
+docker compose exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" postgres \
   pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner \
   < carddemo-20260808T000000Z.dump
 docker compose start api-gateway $(docker compose config --services | grep -- -service)
@@ -823,7 +931,25 @@ ships the following, verifiable in the local Docker Compose environment:
   (`management.opentelemetry.tracing.export.otlp.endpoint`, docker profile). Every log
   line emitted inside a request carries `traceId` and `spanId`, and a gateway-routed
   call produces one trace containing both the `api-gateway` span and the downstream
-  service span — inspect it at <http://localhost:16686>.
+  service span — inspect it at <http://127.0.0.1:16686>, which is bound to the loopback
+  interface rather than published on all interfaces.
+
+  The collector is configured by an explicit document, `observability/jaeger-config.yaml`
+  (duplicated verbatim as a ConfigMap in `k8s/deployment-jaeger.yaml` — the two must stay
+  byte-identical, as there is no kustomization to generate one from the other). It keeps a
+  **bounded** number of traces in memory, `JAEGER_MAX_TRACES` (6000 by default, measured
+  at roughly 34 KB per trace against the container's memory limit); the oldest age out
+  once the depth is reached. `GOMEMLIMIT`, `GOGC` and `GOMAXPROCS` are set from that same
+  limit because the Go runtime is not cgroup-aware and would otherwise size its heap
+  against the host's memory and be killed. The container also has a real healthcheck, so
+  a collector that stops accepting spans is visible to Compose and to Kubernetes instead
+  of reporting `Up` between crashes:
+
+  ```bash
+  docker compose ps jaeger                     # State must read (healthy)
+  docker inspect carddemo-jaeger-1 --format '{{.RestartCount}}'   # must not climb
+  curl -s http://127.0.0.1:16686/api/services  # every reporting service, including the gateway
+  ```
 - **Metrics** — exposed through Spring Boot Actuator and scraped by Prometheus
   at `/actuator/prometheus`. That endpoint (and `/actuator/metrics/**`) is
   **authenticated**: it accepts HTTP basic credentials for a single dedicated

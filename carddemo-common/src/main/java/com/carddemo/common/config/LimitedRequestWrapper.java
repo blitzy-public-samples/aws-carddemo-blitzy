@@ -142,6 +142,7 @@ class LimitedRequestWrapper extends HttpServletRequestWrapper {
         }
 
         /**
+         * :purpose: Read ``finished``.
          * :returns: ``true`` when the underlying stream is fully consumed.
          */
         @Override
@@ -150,6 +151,7 @@ class LimitedRequestWrapper extends HttpServletRequestWrapper {
         }
 
         /**
+         * :purpose: Read ``ready``.
          * :returns: ``true`` when the underlying stream can be read without blocking.
          */
         @Override

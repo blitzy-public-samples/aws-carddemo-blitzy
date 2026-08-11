@@ -25,6 +25,7 @@ import com.carddemo.common.dto.CardUpdateResponseDto;
 import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.dto.SessionContextSupport;
 import com.carddemo.common.exception.CardDemoException;
+import com.carddemo.common.web.PageParameterGuard;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -38,20 +39,20 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * :purpose: Thin REST controller for the CardDemo card feature, exposing credit-card
- *  list, detail, and update operations. It re-expresses three legacy CICS online card
- *  transactions as HTTP endpoints and delegates all business logic to
- *  :java:type:`com.carddemo.card.service.CardService`:
- *  ``CCLI`` / ``COCRDLIC`` (card list) becomes ``GET /cards``, ``CCDL`` / ``COCRDSLC``
- *  (card detail) becomes ``GET /cards/{cardNumber}``, and ``CCUP`` / ``COCRDUPC``
- *  (card update) becomes ``PUT /cards/{cardNumber}``.
+ * :purpose: Thin REST controller for the CardDemo card feature, exposing credit-card list,
+ *     detail, and update operations. It re-expresses three legacy CICS online card
+ *     transactions as HTTP endpoints and delegates all business logic to
+ * :java: type:`com.carddemo.card.service.CardService`: ``CCLI`` / ``COCRDLIC`` (card list)
+ *     becomes ``GET /cards``, ``CCDL`` / ``COCRDSLC`` (card detail) becomes ``GET
+ *     /cards/{cardNumber}``, and ``CCUP`` / ``COCRDUPC`` (card update) becomes ``PUT
+ *     /cards/{cardNumber}``.
  * :output: Card list, detail, and update response DTOs returned directly as HTTP 200
- *  bodies; domain, validation, not-found, and conflict failures are translated to the
- *  appropriate HTTP status by the shared ``GlobalExceptionHandler``.
+ *     bodies; domain, validation, not-found, and conflict failures are translated to the
+ *     appropriate HTTP status by the shared ``GlobalExceptionHandler``.
  * :note: The controller performs only path-variable and account-filter format checks,
- *  resolves and writes back the externalized pseudo-conversational session context,
- *  and delegates to the service. It holds no business logic, persistence, security,
- *  observability, or exception-handling code.
+ *     resolves and writes back the externalized pseudo-conversational session context, and
+ *     delegates to the service. It holds no business logic, persistence, security,
+ *     observability, or exception-handling code.
  */
 @RestController
 @RequestMapping("/cards")
@@ -92,62 +93,63 @@ public class CardController {
 
     /**
      * :purpose: List cards for the card-list screen (legacy ``COCRDLIC``, CICS ``CCLI``),
-     *  returning at most seven rows per page. The optional account and card-number filters
-     *  the operator typed are the only browse scope the service applies -- ``COCRDLIC``
-     *  ``9500-FILTER-RECORDS`` carries no user-type branch, so the browse is role independent
-     *  (decision log §19.1); forward and backward paging (legacy PF8 / PF7) map to the
-     *  one-based ``page`` parameter.
+     *     returning at most seven rows per page. The optional account and card-number filters the
+     *     operator typed are the only browse scope the service applies -- ``COCRDLIC``
+     *     ``9500-FILTER-RECORDS`` carries no user-type branch, so the browse is role independent
+     *     (decision log §19.1); forward and backward paging (legacy PF8 / PF7) map to the
+     *     one-based ``page`` parameter.
      * :param accountId: optional owning-account filter; when blank no account filter is
-     *  applied.
+     *     applied.
      * :param cardNumber: optional exact card-number filter passed through to the service.
      * :param page: the one-based page number to return; defaults to the first page.
-     * :param httpRequest: the current servlet request; its already-established session,
-     *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
+     * :param httpRequest: the current servlet request; its already-established session, when
+     *     present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: the card-list response holding the requested page of card rows.
-     * :raises CardDemoException: when the supplied account filter is not a one-to-eleven
-     *  digit number, or the row-selection flag is neither ``S`` nor ``U`` (both translated
-     *  to HTTP 400).
+     * :raises CardDemoException: when the supplied account filter is not a one-to-eleven digit
+     *     number, or the row-selection flag is neither ``S`` nor ``U`` (both translated to HTTP
+     *     400).
      */
     @GetMapping
     public CardListResponseDto listCards(
             @RequestParam(name = "accountId", required = false) String accountId,
             @RequestParam(name = "cardNumber", required = false) String cardNumber,
-            @RequestParam(name = "page", defaultValue = "1") int page,
+            @RequestParam(name = "page", required = false) Integer page,
             @RequestParam(name = "aid", required = false) String aid,
             @RequestParam(name = "action", required = false) String action,
             @RequestParam(name = "selectedCardNumber", required = false) String selectedCardNumber,
             HttpServletRequest httpRequest) {
+        // A page ordinal that identifies no screen is refused rather than clamped to the
+        // first page: clamping made page=-1 and page=1 return byte-identical responses, so
+        // a client paging bug was indistinguishable from correct behaviour.
+        int requestedPage = PageParameterGuard.requirePositivePage(page, "page");
         Long acctIdFilter = parseAccountFilter(accountId);
         SessionContext ctx = resolveSessionContext(httpRequest);
         // The navigation action and the row selection are part of the COCRDLIC screen
         // contract, so they are bound here and passed through: without them the paging keys
         // and the S/U row selection could never reach 1400-SETUP-MESSAGE.
-        CardListResponseDto response = cardService.listCards(acctIdFilter, cardNumber, page,
+        CardListResponseDto response = cardService.listCards(acctIdFilter, cardNumber, requestedPage,
                 aid, action, selectedCardNumber, ctx);
         storeSessionContext(httpRequest, ctx);
         return response;
     }
 
     /**
-     * :purpose: Read a single card for the card-detail screen (legacy ``COCRDSLC``,
-     *  CICS ``CCDL``) by its sixteen-digit card number.
-     *
-     *  The key is submitted in the request BODY, which is why this read is a POST. A
-     *  card number is a Primary Account Number, and a URL -- path segment or query
-     *  string alike -- is written verbatim into every access log, proxy log and
-     *  distributed trace along the request path, so carrying it there would persist the
-     *  PAN in plaintext across the whole infrastructure. The request body is not
-     *  recorded by any of them. The read itself is unchanged and remains side-effect
-     *  free apart from the session-context update the pseudo-conversational flow
-     *  requires.
-     * :param key: the composite card key -- the sixteen-digit card number and the
-     *  optional ``ACCTSID`` that completes the selection; a supplied account id must be
-     *  a non-zero eleven-digit number.
-     * :param httpRequest: the current servlet request; its already-established session,
-     *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
+     * :purpose: Read a single card for the card-detail screen (legacy ``COCRDSLC``, CICS
+     *     ``CCDL``) by its sixteen-digit card number. The key is submitted in the request BODY,
+     *     which is why this read is a POST. A card number is a Primary Account Number, and a URL
+     *     -- path segment or query string alike -- is written verbatim into every access log,
+     *     proxy log and distributed trace along the request path, so carrying it there would
+     *     persist the PAN in plaintext across the whole infrastructure. The request body is not
+     *     recorded by any of them. The read itself is unchanged and remains side-effect free apart
+     *     from the session-context update the pseudo-conversational flow requires.
+     * :param key: the composite card key -- the sixteen-digit card number and the optional
+     *     ``ACCTSID`` that completes the selection; a supplied account id must be a non-zero
+     *     eleven-digit number.
+     * :param httpRequest: the current servlet request; its already-established session, when
+     *     present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: the card-detail response for the resolved card.
      * :raises CardDemoException: when the card number is not sixteen digits or the account
-     *  number is not a non-zero eleven-digit value (translated to HTTP 400).
+     *     number is not a non-zero eleven-digit value (translated to HTTP 400).
      */
     @PostMapping("/detail")
     public CardDetailResponseDto getCardDetail(
@@ -164,21 +166,20 @@ public class CardController {
     }
 
     /**
-     * :purpose: Update a card for the card-update screen (legacy ``COCRDUPC``, CICS
-     *  ``CCUP``). The editable card fields are validated by the service and the update
-     *  is applied as a single atomic transaction.
-     *  The addressed card number travels in the request body for the same reason the
-     *  detail read submits it there: a PAN must not be written into a URL, because every
-     *  access log, proxy and trace along the path records one.
-     * :param request: the editable card fields (embossed name, active status, expiry
-     *  date, and CVV) together with the card number and optional account id that
-     *  address the record; a supplied account id must be a non-zero eleven-digit number.
-     * :param httpRequest: the current servlet request; its already-established session,
-     *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
+     * :purpose: Update a card for the card-update screen (legacy ``COCRDUPC``, CICS ``CCUP``).
+     *     The editable card fields are validated by the service and the update is applied as a
+     *     single atomic transaction. The addressed card number travels in the request body for the
+     *     same reason the detail read submits it there: a PAN must not be written into a URL,
+     *     because every access log, proxy and trace along the path records one.
+     * :param request: the editable card fields (embossed name, active status, expiry date, and
+     *     CVV) together with the card number and optional account id that address the record; a
+     *     supplied account id must be a non-zero eleven-digit number.
+     * :param httpRequest: the current servlet request; its already-established session, when
+     *     present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: the card-update response reflecting the persisted card.
      * :raises CardDemoException: when the card number is not sixteen digits, the account
-     *  number is not a non-zero eleven-digit value, or a card field fails a validation
-     *  edit (translated to HTTP 400).
+     *     number is not a non-zero eleven-digit value, or a card field fails a validation edit
+     *     (translated to HTTP 400).
      */
     @PutMapping
     public CardUpdateResponseDto updateCard(
@@ -219,19 +220,19 @@ public class CardController {
     }
 
     /**
-     * :purpose: Convert the optional account-filter query parameter to the numeric type
-     *  the service expects, applying the legacy account-filter edit at the type
-     *  boundary — the one place the raw digit run is still visible. A null or blank
-     *  value yields no filter; the value is neither reformatted nor zero-padded.
+     * :purpose: Convert the optional account-filter query parameter to the numeric type the
+     *     service expects, applying the legacy account-filter edit at the type boundary — the one
+     *     place the raw digit run is still visible. A null or blank value yields no filter; the
+     *     value is neither reformatted nor zero-padded.
      * :param accountId: the raw account-filter query parameter, or ``null``.
      * :returns: the parsed account-id filter, or ``null`` when no filter was supplied.
      * :raises CardDemoException: when a supplied value is not exactly eleven ASCII digits.
-     * :note: The width is EXACT. ``COCRDLIC``/``COCRDSLC``/``COCRDUPC`` all receive the
-     *  filter in a ``PIC X(11)`` map field and test ``IF CC-ACCT-ID IS NOT NUMERIC``
-     *  (``COCRDSLC`` L665), which is true unless every one of the eleven characters is a
-     *  digit; BMS blank-pads the untyped positions, so a shorter run is refused. The
-     *  service takes a ``Long``, which cannot tell ``1`` from ``00000000001``, so this
-     *  boundary is the only place the rule can be enforced.
+     * :note: The width is EXACT. ``COCRDLIC``/``COCRDSLC``/``COCRDUPC`` all receive the filter
+     *     in a ``PIC X(11)`` map field and test ``IF CC-ACCT-ID IS NOT NUMERIC`` (``COCRDSLC``
+     *     L665), which is true unless every one of the eleven characters is a digit; BMS
+     *     blank-pads the untyped positions, so a shorter run is refused. The service takes a
+     *     ``Long``, which cannot tell ``1`` from ``00000000001``, so this boundary is the only
+     *     place the rule can be enforced.
      */
     private Long parseAccountFilter(String accountId) {
         if (accountId == null || accountId.trim().isEmpty()) {

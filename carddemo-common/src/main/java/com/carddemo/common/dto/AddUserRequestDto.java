@@ -15,24 +15,36 @@
  */
 package com.carddemo.common.dto;
 
+import com.carddemo.common.validation.SingleByteText;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 /**
  * :purpose: Inbound DTO for the add-user screen (COUSR01C, CICS CU01). Carries the entered
- *     user id, the non-secret profile fields, and the raw password the service encodes
- *     before it is persisted.
- * :output: A mutable carrier of the user id, first name, last name, user type, and raw password.
+ *     user id, the non-secret profile fields, and the raw password the service encodes before
+ *     it is persisted.
+ * :output: A mutable carrier of the user id, first name, last name, user type, and raw
+ *     password.
  * :note: Every field width mirrors the ``CSUSR01Y`` record layout, so a value that could
- *     never have been keyed into the 3270 map is refused with HTTP 400 instead of reaching
- *     the column and failing as a server error. The presence edits stay in the service so
- *     the verbatim ``COUSR01C`` "can NOT be empty..." literals keep their legacy order --
+ *     never have been keyed into the 3270 map is refused with HTTP 400 instead of reaching the
+ *     column and failing as a server error. The presence edits stay in the service so the
+ *     verbatim ``COUSR01C`` "can NOT be empty..." literals keep their legacy order --
  *     ``@Size(max = ...)`` never fires for an absent or blank value.
  * :note: The password travels in the request BODY and is write-only: it is never echoed on
  *     any response DTO. It must never be accepted as a query parameter, because a URL is
  *     recorded verbatim by access logs and by client/server tracing spans (CWE-598).
  */
+/*
+ * Boundary encoding guard. The fields of this request are persisted and then
+ * rendered into the 80-byte USRSEC record (CSUSR01Y),
+ * every one of which is a BYTE-width contract a downstream consumer parses by
+ * offset. Text that needs more than one byte per character therefore cannot
+ * survive that rendering intact - it either loses the character or shifts every
+ * following field - so it is refused here, at the only point where the operator
+ * can still be told which field to correct.
+ */
+@SingleByteText
 public class AddUserRequestDto {
 
     /**

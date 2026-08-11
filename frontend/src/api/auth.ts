@@ -1,22 +1,23 @@
 /**
  * :module: ``frontend/src/api/auth.ts``
- * :purpose: Domain API module for the CardDemo sign-on screen (``SignonPage``).
- *   Wraps the api-gateway authentication route, re-expressing the legacy CICS
- *   transaction ``CC00`` / program ``COSGN00C`` (credential verification and
- *   role-based menu routing) as a single stateless REST call issued through the
- *   shared ``apiClient``. Behavior reference: ``app/cbl/COSGN00C.cbl``.
- * :output: The named export ``signon`` — posts sign-on credentials to
- *   ``POST /auth/signon`` and resolves the backend result (authenticated user
- *   id, granted role, and post-login redirect target).
+ * :purpose: Domain API module for the CardDemo sign-on screen (``SignonPage``). Wraps the
+ *     api-gateway authentication route, re-expressing the legacy CICS transaction ``CC00`` /
+ *     program ``COSGN00C`` (credential verification and role-based menu routing) as a single
+ *     stateless REST call issued through the shared ``apiClient``. Behavior reference:
+ *     ``app/cbl/COSGN00C.cbl``.
+ * :output: The named export ``signon`` — posts sign-on credentials to ``POST
+ *     /auth/signon`` and resolves the backend result (authenticated user id, granted role, and
+ *     post-login redirect target).
  * :note: Credentials are transmitted exactly as entered: this module applies no
- *   upper-casing or other mutation to ``userId`` / ``password`` and never logs
- *   them, so verification is case-sensitive where ``COSGN00C`` was not. That
- *   deviation is recorded in ``docs/decision-log.md`` (AAP 0.6.7).
- * :note: Errors propagate. The shared ``apiClient`` normalizes every failure into
- *   an ``ApiError``, so this module neither catches nor swallows them.
+ *     upper-casing or other mutation to ``userId`` / ``password`` and never logs them, so
+ *     verification is case-sensitive where ``COSGN00C`` was not. That deviation is recorded in
+ *     ``docs/decision-log.md`` (AAP 0.6.7).
+ * :note: Errors propagate. The shared ``apiClient`` normalizes every failure into an
+ *     ``ApiError``, so this module neither catches nor swallows them.
  */
 
 import apiClient from './client';
+import { invalidateMenuCache } from './menu';
 import type {
   SessionIdentityDto,
   SignonRequestDto,
@@ -44,6 +45,10 @@ export async function signon(
     '/auth/signon',
     request,
   );
+  // A new principal may hold a different CDEMO-USER-TYPE, and the menu listing is a
+  // function of exactly that, so any listing memoized for the previous session is dropped
+  // the moment a new one is established.
+  invalidateMenuCache();
   return response.data;
 }
 
@@ -76,4 +81,6 @@ export async function getSessionIdentity(): Promise<SessionIdentityDto> {
  */
 export async function logout(): Promise<void> {
   await apiClient.post<void>('/logout', null, { skipAuthRedirect: true });
+  // The session that scoped the memoized listings no longer exists.
+  invalidateMenuCache();
 }

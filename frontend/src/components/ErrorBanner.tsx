@@ -24,31 +24,29 @@ export const ERROR_LINE_ID = 'screenMessageLine';
  * :purpose: Props for :func:`ErrorBanner`.
  * :param message: Error message, rendered RED with ``role="alert"``.
  * :param noticeMessage: A non-failure condition the screen reports on the same line-23
- *     region and in the same RED its mapset declares statically -- reaching the end of
- *     a browse, or an empty page. It keeps the legacy colour but is announced with
- *     ``role="status"``: the 3270 had no notion of an assertive announcement, and
- *     interrupting a screen-reader user to tell them a list ended is not what the
- *     colour was expressing.
- * :param infoMessage: Informational text a program writes into that SAME ``ERRMSG``
- *     field after moving ``DFHGREEN`` into its colour byte, so it occupies line 23 and
- *     renders GREEN with ``role="status"``. Eight programs do this -- COADM01C, COMEN01C,
- *     COBIL00C, CORPT00C, COTRN02C, COUSR01C, COUSR02C and COUSR03C -- and because it is
- *     one field it holds either an error or this text, never both.
+ *     region and in the same RED its mapset declares statically -- reaching the end of a
+ *     browse, or an empty page. It keeps the legacy colour but is announced with
+ *     ``role="status"``: the 3270 had no notion of an assertive announcement, and interrupting
+ *     a screen-reader user to tell them a list ended is not what the colour was expressing.
+ * :param infoMessage: Informational text a program writes into that SAME ``ERRMSG`` field
+ *     after moving ``DFHGREEN`` into its colour byte, so it occupies line 23 and renders GREEN
+ *     with ``role="status"``. Eight programs do this -- COADM01C, COMEN01C, COBIL00C,
+ *     CORPT00C, COTRN02C, COUSR01C, COUSR02C and COUSR03C -- and because it is one field it
+ *     holds either an error or this text, never both.
  * :param infoFieldMessage: Text a program writes into the mapset's own, SEPARATE
- *     ``INFOMSG`` field. Five mapsets declare one, and every one of them places it ABOVE
- *     the ``ERRMSG`` region at ``POS=(23,1)`` and colours it ``NEUTRAL``: COACTUP and
- *     COACTVW at ``POS=(22,23)``, COCRDLI at ``POS=(20,19)``, COCRDSL and COCRDUP at
- *     ``POS=(20,25)``. Their programs confirm that colour at runtime -- COCRDLIC,
- *     COACTVWC and COCRDSLC move ``DFHNEUTR`` into ``INFOMSGC`` when the line is shown
- *     and ``DFHBMDAR`` when it is not, while COACTUPC and COCRDUPC leave the declared
- *     colour in force and only darken the field -- and none of the five ever moves
- *     ``DFHGREEN`` anywhere. Supplying the prop reserves the row the field occupies, so
- *     the message region does not shift as the line comes and goes; an empty string
- *     renders the darkened state.
+ *     ``INFOMSG`` field. Five mapsets declare one, and every one of them places it ABOVE the
+ *     ``ERRMSG`` region at ``POS=(23,1)`` and colours it ``NEUTRAL``: COACTUP and COACTVW at
+ *     ``POS=(22,23)``, COCRDLI at ``POS=(20,19)``, COCRDSL and COCRDUP at ``POS=(20,25)``.
+ *     Their programs confirm that colour at runtime -- COCRDLIC, COACTVWC and COCRDSLC move
+ *     ``DFHNEUTR`` into ``INFOMSGC`` when the line is shown and ``DFHBMDAR`` when it is not,
+ *     while COACTUPC and COCRDUPC leave the declared colour in force and only darken the field
+ *     -- and none of the five ever moves ``DFHGREEN`` anywhere. Supplying the prop reserves
+ *     the row the field occupies, so the message region does not shift as the line comes and
+ *     goes; an empty string renders the darkened state.
  * :param sendCount: How many attention identifiers the screen has sent. A CICS program
- *     writes ``ERRMSG`` on every ``SEND MAP``, so a second identical rejection is
- *     announced again; a live region only announces text that CHANGED, so the region is
- *     remounted per send to reproduce that.
+ *     writes ``ERRMSG`` on every ``SEND MAP``, so a second identical rejection is announced
+ *     again; a live region only announces text that CHANGED, so the region is remounted per
+ *     send to reproduce that.
  */
 export interface ErrorBannerProps {
   message?: string;

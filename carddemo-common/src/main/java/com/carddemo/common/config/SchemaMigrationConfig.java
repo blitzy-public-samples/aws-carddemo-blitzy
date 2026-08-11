@@ -23,16 +23,15 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * :purpose: Contribute the code-based members of the shared CardDemo migration set that
- *     lives beside the SQL scripts in ``carddemo-common`` (``classpath:db/migration``).
- *     Spring Boot's Flyway auto-configuration collects every ``JavaMigration`` bean and
- *     hands it to Flyway, so declaring the bean here is what places the seeded-PII
- *     encryption step (version 4) between the ``V3`` fixtures and the ``V5`` batch
- *     metadata.
+ *     lives beside the SQL scripts in ``carddemo-common`` (``classpath:db/migration``). Spring
+ *     Boot's Flyway auto-configuration collects every ``JavaMigration`` bean and hands it to
+ *     Flyway, so declaring the bean here is what places the seeded-PII encryption step
+ *     (version 4) between the ``V3`` fixtures and the ``V5`` batch metadata.
  * :note: The shared library ships no ``META-INF`` auto-configuration import file, so a
  *     service activates this configuration explicitly with
- *     ``@Import(SchemaMigrationConfig.class)`` — exactly like {@link ObservabilityConfig}.
- *     The migration owner needs it to provision a database; the other services need it so
- *     their Testcontainers integration tests provision the identical production schema.
+ *     ``@Import(SchemaMigrationConfig.class)`` — exactly like {@link ObservabilityConfig}. The
+ *     migration owner needs it to provision a database; the other services need it so their
+ *     Testcontainers integration tests provision the identical production schema.
  * :note: Gated on Flyway being present so a module without the migration library on its
  *     classpath can still import the configuration harmlessly.
  */
