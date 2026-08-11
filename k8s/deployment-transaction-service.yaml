@@ -1,0 +1,254 @@
+---
+# =============================================================================
+# k8s/deployment-transaction-service.yaml
+# -----------------------------------------------------------------------------
+# Kubernetes Deployment for the CardDemo transaction-service Spring Boot
+# microservice (AAP 0.3.1, 0.4.2).
+#
+# :purpose: Runs the transaction-service pod that re-platforms the legacy online
+#           programs COTRN00C (list), COTRN01C (view) and COTRN02C (add) plus
+#           the batch posting programs CBTRN01C / CBTRN02C / CBTRN03C (CICS
+#           tran-ids CT00 / CT01 / CT02). It owns the Transaction and
+#           DailyTransaction PostgreSQL tables and mints 16-digit zero-padded
+#           transaction ids from a database sequence, preserving the legacy wire
+#           format while removing the browse-last-then-increment race
+#           (AAP 0.6.5).
+# :output:  A Deployment named ``transaction-service`` scheduling one pod that
+#           serves REST traffic and Spring Boot Actuator endpoints on container
+#           port 8080 (named ``http``), selected by the companion Service via
+#           ``app: transaction-service``.
+# :notes:   Image ``carddemo/transaction-service:1.0.0`` is built by
+#           ``transaction-service/Dockerfile`` (FROM eclipse-temurin:21-jre).
+#           Runtime config and datasource credentials are injected via
+#           ``envFrom`` from the ``carddemo-config`` ConfigMap and the
+#           ``carddemo-transaction-service-db`` Secret. Liveness/readiness use the Actuator
+#           health groups, enabled by
+#           ``MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED=true`` in the ConfigMap
+#           (AAP 0.7.5 Observability).
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: transaction-service-output-pvc
+  labels:
+    app.kubernetes.io/name: transaction-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: batch-output
+spec:
+  # ReadWriteOnce is the honest access mode for the default storage classes. It
+  # constrains this Deployment to ONE writer, which is why replicas stays 1 in the
+  # Deployment below - a second replica writing the same generation names would
+  # corrupt a downstream deliverable regardless of the volume.
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transaction-service
+  labels:
+    app: transaction-service
+    app.kubernetes.io/name: transaction-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # Single replica for the reference deployment. Session state is externalized
+  # to Redis via Spring Session, so the service is stateless and may be scaled
+  # horizontally without shared in-process state.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: transaction-service
+  template:
+    metadata:
+      labels:
+        app: transaction-service
+        app.kubernetes.io/name: transaction-service
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: backend
+    spec:
+      # Pod-level runtime hardening: run as a non-root user with a
+      # default seccomp profile and no auto-mounted ServiceAccount token
+      # (these services never call the Kubernetes API).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      # Startup ordering gate: the shared CardDemo schema is provisioned by the
+      # SINGLE Flyway migration owner, batch-service (see its application.yml and
+      # docs/decision-log.md). This service runs with spring.flyway.enabled=false
+      # and Hibernate ddl-auto=validate, so it can only start once that schema
+      # exists; without the gate the pod crash-loops on
+      # "Schema validation: missing table". The init container blocks until the
+      # owner reports READY through its Actuator readiness group, using the same
+      # bash /dev/tcp probe idiom as the Compose healthcheck (the eclipse-temurin
+      # base image ships neither curl nor wget).
+      initContainers:
+        - name: await-schema
+          image: eclipse-temurin:21-jre@sha256:8cef5fc7bebe421363ab543a2f4db5caf7d119d8db67d56b0f56c485d2de4d55
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          # Bounded like every other container in this repository, init containers
+          # included: in a namespace with no LimitRange an unbounded container is
+          # admitted with no QoS guarantee and can be scheduled anywhere. The figures
+          # suit what this container does - one bash loop issuing a TCP readiness
+          # probe every 5 s - and were verified by running the same image and command
+          # under exactly these limits.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          command:
+            - bash
+            - -c
+            - >-
+              until exec 3<>/dev/tcp/batch-service/8080 2>/dev/null
+              && printf 'GET /actuator/health/readiness HTTP/1.1\r\nHost: batch-service\r\nConnection: close\r\n\r\n' >&3
+              && grep -q '"status":"UP"' <&3;
+              do echo 'waiting for the schema owner (batch-service) to become ready'; sleep 5; done;
+              echo 'schema owner ready'
+      containers:
+        - name: transaction-service
+          # See transaction-service/Dockerfile (FROM eclipse-temurin:21-jre).
+          # Produced by `docker compose build transaction-service` from transaction-service/Dockerfile
+          # (docker-compose.yml carries a matching `image:` key with these exact
+          # registry/name/tag defaults), so this reference resolves to an artifact the
+          # repository builds - no undocumented tag-and-push step.
+          # Override the registry or tag for a private registry with
+          # CARDDEMO_IMAGE_REGISTRY / CARDDEMO_IMAGE_TAG at build time.
+          image: carddemo/transaction-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          # Inject non-secret runtime config and datasource credentials. Names
+          # must match k8s/configmap.yaml (carddemo-config) and k8s/secret.yaml
+          # (carddemo-transaction-service-db) exactly.
+          # Container-level runtime hardening: drop every Linux
+          # capability, forbid privilege escalation, and run on a read-only
+          # root filesystem (writable scratch is the mounted tmp emptyDir).
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            # Writable batch working directory. The transaction-posting
+            # job writes the DALYREJS reject file here; the read-only root filesystem
+            # leaves nowhere else for it. An emptyDir is created by the kubelet with
+            # the pod's fsGroup, so the non-root container owns it, and
+            # carddemo-common's BatchOutputPathResolver proves it writable while the
+            # context refreshes.
+            - name: batch-work
+              mountPath: /var/carddemo/batch
+          env:
+            # Batch file roots consumed by carddemo-common's
+            # BatchOutputPathResolver, pointing at the writable emptyDir above.
+            - name: CARDDEMO_BATCH_OUTPUT_DIR
+              value: /var/carddemo/batch/output
+            - name: CARDDEMO_BATCH_INPUT_DIR
+              value: /var/carddemo/batch/input
+          envFrom:
+            - configMapRef:
+                name: carddemo-config
+            # Per-service least-privilege database role: each service
+            # authenticates with its own DB principal, not a shared owner.
+            - secretRef:
+                name: carddemo-transaction-service-db
+            # Shared Redis AUTH secret for externalized Spring Session.
+            - secretRef:
+                name: carddemo-redis-secret
+            # Shared AES-256-GCM key for at-rest PII field encryption
+            # (carddemo-common CryptoConverter: SSN, government id, EFT account
+            # id, CVV). Services fail closed if it is absent.
+            - secretRef:
+                name: carddemo-pii-key
+            # Shared credential of the least-privilege `monitoring` principal
+            # guarding /actuator/prometheus and /actuator/metrics. Must
+            # match the password Prometheus presents, or every scrape gets 401.
+            - secretRef:
+                name: carddemo-monitoring-secret
+          # `limits.memory` is what the image's JAVA_OPTS percentages resolve
+          # against, so this figure - not a JVM flag - is what bounds the heap.
+          # Measured working set for the whole nine-service stack under the AAP
+          # 150-user load: 462-618 MiB resident per service, so 1Gi is held with
+          # headroom.
+          # `limits.cpu` is sized from the CPU cost per request measured over that
+          # same load: 9.2 ms for the tier as a whole, and 105.5 ms for a sign-on,
+          # of which ~72.8 ms is the password encoder alone. Two cores keeps every
+          # service at or below half utilisation at the measured request rate, and
+          # keeps the JVM's own ergonomics multi-core in every runtime.
+          # docker-compose.yml declares the same budget.
+          # Measurements and rationale: docs/decision-log.md section 50.
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          # Startup gate: allow up to 30 x 5s = 150s for the JVM, Spring context
+          # and Flyway migrations before liveness/readiness begin evaluating.
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            # Explicit timeout. The default timeoutSeconds is 1, so during any
+            # datastore blip the aggregate health check — which must wait for the bounded
+            # 3s HikariCP / 2s Lettuce dependency timeouts — fails on every attempt and the
+            # pod is killed after failureThreshold x periodSeconds. 4s bounds each attempt
+            # just above the slowest dependency timeout.
+            timeoutSeconds: 4
+            failureThreshold: 30
+          # Restart the pod if the Actuator liveness group reports DOWN.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Keep the pod out of Service endpoints until the readiness group
+          # (datasource + Redis) reports UP.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+      # Writable scratch for the read-only root filesystem. A Spring
+      # Boot fat-jar only needs a writable /tmp (Tomcat work dir, JVM temp).
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: batch-work
+          # DURABLE batch output. The DALYREJS reject generations written here are
+          # deliverables a downstream consumer reads, so they must outlive a pod. An
+          # emptyDir is deleted with the pod, which meant a COMPLETED run's output
+          # vanished on any routine restart or reschedule while the JobRepository
+          # still reported success - a zero-data-loss violation (AAP 0.7.1) that no
+          # application error surfaced. The claim's ReadWriteOnce access mode is why
+          # this Deployment keeps a single replica.
+          persistentVolumeClaim:
+            claimName: transaction-service-output-pvc

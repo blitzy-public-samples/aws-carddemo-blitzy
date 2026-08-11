@@ -1,0 +1,129 @@
+---
+# =============================================================================
+# Redis 8 Deployment — CardDemo externalized Spring Session / cache store.
+#
+# :purpose: Runs a single in-cluster Redis 8 instance that backs Spring Session,
+#           the replacement for the legacy CICS COMMAREA pseudo-conversational
+#           state. Backend services reach it through the ``redis`` Service using
+#           ``SPRING_DATA_REDIS_HOST=redis`` and ``SPRING_DATA_REDIS_PORT=6379``.
+# :output:  A Deployment named ``redis`` scheduling one pod that serves the
+#           Redis protocol on container port 6379 (named ``redis``).
+# :notes:   Redis requires authentication: the server starts with
+#           ``--requirepass`` sourced from the ``carddemo-redis-secret`` Secret,
+#           and every client (all services + the gateway) presents the same
+#           secret. The Service is ClusterIP-only (never host-exposed). Session
+#           data is transient, so it is kept on an ephemeral ``emptyDir`` volume
+#           rather than a PersistentVolumeClaim.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    app: redis
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: cache
+    spec:
+      # Datastore hardening. The redis:8 image runs as uid 999; run the
+      # pod as that non-root user, drop all capabilities, and use a read-only
+      # root filesystem (Redis only writes to the /data volume).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: redis
+          image: redis:8@sha256:344e3945a0b431c8ff1eecd58c5573538126bd756f02fc7e218ddf1fc2546366
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          # Redis AUTH is mandatory. The password is injected from the
+          # Secret and referenced in args via the $(VAR) form, which Kubernetes
+          # substitutes from the container environment (so the literal is never
+          # baked into the manifest).
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-redis-secret
+                  key: SPRING_DATA_REDIS_PASSWORD
+          # --maxmemory bounds the session store. Left at the default of 0
+          # (unlimited) Redis grows until it reaches the container limit below and
+          # is then OOMKilled, discarding EVERY live session at once - the
+          # externalized COMMAREA equivalent - instead of shedding the sessions
+          # closest to their own expiry. volatile-ttl evicts only keys carrying a
+          # TTL, which is every key Spring Session writes, nearest-to-expire
+          # first; a write that would require evicting a NON-expiring key still
+          # fails loudly rather than silently dropping durable data. The budget
+          # sits below `limits.memory` because the AOF buffer, client buffers and
+          # allocator fragmentation are not counted by maxmemory. docker-compose.yml
+          # carries the same two settings.
+          command:
+            - redis-server
+          args:
+            - --appendonly
+            - "yes"
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            - --maxmemory
+            - 192mb
+            - --maxmemory-policy
+            - volatile-ttl
+          ports:
+            - containerPort: 6379
+              name: redis
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          # Probes authenticate with the same password (via the container env),
+          # so an unauthenticated PING (which now returns NOAUTH) never marks a
+          # healthy pod as failed.
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 6
+      volumes:
+        - name: redis-data
+          emptyDir: {}

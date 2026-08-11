@@ -1,0 +1,282 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Inherits dependency and plugin management from the root parent BOM. -->
+    <parent>
+        <groupId>com.carddemo</groupId>
+        <artifactId>carddemo-parent</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>batch-service</artifactId>
+    <packaging>jar</packaging>
+
+    <name>CardDemo Batch Service</name>
+    <description>Interest-calculation and data-management batch jobs for the modernized CardDemo
+        application: the Spring Batch re-platforming of the legacy COBOL batch programs
+        (CBACT01C-CBACT04C, CBCUS01C, CBTRN01C, CBTRN03C). Runs as a resident Spring Boot service
+        exposing Actuator health and metrics, launching jobs on demand.</description>
+
+    <dependencies>
+
+        <!-- Shared library: JPA domain entities, DateUtil, message/lookup constants,
+             observability and exception types. -->
+        <dependency>
+            <groupId>com.carddemo</groupId>
+            <artifactId>carddemo-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!--
+          Shared test-support utilities from carddemo-common (test-jar), above all
+          com.carddemo.common.testsupport.CardDemoSchemaMigrations: it applies the real
+          committed Flyway migrations of every owning module to the throwaway test
+          database so integration tests run against the deployed schema instead of DDL
+          fabricated inside the test.
+        -->
+        <dependency>
+            <groupId>com.carddemo</groupId>
+            <artifactId>carddemo-common</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Batch: JCL job -> Job, step -> Step, program -> chunk reader/processor/writer or tasklet. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <!-- Persistence over the shared entities (VSAM -> PostgreSQL). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- Jakarta Bean Validation. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!--
+          Spring Security. Every service enforces authentication itself
+          (defence in depth): the api-gateway is not a trust boundary, so a
+          request that reaches this service over the internal network still has
+          to present the shared, Redis-backed session principal. It also
+          protects the Actuator telemetry endpoints with the dedicated
+          monitoring principal (carddemo-common ManagementSecurityConfig).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- Actuator health/readiness/liveness and metrics endpoints. -->
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-data-redis</artifactId>
+        </dependency>
+        <!--
+          Spring Boot 4 modularized auto-configuration: SessionAutoConfiguration and
+          SessionDataRedisAutoConfiguration live in the spring-boot-session-data-redis module
+          (they are NOT bundled with org.springframework.session:spring-session-data-redis).
+          Without it the `spring.session.*` properties are inert, SessionRepositoryFilter is
+          never registered, and HttpSession silently falls back to in-memory servlet-container
+          storage - so the /batch launch surface could not see the shared CardDemo session and
+          rejected every authenticated caller with 401.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-session-data-redis</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Embedded servlet so Actuator HTTP endpoints are served on port 8080
+             (compose healthcheck and Prometheus scrape); this service stays resident. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Prometheus metrics registry. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!--
+          Distributed tracing (AAP 0.7.5). The Boot OpenTelemetry starter brings the
+          Micrometer Tracing OTel bridge TOGETHER WITH the tracing/OTel
+          auto-configuration and the OTLP span exporter. The bridge alone leaves
+          no Tracer in the context, so no trace context is created and every
+          traceId/spanId stays empty.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
+        </dependency>
+
+        <!--
+          Tracing auto-configuration. Spring Boot 4 ships auto-configuration in
+          dedicated modules, so the bridge above is inert on its own: without these
+          two modules no Tracer or ObservationRegistry tracing handler is created and
+          no traceId/spanId ever reaches the SLF4J MDC, leaving the structured log
+          lines uncorrelatable across service boundaries (AAP 0.7.5).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+        </dependency>
+
+        <!-- PostgreSQL JDBC driver; a runtime concern added by the runnable service. -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Flyway migrates this service's Spring Batch metadata schema. -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <!--
+          Spring Boot 4 modularized auto-configuration: FlywayAutoConfiguration lives in the
+          spring-boot-flyway module (it is NOT bundled with flyway-core). Without it, the
+          `spring.flyway.*` properties in application.yml are inert and V1__batch_metadata.sql
+          never runs, so the Spring Batch job repository has no BATCH_* tables at startup.
+          This service sets `spring.flyway.enabled: true`, so the module is required.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
+        </dependency>
+
+        <!-- Test stack: JUnit 5 (Jupiter), AssertJ, Mockito. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Awaitility, for the two integration classes that must wait for an
+          ASYNCHRONOUSLY launched Spring Batch execution to reach a terminal status.
+          A fixed sleep either flakes on a loaded host or wastes the whole budget on a
+          fast one; Awaitility polls the execution and returns as soon as it is done,
+          and fails with the observed state rather than with a bare assertion.
+          Version managed by the Spring Boot BOM. Rationale: docs/decision-log.md,
+          section 53.4.
+        -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Spring MVC test slice: supplies @WebMvcTest, which refreshes a real web
+          application context (and therefore a real RequestMappingHandlerMapping) so a
+          duplicate request mapping fails the build instead of the deployment.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Security test support: @WithMockUser and the springSecurity() MockMvc setup. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Batch test utilities (JobLauncherTestUtils / JobRepositoryTestUtils). -->
+        <dependency>
+            <groupId>org.springframework.batch</groupId>
+            <artifactId>spring-batch-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers for batch integration tests against real PostgreSQL. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Produces the executable boot jar (repackage goal and version inherited from the parent). -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!--
+              Failsafe binds the Testcontainers-backed integration-test (*IT) suite to the
+              integration-test/verify phases so the monthly interest-calculation job test
+              (InterestCalculationJobIT) runs against a real PostgreSQL under `mvn verify`,
+              separate from the fast Surefire unit tests in the `test` phase. A deterministic,
+              NON-PRODUCTION AES-256 key is supplied to the forked test JVM so the
+              carddemo-common CryptoConverter can initialize for the Customer entity used by the
+              batch data-management flows; CryptoConverter fails fast when no key is configured,
+              so production deployments MUST still provide the real key via the CARDDEMO_PII_KEY
+              environment variable (see docs/decision-log.md). This value is an obviously-fake,
+              test-only fixture and is never used outside the test phase. Plugin version inherited
+              from the parent BOM.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
+                    </systemPropertyVariables>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

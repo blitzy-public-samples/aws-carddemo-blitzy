@@ -1,0 +1,54 @@
+---
+# =============================================================================
+# k8s/service-card-service.yaml
+# -----------------------------------------------------------------------------
+# Internal ClusterIP Service for the CardDemo **card-service** microservice.
+# Companion to deployment-card-service.yaml.
+#
+# :purpose: Publish the ``card-service`` Deployment behind a stable virtual IP
+#           and the cluster-internal DNS name ``card-service`` so other CardDemo
+#           backend components (e.g. the api-gateway routing the card-list,
+#           card-detail and card-update flows re-platformed from the legacy
+#           COBOL programs COCRDLIC / COCRDSLC / COCRDUPC) reach it in-cluster
+#           at ``card-service:8080``. See AAP 0.3.1, 0.3.2 and 0.4.2.
+# :output:  A ClusterIP Service named ``card-service`` reachable in-cluster at
+#           ``card-service:8080`` that load-balances HTTP traffic on port 8080
+#           to every Ready pod carrying the ``app: card-service`` label.
+# :notes:   * Type ClusterIP is internal only - the card REST API is consumed
+#             by other in-cluster services (and the gateway), never published
+#             directly to the outside world; external ingress is the frontend
+#             LoadBalancer's responsibility (service-frontend.yaml).
+#           * The ``app: card-service`` selector is a subset of the Deployment
+#             pod-template labels (deployment-card-service.yaml), so it resolves
+#             exactly the card-service pods. ``targetPort: 8080`` matches the
+#             container's named ``http`` port; the Spring Boot app serves both
+#             the card REST endpoints and the Actuator health/metrics endpoints
+#             there (AAP 0.7.5 observability).
+#           * Endpoints populate only after a pod passes its Actuator readiness
+#             probe (/actuator/health/readiness), so traffic is never routed to
+#             an instance whose PostgreSQL/Redis dependencies are not yet up.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: card-service
+  labels:
+    app: card-service
+    app.kubernetes.io/name: card-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # ClusterIP keeps the card REST API reachable only from inside the cluster;
+  # it must not be exposed via an external LoadBalancer or NodePort.
+  type: ClusterIP
+  # Selects the card-service Deployment pods (their pod template carries
+  # app: card-service in deployment-card-service.yaml).
+  selector:
+    app: card-service
+  ports:
+    # Named port 'http' permits by-name references; service port 8080 forwards
+    # to targetPort 8080, the container's port (named 'http' there too).
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

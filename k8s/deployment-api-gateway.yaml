@@ -1,0 +1,164 @@
+---
+# ===========================================================================
+# k8s/deployment-api-gateway.yaml
+# ---------------------------------------------------------------------------
+# Kubernetes Deployment for the CardDemo API gateway (Spring Cloud Gateway).
+#
+# :purpose: Runs the api-gateway Spring Boot service, the PRIMARY EXTERNAL
+#           ENTRY POINT of the CardDemo stack (AAP 0.3.1). It re-platforms the
+#           legacy CICS menu-navigation programs COMEN01C (main menu, tran-id
+#           CM00) and COADM01C (admin menu, tran-id CA00) into role-gated menu
+#           routing, and forwards REST traffic to the backend Spring Boot
+#           services by their in-cluster Kubernetes Service DNS names. The
+#           downstream URIs are injected from the carddemo-config ConfigMap
+#           (${AUTH_SERVICE_URI} ... ${BATCH_SERVICE_URI}).
+# :output:  A Deployment named ``api-gateway`` scheduling one pod that serves
+#           HTTP on container port 8080 (named ``http``). The companion
+#           ``service-api-gateway.yaml`` (type LoadBalancer) selects these pods
+#           via ``app: api-gateway`` and exposes the gateway externally.
+# :notes:   The container image ``carddemo/api-gateway:1.0.0`` is built by
+#           ``api-gateway/Dockerfile`` FROM ``eclipse-temurin:21-jre`` (AAP
+#           0.5.1). The gateway owns NO database (AAP 0.3.1), so it receives NO
+#           database Secret — only the shared Redis AUTH secret for
+#           Spring Session. Non-secret config comes from carddemo-config.
+# ===========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  labels:
+    app: api-gateway
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: gateway
+spec:
+  # Single replica for the reference deployment. The gateway is stateless
+  # (pseudo-conversational state lives in Redis via Spring Session), so it can
+  # be scaled horizontally without shared in-pod state.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+        app.kubernetes.io/name: api-gateway
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: gateway
+    spec:
+      # Pod-level runtime hardening.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: api-gateway
+          # Built by api-gateway/Dockerfile FROM eclipse-temurin:21-jre
+          # (AAP 0.5.1); tagged carddemo/api-gateway:1.0.0.
+          # Produced by `docker compose build api-gateway` from api-gateway/Dockerfile
+          # (docker-compose.yml carries a matching `image:` key with these exact
+          # registry/name/tag defaults), so this reference resolves to an artifact the
+          # repository builds - no undocumented tag-and-push step.
+          # Override the registry or tag for a private registry with
+          # CARDDEMO_IMAGE_REGISTRY / CARDDEMO_IMAGE_TAG at build time.
+          image: carddemo/api-gateway:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          # Container-level runtime hardening: drop all capabilities,
+          # forbid privilege escalation, read-only root filesystem + tmp scratch.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          # Non-secret runtime config from carddemo-config (including the
+          # downstream *_SERVICE_URI routes) plus ONLY the shared Redis
+          # AUTH secret. The gateway owns no database, so no DB Secret is
+          # attached.
+          envFrom:
+            - configMapRef:
+                name: carddemo-config
+            - secretRef:
+                name: carddemo-redis-secret
+            # Shared credential of the least-privilege `monitoring` principal
+            # guarding /actuator/prometheus and /actuator/metrics. Must
+            # match the password Prometheus presents, or every scrape gets 401.
+            - secretRef:
+                name: carddemo-monitoring-secret
+          # Gateway-level trace sampling override: the entry point
+          # samples every request so each trace originates here, overriding the
+          # 0.1 backend default supplied by carddemo-config (explicit env wins
+          # over envFrom).
+          env:
+            - name: MANAGEMENT_TRACING_SAMPLING_PROBABILITY
+              value: "1.0"
+          # `limits.memory` is what the image's JAVA_OPTS percentages resolve
+          # against, so this figure - not a JVM flag - is what bounds the heap.
+          # Measured working set for the whole nine-service stack under the AAP
+          # 150-user load: 462-618 MiB resident per service, so 1Gi is held with
+          # headroom.
+          # `limits.cpu` is sized from the CPU cost per request measured over that
+          # same load: 9.2 ms for the tier as a whole, and 105.5 ms for a sign-on,
+          # of which ~72.8 ms is the password encoder alone. Two cores keeps every
+          # service at or below half utilisation at the measured request rate, and
+          # keeps the JVM's own ergonomics multi-core in every runtime.
+          # docker-compose.yml declares the same budget.
+          # Measurements and rationale: docs/decision-log.md section 50.
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          # ---- Actuator health probes (Observability rule, AAP 0.7.5) ------
+          # startupProbe gates liveness/readiness until Spring Boot has fully
+          # booted: failureThreshold 30 x periodSeconds 5 plus the 10s initial
+          # delay allows ~2.5 min for a slow start, so the livenessProbe does
+          # not restart the pod before the gateway is up.
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            # Explicit timeout. The default timeoutSeconds is 1, so during any
+            # datastore blip the aggregate health check — which must wait for the bounded
+            # 3s HikariCP / 2s Lettuce dependency timeouts — fails on every attempt and the
+            # pod is killed after failureThreshold x periodSeconds. 4s bounds each attempt
+            # just above the slowest dependency timeout.
+            timeoutSeconds: 4
+            failureThreshold: 30
+          # Liveness: restart the container if the JVM/context becomes
+          # unhealthy after startup has completed.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness: remove the pod from the Service endpoints while
+          # dependencies (Redis, downstream services) are not reachable.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+      # Writable scratch for the read-only root filesystem.
+      volumes:
+        - name: tmp
+          emptyDir: {}

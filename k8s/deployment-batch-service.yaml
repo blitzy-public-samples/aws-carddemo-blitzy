@@ -1,0 +1,225 @@
+---
+# ===========================================================================
+# k8s/deployment-batch-service.yaml
+# ---------------------------------------------------------------------------
+# Kubernetes Deployment for the CardDemo batch-service (Spring Boot / Spring
+# Batch). It re-platforms the legacy COBOL batch programs CBACT01C, CBACT02C,
+# CBACT03C, CBACT04C and CBCUS01C — interest calculation (COMP-3 -> BigDecimal
+# precision preserved, AAP 0.6.1) plus data-management — into Spring Batch
+# jobs launched on demand through a JobLauncher endpoint.
+#
+# :purpose: Schedule exactly ONE resident batch-service pod that stays up to
+#           serve Actuator health/metrics and the JobLauncher trigger endpoint
+#           on container port 8080, reading and writing PostgreSQL.
+# :output:  A Deployment named ``batch-service`` (apps/v1) that manages a
+#           single pod replica selected by the label ``app: batch-service``,
+#           consumed by the companion ``service-batch-service.yaml`` Service.
+# :notes:   ``replicas`` is pinned to 1 and the rollout strategy is
+#           ``Recreate`` so two batch pods never run at once; a second
+#           instance would risk duplicate scheduled/launched job executions.
+#           The image ``carddemo/batch-service:1.0.0`` is built FROM
+#           ``eclipse-temurin:21-jre`` by ``batch-service/Dockerfile``.
+#           Runtime configuration and datasource credentials are injected via
+#           ``envFrom`` from the ``carddemo-config`` ConfigMap and the
+#           ``carddemo-batch-service-db`` Secret. CPU limits are intentionally generous
+#           so batch jobs are not throttled out of their window (AAP 0.7.6).
+# ===========================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: batch-service-output-pvc
+  labels:
+    app.kubernetes.io/name: batch-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: batch-output
+spec:
+  # ReadWriteOnce is the honest access mode for the default storage classes. It
+  # constrains this Deployment to ONE writer, which is why replicas stays 1 in the
+  # Deployment below - a second replica writing the same generation names would
+  # corrupt a downstream deliverable regardless of the volume.
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: batch-service
+  labels:
+    app: batch-service
+    app.kubernetes.io/name: batch-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # Singleton: a batch runner must never be horizontally scaled, or scheduled
+  # and on-demand jobs would execute more than once.
+  replicas: 1
+  # Recreate (not RollingUpdate): tear the old pod down before the new one
+  # starts so two batch pods never overlap during a rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: batch-service
+  template:
+    metadata:
+      labels:
+        app: batch-service
+        app.kubernetes.io/name: batch-service
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: backend
+    spec:
+      # Pod-level runtime hardening: run as a non-root user with a
+      # default seccomp profile and no auto-mounted ServiceAccount token
+      # (these services never call the Kubernetes API).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: batch-service
+          # Built by batch-service/Dockerfile FROM eclipse-temurin:21-jre.
+          # Produced by `docker compose build batch-service` from batch-service/Dockerfile
+          # (docker-compose.yml carries a matching `image:` key with these exact
+          # registry/name/tag defaults), so this reference resolves to an artifact the
+          # repository builds - no undocumented tag-and-push step.
+          # Override the registry or tag for a private registry with
+          # CARDDEMO_IMAGE_REGISTRY / CARDDEMO_IMAGE_TAG at build time.
+          image: carddemo/batch-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          # Datasource/Redis config + credentials come from the shared
+          # ConfigMap and Secret (dependencies k8s/configmap.yaml and
+          # k8s/secret.yaml).
+          # Container-level runtime hardening: drop every Linux
+          # capability, forbid privilege escalation, and run on a read-only
+          # root filesystem (writable scratch is the mounted tmp emptyDir).
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            # Writable batch working directory. The read-only root
+            # filesystem leaves nowhere for a job to write, so the statement and
+            # report writers failed with "No such file or directory" while the
+            # caller had already been told the report was submitted. An emptyDir
+            # is created by the kubelet with the pod's fsGroup, so the non-root
+            # container owns it; carddemo-common's BatchOutputPathResolver proves
+            # it writable while the context refreshes.
+            - name: batch-work
+              mountPath: /var/carddemo/batch
+          env:
+            # THE single Flyway migration owner. carddemo-config disables Flyway for every
+            # service; this Deployment-level entry re-enables it here, and a `env` entry
+            # takes precedence over the same key arriving through `envFrom`. Every other
+            # Deployment's await-schema init container waits for the schema this pod
+            # creates, so ownership is declared in exactly one place.
+            - name: SPRING_FLYWAY_ENABLED
+              value: "true"
+            # Batch file roots consumed by carddemo-common's
+            # BatchOutputPathResolver, pointing at the writable emptyDir above.
+            # Substituting a PersistentVolumeClaim for the emptyDir needs no image
+            # or code change because the path is externalized here.
+            - name: CARDDEMO_BATCH_OUTPUT_DIR
+              value: /var/carddemo/batch/output
+            - name: CARDDEMO_BATCH_INPUT_DIR
+              value: /var/carddemo/batch/input
+          envFrom:
+            - configMapRef:
+                name: carddemo-config
+            # Per-service least-privilege database role: each service
+            # authenticates with its own DB principal, not a shared owner.
+            - secretRef:
+                name: carddemo-batch-service-db
+            # Shared Redis AUTH secret for externalized Spring Session.
+            - secretRef:
+                name: carddemo-redis-secret
+            # Shared AES-256-GCM key for at-rest PII field encryption
+            # (carddemo-common CryptoConverter: SSN, government id, EFT account
+            # id, CVV). Services fail closed if it is absent.
+            - secretRef:
+                name: carddemo-pii-key
+            # Shared credential of the least-privilege `monitoring` principal
+            # guarding /actuator/prometheus and /actuator/metrics. Must
+            # match the password Prometheus presents, or every scrape gets 401.
+            - secretRef:
+                name: carddemo-monitoring-secret
+          # Batch is CPU-heavier than the online services; limits stay
+          # generous so jobs complete inside their window (AAP 0.7.6).
+          # `limits.memory` is what the image's JAVA_OPTS percentages resolve
+          # against, so this figure - not a JVM flag - is what bounds the heap.
+          # Measured working set for the whole nine-service stack under the AAP
+          # 150-user load: 462-618 MiB resident per service, so 1Gi is held with
+          # headroom.
+          # `limits.cpu` is sized from the CPU cost per request measured over that
+          # same load: 9.2 ms for the tier as a whole, and 105.5 ms for a sign-on,
+          # of which ~72.8 ms is the password encoder alone. Two cores keeps every
+          # service at or below half utilisation at the measured request rate, and
+          # keeps the JVM's own ergonomics multi-core in every runtime.
+          # docker-compose.yml declares the same budget.
+          # Measurements and rationale: docs/decision-log.md section 50.
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          # Startup probe gates the liveness/readiness probes until the JVM
+          # and Spring context are up (up to 30 x 5s = 150s grace).
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            # Explicit timeout. The default timeoutSeconds is 1, so during any
+            # datastore blip the aggregate health check — which must wait for the bounded
+            # 3s HikariCP / 2s Lettuce dependency timeouts — fails on every attempt and the
+            # pod is killed after failureThreshold x periodSeconds. 4s bounds each attempt
+            # just above the slowest dependency timeout.
+            timeoutSeconds: 4
+            failureThreshold: 30
+          # Liveness: Actuator liveness group; restart the pod if it fails.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness: Actuator readiness group; gate traffic until ready.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+      # Writable scratch for the read-only root filesystem. A Spring
+      # Boot fat-jar only needs a writable /tmp (Tomcat work dir, JVM temp).
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: batch-work
+          # DURABLE batch output. The report and record-dump files the nine data-management jobs write here are
+          # deliverables a downstream consumer reads, so they must outlive a pod. An
+          # emptyDir is deleted with the pod, which meant a COMPLETED run's output
+          # vanished on any routine restart or reschedule while the JobRepository
+          # still reported success - a zero-data-loss violation (AAP 0.7.1) that no
+          # application error surfaced. The claim's ReadWriteOnce access mode is why
+          # this Deployment keeps a single replica.
+          persistentVolumeClaim:
+            claimName: batch-service-output-pvc

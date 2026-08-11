@@ -1,0 +1,58 @@
+# =====================================================================
+# auth-service - 'test' profile (JUnit 5 + Testcontainers).
+#
+# Activated by @ActiveProfiles("test"). Supplies only static, container-
+# agnostic settings; the JDBC url/username/password (PostgreSQLContainer
+# "postgres:18") and the Redis host/port (GenericContainer "redis:8") are
+# injected at runtime by the tests via @DynamicPropertySource - they are
+# deliberately NOT set here. Flyway runs the production migrations
+# (V1 create + V2 seed) against the Testcontainers database and Hibernate
+# validates the SecurityUser entity against the security_users table.
+# =====================================================================
+spring:
+  # Flyway owns the schema; Hibernate only validates the entity mapping
+  # (fail-fast on drift). Never create/create-drop/update - that would
+  # bypass Flyway and defeat the migration-verification objective.
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+  # Run the production migrations (classpath:db/migration: V1 create +
+  # V2 seed) against the Testcontainers PostgreSQL so the migration and
+  # the 10 seed users are verified.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  # Externalized session store, consistent with production, for full-context
+  # (@SpringBootTest) tests: the Redis-backed store is selected by the presence of
+  # spring-session-data-redis on the classpath. The legacy spring.session.store-type
+  # switch was removed in Spring Boot 4.0.0 and is deliberately not set here, as it
+  # would be silently ignored. The @DataJpaTest repository slice does not load
+  # Redis/session auto-config; Redis host/port are injected dynamically.
+
+# Keep tests hermetic: 0.0 sampling means no spans are recorded, so nothing
+# is exported over the network. This overrides the committed production default
+# of 0.1 (1.0 applies to the api-gateway alone, which is the trace entry point).
+# ObservabilityEndpointsIT re-raises this to 1.0 for its own context so span
+# creation and MDC correlation are actually exercised. Prometheus is pull-based
+# and needs no test configuration.
+management:
+  tracing:
+    sampling:
+      probability: 0.0
+
+# Logging to aid debugging of the migration / repository verification.
+logging:
+  level:
+    com.carddemo.auth: DEBUG
+    org.flywaydb: INFO
+    org.hibernate.SQL: DEBUG
+# Start-up warm-up is a production latency control (carddemo-common
+# WarmUpAutoConfiguration): it pre-establishes pooled connections and compiles the
+# read paths so a freshly started service meets the 200 ms target of AAP 0.7.1 on its
+# first request. A test context is never measured for latency, so it is switched off
+# here to keep every context boot as fast as it was.
+carddemo:
+  warmup:
+    enabled: false

@@ -1,0 +1,31 @@
+# =============================================================================
+# batch-service/.dockerignore
+# -----------------------------------------------------------------------------
+# Docker build-context exclusions for the Spring Batch service (CBACT01C-CBACT04C, CBCUS01C).
+#
+# docker-compose.yml builds this image with `context: ./batch-service`, and the
+# Dockerfile consumes exactly ONE input from that context: the repackaged Spring
+# Boot fat jar under target/. Everything else - the whole src/ tree, the compiled
+# classes, the surefire/failsafe reports, the *.jar.original thin jar - is dead
+# weight that Docker would otherwise transfer to the daemon on every build.
+#
+# Before this file existed the context measured 64 MB, so each of the nine
+# backend builds shipped tens of megabytes of host build output and invalidated
+# its own cache whenever any unrelated file under the module changed.
+#
+# The allowlist form below is deliberate: a denylist has to be extended every
+# time the build produces a new artifact, whereas this excludes everything and
+# then re-admits only target/*.jar. `target/*.jar.original` is NOT re-admitted,
+# because the `*.jar` pattern matches only names ending in `.jar`.
+#
+# The Dockerfile and this file are themselves excluded: BuildKit reads the
+# Dockerfile through a separate channel, not from the transferred context.
+# =============================================================================
+
+# --- Exclude the entire module ----------------------------------------------
+*
+
+# --- Re-admit only the repackaged boot jar the Dockerfile copies -------------
+!target
+target/*
+!target/*.jar

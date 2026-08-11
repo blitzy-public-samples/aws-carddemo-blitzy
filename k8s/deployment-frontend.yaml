@@ -1,0 +1,135 @@
+---
+# =============================================================================
+# k8s/deployment-frontend.yaml
+# -----------------------------------------------------------------------------
+# Kubernetes Deployment for the CardDemo React 19 single-page application (SPA),
+# which re-platforms the 17 legacy BMS 3270 mapsets (AAP 0.3.5) into React pages
+# served as a static production bundle.
+#
+# Image `carddemo/frontend:1.0.0` is built by `frontend/Dockerfile`: a
+# multi-stage build that compiles the Vite bundle on the `node:24` base image
+# and serves the static assets with nginx on port 80. nginx also reverse-
+# proxies the same-origin `/api` path to the api-gateway, so the browser
+# never needs an absolute gateway URL.
+#
+# This is NOT a Spring Boot service (AAP 0.3.1):
+#   * NO Actuator -> health probes use a plain HTTP GET on "/" (nginx returns
+#     index.html), never an "/actuator/*" path.
+#   * NO database/Redis credentials -> this Deployment attaches NO `envFrom`
+#     and never references any Secret / the carddemo-config ConfigMap.
+#
+# The companion `service-frontend.yaml` (type LoadBalancer) selects these pods
+# via `app: frontend` and forwards port 80 -> targetPort 8080.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: frontend
+spec:
+  # Stateless static-asset server; one replica suffices for the reference
+  # deployment and can be scaled horizontally without shared state.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        app.kubernetes.io/name: frontend
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: frontend
+    spec:
+      # Pod-level runtime hardening. nginx in the image runs as uid 101.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: frontend
+          # Built by frontend/Dockerfile (build stage FROM node:24; runtime
+          # stage serving /usr/share/nginx/html on the unprivileged port 8080).
+          # Produced by `docker compose build frontend` from frontend/Dockerfile
+          # (docker-compose.yml carries a matching `image:` key with these exact
+          # registry/name/tag defaults), so this reference resolves to an artifact the
+          # repository builds - no undocumented tag-and-push step.
+          # Override the registry or tag for a private registry with
+          # CARDDEMO_IMAGE_REGISTRY / CARDDEMO_IMAGE_TAG at build time.
+          image: carddemo/frontend:1.0.0
+          imagePullPolicy: IfNotPresent
+          # Container-level runtime hardening: EVERY capability dropped, with
+          # none added back. nginx binds the unprivileged port 8080 (see
+          # frontend/nginx.conf), so NET_BIND_SERVICE is no longer needed - the
+          # image's master process runs as uid 101 and never holds uid 0.
+          # Read-only root filesystem with writable emptyDir scratch below.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: 8080
+          # NO `env:` and NO `envFrom:` here, deliberately.
+          #
+          # The bundle's API base ("/api", reverse-proxied to the api-gateway by
+          # this pod's own nginx) and the sign-on header AppID ("CARDDEMO", the
+          # legacy EXEC CICS ASSIGN APPLID field) are consumed by `vite build` and
+          # are therefore BAKED INTO the static assets at BUILD time from
+          # frontend/Dockerfile's VITE_API_BASE_URL / VITE_APP_ID / VITE_SYS_ID
+          # build args. Nothing in the nginx runtime reads a VITE_* variable, so
+          # declaring one here would offer an operator a knob that silently does
+          # nothing: changing it produces neither an effect nor an error. To change
+          # either value, rebuild the image with the build arg and roll out the new
+          # tag. Omitting `envFrom` additionally keeps every DB/Redis secret out of
+          # the browser tier.
+          # Writable scratch required by nginx under the read-only root fs.
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: tmp
+              mountPath: /tmp
+          # nginx static serving is lightweight on CPU and memory.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          # Plain HTTP GET on "/" (nginx serves index.html). No Actuator here.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

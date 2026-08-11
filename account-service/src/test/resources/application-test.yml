@@ -1,0 +1,45 @@
+# Test profile for account-service: boots slice/context/integration tests without a live Redis,
+# against a throwaway Testcontainers PostgreSQL. Activated via @ActiveProfiles("test").
+spring:
+  autoconfigure:
+    # Neutralize Redis + Spring Session auto-config so the context loads without a running Redis.
+    exclude:
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisRepositoriesAutoConfiguration
+      - org.springframework.boot.session.autoconfigure.SessionAutoConfiguration
+      - org.springframework.boot.session.data.redis.autoconfigure.SessionDataRedisAutoConfiguration
+  datasource:
+    # Testcontainers JDBC-URL scheme: auto-provisions an ephemeral postgres:18 container.
+    # Overridable by ITs via @ServiceConnection / @DynamicPropertySource (a JdbcConnectionDetails
+    # bean then takes precedence over these properties).
+    url: jdbc:tc:postgresql:18:///carddemo
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+    username: test
+    password: test
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    # Provision the schema from the SHARED production migration set that ships in
+    # carddemo-common (classpath:db/migration): the same V1 schema, V2 reference
+    # data, V3 fixtures, V4 seeded-PII encryption and V5 Spring Batch metadata that
+    # the migration owner applies in production, so tests validate against the real
+    # schema. Each test database is a throwaway container, so the default single
+    # history table applies and no baseline is needed.
+    enabled: true
+    locations: classpath:db/migration
+logging:
+  level:
+    com.carddemo: INFO
+    org.flywaydb: INFO
+    org.testcontainers: WARN
+    com.github.dockerjava: WARN
+# Start-up warm-up is a production latency control (carddemo-common
+# WarmUpAutoConfiguration): it pre-establishes pooled connections and compiles the
+# read paths so a freshly started service meets the 200 ms target of AAP 0.7.1 on its
+# first request. A test context is never measured for latency, so it is switched off
+# here to keep every context boot as fast as it was.
+carddemo:
+  warmup:
+    enabled: false

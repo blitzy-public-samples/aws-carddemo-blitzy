@@ -1,0 +1,55 @@
+---
+# =============================================================================
+# k8s/service-reporting-service.yaml
+# -----------------------------------------------------------------------------
+# ClusterIP Service — stable in-cluster address for the reporting-service
+# Deployment (AAP 0.3.2). Companion to deployment-reporting-service.yaml.
+#
+# :purpose: Publish the reporting-service Deployment
+#           (deployment-reporting-service.yaml) behind a stable virtual IP and
+#           the cluster-internal DNS name ``reporting-service`` so callers
+#           (the api-gateway and other backend services) reach the report /
+#           statement endpoints — for example ``POST /reports`` — at
+#           ``http://reporting-service:8080``. reporting-service re-platforms
+#           the legacy COBOL report program CORPT00C (CICS transaction CR00)
+#           and the batch statement generators CBSTM03A / CBSTM03B (AAP 0.3.1,
+#           0.4.2, 0.4.4).
+# :output:  A ClusterIP Service named ``reporting-service`` reachable in-cluster
+#           at ``reporting-service:8080`` that load-balances TCP traffic on
+#           port 8080 to every Ready pod carrying the ``app: reporting-service``
+#           label.
+# :notes:   Type ClusterIP is internal only — reporting-service is a backend
+#           API consumed exclusively from inside the cluster (through the
+#           api-gateway) and must never be exposed via an external LoadBalancer
+#           or NodePort. The ``app: reporting-service`` selector is a subset of
+#           the Deployment pod-template labels, so it resolves exactly the
+#           reporting-service pods; service ``port: 8080`` forwards to
+#           ``targetPort: 8080``, the container's named ``http`` port. Endpoints
+#           populate only after a pod passes its Actuator readiness probe
+#           (``/actuator/health/readiness``), matching the ingress rules in
+#           networkpolicy.yaml that admit backend traffic on port 8080.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: reporting-service
+  labels:
+    app: reporting-service
+    app.kubernetes.io/name: reporting-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # ClusterIP keeps reporting-service reachable only from inside the cluster;
+  # it is a backend API fronted by the api-gateway, never published externally.
+  type: ClusterIP
+  # Selects the reporting-service Deployment pods (their pod template carries
+  # app: reporting-service). Must match deployment-reporting-service.yaml.
+  selector:
+    app: reporting-service
+  ports:
+    # Named port 'http' permits by-name references; service port 8080 forwards
+    # to targetPort 8080, the container's port (named 'http' there too).
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

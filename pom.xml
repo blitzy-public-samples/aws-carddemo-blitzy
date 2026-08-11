@@ -1,0 +1,321 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Spring Boot parent supplies dependency and plugin management for the whole build. -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.0</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.carddemo</groupId>
+    <artifactId>carddemo-parent</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+
+    <name>CardDemo Modernization Parent</name>
+    <description>Aggregator and parent BOM for the modernized AWS CardDemo application: a multi-module Spring Boot microservices build migrated from the legacy IBM z/OS COBOL/CICS/VSAM stack to Java 21 and PostgreSQL.</description>
+
+    <properties>
+        <java.version>21</java.version>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <!--
+          Spring Cloud release-train version consumed exclusively by the
+          api-gateway module, which imports the spring-cloud-dependencies BOM
+          in its OWN POM. The BOM is intentionally NOT imported here so that
+          Spring Cloud managed versions do not leak into the other services
+          (see docs/decision-log.md, "Platform & Build").
+        -->
+        <spring-cloud.version>2025.1.2</spring-cloud.version>
+        <!--
+          Security override: pin patched versions of two libraries managed by
+          the Spring Boot 4.1.0 BOM to remediate known, fixed CVEs. The Boot
+          BOM otherwise resolves pgJDBC 42.7.11 and Tomcat 11.0.22. These
+          property names are the exact keys the Spring Boot dependency
+          management uses, so setting them here upgrades every module that
+          pulls the driver or the embedded container.
+        -->
+        <postgresql.version>42.7.13</postgresql.version>
+        <tomcat.version>11.0.24</tomcat.version>
+        <!--
+          Three more security overrides, same mechanism: each name below is the exact
+          key the Spring Boot 4.1.0 dependency management uses, so raising it here
+          raises the version in EVERY module that resolves the library. The Boot BOM
+          otherwise selects Jackson 3.1.4, Logback 1.5.34 and Log4j 2.25.4, each of
+          which has a published fix available:
+            * jackson-bom 3.1.5 - CVE-2026-59889 / GHSA-5gvw-p9qm-jgwh (CWE-863,
+              UnwrappedPropertyHandler replaying buffered JSON). The reachable path
+              needs @JsonView and @JsonUnwrapped on one property and CardDemo uses
+              neither, but a fixed version exists and shipping the vulnerable one is
+              a release failure regardless of reachability.
+            * logback 1.5.37 - CVE-2026-13006 (unicode escapes bypass the restriction
+              on `new` in Janino-evaluated <if> conditions). Janino is absent from the
+              tree and no logback-spring.xml uses <if>, so it is unreachable here too.
+            * log4j2 2.25.5 - CVE-2026-49844 (non-finite IEEE-754 values emit bare
+              tokens RFC 8259 forbids from MapMessage.asJson()). Only the
+              log4j-to-slf4j bridge ships; log4j-core is absent.
+          Reachability is recorded because it is the truth about the risk, NOT as a
+          reason to defer: the checkpoint rule is that a known vulnerable dependency
+          with an available fix is a release failure.
+        -->
+        <jackson-bom.version>3.1.5</jackson-bom.version>
+        <logback.version>1.5.37</logback.version>
+        <log4j2.version>2.25.5</log4j2.version>
+        <!--
+          Fourth security override, same mechanism. The Boot BOM selects Netty
+          4.2.15.Final, whose netty-codec-dns carries GHSA-mfg7-5gfp-c4w3 (the DNS
+          record decoder over-reads a malformed compression pointer). Netty reaches
+          the tree through the Lettuce Redis client (session store) and reactor-netty
+          (the gateway's HTTP client); neither resolves DNS through netty-codec-dns in
+          this deployment - Lettuce uses the JDK resolver and the gateway resolves
+          service names through the platform DNS - but a fixed release exists, and
+          shipping a vulnerable dependency that has one is a release failure
+          regardless of reachability. 4.2.16.Final is the fix version.
+        -->
+        <netty.version>4.2.16.Final</netty.version>
+        <!--
+          OWASP dependency-check scanner, pinned because it is NOT managed by the
+          Spring Boot BOM. Consumed only by the non-default `dependency-scan` profile
+          declared below, so this property is inert in an ordinary build.
+        -->
+        <dependency-check-maven.version>13.0.0</dependency-check-maven.version>
+        <!--
+          JaCoCo code-coverage agent and reporter, pinned because it is NOT managed by
+          the Spring Boot BOM. Bound in every module (see <plugins> below) so
+          `mvn test` and `mvn verify` produce measurable coverage instead of leaving
+          untested branches invisible. Rationale: docs/decision-log.md, section 53.
+        -->
+        <jacoco-maven-plugin.version>0.8.15</jacoco-maven-plugin.version>
+    </properties>
+
+    <modules>
+        <module>carddemo-common</module>
+        <module>auth-service</module>
+        <module>user-service</module>
+        <module>account-service</module>
+        <module>card-service</module>
+        <module>transaction-service</module>
+        <module>billpay-service</module>
+        <module>reporting-service</module>
+        <module>batch-service</module>
+        <module>api-gateway</module>
+    </modules>
+
+    <!--
+        The Spring Cloud BOM (spring-cloud-dependencies) is deliberately NOT imported
+        here; only the api-gateway module imports it, using the inherited
+        ${spring-cloud.version} property. All other managed versions come from the
+        inherited Spring Boot parent BOM. Rationale: docs/decision-log.md, section 1.
+    -->
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <!-- Version inherited from the Spring Boot parent; service modules bind the repackage goal in their own POMs. -->
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                </plugin>
+
+                <!--
+                  A deterministic, NON-PRODUCTION AES-256 key is supplied to every forked test JVM
+                  (unit and integration) so the carddemo-common CryptoConverter can initialize and
+                  round-trip the encrypted PII columns (customer SSN, government-issued id, EFT
+                  account id, card CVV) wherever a test boots a context that reads them.
+                  CryptoConverter and the eager startup PII-key validation both fail fast when no
+                  key is configured, so a production or deployed environment MUST still supply the
+                  real key through the CARDDEMO_PII_KEY environment variable (docker-compose.yml
+                  and k8s/secret.yaml do); a service started without it fails fast rather than
+                  reporting UP and then failing every request that touches an encrypted column.
+                  The value below is an obviously-fake, test-only fixture
+                  ("carddemo-test-pii-key-32bytes!!!") never used outside the test phases.
+                  Declared for surefire AND failsafe so unit tests and Testcontainers integration
+                  tests behave identically; a module that declares its own
+                  systemPropertyVariables must repeat it. Plugin versions are inherited from the
+                  Spring Boot parent BOM.
+
+                  CARDDEMO_PII_KEY is blanked in every test fork. PiiEncryptionKey resolves the
+                  environment variable BEFORE the system property and treats a blank value as
+                  absent, so an operator whose shell (or whose docker-compose/k8s-provisioned
+                  machine) exports the real key would otherwise silently outrank the fixture
+                  above - which is exactly how thirteen crypto and seeded-PII tests came to be
+                  skipped while the build still reported success. Blanking the variable makes the
+                  key deterministic for tests in every environment; no assumption can disable a
+                  security test. Nothing about production resolution changes: a deployed service
+                  reads the real variable and fails fast without it.
+                  Rationale: docs/decision-log.md, section 53.2.
+                -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <configuration>
+                        <systemPropertyVariables>
+                            <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
+                        </systemPropertyVariables>
+                        <environmentVariables>
+                            <CARDDEMO_PII_KEY/>
+                        </environmentVariables>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <configuration>
+                        <systemPropertyVariables>
+                            <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
+                        </systemPropertyVariables>
+                        <environmentVariables>
+                            <CARDDEMO_PII_KEY/>
+                        </environmentVariables>
+                    </configuration>
+                </plugin>
+
+                <!--
+                  Code-coverage instrumentation. The version is pinned by the
+                  ${jacoco-maven-plugin.version} property above because JaCoCo is not part
+                  of the Spring Boot BOM. The executions are declared here rather than in
+                  each module so every module measures coverage identically.
+
+                  prepare-agent writes -javaagent into the `argLine` property, which
+                  Surefire and Failsafe append to their forked JVM command line; no module
+                  sets argLine itself, so nothing is overwritten. The unit and integration
+                  tiers are measured into SEPARATE exec files and rendered as separate
+                  reports, so a branch covered only by a Testcontainers integration test is
+                  not mistaken for one covered by a unit test.
+                -->
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco-maven-plugin.version}</version>
+                    <executions>
+                        <!-- Unit tier: agent for Surefire, report after `test`. -->
+                        <execution>
+                            <id>jacoco-prepare-agent</id>
+                            <goals>
+                                <goal>prepare-agent</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>jacoco-report</id>
+                            <phase>test</phase>
+                            <goals>
+                                <goal>report</goal>
+                            </goals>
+                        </execution>
+                        <!-- Integration tier: agent for Failsafe, report after `verify`. -->
+                        <execution>
+                            <id>jacoco-prepare-agent-integration</id>
+                            <goals>
+                                <goal>prepare-agent-integration</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>jacoco-report-integration</id>
+                            <goals>
+                                <goal>report-integration</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+
+        <plugins>
+            <!--
+              Declared once here so integration-test execution is build-wide: any class
+              matching Failsafe's default patterns (**/IT*.java, **/*IT.java,
+              **/*ITCase.java) runs during `mvn verify` in whichever module it lives.
+              Version and executions are inherited; a module needing extra Failsafe
+              configuration refines it in its own POM. Rationale:
+              docs/decision-log.md, section 6.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+            </plugin>
+
+            <!--
+              Declared once here so coverage is measured build-wide. `mvn test` leaves
+              target/jacoco.exec and target/site/jacoco (HTML + XML + CSV) in every
+              module; `mvn verify` adds target/jacoco-it.exec and
+              target/site/jacoco-it for the Failsafe tier. The aggregator itself has no
+              sources, so its own report is empty by construction. Executions and
+              version are inherited from pluginManagement above. Rationale:
+              docs/decision-log.md, section 53.
+            -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+    <!--
+      Dependency-vulnerability scanning gate. Declared as a NON-DEFAULT profile so the
+      ordinary build (`mvn clean install`, `mvn test`, `mvn verify`) resolves nothing
+      extra and continues to work from the local repository with no network: an
+      inactive profile contributes no plugin to the effective model, so Maven never
+      attempts to download the scanner. Activate it explicitly:
+
+          mvn -B -P dependency-scan verify
+
+      The scan needs network access and an NVD API key. Supply the key as
+      -Dnvd.api.key=... or through the NVD_API_KEY environment variable; without one
+      the NVD feed download is heavily rate-limited rather than unavailable. The first
+      run populates the local CVE datafeed and is slow; subsequent runs reuse it.
+
+      Threshold: the build fails on any dependency carrying a CVE scored 7.0 or higher
+      (CVSS v3 HIGH and CRITICAL). Reports land in each module's target directory in
+      HTML for a human and JSON for a pipeline.
+    -->
+    <profiles>
+        <profile>
+            <id>dependency-scan</id>
+            <properties>
+                <!-- Overridable on the command line; empty is a valid (rate-limited) value. -->
+                <nvd.api.key>${env.NVD_API_KEY}</nvd.api.key>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.owasp</groupId>
+                        <artifactId>dependency-check-maven</artifactId>
+                        <version>${dependency-check-maven.version}</version>
+                        <configuration>
+                            <nvdApiKey>${nvd.api.key}</nvdApiKey>
+                            <failBuildOnCVSS>7</failBuildOnCVSS>
+                            <formats>
+                                <format>HTML</format>
+                                <format>JSON</format>
+                            </formats>
+                            <!--
+                              Test-only and provided-scope artifacts never ship in a service
+                              image, so a CVE in Testcontainers or in the servlet API stubs is
+                              not a deployed exposure and must not fail the gate.
+                            -->
+                            <skipTestScope>true</skipTestScope>
+                            <skipProvidedScope>true</skipProvidedScope>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>scan-dependencies</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
+</project>

@@ -1,0 +1,12 @@
+# =============================================================================
+# observability/.dockerignore
+#
+# Dockerfile.grafana copies NOTHING: it derives from the official Grafana image
+# and deletes the two bundled datasource plugins this stack never loads. The
+# dashboard template, the Prometheus scrape config and the alert rules in this
+# directory are MOUNTED by docker-compose.yml at run time, never baked into a
+# layer, so no file here is a build input.
+#
+# `*` with no re-admission is therefore the complete and correct policy.
+# =============================================================================
+*

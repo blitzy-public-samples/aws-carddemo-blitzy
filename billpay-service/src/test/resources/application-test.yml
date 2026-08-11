@@ -1,0 +1,39 @@
+# Test profile for billpay-service: boots slice/context/integration tests without a live Redis,
+# against a throwaway Testcontainers PostgreSQL. Activated via @ActiveProfiles("test").
+spring:
+  autoconfigure:
+    # Neutralize Redis + Spring Session auto-config so the context loads without a running Redis.
+    exclude:
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisRepositoriesAutoConfiguration
+      - org.springframework.boot.session.autoconfigure.SessionAutoConfiguration
+      - org.springframework.boot.session.data.redis.autoconfigure.SessionDataRedisAutoConfiguration
+  datasource:
+    # Testcontainers JDBC-URL scheme: auto-provisions an ephemeral postgres:18 container.
+    # Overridable by ITs via @ServiceConnection / @DynamicPropertySource.
+    url: jdbc:tc:postgresql:18:///carddemo
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+    username: test
+    password: test
+  jpa:
+    open-in-view: false
+    hibernate:
+      # billpay owns no tables and ships no migrations; the throwaway container is empty,
+      # so Hibernate performs no schema action (ITs provision any needed schema themselves).
+      ddl-auto: none
+  # billpay-service shares the carddemo database and ships no migrations; keep Flyway disabled (matches prod).
+  flyway:
+    enabled: false
+logging:
+  level:
+    com.carddemo: INFO
+    org.testcontainers: WARN
+    com.github.dockerjava: WARN
+# Start-up warm-up is a production latency control (carddemo-common
+# WarmUpAutoConfiguration): it pre-establishes pooled connections and compiles the
+# read paths so a freshly started service meets the 200 ms target of AAP 0.7.1 on its
+# first request. A test context is never measured for latency, so it is switched off
+# here to keep every context boot as fast as it was.
+carddemo:
+  warmup:
+    enabled: false

@@ -1,0 +1,263 @@
+---
+# =============================================================================
+# k8s/deployment-postgres.yaml
+# -----------------------------------------------------------------------------
+# PostgreSQL 18 in-cluster data service for CardDemo, plus its backing
+# PersistentVolumeClaim.
+#
+# :purpose: Run the PostgreSQL 18 datastore that replaces the legacy VSAM
+#           KSDS / sequential data sets (AAP 0.1.2). Backend Spring Boot
+#           services reach it through the ``postgres`` Service at
+#           jdbc:postgresql://postgres:5432/carddemo; Flyway migrations owned
+#           by those services create the schema and seed data on first connect.
+# :output:  Two objects: a ``postgres-pvc`` PersistentVolumeClaim (2Gi, RWO)
+#           and a ``postgres`` Deployment scheduling one pod that serves the
+#           PostgreSQL protocol on container port 5432 (named ``postgres``).
+# :notes:   Credentials are not hardcoded. The bootstrap owner role
+#           (POSTGRES_USER / POSTGRES_PASSWORD) comes from the
+#           ``carddemo-postgres-bootstrap`` Secret and POSTGRES_DB from the
+#           ``carddemo-config`` ConfigMap; a DB-init step uses the owner to
+#           provision the per-service least-privilege roles. A single
+#           replica with the Recreate strategy keeps exactly one writer against
+#           the ReadWriteOnce volume. Rationale: docs/decision-log.md.
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: database
+spec:
+  # No storageClassName: bind to the cluster default so the claim is portable
+  # across minikube, kind, and managed cloud clusters.
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: database
+spec:
+  # Single-writer datastore: exactly one replica may mount the RWO volume.
+  replicas: 1
+  strategy:
+    # Recreate (not RollingUpdate) so the old pod releases the ReadWriteOnce
+    # volume before the new pod starts during a rollout.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: database
+    spec:
+      # Datastore hardening. The postgres:18 image's server process
+      # runs as uid 999; running the pod as that non-root user with a matching
+      # fsGroup lets it own the PVC without any elevated capability. A
+      # read-only root filesystem is intentionally NOT set here — PostgreSQL
+      # writes its socket and lock files under the container root at runtime.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: postgres
+          # Built from db/Dockerfile by `docker compose build postgres`: the
+          # official postgres:18 image with the unreachable `gosu` helper removed,
+          # which is where every fixable CRITICAL/HIGH finding on postgres:18
+          # lives. runAsUser: 999 above is what makes that helper unreachable.
+          image: carddemo/postgres:1.0.0
+          imagePullPolicy: IfNotPresent
+          # Connection budget. Each JPA service now holds a bounded
+          # HikariCP pool (steady state 15 connections in total, ceiling 68 for a
+          # single replica of every service - see the spring.datasource.hikari block
+          # in every service's application.yml), but the image default of
+          # max_connections=100 leaves no headroom: with HikariCP's own defaults the
+          # eight services consumed 80 of the 100 slots while completely idle and any
+          # two further pods were refused with "FATAL: sorry, too many clients
+          # already". 200 accommodates two replicas of every service plus operator and
+          # monitoring sessions. Kept in step with docker-compose.yml.
+          args:
+            - postgres
+            - -c
+            - max_connections=200
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The cluster's ONLY writable location is the PersistentVolume mounted
+            # at PGDATA. Everything else the server touches at run time - the unix
+            # socket directory and its lock files, and the temporary files initdb
+            # writes - is an explicit emptyDir below, so the image layers themselves
+            # can be immutable. Without this a compromised backend could rewrite
+            # binaries, extensions or the entrypoint inside the running container.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: POSTGRES_DB
+            # Bootstrap owner role — distinct from the per-service roles
+            # that a DB-init step provisions using this owner.
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-postgres-bootstrap
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-postgres-bootstrap
+                  key: POSTGRES_PASSWORD
+            # Store the cluster under a subdirectory so PostgreSQL init does not
+            # trip over a volume-root "lost+found" directory.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            # Force scram-sha-256 on every pg_hba.conf entry initdb writes.
+            # The stock docker layout grants `trust` to the local socket and to
+            # 127.0.0.1/::1, which makes any in-pod process an owner-level session
+            # regardless of password. Applied by initdb, so it governs a cluster
+            # initialised empty; matches docker-compose.yml.
+            - name: POSTGRES_INITDB_ARGS
+              value: --auth-local=scram-sha-256 --auth-host=scram-sha-256
+            # Per-service role passwords consumed by the first-boot DB-init script
+            # below (the eight roles the service Secrets reference must be
+            # never created). Each value is read from the SAME Secret the owning
+            # service consumes, so a credential has exactly one source of truth.
+            - name: CARDDEMO_AUTH_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-auth-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: CARDDEMO_USER_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-user-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: CARDDEMO_ACCOUNT_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-account-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: CARDDEMO_CARD_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-card-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: CARDDEMO_TRANSACTION_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-transaction-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: CARDDEMO_BILLPAY_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-billpay-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: CARDDEMO_REPORTING_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-reporting-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: CARDDEMO_BATCH_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-batch-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            # First-boot hook directory. The postgres image executes every
+            # *.sh/*.sql here exactly once, while initializing an empty PGDATA, as
+            # POSTGRES_USER. 01-create-service-roles.sh provisions the eight
+            # per-service login roles and the shared carddemo_app group role. The
+            # projection is read-only and mode 0555 so the script is executable.
+            - name: postgres-init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            # Writable scratch demanded by readOnlyRootFilesystem above. The server
+            # creates its unix socket and lock file in /var/run/postgresql on every
+            # start, and initdb/pg_ctl use /tmp; both are pod-scoped and hold no
+            # durable state, so an emptyDir is the correct backing.
+            - name: postgres-run
+              mountPath: /var/run/postgresql
+            - name: postgres-tmp
+              mountPath: /tmp
+          # Sized for the raised max_connections above: the shared
+          # structures scale with max_connections and each established backend adds
+          # a few MB of private memory, so the 68-connection ceiling of a
+          # single-replica deployment needs more than the previous 512Mi ceiling
+          # on top of the default 128MB shared_buffers.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # pg_isready confirms the server is accepting connections. It is
+          # checked without -U/-d so the probe is independent of the (now
+          # externalized) role and database names.
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -h
+                - 127.0.0.1
+                - -p
+                - "5432"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -h
+                - 127.0.0.1
+                - -p
+                - "5432"
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+        # Carries db/init/01-create-service-roles.sh verbatim. Create or refresh it
+        # from the file in the repository so the two never drift:
+        #   kubectl create configmap carddemo-postgres-init \
+        #     --from-file=db/init/01-create-service-roles.sh \
+        #     --dry-run=client -o yaml | kubectl apply -f -
+        - name: postgres-init
+          configMap:
+            name: carddemo-postgres-init
+            defaultMode: 0555
+        # Pod-scoped scratch for the read-only root filesystem (see volumeMounts).
+        - name: postgres-run
+          emptyDir: {}
+        - name: postgres-tmp
+          emptyDir: {}

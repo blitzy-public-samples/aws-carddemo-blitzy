@@ -1,0 +1,45 @@
+---
+# =============================================================================
+# Jaeger ClusterIP Service — stable in-cluster address for the tracing backend.
+#
+# :purpose: Publish the single-replica ``jaeger`` Deployment
+#           (deployment-jaeger.yaml) behind a stable virtual IP and the
+#           cluster-internal DNS name ``jaeger`` so every CardDemo service can
+#           export OTLP spans to
+#           ``http://jaeger:4318/v1/traces`` — the value the
+#           ``carddemo-config`` ConfigMap supplies as
+#           ``MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT``.
+# :output:  A ClusterIP Service named ``jaeger`` exposing 4317 (OTLP gRPC),
+#           4318 (OTLP HTTP) and 16686 (trace query API / UI).
+# :notes:   Type ClusterIP is internal only. Traces contain request metadata, so
+#           the query UI is never exposed outside the cluster; operators reach it
+#           through ``kubectl port-forward svc/jaeger 16686:16686`` or an
+#           authenticated ingress. The ``app: jaeger`` selector is a subset of the
+#           Deployment pod-template labels, so it resolves exactly the jaeger
+#           pods.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+  labels:
+    app: jaeger
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: tracing
+spec:
+  type: ClusterIP
+  selector:
+    app: jaeger
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+    - name: query
+      port: 16686
+      targetPort: 16686
+      protocol: TCP

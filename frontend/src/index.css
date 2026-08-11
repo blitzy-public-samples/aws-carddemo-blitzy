@@ -1,0 +1,2295 @@
+/*
+ * CardDemo SPA global stylesheet.
+ * Re-expresses the legacy BMS 3270 (24x80) green-screen presentation in plain CSS.
+ * Imported once by src/main.tsx. Plain CSS only: no framework, preprocessor, or design system.
+ * Color semantics mirror app/bms/COSGN00.bms; field-error semantics mirror app/cpy/CSSETATY.cpy.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Reset                                                              */
+/* ------------------------------------------------------------------ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+/* ------------------------------------------------------------------ */
+/* 3270 palette and terminal metrics                                  */
+/* ------------------------------------------------------------------ */
+:root {
+  /* BMS COLOR vocabulary */
+  --term-bg: #000000;        /* terminal background (black)  */
+  --term-blue: #4a90ff;      /* field labels / captions      */
+  --term-yellow: #ffd21a;    /* screen titles                */
+  --term-turquoise: #00cccc; /* instructional prompts        */
+  --term-green: #33ff66;     /* user input fields            */
+  --term-red: #ff3b30;       /* errors / invalid fields      */
+  --term-neutral: #e6e6e6;   /* plain / decorative text      */
+
+  /* Derived tones */
+  --term-green-dim: #1f9c40;
+  --term-field-bg: #0b0f0b;
+  --term-neutral-dim: #5a5a5a;
+
+  /* Character-grid metrics */
+  --term-font: "Courier New", "Consolas", "Liberation Mono", monospace;
+  /*
+   * The character cell SIZES ITSELF TO THE DISPLAY, exactly as a 3270 emulator does: the
+   * glyph grid is 80x24 on every device and the window decides how big a cell is. The
+   * grid is never reflowed and never clipped, which is what makes one law serve the
+   * mandated 375 / 768 / 1280 / 1920 widths without a breakpoint for any of them.
+   *
+   * The two divisors are the frame's own arithmetic, in cells:
+   *   WIDTH  80 columns + 2 cells of frame padding    = 82 cells
+   *          x 0.605 em per cell (the monospace advance width of Courier New, Liberation
+   *          Mono and DejaVu Sans Mono is 0.600 em; 0.605 is that plus a safety margin so
+   *          the frame lands just inside the viewport rather than just outside it)
+   *                                                   = 49.7 em
+   *   HEIGHT 24 application rows + 1 operator-information row = 25 rows
+   *          x 1.3 line-height                        = 32.5 em
+   * so the largest cell that still shows the whole device is
+   *   min(100vw / 49.7, 100vh / 32.5).
+   *
+   * WHY THIS REPLACED A FIXED SIZE: at a fixed 16px (14px/12px under the old width
+   * queries) the frame was 1080px wide and kept all 80 columns via `min-width`, so a
+   * 375px viewport overflowed by 215px at document level and every screen had to be
+   * panned to reach its right-hand fields and its PF keys. Scaling the cell instead
+   * keeps every column, every row, every label and every control on the glass.
+   *
+   * The `dvh` repeat is the same bound measured against the viewport a mobile browser is
+   * actually showing, so the frame still fits while its chrome is on screen; an engine
+   * that does not know the unit keeps the `vh` declaration above it.
+   */
+  --term-font-size: min(calc(100vw / 49.7), calc(100vh / 32.5));
+  --term-font-size: min(calc(100vw / 49.7), calc(100dvh / 32.5));
+  --term-line-height: 1.3;
+  --term-cols: 80;
+  --term-rows: 24;
+  /*
+   * The lines the FRAME occupies: the 24 rows of the BMS display buffer plus the one
+   * Operator Information Area line a 3270 paints below them. The OIA is not one of the
+   * 24 rows -- it is the terminal's own status line -- so a frame that asks for 24 lines
+   * and then renders an OIA has to take that line out of the body, which is what squeezed
+   * the routed region to 17.78 rows and left COACTVW's last row painting 8px over the
+   * message line.
+   *
+   * The height half of the fill law already budgets exactly this many lines:
+   * `100dvh / 32.5` with a 1.3 line box is `100dvh / 25` per line, so when the viewport
+   * is the binding constraint the frame is exactly 25 lines tall and exactly 100dvh.
+   */
+  --term-frame-lines: 25;
+  /* One character cell of frame padding on each side, added OUTSIDE the 80 columns. */
+  --term-pad-x: 1ch;
+  --term-line: calc(var(--term-font-size) * var(--term-line-height));
+  /*
+   * Thickness of the scroll bars the shell draws itself (the body region at every width
+   * and the document's horizontal pan below 32rem). It is stated once here because the
+   * frame's height cap has to leave the horizontal bar its strip: line 24 is the key
+   * legend, and a bar drawn over it would take the legend with it.
+   */
+  --term-scrollbar: 10px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Terminal base                                                      */
+/* ------------------------------------------------------------------ */
+body {
+  background: var(--term-bg);
+  color: var(--term-neutral);
+  font-family: var(--term-font);
+  font-size: var(--term-font-size);
+  line-height: var(--term-line-height);
+  -webkit-font-smoothing: none;
+  text-rendering: optimizeSpeed;
+}
+
+/*
+ * The 24x80 frame the shared Layout component renders.
+ *
+ * Width: the 80 character columns are the CONTENT box. Because `box-sizing:
+ * border-box` applies globally, the frame's own one-cell padding is added to the
+ * 80ch width instead of being taken out of it, so a screen really has all 80
+ * columns to place fields in.
+ *
+ * Height: 24 character rows -- header rows 1-2 (3 on the sign-on mapset), body rows
+ * 3-22, the line-23 message region and the line-24 key legend. There is no vertical
+ * padding, so the row arithmetic stays exact.
+ *
+ * The frame is also BOUNDED by the display, exactly as a 3270 was: a terminal never
+ * grew past its 24 rows, and rows 23 and 24 were always on the glass. Without the
+ * bound a screen whose body needs more room pushed the message region and the key
+ * legend below the fold -- measured at 216px below on the account-view search screen,
+ * which put its only key out of reach of a click. With it, the body region (which
+ * already declares `overflow: auto`) scrolls inside the frame instead.
+ */
+.screen,
+.terminal {
+  display: flex;
+  flex-direction: column;
+  width: calc(var(--term-cols) * 1ch + 2 * var(--term-pad-x));
+  max-width: 100%;
+  /*
+   * The frame asks for its full 24 rows, but never for more height than the viewport can
+   * show. A used `min-height` outranks a smaller `max-height`, so asking for the 24 rows
+   * unconditionally would defeat the cap below and let the frame outgrow a short viewport
+   * again -- taking rows 23 and 24 with it. The `dvh` repeat is the same bound measured
+   * against the viewport a mobile browser is actually showing, so the cap still holds
+   * while its chrome is on screen; a browser that does not know the unit keeps the `vh`
+   * declaration above it.
+   */
+  /*
+   * A DEFINITE height, not a `min-height`. A 3270 is exactly its lines: with a minimum the
+   * frame was content-sized, so every sub-pixel a region gained was added to the frame
+   * instead of being taken out of the one region allowed to give way, and the total drifted
+   * to 25.09 / 26.18 rows. With a definite height the header, the message rows, the key
+   * legend and the operator information area are each exactly one line and the routed body
+   * -- `flex: 1 1 auto`, `min-height: 0`, `overflow: auto` -- absorbs the remainder, which
+   * is what keeps rows 23 and 24 on the glass. The `dvh` repeat is the same bound measured
+   * against the viewport a mobile browser is actually showing; an engine that does not know
+   * the unit keeps the `vh` declaration above it.
+   */
+  height: min(calc(var(--term-frame-lines) * var(--term-line)), 100vh);
+  height: min(calc(var(--term-frame-lines) * var(--term-line)), 100dvh);
+  /*
+   * A 3270 is exactly its 24 rows and the device itself never scrolls: rows 23 and 24 are
+   * always in front of the operator, because that is where the program answers and where
+   * the key legend lives. Capping the frame at the viewport keeps that true. Without it a
+   * screen whose content ran past the viewport pushed both rows below the fold, so a
+   * validation that succeeded reported itself somewhere the operator could not see and the
+   * newly armed save key was invisible with it.
+   */
+  max-height: 100vh;
+  max-height: 100dvh;
+  margin: 0 auto;
+  padding: 0 var(--term-pad-x);
+}
+
+/*
+ * The routed screen body (rows 3-22). It reserves nineteen rows so a 3-row sign-on
+ * header still totals exactly 24, grows to fill the frame when the header uses two
+ * rows, and scrolls rather than pushing the line-23/24 regions off the frame when a
+ * screen is taller than its region.
+ */
+/*
+ * Rows 4-22. Its preferred size is its CONTENT (`flex-basis: auto`), it grows into
+ * whatever the frame has spare, and it is the one region allowed to give way when the
+ * frame is capped -- so a screen with more content than the viewport can hold scrolls
+ * HERE rather than carrying the status rows off the bottom of the device.
+ *
+ * The basis MUST be `auto` rather than a fixed nineteen rows. The frame above declares
+ * `min-height`/`max-height` but no `height`, so it is CONTENT-sized: there is no free
+ * space for `flex-grow` to distribute, and a nineteen-row basis therefore became a
+ * nineteen-row CAP. A screen taller than that -- `/accounts/:id/update`, whose paired
+ * BMS rows wrap on the 80-column frame -- was clipped at 395.2px with its last rows
+ * unreachable, while `min-height: min(24 rows, 100dvh)` still asked the frame for less
+ * height than the body needed. With `auto` the body reports its real height, the frame
+ * grows with it up to the viewport cap, and every field the mapset declares is painted
+ * and hit-testable. The nineteen rows the region is nominally worth are still
+ * guaranteed, by the frame's own 24-row `min-height` and `flex-grow: 1` between them.
+ */
+.screen__body {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+/*
+ * The scroll affordance for the body region, at EVERY width. An overlay scroll bar is
+ * painted over the content only while it is being scrolled and claims no layout width,
+ * so a region that had something below its fold gave the operator no cue at all --
+ * `offsetWidth - clientWidth` measured 0. Styling the scrollbar parts is what opts the
+ * region out of the overlay treatment in Chromium, so the bar is a real, permanently
+ * drawn strip for as long as there is anything to scroll to.
+ *
+ * The standard `scrollbar-width`/`scrollbar-color` pair is deliberately NOT declared
+ * alongside these: when both are present Chromium honours the standard properties and
+ * IGNORES these parts, which puts the overlay bar back. It is offered instead to
+ * engines that do not implement the parts, which reserve a classic bar of their own.
+ */
+.screen__body::-webkit-scrollbar {
+  width: var(--term-scrollbar);
+  height: var(--term-scrollbar);
+}
+
+.screen__body::-webkit-scrollbar-track {
+  background: var(--term-bg);
+}
+
+.screen__body::-webkit-scrollbar-thumb {
+  background: var(--term-green-dim);
+}
+
+.screen__body::-webkit-scrollbar-thumb:hover {
+  background: var(--term-green);
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  .screen__body {
+    scrollbar-width: thin;
+    scrollbar-color: var(--term-green-dim) var(--term-bg);
+  }
+}
+
+/*
+ * The single line an `EXEC CICS SEND TEXT ... ERASE` leaves on an erased device: it
+ * occupies row 1 of an otherwise empty frame, so the frame keeps its 24-row height
+ * with nothing else rendered in it.
+ */
+.screen__plainText {
+  flex: 1 1 auto;
+  width: 100%;
+  margin: 0;
+  color: var(--term-neutral);
+  white-space: pre;
+}
+
+/*
+ * Rows 23 and 24 as one region, so the message line and the key legend -- the two
+ * lines a 3270 operator watches -- are inside a landmark and reachable by the skip
+ * link. `margin-top: auto` pins the pair to the bottom of the frame, which is where
+ * the key bar's own rule used to put it.
+ */
+.screen__status {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin-top: auto;
+}
+
+/*
+ * The region is the skip link's target and holds focus programmatically for that
+ * (`tabIndex={-1}`), so it needs the same indicator every other focus target carries.
+ * Without one the jump was silent: the browser's default indicator on a focused
+ * container is a 1px `rgb(16,16,16)` ring, which is invisible on the terminal's black,
+ * so an operator who took the link had no confirmation they had arrived. `:focus`
+ * rather than `:focus-visible` for the same reason the field cursor uses it -- the focus
+ * here is placed by the link, not typed, and `:focus-visible` does not match a
+ * fragment-navigation placement. The ring is drawn INSIDE the box so rows 23-24 keep
+ * their position and the frame cannot be overflowed by it.
+ */
+.screen__status:focus {
+  outline: 2px solid var(--term-yellow);
+  outline-offset: -2px;
+}
+
+/*
+ * Skip link to rows 23-24. Off-screen until focused, then it occupies the first
+ * character row of the frame -- the only place a 24-row device has to put it, and
+ * only while a keyboard user is on it.
+ */
+.screen__skipLink {
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  color: var(--term-yellow);
+  background: var(--term-bg);
+}
+
+.screen__skipLink:focus {
+  position: static;
+  left: auto;
+  width: auto;
+  height: auto;
+  /*
+   * The link is a shell affordance rather than a BMS field -- it occupies no map row and
+   * appears only while a keyboard user is on it -- so unlike the fields and keys inside the
+   * grid it is free to claim the full 44px target height, and does.
+   */
+  min-height: max(44px, var(--term-line));
+  display: flex;
+  align-items: center;
+  overflow: visible;
+  outline: 2px solid var(--term-yellow);
+}
+
+/*
+ * The 3270 Operator Information Area: the terminal's own status line, painted BELOW
+ * the 24 application rows and never one of them, so it consumes no BMS row and
+ * overwrites no BMS field. It carries the input-inhibited indicator (`X SYSTEM`) for
+ * exactly as long as the keyboard is locked. The row is always reserved, so a screen's
+ * geometry does not shift when a transaction starts, and it is announced politely.
+ */
+.screen__oia {
+  width: 100%;
+  /*
+   * EXACTLY one line, never `min-height`. The frame's line budget is fixed
+   * (`--term-frame-lines`), so a region allowed to grow takes its extra lines from the
+   * routed body -- the only region with `flex-grow` -- and the body then holds fewer map
+   * rows than the mapset declares.
+   */
+  height: var(--term-line);
+  overflow: hidden;
+  margin: 0;
+  color: var(--term-turquoise);
+  font-weight: bold;
+  white-space: pre;
+}
+
+/*
+ * The announcement a guarded route makes while the server has not yet answered whether
+ * the caller is signed on. It is announced and never DISPLAYED: the terminal's own
+ * input-inhibited legend is `X SYSTEM` in the operator information area above, and a
+ * second, differently-worded busy line is output no program produces -- which the
+ * spec-literal rule forbids. It was rendering as a plain, fully legible 20.8px row of
+ * `rgb(230,230,230)` text for as long as the probe took, because the rule its own
+ * docstring promised did not exist. Removed from the flow rather than
+ * `display: none`-d, because a hidden live region is not announced at all.
+ */
+.screen__busy {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ */
+/* Semantic color classes (mirror BMS COLOR attributes)              */
+/* ------------------------------------------------------------------ */
+.label {
+  color: var(--term-blue);
+}
+
+.title {
+  color: var(--term-yellow);
+}
+
+.prompt {
+  color: var(--term-turquoise);
+}
+
+.neutral {
+  color: var(--term-neutral);
+}
+
+/*
+ * A caption the mapset paints GREEN rather than in the TURQUOISE `.prompt` tone.
+ * `COBIL00` declares `'Enter Acct ID:'` (LENGTH=14, POS=(6,6)) `COLOR=GREEN`, the same
+ * green as the entry field beside it, which is the exception among the entry captions.
+ */
+.green {
+  color: var(--term-green);
+}
+
+/*
+ * Green-screen entry fields. A field occupies one terminal character row, which is
+ * shorter than the 24 CSS-pixel minimum target size (WCAG 2.5.8), so the row height is
+ * raised to that floor. The field WIDTH still comes from the BMS `LENGTH` through the
+ * control's `size`, so no field changes the columns it occupies.
+ */
+.field,
+input,
+select,
+textarea {
+  color: var(--term-green);
+  background: var(--term-field-bg);
+  caret-color: var(--term-green);
+  /*
+   * The field's box is EXACTLY its BMS `LENGTH` in cells and EXACTLY one row high, so it
+   * occupies the character cells the mapset gives it and no others. That requires the
+   * border and the padding to take no layout space: a 1px border plus 0.25ch of padding
+   * on each side is what made 42 of 43 controls on the account-update map 2 to 4 cells
+   * wider than their LENGTH and every row 3.2px taller than a line, which inflated that
+   * 24-row map to 28 rows. The border is therefore drawn as an INSET RING, which paints
+   * on top of the cell instead of around it, and the inner shadow that used to suggest
+   * depth is folded into the same ring.
+   */
+  height: var(--term-line);
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  box-shadow: inset 0 0 0 1px var(--term-green-dim);
+  line-height: var(--term-line);
+}
+
+/* Every editable control keeps the terminal monospace font. */
+input,
+select,
+button,
+textarea {
+  font: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--term-green-dim);
+}
+
+/* A wide entry field (25-50 characters) is bounded by its region instead of pushing
+ * the screen past the 80-column frame. */
+input,
+select,
+textarea {
+  max-width: 100%;
+}
+
+/*
+ * Every entry field is exactly as many character cells wide as the symbolic map declares,
+ * because the control's `size` IS the BMS `LENGTH`. Without these rules a text input takes
+ * its width from the engine's own default metric -- measured in Chromium as
+ * `10 * size + 16.78px`, i.e. 1.8 cells too wide at size 1 and 3.8 cells too wide at size
+ * 50 -- so no field on any screen occupied the columns its mapset assigned it. The rules
+ * are generated for every width a mapset can declare (1 to 80) and live here, once,
+ * rather than as a width on each of the 43 controls the pages render.
+ */
+input[size="1"] {
+  width: calc(1 * 1ch);
+}
+input[size="2"] {
+  width: calc(2 * 1ch);
+}
+input[size="3"] {
+  width: calc(3 * 1ch);
+}
+input[size="4"] {
+  width: calc(4 * 1ch);
+}
+input[size="5"] {
+  width: calc(5 * 1ch);
+}
+input[size="6"] {
+  width: calc(6 * 1ch);
+}
+input[size="7"] {
+  width: calc(7 * 1ch);
+}
+input[size="8"] {
+  width: calc(8 * 1ch);
+}
+input[size="9"] {
+  width: calc(9 * 1ch);
+}
+input[size="10"] {
+  width: calc(10 * 1ch);
+}
+input[size="11"] {
+  width: calc(11 * 1ch);
+}
+input[size="12"] {
+  width: calc(12 * 1ch);
+}
+input[size="13"] {
+  width: calc(13 * 1ch);
+}
+input[size="14"] {
+  width: calc(14 * 1ch);
+}
+input[size="15"] {
+  width: calc(15 * 1ch);
+}
+input[size="16"] {
+  width: calc(16 * 1ch);
+}
+input[size="17"] {
+  width: calc(17 * 1ch);
+}
+input[size="18"] {
+  width: calc(18 * 1ch);
+}
+input[size="19"] {
+  width: calc(19 * 1ch);
+}
+input[size="20"] {
+  width: calc(20 * 1ch);
+}
+input[size="21"] {
+  width: calc(21 * 1ch);
+}
+input[size="22"] {
+  width: calc(22 * 1ch);
+}
+input[size="23"] {
+  width: calc(23 * 1ch);
+}
+input[size="24"] {
+  width: calc(24 * 1ch);
+}
+input[size="25"] {
+  width: calc(25 * 1ch);
+}
+input[size="26"] {
+  width: calc(26 * 1ch);
+}
+input[size="27"] {
+  width: calc(27 * 1ch);
+}
+input[size="28"] {
+  width: calc(28 * 1ch);
+}
+input[size="29"] {
+  width: calc(29 * 1ch);
+}
+input[size="30"] {
+  width: calc(30 * 1ch);
+}
+input[size="31"] {
+  width: calc(31 * 1ch);
+}
+input[size="32"] {
+  width: calc(32 * 1ch);
+}
+input[size="33"] {
+  width: calc(33 * 1ch);
+}
+input[size="34"] {
+  width: calc(34 * 1ch);
+}
+input[size="35"] {
+  width: calc(35 * 1ch);
+}
+input[size="36"] {
+  width: calc(36 * 1ch);
+}
+input[size="37"] {
+  width: calc(37 * 1ch);
+}
+input[size="38"] {
+  width: calc(38 * 1ch);
+}
+input[size="39"] {
+  width: calc(39 * 1ch);
+}
+input[size="40"] {
+  width: calc(40 * 1ch);
+}
+input[size="41"] {
+  width: calc(41 * 1ch);
+}
+input[size="42"] {
+  width: calc(42 * 1ch);
+}
+input[size="43"] {
+  width: calc(43 * 1ch);
+}
+input[size="44"] {
+  width: calc(44 * 1ch);
+}
+input[size="45"] {
+  width: calc(45 * 1ch);
+}
+input[size="46"] {
+  width: calc(46 * 1ch);
+}
+input[size="47"] {
+  width: calc(47 * 1ch);
+}
+input[size="48"] {
+  width: calc(48 * 1ch);
+}
+input[size="49"] {
+  width: calc(49 * 1ch);
+}
+input[size="50"] {
+  width: calc(50 * 1ch);
+}
+input[size="51"] {
+  width: calc(51 * 1ch);
+}
+input[size="52"] {
+  width: calc(52 * 1ch);
+}
+input[size="53"] {
+  width: calc(53 * 1ch);
+}
+input[size="54"] {
+  width: calc(54 * 1ch);
+}
+input[size="55"] {
+  width: calc(55 * 1ch);
+}
+input[size="56"] {
+  width: calc(56 * 1ch);
+}
+input[size="57"] {
+  width: calc(57 * 1ch);
+}
+input[size="58"] {
+  width: calc(58 * 1ch);
+}
+input[size="59"] {
+  width: calc(59 * 1ch);
+}
+input[size="60"] {
+  width: calc(60 * 1ch);
+}
+input[size="61"] {
+  width: calc(61 * 1ch);
+}
+input[size="62"] {
+  width: calc(62 * 1ch);
+}
+input[size="63"] {
+  width: calc(63 * 1ch);
+}
+input[size="64"] {
+  width: calc(64 * 1ch);
+}
+input[size="65"] {
+  width: calc(65 * 1ch);
+}
+input[size="66"] {
+  width: calc(66 * 1ch);
+}
+input[size="67"] {
+  width: calc(67 * 1ch);
+}
+input[size="68"] {
+  width: calc(68 * 1ch);
+}
+input[size="69"] {
+  width: calc(69 * 1ch);
+}
+input[size="70"] {
+  width: calc(70 * 1ch);
+}
+input[size="71"] {
+  width: calc(71 * 1ch);
+}
+input[size="72"] {
+  width: calc(72 * 1ch);
+}
+input[size="73"] {
+  width: calc(73 * 1ch);
+}
+input[size="74"] {
+  width: calc(74 * 1ch);
+}
+input[size="75"] {
+  width: calc(75 * 1ch);
+}
+input[size="76"] {
+  width: calc(76 * 1ch);
+}
+input[size="77"] {
+  width: calc(77 * 1ch);
+}
+input[size="78"] {
+  width: calc(78 * 1ch);
+}
+input[size="79"] {
+  width: calc(79 * 1ch);
+}
+input[size="80"] {
+  width: calc(80 * 1ch);
+}
+
+/*
+ * Single-character BMS entry fields (the COCRDLI CRDSELn selection column, the
+ * COTRN00 selection column, and the COBIL00 / CORPT00 / COTRN02 / COCRDUP confirm
+ * fields) keep the character centred in their one cell. Their hit area is NOT widened
+ * past that cell: a one-cell field is one column of the 80-column map, and widening it
+ * would move every field to its right. WCAG 2.5.8's spacing provision is what these
+ * meet -- each is surrounded by non-interactive label text, so a 24px circle centred on
+ * one never reaches another target.
+ */
+input[maxlength="1"],
+input[size="1"] {
+  text-align: center;
+}
+
+/*
+ * Pointer and activation states for the editable controls. The buttons already carry
+ * hover / active / disabled treatments; the text controls carried only ``:focus``, so
+ * a disabled control was byte-identical to an enabled one in every painted property
+ * and nothing responded to the pointer. Only the border brightens, so the character
+ * cell keeps its size and the grid never reflows.
+ */
+/*
+ * The pointer states are matched inside `:where()`, which contributes NO specificity, so
+ * a control the program has faulted keeps its rejection colour while the pointer is over
+ * it. Written plainly, `.field:hover:enabled` scores (0,3,0) and outranked the faulted
+ * rule below (0,1,1) on specificity alone: hovering a rejected field repainted its border
+ * GREEN and cancelled the only colour the screen had to say the value was refused -- the
+ * one moment the operator is most likely to have the pointer on it. Zeroing the pointer
+ * state's contribution lets the rule that describes the field's STATE win, whichever
+ * attribute carries it, while the hover brightening still applies to every control the
+ * screen has not faulted.
+ */
+.field:where(:hover:enabled),
+input:where(:hover:enabled),
+select:where(:hover:enabled),
+textarea:where(:hover:enabled) {
+  border-color: var(--term-green);
+}
+
+.field:where(:active:enabled),
+input:where(:active:enabled),
+select:where(:active:enabled),
+textarea:where(:active:enabled) {
+  border-color: var(--term-green-bright, var(--term-green));
+  box-shadow: inset 0 0 0 1px var(--term-green);
+}
+
+/*
+ * An inactive control carries the DIM tone, the same treatment `button:disabled` gives
+ * an inactive function key -- one rule for every control on every screen, rather than a
+ * per-screen copy of it. A 3270 field the program had not opened for entry was ASKIP or
+ * DRK, so it never looked like a field awaiting input; a control left on the GREEN entry
+ * tone while it refuses input tells the operator the opposite of the truth. This covers
+ * both cases in which a control refuses input: one the screen protects outright, and one
+ * disabled while its screen's request is in flight -- the visible counterpart of the 3270
+ * keyboard lock, which every screen holds for exactly that interval. The field
+ * background, border width and geometry are untouched, so dimming a control moves
+ * nothing on the screen and adds not a single character of output to it; the entry-tone
+ * focus ring is cleared with it, because a control that cannot be entered has no cursor
+ * in it.
+ */
+.field:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  color: var(--term-neutral-dim);
+  background: var(--term-bg);
+  border-color: var(--term-neutral-dim);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+/*
+ * While a screen is waiting on the host, the pointer says so over the whole frame.
+ * Paired with the dimmed controls above, this is the entire in-flight vocabulary.
+ */
+[aria-busy='true'] {
+  cursor: progress;
+}
+
+/*
+ * ONE cursor indicator, on every element that can hold the cursor. A 3270 device has a
+ * single hardware cursor and it looks the same wherever it sits, so an operator never has
+ * to learn a second signal; here the entry controls and the line-24 keys were given
+ * separate rules that disagreed on colour, thickness, offset and even on WHEN they appear
+ * -- 1px green at offset 0 on `:focus` for a field, 2px yellow at offset 1px on
+ * `:focus-visible` for a key. It is drawn in YELLOW because GREEN is the colour of the
+ * field's own border it would sit against: 1px of green on the field background measures
+ * 2.66:1, below the 3:1 floor a non-text indicator must clear (WCAG 1.4.11), while yellow
+ * on the same background clears it. `:focus` rather than
+ * `:focus-visible` is deliberate: the cursor is placed by the PROGRAM as often as by the
+ * operator (`MOVE -1 TO <field>L`), and `:focus-visible` does not match a placement that
+ * followed a pointer interaction -- so the indicator would vanish exactly when the screen
+ * had just moved it. The offset keeps the ring clear of the control's own border, which is
+ * itself green when hovered. Outlines take no space, so nothing on the character grid
+ * moves.
+ */
+.field:focus,
+input:focus,
+select:focus,
+textarea:focus,
+button:focus {
+  outline: 2px solid var(--term-yellow);
+  outline-offset: 1px;
+}
+
+/*
+ * Flat terminal-style keys (no 3D/material styling). The 24x24 CSS-pixel minimum
+ * (WCAG 2.5.8) is applied to the height as well: a one-character terminal row is
+ * shorter than that, and a key is only ever activated by pointer or keyboard, so the
+ * larger hit area costs nothing on the character grid.
+ */
+button {
+  color: var(--term-neutral);
+  background: transparent;
+  /*
+   * Same inset ring as the entry fields, for the same reason: a key sits on the line-24
+   * legend of a 24-row map, so its box may not be taller than a row or wider than the
+   * text it labels.
+   */
+  border: 0;
+  box-shadow: inset 0 0 0 1px var(--term-neutral-dim);
+  padding: 0 0.5ch;
+  height: var(--term-line);
+  min-height: 0;
+  line-height: var(--term-line);
+  cursor: pointer;
+  /* Anchors the enlarged hit area below. */
+  position: relative;
+}
+
+/*
+ * The ACTIONABLE AREA of a key, enlarged to the 44x44 CSS-pixel target without moving the
+ * character grid. A key is one row tall by contract -- 32px at 1280x800 and 43px at
+ * 1920x1080 under the fill law, 24px on a small phone -- so the shortfall is made up by a
+ * transparent overlay that extends the hit region vertically and takes NO layout space.
+ *
+ * Vertically only, deliberately: rows 23 and 24 above and the operator-information row
+ * below carry no other target, so growing into them steals no click, whereas growing
+ * sideways would overlap the adjacent key on the same legend row and make the wrong key
+ * fire. Width is left to the key's own label, which is always several cells.
+ *
+ * `max()` keeps the overlay from ever being negative, so a display large enough to make a
+ * row 44px on its own gets no overlay at all.
+ */
+button::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  /*
+   * Stated as a HEIGHT centred on the box rather than as symmetric negative insets.
+   * The insets were computed from `--term-line`, and Chrome rounds a used length to
+   * 1/64px: (44 - 33.4688) / 2 = 5.2656 became 5.25, so the overlay measured 43.9688px
+   * -- 0.03px short of the 44px it exists to provide. A stated height cannot drift.
+   */
+  top: 50%;
+  height: max(44px, var(--term-line));
+  transform: translateY(-50%);
+}
+
+/*
+ * Reverse video while the pointer is over an enabled key -- the 3270's own way of saying
+ * a field is being addressed, and distinct from both the yellow focus ring and the green
+ * `:active` reverse video.
+ *
+ * NOT gated behind `@media (hover: hover) and (pointer: fine)`. That gate was written to
+ * keep a touch screen from leaving the last key tapped permanently inverted, but it also
+ * withheld the treatment from every environment that reports no fine pointer -- which is
+ * every headless browser, every hybrid touch-and-mouse laptop, and every device driven by
+ * an assistive pointer. Measured: hovering each PF and action control changed no painted
+ * property anywhere in the UI, because the gate never matched. The sticky-hover concern is
+ * handled by the fact that a tap moves focus to the key, where the focus ring is the
+ * indicator, and the next tap elsewhere resolves `:hover` off it.
+ */
+button:hover:not(:disabled) {
+  color: var(--term-bg);
+  background: var(--term-neutral);
+  box-shadow: inset 0 0 0 1px var(--term-neutral);
+}
+
+/* Pressed state uses the green "action" reverse video. */
+button:active {
+  color: var(--term-bg);
+  background: var(--term-green);
+}
+
+/* Disabled keys are dimmed and non-interactive. */
+button:disabled {
+  color: var(--term-neutral-dim);
+  border-color: var(--term-neutral-dim);
+  background: transparent;
+  cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------------ */
+/* Header frame (BMS lines 1-2)                                       */
+/* ------------------------------------------------------------------ */
+.appHeader {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+/* Each header line aligns left / center / right like the 3270 header. */
+.appHeader__row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: baseline;
+  column-gap: 1ch;
+  width: 100%;
+  /* One map row per header line, for the same frame-budget reason as row 24 above. */
+  height: var(--term-line);
+}
+
+/*
+ * Each header cell is one caption field followed by the value field the mapset places
+ * beside it on the same terminal row, so the cell is atomic: a break between the caption
+ * and its value strands the value under a row it does not belong to, and the sign-on
+ * captions spell their literals with a space before the colon (`'Tran :'`,
+ * COSGN00.bms L33) which gives a narrow viewport somewhere to split the caption itself
+ * and leave a lone `:` on a line of its own.
+ */
+.appHeader__left,
+.appHeader__center,
+.appHeader__right {
+  white-space: nowrap;
+}
+
+.appHeader__left {
+  justify-self: start;
+}
+
+.appHeader__center {
+  justify-self: center;
+  text-align: center;
+  color: var(--term-yellow);
+}
+
+/*
+ * Pinned to the third column rather than left to auto-placement. The sign-on frame's
+ * row 3 carries a field at each edge and nothing between them, and an auto-placed cell
+ * would take the middle column there and paint `SysID:` in the centre of the row. Naming
+ * the column is what lets that row omit the middle cell instead of carrying an empty
+ * element whose only purpose is to push this one along.
+ */
+.appHeader__right {
+  justify-self: end;
+  grid-column: 3;
+}
+
+/*
+ * Screen titles are semantic headings (h1 = title01, h2 = title02) for
+ * assistive technology, but must still render as plain 3270 title text: no
+ * default browser margin, size, or bold weight. Header renders the heading with
+ * the modifier class on the element itself, so the element-level selectors are
+ * the matching ones; the descendant form covers a nested arrangement. Only the
+ * descendant form resets the color, which there is inherited from the centered
+ * parent; on the element-level form the co-applied .title keeps the titles
+ * YELLOW.
+ */
+.appHeader__center h1,
+.appHeader__center h2 {
+  margin: 0;
+  font: inherit;
+  font-weight: normal;
+  color: inherit;
+}
+
+/* Same reset where the class sits on the heading itself; typography only, so the
+ * YELLOW title color keeps coming from .appHeader__center / .title. */
+h1.appHeader__center,
+h2.appHeader__center {
+  margin: 0;
+  font: inherit;
+  font-weight: normal;
+}
+
+/*
+ * Screen-title literals inside the routed body (for example the BMS line-4
+ * COLOR=NEUTRAL literal of COCRDSL) are semantic headings, but a 3270 screen has
+ * one uniform character cell: no browser heading size, weight, or margin. Scoped
+ * to the body region so the header titles keep their own treatment above.
+ *
+ * Every level is listed, not just h1-h3. A sub-section heading inside a screen body
+ * is an h4 (`Customer Details` on the account view and the account update screen sits
+ * under the h3 screen title), and an h4 the reset does not reach keeps the browser's
+ * default `margin: 1.33em 0` and bold weight. That margin is not free: the body region
+ * is exactly nineteen character rows, so the unreset heading spent a whole row of it and
+ * the last row of the account view -- `Primary Card Holder Y/N` -- fell out of the region
+ * and had to be scrolled to. Resetting every level keeps one heading treatment for the
+ * whole body, which is what this rule is for.
+ */
+main h1,
+main h2,
+main h3,
+main h4,
+main h5,
+main h6 {
+  margin: 0;
+  font: inherit;
+  font-weight: normal;
+}
+
+/* A body screen title the mapset centers across the 80 columns (COCRDSL line 4). */
+.screenTitle {
+  text-align: center;
+}
+
+/*
+ * Read-only field rows in the routed body (for example the COCRDSL captions on
+ * lines 11/13/15 at column 4 with their values at column 25) occupy ONE terminal
+ * row, one blank column apart. The description list therefore drops its block
+ * stacking and the user-agent value indent.
+ */
+main dl > div {
+  display: flex;
+  gap: 1ch;
+}
+
+main dl dd {
+  margin-inline-start: 0;
+}
+
+/*
+ * A description list is a screen region, not a document block: the user agent's own
+ * `margin: 1em 0` added a third of a character row above and below every one of them,
+ * which is what put the protected detail rows of COTRN01 and COUSR03 on a 52.8px pitch
+ * against a 20.8px grid.
+ */
+main dl {
+  margin: 0;
+}
+
+/*
+ * A BMS caption carries its own column padding (for example the 19-character
+ * `Name on card      :`), so the runs of spaces are preserved rather than
+ * collapsed and every value lands on the one column the mapset places it in.
+ */
+main label,
+main dl dt {
+  white-space: pre;
+}
+
+/*
+ * `main form label` was too narrow. COACTUP renders its rows inside
+ * `section.accountUpdate` with NO `<form>` ancestor, so its captions were free to wrap
+ * their own text -- and `flex-wrap: nowrap` on the row does not stop that, it only stops
+ * the flex LINE from breaking. The `Phone 2: / EFT Account Id: / Primary Card Holder Y/N:`
+ * row measured 2.01 character rows because of it, which pushed the frame to 26.09 rows at
+ * 1280x900 and 27.18 at 375x812 against its 25-line budget, and clipped the wrapped
+ * continuations at the bottom edge of the body at 1920x1080. A caption is a fixed-width
+ * BMS literal: it occupies the columns it is given and never a second row.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Error region (BMS line 23: ERRMSG X(78), ATTRB BRT, COLOR RED)     */
+/* ------------------------------------------------------------------ */
+.errorBanner {
+  width: 100%;
+  /*
+   * Row 23 is a single `PIC X(78)` field, so the region is EXACTLY one line and its text
+   * does not wrap: a device truncates at column 78 rather than borrowing row 22. With
+   * `pre-wrap` and a `min-height` a long message silently claimed a second line, and the
+   * line it claimed came out of the routed body's share of the fixed frame budget.
+   */
+  height: var(--term-line);
+  overflow: hidden;
+  color: var(--term-red);
+  font-weight: bold;
+  white-space: pre;
+}
+
+/* Hidden state still reserves the one-line area. */
+.errorBanner--empty {
+  visibility: hidden;
+}
+
+/*
+ * An informational line-23 message keeps the GREEN attribute the programs move
+ * into ERRMSGC for a successful outcome (MOVE DFHGREEN TO ERRMSGC in
+ * COADM01C, COBIL00C, COMEN01C, CORPT00C, COTRN02C and COUSR01C-COUSR03C).
+ *
+ * The two other announced variants are excluded by selector rather than left to be
+ * overridden further down the sheet: all three would otherwise match at the same (0,2,0)
+ * specificity and the colours would be decided by rule order alone, which is not a
+ * property worth depending on. Excluding them here makes the three mutually exclusive,
+ * so each variant's colour holds wherever its rule happens to sit.
+ */
+.errorBanner[role="status"]:not(.errorBanner--notice):not(.errorBanner--infoField) {
+  color: var(--term-green);
+}
+
+/*
+ * A boundary or empty-page notice keeps the RED its mapset declares statically --
+ * COUSR00.bms, COCRDLI.bms and COTRN00.bms all define ERRMSG with COLOR=RED and their
+ * programs never move DFHGREEN -- while being announced politely rather than as an
+ * alert. The colour is the frozen contract; the announcement urgency is not.
+ */
+.errorBanner--notice[role="status"] {
+  color: var(--term-red);
+}
+
+/*
+ * The separate INFOMSG field the five detail mapsets declare above their ERRMSG region
+ * is NEUTRAL, never GREEN: COACTUP.bms and COACTVW.bms declare it COLOR=NEUTRAL at
+ * POS=(22,23), COCRDLI.bms at POS=(20,19), COCRDSL.bms and COCRDUP.bms at POS=(20,25),
+ * and their programs move DFHNEUTR into INFOMSGC when the line is shown (COCRDLIC L929,
+ * COACTVWC L570, COCRDSLC L556) or darken the field with DFHBMDAR when it is not. None
+ * of the five moves DFHGREEN. No role is named, so the darkened state matches too -- that
+ * state carries no role, because an empty live region would be a reader-only artefact of
+ * reserving the row. Both classes are named so the rule outranks the base RED
+ * `.errorBanner` on specificity rather than on position in the sheet.
+ */
+.errorBanner.errorBanner--infoField {
+  color: var(--term-neutral);
+}
+
+/*
+ * Per-field error styling (app/cpy/CSSETATY.cpy):
+ *   FLG-<field>-NOT-OK -> field/label turns RED (.fieldError)
+ *   FLG-<field>-BLANK  -> leading '*' marker (.blankMarker / .fieldError--blank)
+ * Applied by pages on CDEMO-PGM-REENTER.
+ */
+/*
+ * The RED is painted from the two signals a screen raises DELIBERATELY -- the
+ * ``fieldError`` class its ``CSSETATY`` flag map produces, and the ``data-faulted``
+ * attribute ``faultedFieldProps`` emits -- and NOT from ``aria-invalid``.
+ *
+ * Keying it off ``aria-invalid`` painted the frame on all seventeen screens, because
+ * every screen marks its rejected control for assistive technology. Only five programs
+ * move ``DFHRED`` into a field (``COACTUPC``, ``COCRDUPC``, ``COCRDLIC``, ``COCRDSLC``,
+ * ``COACTVWC`` -- the census is in ``components/ErrorBanner.tsx``); on the other twelve
+ * a rejected entry is marked by the cursor and the line-23 message ALONE, so a red frame
+ * there is observable output the mapset never declares, which the spec-literal rule
+ * forbids. The accessible state and the painted state have to be able to differ, and
+ * these selectors are what lets them.
+ */
+.fieldError,
+[data-faulted='true'] {
+  color: var(--term-red);
+  border-color: var(--term-red);
+}
+
+/*
+ * A second, non-colour cue for the painted control, so the fault does not rely on
+ * colour alone. An inset ring thickens the border inside the existing box, so no
+ * width, height or baseline changes and the 80x24 grid does not reflow.
+ */
+input.fieldError,
+select.fieldError,
+textarea.fieldError,
+input[data-faulted='true'],
+select[data-faulted='true'],
+textarea[data-faulted='true'] {
+  box-shadow: inset 0 0 0 1px var(--term-red);
+}
+
+.fieldError--blank::before,
+.blankMarker::before {
+  content: "*";
+  color: var(--term-red);
+}
+
+/*
+ * The '*' a blank required field receives sits in its own reserved character cell, so
+ * lighting it cannot shift the entry field beside it. The cell is always present and
+ * only its glyph appears, which is how the 3270 behaved: the marker overwrote a column
+ * the map had already reserved.
+ */
+.blankMarkerSlot {
+  display: inline-block;
+  width: 1ch;
+  color: var(--term-red);
+  font-weight: bold;
+}
+
+/* ------------------------------------------------------------------ */
+/* Function-key bar (BMS line 24)                                     */
+/* ------------------------------------------------------------------ */
+/*
+ * The line-24 legend is a BMS literal field like any other and every mapset declares
+ * its colour: YELLOW on fifteen of the seventeen, TURQUOISE on COACTVW and COCRDLI
+ * (whose own rule follows the screen classes below). The buttons inherit it.
+ */
+.pfKeyBar {
+  display: flex;
+  /*
+   * One BMS row, so no wrap -- see the note on `.screenLine` above: a row clamped to a
+   * one-line grid track paints its second line over the row beneath it.
+   */
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: 2ch;
+  width: 100%;
+  /*
+   * Row 24, so EXACTLY one line. The 0.5rem of padding that used to sit above the legend
+   * made the bar 41.47px against a 33.47px line and took two thirds of a row out of the
+   * routed body's share of the frame.
+   */
+  height: var(--term-line);
+  color: var(--term-yellow);
+}
+
+/* COACTVW and COCRDLI declare their line-24 legend TURQUOISE, not YELLOW. */
+.pfKeyBar--turquoise {
+  color: var(--term-turquoise);
+}
+
+/*
+ * The legend keys carry the bar's declared colour, and they keep carrying it while the
+ * keyboard is inhibited. A BMS literal field does not change colour when the terminal
+ * locks: inhibition is reported on the operator information area, never by repainting
+ * line 24. Overriding the generic ``button:disabled`` colour here is what holds the
+ * declared hue for the duration of a send.
+ */
+.pfKeyBar button,
+.pfKeyBar .pfKey {
+  color: inherit;
+  border-color: currentcolor;
+  white-space: nowrap;
+}
+
+/*
+ * The PRESSED key still reverses to black on green. The rule above and the generic
+ * `button:active` both score (0,1,1), so the one declared later won and `color: inherit`
+ * took the legend's own hue into the pressed state: `#ffd21a` text on the `#33ff66`
+ * reverse-video field measures 1.08:1 and the key's label was unreadable for exactly as
+ * long as the operator held it down. Restating the reversal here, after the inherit,
+ * gives the pressed state its foreground back without weakening the reason `inherit`
+ * exists -- a legend field does not change colour when the keyboard locks.
+ */
+.pfKeyBar button:active,
+.pfKeyBar .pfKey:active {
+  color: var(--term-bg);
+}
+
+/*
+ * An inhibited key is dimmed rather than recoloured, so the declared hue survives while
+ * the pointer still gets an affordance telling it the key will not respond.
+ */
+.pfKeyBar button:disabled,
+.pfKeyBar .pfKey:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------------ */
+/* Card update screen (app/bms/COCRDUP.bms): caption column + fields  */
+/* ------------------------------------------------------------------ */
+.cardUpdate {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 1ch;
+  row-gap: var(--term-line);
+  align-items: baseline;
+  width: 100%;
+}
+
+/* The BMS caption literals carry their own column padding; their spaces are kept. */
+.cardUpdate__label {
+  white-space: pre;
+}
+
+/* Heading, info line and action row span the caption and field columns. */
+.cardUpdate__heading,
+.cardUpdate__infoMsg,
+.cardUpdate__actions {
+  grid-column: 1 / -1;
+}
+
+/*
+ * COCRDUP's own INFOMSG field, ``POS=(20,25)``: a body row indented to column 25,
+ * NEUTRAL, below the three detail rows. The indent yields before the text does, so the
+ * guidance stays readable when the frame is narrower than the indent plus the message.
+ */
+.cardUpdate__infoMsg {
+  padding-left: min(24ch, 100% - 42ch);
+}
+
+/*
+ * The name field is the one control wider than a narrow frame: it is declared
+ * ``LENGTH=50``, and a flex item's automatic minimum size is its min-content width, so
+ * without this it forces the whole grid past the viewport and carries every caption off
+ * the left edge with it.
+ */
+.cardUpdate__value {
+  min-width: 0;
+}
+
+.cardUpdate__value > input {
+  min-width: 0;
+}
+
+/* Typography only: the heading renders as plain NEUTRAL screen text. */
+.cardUpdate__heading {
+  margin: 0;
+  font: inherit;
+  font-weight: normal;
+}
+
+/* One field cell: the blank marker, the entry field(s), and their separators. */
+.cardUpdate__value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+}
+
+/* The blank-required marker occupies one fixed character cell in every field cell. */
+.cardUpdate__marker {
+  flex: 0 0 1ch;
+  color: var(--term-red);
+  font-weight: bold;
+}
+
+/* Expiry month / year separator: '/' with one blank column on either side. */
+.cardUpdate__separator {
+  padding-inline: 1ch;
+}
+
+/*
+ * Row 4 of the two card detail mapsets. COCRDSL and COCRDUP both declare their screen
+ * name at ``POS=(4,30)`` -- an indented body heading, not a centred one -- so the two
+ * screens agree with each other and with their maps. The indent gives way first on a
+ * narrow frame so the heading itself is never carried out of view.
+ */
+.cardDetail__heading,
+.cardUpdate__heading {
+  padding-left: min(29ch, 100% - 27ch);
+}
+
+/*
+ * COCRDSL's own INFOMSG field, ``POS=(20,25)``: the same body row and column its update
+ * sibling declares.
+ */
+.cardDetail__infoMsg {
+  padding-left: min(24ch, 100% - 42ch);
+}
+
+/* ------------------------------------------------------------------ */
+/* Data tables (list screens)                                         */
+/* ------------------------------------------------------------------ */
+.dataTable {
+  width: 100%;
+  border-collapse: collapse;
+  font: inherit;
+}
+
+/*
+ * A 3270 column is a fixed window: its width comes from the map, never from the data
+ * inside it, so a row arriving, changing or leaving cannot move a column boundary. A
+ * table that opts in declares its widths in a `colgroup` taken from the mapset's own
+ * rule runs and is laid out from them; without this the browser measures the content
+ * and every header cell shifts between the populated, filtered and empty states.
+ */
+.dataTable--fixed {
+  table-layout: fixed;
+}
+
+.dataTable caption {
+  color: var(--term-yellow);
+  text-align: left;
+}
+
+/*
+ * The BMS colour contract of the three browse mapsets, which is the OPPOSITE of the
+ * web default: the column captions on the header row are NEUTRAL literals
+ * (`COTRN00` row 8, `COCRDLI` row 9, `COUSR00` row 8) and the DATA fields beneath
+ * them are BLUE (`USRID01`/`FNAME01`/`LNAME01`/`UTYPE01` and their siblings).
+ */
+.dataTable th {
+  color: var(--term-neutral);
+  text-align: left;
+  font-weight: normal;
+  padding: 0 1ch;
+}
+
+/*
+ * The colour is declared on the row so the reverse-video selection and hover
+ * treatments below, which set it on the row too, still reach the cell text.
+ */
+.dataTable tbody tr {
+  color: var(--term-blue);
+}
+
+.dataTable td {
+  padding: 0 1ch;
+  vertical-align: top;
+}
+
+/*
+ * The rule under the column captions. Each mapset paints it as a run of hyphens PER
+ * COLUMN with the gaps between them left blank -- `COTRN00` row 9 is 3/16/8/26/12
+ * hyphens at columns 2/8/27/38/67 -- so the row renders those literal runs rather
+ * than one continuous border across the table. It is decorative, so it is hidden
+ * from assistive technology and takes no part in the header associations.
+ */
+.dataTable__rule td {
+  color: var(--term-neutral);
+  padding: 0 1ch;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/*
+ * A 3270 field is a fixed-width window: text longer than the field is truncated by the
+ * MOVE that fills it and can never wrap, so every list row occupies exactly one terminal
+ * row. Keeping cells on a single line preserves that, and is what holds the densest
+ * screens inside the 24-row frame.
+ */
+.dataTable th,
+.dataTable td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+}
+
+/* Right-align numeric / amount columns. */
+.dataTable .amount,
+.dataTable .num,
+.dataTable th.amount,
+.dataTable td.amount {
+  text-align: right;
+}
+
+/*
+ * A genuinely SELECTED row -- one whose action code the operator has keyed -- is the
+ * only row that takes the full reverse-video treatment, together with the transient
+ * pointer hover. Merely tabbing into a row's ``Sel`` box is not a selection: the
+ * legacy 3270 applies no row highlight when the cursor enters a field, so focus is
+ * shown by the field's own focus outline and the row is left alone. Conflating the two
+ * left a keyboard operator unable to tell which row they had actually chosen.
+ */
+.dataTable tbody tr.selected {
+  color: var(--term-bg);
+  background: var(--term-green);
+}
+
+/*
+ * Reverse video while the pointer is over a browse row, the same treatment a selected row
+ * carries -- a row IS a target on the list screens, where clicking it puts its key in the
+ * selection column.
+ *
+ * Ungated for the same reason the key hover above is: `@media (hover: hover) and
+ * (pointer: fine)` withholds the treatment from every environment that reports no fine
+ * pointer, including every headless browser and every hybrid laptop, which is why hovering
+ * changed no painted property anywhere in the tested UI.
+ */
+.dataTable tbody tr:hover {
+  color: var(--term-bg);
+  background: var(--term-green);
+}
+
+/* ------------------------------------------------------------------ */
+/* Report request screen (app/bms/CORPT00.bms, transaction CR00)      */
+/* ------------------------------------------------------------------ */
+
+/* Screen heading on the character grid, like the header title lines. */
+.reportPage__heading {
+  margin: 0;
+  font: inherit;
+  font-weight: normal;
+}
+
+/*
+ * The End Date caption carries the mapset's two leading spaces (BMS
+ * ``INITIAL='  End Date :'``), so whitespace is preserved and both date rows
+ * start their entry fields in the same column, as POS(13,29) / POS(14,29) do.
+ */
+.reportPage__dateRow .prompt {
+  white-space: pre;
+}
+
+/*
+ * The date parts accept input only for the custom window. They carry no rule of
+ * their own: the global `input:disabled` treatment they used to declare privately
+ * now dims every inactive control the same way.
+ */
+
+/*
+ * The three report-window selectors carry no rule of their own. They are ordinary
+ * one-character entry fields now -- CORPT00.bms declares MONTHLY, YEARLY and CUSTOM as
+ * three independent ``UNPROT`` ``LENGTH=1`` fields, not as one control with three states
+ * -- so they take the shared `input` treatment: exactly one cell wide, one line high, on
+ * the GREEN entry tone with the mapset's UNDERLINE. The `min-width: 24px` floor this rule
+ * used to carry existed only because a radio's intrinsic box is 13px and could not be
+ * widened; a one-cell field must stay one column, and WCAG 2.5.8's spacing provision is
+ * what covers its target size.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Screen composition primitives                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * One character row of a mapset: captions and their fields sit on a single line, one
+ * blank column apart, and the runs of spaces a BMS caption literal carries are
+ * preserved so every value lands in the column the mapset places it in.
+ *
+ * The row does NOT wrap. A 3270 row is one row: a field declared at column 55 is at
+ * column 55, and there is no second line for it to fall onto. The row used to wrap
+ * because the character cell was a fixed size and a narrow viewport genuinely could not
+ * hold eighty columns, so the alternative was a clipped field; the cell now scales with
+ * the viewport (see --term-font-size) and eighty columns fit at every width, which
+ * removes the reason. Keeping the wrap after that was actively harmful: a row placed in a
+ * grid track exactly one line high has its box CLAMPED to that track, so a second flex
+ * line was painted over the row beneath it -- `Last Name :` landed on top of `Address:`
+ * and its entry field became invisible AND unhittable (`elementFromPoint` returned the
+ * address field). A sub-pixel shortfall was enough to trigger it: Chrome rounds each grid
+ * track down to 1/64px, which leaves the eighty tracks 1.2px narrower than the region
+ * that holds them, and one row's content was 1px over.
+ */
+.screenLine,
+.accountUpdate__row,
+.billPay__row,
+.detailField,
+.reportPage__dateRow,
+.reportPage__option,
+.signon__row,
+.tranAdd__row,
+.userAdd__row,
+.userDelete__row,
+.userUpdate__row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  column-gap: 1ch;
+  min-height: var(--term-line);
+}
+
+/*
+ * The line-4 title row of the browse screens. COTRN00, COCRDLI and COUSR00 each declare
+ * the screen name, the `Page:` caption and the page-number field at three positions on
+ * the SAME row - COTRN00 at columns 30, 65 and 71 - so the three fields occupy one
+ * terminal row. The page indicator carries the trailing columns the mapset gives it.
+ */
+.screenTitleLine {
+  display: flex;
+  /*
+   * One BMS row, so no wrap -- see the note on `.screenLine` above: a row clamped to a
+   * one-line grid track paints its second line over the row beneath it.
+   */
+  flex-wrap: nowrap;
+  align-items: baseline;
+  column-gap: 1ch;
+  min-height: var(--term-line);
+}
+
+/*
+ * An EMPTY value cell has no text, and therefore no baseline, so `align-items: baseline`
+ * falls back to aligning its bottom margin edge — which makes an unpopulated row taller
+ * than the same row once it holds a value. Across a full screen of fields that difference
+ * accumulated into a visible jump of the whole message line and function-key bar the first
+ * time a record was displayed. A zero-width space gives the empty cell the same text
+ * baseline a populated one has, so a row occupies exactly one terminal line in both states
+ * and nothing below it moves. The character is not rendered and carries no screen output.
+ */
+.accountView__field > dd:empty::before,
+.detailField > dd:empty::before,
+.tranAdd__row > dd:empty::before,
+.userAdd__row > dd:empty::before,
+.userDelete__row > dd:empty::before,
+.userUpdate__row > dd:empty::before,
+.billPay__row > dd:empty::before {
+  content: '\200B';
+}
+
+.screenTitleLine__page {
+  display: flex;
+  column-gap: 1ch;
+  margin: 0 0 0 auto;
+}
+
+/*
+ * COSGN00 places its body literals at fixed columns, so each one is indented by the
+ * columns that precede it: the row-5 description at column 6, the rows 7-15 note block
+ * at column 21, the row-17 prompt at column 16, and the rows 19-20 captions at column
+ * 29. Every block fits inside the 80-column frame.
+ */
+.signon__description {
+  margin: 0;
+  min-height: var(--term-line);
+  padding-left: 5ch;
+}
+
+/*
+ * The note block is the one body literal that may not reflow: it is ASCII art whose nine
+ * rows only read as a banknote while their columns stay aligned, so it keeps
+ * ``white-space: pre``. That makes its column offset the only part that can yield when the
+ * frame narrows, and yield it must -- an indent wide enough to push the art past the frame
+ * costs whole characters off the right edge, which is a worse infidelity than a shortened
+ * indent. The offset is therefore the 20 columns the mapset declares or whatever room is
+ * left beside the 42-column art, whichever is smaller; once the art alone fills the frame
+ * the calculation goes negative and CSS clamps the padding to zero.
+ */
+.signon__note {
+  margin: 0;
+  padding-left: min(20ch, 100% - 42ch);
+  font: inherit;
+  line-height: var(--term-line);
+  white-space: pre;
+}
+
+.signon__prompt {
+  margin: 0;
+  min-height: var(--term-line);
+  padding-left: 15ch;
+}
+
+.signon__row {
+  padding-left: 28ch;
+}
+
+.screenLine > label,
+.accountUpdate__row > label,
+.signon__row > label,
+.billPay__row > label,
+.detailField > label,
+.tranAdd__row > label,
+.userAdd__row > label,
+.userDelete__row > label,
+.userUpdate__row > label,
+/*
+ * A protected value's caption is a BMS literal field like any other, so the columns
+ * it declares are significant: `COUSR03` paints `'User Type: '` with the trailing
+ * column included. `OutputField` renders that caption as the `dt` of its term/value
+ * pair rather than as a `label`, so the term carries the same rule as the labels
+ * beside it.
+ */
+.detailField > dt,
+.accountView__field > dt,
+.cardUpdate__outputRow > dt {
+  white-space: pre;
+}
+
+/*
+ * A screen root: the body region's own column, stacked one character row at a time.
+ */
+.accountView,
+.accountUpdate,
+.billPay,
+.reportPage,
+.tranAdd,
+.tranList,
+.tranViewPage,
+.userAdd,
+.userDelete,
+.userUpdate {
+  display: flex;
+  flex-direction: column;
+  row-gap: 0;
+  width: 100%;
+}
+
+/*
+ * A standalone BMS literal line inside a screen body - `COUSR00` row 21 and
+ * `COTRN00` row 21 each paint one such field. It is a single terminal row like every
+ * other field, so it carries none of the block margins a paragraph would default to:
+ * a 24-row frame has no spare rows to give away.
+ */
+.screenNote {
+  margin: 0;
+  min-height: var(--term-line);
+}
+
+/* The keyed search / lookup region above a screen's detail area. */
+.cardList__search,
+.tranListSearch,
+.userListSearch,
+.userDelete__lookup {
+  display: flex;
+  /*
+   * One BMS row, so no wrap -- see the note on `.screenLine` above: a row clamped to a
+   * one-line grid track paints its second line over the row beneath it.
+   */
+  flex-wrap: nowrap;
+  align-items: baseline;
+  column-gap: 1ch;
+  width: 100%;
+}
+
+/*
+ * COACTVW row 5 places its caption at column 19 and the key field at column 38, on the same
+ * grid the detail block below uses, so the keyed row and the detail rows share one column
+ * system rather than each finding its own indent.
+ */
+/*
+ * The row grows to whatever the tallest cell needs instead of being pinned to one
+ * terminal line. The entry control reserves the 24x24 hit area every editable control
+ * on the screen reserves (WCAG 2.5.8), which is 3.2px more than a 20.8px line, and a
+ * fixed track made the control 22.8px tall -- 1.2px short of the floor the project
+ * adopts everywhere else. Growing the ONE row it occupies costs 3.2px on this screen
+ * and keeps the declared columns, the baseline and the character grid intact.
+ */
+.accountView__search {
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: minmax(var(--term-line), auto);
+  align-items: baseline;
+  width: 100%;
+}
+
+.accountView__search > label {
+  grid-column: 19 / span 16;
+}
+
+.accountView__search > input {
+  grid-column: 38 / span 11;
+  line-height: var(--term-line);
+}
+
+/*
+ * A BMS entry field occupies EXACTLY the number of character cells its LENGTH declares.
+ * Left to the browser, `size` is a heuristic: an eleven-character account-number field
+ * came out 13.2 cells wide, and the same field placed on a character grid came out
+ * eleven, so the one value rendered at two different widths depending on the screen it
+ * was on. A field carrying this class is sized in `ch` instead, and the frame and the
+ * padding are taken out of the box for the same reason the read-only boxes above are:
+ * both would come out of the declared width and clip the last glyph of a full value.
+ */
+.charField {
+  box-sizing: border-box;
+  padding: 0;
+  /*
+   * The shared `max-width: 100%` above keeps a 25- to 50-character field inside its region.
+   * A field sized in character cells must opt out of it: on the 80-column grid the field's
+   * containing block IS its declared eleven tracks, so the clamp took back exactly the two
+   * pixels of frame that were added outside them and an eleven-digit account number lost a
+   * glyph at whichever end was scrolled away. Eleven cells is 79px at the narrowest
+   * breakpoint, so there is nothing here for the clamp to protect.
+   */
+  max-width: none;
+}
+
+/*
+ * ``ACCTSID LENGTH=11`` on COACTVW, COACTUP, COCRDLI, COCRDSL and COCRDUP alike. The two
+ * pixels of the field's own 1px frame are ADDED to the eleven columns rather than taken out
+ * of them, so the value keeps all eleven character cells and an eleven-digit account number
+ * does not lose the right-hand sliver of its last glyph; the negative start margin then puts
+ * the first cell back on the column the mapset declares. Keeping the frame as a border --
+ * rather than moving it to an outline, which takes no layout space -- is what lets
+ * ``1300-SETUP-SCREEN-ATTRS``'s ``MOVE DFHRED TO ACCTSIDC`` still show: the yellow focus
+ * ring is an outline, and a rejected field is focused, so a fault drawn as an outline would
+ * be replaced by the ring at exactly the moment the operator is meant to see it.
+ */
+.charField--acctId {
+  width: calc(11ch + 2px);
+  margin-inline-start: -1px;
+}
+
+/* A read-only detail block: caption column, value column, one row per field. */
+.userDelete__detail {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin: 0;
+}
+
+/*
+ * COACTVW is a genuinely two-column screen: rows 6-10 carry a date field at columns 8/17
+ * on the left and a money field at columns 39/61 on the right, and rows 12-13 pair a
+ * customer field at 8/23 with one at 49/61. Stacking every field in a single column both
+ * doubled the screen's height -- past the 24 rows the device has, which pushed the line-23
+ * message and the line-24 legend below the fold -- and left the five money values starting
+ * at whatever x their own caption happened to end at, so the column read ragged.
+ *
+ * The block is therefore the character grid itself: 80 columns of one character each, one
+ * declared terminal row per grid row. Each field is placed on its own POS=(row,col) with
+ * its LENGTH as the span, so alignment is not something the layout has to be coaxed into
+ * -- two captions declared at column 39 are placed at column 39 and cannot disagree.
+ */
+.accountView__details {
+  display: grid;
+  grid-template-columns: repeat(80, 1ch);
+  grid-auto-rows: var(--term-line);
+  /*
+   * The block is placed on a stated span of the screen's rows, and its own rows must stay
+   * one character row each inside it. Without this the tracks STRETCH to fill the span --
+   * a six-row block given seventeen rows put its fields on rows 8.67 and 14.34 instead of
+   * the map's own rows, which is what made the customer values overprint the account
+   * captions.
+   */
+  align-content: start;
+  column-gap: 0;
+  row-gap: 0;
+  align-items: baseline;
+  width: 100%;
+  margin: 0;
+}
+
+/*
+ * The pair contributes its caption and its value to the grid above as two independently
+ * placed cells, so the wrapper must not box them together. It stays in the DOM because a
+ * `dl` may only contain dt, dd and div, and because it is the pair's grouping.
+ */
+.accountView__field {
+  display: contents;
+}
+
+/*
+ * A placed value is sized by its grid span, so it must not also claim a minimum height:
+ * the 24px every entry control reserves exceeds one terminal line (20.8px at the default
+ * cell), and an EMPTY box has no text baseline, so `align-items: baseline` synthesised one
+ * at its bottom edge and pushed the caption beside it down by the difference. That was
+ * worth 10px on every one of these rows.
+ */
+.accountView__details .field {
+  min-height: 0;
+  line-height: var(--term-line);
+  overflow: hidden;
+  /*
+   * A field shows exactly the characters its LENGTH declares. The box is spanned to that
+   * many columns, so it carries no horizontal padding to spend on chrome, and it does not
+   * wrap: a value that fills its width was breaking onto a second line and overlapping the
+   * row beneath it -- the dates did, because a hyphen is a break opportunity, so `Opened:`
+   * put `2014-05-` on its own row and `20` on the next. A 3270 truncates instead.
+   */
+  padding: 0;
+  white-space: nowrap;
+  /*
+   * The frame is drawn as an outline rather than a border because an outline takes no
+   * layout space. A border does: the box is spanned to exactly LENGTH columns and is a
+   * border box, so a 1px rule on each side came out of the characters, and any value that
+   * filled its field lost the right-hand sliver of its last glyph. Drawing the frame
+   * outside the box gives the value all of its declared columns, and it also removes the
+   * 1px the border was contributing to the row's shared baseline.
+   */
+  border: 0;
+  outline: 1px solid var(--term-green-dim);
+}
+
+/*
+ * An EMPTY box is the remaining baseline case. It holds no text, so it has no text baseline
+ * for `align-items: baseline` to use, and the synthesised one sits at its bottom margin
+ * edge -- which aligned its BOTTOM with the caption's baseline and hung the box below its
+ * own row. Stretching an empty box makes it occupy the row it was given, which is both where
+ * it belongs and what the populated boxes beside it look like.
+ */
+.accountView__details .field:empty {
+  align-self: stretch;
+}
+
+/*
+ * The same case on the caption side: rows the mapset leaves unlabelled (COACTVW paints
+ * `Address:` for the first address line only) still carry an empty `dt`, because a `dl`
+ * pairs each value with a term. Anchoring it to the row start keeps it from being placed
+ * by a synthesised baseline and reporting a row that is not there.
+ */
+.accountView__details dt:empty {
+  align-self: start;
+  min-height: var(--term-line);
+}
+
+/*
+ * One caption/field pair of the account-update map, on ONE line for the same reason the
+ * row that holds it is: the mapset states a column for each, and a `PIC X(50)` address
+ * line is fifty columns of a row that has eighty. It used to wrap because the character
+ * cell was a fixed size and fifty columns did not fit a phone-width frame; the cell now
+ * scales, so they do.
+ */
+.accountUpdate__field {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  column-gap: 1ch;
+  min-width: 0;
+}
+
+/*
+ * A flex item's AUTOMATIC minimum size is its content's intrinsic width, which for an
+ * entry control is the `size` attribute the mapset's `LENGTH` sets -- 373.6px for the
+ * three `PIC X(50)` address lines. That floor defeats shrinking, so at 375px the
+ * controls still overhung their 361px row by 13px and the body region's scroller cut
+ * the right border off each of them. Releasing the floor lets the control take the
+ * width the row actually has; `maxLength` still holds the field to its declared 50
+ * characters, so nothing enterable is lost.
+ */
+.accountUpdate__field input {
+  min-width: 0;
+}
+
+/*
+ * The re-entry marker column. `CSSETATY` moves `*` INTO a blank required field on
+ * re-entry (`MOVE '*' TO (SCRNVAR2)O`), so on the terminal the marker never moved
+ * anything: field positions were fixed. The column is therefore RESERVED here and the
+ * glyph merely appears in it, so a failed edit moves no caption, no entry field and no
+ * neighbouring group -- inserting the marker used to shift all three by 19.2px. The
+ * row separates its items by one column and the reserved marker already IS that
+ * column, so the row's gap is absorbed behind it and the caption sits exactly one
+ * character cell right of an unmarked row. Same treatment as `.cardUpdate__marker`.
+ */
+.accountUpdate__marker {
+  flex: 0 0 1ch;
+  /*
+   * `1ch` resolves to 9.60156px and is used at 9.59375px, but the `*` glyph's own
+   * min-content advance is 9.609375px -- and a flex item's AUTOMATIC minimum size
+   * would raise the used width to that while the negative margin still cancelled only
+   * 9.59375px, moving the caption by 1/64px between the marked and unmarked states.
+   * Releasing the floor holds the column at exactly one character cell in both.
+   */
+  min-width: 0;
+  margin-inline-end: -1ch;
+  color: var(--term-red);
+  font-weight: bold;
+}
+
+/*
+ * An entry field asks for the columns its BMS LENGTH declares, and the three address fields
+ * ask for fifty of them -- more than a phone-width frame has. Letting the field keep that
+ * width made the body region scroll sideways to follow the caret, and every caption on the
+ * screen went off the left edge with it. An input scrolls its own text natively, so
+ * narrowing it to the room available keeps the caret visible without moving the screen: the
+ * value is still reachable, and the captions beside it stay where they were painted.
+ *
+ * A flex item's automatic minimum size is its min-content size, and for an input that is
+ * derived from `size` -- which is why the global `max-width: 100%` could not bind and the
+ * field kept its fifty columns. Releasing that minimum on the wide fields, and only on
+ * them, lets the row absorb the overflow in the one field that has columns to spare while
+ * every narrow field beside it keeps all of its own.
+ */
+.accountUpdate__field--wide,
+.accountUpdate__field--wide > .field {
+  min-width: 0;
+}
+
+/*
+ * A field the mapset splits across several 3270 fields (the three account dates, the
+ * date of birth, the SSN and the two phone numbers) renders its segments as one
+ * inline run, one blank column apart exactly as the mapset spaces them, with the
+ * literal separator fields carrying no gap of their own.
+ */
+.accountUpdate__field > span {
+  display: inline-flex;
+  align-items: baseline;
+  column-gap: 0;
+}
+
+.accountUpdate__field > span + span {
+  margin-left: 1ch;
+}
+
+.accountUpdate__field > span > .label {
+  padding: 0 0.25ch;
+}
+
+/* A confirmation prompt and its one-character field on a single row. */
+.reportPage__confirm,
+.tranAdd__confirm {
+  display: flex;
+  /*
+   * One BMS row, so no wrap -- see the note on `.screenLine` above: a row clamped to a
+   * one-line grid track paints its second line over the row beneath it.
+   */
+  flex-wrap: nowrap;
+  align-items: center;
+  column-gap: 1ch;
+  min-height: var(--term-line);
+}
+
+/*
+ * The confirmation sentence is the longest literal on either screen -- `COTRN02` declares
+ * it LENGTH=55 at POS=(15,6) and `COBIL00` LENGTH=53 at POS=(15,6), so they need 60 and 58
+ * of the frame's 80 columns.
+ *
+ * This was `pre-wrap`, to stop `pre` clipping the tail on a viewport too narrow to show
+ * the sentence on one line -- the operator was left being asked to confirm by a sentence
+ * that ended "Please" with the question gone. That is no longer reachable: the frame is
+ * sized by `--term-font-size: min(100vw / 49.7, 100dvh / 32.5)`, so eighty columns fit at
+ * EVERY viewport (measured 80.06 body columns at 375px, 768px, 1280px and 1920px alike),
+ * and a 60-column literal inside eighty can never be the thing that overflows.
+ *
+ * `pre` is now REQUIRED rather than merely safe, because both labels are placed on a grid
+ * track of exactly their own BMS LENGTH. Chrome rounds each of the eighty tracks down to
+ * 1/64px, which leaves a 55-cell track 849.06px wide against the literal's own 849.89px
+ * advance -- and under `pre-wrap` that 0.83px was enough to break the line at its last
+ * space and drop the trailing ':' onto the next terminal row. Under `pre` the same 0.83px
+ * simply overhangs into the column the mapset leaves blank before CONFIRM (columns 61-62
+ * on COTRN02, column 59 on COBIL00), so it covers nothing and the sentence stays whole on
+ * its declared row.
+ */
+.tranAdd__confirm > label,
+.billPay__row > label[for='billPayConfirm'] {
+  white-space: pre;
+}
+
+/* The card-list body: the two browse filters and the seven-row table. */
+.cardList__body {
+  display: flex;
+  flex-direction: column;
+  row-gap: 0;
+  width: 100%;
+}
+
+/*
+ * COCRDLI's own INFOMSG field, ``POS=(20,19)``: a body row indented to column 19,
+ * NEUTRAL, carrying the row-action guidance. It is a separate field from the line-23
+ * ERRMSG region, so both can carry text on the same send. The indent gives way before
+ * the text does on a narrow viewport, so the guidance is never pushed out of view.
+ */
+.cardList__infoMsg {
+  padding-left: min(18ch, 100% - 42ch);
+}
+
+/* The user-list body: the browse filter and the ten-row table. */
+.userList__body {
+  display: flex;
+  flex-direction: column;
+  row-gap: 0;
+  width: 100%;
+}
+
+/* The transaction-list body: the browse filter and the ten-row table. */
+.tranList__body {
+  display: flex;
+  flex-direction: column;
+  row-gap: 0;
+  width: 100%;
+}
+
+/*
+ * The two protected rows of the card-update screen. They are a definition list so the
+ * values carry an accessible name without being keyboard stops, yet they must still lay
+ * out on the same caption/value grid as the editable rows beside them.
+ */
+/*
+ * A protected value rendered by OutputField is a description in a definition list, so
+ * it can never be an editable control -- but on the read-only screens it was given the
+ * ``.field`` class and therefore painted with the entry-control border, background and
+ * inset shadow, making every displayed value look like something the operator could
+ * type into. A BMS field defined ``ATTRB=ASKIP``/``PROT`` shows its value with no entry
+ * box at all, so the box is removed here and the value keeps the BLUE protected tone
+ * ``/cards/update`` already used. Selectors are scoped to ``dd`` so no editable control
+ * is affected.
+ */
+dd.field,
+dd.protectedValue {
+  color: var(--term-blue);
+  background: none;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  min-height: var(--term-line);
+}
+
+.cardUpdate__protected {
+  display: contents;
+  margin: 0;
+}
+
+/*
+ * The two search keys while the record has not been fetched. Like the protected list it
+ * dissolves into the parent grid, so each caption lands in the caption column and each
+ * entry field in the field column. Without this the whole group would be a single grid
+ * item in the `max-content` caption column, whose intrinsic width is the sum of both
+ * captions and both entry fields — enough to push the field column past the 80-column
+ * body and clip every caption mid-word.
+ */
+.cardUpdate__keys {
+  display: contents;
+}
+
+.cardUpdate__outputRow {
+  display: contents;
+}
+
+/* Grouped fields inside one mapset row (for example a date's segments). */
+.tranAdd__group {
+  display: inline-flex;
+  align-items: baseline;
+  column-gap: 0;
+}
+
+/* The report date range occupies its own two rows. */
+.reportPage__range {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+/*
+ * A decorative separator literal the mapset draws across the 80 columns, so the rule IS
+ * the literal rather than a drawn line. It is rendered as the run of characters the
+ * mapset declares -- `LENGTH=70` at `POS=(8,6)` on every screen carrying one: hyphens on
+ * `COTRN01`, `COTRN02` and `COBIL00`, asterisks on `COUSR02` and `COUSR03` -- so it
+ * occupies exactly the columns it is given. Every one of those screens renders it through
+ * this one rule; an `hr` is deliberately not used anywhere, because a replaced element
+ * carries the user agent's own auto inline margins, which inside a flex column collapse
+ * it to a two-pixel dot.
+ */
+.billPay__separator,
+.tranAdd__rule,
+.tranView__rule,
+.userDelete__rule,
+.userUpdate__separator {
+  width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  min-height: var(--term-line);
+  /*
+   * The blank terminal row the mapsets declare above the rule. All five place the
+   * 70-character run at POS=(8,6) with the entry row at row 6 -- COBIL00:L94-95,
+   * COUSR02:L94-95, COUSR03:L94-95, COTRN01:L96-97, COTRN02:L113-114 -- so row 7 is
+   * empty. Without it the rule sat on row 7 and everything below it was one row high,
+   * and the 2px focus outline of the control on row 6 was drawn across the glyph run.
+   */
+  margin-top: var(--term-line);
+  /*
+   * COTRN01's rule is a paragraph, so the UA `<p>` bottom margin would otherwise push the
+   * row beneath it 16px off the terminal grid -- a pitch the other four rules do not have.
+   * Declared on the whole group so the rule occupies exactly its one row everywhere.
+   */
+  margin-bottom: 0;
+}
+
+/* A body screen heading renders as plain screen text on the character grid. */
+.userDelete__heading {
+  margin: 0;
+  font: inherit;
+  font-weight: normal;
+}
+
+/*
+ * The `User Type:` row of COUSR03: the caption/value pair is a description list of its
+ * own so the row can also carry the `(A=Admin, U=User)` literal the mapset paints
+ * beside it without putting a bare element inside the list.
+ */
+.userDelete__typeRow {
+  display: contents;
+  margin: 0;
+}
+
+/* The user-update form is the screen's own column. */
+.userUpdate__form {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+/* ------------------------------------------------------------------ */
+/* Responsive fallback                                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Responsive strategy (recorded in docs/decision-log.md).
+ *
+ * A BMS mapset places every field at a fixed row and column of a 24x80 device, so the
+ * column grid is the frozen contract: a field may not be dropped, truncated, re-ordered
+ * or reflowed onto another row without changing the screen the program declares. The
+ * frame therefore keeps all 80 columns at every viewport, and the two breakpoints do
+ * only two things:
+ *
+ *   1. shrink the character cell, which is what a real terminal does when it is scaled,
+ *      so the 80 columns keep fitting for as long as they legibly can; and
+ *   2. below that width, let the body region scroll horizontally with a VISIBLE and
+ *      operable affordance, so a column that no longer fits is discoverable and
+ *      reachable rather than silently clipped.
+ *
+ * Nothing here is allowed to widen a region beyond its own content: a minimum width
+ * imposed on a table is what pushed a whole column past the viewport while the frame
+ * itself reported no overflow.
+ *
+ * The 80-column frame needs about 46rem at the base 16px character cell. Below the two
+ * breakpoints the character cell shrinks so the 80 columns keep fitting in less room.
+ *
+ * A 3270 screen is not a reflowable document: a mapset places every field at a fixed
+ * row and column, and each of the frozen 70-character rule literals, 60-character
+ * description fields and 50-character address fields is as wide as it is because the
+ * mapset declares it so. Below about 30rem even a 12px cell cannot fit the 80 columns,
+ * and letting the frame narrow past them was what clipped them -- a whole `Amount`
+ * column, the right 85px of the sign-on note, every `Card Update` caption, twenty of
+ * the seventy asterisks of a rule line, and the second line of a wrapped `Date:`
+ * caption. The frame therefore keeps its 80 columns as a hard MINIMUM and pans
+ * horizontally as one piece, exactly as a terminal window narrower than its device
+ * does; nothing inside it moves, wraps, shrinks or disappears at any viewport width.
+ */
+/*
+ * NO WIDTH BREAKPOINT GOVERNS THE TERMINAL.
+ *
+ * Two media queries used to live here -- one at 48rem and one at 32rem -- and both existed
+ * only to compensate for a cell size that could not change: they stepped the font down to
+ * 14px and then 12px, kept all 80 columns with `min-width` so the DOCUMENT panned instead
+ * of the frame fitting (the 215px overflow at 375px), styled the scroll bar that pan
+ * needed, animated a pan cue against it, and re-laid the header row and five search rows
+ * as columns below those widths. That last part is why the same map rendered differently
+ * at 768 and at 1280.
+ *
+ * The fill law in `:root` removes the need for every one of those: the cell is a function
+ * of the viewport, so 80x24 fits at 375px exactly as it fits at 1920px, the document never
+ * pans, and one geometry serves every width. Anything genuinely width-dependent belongs in
+ * a `min-width`-scoped rule alongside the law, not in a compensating override here.
+ */
+
+
+
+/*
+ * The horizontally scrolling regions. A browse table is the one region that is wider
+ * than the frame on a narrow viewport, so it -- not the whole body -- is the scroll
+ * container: scrolling it reveals the trailing columns without carrying the screen's
+ * captions off the left edge with them. The scrollbar is styled rather than left as an
+ * overlay so it is drawn whenever the region overflows and the operator can see that
+ * there is more to the right, and the region is a labelled group the keyboard can enter
+ * (the pages give it `tabindex`), because the clipped columns hold no focusable field
+ * of their own.
+ */
+.tableScroll {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--term-green-dim) var(--term-field-bg);
+}
+
+.tableScroll:focus-visible {
+  outline: 2px solid var(--term-yellow);
+  outline-offset: 0;
+}
+
+.tableScroll::-webkit-scrollbar {
+  height: 10px;
+}
+
+.tableScroll::-webkit-scrollbar-track {
+  background: var(--term-field-bg);
+}
+
+.tableScroll::-webkit-scrollbar-thumb {
+  background: var(--term-green-dim);
+}
+
+.tableScroll::-webkit-scrollbar-thumb:hover {
+  background: var(--term-green);
+}
+
+/*
+ * The pan cue's fade. It is driven by the document's own inline scroll position, not by
+ * time, so it never animates on its own: at rest it is a static value, and it only
+ * changes while the operator is panning. That is also why it is exempt from the
+ * reduced-motion rule below -- there is no motion to reduce.
+ */
+@keyframes term-pan-cue {
+  from {
+    opacity: 0.55;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+/*
+ * Honour a reduced-motion preference: the shell animates nothing, so this only pins
+ * the behaviour for the scroll containers introduced above.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .screen__body,
+  .tableScroll {
+    scroll-behavior: auto;
+  }
+}
+
+/*
+ * A field the program has PROTECTED while it still shows its value.
+ *
+ * COCRDLIC 1250-SETUP-ARRAY-ATTRIBS moves DFHBMPRF into every row selector when either
+ * filter edit has failed (L751-L753, set by FLG-PROTECT-SELECT-ROWS-YES at L1019-L1021 and
+ * L1053-L1055): a screen whose filter is wrong does not accept a row action until the
+ * filter is corrected. The selectors were left fully actionable, so an operator could
+ * enter a row action on a screen the program had closed to entry and watch it be ignored.
+ *
+ * This is NOT the disabled tone. `:disabled` above says "in flight, wait"; a protected
+ * field is not waiting for anything, it is simply not open for entry on this turn, and it
+ * keeps its value legible. The entry box is dropped and the field is dimmed just enough to
+ * read as closed, which is the nearest thing a browser has to a 3270 field that the cursor
+ * skips. Geometry is untouched, so protecting a field moves nothing on the screen.
+ */
+.field:read-only:not(:disabled),
+input.field[readonly]:not(:disabled) {
+  background: none;
+  border-color: var(--term-neutral-dim);
+  box-shadow: none;
+  cursor: default;
+}
+
+/*
+ * HILIGHT=UNDERLINE on a PROTECTED value.
+ *
+ * The card screens declare their protected value fields ATTRB=(ASKIP) with
+ * HILIGHT=UNDERLINE and COLOR=DEFAULT -- CRDNAME, CRDSTCD, EXPMON and EXPYEAR on
+ * app/bms/COCRDSL.bms L107-L135 -- so on the terminal the underline IS the mark of the
+ * field, and it is the only decoration those fields carry. Rendered with neither an entry
+ * box (correct: BMS has none) nor the underline the mapset declares, a protected value
+ * became indistinguishable from ordinary body text on one side and from an editable
+ * control on the other. The underline restores the declared attribute; the value stays in
+ * the DEFAULT tone rather than being recoloured, because the mapset recolours only the
+ * CAPTIONS (COLOR=TURQUOISE), never these values.
+ *
+ * Scoped to `dd` so it can only ever apply to a value rendered by OutputField, which is a
+ * description in a definition list and therefore already unreachable by the keyboard and
+ * impossible to type into.
+ */
+dd.protectedValue--underline {
+  text-decoration: underline;
+  text-decoration-color: var(--term-neutral-dim);
+  text-underline-offset: 0.15em;
+}

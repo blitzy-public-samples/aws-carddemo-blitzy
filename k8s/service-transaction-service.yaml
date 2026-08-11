@@ -1,0 +1,50 @@
+---
+# =============================================================================
+# k8s/service-transaction-service.yaml
+# -----------------------------------------------------------------------------
+# Internal ClusterIP Service for the CardDemo transaction-service microservice
+# (AAP 0.3.2). Companion to deployment-transaction-service.yaml.
+#
+# :purpose: Publish the transaction-service Deployment
+#           (deployment-transaction-service.yaml) behind a stable virtual IP
+#           and the cluster-internal DNS name ``transaction-service`` so peer
+#           services and the api-gateway can reach the online transaction
+#           endpoints (COTRN00C list / COTRN01C view / COTRN02C add; CICS
+#           tran-ids CT00 / CT01 / CT02) together with the Spring Boot
+#           Actuator health, metrics and Prometheus endpoints over HTTP.
+# :output:  A ClusterIP Service named ``transaction-service`` reachable in
+#           cluster at ``transaction-service:8080`` that load-balances TCP
+#           traffic on port 8080 to every Ready pod carrying the
+#           ``app: transaction-service`` label.
+# :notes:   Type ClusterIP keeps the service internal only; external traffic
+#           is mediated exclusively by the api-gateway (AAP 0.3.1). The
+#           ``app: transaction-service`` selector is a subset of the
+#           Deployment pod-template labels, so it resolves exactly those pods;
+#           ``targetPort: 8080`` matches the container's named ``http`` port.
+#           Endpoints populate only after a pod passes its Actuator readiness
+#           probe (readiness health group: datasource + Redis).
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-service
+  labels:
+    app: transaction-service
+    app.kubernetes.io/name: transaction-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # ClusterIP keeps transaction-service reachable only from inside the
+  # cluster; all external traffic is routed through the api-gateway.
+  type: ClusterIP
+  # Must match the pod-template labels in deployment-transaction-service.yaml
+  # (app: transaction-service) so the Service resolves exactly those pods.
+  selector:
+    app: transaction-service
+  ports:
+    # Service port 8080 forwards to targetPort 8080, the container's named
+    # 'http' port that serves REST traffic and Spring Boot Actuator endpoints.
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

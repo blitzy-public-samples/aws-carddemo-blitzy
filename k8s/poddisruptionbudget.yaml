@@ -1,0 +1,159 @@
+---
+# ===========================================================================
+# k8s/poddisruptionbudget.yaml — voluntary-disruption guards.
+# ---------------------------------------------------------------------------
+# One PodDisruptionBudget per stateless workload. `maxUnavailable: 1` is always
+# drain-safe (a single-replica pod may still be evicted for node maintenance)
+# and, once a workload is scaled to >=2 replicas to meet the 150-concurrent-user
+# target, limits simultaneous voluntary disruption to one pod. The single-writer
+# datastores (postgres, redis) are intentionally excluded: a PDB there would
+# either provide nothing (maxUnavailable) or block node drains (minAvailable).
+# ===========================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-gateway-pdb
+  labels:
+    app: api-gateway
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: pdb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: api-gateway
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: auth-service-pdb
+  labels:
+    app: auth-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: pdb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: auth-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: user-service-pdb
+  labels:
+    app: user-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: pdb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: user-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: account-service-pdb
+  labels:
+    app: account-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: pdb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: account-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: card-service-pdb
+  labels:
+    app: card-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: pdb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: card-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: transaction-service-pdb
+  labels:
+    app: transaction-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: pdb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: transaction-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: billpay-service-pdb
+  labels:
+    app: billpay-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: pdb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: billpay-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: reporting-service-pdb
+  labels:
+    app: reporting-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: pdb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: reporting-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: batch-service-pdb
+  labels:
+    app: batch-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: pdb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: batch-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend-pdb
+  labels:
+    app: frontend
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: pdb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: frontend

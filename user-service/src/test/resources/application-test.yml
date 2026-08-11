@@ -1,0 +1,60 @@
+# =====================================================================
+# user-service - 'test' profile (JUnit 5 + Testcontainers).
+#
+# Activated by @ActiveProfiles("test"). Supplies only static, container-
+# agnostic settings; the JDBC url/username/password (PostgreSQLContainer
+# "postgres:18") are injected at runtime by the tests via
+# @DynamicPropertySource - they are deliberately NOT set here.
+#
+# Unlike auth-service, user-service owns NO Flyway migrations (the
+# security_users schema is owned by auth-service). The integration tests
+# therefore bind to the shared, already-migrated container from
+# com.carddemo.common.testsupport.MigratedSchemaContainer and Hibernate only
+# validates the com.carddemo.common.domain.SecurityUser mapping against it
+# (ddl-auto: validate); this module's own Flyway is disabled. Spring Session is
+# Redis-backed here exactly as in production (classpath-driven in Spring Boot 4),
+# so a full-context test that drives real HTTP supplies its own redis:8 container.
+# =====================================================================
+spring:
+  # The owning module's committed migrations own the schema in tests (this
+  # module ships no Flyway migrations of its own), so Hibernate validates the
+  # SecurityUser mapping against the deployed security_users table.
+  jpa:
+    hibernate:
+      # The integration tests run against the schema produced by the owning modules'
+      # committed Flyway migrations (see MigratedSchemaContainer), so Hibernate only
+      # validates the entity mapping and never generates a schema of its own.
+      ddl-auto: validate
+
+  # No Flyway migrations in this module - disable so the test context
+  # does not attempt to run or verify migrations.
+  flyway:
+    enabled: false
+
+  # Spring Session is driven purely by what is on the CLASSPATH in Spring Boot 4;
+  # the legacy spring.session.store-type switch was removed in 4.0.0 and setting it
+  # here would be silently ignored. Slice and @DataJpaTest tests never load the
+  # session filter, so they need no Redis; a full-context test that drives real HTTP
+  # DOES exercise the Redis-backed session filter and therefore starts its own
+  # redis:8 container (see ObservabilityEndpointsIT).
+
+# Keep tests hermetic: 0.0 sampling means no spans are recorded, so
+# nothing is exported over the network (modern Spring Boot 4 key).
+management:
+  tracing:
+    sampling:
+      probability: 0.0
+
+# Logging to aid debugging of the repository CRUD/paging verification.
+logging:
+  level:
+    com.carddemo.user: DEBUG
+    org.hibernate.SQL: DEBUG
+# Start-up warm-up is a production latency control (carddemo-common
+# WarmUpAutoConfiguration): it pre-establishes pooled connections and compiles the
+# read paths so a freshly started service meets the 200 ms target of AAP 0.7.1 on its
+# first request. A test context is never measured for latency, so it is switched off
+# here to keep every context boot as fast as it was.
+carddemo:
+  warmup:
+    enabled: false

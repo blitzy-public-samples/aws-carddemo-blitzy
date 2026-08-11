@@ -1,0 +1,308 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Inherits dependency and plugin management from the root parent BOM. -->
+    <parent>
+        <groupId>com.carddemo</groupId>
+        <artifactId>carddemo-parent</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>account-service</artifactId>
+    <packaging>jar</packaging>
+
+    <name>CardDemo Account View &amp; Update Service</name>
+    <description>Account view (GET /accounts/{id}, CICS CAVW) and account update with optimistic
+        locking (PUT /accounts/{id}, CICS CAUP) microservice, migrated from the legacy COBOL
+        programs COACTVWC and COACTUPC over the VSAM KSDS ACCTFILE / CUSTFILE.</description>
+
+    <dependencies>
+
+        <!-- Shared library: JPA entities, DTOs, DateUtil, constants, observability and exception types. -->
+        <dependency>
+            <groupId>com.carddemo</groupId>
+            <artifactId>carddemo-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!--
+          Shared test-support utilities from carddemo-common (test-jar), above all
+          com.carddemo.common.testsupport.CardDemoSchemaMigrations: it applies the real
+          committed Flyway migrations of every owning module to the throwaway test
+          database so integration tests run against the deployed schema instead of DDL
+          fabricated inside the test.
+        -->
+        <dependency>
+            <groupId>com.carddemo</groupId>
+            <artifactId>carddemo-common</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- REST controllers (embedded Tomcat + Spring MVC); not transitive from carddemo-common. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Persistence for the account and customer repositories (VSAM -> PostgreSQL). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- Jakarta Bean Validation on the account update request DTO. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!--
+            Authorization boundary for every route in this service. Without a
+            SecurityFilterChain the service accepted session-less calls and served
+            data to an unauthenticated caller; the principal is rebuilt from the
+            shared Redis session by SessionContextAuthenticationFilter.
+          Spring Security. Every service enforces authentication itself
+          (defence in depth): the api-gateway is not a trust boundary, so a
+          request that reaches this service over the internal network still has
+          to present the shared, Redis-backed session principal. It also
+          protects the Actuator telemetry endpoints with the dedicated
+          monitoring principal (carddemo-common ManagementSecurityConfig).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- Actuator health/readiness/liveness and metrics endpoints. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Redis connectivity backing externalized session. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- Spring Session (Redis) for the externalized SessionContext (COMMAREA replacement). -->
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-data-redis</artifactId>
+        </dependency>
+        <!--
+          Spring Boot 4 modularized auto-configuration: SessionAutoConfiguration and
+          SessionDataRedisAutoConfiguration live in the spring-boot-session-data-redis module
+          (they are NOT bundled with org.springframework.session:spring-session-data-redis).
+          Without it the `spring.session.*` properties are inert, SessionRepositoryFilter is
+          never registered, and HttpSession silently falls back to in-memory servlet-container
+          storage instead of Redis, defeating the externalized COMMAREA session.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-session-data-redis</artifactId>
+        </dependency>
+
+        <!-- Prometheus metrics registry. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!--
+          Distributed tracing (AAP 0.7.5). The Boot OpenTelemetry starter brings the
+          Micrometer Tracing OTel bridge TOGETHER WITH the tracing/OTel
+          auto-configuration and the OTLP span exporter. The bridge alone leaves
+          no Tracer in the context, so no trace context is created and every
+          traceId/spanId stays empty.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
+        </dependency>
+
+        <!--
+          Tracing auto-configuration. Spring Boot 4 ships auto-configuration in
+          dedicated modules, so the bridge above is inert on its own: without these
+          two modules no Tracer or ObservationRegistry tracing handler is created and
+          no traceId/spanId ever reaches the SLF4J MDC, leaving the structured log
+          lines uncorrelatable across service boundaries (AAP 0.7.5).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+        </dependency>
+
+        <!-- PostgreSQL JDBC driver (runtime only). -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Flyway engine + PostgreSQL support for the shared carddemo-common migration set. -->
+        <!--
+          Flyway: the shared CardDemo migration set ships in carddemo-common
+          (classpath:db/migration) and is applied in production by the single migration
+          owner (batch-service). This service keeps the migration library so its
+          Testcontainers integration tests can provision the identical production schema.
+        -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <!--
+          Spring Boot 4 modularized auto-configuration: FlywayAutoConfiguration lives in the
+          spring-boot-flyway module (it is NOT bundled with flyway-core). Without it, the shared
+          carddemo-common migrations never run and Hibernate `validate` fails on the missing
+          business tables. It is gated by `spring.flyway.enabled`.
+          spring-boot-flyway module (it is NOT bundled with flyway-core). Without it,
+          `spring.flyway.*` is inert - no flywayInitializer bean is registered and no
+          migration ever runs, however the properties are set. It is gated by
+          `spring.flyway.enabled`, so it stays inert in production, where this service does
+          not own the schema.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
+        </dependency>
+
+        <!-- Test stack: JUnit 5 (Jupiter), AssertJ, Mockito. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Spring Boot 4.x modularized the sliced-test support: @DataJpaTest and
+          @AutoConfigureTestDatabase are no longer transitively provided by
+          spring-boot-starter-test. This starter aggregates the JPA test slice
+          (spring-boot-data-jpa-test) and the test-datasource support
+          (spring-boot-starter-jdbc-test) required by the repository integration
+          tests (AccountRepositoryIT, CardXrefRepositoryIT, CustomerRepositoryIT).
+          Version managed by the Spring Boot BOM.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Spring MVC test slice (@WebMvcTest / @AutoConfigureMockMvc). As of Spring
+          Boot 4.0 the Web MVC test support was extracted from the catch-all
+          spring-boot-test-autoconfigure module into its own module surfaced through
+          this starter; it is no longer transitively provided by
+          spring-boot-starter-test. Backs AccountControllerTest and the full-context
+          optimistic-lock conflict MockMvc test. Version managed by the Spring Boot BOM.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Spring Security test support: the integration tests authenticate as a
+          signed-on principal because every business route is protected.
+        -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers integration tests against real PostgreSQL (backs the optimistic-lock conflict test). -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              Run the JUnit 5 unit tests with Surefire's DEFAULT include set only. The *IT
+              classes are deliberately NOT included here: they are Testcontainers-backed
+              integration tests and belong to the verify phase, where maven-failsafe-plugin
+              (declared in the parent POM and configured below) runs them exactly once.
+              Including **/*IT.java here as well made every IT class run twice per build -
+              once under Surefire and again under Failsafe - doubling the container startups.
+              A deterministic, NON-PRODUCTION AES-256 key is supplied to the forked test JVM
+              so the carddemo-common CryptoConverter can round-trip encrypted PII columns;
+              CryptoConverter fails fast when no key is configured, so production deployments
+              MUST still provide the real key via the CARDDEMO_PII_KEY environment variable
+              (see docs/decision-log.md). This value is an obviously-fake, test-only fixture
+              and is never used outside the test phase. Plugin version inherited from the
+              Spring Boot parent plugin management.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+
+            <!-- Repackage into an executable Spring Boot jar (target/account-service-*.jar). -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>repackage</id>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!--
+              Activate the integration-test/verify executions the parent POM declares for
+              maven-failsafe-plugin (version managed by the Spring Boot parent). This runs
+              the Testcontainers-backed repository integration tests (the *IT classes, e.g.
+              CardXrefRepositoryIT) during the verify phase, keeping them out of the fast
+              surefire unit-test phase. The same non-production PII key configured for
+              Surefire is declared here as well: the forked Failsafe JVM is a separate
+              process, so without it the CryptoConverter has no key and any IT touching an
+              encrypted PII column fails depending on execution order.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+
+        </plugins>
+    </build>
+
+</project>

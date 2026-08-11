@@ -1,0 +1,31 @@
+-- =============================================================================
+-- V6__security_users_optimistic_lock.sql
+--
+-- Adds the JPA @Version optimistic-lock counter to security_users
+-- (com.carddemo.common.domain.SecurityUser), completing the concurrency model
+-- AAP 0.6.2 mandates for every aggregate a screen rewrites.
+--
+-- WHY: COUSR02C (CICS CU02) read the USRSEC record for update, which held a VSAM
+-- update lock for the whole rewrite. A stateless REST service cannot hold that
+-- lock across requests, and security_users carried no version column, so two
+-- simultaneous administrator edits of one user BOTH reported
+-- 'User <id> has been updated ...' and only the later credential survived - a
+-- silent lost update over authentication material. With the counter present the
+-- provider issues
+--   UPDATE security_users SET ... WHERE sec_usr_id = ? AND version = ?
+-- so the stale writer matches no row and is answered with the verbatim
+-- COACTUPC conflict literal 'Record changed by some one else. Please review'
+-- (HTTP 409) instead of overwriting.
+--
+-- The column mirrors customers.version and accounts.version exactly (BIGINT NOT
+-- NULL DEFAULT 0) so every existing row adopts version 0 and no seed data has to
+-- change. There is no legacy field behind it; it is recorded as target-only in
+-- docs/traceability-matrix.md.
+--
+-- Source references: app/cpy/CSUSR01Y.cpy (SEC-USER-DATA), app/cbl/COUSR02C.cbl
+-- (READ ... UPDATE / REWRITE), app/cbl/COACTUPC.cbl:L517-523 (the 88-level
+-- conditions this reproduces).
+-- =============================================================================
+
+ALTER TABLE security_users
+    ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0;

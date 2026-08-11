@@ -1,0 +1,271 @@
+# =============================================================================
+# .gitignore — AWS CardDemo modernized target
+# Java 21 / Spring Boot (multi-module Maven) + React 19 / Node.js 24 (Vite)
+#
+# Baseline: GitHub community Java + Maven + Node templates, merged and
+# de-duplicated for this repository. Directory patterns are intentionally
+# unanchored so they match at any depth: the repository root, the frontend/
+# workspace, and every Maven module's build output.
+#
+# Legacy mainframe sources (app/), reference assets (diagrams/, samples/),
+# and all committed configuration/templates remain tracked — see the final
+# "Do NOT ignore" section.
+# =============================================================================
+
+# ---- Java / Maven ----
+# Per-module build output (matches target/ in every Maven module)
+target/
+# Compiled bytecode and packaged binaries
+*.class
+*.jar
+# Keep the committed Maven Wrapper jar even though *.jar is ignored above
+!.mvn/wrapper/maven-wrapper.jar
+*.war
+*.ear
+*.nar
+# Maven Wrapper scratch
+.mvn/timing.properties
+# maven-release-plugin / build-helper scratch files
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+# JVM fatal-error / replay logs
+hs_err_pid*
+replay_pid*
+
+# ---- Node / React ----
+# Dependency directories (root and frontend/ and any nested workspace)
+node_modules/
+jspm_packages/
+# Build output (Vite dist/, CRA build/, SSR output, Vite cache)
+dist/
+dist-ssr/
+build/
+.vite/
+# Package tarballs from `npm pack`
+*.tgz
+# npm / yarn / pnpm caches and lint cache
+.npm/
+.eslintcache
+# Test coverage output (root and frontend/)
+coverage/
+.nyc_output/
+*.lcov
+# Node debug logs (rotated variants such as npm-debug.log.1 are covered here)
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# ---- IDE ----
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+# Eclipse
+.settings/
+.project
+.classpath
+.factorypath
+.apt_generated/
+bin/
+# Visual Studio Code — ignore per-user settings but keep the shared
+# recommended-extensions list so the whole team gets the same tooling hints
+.vscode/*
+!.vscode/extensions.json
+
+# ---- Secrets & Env ----
+# Never commit real credentials or local environment overrides
+.env
+.env.*
+# Allow a committed, non-secret template
+!.env.example
+
+# ---- Private keys, certificates & keystores ----
+# A key or keystore that reaches history is compromised permanently, so these are
+# refused by name and by extension at any depth. The repository legitimately
+# tracks NO key material of any kind: the AES PII key and every password are
+# supplied through the environment (.env / k8s Secrets), and k8s/secret.yaml holds
+# placeholder TEMPLATE values only.
+id_rsa
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.truststore
+*.crt
+*.cer
+*.der
+*.asc
+*.gpg
+*.kdbx
+.ssh/
+# Local-only overrides (e.g., Vite *.local, application-local.*)
+*.local
+
+# ---- Logs & Runtime ----
+*.log
+logs/
+*.tmp
+# Default working-directory-relative destination of the batch statement /
+# report writers (statementGenerationJob writes output/statements.txt and
+# output/statements.html when no explicit file job parameter is supplied);
+# these are generated artifacts and must never be staged.
+output/
+
+# ---- Local datastore volumes (bind-mounted PostgreSQL / Redis data) ----
+# A bind-mounted database directory drops thousands of binary files — and a full
+# copy of the seeded PII — into the working tree. Unanchored so they match at any
+# depth (repository root or a nested compose workspace).
+pgdata/
+pgdata-*/
+postgres-data/
+postgresql-data/
+pg-data/
+redis-data/
+docker-volumes/
+
+# ---- Database dumps & backups ----
+# Extension patterns are unanchored; the *.sql patterns are ROOT-ANCHORED and
+# name-prefixed on purpose, so that db/migration/*.sql (the tracked Flyway schema
+# and seed scripts) can never be matched. See the "Do NOT ignore" section.
+*.dump
+*.sql.gz
+*.sql.bz2
+*.sql.xz
+*.bak
+/dump*.sql
+/db_dump*.sql
+/carddemo_backup*.sql
+/*_backup.sql
+/*-backup.sql
+
+# ---- Generated test, report & QA-evidence output ----
+# Test runners and QA tooling write reports, captures, and recordings into the
+# working tree; none of it is a repository deliverable.
+test-output/
+test-results/
+surefire-reports/
+failsafe-reports/
+allure-results/
+playwright-report/
+qa-evidence/
+
+# ---- OS ----
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ---- Generated batch artefacts (the code's own default output/input names) ----
+# Every one of these is a file a batch job creates at runtime, named by the defaults in
+# JobSchedulingConfig, RejectFileItemWriter and StatementGenerationJob. They are run
+# output, never source, and must never be staged. Both the bare names (produced when a
+# job runs with the working directory as its root) and the configured
+# carddemo.batch.output-dir / input-dir roots are covered.
+# The names below are copied from the constants that produce them, so a rename in
+# JobSchedulingConfig must be mirrored here: DEFAULT_ACCOUNT_REPORT_FILE,
+# DEFAULT_CARD_REPORT_FILE, DEFAULT_CARD_XREF_REPORT_FILE, DEFAULT_CUSTOMER_REPORT_FILE,
+# DEFAULT_CATEGORY_BALANCE_REPORT_FILE, DEFAULT_TRANSACTION_DETAIL_REPORT_FILE,
+# DEFAULT_COMBINED_TRANSACTION_FILE, DEFAULT_DAILY_TRANSACTION_FEED_FILE, plus the
+# carddemo.batch.reject-file / statement-text-file / statement-html-file property
+# defaults. An earlier revision listed invented stems (trandet*, catbal*, acctrept*,
+# cardrept*, xrefrept*, custrept*) that matched none of them.
+/output/
+/input/
+dalyrejs*.txt
+statements.txt
+statements.html
+combined-transactions*.txt
+tran-detail-report*.txt
+tcatbal-report*.txt
+acctdata-report*.txt
+carddata-report*.txt
+cardxref-report*.txt
+custdata-report*.txt
+combined*.txt
+trandet*.txt
+catbal*.txt
+acctrept*.txt
+cardrept*.txt
+xrefrept*.txt
+custrept*.txt
+dailytran*.txt
+carddemo-batch/
+
+# The generated-artefact names above are matched at any depth, so the legacy ASCII seed
+# fixtures are re-included explicitly: app/data/ASCII/dailytran.txt is a committed source
+# fixture that shares a name with the generated daily-transaction feed.
+!app/data/**
+
+# ---- Automated QA / agent evidence written into the working tree ----
+# Automated review and QA runs write their working evidence into a `blitzy/`
+# directory at the repository root: browser screenshots, screen recordings, HTTP
+# header and log dumps, metrics dumps, and cookie jars. They are large binary
+# artifacts belonging to a single verification run, and cookie jars in particular
+# hold LIVE session identifiers, so none of it may ever be staged or committed.
+# The directory is transient working state, not a deliverable — the durable
+# outputs are docs/decision-log.md and docs/traceability-matrix.md.
+blitzy/
+*.cookies
+cookies.txt
+cookie-jar*.txt
+# `nohup ... &` — the shape used to start the stack or a long build from a shell —
+# drops its combined output here; it is transient run output, never a deliverable.
+nohup.out
+
+# ---- Archives ----
+# Build outputs, database dumps and evidence bundles get tarred or zipped for
+# transport; none of that belongs in the tree. The two committed legacy runtime
+# bundles under samples/ are re-included immediately below, and app/** is already
+# re-included further up, so no tracked source is hidden by these patterns.
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.tar.xz
+*.zip
+*.7z
+*.rar
+*.gz
+*.bz2
+*.xz
+# Legacy runtime bundles that ARE tracked sources (Micro Focus / UniKix samples).
+!samples/**/*.zip
+
+# ---- Do NOT ignore (intentionally tracked config, templates & sources) ----
+# The patterns above deliberately do NOT match the following committed files;
+# they are listed here as a maintenance reminder so future edits keep them
+# trackable:
+#   - k8s/*.yaml (including k8s/secret.yaml — a placeholder TEMPLATE, not a real secret)
+#   - observability/prometheus.yml, observability/grafana-dashboard.json
+#   - docker-compose.yml
+#   - pom.xml (root aggregator and per-module) — only pom.xml.* scratch is ignored
+#   - frontend/package.json and frontend/package-lock.json
+#   - db/migration/*.sql (Flyway schema and seed scripts) — the dump patterns above
+#     are root-anchored and name-prefixed (/dump*.sql, /db_dump*.sql, …) precisely so
+#     that no migration script can ever be matched by them
+#   - application.yml and logback-spring.xml (per-service config)
+#   - .env.example and .mvn/wrapper/maven-wrapper.jar (re-included via negations above)
+#   - legacy sources: app/, diagrams/, samples/ (includes samples/**/*.zip runtime bundles)

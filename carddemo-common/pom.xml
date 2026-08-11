@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Inherits dependency and plugin management from the root parent BOM. -->
+    <parent>
+        <groupId>com.carddemo</groupId>
+        <artifactId>carddemo-parent</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>carddemo-common</artifactId>
+    <packaging>jar</packaging>
+
+    <name>CardDemo Common</name>
+    <description>Shared library for the modernized CardDemo application: JPA domain entities, DTOs,
+        date utility, message/lookup constants, and cross-cutting observability and exception types
+        consumed by every CardDemo microservice and the API gateway.</description>
+
+    <!--
+      Dependency-scope policy (see docs/decision-log.md, "Platform & Build").
+
+      carddemo-common is a SHARED CONTRACT / DOMAIN library, not an executable
+      application. Every runtime-infrastructure dependency below is declared
+      <optional>true</optional> so it is present on this module's own compile
+      classpath (the JPA, validation, observability, Jackson and crypto
+      annotations it references) yet is NOT propagated transitively to the
+      services and the API gateway that depend on this jar. Each executable
+      module explicitly declares the starters/providers it actually needs at
+      runtime. This prevents JPA/Hikari/Hibernate, Actuator, Prometheus,
+      tracing, Redis and Spring Session from leaking into modules (notably the
+      gateway) that must NOT start a datasource or a JPA context.
+    -->
+    <dependencies>
+
+        <!-- Persistence: JPA/Jakarta Persistence annotations for the domain entities. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Jakarta Bean Validation annotations for request/response DTOs and entities. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Actuator types referenced by the shared ObservabilityConfig. -->
+        <!-- Batch support for the shared batch helpers (output path resolution and
+             failed-output cleanup). Optional so only the services that actually run
+             batch jobs inherit the batch runtime. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Prometheus metrics registry (Micrometer). -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
+          Distributed tracing (AAP 0.7.5), delivered as three cooperating pieces. All
+          three are deliberately NON-optional so every service that depends on
+          carddemo-common inherits a WORKING tracing stack: an optional dependency is
+          not transitive, which is why the bridge alone previously had to be repeated in
+          each service POM and still produced no spans at all.
+            1. spring-boot-micrometer-tracing-opentelemetry - the Spring Boot 4
+               MODULARIZED auto-configuration for Micrometer Tracing over the
+               OpenTelemetry bridge. In Boot 4 this no longer ships inside
+               spring-boot-actuator-autoconfigure, so without this module
+               management.tracing.* / management.opentelemetry.tracing.* are inert, no
+               Tracer/ObservationHandler is created and no span is ever recorded. It
+               transitively supplies spring-boot-micrometer-tracing,
+               spring-boot-micrometer-observation and spring-boot-opentelemetry.
+            2. micrometer-tracing-bridge-otel - the bridge implementation that backs
+               Micrometer's Tracer with the OpenTelemetry SDK and publishes traceId /
+               spanId into the SLF4J MDC, so the structured JSON logs carry them.
+            3. opentelemetry-exporter-otlp - the OTLP span exporter. Without it the
+               configured OTLP endpoint cannot be honoured and spans are dropped on the
+               floor even when they are recorded.
+          Versions come from the Spring Boot / OpenTelemetry BOMs (AAP 0.5.1: only the
+          anchors are pinned).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
+        <!-- Redis connectivity backing externalized session (provider-side only). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Spring Session (Redis) for the externalized SessionContext. -->
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-data-redis</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Jackson 3 databind for the strict, allowlisted Spring Session Redis JSON
+             serializer (SessionRedisConfig). spring-data-redis marks its
+             Jackson dependency optional, so it is declared here for compilation; the
+             web/json starters provide it on every service's runtime classpath. -->
+        <dependency>
+            <groupId>tools.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Jackson annotations for the frozen JSON contract on SessionContext/DTOs. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Password-encoding primitives for the shared DelegatingPasswordEncoder factory. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-crypto</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
+          Spring Security for the shared security components: the session-derived
+          authentication filter, the uniform hardening helper, the auditing entry
+          point / access-denied handler, and the management (Prometheus scrape)
+          filter chain. Declared <optional>true</optional> like every other
+          dependency of this library: each consuming service declares
+          spring-boot-starter-security itself, so no service inherits a security
+          filter chain it did not ask for.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Web MVC / Servlet API for the shared exception types and correlation filter. -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-webmvc</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
+          Spring Boot MVC error infrastructure. Supplies ErrorController /
+          ErrorAttributes / AbstractErrorController so CardDemoErrorController can
+          replace Boot's BasicErrorController body with the documented
+          ErrorResponse envelope, and the Tomcat + web-server factory types so the
+          container's HTML error report can be suppressed. <optional>true</optional>
+          keeps them off the pure batch module's classpath; every web service
+          already has them transitively through spring-boot-starter-web.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-webmvc</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-web-server</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-tomcat</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
+          Spring Boot's Jackson auto-configuration types. Needed only for the
+          JsonMapperBuilderCustomizer contract that
+          StrictScalarCoercionAutoConfiguration implements to make the JSON boundary
+          refuse a number or boolean where a textual member is declared.
+          <optional>true</optional> for the same reason as the web types above: the
+          pure batch module does not need it, and every service that binds JSON
+          already has it transitively through spring-boot-starter-web.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-jackson</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
+          Flyway migration API for the shared migration set that ships in this module's
+          resources (classpath:db/migration) together with its code-based member,
+          SeededPiiEncryptionMigration (a JavaMigration). Optional like every other
+          integration dependency: each service that provisions or tests the schema
+          already declares flyway-core plus the Boot Flyway auto-configuration module.
+        -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
+          Servlet API for the shared CorrelationIdFilter (a OncePerRequestFilter
+          subclass). Declared <scope>provided</scope>: it is on this module's
+          compile classpath but is NOT propagated to dependents, and at runtime
+          the embedded Tomcat of each web service supplies it. Non-web modules
+          (batch-service) never load the filter because WebObservabilityConfig is
+          gated by @ConditionalOnWebApplication. Version is managed by the
+          Spring Boot parent BOM (jakarta-servlet.version = 6.1.0).
+        -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Test stack: JUnit 5 (Jupiter), AssertJ, Mockito. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers for repository integration tests against real PostgreSQL. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          PostgreSQL JDBC driver, TEST scope only. The service modules bring the driver at
+          runtime scope for their own datasource; this module needs it only so its OWN
+          integration tests can reach the migrated container that its test-support classes
+          start (MigratedSchemaContainer / CardDemoSchemaMigrations). Without it Flyway
+          reports "No JDBC driver found to handle jdbc:postgresql://…" the moment a test in
+          this module - rather than in a consuming service - touches that container. Version
+          is managed by the Spring Boot BOM and overridden to a patched release by the root
+          POM's ${postgresql.version}.
+        -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              Publish the test classes as a test-jar so every service module can reuse the
+              shared test-support utilities - above all CardDemoSchemaMigrations, which
+              applies the real committed migrations of all owning modules. Without a shared
+              artifact each module would have to hand-write DDL for the tables it does not
+              own, which is exactly the test-realism defect this addresses.
+              Plugin version inherited from the Spring Boot parent plugin management.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>test-jar</id>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

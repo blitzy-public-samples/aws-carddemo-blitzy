@@ -1,0 +1,296 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Inherits dependency and plugin management from the root parent BOM. -->
+    <parent>
+        <groupId>com.carddemo</groupId>
+        <artifactId>carddemo-parent</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>card-service</artifactId>
+    <packaging>jar</packaging>
+
+    <name>CardDemo Card Service</name>
+    <description>Runnable Spring Boot microservice for the modernized CardDemo application: card list,
+        detail, update, and card-customer-account cross-reference resolution, migrated from the legacy
+        COBOL COCRDLIC/COCRDSLC/COCRDUPC programs and the CARDDAT/CARDAIX VSAM data sets.</description>
+
+    <dependencies>
+
+        <!-- Shared library: JPA entities (Card, CardXref), DTOs, DateUtil, constants, observability. -->
+        <dependency>
+            <groupId>com.carddemo</groupId>
+            <artifactId>carddemo-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!--
+          Shared test-support utilities from carddemo-common (test-jar), above all
+          com.carddemo.common.testsupport.CardDemoSchemaMigrations: it applies the real
+          committed Flyway migrations of every owning module to the throwaway test
+          database so integration tests run against the deployed schema instead of DDL
+          fabricated inside the test.
+        -->
+        <dependency>
+            <groupId>com.carddemo</groupId>
+            <artifactId>carddemo-common</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- REST controllers for card list (CCLI), detail (CCDL), and update (CCUP). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Persistence: card and card_xref tables via Spring Data JPA. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- Jakarta Bean Validation for request DTOs. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!--
+            Authorization boundary for every route in this service. Without a
+            SecurityFilterChain the service accepted session-less calls and served
+            data to an unauthenticated caller; the principal is rebuilt from the
+            shared Redis session by SessionContextAuthenticationFilter.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- Actuator health/readiness/liveness and the Prometheus endpoint. -->
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Redis connectivity backing externalized session. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- Spring Session (Redis) for the externalized SessionContext. -->
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-data-redis</artifactId>
+        </dependency>
+        <!--
+          Spring Boot 4 modularized auto-configuration: SessionAutoConfiguration and
+          SessionDataRedisAutoConfiguration live in the spring-boot-session-data-redis module
+          (they are NOT bundled with org.springframework.session:spring-session-data-redis).
+          Without it the `spring.session.*` properties are inert, SessionRepositoryFilter is
+          never registered, and HttpSession silently falls back to in-memory servlet-container
+          storage instead of Redis, defeating the externalized COMMAREA session.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-session-data-redis</artifactId>
+        </dependency>
+
+        <!-- Prometheus metrics registry. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!--
+          Distributed tracing (AAP 0.7.5). The Boot OpenTelemetry starter brings the
+          Micrometer Tracing OTel bridge TOGETHER WITH the tracing/OTel
+          auto-configuration and the OTLP span exporter. The bridge alone leaves
+          no Tracer in the context, so no trace context is created and every
+          traceId/spanId stays empty.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
+        </dependency>
+
+        <!--
+          Tracing auto-configuration. Spring Boot 4 ships auto-configuration in
+          dedicated modules, so the bridge above is inert on its own: without these
+          two modules no Tracer or ObservationRegistry tracing handler is created and
+          no traceId/spanId ever reaches the SLF4J MDC, leaving the structured log
+          lines uncorrelatable across service boundaries (AAP 0.7.5).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+        </dependency>
+
+        <!-- PostgreSQL JDBC driver. -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Flyway schema and seed migrations for the card/card_xref schema. -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <!--
+          Spring Boot 4 modularized auto-configuration: FlywayAutoConfiguration lives in the
+          spring-boot-flyway module (it is NOT bundled with flyway-core). Without it, the
+          migrations never run and Hibernate `validate` fails on the missing card tables. It
+          is gated by `spring.flyway.enabled`, so it remains inert wherever Flyway is disabled.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
+        </dependency>
+
+        <!-- Test stack: JUnit 5 (Jupiter), AssertJ, Mockito, Spring Test. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Spring MVC test slice (Spring Boot 4 modularized MockMvc support): supplies
+          @AutoConfigureMockMvc and the MockMvc auto-configuration (transitively including
+          spring-boot-webmvc-test), which are no longer part of spring-boot-starter-test.
+          Required by the card REST controller and end-to-end MockMvc integration tests.
+          Version managed by the Spring Boot BOM.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          @DataJpaTest / @AutoConfigureTestDatabase persistence-slice support. In Spring Boot 4.x
+          these annotations live in the modular spring-boot-data-jpa-test / spring-boot-jdbc-test
+          jars, which this starter pulls in transitively (spring-boot-data-jpa-test and
+          spring-boot-starter-jdbc-test). Backs CardRepositoryIT and CardXrefRepositoryIT.
+          Versions managed by the parent BOM.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Spring Security test support: the integration tests authenticate as a
+          signed-on principal because every business route is protected.
+        -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers for integration tests against real PostgreSQL. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Boot 4.x test slices. In Boot 4.x the sliced test annotations were split out
+             of spring-boot-starter-test into per-technology artifacts: @DataJpaTest lives in
+             spring-boot-data-jpa-test and @AutoConfigureTestDatabase in spring-boot-jdbc-test.
+             Required by the CardRepository persistence-slice test. Versions are BOM-managed. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-data-jpa-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-jdbc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              A deterministic, NON-PRODUCTION AES-256 key is supplied to the forked test JVM so
+              the carddemo-common CryptoConverter can encrypt the sensitive columns the tests
+              persist (card CVV, customer identifiers). CryptoConverter fails fast when no key is
+              configured, so production deployments MUST still provide the real key via the
+              CARDDEMO_PII_KEY environment variable (see docs/decision-log.md). The value is an
+              obviously-fake, test-only fixture and is never used outside the test phases; it is
+              declared for BOTH forks because Surefire and Failsafe run in separate JVMs.
+              Plugin version inherited from the Spring Boot parent plugin management.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+
+            <!-- Repackages the service into an executable Spring Boot fat jar. -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!--
+              Runs *IT integration tests (e.g. OptimisticLockConflictIT, CardViewUpdateIT) in the
+              Failsafe integration-test/verify phases, separate from the Surefire unit-test phase.
+              The plugin version and the managed integration-test + verify goal bindings are
+              inherited from the Spring Boot parent BOM.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>integration-tests</id>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <systemPropertyVariables>
+                        <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
+                    </systemPropertyVariables>
+                </configuration>
+</plugin>
+        </plugins>
+    </build>
+
+</project>

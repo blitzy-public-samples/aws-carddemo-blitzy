@@ -1,0 +1,52 @@
+---
+# =============================================================================
+# k8s/service-billpay-service.yaml
+# -----------------------------------------------------------------------------
+# :purpose: Internal ClusterIP Service publishing the CardDemo bill-payment
+#           microservice (the ``billpay-service`` Deployment) behind a stable
+#           virtual IP and the cluster-internal DNS name ``billpay-service`` so
+#           the api-gateway and other in-cluster callers reach it at
+#           ``billpay-service:8080``. billpay-service is the Spring Boot
+#           re-platform of legacy COBOL program COBIL00C (CICS transaction
+#           CB00), serving REST ``POST /billpay``.
+# :output:  A ClusterIP Service named ``billpay-service`` that load-balances
+#           TCP traffic on port 8080 to every Ready pod carrying the
+#           ``app: billpay-service`` label, forwarding to the container's
+#           named ``http`` port (targetPort 8080).
+# :notes:   Type ClusterIP keeps the service internal only; CardDemo backend
+#           services are never exposed outside the cluster, external traffic
+#           enters through the frontend LoadBalancer and the api-gateway. The
+#           ``app: billpay-service`` selector is a subset of the pod-template
+#           labels declared in k8s/deployment-billpay-service.yaml, so it
+#           resolves exactly the billpay-service pods; ``targetPort: 8080``
+#           matches that container's named ``http`` port. The
+#           k8s/networkpolicy.yaml ``allow-backend-ingress`` rule (which selects
+#           ``app.kubernetes.io/component: backend``) permits ingress on TCP
+#           8080 only from the api-gateway. Endpoints populate only after a pod
+#           passes its Actuator ``/actuator/health/readiness`` probe.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: billpay-service
+  labels:
+    app: billpay-service
+    app.kubernetes.io/name: billpay-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # ClusterIP keeps billpay-service reachable only from inside the cluster;
+  # callers resolve it via the DNS name billpay-service:8080. External exposure
+  # is handled upstream by the frontend LoadBalancer and the api-gateway.
+  type: ClusterIP
+  # Selects the billpay-service Deployment pods (their pod template carries the
+  # app: billpay-service label in k8s/deployment-billpay-service.yaml).
+  selector:
+    app: billpay-service
+  ports:
+    # Named port 'http' permits by-name references; service port 8080 forwards
+    # to targetPort 8080, the container's 'http' port (Spring Boot Tomcat).
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

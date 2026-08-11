@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  account-service structured logging (Observability rule, AAP 0.7.5).
+
+  Deployed profiles (docker, k8s, prod) emit structured JSON in the
+  Logstash format via Spring Boot's built-in StructuredLogEncoder - no
+  third-party logstash-logback-encoder is on the classpath. The Logstash
+  format automatically includes every MDC entry, so the business
+  correlation id (MDC key "correlationId", set by carddemo-common
+  CorrelationIdContext) and the Micrometer Tracing identifiers
+  ("traceId", "spanId") appear as JSON fields.
+
+  Locally (no docker/k8s/prod profile) a human-readable line is emitted
+  that renders the same three MDC keys explicitly.
+-->
+<configuration>
+
+    <!-- Spring Boot logback conventions (charset, conversion words). -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- Application name from the Spring Environment, for correlation. -->
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="account-service"/>
+
+    <!-- Structured JSON is the DEFAULT for every profile except the two that exist for humans
+: gating JSON on an explicit "docker,k8s,prod" list meant an unrecognised or
+         misspelt profile silently fell back to the plain-text pattern and structured logging was
+         lost exactly where it was hardest to notice. Any profile other than 'default' (no profile
+         set) and 'test' now logs JSON. -->
+    <springProfile name="!default &amp; !test">
+        <!-- Structured JSON console (Logstash format); MDC auto-included. -->
+        <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="org.springframework.boot.logging.logback.StructuredLogEncoder">
+                <format>logstash</format>
+                <charset>${CONSOLE_LOG_CHARSET:-UTF-8}</charset>
+            </encoder>
+        </appender>
+        <!-- Async wrapper for deployed profiles: decouples request
+             threads from console I/O so structured JSON logging does not inflate
+             p95 latency or memory. neverBlock drops rather than blocks when the
+             ring buffer saturates, protecting the sub-200ms p95 NFR; a 0
+             discardingThreshold keeps INFO/WARN/ERROR until that point. -->
+        <appender name="ASYNC_JSON" class="ch.qos.logback.classic.AsyncAppender">
+            <appender-ref ref="JSON_CONSOLE"/>
+            <queueSize>4096</queueSize>
+            <discardingThreshold>0</discardingThreshold>
+            <neverBlock>true</neverBlock>
+            <includeCallerData>false</includeCallerData>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="ASYNC_JSON"/>
+        </root>
+    </springProfile>
+
+    <!-- Local development (no profile active) and the automated-test profile: readable text. -->
+    <springProfile name="default,test">
+        <!-- Human-readable console for local development; explicit MDC ids. -->
+        <appender name="TEXT_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <charset>${CONSOLE_LOG_CHARSET:-UTF-8}</charset>
+                <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [${appName}] [correlationId=%X{correlationId:-},traceId=%X{traceId:-},spanId=%X{spanId:-}] %logger{36} - %msg%n</pattern>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="TEXT_CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <!-- Application package logging level. -->
+    <logger name="com.carddemo" level="INFO"/>
+
+</configuration>

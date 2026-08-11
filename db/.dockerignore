@@ -1,0 +1,13 @@
+# =============================================================================
+# db/.dockerignore
+#
+# db/Dockerfile copies NOTHING: it derives from the official postgres image and
+# removes one unreachable binary. Excluding the whole context keeps the build
+# reproducible and keeps db/init/01-create-service-roles.sh - which is mounted at
+# RUN time by docker-compose.yml, never baked into a layer - out of the image.
+#
+# `*` with no re-admission is therefore the complete and correct policy. The root
+# .gitignore still governs what is committed here; this file governs only what
+# Docker may read.
+# =============================================================================
+*

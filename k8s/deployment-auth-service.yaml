@@ -1,0 +1,228 @@
+---
+# =============================================================================
+# k8s/deployment-auth-service.yaml
+# -----------------------------------------------------------------------------
+# Kubernetes Deployment for the CardDemo **auth-service** Spring Boot 4.1.0
+# microservice — the cloud-native re-platforming of the legacy COBOL sign-on
+# program COSGN00C (CICS transaction CC00), exposed as REST `POST /auth/signon`
+# (AAP 0.3.1, 0.4.2, 0.6.7).
+#
+# :purpose: Schedule the auth-service pod(s) that verify user credentials
+#           against the PostgreSQL ``security_users`` table using a Spring
+#           Security filter chain with a BCrypt/PBKDF2 ``PasswordEncoder`` and a
+#           ``UserDetailsService`` (the replacement for RACF/USRSEC plaintext
+#           credentials, AAP 0.6.7), backing pseudo-conversational state with
+#           externalized Spring Session in Redis.
+# :output:  A Deployment named ``auth-service`` running a Spring Boot container
+#           that listens on container port 8080 (named ``http``) and reports
+#           health through Spring Boot Actuator probe endpoints.
+# :notes:   The image ``carddemo/auth-service:1.0.0`` is built by
+#           ``auth-service/Dockerfile`` (base image FROM eclipse-temurin:21-jre,
+#           per the pinned runtime in AAP 0.5.1).
+#           ``imagePullPolicy: IfNotPresent`` keeps locally built images
+#           without forcing a registry pull.
+#
+#           Runtime configuration is injected entirely through ``envFrom``:
+#             * ConfigMap ``carddemo-config`` — non-secret settings
+#               (SPRING_PROFILES_ACTIVE=k8s, SPRING_DATASOURCE_URL,
+#               SPRING_DATA_REDIS_HOST/PORT, Actuator health-probe exposure).
+#             * Secret ``carddemo-auth-service-db`` — datasource username/password.
+#
+#           Observability (AAP 0.7.5): Actuator liveness/readiness probes are
+#           wired below; the ConfigMap enables the health probe groups
+#           (MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED=true) so
+#           ``/actuator/health/liveness`` and ``/actuator/health/readiness``
+#           resolve at runtime.
+#
+#           The companion ``service-auth-service.yaml`` selects these pods via
+#           ``app: auth-service`` and forwards traffic to targetPort 8080.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  labels:
+    app: auth-service
+    app.kubernetes.io/name: auth-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # Single replica for the reference deployment. The service is stateless
+  # (session state lives in Redis), so it can be scaled horizontally without
+  # code changes to meet the 150-concurrent-user non-functional target.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+        app.kubernetes.io/name: auth-service
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: backend
+    spec:
+      # Pod-level runtime hardening: run as a non-root user with a
+      # default seccomp profile and no auto-mounted ServiceAccount token
+      # (these services never call the Kubernetes API).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      # Startup ordering gate: the shared CardDemo schema is provisioned by the
+      # SINGLE Flyway migration owner, batch-service (see its application.yml and
+      # docs/decision-log.md). This service runs with spring.flyway.enabled=false
+      # and Hibernate ddl-auto=validate, so it can only start once that schema
+      # exists; without the gate the pod crash-loops on
+      # "Schema validation: missing table". The init container blocks until the
+      # owner reports READY through its Actuator readiness group, using the same
+      # bash /dev/tcp probe idiom as the Compose healthcheck (the eclipse-temurin
+      # base image ships neither curl nor wget).
+      initContainers:
+        - name: await-schema
+          image: eclipse-temurin:21-jre@sha256:8cef5fc7bebe421363ab543a2f4db5caf7d119d8db67d56b0f56c485d2de4d55
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          # Bounded like every other container in this repository, init containers
+          # included: in a namespace with no LimitRange an unbounded container is
+          # admitted with no QoS guarantee and can be scheduled anywhere. The figures
+          # suit what this container does - one bash loop issuing a TCP readiness
+          # probe every 5 s - and were verified by running the same image and command
+          # under exactly these limits.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          command:
+            - bash
+            - -c
+            - >-
+              until exec 3<>/dev/tcp/batch-service/8080 2>/dev/null
+              && printf 'GET /actuator/health/readiness HTTP/1.1\r\nHost: batch-service\r\nConnection: close\r\n\r\n' >&3
+              && grep -q '"status":"UP"' <&3;
+              do echo 'waiting for the schema owner (batch-service) to become ready'; sleep 5; done;
+              echo 'schema owner ready'
+      containers:
+        - name: auth-service
+          # Built by auth-service/Dockerfile (FROM eclipse-temurin:21-jre).
+          # Produced by `docker compose build auth-service` from auth-service/Dockerfile
+          # (docker-compose.yml carries a matching `image:` key with these exact
+          # registry/name/tag defaults), so this reference resolves to an artifact the
+          # repository builds - no undocumented tag-and-push step.
+          # Override the registry or tag for a private registry with
+          # CARDDEMO_IMAGE_REGISTRY / CARDDEMO_IMAGE_TAG at build time.
+          image: carddemo/auth-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          # Inject all runtime config: non-secret settings from the ConfigMap
+          # (carddemo-config) plus this service's own least-privilege database
+          # role and the shared Redis AUTH secret. Names must match
+          # k8s/configmap.yaml and k8s/secret.yaml exactly.
+          # Container-level runtime hardening: drop every Linux
+          # capability, forbid privilege escalation, and run on a read-only
+          # root filesystem (writable scratch is the mounted tmp emptyDir).
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          envFrom:
+            - configMapRef:
+                name: carddemo-config
+            # Per-service least-privilege database role: each service
+            # authenticates with its own DB principal, not a shared owner.
+            - secretRef:
+                name: carddemo-auth-service-db
+            # Shared Redis AUTH secret for externalized Spring Session.
+            - secretRef:
+                name: carddemo-redis-secret
+            # Shared AES-256-GCM key for at-rest PII field encryption
+            # (carddemo-common CryptoConverter: SSN, government id, EFT account
+            # id, CVV). Services fail closed if it is absent.
+            - secretRef:
+                name: carddemo-pii-key
+            # Shared credential of the least-privilege `monitoring` principal
+            # guarding /actuator/prometheus and /actuator/metrics. Must
+            # match the password Prometheus presents, or every scrape gets 401.
+            - secretRef:
+                name: carddemo-monitoring-secret
+          # Sized for a JVM Spring Boot service; the 1Gi limit keeps the
+          # per-pod footprint within the stated memory budget.
+          # `limits.memory` is what the image's JAVA_OPTS percentages resolve
+          # against, so this figure - not a JVM flag - is what bounds the heap.
+          # Measured working set for the whole nine-service stack under the AAP
+          # 150-user load: 462-618 MiB resident per service, so 1Gi is held with
+          # headroom.
+          # `limits.cpu` is sized from the CPU cost per request measured over that
+          # same load: 9.2 ms for the tier as a whole, and 105.5 ms for a sign-on,
+          # of which ~72.8 ms is the password encoder alone. Two cores keeps every
+          # service at or below half utilisation at the measured request rate, and
+          # keeps the JVM's own ergonomics multi-core in every runtime.
+          # docker-compose.yml declares the same budget.
+          # Measurements and rationale: docs/decision-log.md section 50.
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          # Startup probe guards the JVM/Spring Boot warm-up: up to
+          # 30 x 5s = 150s before the container is considered failed, and it
+          # gates the liveness/readiness probes so a slow boot is never killed
+          # prematurely. Uses the aggregate health endpoint.
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            # Explicit timeout. The default timeoutSeconds is 1, so during any
+            # datastore blip the aggregate health check — which must wait for the bounded
+            # 3s HikariCP / 2s Lettuce dependency timeouts — fails on every attempt and the
+            # pod is killed after failureThreshold x periodSeconds. 4s bounds each attempt
+            # just above the slowest dependency timeout.
+            timeoutSeconds: 4
+            failureThreshold: 30
+          # Liveness uses the Actuator liveness group: restart the pod only if
+          # the application enters a broken (non-recoverable) internal state.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness uses the Actuator readiness group: remove the pod from
+          # Service endpoints while dependencies (PostgreSQL, Redis) are not
+          # ready, without restarting the container.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+      # Writable scratch for the read-only root filesystem. A Spring
+      # Boot fat-jar only needs a writable /tmp (Tomcat work dir, JVM temp).
+      volumes:
+        - name: tmp
+          emptyDir: {}

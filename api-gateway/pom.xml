@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Inherits dependency and plugin management from the root parent BOM. -->
+    <parent>
+        <groupId>com.carddemo</groupId>
+        <artifactId>carddemo-parent</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>api-gateway</artifactId>
+    <packaging>jar</packaging>
+
+    <name>CardDemo API Gateway</name>
+    <description>Runnable Spring Boot service providing API gateway routing and menu navigation for the
+        modernized CardDemo application. Fronts the downstream microservices, gates access by role
+        (ROLE_ADMIN/ROLE_USER), and originates distributed tracing and correlation identifiers across
+        service boundaries. This is the sole module that consumes the Spring Cloud Gateway starter.</description>
+
+    <!--
+      Spring Cloud release-train BOM, imported here (and ONLY here) so that the
+      Spring Cloud Gateway starter below resolves its managed version. The root
+      parent intentionally does not import this BOM globally; it supplies only
+      the ${spring-cloud.version} property (see the parent pom and
+      docs/decision-log.md, "Platform & Build"). Scoping the import to this
+      module keeps Spring Cloud managed versions out of the other services.
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <!--
+              Security override for BouncyCastle, declared BEFORE the imported BOM
+              because a version stated directly in a module's own dependencyManagement
+              wins over one that arrives through an import.
+
+              bcprov-jdk18on enters this module only, transitively, through
+              spring-cloud-starter-gateway-server-webmvc (exactly one row in the
+              physical SBOM; no other service resolves it). The train's managed 1.81.1
+              is affected by CVE-2026-14682 (HIGH 8.7, CWE-789 excessive allocation in
+              DefiniteLengthInputStream.toByteArray) and CVE-2026-0636 (LDAP injection,
+              CWE-90). 1.84 fixes only the latter, so 1.85 is the floor.
+
+              Neither is reachable here - BouncyCastle is never registered as a JCE
+              provider, there is no LDAP surface, and the PII cipher is JDK-native
+              SunJCE AES/GCM/NoPadding - but a fixed version exists, and shipping a
+              known-vulnerable artifact is a release failure independently of
+              reachability. The pin is a floor, not a downgrade: if a future train
+              manages a HIGHER version, remove this block rather than hold it back.
+            -->
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcprov-jdk18on</artifactId>
+                <version>1.85</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+
+        <!-- Spring Cloud Gateway Server (servlet/Web MVC) routing engine. -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-gateway-server-webmvc</artifactId>
+        </dependency>
+
+        <!--
+          Client-side load balancing across the instances of a downstream service.
+
+          WITHOUT this artifact a route's `uri` may only name a single fixed authority,
+          which the gateway resolves once and then keeps for the life of its pooled
+          keep-alive connections. Scaling a service to two replicas therefore left one
+          replica idle - measured: 200 authenticated reads through the gateway with
+          account-service scaled to 2 were served 200/0 by a single replica - and stopping
+          the serving replica surfaced HTTP 503 to the caller for ~11 s.
+
+          The artifact is what activates
+          FilterAutoConfiguration$LoadBalancerHandlerConfiguration, which is
+          @ConditionalOnClass(org.springframework.cloud.loadbalancer.annotation.LoadBalancerClient)
+          and registers the `lb` route-uri scheme. Only then does `uri: lb://<service>`
+          bind, applying LoadBalancerFilterFunctions.lb(<service>) as a route filter that
+          rewrites the target authority per request from a chosen ServiceInstance.
+
+          Spring Cloud LoadBalancer ships NO instance source that works without a service
+          registry, so UpstreamLoadBalancerConfig supplies one built on the container
+          platform's own DNS. Version is managed by the Spring Cloud release-train BOM
+          imported above - the same train as the gateway starter, never pinned separately.
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+        </dependency>
+
+        <!-- Servlet MVC (Tomcat) stack for the local menu-navigation REST endpoints. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Spring Security filter chain for role-gated access. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- Actuator health/readiness/liveness and metrics endpoints. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Jakarta Bean Validation for the menu request DTOs. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Redis connectivity backing externalized session. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- Spring Session (Redis) so the externalized SessionContext survives across stateless requests. -->
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-data-redis</artifactId>
+        </dependency>
+        <!--
+          Spring Boot 4 modularized auto-configuration: SessionAutoConfiguration and
+          SessionDataRedisAutoConfiguration live in the spring-boot-session-data-redis module
+          (they are NOT bundled with org.springframework.session:spring-session-data-redis).
+          Without it the `spring.session.*` properties are inert, SessionRepositoryFilter is
+          never registered, and HttpSession silently falls back to in-memory servlet-container
+          storage instead of Redis, defeating the externalized COMMAREA session.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-session-data-redis</artifactId>
+        </dependency>
+
+        <!-- Prometheus metrics registry. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!--
+          Distributed tracing (AAP 0.7.5). The Boot OpenTelemetry starter brings the
+          Micrometer Tracing OTel bridge TOGETHER WITH the tracing/OTel
+          auto-configuration and the OTLP span exporter. The bridge alone leaves
+          no Tracer in the context, so no trace context is created and every
+          traceId/spanId stays empty.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
+        </dependency>
+
+        <!--
+          Tracing auto-configuration. Spring Boot 4 ships auto-configuration in
+          dedicated modules, so the bridge above is inert on its own: without these
+          two modules no Tracer or ObservationRegistry tracing handler is created and
+          no traceId/spanId ever reaches the SLF4J MDC, leaving the structured log
+          lines uncorrelatable across service boundaries (AAP 0.7.5).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+        </dependency>
+
+        <!-- Shared library: domain, DTOs, constants, cross-cutting config and exception types. -->
+        <dependency>
+            <groupId>com.carddemo</groupId>
+            <artifactId>carddemo-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Test stack: JUnit 5 (Jupiter), AssertJ, Mockito. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Security test support for role-based slice tests of the menu gating. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Spring MVC test slice (@WebMvcTest, MockMvc auto-configuration). As of
+          Spring Boot 4.0 the Web MVC test slice was extracted from the
+          catch-all spring-boot-test-autoconfigure module into its own
+          spring-boot-webmvc-test module, surfaced through this starter; it is no
+          longer transitively provided by spring-boot-starter-test. The version is
+          managed by the Spring Boot BOM (no explicit pin).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            Testcontainers: the session integration test runs against a real redis:8 so the
+            COMMAREA-equivalent SessionContext is proven to serialize, persist and reload
+            across requests through the actual store (AAP 0.6.3), not an in-memory stand-in.
+        -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Repackage into a runnable fat jar; plugin version inherited from the parent. -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
