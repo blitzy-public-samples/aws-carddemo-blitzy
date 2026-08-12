@@ -57,17 +57,12 @@
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
     <!--
-      The modification time every archive entry carries. Without it the Jar plugin and the
-      Spring Boot repackage stamp each entry with the moment the build ran, so two builds of
-      one commit produced two different archives and neither the provenance statement the
-      pipeline records nor a reader comparing two images could tell a rebuild from a change.
-      This property is the mechanism Maven defines for that, and both plugins read it.
-
-      It is a fixed date rather than the commit time: a property cannot read git, and a value
-      derived per build would restore the problem it removes. Raise it when a release is cut.
-      DocumentationContractTest is not what proves this works — a second `mvn clean package`
-      producing a byte-identical archive is, and that comparison is recorded in
-      card-platform/docs/decision-log.md.
+      The modification time every archive entry carries. The Jar plugin and the Spring Boot
+      repackage both read this property; without it each entry is stamped with the moment the
+      build ran, and two builds of one commit produce two different archives. The value is a
+      fixed date, so raise it when a release is cut. A second `mvn clean package` producing a
+      byte-identical archive is what shows it working.
+      Design decisions: card-platform/docs/decision-log.md.
     -->
     <project.build.outputTimestamp>2026-08-10T00:00:00Z</project.build.outputTimestamp>
 
@@ -89,13 +84,20 @@
         lz4-java          kafka-clients:4.2.1 resolves 1.10.1
       Every floor except tomcat.version answers a published advisory, and the
       dependencyManagement entry for each names the advisory it answers.
-      tomcat.version is precautionary rather than advisory-driven: no advisory
-      affecting the 11.0.22 the bill of materials manages was identified, and
-      11.0.24 is the release this build has been exercised against.
+      tomcat.version is 11.0.24, the newest release Maven Central publishes on
+      the 11.0.x line, and it is not a fix for CVE-2026-66299. That advisory,
+      published 28 July 2026 and rated Low by Apache, covers 11.0.0-M20 through
+      11.0.24 and names 11.0.25 as the fixed release; 11.0.25 is unpublished, so
+      no reachable version answers it. Its subject is the WebSocket chat sample of
+      the examples web application, which an embedded Tomcat does not ship and
+      which no service here declares, so nothing in this platform is within its
+      affected surface. card-platform/docs/suggested-next-tasks.md carries the
+      watch item for 11.0.25.
       enforce-transitive-security-floors in the build section below checks every
       floor against the resolved graph of each module, so a floor that stops
       taking effect fails the build instead of going quiet. Remove an entry, and
       its rule, once the bill of materials manages that version or higher.
+      Design decisions: card-platform/docs/decision-log.md.
     -->
     <tomcat.version>11.0.24</tomcat.version>
     <postgresql.version>42.7.13</postgresql.version>
@@ -201,12 +203,14 @@
         entries below raise all three from the version the bill of materials
         manages to ${tomcat.version}.
 
-        This raise is precautionary and not the answer to an advisory. No advisory
-        affecting tomcat-embed 11.0.22, the version the bill of materials manages,
-        was identified. 11.0.24 is the release this build has been exercised
-        against, and holding all three artifacts at one version keeps the
-        container's own compatibility contract intact. Treat it as compatibility
-        hardening when reading the floors above.
+        This raise is not the answer to an advisory. CVE-2026-66299 covers
+        11.0.0-M20 through 11.0.24, so the pinned version is inside its range and
+        does not fix it, and 11.0.25 is named as the fix but is unpublished. What
+        the advisory reaches is the WebSocket chat sample of the
+        examples web application, which an embedded Tomcat does not ship, and no
+        service here declares a WebSocket endpoint. Read the three entries as
+        compatibility hardening: they hold all three artifacts at one version,
+        which keeps the container's own compatibility contract intact.
       -->
       <dependency>
         <groupId>org.apache.tomcat.embed</groupId>

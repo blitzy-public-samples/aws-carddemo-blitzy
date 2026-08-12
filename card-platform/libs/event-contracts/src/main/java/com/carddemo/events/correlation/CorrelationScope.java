@@ -29,7 +29,7 @@ import tools.jackson.databind.JsonNode;
  * <p>The intended use is one try-with-resources per request or per delivery:
  *
  * <pre>{@code
- * try (CorrelationScope scope = CorrelationScope.open()
+ * try (CorrelationScope _ = CorrelationScope.open()
  *         .withCorrelation(correlationId)
  *         .withCausation(causationId)
  *         .withEvent(event.eventId(), TransactionAuthorized.EVENT_TYPE)) {

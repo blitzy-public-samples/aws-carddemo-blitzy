@@ -178,7 +178,7 @@ class EventCorrelationTest {
         @DisplayName("a scope makes every value readable, and closing it takes them away")
         void aScopeMakesEveryValueReadable() {
             UUID handled = UUID.randomUUID();
-            try (CorrelationScope scope = CorrelationScope.open()
+            try (CorrelationScope _ = CorrelationScope.open()
                     .withCorrelation(CORRELATION)
                     .withCausation(CAUSATION)
                     .withEvent(handled, "TransactionAuthorized")) {
@@ -197,7 +197,7 @@ class EventCorrelationTest {
             // A relay publishing row E2 works under eventId = E2 and has to send the parent E1 the
             // row recorded, so reading one field for both would send the wrong parent.
             UUID published = UUID.randomUUID();
-            try (CorrelationScope scope = CorrelationScope.open()
+            try (CorrelationScope _ = CorrelationScope.open()
                     .withCausation(CAUSATION)
                     .withEvent(published, "TransactionPosted")) {
                 assertThat(EventCorrelation.currentEventId()).contains(published);

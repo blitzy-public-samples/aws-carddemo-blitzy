@@ -18,7 +18,7 @@
   <artifactId>cobol-compat</artifactId>
   <packaging>jar</packaging>
 
-  <name>CardDemo COBOL Compatibility Library</name>
+  <name>CardDemo Card Platform :: COBOL Compatibility Library</name>
   <description>
     Shared helpers that reproduce the arithmetic, parsing, and validation rules of the
     CardDemo COBOL programs. Holds fixed-point decimal helpers, Picture-clause scale

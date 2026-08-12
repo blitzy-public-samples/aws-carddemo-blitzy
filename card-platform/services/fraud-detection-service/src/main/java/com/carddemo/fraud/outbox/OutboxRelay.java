@@ -377,7 +377,7 @@ public class OutboxRelay {
         if (recordType == null) {
             return Dispatch.unknownType(row);
         }
-        try (CorrelationScope scope = scopeOf(row)) {
+        try (CorrelationScope _ = scopeOf(row)) {
             Object event = objectMapper.readValue(row.getPayload(), recordType);
             return Dispatch.issued(row,
                     publisher.publish(fraudAssessedTopic, row.getAggregateId(), event)

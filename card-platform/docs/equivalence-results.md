@@ -84,7 +84,7 @@ The counts below describe the delivered tree rather than one moment, and the mec
 |---|---:|
 | Failsafe equivalence tests | 229 passed across the nine `*EquivalenceTest` classes |
 | Failsafe end-to-end flow test in the same module | 6 passed in `ThreeConsumerAuthorizationFlowIT`, giving 235 for this module's whole Failsafe run |
-| Surefire unit and contract tests in the same module | 566 passed |
+| Surefire unit and contract tests in the same module | 574 passed |
 | `*EquivalenceTest` classes executed | 9 |
 | Required named equivalence classes | 6 present and passing |
 | Checked-in expected-output files | 14, every one read by its declared consumer |
@@ -131,7 +131,7 @@ The reject record itself is compared as bytes. `renderRejectRecord` copies the f
 | `CardSeedEquivalenceTest` | 7 |
 | `ThreeConsumerAuthorizationFlowIT` | 6 |
 
-The whole reactor ran 6,509 Surefire and 599 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven.
+The whole reactor ran 6,541 Surefire and 599 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven.
 
 Here is where they came from, module by module. `scripts/check-published-test-counts.sh` compares every cell below against the reports of a completed build, so a figure in this table is measured rather than asserted.
 
@@ -139,14 +139,14 @@ Here is where they came from, module by module. `scripts/check-published-test-co
 |---|---:|---:|
 | `libs/event-contracts` | 337 | 0 |
 | `libs/cobol-compat` | 130 | 0 |
-| `services/authorization-service` | 835 | 53 |
-| `services/ledger-posting-service` | 498 | 23 |
-| `services/fraud-detection-service` | 728 | 74 |
+| `services/authorization-service` | 843 | 53 |
+| `services/ledger-posting-service` | 504 | 23 |
+| `services/fraud-detection-service` | 730 | 74 |
 | `services/notification-service` | 868 | 39 |
 | `services/account-service` | 1,773 | 51 |
-| `services/card-service` | 774 | 124 |
-| `equivalence-tests` | 566 | 235 |
-| **Reactor total** | **6,509** | **599** |
+| `services/card-service` | 782 | 124 |
+| `equivalence-tests` | 574 | 235 |
+| **Reactor total** | **6,541** | **599** |
 
 The two library modules carry no Failsafe figure because neither holds a class the integration patterns select: `**/*IT.java` and `**/*EquivalenceTest.java` match nothing under either. Every other module holds at least one, and the script fails when one of them writes no Failsafe report. That is the fail-open case a silently empty selection would otherwise leave green.
 
@@ -183,7 +183,7 @@ All nine classes sit in `com.carddemo.equivalence`. The six the specification re
 | Test class | Subject | Assertion | Result |
 |---|---|---|---|
 | `PostingEquivalenceTest` | All 300 daily-transaction records | Final balances, category balances and reject reasons match the expected results record by record, with ordering, timestamp normalization and idempotency. Five checked-in assets read row by row, including the raw 350-character reject block | PASS — 58 tests |
-| `AuthorizationDecisionEquivalenceTest` | Each of the four decline reasons | Correct code and verbatim description, correct short-circuit ordering, equality boundaries, missing rows, and the narrowed precision boundary. Four checked-in assets read row by row | PASS — 17 tests |
+| `AuthorizationDecisionEquivalenceTest` | Each of the four decline reasons | Correct code and verbatim description, correct short-circuit ordering, equality boundaries, missing rows, and the narrowed precision boundary. Four checked-in assets read row by row | PASS — 18 tests |
 | `BillPaymentEquivalenceTest` | The online payment path | Balance reduced to zero and both cycle accumulators left untouched, unlike batch posting. Two checked-in assets read row by row | PASS — 22 tests |
 | `InterestCalculationEquivalenceTest` | Rate rules and the default-group fallback | Rates resolve identically, one `DEFAULT` retry, failed retry, and the accumulator reset. Verified, not migrated. Two checked-in assets read row by row | PASS — 23 tests |
 | `ValidationEquivalenceTest` | Field validation | The six card message texts and the credit-score range message reproduced character for character. Two checked-in assets read row by row | PASS — 50 tests |

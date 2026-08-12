@@ -31,7 +31,10 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.RecordComponent;
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -83,6 +86,9 @@ class RiskScoringServiceTest {
     private static final String AUTHORIZED_AT_EARLIER_HOUR = "2022-06-10 03:27:53.000000";
     private static final Instant EARLIER_BUCKET_START = Instant.parse("2022-06-10T03:00:00Z");
 
+    /** The instant a fixed clock reports, well after the 2022 event the fixture carries. */
+    private static final Instant SCORED_AT = Instant.parse("2026-03-04T05:06:07.890Z");
+
     // Identifiers the rule stubs report, the shipped threshold, the bounds, and one written row.
     private static final String FIRST_RULE = "RULE_ONE";
     private static final String SECOND_RULE = "RULE_TWO";
@@ -100,20 +106,46 @@ class RiskScoringServiceTest {
     private static final int ONE_WINDOW_WRITE = 1;
     private static final FraudProperties SHIPPED_SETTINGS = settingsFlaggingAt(SHIPPED_THRESHOLD);
 
-    /** Collaborator kinds the scorer holds no field of. */
+    /**
+     * Collaborator kinds the scorer holds no field of, because each belongs to the consumer.
+     *
+     * <p>{@code Clock} left this list when the scorer took one. It was here while the class read
+     * {@code Instant.now()} directly, and a review of the delivered platform found that the one
+     * value an assessment reports which no test could name. The clock now arrives through the
+     * constructor, so {@code aFixedClockFixesTheMomentScored} names it. The four that remain are
+     * observability, and the consumer owns all four.
+     */
     private static final List<String> OUTSIDE_TYPES =
-            List.of("Logger", "MeterRegistry", "Counter", "Timer", "Clock");
+            List.of("Logger", "MeterRegistry", "Counter", "Timer");
 
     @Nested
     @DisplayName("The declared shape of the scorer")
     class DeclaredShape {
 
+        /**
+         * Two constructors, and only one of them is an injection point.
+         *
+         * <p>The class carried one constructor while it read {@code Instant.now()} directly. It now
+         * takes a clock, under the shape {@code notification/domain/NotificationService} already
+         * uses: a public constructor the framework calls, which supplies {@link Clock#systemUTC()},
+         * and a package-private one a test hands a fixed clock to. Two constructors make the
+         * injection point ambiguous, so the public one carries {@code @Autowired} and the earlier
+         * assertion that no constructor carried it is withdrawn with the single-constructor shape it
+         * described.
+         *
+         * <p>Both are selected by parameter count rather than by position.
+         * {@code getDeclaredConstructors} fixes no order, so reading index zero would have passed or
+         * failed on whichever the virtual machine happened to list first.
+         */
         @Test
-        @DisplayName("Registers as a public, non-final @Service with one constructor and no boundary")
+        @DisplayName("Registers as a public, non-final @Service with two constructors and no boundary")
         void registersAsAServiceTakingThreeCollaborators() {
             List<String> annotations = annotationNames(SUBJECT.getAnnotations());
-            Constructor<?> constructor = SUBJECT.getDeclaredConstructors()[0];
-            List<String> parameters = Arrays.stream(constructor.getParameterTypes())
+            Constructor<?> injected = constructorTaking(3);
+            Constructor<?> withClock = constructorTaking(4);
+            List<String> parameters = Arrays.stream(injected.getParameterTypes())
+                    .map(Class::getSimpleName).toList();
+            List<String> withClockParameters = Arrays.stream(withClock.getParameterTypes())
                     .map(Class::getSimpleName).toList();
             assertAll("the stereotype, the modifiers and the injection point",
                     () -> assertTrue(SUBJECT.isAnnotationPresent(Service.class), "stereotype"),
@@ -122,13 +154,21 @@ class RiskScoringServiceTest {
                     () -> assertFalse(Ordered.class.isAssignableFrom(SUBJECT), "ordering interface"),
                     () -> assertTrue(Modifier.isPublic(SUBJECT.getModifiers()), "public"),
                     () -> assertFalse(Modifier.isFinal(SUBJECT.getModifiers()), "open to a proxy"),
-                    () -> assertEquals(1, SUBJECT.getDeclaredConstructors().length, "count"),
+                    () -> assertEquals(2, SUBJECT.getDeclaredConstructors().length, "count"),
                     () -> assertEquals(List.of("List", "VelocityWindowRepository",
                             "FraudProperties"), parameters, "parameters in sequence"),
                     () -> assertEquals("java.util.List<com.carddemo.fraud.domain.RiskRule>",
-                            constructor.getGenericParameterTypes()[0].getTypeName(), "element type"),
-                    () -> assertFalse(annotationNames(constructor.getAnnotations())
-                            .contains("Autowired"), "annotated injection"));
+                            injected.getGenericParameterTypes()[0].getTypeName(), "element type"),
+                    () -> assertTrue(Modifier.isPublic(injected.getModifiers()),
+                            "the framework calls the three-argument constructor"),
+                    () -> assertTrue(annotationNames(injected.getAnnotations())
+                            .contains("Autowired"), "the one injection point names itself"),
+                    () -> assertEquals(List.of("List", "VelocityWindowRepository", "FraudProperties",
+                            "Clock"), withClockParameters, "the clock arrives last"),
+                    () -> assertFalse(Modifier.isPublic(withClock.getModifiers()),
+                            "the clock-taking constructor is for this package alone"),
+                    () -> assertFalse(annotationNames(withClock.getAnnotations())
+                            .contains("Autowired"), "only one constructor is an injection point"));
         }
 
         @Test
@@ -136,8 +176,8 @@ class RiskScoringServiceTest {
         void holdsEveryFieldPrivateAndFinal() throws ReflectiveOperationException {
             List<Field> fields = Arrays.stream(SUBJECT.getDeclaredFields())
                     .filter(field -> !field.isSynthetic()).toList();
-            List<String> onParameters = Arrays.stream(
-                            SUBJECT.getDeclaredConstructors()[0].getParameterAnnotations())
+            List<String> onParameters = Arrays.stream(SUBJECT.getDeclaredConstructors())
+                    .map(Constructor::getParameterAnnotations).flatMap(Arrays::stream)
                     .flatMap(Arrays::stream).map(item -> item.annotationType().getSimpleName())
                     .filter("Value"::equals).toList();
             List<String> surface = Arrays.stream(SUBJECT.getDeclaredMethods())
@@ -209,13 +249,12 @@ class RiskScoringServiceTest {
         /**
          * Asserts one instant reaches both the returned assessment and the window row's stamp.
          *
-         * <p>This is the guarantee the class offers, stated as what it is. The test claimed the clock
-         * was read once, which it could not establish: the count of reads is not observable from
-         * outside, because {@code holdsEveryFieldPrivateAndFinal} above requires that this class hold
-         * no {@link java.time.Clock} field, listing {@code Clock} among the types it must not carry.
-         * Adding one to count reads through would break that invariant, so the honest claim is the one
-         * below, and it is the claim that matters: a second read would let the assessment and the row
-         * disagree, and {@code assertSame} refuses that.
+         * <p>This is the guarantee the class offers, stated as what it is. The test once claimed the
+         * clock was read once, which it could not establish from outside, and the honest claim is the
+         * one below: a second read would let the assessment and the row disagree, and
+         * {@code assertSame} refuses that. The clock is injectable now, so the read count is
+         * observable through a counting clock; that is a different property from this one, and
+         * {@code aFixedClockFixesTheMomentScored} below holds the value rather than the count.
          *
          * <p>Two wall-clock readings taken around the call used to bracket the instant. That
          * established nothing about the read count, and a clock moved backward between the two
@@ -274,6 +313,58 @@ class RiskScoringServiceTest {
                             "the event time under the width the class names"),
                     () -> assertNotEquals(EARLIER_BUCKET_START, bucket.getValue(),
                             "the hour the authorization text names"));
+        }
+
+        /**
+         * A fixed clock fixes the moment scored, which is what taking the clock buys.
+         *
+         * <p>The class read {@code Instant.now()} before, so the one value every assessment and every
+         * window row carries could be bracketed and never named. Nothing could assert that the row's
+         * stamp was the moment the assessment ran rather than any moment at all, and nothing could
+         * reproduce a run. Both hold now.
+         */
+        @Test
+        @DisplayName("A fixed clock fixes the moment scored, on the assessment and on the row")
+        void aFixedClockFixesTheMomentScored() {
+            VelocityWindowRepository windows = countingWindow();
+            ArgumentCaptor<Instant> stamp = ArgumentCaptor.forClass(Instant.class);
+            RiskScoringService scorer = new RiskScoringService(
+                    List.of(triggering(FIRST_RULE, 10)), windows, SHIPPED_SETTINGS,
+                    Clock.fixed(SCORED_AT, ZoneOffset.UTC));
+
+            RiskAssessment assessment = scorer.assess(authorization(FIXTURE_AMOUNT));
+
+            verify(windows, times(ONE_WINDOW_WRITE))
+                    .addAuthorization(eq(ACCOUNT_ID), any(), any(), stamp.capture());
+            assertAll("the moment a fixed clock reports",
+                    () -> assertEquals(SCORED_AT, assessment.assessedAt(), "the assessment"),
+                    () -> assertEquals(SCORED_AT, stamp.getValue(), "the window row's stamp"));
+        }
+
+        /**
+         * The clock is read once per assessment, which the injected clock finally makes observable.
+         *
+         * <p>A counting clock answers a new instant on every read, so two reads would give the
+         * assessment and the row two different values. One read is what makes them one value.
+         */
+        @Test
+        @DisplayName("The clock is read once, so a moving clock cannot split the two values")
+        void theClockIsReadOncePerAssessment() {
+            VelocityWindowRepository windows = countingWindow();
+            ArgumentCaptor<Instant> stamp = ArgumentCaptor.forClass(Instant.class);
+            CountingClock ticking = new CountingClock(SCORED_AT);
+            RiskScoringService scorer = new RiskScoringService(
+                    List.of(triggering(FIRST_RULE, 10)), windows, SHIPPED_SETTINGS, ticking);
+
+            RiskAssessment assessment = scorer.assess(authorization(FIXTURE_AMOUNT));
+
+            verify(windows, times(ONE_WINDOW_WRITE))
+                    .addAuthorization(eq(ACCOUNT_ID), any(), any(), stamp.capture());
+            assertAll("one assessment against a clock that moves on every read",
+                    () -> assertEquals(1, ticking.reads(), "reads of the clock"),
+                    () -> assertEquals(SCORED_AT, assessment.assessedAt(), "the first reading"),
+                    () -> assertSame(assessment.assessedAt(), stamp.getValue(),
+                            "the row carries the same object, so no second reading happened"));
         }
     }
 
@@ -532,5 +623,63 @@ class RiskScoringServiceTest {
     private static List<String> annotationNames(Annotation[] annotations) {
         return Arrays.stream(annotations)
                 .map(annotation -> annotation.annotationType().getSimpleName()).toList();
+    }
+
+    /**
+     * Returns the declared constructor taking a given number of parameters.
+     *
+     * <p>{@code getDeclaredConstructors} fixes no order, so a test that read index zero would pass or
+     * fail on whichever the virtual machine happened to list first.
+     *
+     * @param parameters the parameter count to select on
+     * @return the one declared constructor of that arity
+     */
+    private static Constructor<?> constructorTaking(int parameters) {
+        return Arrays.stream(SUBJECT.getDeclaredConstructors())
+                .filter(candidate -> candidate.getParameterCount() == parameters)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "no declared constructor takes " + parameters + " parameters"));
+    }
+
+    /**
+     * A clock that answers one second later on every read, so a second read becomes visible.
+     *
+     * <p>A fixed clock cannot show how many times it was read. This one can: two reads inside one
+     * assessment would hand the assessment and the window row two different instants.
+     */
+    private static final class CountingClock extends Clock {
+
+        /** The instant the first read answers. */
+        private final Instant base;
+
+        /** Reads taken so far, which is also the seconds added to the next answer. */
+        private int reads;
+
+        private CountingClock(Instant base) {
+            this.base = base;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            Instant answered = base.plusSeconds(reads);
+            reads++;
+            return answered;
+        }
+
+        /** Returns how many times this clock has been read. */
+        private int reads() {
+            return reads;
+        }
     }
 }

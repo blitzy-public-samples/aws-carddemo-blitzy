@@ -18,7 +18,7 @@
   <artifactId>ledger-posting-service</artifactId>
   <packaging>jar</packaging>
 
-  <name>CardDemo Platform :: Ledger Posting Service</name>
+  <name>CardDemo Card Platform :: Ledger Posting Service</name>
   <description>Spring Boot application module for the CardDemo ledger posting service, whose
     posting arithmetic comes from app/cbl/CBTRN02C.cbl. Declares the web, persistence,
     messaging and observability dependencies the service needs.</description>

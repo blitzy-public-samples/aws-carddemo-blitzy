@@ -15,7 +15,7 @@
   <artifactId>equivalence-tests</artifactId>
   <packaging>jar</packaging>
 
-  <name>CardDemo Equivalence Tests</name>
+  <name>CardDemo Card Platform :: Equivalence Tests</name>
   <description>
     Provides fixed-width fixture loading and copybook parsing support for the equivalence
     suite. Nine *EquivalenceTest classes cover posting, authorization, bill payment,

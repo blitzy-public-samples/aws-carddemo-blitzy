@@ -5,15 +5,14 @@
 # values it changes. The tag they carry today, 1.0.0-SNAPSHOT, is mutable.
 # Design decisions: card-platform/docs/decision-log.md.
 #
-# TWO KINDS OF IMAGE LIVE IN THIS FOLDER, AND ONLY ONE OF THEM CAN CARRY A DIGEST TODAY.
+# The two kinds of image this folder references, and how each is identified:
 #
 #   upstream  apache/kafka in 10-kafka.yaml and postgres in 20-postgres.yaml. Both are
-#             pulled from a registry and both are already pinned by digest.
+#             pulled from a registry and both are pinned by digest.
 #   platform  the six below. They are built from card-platform/services/*/Dockerfile on
 #             the machine that deploys them and loaded into the cluster. A locally built
-#             image has no manifest digest at all: `docker inspect` reports an empty
-#             RepoDigests list until the image is pushed to a registry, so a digest
-#             reference for these six names nothing a node could resolve.
+#             image carries no manifest digest: `docker inspect` reports an empty
+#             RepoDigests list until the image is pushed to a registry.
 #
 # What the demo path does. The six Deployments set imagePullPolicy: Never, so the kubelet
 # runs the image an operator loaded with deploy/k8s/load-images.sh or refuses the Pod and

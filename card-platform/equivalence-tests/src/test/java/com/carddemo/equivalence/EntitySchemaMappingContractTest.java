@@ -153,10 +153,13 @@ class EntitySchemaMappingContractTest {
      *
      * <p>Seven columns left the model most recently, and the whole of the authorization service's
      * {@code unresolved_card_attempt} table with them.
-     * {@code V20__unresolved_card_attempt_withdrawn.sql} drops it because the outcome it recorded
-     * is no longer decided: a card that resolves no cross-reference row is refused rather than
-     * decided against the account a caller named in the request body. The observation that an
-     * unknown card was presented is kept as a metric, and a metric has no column.</p>
+     * {@code V20__unresolved_card_attempt_withdrawn.sql} drops it, and
+     * {@code V24__unresolved_card_decline_is_decided.sql} keeps it dropped for the reason that
+     * outlasted the reversal: every column of it recorded a call {@code authorization_decision}
+     * already records. A card that resolves no cross-reference row is decided under
+     * {@code transaction-declined-v2}, keyed on the transaction identifier this service minted, and
+     * the row that holds it carries a null {@code account_id}. The observation that an unknown card
+     * was presented is also kept as a metric, and a metric has no column.</p>
      *
      * <p>Sixteen arrived with the card-token rotation, and none has a COBOL ancestor because the
      * source holds no token: {@code app/bms/COCRDSL.bms:L99} shows a card in full. Three of the

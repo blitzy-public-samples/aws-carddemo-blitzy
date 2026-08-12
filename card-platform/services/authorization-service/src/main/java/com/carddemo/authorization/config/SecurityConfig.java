@@ -565,6 +565,12 @@ public class SecurityConfig {
                         // server.error.include-* key at a value that reveals no detail.
                         .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.ASYNC)
                             .permitAll()
+                        // Ahead of every route rule, because a request refused here must be
+                        // refused whatever route it names. A state-changing request carrying a
+                        // content type a browser can send cross-origin with no preflight is the
+                        // shape of a forged call, and no machine caller of a JSON API sends one.
+                        .requestMatchers(SecurityConfig::isBrowserSimpleStateChange)
+                            .denyAll()
                         .requestMatchers(HttpMethod.POST, "/authorizations")
                             .hasAnyRole(ROLE_ACQUIRER, ROLE_ADMIN)
                         // Default deny. A route named by no rule above is refused.
@@ -583,6 +589,65 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .headers(headers -> headers.cacheControl(Customizer.withDefaults()))
                 .build();
+    }
+
+    /**
+     * The three content types a browser sends cross-origin without asking permission first.
+     *
+     * <p>Taken from the Fetch standard's definition of a CORS-safelisted request header: a request
+     * whose {@code Content-Type} is one of these three, whose method is GET, HEAD or POST, and which
+     * sets no other author header, is sent with no preflight and with the credentials the browser
+     * holds for the target origin. Any other content type makes the request non-simple, and the
+     * browser asks first.
+     *
+     * <p>Compared case-insensitively and ignoring parameters, so
+     * {@code Application/X-WWW-Form-Urlencoded; charset=UTF-8} is recognised.
+     */
+    static final List<String> BROWSER_SIMPLE_CONTENT_TYPES = List.of(
+            MediaType.APPLICATION_FORM_URLENCODED_VALUE,
+            MediaType.MULTIPART_FORM_DATA_VALUE,
+            MediaType.TEXT_PLAIN_VALUE);
+
+    /**
+     * The methods that change state and are therefore worth forging.
+     *
+     * <p>POST is the one a browser can send cross-origin with no preflight, so it is the one this
+     * check exists for. PUT, PATCH and DELETE are listed because they are state-changing and cost
+     * nothing to include: a browser cannot send them cross-origin without a preflight, so naming
+     * them adds no refusal a legitimate caller would notice.
+     */
+    private static final List<String> STATE_CHANGING_METHODS =
+            List.of(HttpMethod.POST.name(), HttpMethod.PUT.name(), HttpMethod.PATCH.name(),
+                    HttpMethod.DELETE.name());
+
+    /**
+     * Reports whether one request is a state change carrying a browser-simple content type.
+     *
+     * <p>This is the cross-site request forgery control of this service, stated once rather than per
+     * route. A request it matches is denied before any route rule is consulted, so a route added
+     * later without a {@code consumes} declaration is covered by default rather than by review.
+     *
+     * <p>A request with no {@code Content-Type} does not match. That is deliberate: a caller who
+     * omitted the header made a mistake and should read 415 from the route, whereas a caller who
+     * sent a form encoding to a JSON API is either a browser being driven from another origin or a
+     * client that will not work anyway.
+     *
+     * <p>Package-private so a unit test can drive it with a request rather than having to stand up a
+     * servlet container to observe one refusal.
+     *
+     * @param request the request under authorization
+     * @return true when the request is a state change a browser could have forged
+     */
+    static boolean isBrowserSimpleStateChange(HttpServletRequest request) {
+        if (!STATE_CHANGING_METHODS.contains(request.getMethod())) {
+            return false;
+        }
+        String declared = request.getContentType();
+        if (declared == null || declared.isBlank()) {
+            return false;
+        }
+        String bare = declared.split(";", 2)[0].trim();
+        return BROWSER_SIMPLE_CONTENT_TYPES.stream().anyMatch(bare::equalsIgnoreCase);
     }
 
     /**

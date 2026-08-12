@@ -20,7 +20,7 @@
   <artifactId>card-service</artifactId>
   <packaging>jar</packaging>
 
-  <name>card-service</name>
+  <name>CardDemo Card Platform :: Card Service</name>
   <description>
     Card list, card detail and card update over Representational State Transfer
     (REST). Publishes one CardUpdated event on mutation, against the shared

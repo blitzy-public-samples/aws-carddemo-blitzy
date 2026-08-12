@@ -211,7 +211,7 @@ class KafkaEventPublisherTest {
                 "North Enoshaven", "72112", MASKED_CARD_NUMBER, ORIGIN_TIMESTAMP);
         String payload = jsonMapper.writeValueAsString(event);
 
-        try (CorrelationScope scope = CorrelationScope.open()
+        try (CorrelationScope _ = CorrelationScope.open()
                 .withCorrelation(correlationId)
                 .withCausation(causationId)) {
             assertDoesNotThrow(

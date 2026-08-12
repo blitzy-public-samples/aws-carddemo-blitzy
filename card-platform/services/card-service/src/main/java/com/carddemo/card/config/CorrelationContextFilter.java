@@ -60,7 +60,7 @@ public class CorrelationContextFilter extends OncePerRequestFilter {
                 .parse(request.getHeader(EventCorrelation.CORRELATION_ID_REQUEST_HEADER))
                 .orElseGet(EventCorrelation::newCorrelationId);
 
-        try (CorrelationScope scope = CorrelationScope.open().withCorrelation(correlationId)) {
+        try (CorrelationScope _ = CorrelationScope.open().withCorrelation(correlationId)) {
             response.setHeader(EventCorrelation.CORRELATION_ID_REQUEST_HEADER,
                     correlationId.toString());
             chain.doFilter(request, response);

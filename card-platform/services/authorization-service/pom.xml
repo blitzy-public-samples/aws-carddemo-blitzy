@@ -17,7 +17,7 @@
   <artifactId>authorization-service</artifactId>
   <packaging>jar</packaging>
 
-  <name>Authorization Service</name>
+  <name>CardDemo Card Platform :: Authorization Service</name>
   <description>
     Spring Boot application module for the CardDemo authorization service. Declares the
     web, persistence, messaging and observability dependencies the service needs, and

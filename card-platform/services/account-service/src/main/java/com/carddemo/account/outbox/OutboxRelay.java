@@ -360,7 +360,7 @@ public class OutboxRelay {
             return Dispatch.refused(row, UNRESOLVED_DESTINATION,
                     rootCause(unconfigured).getClass().getSimpleName());
         }
-        try (CorrelationScope scope = scopeOf(row)) {
+        try (CorrelationScope _ = scopeOf(row)) {
             return Dispatch.issued(row, destination, eventPublisherPort.publish(destination,
                     row.getAggregateId(), row.getPayload()));
         } catch (RuntimeException notSent) {

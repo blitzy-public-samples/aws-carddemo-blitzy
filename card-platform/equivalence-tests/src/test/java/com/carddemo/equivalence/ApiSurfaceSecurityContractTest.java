@@ -638,6 +638,19 @@ class ApiSurfaceSecurityContractTest {
     /** Rule that ends every ordinary chain, so a route no rule above named is refused. */
     private static final String DEFAULT_DENY_RULE = ".anyRequest().denyAll()";
 
+    /**
+     * Rule that refuses a state change carrying a content type a browser can forge.
+     *
+     * <p>A request matching it is denied before any route rule is consulted, so a route added later
+     * without a {@code consumes} declaration is covered by default rather than by review.
+     */
+    private static final String BROWSER_SIMPLE_DENY_RULE =
+            ".requestMatchers(SecurityConfig::isBrowserSimpleStateChange)";
+
+    /** Methods a chain rule can name that change state, and are therefore worth forging. */
+    private static final List<String> STATE_CHANGING_METHOD_NAMES =
+            List.of("HttpMethod.POST", "HttpMethod.PUT", "HttpMethod.PATCH", "HttpMethod.DELETE");
+
     /** Rule that ends every management chain. */
     private static final String MANAGEMENT_DEFAULT_RULE = ".anyRequest().hasRole(ROLE_MONITORING)";
 
@@ -2681,6 +2694,95 @@ class ApiSurfaceSecurityContractTest {
             assertEquals(List.of(), policies,
                     "a cross-origin policy now exists, so this contract has to grow assertions for "
                             + "the origins it admits and the ones it refuses: " + policies);
+        }
+    }
+
+    /**
+     * The browser-simple refusal is present exactly where a state change is reachable.
+     *
+     * <p>Only the account service carried this rule when a review measured the six chains, and the
+     * asymmetry read as an oversight rather than as a decision. It is a decision, and this class
+     * states it: a chain that names a state-changing method carries the rule, and a chain that names
+     * none does not, because a rule that could never fire is a rule a reader has to rule out.
+     *
+     * <p>Three services name only reads. Their {@code .anyRequest().denyAll()} already refuses every
+     * state-changing method, and {@code config/CrossSiteRequestFilter} refuses one that lacks the
+     * mandatory request header, so the rule would add no refusal in any of the three.
+     *
+     * <p>The check is on the shipped source of each chain rather than on a running context, because
+     * what it holds is where a rule sits relative to the route rules. That order is the property:
+     * a refusal placed after a route rule is a refusal a route rule can pre-empt.
+     */
+    @Nested
+    @DisplayName("The browser-simple refusal sits wherever a state change is reachable")
+    class BrowserSimpleRefusal {
+
+        @Test
+        @DisplayName("every chain naming a state-changing method carries the refusal, ahead of it")
+        void everyChainNamingAStateChangeCarriesTheRefusalAheadOfIt() {
+            for (String module : ALL_MODULES) {
+                String chain = apiChainOf(module);
+                int firstStateChange = STATE_CHANGING_METHOD_NAMES.stream()
+                        .map(chain::indexOf)
+                        .filter(at -> at >= 0)
+                        .min(Integer::compareTo)
+                        .orElse(-1);
+                if (firstStateChange < 0) {
+                    continue;
+                }
+                int refusalAt = chain.indexOf(BROWSER_SIMPLE_DENY_RULE);
+                assertTrue(refusalAt >= 0, module + " names a state-changing route and carries no "
+                        + BROWSER_SIMPLE_DENY_RULE + " rule, so a form-encoded call reaches its "
+                        + "handler where the same call is refused by another service");
+                assertTrue(refusalAt < firstStateChange,
+                        module + " places the browser-simple refusal after a route rule, where a "
+                                + "route rule can grant a request the refusal would have denied");
+                assertTrue(chain.contains(BROWSER_SIMPLE_DENY_RULE + "\n" + "                            .denyAll()")
+                                || chain.replaceAll("\\s+", " ")
+                                        .contains(BROWSER_SIMPLE_DENY_RULE + " .denyAll()"),
+                        module + " matches the browser-simple shape and does something other than "
+                                + "deny it");
+            }
+        }
+
+        @Test
+        @DisplayName("a chain naming only reads carries no refusal that could never fire")
+        void aChainNamingOnlyReadsCarriesNoRefusalThatCouldNeverFire() {
+            for (String module : ALL_MODULES) {
+                String chain = apiChainOf(module);
+                boolean namesAStateChange =
+                        STATE_CHANGING_METHOD_NAMES.stream().anyMatch(chain::contains);
+                if (namesAStateChange) {
+                    continue;
+                }
+                assertFalse(chain.contains(BROWSER_SIMPLE_DENY_RULE),
+                        module + " names no state-changing route, so the browser-simple refusal "
+                                + "could never fire in it and reads as a rule a maintainer has to "
+                                + "understand before changing anything");
+                assertTrue(chain.contains(DEFAULT_DENY_RULE),
+                        module + " relies on its default deny to refuse a state change, so the "
+                                + "default deny has to be there");
+            }
+        }
+
+        @Test
+        @DisplayName("every service declaring the check declares the same three content types")
+        void everyServiceDeclaringTheCheckDeclaresTheSameThreeContentTypes() {
+            List<String> declaring = ALL_MODULES.stream()
+                    .filter(module -> securityConfigOf(module)
+                            .contains("static boolean isBrowserSimpleStateChange("))
+                    .toList();
+            assertFalse(declaring.isEmpty(), "no service declares the browser-simple check");
+            for (String module : declaring) {
+                String source = securityConfigOf(module);
+                for (String value : List.of("MediaType.APPLICATION_FORM_URLENCODED_VALUE",
+                        "MediaType.MULTIPART_FORM_DATA_VALUE", "MediaType.TEXT_PLAIN_VALUE")) {
+                    assertTrue(source.contains(value), module + " omits " + value
+                            + " from the browser-simple set, so one forged shape reaches a handler");
+                }
+                assertTrue(source.contains("List.of(HttpMethod.POST.name(), HttpMethod.PUT.name(),"),
+                        module + " has to cover every state-changing method, not only POST");
+            }
         }
     }
 

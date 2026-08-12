@@ -36,7 +36,7 @@
   <artifactId>event-contracts</artifactId>
   <packaging>jar</packaging>
 
-  <name>event-contracts</name>
+  <name>CardDemo Card Platform :: Event Contracts</name>
   <description>Versioned JSON Schema documents for the authorization, ledger, fraud, account, card and customer events, and for the dead-letter envelope. Every document is Draft 2020-12. Every document closes its top-level property set and carries one bounded extensions object, so an undeclared field is refused and evolution stays additive.</description>
 
   <!-- Language level. The compiler plugin in card-platform/pom.xml reads

@@ -27,6 +27,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.MediaType;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -1150,6 +1151,101 @@ class SecurityConfigTest {
                             "the MONITORING hash in TestIdentityPasswords no longer verifies its"
                                     + " plaintext, so every test that authenticates as that"
                                     + " identity would fail for a reason unrelated to its subject"));
+        }
+    }
+
+    @Nested
+    @DisplayName("Cross-site request forgery, refused by the shape of the request")
+    class CrossSiteRequestForgery {
+
+        /**
+         * Builds a request of one method carrying one content type.
+         *
+         * @param method      the HTTP method
+         * @param contentType the {@code Content-Type} header, or null to send none
+         * @return the request the check receives
+         */
+        private static MockHttpServletRequest request(String method, String contentType) {
+            MockHttpServletRequest request = new MockHttpServletRequest();
+            request.setMethod(method);
+            if (contentType != null) {
+                request.setContentType(contentType);
+            }
+            return request;
+        }
+
+        @Test
+        @DisplayName("a form-encoded POST is the forged shape and is refused")
+        void aFormEncodedPostIsRefused() {
+            assertTrue(SecurityConfig.isBrowserSimpleStateChange(
+                            request("POST", MediaType.APPLICATION_FORM_URLENCODED_VALUE)),
+                    "a browser sends exactly this cross-origin with no preflight, carrying the"
+                            + " credential it holds for this origin");
+        }
+
+        @Test
+        @DisplayName("multipart and plain text are refused for the same reason")
+        void multipartAndPlainTextAreRefused() {
+            assertTrue(SecurityConfig.isBrowserSimpleStateChange(
+                    request("POST", MediaType.MULTIPART_FORM_DATA_VALUE)));
+            assertTrue(SecurityConfig.isBrowserSimpleStateChange(
+                    request("POST", MediaType.TEXT_PLAIN_VALUE)));
+        }
+
+        @Test
+        @DisplayName("a charset parameter does not hide a form encoding")
+        void aCharsetParameterDoesNotHideAFormEncoding() {
+            assertTrue(SecurityConfig.isBrowserSimpleStateChange(
+                            request("POST", "Application/X-WWW-Form-Urlencoded; charset=UTF-8")),
+                    "the comparison ignores parameters and case, or the control is one header"
+                            + " away from being bypassed");
+        }
+
+        @Test
+        @DisplayName("a JSON POST is not the forged shape and passes this check")
+        void aJsonPostPassesThisCheck() {
+            assertFalse(SecurityConfig.isBrowserSimpleStateChange(
+                            request("POST", MediaType.APPLICATION_JSON_VALUE)),
+                    "application/json is not a content type a browser can send cross-origin"
+                            + " without asking first, so it needs no refusal here");
+        }
+
+        @Test
+        @DisplayName("a POST naming no media type reaches the route, which answers 415")
+        void aPostNamingNoMediaTypeReachesTheRoute() {
+            assertFalse(SecurityConfig.isBrowserSimpleStateChange(request("POST", null)),
+                    "a missing header is a caller's mistake and reads 415; a form encoding is the"
+                            + " shape of an attack and reads 403");
+        }
+
+        @Test
+        @DisplayName("a read is never refused by this check, whatever it names")
+        void aReadIsNeverRefusedByThisCheck() {
+            assertFalse(SecurityConfig.isBrowserSimpleStateChange(
+                            request("GET", MediaType.APPLICATION_FORM_URLENCODED_VALUE)),
+                    "a read changes nothing, so forging one achieves nothing");
+            assertFalse(SecurityConfig.isBrowserSimpleStateChange(
+                    request("HEAD", MediaType.TEXT_PLAIN_VALUE)));
+        }
+
+        @Test
+        @DisplayName("every state-changing method is covered, not only the one a browser can send")
+        void everyStateChangingMethodIsCovered() {
+            for (String method : List.of("POST", "PUT", "PATCH", "DELETE")) {
+                assertTrue(SecurityConfig.isBrowserSimpleStateChange(
+                                request(method, MediaType.TEXT_PLAIN_VALUE)),
+                        method + " changes state and costs nothing to cover");
+            }
+        }
+
+        @Test
+        @DisplayName("the refused set is exactly the three CORS-simple content types")
+        void theRefusedSetIsExactlyTheThreeSimpleContentTypes() {
+            assertEquals(List.of(MediaType.APPLICATION_FORM_URLENCODED_VALUE,
+                            MediaType.MULTIPART_FORM_DATA_VALUE, MediaType.TEXT_PLAIN_VALUE),
+                    SecurityConfig.BROWSER_SIMPLE_CONTENT_TYPES,
+                    "a fourth entry would refuse a request no browser can forge, and a missing one"
+                            + " would leave a route reachable from another origin");
         }
     }
 }

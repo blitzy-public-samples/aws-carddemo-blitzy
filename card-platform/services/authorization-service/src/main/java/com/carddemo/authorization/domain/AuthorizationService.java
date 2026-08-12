@@ -483,7 +483,7 @@ public class AuthorizationService {
         void record(AuthorizationService service) {
             service.countOutcome(outcomeTag);
             service.countEvent(eventType);
-            try (CorrelationScope scope = CorrelationScope.open()
+            try (CorrelationScope _ = CorrelationScope.open()
                     .withEvent(eventId, eventType)
                     .withTransaction(transactionId)) {
                 LOG.info("An authorization decision committed under outcome {}, and it published one"

@@ -630,3 +630,13 @@ Five appended items read the same way. Item 32 records that five batch programs 
 - **Why it is a task rather than a change:** AAP 0.3.1 enumerates a `config` package inside each service and names these classes there. AAP 0.4.2 fixes the module graph at two libraries and six services. AAP 0.3.3 abstracts one seam and says no other is abstracted. Amending the plan is a human decision, and `docs/decision-log.md` records why the copies stand until then.
 - **Check:** Six services start. The ban on a service depending on another still fails a violating build. The five contract tests read the shared classes rather than six copies.
 - **Behavior change:** No. The classes are identical today, which is what makes the move mechanical.
+
+## Work the final acceptance gate surfaced
+
+### Raise Tomcat to 11.0.25 when Apache publishes it
+
+- **Change:** Raise `tomcat.version` from 11.0.24 to 11.0.25, and remove the paragraph of the version-floor comment that explains why the pinned version does not fix CVE-2026-66299.
+- **Where:** `card-platform/pom.xml`, the `tomcat.version` property and the comment above it. The `dependencyManagement` entries for `tomcat-embed-core`, `tomcat-embed-el` and `tomcat-embed-websocket` read the property, so one edit moves all three, and `enforce-transitive-security-floors` re-checks the resolved graph of every module.
+- **Why now is not necessary:** 11.0.25 does not exist yet. Maven Central publishes nothing above 11.0.24 on the 11.0.x line, which the artifact metadata confirms. Apache rates the advisory Low, it covers 11.0.0-M20 through 11.0.24, and its subject is the WebSocket chat sample of the examples web application. An embedded Tomcat ships no examples web application and no service here declares a WebSocket endpoint, so the affected code is absent rather than reachable.
+- **Check:** `curl -sI https://repo1.maven.org/maven2/org/apache/tomcat/embed/tomcat-embed-core/11.0.25/tomcat-embed-core-11.0.25.pom` answering 200 rather than 404 is the signal to act. After raising, `mvn -B -ntp -o clean verify` and confirm the enforcer reports no floor below the pin.
+- **Behavior change:** None. The change is a patch release of the servlet container, and no code of this platform reaches the example the advisory names.

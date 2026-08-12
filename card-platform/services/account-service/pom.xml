@@ -18,7 +18,7 @@
   <artifactId>account-service</artifactId>
   <packaging>jar</packaging>
 
-  <name>CardDemo Account Service</name>
+  <name>CardDemo Card Platform :: Account Service</name>
   <description>
     Spring Boot application module for the CardDemo account service. Declares the web,
     persistence, messaging and observability dependencies the service needs, and

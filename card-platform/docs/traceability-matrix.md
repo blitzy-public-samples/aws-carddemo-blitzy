@@ -1,6 +1,6 @@
 # Traceability Matrix
 
-Rule 1 requires every source construct to reach a target or a documented exclusion. The matrix also reads backward, from every one of the 907 delivered target paths to source provenance or a net-new marker. Coverage arithmetic closes each source inventory before any mapping detail. Design rationale lives in the [decision log](decision-log.md), flagged source ambiguities in [business-rule flags](business-rule-flags.md), and the paired architecture views in [architecture before and after](architecture-before-after.md).
+Rule 1 requires every source construct to reach a target or a documented exclusion. The matrix also reads backward, from every one of the 910 delivered target paths to source provenance or a net-new marker. Coverage arithmetic closes each source inventory before any mapping detail. Design rationale lives in the [decision log](decision-log.md), flagged source ambiguities in [business-rule flags](business-rule-flags.md), and the paired architecture views in [architecture before and after](architecture-before-after.md).
 
 ## Coverage summary
 
@@ -16,9 +16,9 @@ Every count in this document was measured in the repository. Where a measurement
 | `app/cpy-bms/` | 17 source copybooks | All excluded for the same reason; `.gitkeep` is not a source member | 17 |
 | `app/data/ASCII/` | 9 | All reused as fixtures or seed sources | 9 |
 | `app/data/EBCDIC/` | 12 data artifacts | All retained as binary or width references; `.gitkeep` is excluded from the count | 12 |
-| Delivered target tree | 907 tracked files | 305 source-derived, 247 verification source-derived, 156 verification additive, 135 additive, 44 net new platforms, 11 rule-mandated documents, 8 rule 3 documents, 1 rule 3 update | 907 |
+| Delivered target tree | 910 tracked files | 306 source-derived, 248 verification source-derived, 157 verification additive, 135 additive, 44 net new platforms, 11 rule-mandated documents, 8 rule 3 documents, 1 rule 3 update | 910 |
 
-The backward direction closes on its own count. The delivered tree holds 907 tracked target paths. The two module-level tables below resolve them in 53 rows, each naming a module or a uniform group rather than a file. Every one of the 907 then appears once in [backward: every target path](#backward-every-target-path), so the target side is enumerated rather than summarised.
+The backward direction closes on its own count. The delivered tree holds 910 tracked target paths. The two module-level tables below resolve them in 53 rows, each naming a module or a uniform group rather than a file. Every one of the 910 then appears once in [backward: every target path](#backward-every-target-path), so the target side is enumerated rather than summarised.
 
 ## Forward: COBOL programs
 
@@ -375,13 +375,13 @@ The build, container, deployment, and document deliverables trace to a rule or a
 
 ## Backward: every target path
 
-Rule 1 closes in both directions, so the forward inventories above are matched by a row for every target path this engagement delivers. The list is complete rather than representative: `git ls-files --cached --others --exclude-standard card-platform .github README.md | wc -l` reports 907 delivered paths, and the tables below carry 907 rows. The two flags are not decoration. A plain `git ls-files` lists tracked paths only, so it reports fewer in any session that added a file, because a file is untracked until it is committed. The closure table at the end sums the rows per group, so that figure can be checked without counting by hand.
+Rule 1 closes in both directions, so the forward inventories above are matched by a row for every target path this engagement delivers. The list is complete rather than representative: `git ls-files --cached --others --exclude-standard card-platform .github README.md | wc -l` reports 910 delivered paths, and the tables below carry 910 rows. The two flags are not decoration. A plain `git ls-files` lists tracked paths only, so it reports fewer in any session that added a file, because a file is untracked until it is committed. The closure table at the end sums the rows per group, so that figure can be checked without counting by hand.
 
 That command names one path outside `card-platform/` and `.github/`, and it belongs in the count. The root `README.md` is the one pre-existing document this engagement updates, and a review found it missing here, so it now carries a row of its own. A `.gitattributes` was named alongside it and has since been withdrawn, because the AAP confines this engagement's writes to `card-platform/`, that guide and `.github/`. The four remaining root files — `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `LICENSE` and `NOTICE` — are untouched, so nothing delivers them and none carries a row. Everything under `blitzy/` is run evidence rather than platform code, so git excludes it and no row states provenance for it.
 
-The Source provenance column names what the file itself records. Every delivered file that derives from a source member cites that member in its own comments, so the column is read out of the code rather than asserted over it. **652 of the 907 paths name at least one member under `app/`, and the remaining 255 name none.** Every one of those 255 cells opens with `None cited`, and what follows says why: 187 read `None cited in the file`, and the other 68 name the absence itself, such as `None cited; the source scores no risk and runs no rules engine`. Where a file cites more than four members the cell names four and counts the rest, because the point of a row is provenance rather than a citation list.
+The Source provenance column names what the file itself records. Every delivered file that derives from a source member cites that member in its own comments, so the column is read out of the code rather than asserted over it. **654 of the 910 paths name at least one member under `app/`, and the remaining 256 name none.** Every one of those 256 cells opens with `None cited`, and what follows says why: 188 read `None cited in the file`, and the other 68 name the absence itself, such as `None cited; the source scores no risk and runs no rules engine`. Where a file cites more than four members the cell names four and counts the rest, because the point of a row is provenance rather than a citation list.
 
-A cell that names no member says so in one of five wordings rather than one. The plain wording `None cited in the file` accounts for 187 rows, the fraud wording for 44, and the build wording for 25. Two further wordings cover the remaining 3. All 259 mean the same measured thing — the file carries no reference to any member under `app/` — and the wording records only why. `DocumentationContractTest` recomputes all 907 sets from disk and fails on any cell that disagrees, so this column cannot drift from the files again.
+A cell that names no member says so in one of five wordings rather than one. The plain wording `None cited in the file` accounts for 188 rows, the fraud wording for 40, and the build wording for 25. Two further wordings cover the remaining 3. All 256 mean the same measured thing — the file carries no reference to any member under `app/` — and the wording records only why. `DocumentationContractTest` recomputes all 910 sets from disk and fails on any cell that disagrees, so this column cannot drift from the files again.
 
 **A citation is not automatically provenance, and two groups of rows say so in the cell itself**. Build, container and deployment artifacts name the members whose behaviour the artifact runs. The repository carries no build manifest of any kind, so those citations are context.
 
@@ -703,9 +703,11 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/services/ledger-posting-service/src/test/java/com/carddemo/ledger/outbox/OutboxRelayTest.java` | None cited in the file | Verification, additive |
 | `card-platform/services/ledger-posting-service/src/test/java/com/carddemo/ledger/repository/AccountBalanceProjectionRepositoryTest.java` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl`, `app/data/ASCII/acctdata.txt` | Verification, source-derived |
 | `card-platform/services/ledger-posting-service/src/test/java/com/carddemo/ledger/repository/OutboxClaimOrderTest.java` | `app/cbl/CORPT00C.cbl`, `app/cpy/CVACT01Y.cpy` | Verification, source-derived |
+| `card-platform/services/ledger-posting-service/src/test/java/com/carddemo/ledger/repository/TransactionCardNumberConstraintTest.java` | `app/cpy/CVTRA05Y.cpy` | Verification, source-derived |
 | `card-platform/services/ledger-posting-service/src/test/java/com/carddemo/ledger/repository/TransactionCategoryBalanceRepositoryTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVTRA01Y.cpy` | Verification, source-derived |
 | `card-platform/services/ledger-posting-service/src/test/java/com/carddemo/ledger/outbox/OutboxWriterTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVTRA05Y.cpy`, `app/data/ASCII/cardxref.txt`, `app/data/ASCII/dailytran.txt` | Verification, source-derived |
 | `card-platform/services/ledger-posting-service/src/main/resources/db/migration/V11__processed_event_claims_are_permanent.sql` | `app/cbl/CBTRN02C.cbl` | Source-derived |
+| `card-platform/services/ledger-posting-service/src/main/resources/db/migration/V12__transaction_card_number_is_masked.sql` | `app/cpy/CVTRA05Y.cpy` | Source-derived |
 | `card-platform/services/ledger-posting-service/src/main/resources/application-trusted-proxy.yml` | None cited in the file | Additive |
 
 ### Fraud detection service — 99 paths
@@ -1274,6 +1276,7 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/TestIdentityPasswords.java` | None cited in the file | Verification, additive |
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/TestInfrastructureOwnershipContractTest.java` | None cited in the file | Verification, additive |
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/ThreeConsumerAuthorizationFlowIT.java` | `app/data/ASCII/cardxref.txt` | Verification, source-derived |
+| `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/UnresolvedCardDeclineProseContractTest.java` | None cited in the file | Verification, additive |
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/ValidationEquivalenceTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl`, `app/cbl/COCRDUPC.cbl`, `app/cpy/CVACT02Y.cpy` and 3 more | Verification, source-derived |
 | `card-platform/equivalence-tests/src/test/resources/expected/acctdata-final-account-state-model-b.csv` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVTRA01Y.cpy` and 2 more | Verification, source-derived |
 | `card-platform/equivalence-tests/src/test/resources/expected/bill-payment-results.csv` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COBIL00C.cbl`, `app/cpy/CSDAT01Y.cpy`, `app/cpy/CVACT01Y.cpy` and 3 more | Verification, source-derived |
@@ -1362,12 +1365,12 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | Event contract library | 45 |
 | COBOL compatibility library | 13 |
 | Authorization service | 145 |
-| Ledger posting service | 98 |
+| Ledger posting service | 100 |
 | Fraud detection service | 99 |
 | Notification service | 95 |
 | Account service | 179 |
 | Card service | 118 |
-| Equivalence test module | 73 |
+| Equivalence test module | 74 |
 | Documents | 10 |
 | Presentation | 1 |
 | Deployment artifacts | 15 |
@@ -1375,11 +1378,11 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | Repository-root platform files | 8 |
 | Continuous integration | 3 |
 | Repository root outside the platform tree | 1 |
-| **Total** | **907** |
+| **Total** | **910** |
 
-**Backward closure:** 907 rows against 907 tracked paths, so every target path carries a classification and a provenance statement.
+**Backward closure:** 910 rows against 910 tracked paths, so every target path carries a classification and a provenance statement.
 
-The last review of this platform measured 878 delivered paths and found this section closed against 876. Its remediation added 31 paths and withdrew 2, taking the tree to 907. This review added one migration and withdrew one root path, which is how the same command still reports 907. The arithmetic is stated so the two figures reconcile without a second measurement. Withdrawn paths are listed below, because a path the tree no longer carries can hold no row above.
+The last review of this platform measured 878 delivered paths and found this section closed against 876. Its remediation added 31 paths and withdrew 2, taking the tree to 907. The review after it added one migration and withdrew one root path, leaving the same figure, and this remediation adds two tests and one migration, taking the tree to 910. The arithmetic is stated so the two figures reconcile without a second measurement. Withdrawn paths are listed below, because a path the tree no longer carries can hold no row above.
 
 ## Withdrawn target paths
 

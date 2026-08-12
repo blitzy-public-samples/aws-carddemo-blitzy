@@ -8,12 +8,14 @@ import com.carddemo.fraud.config.FraudProperties;
 import com.carddemo.fraud.entity.VelocityWindowEntity;
 import com.carddemo.fraud.repository.VelocityWindowRepository;
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
@@ -31,6 +33,9 @@ import org.springframework.stereotype.Service;
  * holds. This class builds no event, publishes nothing and opens no transaction; the consumer that
  * calls it owns all three. The decisions behind this class are recorded in
  * {@code card-platform/docs/decision-log.md}.
+ *
+ * <p>The moment each assessment reports is read from an injected {@link Clock}, so a test can fix it
+ * and the velocity bucket a run writes is the bucket the test names.
  *
  * <p>A rule that triggers is not by itself a flag. The score every triggered rule contributes to is
  * compared against {@code carddemo.fraud.risk.flag-threshold}, and only a total at or above that
@@ -71,6 +76,9 @@ public class RiskScoringService {
     /** Score at or above which the assessment is flagged. */
     private final int flagThreshold;
 
+    /** Reads the instant each assessment reports as the moment it was scored. */
+    private final Clock clock;
+
     /**
      * Takes every risk rule, the window store and the bound settings the threshold comes from.
      *
@@ -93,8 +101,27 @@ public class RiskScoringService {
      * @throws IllegalArgumentException if the configured threshold is outside the range the event
      *                                  contract permits for a risk score
      */
+    @Autowired
     public RiskScoringService(List<RiskRule> rules, VelocityWindowRepository velocityWindows,
             FraudProperties properties) {
+        this(rules, velocityWindows, properties, Clock.systemUTC());
+    }
+
+    /**
+     * Takes the rules, the window store, the bound settings and the clock each assessment reads.
+     *
+     * @param rules           every rule the framework supplied, kept in the order supplied. An
+     *                        empty collection scores every transaction as cleared
+     * @param velocityWindows store the atomic window update runs against
+     * @param properties      the bound {@code carddemo} block, read for
+     *                        {@code fraud.risk.flag-threshold}
+     * @param clock           the clock each assessment reads the moment scored from
+     * @throws NullPointerException     if any argument, or any rule, is null
+     * @throws IllegalArgumentException if the configured threshold is outside the range the event
+     *                                  contract permits for a risk score
+     */
+    RiskScoringService(List<RiskRule> rules, VelocityWindowRepository velocityWindows,
+            FraudProperties properties, Clock clock) {
         this.rules = List.copyOf(Objects.requireNonNull(rules, "rules"));
         this.velocityWindows = Objects.requireNonNull(velocityWindows, "velocityWindows");
         int configured = Objects.requireNonNull(properties, "properties")
@@ -104,6 +131,7 @@ public class RiskScoringService {
                     + MINIMUM_FLAG_THRESHOLD + " and " + MAXIMUM_RISK_SCORE);
         }
         this.flagThreshold = configured;
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     /**
@@ -123,7 +151,7 @@ public class RiskScoringService {
      */
     public RiskAssessment assess(TransactionAuthorized event) {
         Objects.requireNonNull(event, "event");
-        Instant assessedAt = Instant.now();
+        Instant assessedAt = clock.instant();
         recordVelocityWindow(event, assessedAt);
 
         List<String> triggeredRules = new ArrayList<>();

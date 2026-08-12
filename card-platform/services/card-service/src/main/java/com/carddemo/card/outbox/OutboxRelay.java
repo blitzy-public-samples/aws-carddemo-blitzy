@@ -410,7 +410,7 @@ public class OutboxRelay {
                     "stored event type reaches no topic of this service");
         }
         Timer.Sample publishAttempt = Timer.start();
-        try (CorrelationScope scope = scopeOf(row)) {
+        try (CorrelationScope _ = scopeOf(row)) {
             return Dispatch.issued(row, publishAttempt,
                     publisher.publish(cardUpdatedTopic, row.getAggregateId(), row.getPayload())
                             .toCompletableFuture());
@@ -847,7 +847,7 @@ public class OutboxRelay {
                 row.getEventId().toString(), governedTypeOrAbsent(row.getEventType()),
                 row.getAttemptCount());
 
-        try (CorrelationScope scope = scopeOf(row)) {
+        try (CorrelationScope _ = scopeOf(row)) {
             await(publisher.publish(deadLetterTopic, row.getAggregateId(),
                     objectMapper.writeValueAsString(envelope)).toCompletableFuture(), deadline);
         } catch (RelayDeadlineExceededException lapsed) {

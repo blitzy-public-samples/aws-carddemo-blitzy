@@ -27,6 +27,10 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
@@ -129,6 +133,18 @@ final class PostingServiceTest {
      * that Picture clause holds carries ten integer digits.
      */
     private static final BigDecimal POSTED_BALANCE = new BigDecimal("697.77");
+
+    /** An instant a fixed clock reads, chosen so every rendered component differs. */
+    private static final Instant FIXED_INSTANT = Instant.parse("2026-03-04T05:06:07.890Z");
+
+    /**
+     * {@link FIXED_INSTANT} rendered by {@code CobolDecimal.formatProcessingTimestamp}.
+     *
+     * <p>{@code PicClause.PROCESSING_TIMESTAMP_SHAPE} is {@code YYYY-MM-DD-HH.MM.SS.hh0000}, so the
+     * 890 milliseconds become 89 hundredths and four zeros follow, which is the two-significant-digit
+     * fraction {@code app/cbl/CBTRN02C.cbl:L701} writes.
+     */
+    private static final String FIXED_STAMP = "2026-03-04-05.06.07.890000";
     private static final BigDecimal WIDEST_BALANCE = new BigDecimal("9999999999.99");
     private static final BigDecimal REFUND_AMOUNT = new BigDecimal("-998.33");
     private static final BigDecimal REFUNDED_BALANCE = new BigDecimal("-805.33");
@@ -300,6 +316,49 @@ final class PostingServiceTest {
                     .doesNotMatch(TransactionPosted.POSTED_AT_PATTERN);
             assertThat(row.getProcessedTimestamp().charAt(10))
                     .isEqualTo(PicClause.PROCESSING_TIMESTAMP_DASH);
+        }
+
+        /**
+         * The stamp is read from an injected clock, so a test can name the value it expects.
+         *
+         * <p>The service took the machine clock at the default zone before, which left this the one
+         * value of a posted row nothing could assert and made the stamp move with the container's
+         * zone. Both are fixed here: the clock arrives through the constructor and the instant is
+         * read at {@link ZoneOffset#UTC}.
+         */
+        @Test
+        @DisplayName("an injected clock fixes the stamp, and the reading is taken at UTC")
+        void anInjectedClockFixesTheStamp() {
+            yieldBalance(POSTED_BALANCE);
+            PostingService fixed = new PostingService(categoryBalances, accountBalances, postedRows,
+                    outboxWriter, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
+
+            fixed.postTransaction(authorized(AMOUNT), ACCOUNT_ID);
+
+            assertThat(insertedRow().getProcessedTimestamp()).isEqualTo(FIXED_STAMP);
+            assertThat(enqueuedEvent().postedAt()).isEqualTo(FIXED_STAMP);
+        }
+
+        /**
+         * A clock in another zone yields the same stamp, which is what reading at UTC buys.
+         *
+         * <p>{@code Clock.fixed} carries a zone, and {@code LocalDateTime.now(clock)} would have
+         * honoured it. The service converts the instant at {@link ZoneOffset#UTC} instead, so a
+         * container running in one zone and a container running in another stamp one instant the
+         * same way. Without that, two postings of the same moment would disagree by hours and the
+         * disagreement would only show in production.
+         */
+        @Test
+        @DisplayName("a clock in another zone yields the same stamp, so the container's zone is out")
+        void aClockInAnotherZoneYieldsTheSameStamp() {
+            yieldBalance(POSTED_BALANCE);
+            PostingService elsewhere = new PostingService(categoryBalances, accountBalances,
+                    postedRows, outboxWriter,
+                    Clock.fixed(FIXED_INSTANT, ZoneId.of("Asia/Kolkata")));
+
+            elsewhere.postTransaction(authorized(AMOUNT), ACCOUNT_ID);
+
+            assertThat(insertedRow().getProcessedTimestamp()).isEqualTo(FIXED_STAMP);
         }
     }
 

@@ -350,7 +350,7 @@ public class OutboxRelay {
                     OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
             return Dispatch.unroutable(row);
         }
-        try (CorrelationScope scope = scopeOf(row)) {
+        try (CorrelationScope _ = scopeOf(row)) {
             Object event = jsonMapper.readValue(row.getPayload(), destination.eventClass());
             return Dispatch.issued(row, destination.topic(), ledgerEventTemplate.send(
                     correlatedRecord(destination.topic(), row.getAggregateId(), event)));
@@ -509,7 +509,7 @@ public class OutboxRelay {
                         NO_SOURCE_OFFSET, row.getEventId().toString(), row.getEventType(),
                         row.getAttemptCount());
 
-        try (CorrelationScope scope = scopeOf(row)) {
+        try (CorrelationScope _ = scopeOf(row)) {
             await(ledgerEventTemplate.send(
                     correlatedRecord(deadLetterTopic, row.getAggregateId(), envelope)), deadline);
         }

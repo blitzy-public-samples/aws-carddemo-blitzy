@@ -49,11 +49,12 @@ class SupplyChainContractTest {
      * Each version floor: the property that carries it, and the coordinates it governs.
      *
      * <p>{@code tomcat.version} is here for the same mechanical reasons as the others and for a
-     * different substantive one. It answers no advisory. It is a compatibility raise over the
-     * 11.0.22 the bill of materials manages. What holds the file to saying so is
-     * {@link WhatTheDescriptorSays#theTomcatFloorIsDescribedAsPrecautionary()}, because a
-     * precautionary pin recorded as a security floor invites a reader to believe an advisory was
-     * found when none was.
+     * different substantive one. It answers no advisory: it is a compatibility raise over the
+     * 11.0.22 the bill of materials manages, and CVE-2026-66299 covers the pinned 11.0.24 itself.
+     * What holds the file to saying so is
+     * {@link WhatTheDescriptorSays#theTomcatFloorNamesTheAdvisoryItDoesNotAnswer()}. A raise
+     * recorded as a security floor invites a reader to believe an advisory was answered, and this
+     * one leaves an advisory standing that the platform is simply outside the surface of.
      */
     private static final Map<String, List<String>> FLOORS = new LinkedHashMap<>();
 
@@ -97,6 +98,16 @@ class SupplyChainContractTest {
 
     /** The identifier the LZ4 advisory was wrongly recorded as, which may not reappear. */
     private static final String WITHDRAWN_LZ4_IDENTIFIER = "CVE-2026-7053";
+
+    /**
+     * The advisory covering the pinned Tomcat version, which no reachable release fixes.
+     *
+     * <p>Published 28 July 2026, rated Low by Apache, covering 11.0.0-M20 through 11.0.24 and fixed
+     * in 11.0.25. Maven Central publishes nothing above 11.0.24 on that line, so the pin cannot be
+     * raised past it, and the affected component is the WebSocket chat sample of the examples web
+     * application, which an embedded Tomcat does not ship.
+     */
+    private static final String TOMCAT_ADVISORY = "CVE-2026-66299";
 
     /** The Jackson 2 version carrying those three advisories, which no floor may permit. */
     private static final String VULNERABLE_JACKSON_2 = "2.21.4";
@@ -244,20 +255,38 @@ class SupplyChainContractTest {
                     .doesNotContain(WITHDRAWN_LZ4_IDENTIFIER);
         }
 
+        /**
+         * The Tomcat entry names the advisory the pinned version does not fix.
+         *
+         * <p>This test read the word {@code precautionary} while the comment said no advisory
+         * affecting the 11.0.x line had been identified. CVE-2026-66299 was published on 28 July
+         * 2026 covering 11.0.0-M20 through 11.0.24, so the pinned version is inside its range and
+         * the earlier wording had gone stale. Naming the advisory, stating that the pin does not fix
+         * it, and stating why the platform sits outside its surface is what a reader needs, and each
+         * of the three is asserted below.
+         */
         @Test
-        @DisplayName("the Tomcat raise is described as precautionary, not as an advisory answer")
-        void theTomcatFloorIsDescribedAsPrecautionary() throws IOException {
+        @DisplayName("the Tomcat raise names the advisory it does not answer, and why it need not")
+        void theTomcatFloorNamesTheAdvisoryItDoesNotAnswer() throws IOException {
             String pom = pom();
             int entryAt = pom.indexOf("<artifactId>tomcat-embed-core</artifactId>");
             assertThat(entryAt).as("the embedded container entry").isGreaterThan(0);
             String comment = pom.substring(Math.max(0, entryAt - 1400), entryAt);
             assertThat(comment)
-                    .as("no advisory affecting the managed 11.0.22 was identified, so the raise "
-                            + "has to read as compatibility hardening")
-                    .contains("precautionary");
+                    .as("the raise answers no advisory, and the advisory that covers the pinned "
+                            + "version has to be named rather than left out")
+                    .contains("not the answer to an advisory")
+                    .contains(TOMCAT_ADVISORY)
+                    .contains("11.0.0-M20 through 11.0.24");
             assertThat(comment)
-                    .as("and it has to say which version it was measured against")
-                    .contains("11.0.22");
+                    .as("a reader has to learn why an advisory covering the pin needs no action, "
+                            + "which is that the affected component is absent")
+                    .contains("examples web application");
+            assertThat(pom)
+                    .as("the version-floor block has to carry the same statement, because that is "
+                            + "the block a reader of the floors reads")
+                    .contains(TOMCAT_ADVISORY)
+                    .contains("11.0.25");
         }
 
         @Test

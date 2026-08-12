@@ -7,8 +7,11 @@ import com.carddemo.ledger.entity.TransactionEntity;
 import com.carddemo.ledger.outbox.OutboxWriter;
 import com.carddemo.ledger.repository.TransactionRepository;
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Objects;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,7 +27,9 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>{@code TRAN-PROC-TS} at {@code app/cpy/CVTRA05Y.cpy:L17} is not one of the twelve. One call to
  * {@link CobolDecimal#formatProcessingTimestamp} per posting replaces {@code :L437-L438}, and that
- * one value reaches the transaction row and {@link TransactionPosted#postedAt()} alike.
+ * one value reaches the transaction row and {@link TransactionPosted#postedAt()} alike. The instant
+ * behind it is read from an injected {@link Clock} at {@link ZoneOffset#UTC}, so the stamp does not
+ * move with the container's zone and a test can fix it.
  *
  * <p>The published event carries the same nine descriptive values the row does, under
  * {@link TransactionPosted#DETAIL_SCHEMA_VERSION}.
@@ -50,8 +55,14 @@ public class PostingService {
     /** Enqueues the posted event as an unpublished outbox row. */
     private final OutboxWriter outboxWriter;
 
+    /** Reads the instant the processing timestamp of one posting is taken from. */
+    private final Clock clock;
+
     /**
      * Takes the two updaters, the transaction store and the outbox writer.
+     *
+     * <p>The processing timestamp comes from {@link Clock#systemUTC()}. The constructor below takes
+     * another clock, and a test supplies a fixed one through it.
      *
      * @param categoryBalanceUpdater the first update, {@code app/cbl/CBTRN02C.cbl:L440}
      * @param accountBalanceUpdater  the second update, {@code app/cbl/CBTRN02C.cbl:L441}
@@ -60,10 +71,31 @@ public class PostingService {
      * @param outboxWriter           the writer one posted event is enqueued through
      * @throws NullPointerException if any argument is {@code null}
      */
+    @Autowired
     public PostingService(CategoryBalanceUpdater categoryBalanceUpdater,
             AccountBalanceUpdater accountBalanceUpdater,
             TransactionRepository transactionRepository,
             OutboxWriter outboxWriter) {
+        this(categoryBalanceUpdater, accountBalanceUpdater, transactionRepository, outboxWriter,
+                Clock.systemUTC());
+    }
+
+    /**
+     * Takes the collaborators and the clock the processing timestamp is read from.
+     *
+     * @param categoryBalanceUpdater the first update, {@code app/cbl/CBTRN02C.cbl:L440}
+     * @param accountBalanceUpdater  the second update, {@code app/cbl/CBTRN02C.cbl:L441}
+     * @param transactionRepository  the store the third update inserts through,
+     *                               {@code app/cbl/CBTRN02C.cbl:L442}
+     * @param outboxWriter           the writer one posted event is enqueued through
+     * @param clock                  the clock the processing timestamp of each posting is taken from
+     * @throws NullPointerException if any argument is {@code null}
+     */
+    PostingService(CategoryBalanceUpdater categoryBalanceUpdater,
+            AccountBalanceUpdater accountBalanceUpdater,
+            TransactionRepository transactionRepository,
+            OutboxWriter outboxWriter,
+            Clock clock) {
         this.categoryBalanceUpdater = Objects.requireNonNull(categoryBalanceUpdater,
                 "categoryBalanceUpdater is required");
         this.accountBalanceUpdater = Objects.requireNonNull(accountBalanceUpdater,
@@ -71,6 +103,7 @@ public class PostingService {
         this.transactionRepository = Objects.requireNonNull(transactionRepository,
                 "transactionRepository is required");
         this.outboxWriter = Objects.requireNonNull(outboxWriter, "outboxWriter is required");
+        this.clock = Objects.requireNonNull(clock, "clock is required");
     }
 
     /**
@@ -108,7 +141,8 @@ public class PostingService {
 
         String accountId = event.accountId();
         BigDecimal amount = event.amount();
-        String processedTimestamp = CobolDecimal.formatProcessingTimestamp(LocalDateTime.now());
+        String processedTimestamp = CobolDecimal.formatProcessingTimestamp(
+                LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC));
         TransactionEntity postedRow = buildTransactionRow(event, processedTimestamp);
 
         boolean categoryBalanceWrapped = categoryBalanceUpdater.updateCategoryBalance(accountId,

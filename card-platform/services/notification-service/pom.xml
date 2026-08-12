@@ -20,7 +20,7 @@
   <artifactId>notification-service</artifactId>
   <packaging>jar</packaging>
 
-  <name>CardDemo Notification Service</name>
+  <name>CardDemo Card Platform :: Notification Service</name>
   <description>The notification service consumes four topics, each under a consumer
     group of its own. transaction.posted carries the new balance a posting produced,
     and the service maintains a card-keyed read model and renders a cardholder alert

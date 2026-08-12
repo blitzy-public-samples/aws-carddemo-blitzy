@@ -20,7 +20,7 @@
   <artifactId>fraud-detection-service</artifactId>
   <packaging>jar</packaging>
 
-  <name>card-platform :: fraud-detection-service</name>
+  <name>CardDemo Card Platform :: Fraud Detection Service</name>
   <description>
     Spring Boot application module for the CardDemo fraud detection service, a capability
     with no COBOL ancestor. Declares the web, persistence, messaging and observability

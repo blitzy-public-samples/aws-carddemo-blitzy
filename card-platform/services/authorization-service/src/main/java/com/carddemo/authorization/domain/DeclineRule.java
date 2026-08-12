@@ -202,12 +202,24 @@ public interface DeclineRule {
          * did rather than what the decision applies to. Reject reason
          * {@link DeclineReason#INVALID_CARD_NUMBER} is assigned at
          * {@code app/cbl/CBTRN02C.cbl:L385-L387} when that keyed read misses, so no account
-         * identifier was read. {@code domain/AuthorizationService} refuses such a call rather than
-         * deciding it: with no account this platform resolved, there is no subject a decision could
-         * apply to, and the account a caller named in the request body is not one. The refusal carries
-         * the text of {@code app/cbl/COTRN02C.cbl:L625-L626}, allocates no identifier and writes
-         * nothing. Every other reason runs after the cross-reference resolved, so this accessor
-         * answers with a value for each of them.
+         * identifier was read. {@code domain/AuthorizationService} decides such a call all the same,
+         * and names no account on it. It allocates the transaction identifier, writes one
+         * {@code authorization_decision} row whose {@code account_id} is null, and writes one outbox
+         * row under {@code schemas/transaction-declined-v2.json} keyed on that identifier, all in one
+         * local transaction. The caller receives 422 carrying reject code {@code 0100} and the
+         * verbatim text of {@code app/cbl/CBTRN02C.cbl:L386}, with no {@code accountId} beside it.
+         * {@code TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION} is the version that event
+         * travels under, and {@code ck_authorization_decision_approved_account} is what lets a
+         * decline, and only a decline, leave the column empty.
+         *
+         * <p>The account a caller named in the request body is never that subject, and one refusal is
+         * a separate outcome from this one. A request that names an account whose cross-reference
+         * holds no row is refused before a decision by
+         * {@code AccountNotFoundInCrossReferenceException}, which carries the text of
+         * {@code app/cbl/COTRN02C.cbl:L591-L592} and allocates no identifier. That refusal happens
+         * while the card is being resolved, so no context of this class is ever built for it. Every
+         * reason other than {@link DeclineReason#INVALID_CARD_NUMBER} runs after the cross-reference
+         * resolved, so this accessor answers with a value for each of them.
          *
          * @return the eleven-digit account identifier the cross-reference row held, or {@code null}
          *         when the cross-reference has not resolved

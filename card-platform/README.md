@@ -30,7 +30,7 @@ The Maven aggregator contains nine child modules and builds ten reactor projects
 
 | Capability | Delivered implementation |
 | :--- | :--- |
-| Authorization | Four source-derived decline rules, one response, one persisted decision, and exactly one outcome event for each authenticated, parseable request that reaches an authorization decision. Reject reason 0100 resolves no subject, so it refuses the call instead of deciding it |
+| Authorization | Four source-derived decline rules, one response, one persisted decision, and exactly one outcome event for each authenticated, parseable request that reaches an authorization decision. Reject reason 0100 resolves no account, so its decision and its event name none |
 | Posting | Transaction, category-balance, account-balance, account-state replica, feed-reject, outbox, and duplicate-delivery handling |
 | Fraud | Three net-new risk rules, persisted assessments, and flagged or cleared events |
 | Notification | Authorized-transaction, posted-transaction, fraud, and customer-context consumers, private read models, two renderers, alert-attempt metadata, and history API |
@@ -286,7 +286,7 @@ Every business route requires HTTP Basic authentication. The security chains den
 
 `acquirer1` is a machine identity a point-of-sale network presents, and only the authorization service reads it. `POST /authorizations` names its card in the request body, so no path variable carries an identifier an ownership scope can be compared against. The route therefore reaches every card the platform holds.
 
-A cardholder identity is refused there with 403 for that reason: an entitlement over one account must not authorize against another. The chain admits `ACQUIRER` and `ADMIN` there and nothing else. The decision itself then compares the identity against the account the cross-reference resolved, so a caller entitled to no account reaches no decision. The decline rules are the control that applies to the card: a card the cross-reference does not carry is refused with reason 0100 from `app/cbl/CBTRN02C.cbl:L385-L387`. Ownership managers govern the other five services, where a path variable names an account, a customer or a card token.
+A cardholder identity is refused there with 403 for that reason: an entitlement over one account must not authorize against another. The chain admits `ACQUIRER` and `ADMIN` there and nothing else. The decision itself then compares the identity against the account the cross-reference resolved, so a caller entitled to no account reaches no decision. The decline rules are the control that applies to the card: a card the cross-reference does not carry is declined with reason 0100 from `app/cbl/CBTRN02C.cbl:L385-L387`. Ownership managers govern the other five services, where a path variable names an account, a customer or a card token.
 
 Anonymous access is limited to `/actuator/health` on each management port. Business identities do not receive monitoring access.
 
@@ -526,7 +526,9 @@ Seven business topics, six source-specific dead-letter topics, and one shared fa
 
 Every governed event carries `eventId`, `eventType`, `schemaVersion`, `occurredAt`, and an aggregate key. Money travels as a decimal string.
 
-The account identifier is the Kafka key and the ordering unit of every event a producer writes. It always comes from a stored row rather than from a request body. An authorization whose card resolves no cross-reference row therefore resolves no subject, and is refused before a decision: it draws no identifier, writes no row and publishes nothing. Reasons 0101, 0102 and 0103 publish under `transaction-declined-v3` keyed on the account the cross-reference resolved, beside one `authorization_decision` row, so **one decided call produces exactly one event**.
+The account identifier is the Kafka key and the ordering unit of every event a producer writes. It always comes from a stored row rather than from a request body. Reasons 0101, 0102 and 0103 publish under `transaction-declined-v3` keyed on the account the cross-reference resolved, beside one `authorization_decision` row, so **one decided call produces exactly one event**.
+
+Reason 0100 is the one exception, because a card the cross-reference does not carry resolves no account. That call is decided all the same: it publishes under `transaction-declined-v2` keyed on the transaction identifier this service allocated. The `authorization_decision` row beside it carries a null `account_id`, which `ck_authorization_decision_approved_account` permits for a decline and for nothing else.
 
 Fourteen schema documents cover eight business event types, five released versions above version one, and the dead-letter envelope. Publish and consume paths validate against the registered document. `contracts/released-contracts.json` records every released version with a digest of its wire contract, so no document can be deleted or rewritten in place.
 
@@ -551,14 +553,14 @@ Add `-o` only once `~/.m2/repository` already holds every dependency this reacto
 The delivered suite includes:
 
 - posting over all 300 daily transaction records;
-- decline reasons 0100 through 0103, the refusal reason 0100 now produces, and the narrowed-precision boundary;
+- decline reasons 0100 through 0103, the account-less decision reason 0100 produces, and the narrowed-precision boundary;
 - online bill-payment behavior;
 - interest-rate resolution without migrating interest processing;
 - account and card validation;
 - truncation toward zero;
 - fixture census, identifier fidelity, and card seed checks.
 
-The published run reports 229 Failsafe equivalence tests and 566 unit or contract tests, with zero failures. Both figures are measured rather than asserted: run `scripts/check-published-test-counts.sh` after `mvn verify` and it compares every published count against the reports that run wrote. See [Equivalence Results](docs/equivalence-results.md).
+The published run reports 229 Failsafe equivalence tests and 574 unit or contract tests, with zero failures. Both figures are measured rather than asserted: run `scripts/check-published-test-counts.sh` after `mvn verify` and it compares every published count against the reports that run wrote. See [Equivalence Results](docs/equivalence-results.md).
 
 Interest is verified but not migrated. `BillingCycleService` reproduces only the two accumulator resets at `app/cbl/CBACT04C.cbl:L353-L354`.
 

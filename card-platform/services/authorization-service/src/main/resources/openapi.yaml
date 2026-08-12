@@ -1187,12 +1187,12 @@ components:
           description: >-
             Account this decision applied to, from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7,
             which app/cbl/CBTRN02C.cbl:L394 reads out of the cross-reference record. Eleven digits,
-            zero-filled on the left. Present on every decided outcome, and always the account that
-            read resolved. Where the keyed read at app/cbl/CBTRN02C.cbl:L383-L384 takes its INVALID
-            KEY branch no account is resolved, so the call is refused before a decision and receives
-            no decision body at all. The property stays nullable in the schema because
-            AuthorizationResponse is the one shape every outcome shares and a pre-decision refusal
-            carries no decision.
+            zero-filled on the left, and always the account that read resolved. Where that read at
+            app/cbl/CBTRN02C.cbl:L383-L384 takes its INVALID KEY branch, the call is decided all the
+            same: declineReasonCode reads 0100 and this property reads null. That is the one outcome
+            this property is null on, and it is why the schema declares the type as nullable. The
+            stored decision row records the same absence, which
+            ck_authorization_decision_approved_account permits for a decline and for nothing else.
           examples: ['00000000007']
         approved:
           type: boolean

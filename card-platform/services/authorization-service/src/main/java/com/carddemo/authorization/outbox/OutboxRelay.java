@@ -458,7 +458,7 @@ public class OutboxRelay {
                     OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
             return Dispatch.refused(row, UNRESOLVED_DESTINATION, UNKNOWN_EVENT_TYPE);
         }
-        try (CorrelationScope scope = scopeOf(row)) {
+        try (CorrelationScope _ = scopeOf(row)) {
             return Dispatch.issued(row, destination,
                     publisher.publish(destination, row.getAggregateId(), row.getPayload()));
         } catch (RuntimeException notSent) {
@@ -613,7 +613,7 @@ public class OutboxRelay {
             if (System.nanoTime() - deadline >= 0L) {
                 return counts;
             }
-            try (CorrelationScope scope = scopeOf(row)) {
+            try (CorrelationScope _ = scopeOf(row)) {
                 log.warn("Authorization outbox event {} has owed a dead letter on {} since {}, so "
                         + "this pass offers it again.", row.getEventId(), deadLetterTopic,
                         row.getLastAttemptAt());

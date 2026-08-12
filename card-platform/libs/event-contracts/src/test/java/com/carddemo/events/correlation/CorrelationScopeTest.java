@@ -26,7 +26,7 @@ class CorrelationScopeTest {
     @Test
     @DisplayName("every field is readable inside the scope")
     void everyFieldIsReadableInsideTheScope() {
-        try (CorrelationScope scope = CorrelationScope.open()
+        try (CorrelationScope _ = CorrelationScope.open()
                 .withCorrelation(CORRELATION)
                 .withCausation(CAUSATION)
                 .withEvent(HANDLED, "TransactionPosted")
@@ -46,7 +46,7 @@ class CorrelationScopeTest {
     @Test
     @DisplayName("closing removes every key the scope introduced")
     void closingRemovesEveryKeyTheScopeIntroduced() {
-        try (CorrelationScope scope = CorrelationScope.open()
+        try (CorrelationScope _ = CorrelationScope.open()
                 .withCorrelation(CORRELATION)
                 .withEvent(HANDLED, "TransactionPosted")) {
             assertThat(MDC.getCopyOfContextMap()).isNotEmpty();
@@ -60,8 +60,8 @@ class CorrelationScopeTest {
     @Test
     @DisplayName("a nested scope restores the value the outer scope set")
     void aNestedScopeRestoresTheOuterValue() {
-        try (CorrelationScope outer = CorrelationScope.open().withCorrelation(CORRELATION)) {
-            try (CorrelationScope inner = CorrelationScope.open().withCorrelation(CAUSATION)) {
+        try (CorrelationScope _ = CorrelationScope.open().withCorrelation(CORRELATION)) {
+            try (CorrelationScope _ = CorrelationScope.open().withCorrelation(CAUSATION)) {
                 assertThat(MDC.get(EventCorrelation.CORRELATION_ID_FIELD))
                         .isEqualTo(CAUSATION.toString());
             }
@@ -76,7 +76,7 @@ class CorrelationScopeTest {
     void aDeliveryLeavesNothingBehind() {
         for (int delivery = 0; delivery < 3; delivery++) {
             UUID handled = UUID.randomUUID();
-            try (CorrelationScope scope = CorrelationScope.open()
+            try (CorrelationScope _ = CorrelationScope.open()
                     .withCorrelation(CORRELATION)
                     .withEvent(handled, "TransactionAuthorized")) {
                 assertThat(MDC.get(EventCorrelation.EVENT_ID_FIELD)).isEqualTo(handled.toString());
@@ -90,7 +90,7 @@ class CorrelationScopeTest {
     @Test
     @DisplayName("an absent value writes no field rather than an empty one")
     void anAbsentValueWritesNoField() {
-        try (CorrelationScope scope = CorrelationScope.open()
+        try (CorrelationScope _ = CorrelationScope.open()
                 .withCorrelation(null)
                 .withCausation(null)
                 .withEvent(null, null)
@@ -119,7 +119,7 @@ class CorrelationScopeTest {
     @DisplayName("a key written twice in one scope restores what it held before the first write")
     void aKeyWrittenTwiceRestoresTheOriginal() {
         MDC.put(EventCorrelation.EVENT_TYPE_FIELD, "Original");
-        try (CorrelationScope scope = CorrelationScope.open()
+        try (CorrelationScope _ = CorrelationScope.open()
                 .with(EventCorrelation.EVENT_TYPE_FIELD, "First")
                 .with(EventCorrelation.EVENT_TYPE_FIELD, "Second")) {
             assertThat(MDC.get(EventCorrelation.EVENT_TYPE_FIELD)).isEqualTo("Second");
