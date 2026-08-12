@@ -131,22 +131,22 @@ The reject record itself is compared as bytes. `renderRejectRecord` copies the f
 | `CardSeedEquivalenceTest` | 7 |
 | `ThreeConsumerAuthorizationFlowIT` | 6 |
 
-The whole reactor ran 6,505 Surefire and 599 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven.
+The whole reactor ran 6,509 Surefire and 599 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven.
 
 Here is where they came from, module by module. `scripts/check-published-test-counts.sh` compares every cell below against the reports of a completed build, so a figure in this table is measured rather than asserted.
 
 | Reactor module | Surefire | Failsafe |
 |---|---:|---:|
-| `libs/event-contracts` | 335 | 0 |
+| `libs/event-contracts` | 337 | 0 |
 | `libs/cobol-compat` | 130 | 0 |
-| `services/authorization-service` | 833 | 53 |
+| `services/authorization-service` | 835 | 53 |
 | `services/ledger-posting-service` | 498 | 23 |
 | `services/fraud-detection-service` | 728 | 74 |
 | `services/notification-service` | 868 | 39 |
 | `services/account-service` | 1,773 | 51 |
 | `services/card-service` | 774 | 124 |
 | `equivalence-tests` | 566 | 235 |
-| **Reactor total** | **6,505** | **599** |
+| **Reactor total** | **6,509** | **599** |
 
 The two library modules carry no Failsafe figure because neither holds a class the integration patterns select: `**/*IT.java` and `**/*EquivalenceTest.java` match nothing under either. Every other module holds at least one, and the script fails when one of them writes no Failsafe report. That is the fail-open case a silently empty selection would otherwise leave green.
 
@@ -347,9 +347,11 @@ No unintended divergence between service behaviour and source rule was observed 
 
 Four divergences are deliberate reproductions of source behaviour. Each names where its explanation lives, so that none reads as a defect in the platform.
 
-One divergence runs the other way, and it is a departure from the source rather than a reproduction of it. The batch path declines a card that resolves no cross-reference row, at `app/cbl/CBTRN02C.cbl:L385-L387`, and writes the reject record of `:L446-L465` against the account `:L394` took out of that row. Where the read misses there is no such account, and the feed record at `app/cpy/CVTRA06Y.cpy` carries none of its own.
+One divergence runs the other way, and it is narrower than it once was. The batch path declines a card that resolves no cross-reference row, at `app/cbl/CBTRN02C.cbl:L385-L387`, and writes the reject record of `:L446-L465` against the account `:L394` took out of that row. Where the read misses there is no such account, and the feed record at `app/cpy/CVTRA06Y.cpy` carries none of its own, so the source assigns a reason it cannot attribute.
 
-This platform therefore refuses the call with the text the synchronous ancestor uses at `app/cbl/COTRN02C.cbl:L625-L626`, and publishes no reject reason `0100` at all. `SYN-100-XREF-MISS` in `synthetic-boundary-cases.csv` still states the source outcome, because that file records what the source does. The departure is recorded in `docs/decision-log.md` under "The subject of a decision comes from a stored row".
+This platform assigns the same reason with the same text and attributes it to nothing. One decision row carries `account_id` null, and one event under `schemas/transaction-declined-v2.json` is keyed on the transaction identifier it minted. `SYN-100-XREF-MISS` in `synthetic-boundary-cases.csv` states the source outcome, and the target now agrees with it on the code and the text.
+
+What still departs is the reject row. Version 2 carries none of the nine descriptive values `REJECT-TRAN-DATA` needs, because they describe a transaction the read rejected and exist only on the request. So the ledger writes no `rejected_transaction` row for it, and that table declares no account column either. The departure is recorded in `docs/decision-log.md` under "The subject of a decision comes from a stored row" and "One event for the outcome whose card resolves nothing".
 
 | Reproduced divergence | Source | Result | Recorded in |
 |---|---|---|---|

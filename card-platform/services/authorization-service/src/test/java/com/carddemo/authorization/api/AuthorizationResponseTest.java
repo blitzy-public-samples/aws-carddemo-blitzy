@@ -24,9 +24,11 @@ import tools.jackson.databind.json.JsonMapper;
  * code {@code 0100} is assigned at {@code app/cbl/CBTRN02C.cbl:L385} when the read took its
  * {@code INVALID KEY} branch, so no account exists to name.
  *
- * <p>The tests below hold that invariant from both directions, and one of them builds a real
- * {@link TransactionDeclined} to prove a response carrying an identifier can always produce the
- * event its contract requires.
+ * <p>So there are two decline shapes, not one, and the tests below hold each of them from both
+ * directions: the three codes following the read must name an account, and reject code {@code 0100}
+ * must not. Two of them build a real {@link TransactionDeclined} to prove each response shape can
+ * produce the event its contract requires — version 3 for the three, and version 2, the one declined
+ * document declaring no {@code accountId} property, for {@code 0100}.
  */
 final class AuthorizationResponseTest {
 
@@ -83,10 +85,10 @@ final class AuthorizationResponseTest {
                 "spaces name no account");
     }
 
-    /** Asserts each of the four declines carries the account its decision applies to. */
+    /** Asserts each decline following a resolved account carries the account it applies to. */
     @Test
-    void eachDeclineCarriesTheAccountItsDecisionAppliesTo() {
-        for (DeclineReason reason : DeclineReason.values()) {
+    void eachDeclineFollowingAResolvedAccountCarriesIt() {
+        for (DeclineReason reason : RESOLVED_ACCOUNT_REASONS) {
             AuthorizationResponse response =
                     AuthorizationResponse.decline(TRANSACTION_ID, ACCOUNT_ID, reason);
 
@@ -99,10 +101,10 @@ final class AuthorizationResponseTest {
         }
     }
 
-    /** Asserts each of the four declines requires the account its decision applies to. */
+    /** Asserts each decline following a resolved account requires it. */
     @Test
-    void eachDeclineRequiresTheAccountItsDecisionAppliesTo() {
-        for (DeclineReason reason : DeclineReason.values()) {
+    void eachDeclineFollowingAResolvedAccountRequiresIt() {
+        for (DeclineReason reason : RESOLVED_ACCOUNT_REASONS) {
             IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
                     () -> AuthorizationResponse.decline(TRANSACTION_ID, null, reason),
                     reason.code() + " names the account its decision applies to");
@@ -113,70 +115,92 @@ final class AuthorizationResponseTest {
     }
 
     /**
-     * Asserts reject code {@code 0100} is shaped by the one decline factory like any other code.
+     * Asserts reject code {@code 0100} has its own factory, and that the outcome it builds names no
+     * account.
      *
-     * <p>This record is a shape rather than a rule: one factory builds every decline and none of them
-     * decides which outcomes a service may reach. {@code domain/AuthorizationService} refuses a card
-     * that resolves no cross-reference row instead of deciding it, so no published response carries
-     * this code. The factory is still held to the same invariants for it, because a response of this
-     * shape must name an account whatever code it carries, and no factory here invents one.
+     * <p>The code is assigned inside the {@code INVALID KEY} branch of the cross-reference read at
+     * {@code app/cbl/CBTRN02C.cbl:L385}, so the read that would have resolved an account is the read
+     * that failed. There is nothing to name, and the alternative — naming whatever account the request
+     * declared — is what a security review objected to: this service holds no row tying that value to
+     * the card, so a caller could attach a decision to an account it had merely typed.
+     *
+     * <p>Two factories therefore exist rather than one with a nullable argument, so neither shape can
+     * be built by accident. Everything else about the body is identical to the other three codes.
      */
     @Test
-    void theUnresolvedCardCodeIsShapedLikeAnyOtherDecline() {
+    void theUnresolvedCardCodeIsBuiltByItsOwnFactoryAndNamesNoAccount() {
         AuthorizationResponse response =
-                AuthorizationResponse.decline(TRANSACTION_ID, ACCOUNT_ID, UNRESOLVED_CARD);
+                AuthorizationResponse.declineUnresolvedCard(TRANSACTION_ID);
 
         assertFalse(response.approved(), "the response reports a decline");
-        assertEquals(ACCOUNT_ID, response.accountId(),
-                "reject code 0100 names the account its decision applied to");
+        assertNull(response.accountId(),
+                "reject code 0100 resolved no account, so it names none");
+        assertEquals(TRANSACTION_ID, response.transactionId(),
+                "and it names the identifier this service minted for the decision");
         assertEquals(UNRESOLVED_CARD, response.declineReasonCode(),
-                "the reject code travels unchanged");
+                "the reject code app/cbl/CBTRN02C.cbl:L385 assigns");
         assertEquals(UNRESOLVED_CARD.description(), response.declineReasonDescription(),
                 "the text comes from the reject code");
     }
 
     /**
-     * Asserts a response carrying reject code {@code 0100} and no account identifier is refused.
+     * Asserts a response carrying reject code {@code 0100} and an account identifier is refused, and
+     * that the general decline factory refuses the code outright.
      *
-     * <p>Every decided outcome names the account it applies to, and the event contract requires those
-     * eleven digits in {@code accountId} and in the message key. A response reaching the outbox without
-     * one would fail that contract after the decision had already been taken, and the ledger would
-     * have no account to write its reject row against.
+     * <p>This is the invariant in its second direction, and it is the one that keeps the security
+     * finding closed. The three codes assigned after the cross-reference read require an account;
+     * {@code 0100} is assigned by that read failing and so must carry none. Enforcing only the first
+     * direction would leave the account a caller declared able to reach a {@code 0100} decision by way
+     * of the general factory, which is exactly the path that was withdrawn.
      */
     @Test
-    void aResponseCarryingTheUnresolvedCardCodeAndNoAccountIsRefused() {
-        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> new AuthorizationResponse(TRANSACTION_ID, null, false, UNRESOLVED_CARD,
+    void aResponseCarryingTheUnresolvedCardCodeAndAnAccountIsRefused() {
+        IllegalArgumentException carried = assertThrows(IllegalArgumentException.class,
+                () -> new AuthorizationResponse(TRANSACTION_ID, ACCOUNT_ID, false, UNRESOLVED_CARD,
                         UNRESOLVED_CARD.description()),
-                "reject code 0100 names the account its decision applies to");
+                "reject code 0100 resolved no account, so it may name none");
 
-        assertTrue(thrown.getMessage().contains("accountId"),
-                "the rejection names the component that is absent");
+        assertTrue(carried.getMessage().contains("accountId"),
+                "the rejection names the component that must be absent");
+
+        IllegalArgumentException viaFactory = assertThrows(IllegalArgumentException.class,
+                () -> AuthorizationResponse.decline(TRANSACTION_ID, ACCOUNT_ID, UNRESOLVED_CARD),
+                "the general factory builds the three codes that resolved an account");
+
+        assertTrue(viaFactory.getMessage().contains(UNRESOLVED_CARD.code()),
+                "the rejection names the reject code that has its own factory: "
+                        + viaFactory.getMessage());
     }
 
     /**
-     * Asserts the one decline factory covers every reject code the platform defines.
+     * Asserts the two decline factories between them cover every reject code the platform defines,
+     * and that the split follows one predicate rather than a hand-kept list.
      *
-     * <p>A fifth reject code added to the enum reaches the same factory, so the assertion is that one
-     * shape covers the set rather than that two factories partition it.
+     * <p>{@code DeclineReason.resolvesAccount()} decides which factory a code reaches, so a fifth
+     * reject code added to the enum is routed by the predicate it declares rather than by an edit
+     * here. The partition is what the assertions measure: neither factory is reachable for a code the
+     * other owns, and the union is the whole enum.
      */
     @Test
-    void theOneDeclineFactoryCoversEveryRejectCode() {
+    void theTwoDeclineFactoriesCoverEveryRejectCode() {
         EnumSet<DeclineReason> covered = EnumSet.noneOf(DeclineReason.class);
 
         for (DeclineReason reason : DeclineReason.values()) {
-            AuthorizationResponse response =
-                    AuthorizationResponse.decline(TRANSACTION_ID, ACCOUNT_ID, reason);
+            AuthorizationResponse response = reason.resolvesAccount()
+                    ? AuthorizationResponse.decline(TRANSACTION_ID, ACCOUNT_ID, reason)
+                    : AuthorizationResponse.declineUnresolvedCard(TRANSACTION_ID);
 
             assertEquals(reason, response.declineReasonCode(),
                     "the factory changed the reject code it was given");
+            assertEquals(reason.resolvesAccount(), response.accountId() != null,
+                    reason.code() + " names an account exactly when its read resolved one");
             covered.add(response.declineReasonCode());
         }
 
         assertEquals(EnumSet.allOf(DeclineReason.class), covered,
-                "one factory builds every reject code app/cbl/CBTRN02C.cbl assigns");
+                "two factories build every reject code app/cbl/CBTRN02C.cbl assigns");
         assertTrue(covered.contains(UNRESOLVED_CARD),
-                "reject code 0100 stopped reaching a caller through that factory");
+                "reject code 0100 stopped reaching a caller at all");
         assertEquals(DeclineReason.values().length, RESOLVED_ACCOUNT_REASONS.size() + 1,
                 "the three reasons following a resolved account and the one preceding it stopped "
                         + "accounting for every reject code");
@@ -198,6 +222,34 @@ final class AuthorizationResponseTest {
 
         assertEquals(response.accountId(), event.envelope().aggregateId(),
                 "the response identifier becomes the message key");
+        assertEquals(response.declineReasonCode(), event.declineReasonCode(),
+                "the response and the event name the reject code with one property name");
+    }
+
+    /**
+     * Asserts a declined response carrying no account produces the event its contract requires, keyed
+     * on the transaction identifier rather than on an account.
+     *
+     * <p>This is the second decline shape reaching its second contract.
+     * {@code transaction-declined-v2.json} declares no {@code accountId} property and retypes
+     * {@code aggregateId} to the sixteen printable characters a transaction identifier occupies, so the
+     * value this response already carries is the message key. Nothing has to be invented for it, which
+     * is the whole reason this contract was chosen over a sentinel account.
+     */
+    @Test
+    void aDeclinedResponseCarryingNoAccountProducesItsEvent() {
+        AuthorizationResponse response =
+                AuthorizationResponse.declineUnresolvedCard(TRANSACTION_ID);
+
+        TransactionDeclined event = TransactionDeclined.ofUnresolvedAccount(
+                response.transactionId(), new BigDecimal("504.77"), "************7065");
+
+        assertEquals(response.transactionId(), event.envelope().aggregateId(),
+                "the response identifier becomes the message key");
+        assertNull(event.accountId(), "and no account is named, because none resolved");
+        assertEquals(TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION,
+                event.envelope().schemaVersion(),
+                "the event travels under the one declined document declaring no accountId");
         assertEquals(response.declineReasonCode(), event.declineReasonCode(),
                 "the response and the event name the reject code with one property name");
     }

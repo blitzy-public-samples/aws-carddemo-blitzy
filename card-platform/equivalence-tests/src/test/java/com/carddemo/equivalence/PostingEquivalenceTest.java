@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -2001,13 +2002,18 @@ class PostingEquivalenceTest {
             PostingRun run = fixtureRun();
 
             assertEquals(run.rejectedCount(), run.declinedEvents().size(),
-                    "each decline publishes one account-keyed " + TransactionDeclined.EVENT_TYPE
+                    "each decline publishes one " + TransactionDeclined.EVENT_TYPE
                             + ", which is one event per decided call");
             for (TransactionDeclined declined : run.declinedEvents()) {
                 assertEquals(declined.accountId(), declined.aggregateId(),
-                        "and the account the decision applies to is its message key, for every"
-                                + " reject reason including "
-                                + DeclineReason.INVALID_CARD_NUMBER.code());
+                        "the account the decision applies to is its message key. Every reject the"
+                                + " feed reaches carries reason "
+                                + DeclineReason.OVER_CREDIT_LIMIT.code() + ", which resolves one;"
+                                + " reason " + DeclineReason.INVALID_CARD_NUMBER.code()
+                                + " resolves none and no feed record reaches it");
+                assertTrue(declined.declineReasonCode().resolvesAccount(),
+                        "a reject this feed reaches follows a resolved account, so no record of it"
+                                + " travels the account-less contract");
             }
         }
 
@@ -2028,18 +2034,24 @@ class PostingEquivalenceTest {
             assertFalse(DeclineReason.INVALID_CARD_NUMBER.resolvesAccount(),
                     "the reason CBTRN02C L385 assigns follows no successful cross-reference read");
 
-            TransactionDeclined unresolvedCard = TransactionDeclined.of(firstFeedAccountId(),
-                    syntheticTransactionId(FIRST_RECORD_ORDINAL),
-                    DeclineReason.INVALID_CARD_NUMBER, firstFeedRecord().amount(),
+            TransactionDeclined unresolvedCard = TransactionDeclined.ofUnresolvedAccount(
+                    syntheticTransactionId(FIRST_RECORD_ORDINAL), firstFeedRecord().amount(),
                     PanMasker.maskCardNumber(firstFeedRecord().cardNumber()));
 
-            assertEquals(firstFeedAccountId(), unresolvedCard.accountId(),
-                    "which read resolved an identifier is not which subject the decision applies"
-                            + " to: a synchronous call declares its own account, so reason "
-                            + DeclineReason.INVALID_CARD_NUMBER.code()
-                            + " publishes an account-keyed decline like the other three");
-            assertEquals(firstFeedAccountId(), unresolvedCard.aggregateId(),
-                    "and that account is its message key");
+            assertNull(unresolvedCard.accountId(),
+                    "which read resolved an identifier is which subject the decision has: reason "
+                            + DeclineReason.INVALID_CARD_NUMBER.code() + " follows the read that"
+                            + " resolved nothing, so it names no account");
+            assertEquals(syntheticTransactionId(FIRST_RECORD_ORDINAL),
+                    unresolvedCard.aggregateId(),
+                    "and the transaction identifier its producer minted is its message key");
+            assertThrows(IllegalArgumentException.class,
+                    () -> TransactionDeclined.of(firstFeedAccountId(),
+                            syntheticTransactionId(FIRST_RECORD_ORDINAL),
+                            DeclineReason.INVALID_CARD_NUMBER, firstFeedRecord().amount(),
+                            PanMasker.maskCardNumber(firstFeedRecord().cardNumber())),
+                    "and no factory taking an account will build that reason, which is what keeps a"
+                            + " caller-declared account out of the decision");
         }
 
         @Test

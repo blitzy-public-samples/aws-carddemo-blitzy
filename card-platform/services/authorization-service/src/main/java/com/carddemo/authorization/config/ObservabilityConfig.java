@@ -178,24 +178,6 @@ public class ObservabilityConfig {
      */
     public static final String ENTITLEMENT_STAGE = "entitlement";
 
-    /**
-     * The {@link #STAGE_TAG} value of a call refused because the card it named resolved no
-     * cross-reference row.
-     *
-     * <p>Neither a decline nor a fault, on the same terms as {@link #ENTITLEMENT_STAGE}. Nothing was
-     * decided, no identifier was drawn and no event was written, because the account a decision would
-     * apply to is the one {@code app/cbl/CBTRN02C.cbl:L394} moves out of the resolved row and that
-     * read resolved nothing.
-     *
-     * <p>This series is what carries the fact a table used to. An earlier form of this service decided
-     * such a call against the account the request declared and recorded it in
-     * {@code unresolved_card_attempt}, which a security review found let any entitled caller write an
-     * outcome against an account it merely named. The row is gone with the outcome; the observation
-     * that an unknown card was presented is kept here, where a probe shows up as a rising count and
-     * carries no cardholder value at all.
-     */
-    public static final String UNRESOLVED_CARD_STAGE = "unresolved-card";
-
     /** Tag key that names this service on every meter it reports. */
     public static final String SERVICE_TAG = "service";
 

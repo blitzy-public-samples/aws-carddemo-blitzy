@@ -104,77 +104,131 @@ class OutboxWriterTest {
             assertFalse(row.isPublished(), "a fresh row is unpublished until the relay sends it");
         }
 
-        /** Asserts a decline keys its row on the same eleven-digit form, whichever reason stands. */
+        /**
+         * Asserts a decline whose read resolved an account keys its row on the eleven-digit form.
+         *
+         * <p>Reject code {@code 0100} is excluded because it resolved no account to key on, which the
+         * transaction-key tests below cover. The other three follow
+         * {@code MOVE XREF-ACCT-ID TO FD-ACCT-ID} at {@code app/cbl/CBTRN02C.cbl:L394} and carry the
+         * account that read named.
+         *
+         * @param reason one reject code assigned after the cross-reference read resolved an account
+         */
         @ParameterizedTest
-        @EnumSource(DeclineReason.class)
+        @EnumSource(value = DeclineReason.class, names = "INVALID_CARD_NUMBER",
+                mode = EnumSource.Mode.EXCLUDE)
         void aDeclineKeysOnItsAccount(DeclineReason reason) {
             OutboxEventEntity row = writer.writeDeclined(declinedWithDetail(reason));
 
             assertEquals(TransactionDeclined.EVENT_TYPE, row.getEventType(),
                     "a reject code names a declined event");
             assertEquals(ACCOUNT_ID, row.getAggregateId(),
-                    "every decision names the account it applies to, so every decline keys on one");
+                    "a decision that resolved an account names it, so it keys on one");
             assertTrue(row.getPayload().contains("\"schemaVersion\":"
                             + TransactionDeclined.TRANSACTION_DETAIL_SCHEMA_VERSION),
-                    "a decline travels under the one version a producer writes, which carries the"
-                            + " nine values REJECT-TRAN-DATA needs");
+                    "such a decline travels under the version carrying the nine values"
+                            + " REJECT-TRAN-DATA needs");
         }
     }
 
     /**
-     * The sixteen-character form, which no producer writes and this writer refuses.
+     * The sixteen-character form, which one outcome writes and this writer admits for that outcome
+     * alone.
      *
-     * <p>{@code EventEnvelope#AGGREGATE_KEY_PATTERN} still admits it, because a record published under
-     * {@code schemas/transaction-declined-v2.json} before every decline named its account is still on
-     * its topic and a consumer still reads it. Writing it is a different question, and migration
-     * {@code V19} records where the answer lives: the column still admits both widths, because a
-     * {@code CHECK} narrowed after those rows exist is enforced on every {@code UPDATE} of them, so
-     * this writer is what holds a new row to the account form.
+     * <p>Reject code {@code 0100} is assigned by the cross-reference read failing, so it resolves no
+     * account and has no eleven-digit key. The identifier this service minted is the only value it can
+     * be keyed on that no caller supplied, and {@code schemas/transaction-declined-v2.json} is the one
+     * declined document declaring no {@code accountId} and retyping {@code aggregateId} to the sixteen
+     * printable characters that identifier occupies.
+     *
+     * <p>So the writer admits the transaction form for that one pairing of event type and contract
+     * version, and refuses it for every other. Migration {@code V19} records why the column still
+     * admits both widths — a {@code CHECK} narrowed after rows exist is enforced on every
+     * {@code UPDATE} of them — and migration {@code V24} records why the pairing is written again.
      */
     @Nested
-    @DisplayName("the transaction key form, retained on the read side and refused on the write side")
+    @DisplayName("the transaction key form, written by the one outcome that resolves no account")
     class TransactionKeyForm {
 
-        /** Asserts the writer refuses the retained transaction-keyed form. */
+        /** Asserts the writer admits the transaction-keyed form for the account-less contract. */
         @Test
-        void aTransactionKeyedDeclineIsRefusedBeforeARowIsBuilt() {
-            TransactionDeclined retained = TransactionDeclined
-                    .ofUnresolvedAccount(TRANSACTION_ID, AMOUNT, MASKED_CARD_NUMBER);
+        void aTransactionKeyedDeclineIsWrittenForTheAccountLessContract() {
+            OutboxEventEntity row = writer.writeDeclined(TransactionDeclined
+                    .ofUnresolvedAccount(TRANSACTION_ID, AMOUNT, MASKED_CARD_NUMBER));
+
+            assertEquals(TransactionDeclined.EVENT_TYPE, row.getEventType(),
+                    "a reject code names a declined event");
+            assertEquals(TRANSACTION_ID, row.getAggregateId(),
+                    "the identifier this service minted is the key, so no caller chose the"
+                            + " partition");
+            assertTrue(row.getPayload().contains("\"schemaVersion\":"
+                            + TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION),
+                    "and the row travels under the one document declaring no accountId: "
+                            + row.getPayload());
+            assertFalse(row.getPayload().contains("\"accountId\""),
+                    "which is visible in the payload: " + row.getPayload());
+        }
+
+        /**
+         * Asserts a transaction-keyed record under any other contract version cannot be built, so the
+         * writer's own narrowing is the second of two checks rather than the only one.
+         *
+         * <p>The admission above is narrow on purpose. Version 3 requires an {@code accountId} and keys
+         * on it, so a version-3 record carrying a sixteen-character key would name an account in its
+         * payload that its key does not name, and a consumer partitioning by account would read it off
+         * the wrong partition.
+         *
+         * <p>Which layer refuses that is what this test pins. {@code TransactionDeclined} refuses it in
+         * its own constructor, naming the eleven-digit pattern, so the pairing never reaches this
+         * writer through any factory. The writer narrows the key form again for the same pairing, which
+         * is what holds a record built through the canonical constructor — a deserializer does that —
+         * to the same rule.
+         */
+        @Test
+        void aTransactionKeyedRecordUnderAnotherContractCannotBeBuilt() {
+            EventEnvelope transactionKeyedAtVersionThree = EventEnvelope.of(
+                    TransactionDeclined.EVENT_TYPE, TRANSACTION_ID,
+                    TransactionDeclined.TRANSACTION_DETAIL_SCHEMA_VERSION);
 
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                    () -> writer.writeDeclined(retained),
-                    "no row written from V19 forward carries the transaction key form");
+                    () -> TransactionDeclined.of(transactionKeyedAtVersionThree, TRANSACTION_ID,
+                            DeclineReason.ACCOUNT_NOT_FOUND, AMOUNT, MASKED_CARD_NUMBER),
+                    "only the account-less declined contract keys on a transaction identifier");
 
             assertTrue(refused.getMessage().contains(EventEnvelope.AGGREGATE_ID_PATTERN),
-                    "the message names the one key form the column admits, and the message is: "
-                            + refused.getMessage());
+                    "the message names the key form every other contract carries, and the message"
+                            + " is: " + refused.getMessage());
             verify(outboxEvents, never()).save(any(OutboxEventEntity.class));
         }
 
         /**
-         * Asserts the retained record stays readable, which is what retaining its document buys.
+         * Asserts the account-less record is both readable and publishable, which is what promoting its
+         * document to PUBLISHED buys.
          *
-         * <p>The refusal above is a producer-side rule. A consumer meeting a record published under the
-         * retained document before that rule existed still has to read it, so the document still
-         * governs and {@code EventContracts#violationsOf} still accepts a payload under it.
+         * <p>Both halves matter. A consumer meeting a record published under this document before the
+         * producer path existed still has to read it, so {@code EventContracts#violationsOf} accepts it.
+         * And the producer path now exists, so {@code EventContracts#publishViolationsOf} must accept it
+         * too — that method is the gate {@code outbox/OutboxWriter} passes every payload through, and a
+         * RETAINED posture there is what refused this outcome an event at all.
          */
         @Test
-        void theRetainedTransactionKeyedRecordStaysReadable() {
-            TransactionDeclined retained = TransactionDeclined
+        void theTransactionKeyedRecordIsReadableAndPublishable() {
+            TransactionDeclined accountLess = TransactionDeclined
                     .ofUnresolvedAccount(TRANSACTION_ID, AMOUNT, MASKED_CARD_NUMBER);
             String payload = new String(new JsonSchemaValidatingSerializer<Object>().serialize(
-                    EventContracts.defaultTopicFor(TransactionDeclined.EVENT_TYPE), retained),
+                    EventContracts.defaultTopicFor(TransactionDeclined.EVENT_TYPE), accountLess),
                     StandardCharsets.UTF_8);
 
             assertTrue(EventContracts.violationsOf(TransactionDeclined.EVENT_TYPE, payload)
                             .isEmpty(),
-                    "a record already published under the retained document stopped being readable");
-            assertFalse(EventContracts.publishViolationsOf(TransactionDeclined.EVENT_TYPE, payload)
+                    "a record already published under this document stopped being readable");
+            assertTrue(EventContracts.publishViolationsOf(TransactionDeclined.EVENT_TYPE, payload)
                             .isEmpty(),
-                    "and a producer may write it again");
+                    "and a producer may write it: " + EventContracts
+                            .publishViolationsOf(TransactionDeclined.EVENT_TYPE, payload));
             assertTrue(payload.contains("\"schemaVersion\":"
                             + TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION),
-                    "the retained record declares the version its document names: " + payload);
+                    "the record declares the version its document names: " + payload);
         }
 
         /**

@@ -1,5 +1,6 @@
 package com.carddemo.authorization.api;
 
+import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -459,13 +460,20 @@ final class AuthorizationControllerTest {
     }
 
     /**
-     * Stubs the decision service to decline one call against a resolved account.
+     * Stubs the decision service to decline one call, against the account the reject code has one.
+     *
+     * <p>Three of the four reject codes resolve an account before they are assigned and are decided
+     * against it. Reject code {@code 0100} is assigned by the read that resolves the account, so it has
+     * none, and {@code domain/AuthorizationService.Outcome} refuses to carry an account with it — the
+     * two directions of that invariant are what {@code domain/AuthorizationServiceTest} measures. This
+     * helper therefore hands the controller whichever shape the reject code permits.
      *
      * @param reason the one reject code that stands
      */
     private void stubDecline(DeclineReason reason) {
+        BigDecimal subject = reason.resolvesAccount() ? new BigDecimal(WORKED_EXAMPLE_ACCOUNT) : null;
         when(authorizations.authorize(any(), any())).thenReturn(AuthorizationService.Outcome
-                .declined(reason, new BigDecimal(WORKED_EXAMPLE_ACCOUNT), ALLOCATED_ID));
+                .declined(reason, subject, ALLOCATED_ID));
     }
 
     /**
@@ -598,10 +606,12 @@ final class AuthorizationControllerTest {
         /**
          * Every reject code the enum carries renders as one 422 body.
          *
-         * <p>The loop covers {@link DeclineReason#INVALID_CARD_NUMBER} as well, which
-         * {@code domain/AuthorizationService} refuses rather than decides. This controller renders the
-         * outcome it is handed and encodes no rule about which outcomes exist, so the value is stubbed
-         * here to prove the mapping is uniform across the enum.
+         * <p>The status, the {@code approved} flag, the reject code and its text are uniform across all
+         * four. The account is not, and that is the one difference this loop holds: reject code
+         * {@code 0100} is assigned by the cross-reference read itself, so no account was resolved for
+         * it and the body carries {@code accountId} as JSON null. The other three resolved an account
+         * before their rule ran and name it. {@code openapi.yaml} says the same thing as four
+         * {@code oneOf} branches, one of which pins {@code accountId} to the null type.
          */
         @Test
         void eachDeclineAnswersFourTwentyTwo() throws Exception {
@@ -613,7 +623,9 @@ final class AuthorizationControllerTest {
                         .andExpect(status().isUnprocessableContent())
                         .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                         .andExpect(jsonPath("$.approved").value(false))
-                        .andExpect(jsonPath("$.accountId").value(WORKED_EXAMPLE_ACCOUNT))
+                        .andExpect(reason.resolvesAccount()
+                                ? jsonPath("$.accountId").value(WORKED_EXAMPLE_ACCOUNT)
+                                : jsonPath("$.accountId").value(nullValue()))
                         .andExpect(jsonPath("$.declineReasonCode").value(reason.code()))
                         .andExpect(jsonPath("$.declineReasonDescription")
                                 .value(reason.description()));
@@ -621,34 +633,38 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * A card resolving no cross-reference row answers 422 with the text the source writes for it.
+         * A card resolving no cross-reference row answers 422 with the reject code and text the source
+         * assigns for it, and with no account.
          *
-         * <p>{@code READ-CCXREF-FILE} answers its {@code NOTFND} limb with
-         * {@value AuthorizationRequest#CARD_NUMBER_NOT_FOUND_MESSAGE} at
-         * {@code app/cbl/COTRN02C.cbl:L625-L626} and re-sends the screen. No decision was taken, so
-         * the body carries the refusal shape and no reject code. Every caller receives this answer,
-         * whatever the request body declared, which {@code domain/AuthorizationServiceTest} measures.
+         * <p>{@code app/cbl/CBTRN02C.cbl:L385-L387} assigns reject reason {@code 0100} inside the
+         * {@code INVALID KEY} limb of the cross-reference read, and {@code :L446-L465} writes the reject
+         * record for it as for the other three. So the body is a decline body: it carries
+         * {@code approved} false, the code, and the verbatim text. What it carries as null is the
+         * account, because the read that would have resolved one is the read that failed. Every caller
+         * receives the same answer whatever the request body declared, which
+         * {@code domain/AuthorizationServiceTest} measures on the decision side.
          */
         @Test
-        void aCardResolvingNoRowAnswersItsOwnText() throws Exception {
-            when(authorizations.authorize(any(), any())).thenThrow(
-                    new AuthorizationService.CardNumberNotFoundInCrossReferenceException());
+        void aCardResolvingNoRowAnswersItsOwnCodeAndNoAccount() throws Exception {
+            stubDecline(DeclineReason.INVALID_CARD_NUMBER);
 
             mockMvc.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
                             .content(json(completeBody())))
                     .andExpect(status().isUnprocessableContent())
-                    .andExpect(jsonPath("$.messages[0]")
-                            .value(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE))
-                    .andExpect(jsonPath("$.approved").doesNotExist())
-                    .andExpect(jsonPath("$.declineReasonCode").doesNotExist());
+                    .andExpect(jsonPath("$.approved").value(false))
+                    .andExpect(jsonPath("$.accountId").value(nullValue()))
+                    .andExpect(jsonPath("$.transactionId").value(ALLOCATED_ID))
+                    .andExpect(jsonPath("$.declineReasonCode")
+                            .value(DeclineReason.INVALID_CARD_NUMBER.code()))
+                    .andExpect(jsonPath("$.declineReasonDescription")
+                            .value("INVALID CARD NUMBER FOUND"))
+                    .andExpect(jsonPath("$.messages").doesNotExist());
         }
 
         @Test
         void noDeclineAnswersFiveHundredOrFiveHundredAndThree() throws Exception {
             for (DeclineReason reason : DeclineReason.values()) {
-                when(authorizations.authorize(any(), any())).thenReturn(
-                        AuthorizationService.Outcome.declined(reason,
-                                new BigDecimal(WORKED_EXAMPLE_ACCOUNT), ALLOCATED_ID));
+                stubDecline(reason);
 
                 int answered = postBody(json(completeBody())).getResponse().getStatus();
 
@@ -693,9 +709,7 @@ final class AuthorizationControllerTest {
         @Test
         void aRejectCodeTravelsAsFourZeroPaddedCharacters() throws Exception {
             for (DeclineReason reason : DeclineReason.values()) {
-                when(authorizations.authorize(any(), any())).thenReturn(
-                        AuthorizationService.Outcome.declined(reason,
-                                new BigDecimal(WORKED_EXAMPLE_ACCOUNT), ALLOCATED_ID));
+                stubDecline(reason);
 
                 String body = postBody(json(completeBody())).getResponse().getContentAsString();
 
@@ -2111,21 +2125,23 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * A card no row carries is refused, and the account the request declared reaches no response.
+         * A card no row carries declines under {@code 0100}, and the account the request declared
+         * reaches no part of the response.
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L385-L387} assigns reject code {@code 0100} inside the
          * invalid-key limb of a keyed read, before {@code app/cbl/CBTRN02C.cbl:L394} has any account to
-         * move. This route answers the way its synchronous ancestor does at
-         * {@code app/cbl/COTRN02C.cbl:L625-L626}: it reports the card as unknown and decides nothing.
+         * move, and {@code :L446-L465} writes the reject record for it as for the other three reasons.
+         * So the outcome is a decline and this route answers it as one.
          *
          * <p>The account on the request is what this test watches. An earlier form of this route
          * answered {@code 0100} naming that account, which let a caller holding a broad role write a
          * decision, an audit row and a declined event against an account it had merely typed. The body
-         * now carries the source text and no reject code, no approval flag and no account at all. The
-         * card number is constructed, since the code is reached zero times over the fixtures.
+         * now carries the reject code, its verbatim text and {@code accountId} as JSON null — never the
+         * declared value. The card number is constructed, since the code is reached zero times over the
+         * fixtures.
          */
         @Test
-        void aCardNoRowCarriesIsRefusedAndNamesNoDeclaredAccount() throws Exception {
+        void aCardNoRowCarriesDeclinesAndNamesNoDeclaredAccount() throws Exception {
             Map<String, String> body = completeBody();
             body.put(CARD_NUMBER_FIELD, UNKNOWN_CARD);
             body.put(ACCOUNT_ID_FIELD, WORKED_EXAMPLE_ACCOUNT);
@@ -2133,32 +2149,36 @@ final class AuthorizationControllerTest {
             decisionPath.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
                             .content(json(body)))
                     .andExpect(status().isUnprocessableContent())
-                    .andExpect(jsonPath("$.messages[0]")
-                            .value(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE))
-                    .andExpect(jsonPath("$.approved").doesNotExist())
-                    .andExpect(jsonPath("$.declineReasonCode").doesNotExist())
-                    .andExpect(jsonPath("$.accountId").doesNotExist());
+                    .andExpect(jsonPath("$.approved").value(false))
+                    .andExpect(jsonPath("$.declineReasonCode")
+                            .value(DeclineReason.INVALID_CARD_NUMBER.code()))
+                    .andExpect(jsonPath("$.declineReasonDescription")
+                            .value(DeclineReason.INVALID_CARD_NUMBER.description()))
+                    .andExpect(jsonPath("$.accountId").value(nullValue()))
+                    .andExpect(jsonPath("$.messages").doesNotExist());
         }
 
         /**
-         * A card no row carries, on a request declaring no account, is refused before a decision.
+         * A card no row carries, on a request declaring no account, declines all the same.
          *
-         * <p>{@code READ-CCXREF-FILE} answers its {@code NOTFND} limb with
-         * {@value AuthorizationRequest#CARD_NUMBER_NOT_FOUND_MESSAGE} at
-         * {@code app/cbl/COTRN02C.cbl:L625-L626} and captures nothing. Nothing names a subject here, so
-         * the call is refused rather than decided and the body carries no reject code.
+         * <p>Nothing names an account here, and the outcome does not need one:
+         * {@code transaction-declined-v2.json} is the one declined document that declares no
+         * {@code accountId} property, and the identifier this service allocated is the subject the
+         * decision and its event are keyed on. So the answer is the same body the declared-account case
+         * receives, which is the point — the declared value never mattered.
          */
         @Test
-        void aCardNoRowCarriesWithNoDeclaredAccountIsRefusedBeforeADecision() throws Exception {
+        void aCardNoRowCarriesWithNoDeclaredAccountStillDeclines() throws Exception {
             Map<String, String> body = completeBody();
             body.put(CARD_NUMBER_FIELD, UNKNOWN_CARD);
 
             decisionPath.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
                             .content(json(body)))
                     .andExpect(status().isUnprocessableContent())
-                    .andExpect(jsonPath("$.messages[0]")
-                            .value(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE))
-                    .andExpect(jsonPath("$.declineReasonCode").doesNotExist());
+                    .andExpect(jsonPath("$.declineReasonCode")
+                            .value(DeclineReason.INVALID_CARD_NUMBER.code()))
+                    .andExpect(jsonPath("$.transactionId").value(ALLOCATED_ID))
+                    .andExpect(jsonPath("$.accountId").value(nullValue()));
         }
 
         /**
@@ -2187,8 +2207,8 @@ final class AuthorizationControllerTest {
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L372} runs the account read only while the reject code holds
          * zero, so a card that resolves nothing never reaches it. The short-circuit is what this test
-         * measures, and it is visible in the read that does not happen: the response carries the card
-         * text rather than the account reject code, and no account row is read for the account the
+         * measures, and it is visible in the read that does not happen: the response carries reject
+         * code {@code 0100} rather than {@code 0101}, and no account row is read for the account the
          * request declared.
          */
         @Test
@@ -2200,9 +2220,8 @@ final class AuthorizationControllerTest {
             decisionPath.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
                             .content(json(body)))
                     .andExpect(status().isUnprocessableContent())
-                    .andExpect(jsonPath("$.messages[0]")
-                            .value(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE))
-                    .andExpect(jsonPath("$.declineReasonCode").doesNotExist());
+                    .andExpect(jsonPath("$.declineReasonCode")
+                            .value(DeclineReason.INVALID_CARD_NUMBER.code()));
 
             verify(accountSnapshots, never()).findForUpdateByAccountId(any());
         }

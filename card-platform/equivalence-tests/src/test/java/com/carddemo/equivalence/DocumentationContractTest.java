@@ -88,7 +88,9 @@ class DocumentationContractTest {
             Map.entry(20, "twenty"),
             Map.entry(21, "twenty-one"),
             Map.entry(22, "twenty-two"),
-            Map.entry(23, "twenty-three"));
+            Map.entry(23, "twenty-three"),
+            Map.entry(24, "twenty-four"),
+            Map.entry(25, "twenty-five"));
 
     /** A listener declaration, anchored so a Javadoc mention of the annotation is not one. */
     private static final Pattern LISTENER_ANNOTATION =
@@ -128,11 +130,15 @@ class DocumentationContractTest {
     /**
      * Arguments that make git name the delivered set rather than the tracked subset of it.
      *
-     * <p>Two paths sit at the repository root and are named individually, because the engagement
-     * delivers them and no directory argument reaches them. The root {@code README.md} is the one
-     * pre-existing document this work updates, and {@code .gitattributes} declares the line endings
-     * that document already had. A review found both absent from the matrix's inventory, which is
-     * how a document claiming closure over the whole tree closed over less than it.
+     * <p>One path sits at the repository root and is named individually, because the engagement
+     * delivers it and no directory argument reaches it. The root {@code README.md} is the one
+     * pre-existing document this work updates. A review found it absent from the matrix's inventory,
+     * which is how a document claiming closure over the whole tree closed over less than it.
+     *
+     * <p>A second root file was named here and has since been withdrawn. A {@code .gitattributes}
+     * declaring the guide's line endings sits outside the three paths this engagement is allowed to
+     * write, so the whitespace policy moved into the check invocation and the file was removed. The
+     * argument list follows the tree rather than leading it.
      *
      * <p>The four remaining root files are deliberately not named. {@code CODE_OF_CONDUCT.md},
      * {@code CONTRIBUTING.md}, {@code LICENSE} and {@code NOTICE} are untouched since the baseline
@@ -140,12 +146,11 @@ class DocumentationContractTest {
      */
     private static final List<String> DELIVERED_SET_ARGUMENTS = List.of(
             "--cached", "--others", "--exclude-standard", "card-platform", ".github",
-            "README.md", ".gitattributes");
+            "README.md");
 
     /** The command the matrix must name, written the way a reader would run it. */
     private static final String DELIVERED_SET_COMMAND =
-            "git ls-files --cached --others --exclude-standard card-platform .github README.md"
-                    + " .gitattributes";
+            "git ls-files --cached --others --exclude-standard card-platform .github README.md";
 
     /** The provenance cell of a delivered file that cites nothing and says no more than that. */
     private static final String PLAIN_ABSENCE = "None cited in the file";
@@ -1308,11 +1313,11 @@ class DocumentationContractTest {
      * after a commit.
      *
      * <p>The set the command names is every path this engagement creates or updates, which is why
-     * {@link #DELIVERED_SET_ARGUMENTS} names two files at the repository root as well as the two
-     * directories. Scoping it to the directories alone left the root {@code README.md} and
-     * {@code .gitattributes} outside a closure that claimed to cover the delivered tree, and a
-     * review measured the gap. A withdrawn path holds no row by the same rule, so the matrix records
-     * those operations in a section of their own below the closure.
+     * {@link #DELIVERED_SET_ARGUMENTS} names a file at the repository root as well as the two
+     * directories. Scoping it to the directories alone left the root {@code README.md} outside a
+     * closure that claimed to cover the delivered tree, and a review measured the gap. A withdrawn
+     * path holds no row by the same rule, so the matrix records those operations in a section of its
+     * own below the closure.
      */
     @Test
     @DisplayName("the backward traceability count matches its rows, its groups and the delivered tree")
@@ -1409,11 +1414,11 @@ class DocumentationContractTest {
     /**
      * Holds the delivered-set definition closed against the repository rather than against itself.
      *
-     * <p>{@link #DELIVERED_SET_ARGUMENTS} names two directories and two files, so a path written
+     * <p>{@link #DELIVERED_SET_ARGUMENTS} names two directories and one file, so a path written
      * anywhere else is invisible to every closure built on it. That is how the root
-     * {@code README.md} and {@code .gitattributes} went unrowed: the command could not see them, so
-     * the count it produced agreed with the rows and both were short of the tree. A review measured
-     * the gap, which no test could.
+     * {@code README.md} went unrowed: the command could not see it, so the count it produced agreed
+     * with the rows and both were short of the tree. A review measured the gap, which no test
+     * could.
      *
      * <p>This one can. Every top-level entry git resolves is either covered by the delivered set or
      * named in {@link #ENTRIES_OUTSIDE_THE_DELIVERED_SET} with the reason it is not. A new file or

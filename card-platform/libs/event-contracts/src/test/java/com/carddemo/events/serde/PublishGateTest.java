@@ -110,17 +110,33 @@ class PublishGateTest {
     @Test
     @DisplayName("a contract version no producer may write is refused")
     void aContractVersionNoProducerMayWriteIsRefused() {
-        TransactionDeclined retained = TransactionDeclined.ofUnresolvedAccount(TRANSACTION_ID,
-                new BigDecimal("50.47"), MASKED_CARD_NUMBER);
+        TransactionDeclined retained = TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
+                DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal("50.47"), MASKED_CARD_NUMBER);
 
         IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                 () -> PublishGate.checkedJsonOf(retained),
-                "the retained account-less declined contract has no producer left, and the posture"
+                "the retained version-one declined contract has no producer left, and the posture"
                         + " gate is what keeps it that way");
 
         assertTrue(refused.getMessage().contains("posture")
                         || refused.getMessage().contains("schemaVersion"),
                 refused.getMessage());
+    }
+
+    @Test
+    @DisplayName("the account-less declined contract passes the gate, because one outcome writes it")
+    void theAccountLessDeclinedContractPassesTheGate() {
+        TransactionDeclined accountLess = TransactionDeclined.ofUnresolvedAccount(TRANSACTION_ID,
+                new BigDecimal("50.47"), MASKED_CARD_NUMBER);
+
+        String payload = PublishGate.checkedJsonOf(accountLess);
+
+        assertTrue(payload.contains("\"aggregateId\":\"" + TRANSACTION_ID + "\""),
+                "the checked text keys on the identifier the authorization service minted: "
+                        + payload);
+        assertFalse(payload.contains("\"accountId\""),
+                "and it names no account, because the read that would have resolved one failed: "
+                        + payload);
     }
 
     @Test

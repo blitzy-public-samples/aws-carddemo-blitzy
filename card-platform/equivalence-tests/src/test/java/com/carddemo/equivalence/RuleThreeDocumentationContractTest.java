@@ -199,70 +199,62 @@ class RuleThreeDocumentationContractTest {
     }
 
     /**
-     * Holds every carriage-return terminated file this repository delivers to a declared policy.
+     * Holds every carriage-return terminated file this repository delivers to a checked policy.
      *
-     * <p>{@code git diff --check} reads the whitespace attribute of the file it is reporting on.
-     * With none declared, a carriage return before the line feed is trailing whitespace, so every
-     * added line of the root guide was reported as a defect and the command exited 2. The guide
-     * cannot be converted: {@link #theRootReadmeIsTheOriginalGuidePlusOneTocLineAndOneSection()}
-     * requires its legacy bytes unchanged, and those bytes are carriage-return terminated.
+     * <p>{@code git diff --check} treats a carriage return before the line feed as trailing
+     * whitespace unless it is told otherwise, so every added line of the root guide is reported as
+     * a defect and the command exits 2. The guide cannot be converted:
+     * {@link #theRootReadmeIsTheOriginalGuidePlusOneTocLineAndOneSection()} requires its legacy
+     * bytes unchanged, and those bytes are carriage-return terminated.
      *
-     * <p>The policy is therefore declared rather than applied. This test finds the files that need
-     * it by reading bytes rather than by trusting a list, and it also refuses a converting attribute:
-     * {@code text}, {@code eol} and {@code working-tree-encoding} would rewrite content that has to
-     * stay byte for byte.
+     * <p>The policy is carried by the invocation rather than by a repository file. A root
+     * {@code .gitattributes} would sit outside the three paths this engagement is allowed to write,
+     * so the documented command names the setting instead:
+     * {@code git -c core.whitespace=cr-at-eol diff --check}. That form covers every file at once,
+     * which is why this test asserts the documentation carries it rather than counting per-path
+     * declarations.
+     *
+     * <p>Two properties are checked together. The scan reads bytes rather than trusting a list, so
+     * it finds the guide the setting exists for. The absence of any attributes file is asserted in
+     * its own right, because {@code text}, {@code eol} and {@code working-tree-encoding} would
+     * rewrite content that has to stay byte for byte.
      */
     @Test
-    void everyCarriageReturnTerminatedFileCarriesADeclaredWhitespacePolicy() {
-        Path attributes = repositoryRoot().resolve(".gitattributes");
-        assertTrue(Files.isRegularFile(attributes),
-                "a repository whose delivered files are not all line-feed terminated declares the "
-                        + "policy in .gitattributes, or git reports every added line as a defect");
-
-        List<String> declarations = new ArrayList<>();
-        List<String> converting = new ArrayList<>();
-        for (String line : read(attributes).split("\\R")) {
-            String rule = line.trim();
-            if (rule.isEmpty() || rule.startsWith("#")) {
-                continue;
-            }
-            String[] tokens = rule.split("\\s+");
-            for (int index = 1; index < tokens.length; index++) {
-                String name = tokens[index].replaceFirst("^[-!]", "").replaceFirst("=.*$", "");
-                if (List.of("text", "eol", "working-tree-encoding").contains(name)) {
-                    converting.add(rule);
-                    break;
-                }
-            }
-            if (rule.contains("whitespace=cr-at-eol")) {
-                declarations.add(tokens[0]);
-            }
-        }
-        assertEquals(List.of(), converting,
-                "an attribute that rewrites line endings or encoding would change bytes this "
-                        + "repository preserves verbatim: " + converting);
-
-        List<String> uncovered = new ArrayList<>();
-        int carriageReturnFiles = 0;
+    void everyCarriageReturnTerminatedFileIsCheckedUnderADocumentedInvocation() {
+        List<String> attributeFiles = new ArrayList<>();
         for (Path file : deliveredFilesOutsideTheLegacyApplication()) {
-            if (!contains(readBytes(file), (byte) '\r', (byte) '\n')) {
-                continue;
-            }
-            carriageReturnFiles++;
-            String relative = repositoryRoot().relativize(file).toString();
-            String name = file.getFileName().toString();
-            if (!declarations.contains(relative) && !declarations.contains(name)) {
-                uncovered.add(relative);
+            if (file.getFileName().toString().equals(".gitattributes")) {
+                attributeFiles.add(repositoryRoot().relativize(file).toString());
             }
         }
+        assertEquals(List.of(), attributeFiles,
+                "this engagement writes card-platform, the root README.md and .github and nothing "
+                        + "else, and an attributes file could also rewrite line endings or encoding "
+                        + "in content preserved verbatim: " + attributeFiles);
 
-        assertTrue(carriageReturnFiles > 0,
-                "the scan found no carriage-return terminated file, so its verdict would mean "
-                        + "nothing: the root guide is one");
-        assertEquals(List.of(), uncovered,
-                "these files end their lines with a carriage return and no .gitattributes entry "
-                        + "declares it, so git diff --check reports each added line as trailing "
-                        + "whitespace: " + uncovered);
+        List<String> carriageReturnFiles = new ArrayList<>();
+        for (Path file : deliveredFilesOutsideTheLegacyApplication()) {
+            if (contains(readBytes(file), (byte) '\r', (byte) '\n')) {
+                carriageReturnFiles.add(repositoryRoot().relativize(file).toString());
+            }
+        }
+        assertTrue(carriageReturnFiles.contains("README.md"),
+                "the scan found no carriage return in the root guide, so this verdict would mean "
+                        + "nothing: the guide is the file the setting exists for, and its legacy "
+                        + "bytes are carriage-return terminated");
+
+        for (Path guide : List.of(platformDirectory().resolve("docs/onboarding.md"),
+                platformDirectory().resolve("docs/decision-log.md"))) {
+            String text = read(guide);
+            assertTrue(text.contains("core.whitespace=cr-at-eol"),
+                    guide.getFileName() + " must name the setting, because a reader who runs the "
+                            + "check without it is told every one of the guide's "
+                            + carriageReturnFiles.size() + " carriage-return terminated files is "
+                            + "defective");
+            assertTrue(text.contains("git -c core.whitespace=cr-at-eol diff --check"),
+                    guide.getFileName() + " must carry the whole invocation, since the setting is "
+                            + "useless to a reader who cannot see which command takes it");
+        }
     }
 
     /**

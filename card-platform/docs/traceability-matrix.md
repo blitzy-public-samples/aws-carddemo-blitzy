@@ -16,7 +16,7 @@ Every count in this document was measured in the repository. Where a measurement
 | `app/cpy-bms/` | 17 source copybooks | All excluded for the same reason; `.gitkeep` is not a source member | 17 |
 | `app/data/ASCII/` | 9 | All reused as fixtures or seed sources | 9 |
 | `app/data/EBCDIC/` | 12 data artifacts | All retained as binary or width references; `.gitkeep` is excluded from the count | 12 |
-| Delivered target tree | 907 tracked files | 304 source-derived, 247 verification source-derived, 156 verification additive, 135 additive, 45 net new platform, 11 Rule-mandated documents, 8 Rule 3 documents, 1 Rule 3 update | 907 |
+| Delivered target tree | 907 tracked files | 305 source-derived, 247 verification source-derived, 156 verification additive, 135 additive, 44 net new platforms, 11 rule-mandated documents, 8 rule 3 documents, 1 rule 3 update | 907 |
 
 The backward direction closes on its own count. The delivered tree holds 907 tracked target paths. The two module-level tables below resolve them in 53 rows, each naming a module or a uniform group rather than a file. Every one of the 907 then appears once in [backward: every target path](#backward-every-target-path), so the target side is enumerated rather than summarised.
 
@@ -361,7 +361,6 @@ The build, container, deployment, and document deliverables trace to a rule or a
 | `card-platform/README.md` | Mono-repo map and delivered platform inventory | Rule 3 addition |
 | `card-platform/services/*/README.md` | Per-service purpose, provenance, APIs, events, and local operation | Six Rule 3 additions |
 | Root `README.md` modernization section | Existing onboarding entry point plus Rule 3 | Update to an existing document |
-| Root `.gitattributes` | The carriage-return line endings the legacy root guide already had, which `git diff --check` reports as defects unless the policy is declared | Net new repository-hygiene declaration |
 | `docs/decision-log.md` | Rule 1 | Rule-mandated addition |
 | `docs/traceability-matrix.md` | Rule 1 | Rule-mandated addition |
 | `docs/business-rule-flags.md` | User directive and AAP register | Rule-mandated addition |
@@ -376,19 +375,19 @@ The build, container, deployment, and document deliverables trace to a rule or a
 
 ## Backward: every target path
 
-Rule 1 closes in both directions, so the forward inventories above are matched by a row for every target path this engagement delivers. The list is complete rather than representative: `git ls-files --cached --others --exclude-standard card-platform .github README.md .gitattributes | wc -l` reports 907 delivered paths, and the tables below carry 907 rows. The two flags are not decoration. A plain `git ls-files` lists tracked paths only, so it reports fewer in any session that added a file, because a file is untracked until it is committed. The closure table at the end sums the rows per group, so that figure can be checked without counting by hand.
+Rule 1 closes in both directions, so the forward inventories above are matched by a row for every target path this engagement delivers. The list is complete rather than representative: `git ls-files --cached --others --exclude-standard card-platform .github README.md | wc -l` reports 907 delivered paths, and the tables below carry 907 rows. The two flags are not decoration. A plain `git ls-files` lists tracked paths only, so it reports fewer in any session that added a file, because a file is untracked until it is committed. The closure table at the end sums the rows per group, so that figure can be checked without counting by hand.
 
-That command names two paths outside `card-platform/` and `.github/`, and both belong in the count. The root `README.md` is the one pre-existing document this engagement updates, and the root `.gitattributes` declares the line endings that document already had. A review found both missing here, so each now carries a row of its own. The four remaining root files — `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `LICENSE` and `NOTICE` — are untouched, so nothing delivers them and none carries a row. Everything under `blitzy/` is run evidence rather than platform code, so git excludes it and no row states provenance for it.
+That command names one path outside `card-platform/` and `.github/`, and it belongs in the count. The root `README.md` is the one pre-existing document this engagement updates, and a review found it missing here, so it now carries a row of its own. A `.gitattributes` was named alongside it and has since been withdrawn, because the AAP confines this engagement's writes to `card-platform/`, that guide and `.github/`. The four remaining root files — `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `LICENSE` and `NOTICE` — are untouched, so nothing delivers them and none carries a row. Everything under `blitzy/` is run evidence rather than platform code, so git excludes it and no row states provenance for it.
 
-The Source provenance column names what the file itself records. Every delivered file that derives from a source member cites that member in its own comments, so the column is read out of the code rather than asserted over it. **647 of the 907 paths name at least one member under `app/`, and the remaining 260 name none.** Every one of those 260 cells opens with `None cited`, and what follows says why: 188 read `None cited in the file`, and the other 72 name the absence itself, such as `None cited; the source scores no risk and runs no rules engine`. Where a file cites more than four members the cell names four and counts the rest, because the point of a row is provenance rather than a citation list.
+The Source provenance column names what the file itself records. Every delivered file that derives from a source member cites that member in its own comments, so the column is read out of the code rather than asserted over it. **648 of the 907 paths name at least one member under `app/`, and the remaining 259 name none.** Every one of those 259 cells opens with `None cited`, and what follows says why: 187 read `None cited in the file`, and the other 72 name the absence itself, such as `None cited; the source scores no risk and runs no rules engine`. Where a file cites more than four members the cell names four and counts the rest, because the point of a row is provenance rather than a citation list.
 
-A cell that names no member says so in one of five wordings rather than one. The plain wording `None cited in the file` accounts for 188 rows, the fraud wording for 44, and the build wording for 25. Two further wordings cover the remaining 3. All 260 mean the same measured thing — the file carries no reference to any member under `app/` — and the wording records only why. `DocumentationContractTest` recomputes all 907 sets from disk and fails on any cell that disagrees, so this column cannot drift from the files again.
+A cell that names no member says so in one of five wordings rather than one. The plain wording `None cited in the file` accounts for 187 rows, the fraud wording for 44, and the build wording for 25. Two further wordings cover the remaining 3. All 259 mean the same measured thing — the file carries no reference to any member under `app/` — and the wording records only why. `DocumentationContractTest` recomputes all 907 sets from disk and fails on any cell that disagrees, so this column cannot drift from the files again.
 
 **A citation is not automatically provenance, and two groups of rows say so in the cell itself**. Build, container and deployment artifacts name the members whose behaviour the artifact runs. The repository carries no build manifest of any kind, so those citations are context.
 
 Every path under `services/fraud-detection-service` names members too, and none of them is an ancestor. The source scores no risk, checks no velocity and runs no rules engine, so what those files take is field widths and the rule-object shape the authorization decline chain uses. The plan records both borrowings as borrowings, so every fraud path is classified additive however many members it cites.
 
-Eight labels are used. **Source-derived** is main code, a schema, a migration or a resource that names at least one source member. **Additive** is a file with no ancestor, whether or not it cites one. 
+Eight labels are used. **Source-derived** is main code, a schema, a migration or a resource that names at least one source member. **Additive** is a file with no ancestor, whether or not it cites one.
 
 **Verification, source-derived** and **Verification, additive** are the two test cases, split the same way. **Rule-mandated document** covers the documents Rules 1 to 5 require, and **Rule 3 document** the per-module readme Rule 3 requires. A document’s authority is a rule, and the members in its cell are the evidence it cites. **Net new platform** covers build, container, pipeline, deployment and repository-hygiene artifacts.
 
@@ -404,7 +403,7 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/FraudCleared.java` | `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA05Y.cpy` | Source-derived |
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/FraudFlagged.java` | `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA05Y.cpy` | Source-derived |
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/TransactionAuthorized.java` | `app/bms/COCRDSL.bms`, `app/cbl/CBSTM03A.CBL`, `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT03Y.cpy` and 3 more | Source-derived |
-| `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/TransactionDeclined.java` | `app/bms/COCRDSL.bms`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CVACT03Y.cpy` and 5 more | Source-derived |
+| `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/TransactionDeclined.java` | `app/bms/COCRDSL.bms`, `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA05Y.cpy` and 4 more | Source-derived |
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/TransactionPosted.java` | `app/bms/COCRDSL.bms`, `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT03Y.cpy` and 4 more | Source-derived |
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/correlation/CorrelatedEvent.java` | None cited in the file | Additive |
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/correlation/CorrelationScope.java` | None cited in the file | Additive |
@@ -434,13 +433,13 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/libs/event-contracts/src/main/resources/schemas/transaction-posted-v1.json` | `app/bms/COCRDSL.bms`, `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT03Y.cpy` and 2 more | Source-derived |
 | `card-platform/libs/event-contracts/src/main/resources/schemas/transaction-posted-v2.json` | `app/bms/COCRDSL.bms`, `app/cbl/CBTRN02C.cbl`, `app/cpy/COSTM01.CPY`, `app/cpy/CVACT01Y.cpy` and 6 more | Source-derived |
 | `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/EventRedactionTest.java` | `app/data/ASCII/carddata.txt` | Verification, source-derived |
-| `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/EventRoundTripTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT02Y.cpy` and 5 more | Verification, source-derived |
+| `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/EventRoundTripTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT02Y.cpy`, `app/cpy/CVACT03Y.cpy` and 4 more | Verification, source-derived |
 | `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/EventSchemaContractTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT02Y.cpy`, `app/cpy/CVACT03Y.cpy` and 1 more | Verification, source-derived |
-| `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/SchemaBackwardCompatibilityTest.java` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl`, `app/cbl/COCRDUPC.cbl` and 14 more | Verification, source-derived |
+| `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/SchemaBackwardCompatibilityTest.java` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl`, `app/cbl/COCRDUPC.cbl` and 13 more | Verification, source-derived |
 | `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/correlation/CorrelationScopeTest.java` | None cited in the file | Verification, additive |
 | `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/correlation/EventCorrelationTest.java` | None cited in the file | Verification, additive |
 | `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/serde/EventPublicationGuardTest.java` | `app/cpy/CVACT03Y.cpy`, `app/data/ASCII/carddata.txt` | Verification, source-derived |
-| `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/serde/EventSerdeSecurityTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CVACT02Y.cpy`, `app/cpy/CVCUS01Y.cpy` and 4 more | Verification, source-derived |
+| `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/serde/EventSerdeSecurityTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT02Y.cpy`, `app/cpy/CVCUS01Y.cpy`, `app/cpy/CVTRA05Y.cpy` and 3 more | Verification, source-derived |
 | `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/serde/PublishGateTest.java` | None cited in the file | Verification, additive |
 ### COBOL compatibility library — 13 paths
 | Target path | Source provenance | Classification |
@@ -458,7 +457,7 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/libs/cobol-compat/src/test/java/com/carddemo/cobol/CobolDecimalTruncationTest.java` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COBIL00C.cbl`, `app/cpy/CVACT01Y.cpy` and 4 more | Verification, source-derived |
 | `card-platform/libs/cobol-compat/src/test/java/com/carddemo/cobol/NumvalParserTest.java` | `app/cbl/COACTUPC.cbl`, `app/cbl/CORPT00C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CSUTLDPY.cpy` and 1 more | Verification, source-derived |
 | `card-platform/libs/cobol-compat/src/test/java/com/carddemo/cobol/PanMaskerTest.java` | `app/bms/COCRDSL.bms`, `app/cbl/COCRDUPC.cbl`, `app/cpy/COSTM01.CPY`, `app/cpy/CVACT02Y.cpy` and 2 more | Verification, source-derived |
-### Authorization service — 144 paths
+### Authorization service — 145 paths
 | Target path | Source provenance | Classification |
 | --- | --- | --- |
 | `card-platform/services/authorization-service/Dockerfile.dockerignore` | None cited; no source build, container or deployment manifest exists | Net new platform |
@@ -469,7 +468,7 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/api/AuthorizationController.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/COCOM01Y.cpy`, `app/cpy/CVACT03Y.cpy` and 1 more | Source-derived |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/api/AuthorizationRequest.java` | `app/bms/COADM01.bms`, `app/bms/COMEN01.bms`, `app/bms/COTRN02.bms`, `app/cbl/CBTRN02C.cbl` and 8 more | Source-derived |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/api/AuthorizationResponse.java` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT02Y.cpy`, `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA05Y.cpy` and 1 more | Source-derived |
-| `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/api/GlobalExceptionHandler.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CVTRA06Y.cpy` | Source-derived |
+| `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/api/GlobalExceptionHandler.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl` | Source-derived |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/config/AuthorizationProperties.java` | `app/cbl/CBTRN02C.cbl` | Source-derived |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/config/CorrelationContextFilter.java` | `app/cbl/CBTRN02C.cbl` | Additive |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/config/CorrelationRecordInterceptor.java` | `app/cbl/CBTRN02C.cbl` | Additive |
@@ -604,6 +603,7 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/services/authorization-service/src/main/resources/db/migration/V21__processed_event_claims_are_permanent.sql` | None cited in the file | Additive |
 | `card-platform/services/authorization-service/src/main/resources/db/migration/V22__authorization_decision_card_token_version.sql` | None cited in the file | Additive |
 | `card-platform/services/authorization-service/src/main/resources/db/migration/V23__subject_request_procedure.sql` | `app/jcl/XREFFILE.jcl` | Source-derived |
+| `card-platform/services/authorization-service/src/main/resources/db/migration/V24__unresolved_card_decline_is_decided.sql` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA05Y.cpy`, `app/cpy/CVTRA06Y.cpy` | Source-derived |
 | `card-platform/services/authorization-service/src/main/resources/application-trusted-proxy.yml` | None cited in the file | Additive |
 
 ### Ledger posting service — 98 paths
@@ -1298,7 +1298,7 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/docs/data-model.md` | `app/bms/COCRDSL.bms`, `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl` and 24 more | Rule-mandated document |
 | `card-platform/docs/decision-log.md` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBSTM03A.CBL`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl` and 34 more | Rule-mandated document |
 | `card-platform/docs/equivalence-results.md` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl`, `app/cbl/COBIL00C.cbl` and 22 more | Rule-mandated document |
-| `card-platform/docs/event-flow.md` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl`, `app/cbl/CORPT00C.cbl` and 6 more | Rule-mandated document |
+| `card-platform/docs/event-flow.md` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl`, `app/cbl/CORPT00C.cbl` and 5 more | Rule-mandated document |
 | `card-platform/docs/onboarding.md` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CSLKPCDY.cpy` and 5 more | Rule-mandated document |
 | `card-platform/docs/prose-validation.md` | None cited in the file | Rule-mandated document |
 | `card-platform/docs/suggested-next-tasks.md` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBSTM03A.CBL`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl` and 17 more | Rule-mandated document |
@@ -1350,10 +1350,9 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | `.github/workflows/ci.yml` | Context only, because no source build, container or deployment manifest exists: `app/cpy/CVACT03Y.cpy`, `app/data/ASCII/cardxref.txt` | Net new platform |
 | `card-platform/.gitleaks.toml` | None cited; no source build, container or deployment manifest exists | Net new platform |
 
-### Repository root outside the platform tree — 2 paths
+### Repository root outside the platform tree — 1 paths
 | Target path | Source provenance | Classification |
 | --- | --- | --- |
-| `.gitattributes` | None cited in the file | Net new platform |
 | `README.md` | None cited in the file | Rule 3 update |
 
 ### Backward closure arithmetic
@@ -1362,7 +1361,7 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | --- | ---: |
 | Event contract library | 45 |
 | COBOL compatibility library | 13 |
-| Authorization service | 144 |
+| Authorization service | 145 |
 | Ledger posting service | 98 |
 | Fraud detection service | 99 |
 | Notification service | 95 |
@@ -1375,16 +1374,16 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | Demo scripts | 4 |
 | Repository-root platform files | 8 |
 | Continuous integration | 3 |
-| Repository root outside the platform tree | 2 |
+| Repository root outside the platform tree | 1 |
 | **Total** | **907** |
 
 **Backward closure:** 907 rows against 907 tracked paths, so every target path carries a classification and a provenance statement.
 
-The last review of this platform measured 878 delivered paths and found this section closed against 876. Its remediation added 31 paths and withdrew 2, which is how the same command now reports 907. The arithmetic is stated so the two figures reconcile without a second measurement. Withdrawn paths are listed below, because a path the tree no longer carries can hold no row above.
+The last review of this platform measured 878 delivered paths and found this section closed against 876. Its remediation added 31 paths and withdrew 2, taking the tree to 907. This review added one migration and withdrew one root path, which is how the same command still reports 907. The arithmetic is stated so the two figures reconcile without a second measurement. Withdrawn paths are listed below, because a path the tree no longer carries can hold no row above.
 
 ## Withdrawn target paths
 
-A withdrawal is an operation this engagement performed, so Rule 1 owes it a record even though no delivered path carries it. Six container-context files were replaced by a per-service `Dockerfile.dockerignore`, which BuildKit reads in preference to the context's own file. Two authorization classes were withdrawn with the decline they served.
+A withdrawal is an operation this engagement performed, so Rule 1 owes it a record even though no delivered path carries it. Six container-context files were replaced by a per-service `Dockerfile.dockerignore`, which BuildKit reads in preference to the context's own file. Two authorization classes were withdrawn with the decline they served. One root file was withdrawn for sitting outside the paths this engagement may write.
 
 | Withdrawn path | Operation | What replaced it | Decision record |
 | --- | --- | --- | --- |
@@ -1394,8 +1393,9 @@ A withdrawal is an operation this engagement performed, so Rule 1 owes it a reco
 | `card-platform/services/fraud-detection-service/.dockerignore` | Delete | `card-platform/services/fraud-detection-service/Dockerfile.dockerignore` | [Decision log](decision-log.md) |
 | `card-platform/services/ledger-posting-service/.dockerignore` | Delete | `card-platform/services/ledger-posting-service/Dockerfile.dockerignore` | [Decision log](decision-log.md) |
 | `card-platform/services/notification-service/.dockerignore` | Delete | `card-platform/services/notification-service/Dockerfile.dockerignore` | [Decision log](decision-log.md) |
-| `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/entity/UnresolvedCardAttemptEntity.java` | Delete | The staged refusal that answers every caller alike, its `UNRESOLVED_CARD_STAGE` failure counter, and the table drop in `V20__unresolved_card_attempt_withdrawn.sql` | [Decision log](decision-log.md) |
-| `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/repository/UnresolvedCardAttemptRepository.java` | Delete | The same refusal; no row is written, so no store is needed | [Decision log](decision-log.md) |
+| `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/entity/UnresolvedCardAttemptEntity.java` | Delete | The reject code 0100 decision this platform records against no account, and the table drop in `V20__unresolved_card_attempt_withdrawn.sql` | [Decision log](decision-log.md) |
+| `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/repository/UnresolvedCardAttemptRepository.java` | Delete | The same decision; no attempt row is written, so no store is needed | [Decision log](decision-log.md) |
+| `.gitattributes` | Delete | `git -c core.whitespace=cr-at-eol diff --check`, which carries the policy in the invocation instead of in a file the AAP does not admit | [Decision log](decision-log.md) |
 
 ## Deliberate omissions
 

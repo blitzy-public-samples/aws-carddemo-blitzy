@@ -50,14 +50,13 @@ import java.util.List;
  * branch. A component filled with spaces counts as absent, matching the
  * {@code NOT = SPACES AND LOW-VALUES} test at {@code app/cbl/COTRN02C.cbl:L196}.
  *
- * <p>Where both arrive, the card decides and the account names the subject.
+ * <p>Where both arrive, the card decides and the row that card resolves names the subject.
  * {@code app/cbl/CBTRN02C.cbl:L383} keys the cross-reference read on the card the transaction
  * carries, so the card a caller presents is the card the four rules run against. The account is read
- * from the cross-reference row that card resolves, and where the card resolves no row the declared
- * account is the subject the decision applies to and the key its decline publishes under. A card
- * resolving no row on a call that declared no account is refused with
- * {@value #CARD_NUMBER_NOT_FOUND_MESSAGE}, from the {@code NOTFND} limb at
- * {@code app/cbl/COTRN02C.cbl:L625-L626}, because nothing names a subject.
+ * from the cross-reference row that card resolves, and an account declared on the request selects a
+ * card on the account branch and takes no further part. Where the card resolves no row the call is
+ * decided under reject reason {@code 0100} of {@code app/cbl/CBTRN02C.cbl:L385-L387} against no
+ * account at all, because nothing this platform stores names one.
  *
  * <p>Where only the account arrives, the account branch of
  * {@code app/cbl/COTRN02C.cbl:L196-L209} runs: the cross-reference is read by account identifier
@@ -374,26 +373,6 @@ public record AuthorizationRequest(
     public static final String ACCOUNT_ID_NOT_FOUND_MESSAGE = "Account ID NOT found...";
 
     /**
-     * Rejection text for a card number that resolves no cross-reference row on a request that
-     * declared no account either, from the {@code NOTFND} limb of {@code READ-CCXREF-FILE} at
-     * {@code app/cbl/COTRN02C.cbl:L625-L626}.
-     *
-     * <p>The card branch of {@code VALIDATE-INPUT-KEY-FIELDS} reads the cross-reference by the card
-     * number the caller supplied, and a card with no row there is an input refusal at the capture
-     * stage: the source answers it with this text and re-sends the screen, so no transaction is
-     * captured and no identifier is consumed.
-     *
-     * <p>This service refuses such a request for the same reason the source does, and for one more.
-     * Reject reason {@code 0100} of {@code app/cbl/CBTRN02C.cbl:L385-L387} is a decision about an
-     * account, {@code app/cbl/CBTRN02C.cbl:L446-L465} writes a reject record that account owns, and
-     * a request that declares no account and names a card no row holds establishes no account for
-     * either. It is therefore refused before a decision rather than decided against a subject
-     * nobody can name. A request that declares an account keeps that account as its subject, so the
-     * cross-reference miss decides reason {@code 0100} against it in the ordinary way.
-     */
-    public static final String CARD_NUMBER_NOT_FOUND_MESSAGE = "Card Number NOT found...";
-
-    /**
      * Rejection text for a request that carries a transaction identifier. ADDITIVE: no source
      * paragraph writes it, because no screen field offers the value.
      *
@@ -491,7 +470,6 @@ public record AuthorizationRequest(
             ACCOUNT_ID_NOT_NUMERIC_MESSAGE,
             ACCOUNT_ID_NOT_FOUND_MESSAGE,
             CARD_NUMBER_NOT_NUMERIC_MESSAGE,
-            CARD_NUMBER_NOT_FOUND_MESSAGE,
             IDENTIFIER_REQUIRED_MESSAGE,
             TYPE_CODE_EMPTY_MESSAGE,
             CATEGORY_CODE_EMPTY_MESSAGE,

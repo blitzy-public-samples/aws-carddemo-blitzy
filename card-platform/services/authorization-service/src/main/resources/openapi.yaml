@@ -23,10 +23,13 @@ info:
     Every decided reject reason travels under one contract.
 
 
-    Reject reason 0100 is not decided here. It is assigned where the cross-reference read missed, and
-    the account that read would have resolved is the only subject a decision of this service has. The
-    call is therefore refused with the source text of app/cbl/COTRN02C.cbl:L625-L626 and records
-    nothing. An account named in the request body never becomes a subject.
+    Reject reason 0100 is decided here like the other three, and it is the one outcome that names no
+    account. It is assigned where the cross-reference read missed, so no stored row named an
+    account. Its decision row leaves account_id empty.
+
+    Its event travels under schemas/transaction-declined-v2.json, keyed on the transaction identifier
+    this service allocated. An account named in the request body never becomes a subject, an
+    aggregate or a partition key.
 
 
     A call refused before the decision writes neither. Statuses 400, 401, 403, 406, 413, 415 and 503
@@ -69,19 +72,24 @@ paths:
         carrying the one reject code that stands. No decline answers 500 or 503.
 
 
-        Exactly one event is published per decided request, and never more than one. An approval
-        publishes TransactionAuthorized and a decline publishes TransactionDeclined. Every decline
-        travels under schemas/transaction-declined-v3.json, keyed on the eleven-digit account
-        identifier the decision applies to. It carries the nine descriptive values
-        app/cbl/CBTRN02C.cbl:L446-L465 copies into REJECT-TRAN-DATA, so a consumer can persist the
-        reject record.
+        Exactly one event is published per request that reaches a decision, and never more than one.
+        An approval publishes TransactionAuthorized and a decline publishes TransactionDeclined. A
+        decline whose card resolved an account travels under schemas/transaction-declined-v3.json,
+        keyed on the eleven-digit account identifier the decision applies to. It carries the nine
+        descriptive values app/cbl/CBTRN02C.cbl:L446-L465 copies into REJECT-TRAN-DATA, so a consumer
+        can persist the reject record.
 
 
-        Reason 0100 fires where the cross-reference read missed, and this service then has no account
-        it can vouch for. The call is answered 422 carrying "Card Number NOT found...", the text
-        app/cbl/COTRN02C.cbl:L625-L626 writes, and it records nothing and publishes nothing. A
-        request refused before the rule chain is entered records nothing at all: 401, 403 and a body
-        the reader or the bean constraints reject all leave every table untouched.
+        Reason 0100 fires where the cross-reference read missed, so no stored row named an account.
+        The call is still decided. It answers 422 carrying reject code 0100 and the text
+        app/cbl/CBTRN02C.cbl:L386 writes, with no accountId beside it. It publishes one event under
+        schemas/transaction-declined-v2.json, keyed on the transaction identifier this service
+        allocated.
+
+        That document declares no accountId at all, because the only candidate would be the value the
+        request body carried and no stored row ties it to the card presented. A request refused before
+        the rule chain is entered records nothing at all: 401, 403 and a body the reader or the bean
+        constraints reject all leave every table untouched.
 
 
         Access is decided by role alone. ACQUIRER and ADMIN are the two roles this operation admits,
@@ -396,10 +404,11 @@ paths:
             an unentitled caller that the subject exists.
 
 
-            A card that resolved no account answers the same way, and the entitlement check runs
-            before any of it. The "Card Number NOT found..." refusal cannot be used to discover which
-            cards this platform holds. The chain writes the problem document and the decision writes
-            the service error body, so both shapes are declared below.
+            The entitlement check runs before the decision branches on what the cross-reference
+            resolved. A caller entitled to nothing therefore receives this same 403 whether or not
+            the card it named exists. No answer of this route can be used to discover which cards
+            this platform holds. The chain writes the problem document and the decision writes the service
+            error body, so both shapes are declared below.
           headers:
             Cache-Control:
               description: Keeps the refusal out of every cache.
@@ -533,21 +542,21 @@ paths:
                     approved: false
                     declineReasonCode: '0102'
                     declineReasonDescription: OVERLIMIT TRANSACTION
-                refusedUnresolvedCard:
+                declinedUnresolvedCard:
                   summary: >-
-                    Refused where no cross-reference row carries the card number. Reject code 0100 at
-                    app/cbl/CBTRN02C.cbl:L383-L387 is assigned in the INVALID KEY branch of that
-                    read, which resolves no account. This service therefore has no subject to decide
-                    against, and answers the way app/cbl/COTRN02C.cbl:L625-L626 does. No approved
-                    member, no reject code and no accountId appear, because nothing was decided.
-                    SYNTHETIC: all 50 cards in app/data/ASCII/cardxref.txt resolve, so seeded data
-                    reaches this answer only with a card number held by no row.
+                    Declined where the cross-reference read resolves nothing. Reject code 0100 at
+                    app/cbl/CBTRN02C.cbl:L383-L387 is assigned in the INVALID KEY branch of that read,
+                    which resolves no account, so accountId is null here and on no other decided
+                    outcome. SYNTHETIC: all 50 rows of app/data/ASCII/cardxref.txt resolve, so seeded
+                    data reaches this answer only for sixteen digits no row holds. The decision is
+                    recorded and one event is published under schemas/transaction-declined-v2.json,
+                    keyed on the transactionId this body names.
                   value:
-                    status: 422
-                    error: Validation failed
-                    messages:
-                      - Card Number NOT found...
-                    timestamp: '2022-06-10T19:27:53.412Z'
+                    transactionId: '0000001000000002'
+                    accountId: null
+                    approved: false
+                    declineReasonCode: '0100'
+                    declineReasonDescription: INVALID CARD NUMBER FOUND
                 validationFailure:
                   summary: >-
                     The body was read and bound, and it named neither identifier. The text is the
@@ -739,14 +748,14 @@ components:
         card and against the account it declared.
 
 
-        Three refusals precede a decision, and each carries its own source text. The WHEN OTHER
-        branch at app/cbl/COTRN02C.cbl:L224 answers a request naming neither with "Account or Card
+        Two refusals precede a decision, and each carries its own source text. The WHEN OTHER branch
+        at app/cbl/COTRN02C.cbl:L224 answers a request naming neither identifier with "Account or Card
         Number must be entered...". The NOTFND limb at app/cbl/COTRN02C.cbl:L591-L592 answers an
-        accountId resolving no card with "Account ID NOT found...". The NOTFND limb at
-        app/cbl/COTRN02C.cbl:L625-L626 answers a cardNumber resolving no cross-reference row with
-        "Card Number NOT found...", whether or not the request declared an accountId as well. An
-        account named in a body is not a subject this platform resolved, so nothing is decided
-        against it.
+        accountId resolving no card with "Account ID NOT found...", because that branch resolved no
+        card for the rules to run on. A cardNumber resolving no cross-reference row is not refused: it
+        is reject code 0100, decided against no account and published under
+        schemas/transaction-declined-v2.json. An account named in a body is not a subject this platform
+        resolved, so no decision is keyed on it.
 
 
         A property sent as an explicit JSON null is refused wherever a value is required and accepted
@@ -930,10 +939,11 @@ components:
 
             A value here is the card the rules run on, whether or not accountId also arrives, because
             app/cbl/CBTRN02C.cbl:L383 keys that read on the card of the transaction being authorized.
-            A card with no cross-reference row is refused with "Card Number NOT found..." from
-            app/cbl/COTRN02C.cbl:L625-L626, whether or not accountId arrived. Reject code 0100 at
-            app/cbl/CBTRN02C.cbl:L385-L387 is the batch outcome of that same read, and this route
-            publishes no decline under it.
+            A card with no cross-reference row is declined under reject code 0100 at
+            app/cbl/CBTRN02C.cbl:L385-L387, whether or not accountId arrived. That decline names no
+            account: the read resolved none, and the value accountId carried is not one. It
+            publishes one event under schemas/transaction-declined-v2.json, keyed on the transaction
+            identifier this service allocated.
 
 
             app/cbl/COTRN02C.cbl:L211 applies the COBOL numeric class test to the same field and
@@ -956,8 +966,11 @@ components:
             value from record 1 of app/data/ASCII/carddata.txt with `cut -c1-16
             app/data/ASCII/carddata.txt | sed -n '1p'` and send it in place of the accountId of the
             approvedAuthorization example. That resolves the same account and returns the same
-            approval. Any sixteen digits no seeded row carries takes the INVALID KEY limb of the same
-            read and is refused, writing no row and publishing nothing.
+            approval.
+
+            Any sixteen digits no seeded row carries takes the INVALID KEY limb of the same read.
+            That is declined under reject code 0100, writing one decision row naming no account and
+            publishing one event keyed on the transaction identifier.
         originTimestamp:
           type: string
           pattern: '^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2}\.\d{6})?$'
@@ -1016,10 +1029,12 @@ components:
             digits, zero-filled on the left, so account 7 reads as 00000000007.
 
 
-            A value here names the subject the decision applies to, once the cross-reference read has
-            resolved it. Where cardNumber arrives too, that card is the card the rules run on and
-            this account stays the subject. A card that read misses is refused before any decision
-            runs, so no decline is ever published against the account named here.
+            A value here selects the card the decision runs on where cardNumber does not arrive, and
+            the subject of the decision is then the account the cross-reference row itself named. Where
+            cardNumber arrives too, that card is the card the rules run on and this value takes no
+            further part. A card that read misses is declined under reject code 0100 against no
+            account at all. No decision and no event of this platform is ever keyed on the value
+            sent here.
 
 
             Where cardNumber does not arrive, the cross-reference read at app/cbl/COTRN02C.cbl:L208
@@ -1070,15 +1085,17 @@ components:
 
 
         accountId names the account the keyed read at app/cbl/CBTRN02C.cbl:L383-L384 resolved, on
-        every branch and with no exception. Reject code 0100 is assigned in the INVALID KEY branch of
-        that read, before app/cbl/CBTRN02C.cbl:L394 has an account to move. It therefore reaches no
-        caller as a decline. The request is refused before a decision, carrying the source text of
-        app/cbl/COTRN02C.cbl:L625-L626, whether or not it named an account of its own.
+        three of the four branches. Reject code 0100 is the fourth. It is assigned in the INVALID
+        KEY branch of that read, before app/cbl/CBTRN02C.cbl:L394 has an account to move, so its
+        branch pins accountId to null. The only value available to fill it would be the one the request body
+        carried, and no stored row of this platform ties that value to the card presented.
 
 
-        Every branch publishes one event under schemas/transaction-declined-v3.json keyed on that
-        account. A decline a caller receives therefore always names an account this platform
-        resolved, never one the request declared.
+        The three account-bearing branches publish one event under
+        schemas/transaction-declined-v3.json keyed on that account. The 0100 branch publishes one event
+        under schemas/transaction-declined-v2.json, which declares no accountId and is keyed on the
+        transactionId this body names. A decline a caller receives therefore names an account this
+        platform resolved or names none at all, never one the request declared.
       allOf:
         - $ref: '#/components/schemas/AuthorizationResponse'
         - type: object
@@ -1087,6 +1104,15 @@ components:
             approved:
               const: false
         - oneOf:
+            - title: Reject code 0100, from app/cbl/CBTRN02C.cbl:L385-L387.
+              type: object
+              properties:
+                accountId:
+                  type: 'null'
+                declineReasonCode:
+                  const: '0100'
+                declineReasonDescription:
+                  const: 'INVALID CARD NUMBER FOUND'
             - title: Reject code 0101, from app/cbl/CBTRN02C.cbl:L397-L399.
               type: object
               required: [accountId]
@@ -1324,13 +1350,12 @@ components:
               - 'Account ID must be Numeric...'                  # :L199
               - 'Card Number must be Numeric...'                 # :L213
               - 'Account or Card Number must be entered...'      # :L226
-              # Each branch reads the cross-reference by the value the caller supplied, and a value
-              # with no row there is refused at the capture stage, whether the request declared an
-              # account of its own or not. The account text answers a request naming an account the
-              # read missed, and the card text answers one naming a card the read missed. Neither
-              # is a decline, and neither carries reject code 0100.
+              # The account branch reads the cross-reference by the account identifier the caller
+              # supplied, and an account with no row there resolves no card for the rules to run on,
+              # so it is refused at the capture stage. That refusal is not a decline and carries no
+              # reject code. The card branch is a decision instead: a card with no row there is
+              # reject code 0100, so app/cbl/COTRN02C.cbl:L625-L626 has no counterpart here.
               - 'Account ID NOT found...'                        # :L591-L592
-              - 'Card Number NOT found...'                       # :L625-L626
               # ADDITIVE. No source paragraph writes these ten.
               - 'Transaction ID is allocated by this service and must not be supplied...'
               - 'Text fields must hold printable characters only...'

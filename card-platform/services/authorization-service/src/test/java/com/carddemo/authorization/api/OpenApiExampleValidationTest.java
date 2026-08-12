@@ -198,11 +198,12 @@ class OpenApiExampleValidationTest {
      * route publishes come from {@code app/cbl/CBTRN02C.cbl:L397-L419}, one {@code MOVE} of a code
      * beside one {@code MOVE} of its text.
      *
-     * <p>Reject code {@code 0100} is not among them. It follows the {@code INVALID KEY} branch at
-     * {@code app/cbl/CBTRN02C.cbl:L383-L384}, which resolves no account, and the account the batch
-     * writes its reject record against comes from {@code :L394} reading the row that branch did not
-     * find. This route therefore refuses such a call rather than deciding it, so the decline schema
-     * enumerates three codes and refuses a body carrying {@code 0100} at all.
+     * <p>Reject code {@code 0100} is the fourth pairing, and it is the mirror image of the other
+     * three. It follows the {@code INVALID KEY} branch at {@code app/cbl/CBTRN02C.cbl:L383-L384},
+     * which resolves no account, and the account the batch writes its reject record against comes from
+     * {@code :L394} reading the row that branch did not find. Its branch of the decline schema
+     * therefore pins {@code accountId} to null and refuses a body that names one, because the only
+     * value available to fill it would be the one the request body carried.
      */
     @Test
     @DisplayName("each decision schema enforces the invariants of its status")
@@ -227,10 +228,11 @@ class OpenApiExampleValidationTest {
         assertInvalid(declined,
                 decision(false, "00000000030", "0102", "TRANSACTION RECEIVED AFTER ACCT EXPIRATION"),
                 "a decline pairing one reject code with the text of another");
+        assertValid(declined, decision(false, null, "0100", "INVALID CARD NUMBER FOUND"),
+                "a decline carrying 0100 and naming no account, which is the one outcome that names"
+                        + " none");
         assertInvalid(declined, decision(false, "00000000030", "0100", "INVALID CARD NUMBER FOUND"),
-                "a decline carrying 0100, which this route refuses rather than decides");
-        assertInvalid(declined, decision(false, null, "0100", "INVALID CARD NUMBER FOUND"),
-                "a decline carrying 0100 and naming no account");
+                "a decline carrying 0100 beside an account, which that read resolved none of");
         assertInvalid(declined, decision(false, null, "0102", "OVERLIMIT TRANSACTION"),
                 "a decline carrying 0102 and naming no account");
         assertInvalid(declined, decision(false, "00000000030", "0199", "OVERLIMIT TRANSACTION"),

@@ -767,9 +767,17 @@ The profile uses Tomcat's `native` strategy rather than the framework's. The fra
 
 **Symptom:** `DocumentationContractTest` fails naming paths that are "delivered and carry no backward row", or naming a published statement it says has to read a different number. Nothing in the message is a file you edited.
 
-**Cause:** Rule 1 requires `docs/traceability-matrix.md` to read backward from every delivered path, and the test holds that closure exactly. It derives the count from the rows themselves, compares it against `git ls-files --cached --others --exclude-standard card-platform .github README.md .gitattributes`, and then requires eleven published figures to agree with what it measured. Six of those state the count and five state the citation split. One new file breaks all eleven at once.
+**Cause:** Rule 1 requires `docs/traceability-matrix.md` to read backward from every delivered path, and the test holds that closure exactly. It derives the count from the rows themselves, compares it against `git ls-files --cached --others --exclude-standard card-platform .github README.md`, and then requires eleven published figures to agree with what it measured. Six of those state the count and five state the citation split. One new file breaks all eleven at once.
 
 **Fix:** add the row first, in the group table its path belongs to, with a provenance cell naming the source members the file itself cites or opening `None cited`. Then add one to that group's tally and to the total in the closure table. Then restate the eleven figures: the failure message quotes the exact string each one has to contain, so run the module test and work down what it names. A path the command cannot see fails a second test instead, which lists every repository entry that is neither delivered nor recorded as outside the set.
+
+### 22. The whitespace check reports every added line of the root guide
+
+**Symptom:** `git diff --check` names 85 added lines in `README.md` as trailing whitespace and exits 2. None of those lines looks wrong in an editor.
+
+**Cause:** the root guide ends its lines with a carriage return and a line feed, and it did so before this engagement. `git diff --check` reads that carriage return as trailing whitespace unless it is told otherwise. The guide cannot be converted, because `RuleThreeDocumentationContractTest` holds its legacy bytes against a hash. A root `.gitattributes` once declared the policy per path, and it was withdrawn. The AAP admits writes to `card-platform/`, that guide and `.github/`, and a root file is in none of them.
+
+**Fix:** run `git -c core.whitespace=cr-at-eol diff --check`, which is the invocation this repository documents. It covers every file at once rather than a path list, so it needs no maintenance as files arrive. Against the review baseline it exits 0, so any hit it reports is a real defect rather than known noise. `everyCarriageReturnTerminatedFileIsCheckedUnderADocumentedInvocation` fails the build if this guide or `docs/decision-log.md` stops carrying the whole command.
 
 ## Where to go next
 

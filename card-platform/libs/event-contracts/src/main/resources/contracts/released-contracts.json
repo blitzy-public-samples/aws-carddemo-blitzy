@@ -36,13 +36,13 @@
       "eventType": "TransactionDeclined",
       "schemaVersion": 2,
       "resource": "schemas/transaction-declined-v2.json",
-      "posture": "RETAINED",
+      "posture": "PUBLISHED",
       "contractDigest": "sha256:81a0f7927b67a241fe8aec2cffc273a194c9178f27631ef77b802f8512dac917",
       "nonAdditiveOver": 1,
       "stoppedRequiring": [
         "accountId"
       ],
-      "note": "Released for reject code 0100 alone, and no producer writes it any more. It forked off version 1 rather than adding to it: it stopped requiring accountId, pinned declineReasonCode and declineReasonDescription to that one reject code, and retyped aggregateId to the sixteen-character transaction identifier. Reject code 0100 now publishes under version 3 keyed on the account the decision applies to, so the fork has no producer left; the document stays governed and readable for every record already published under it. Version 3 is the additive successor of version 1.",
+      "note": "The one contract reject code 0100 publishes under, and the only declined document that declares no accountId. It forked off version 1 rather than adding to it: it stopped requiring accountId, pinned declineReasonCode and declineReasonDescription to that one reject code, and retyped aggregateId to the sixteen-character transaction identifier the authorization service allocates. That fork is what the outcome needs. app/cbl/CBTRN02C.cbl:L385-L387 assigns 0100 inside the INVALID KEY limb of the cross-reference read, so no stored row names an account, and the account a caller declared beside the card is a value nothing corroborates. Reasons 0101, 0102 and 0103 publish under version 3, which is the additive successor of version 1. A consumer holding version 1 or 3 requires accountId and refuses a version-2 record on the dead-letter topic; the ledger reads every version and writes no reject row for this one, because the document carries none of the nine values REJECT-TRAN-DATA needs.",
       "retyped": [
         "aggregateId",
         "declineReasonCode",

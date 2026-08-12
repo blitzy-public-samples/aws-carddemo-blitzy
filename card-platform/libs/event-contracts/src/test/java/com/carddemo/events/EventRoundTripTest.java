@@ -235,13 +235,13 @@ class EventRoundTripTest {
      * reads {@code IF WS-REJECT-COUNT > 0} then {@code MOVE 4 TO RETURN-CODE}, which is the
      * source's own definition of a normal outcome.
      *
-     * <p>All four reject reasons are covered, including the one
-     * {@code app/cbl/CBTRN02C.cbl:L383-L387} assigns before the cross-reference resolves an
-     * account. That reason names the read that resolved nothing, not the subject the decision
-     * applies to: a synchronous caller declares its own account, and a call that can establish
-     * neither is refused at ingress with {@code 'Card Number NOT found...'} of
-     * {@code app/cbl/COTRN02C.cbl:L626} rather than decided. Every decided decline therefore
-     * carries an account, and every reject reason round-trips.
+     * <p>All four reject reasons are covered, and one of them travels a different contract.
+     * {@code app/cbl/CBTRN02C.cbl:L383-L387} assigns reason 0100 inside the {@code INVALID KEY} limb
+     * of the cross-reference read, so that read resolved no account and the decision names none: the
+     * record carries no {@code accountId} and keys on the sixteen-character transaction identifier its
+     * producer minted. The other three follow {@code MOVE XREF-ACCT-ID} at
+     * {@code app/cbl/CBTRN02C.cbl:L394} and carry the account that read resolved. Both shapes must
+     * survive a round trip unchanged, which is why the helper below routes on the reason.
      */
     @Test
     void aDeclinedTransactionRoundTripsForEveryRejectReasonWithItsVerbatimText() {
@@ -1241,18 +1241,27 @@ class EventRoundTripTest {
     }
 
     /**
-     * A declined transaction under the retained first contract, for any one of the four reject
-     * reasons.
+     * A declined transaction for any one of the four reject reasons, on the contract that reason has.
      *
-     * <p>The retained document is the one this round trip needs, because it is the smallest declined
-     * contract and it enumerates all four reject codes. Reading a record under it is what retention
-     * buys; no producer writes it, which {@code serde/EventContracts#publishViolationsOf} enforces
-     * on the paths that publish.
+     * <p>The retained first contract is the one three of the four need, because it is the smallest
+     * declined document and it enumerates every reject code. Reading a record under it is what
+     * retention buys; no producer writes it, which
+     * {@code serde/EventContracts#publishViolationsOf} enforces on the paths that publish.
+     *
+     * <p>Reason 0100 cannot travel that document, because it declares {@code accountId} required and
+     * that reason resolved none. It travels
+     * {@code schemas/transaction-declined-v2.json} instead, which declares no account and keys on the
+     * transaction identifier, and the factory routing here is the same routing
+     * {@code DeclineReason#resolvesAccount()} drives everywhere else.
      *
      * @param reason the reject reason the decline carries, any of the four
      * @return a declined transaction carrying {@code reason}
      */
     private static TransactionDeclined aDeclinedTransaction(DeclineReason reason) {
+        if (!reason.resolvesAccount()) {
+            return TransactionDeclined.ofUnresolvedAccount(TRANSACTION_ID,
+                    new BigDecimal(NEGATIVE_AMOUNT), MASKED_CARD_NUMBER);
+        }
         return TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID, reason,
                 new BigDecimal(NEGATIVE_AMOUNT), MASKED_CARD_NUMBER);
     }

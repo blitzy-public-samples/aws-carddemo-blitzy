@@ -36,14 +36,16 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>Every decided call writes exactly one row. An approval writes one {@link TransactionAuthorized}
  * and a decline writes one {@link TransactionDeclined}, never both and never two of either. A call
- * whose card resolved to no account writes its decline too, keyed on the account the caller
- * declared, which is the subject that decision applies to.
+ * whose card resolved no account writes its decline too, keyed on the transaction identifier the
+ * deciding service allocated, because that read named no account to key on and the account a caller
+ * declared is not one.
  *
  * <p>Each payload is one flat JavaScript Object Notation (JSON) object. The five envelope
  * properties sit beside the payload properties, so no nested key reaches the row:
  * {@code transaction-authorized-v1.json} names nineteen required properties, and the three governed
- * transaction-declined documents name the account-keyed form, the account-less form released for
- * reject code {@code 0100}, and the detail-bearing form every decline publishes under.
+ * transaction-declined documents name the retained account-keyed form, the account-less form reject
+ * code {@code 0100} publishes under, and the detail-bearing form the other three reasons publish
+ * under.
  *
  * <p>Every payload crosses {@link PublishGate} before the row is saved, which is the one
  * publish-side boundary of this platform: the class must name a registered event type, that type must
@@ -136,19 +138,21 @@ public class OutboxWriter {
      * {@code app/cbl/CBTRN02C.cbl:L446-L465} stays out of this row. The ledger posting service owns
      * it, in its own {@code rejected_transaction} table.
      *
-     * <p>ONE VERSION REACHES THIS METHOD. Version 1 keys on the eleven-digit account identifier the
-     * cross-reference resolved, and reasons {@code 0101}, {@code 0102} and {@code 0103} are the three
-     * that reach it, because each fires after that read succeeded.
+     * <p>TWO VERSIONS REACH THIS METHOD, ONE PER SUBJECT THE DECISION HAS. Version 3 keys on the
+     * eleven-digit account identifier the cross-reference resolved, and reasons {@code 0101},
+     * {@code 0102} and {@code 0103} are the three that reach it, because each fires after that read
+     * succeeded.
      *
-     * <p>Reject code {@code 0100} reaches nothing here. It is assigned at
+     * <p>Reject code {@code 0100} reaches version 2. It is assigned at
      * {@code app/cbl/CBTRN02C.cbl:L385}, inside the {@code INVALID KEY} branch of the cross-reference
      * read at {@code :L383}, and the short-circuit at {@code :L376-L378} stops the account read from
-     * running, so no account identifier exists to key an event on. A subject this service cannot
-     * resolve from a stored row is a call it refuses rather than a decision it records, so
-     * {@code domain/AuthorizationService} answers such a request before any identifier is allocated
-     * and writes neither a decision nor a row. {@code schemas/transaction-declined-v2.json} declared
-     * that shape and {@code contracts/released-contracts.json} records it as retained rather than
-     * published, so {@link #write} refuses it here.
+     * running, so no account identifier exists to key an event on.
+     * {@code schemas/transaction-declined-v2.json} is the contract for exactly that: it declares no
+     * {@code accountId} and keys the event on the transaction identifier the deciding service
+     * allocated. {@code contracts/released-contracts.json} records it as published, so {@link #write}
+     * admits it, and the outcome is a decision rather than a refusal because
+     * {@code app/cbl/CBTRN02C.cbl:L446-L465} writes a reject record for this reason as for the other
+     * three.
      *
      * <p>Every call that does reach a decision writes exactly one outbox row inside the transaction
      * that recorded the decision, which is what AAP transformation rule T4 requires.
@@ -172,9 +176,9 @@ public class OutboxWriter {
      *
      * <p>The row takes its identifiers from the envelope the event itself carries. The primary key of
      * the row, the message key the relay publishes under, and the values inside the payload therefore
-     * hold one account and one event identifier.
+     * hold one aggregate and one event identifier.
      *
-     * <p>The order of the three steps is the guarantee. The account key is read first, the payload is
+     * <p>The order of the three steps is the guarantee. The message key is read first, the payload is
      * written and measured second, and the row is saved last. Every rejection therefore leaves the
      * caller's transaction able to roll back with nothing stored.
      *
@@ -221,38 +225,47 @@ public class OutboxWriter {
     /**
      * Reads the message key the row records, and the relay publishes under.
      *
-     * <p>One form reaches a row this method writes: eleven decimal digits, the account identifier of
+     * <p>The usual form is eleven decimal digits, the account identifier of
      * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. The key travels as text and
      * nothing pads, so the leading zeros of an identifier belong to the value and survive: account
      * seven renders as eleven characters ending in seven. Keying every event of one account on that
      * value keeps the events of that account on one partition and in publish order, which is what the
      * ledger needs to apply them to a balance in the order they were decided.
      *
-     * <p>Every decision this service records names an account, reject code {@code 0100} of
-     * {@code app/cbl/CBTRN02C.cbl:L385-L387} included: the cross-reference read resolves the subject
-     * where it can, the caller declares it where that read misses, and a call that establishes
-     * neither is refused before a decision by
-     * {@code domain/AuthorizationService.CardNumberNotFoundInCrossReferenceException}. So there is one
-     * key form to write.
+     * <p>One contract carries the other form, and only that contract may.
+     * {@code schemas/transaction-declined-v2.json} governs the decline of a card the cross-reference
+     * resolved no account for, declares no {@code accountId} at all, and keys the event on the
+     * sixteen-character transaction identifier. Reject code {@code 0100} of
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387} is assigned inside the {@code INVALID KEY} limb of that
+     * read, so no stored row named an account, and an account a caller declared beside the card is a
+     * value nothing corroborates. The identifier this service allocated is the one subject it can
+     * vouch for, and {@link EventEnvelope#AGGREGATE_KEY_PATTERN} admits it beside the account form.
      *
-     * <p>{@link EventEnvelope#AGGREGATE_KEY_PATTERN} still admits a second form, the sixteen-character
-     * transaction identifier, because a record published under
-     * {@code schemas/transaction-declined-v2.json} before that redesign is still on its topic and a
-     * consumer still reads it. Reading it is what retention buys; writing it is what this method
-     * refuses. The CHECK constraint {@code ck_outbox_event_aggregate_id} was narrowed to the account
-     * form by migration {@code V19} and carries {@code NOT VALID}, so it holds every row written from
-     * that migration forward and leaves the older rows the record they are.
+     * <p>The pairing is checked rather than assumed. A transaction key is admitted for
+     * {@link TransactionDeclined#EVENT_TYPE} at
+     * {@value TransactionDeclined#UNRESOLVED_ACCOUNT_SCHEMA_VERSION} and for nothing else, so no other
+     * event of this service can reach a topic keyed on a value no consumer partitions an account by.
+     * {@code ck_outbox_event_aggregate_id} admits both forms, so the column holds whichever of the two
+     * this check passed.
      *
      * @param envelope the five envelope values of the event
-     * @return the message key: eleven decimal digits
-     * @throws IllegalArgumentException when the envelope carries another form. The message names the
-     *                                  pattern and the length, and never the value
+     * @return the message key: eleven decimal digits, or the sixteen-character transaction identifier
+     *         of the account-less declined contract
+     * @throws IllegalArgumentException when the envelope carries a form its contract does not declare.
+     *                                  The message names the pattern, the event type and the length,
+     *                                  and never the value
      */
     private static String messageKeyOf(EventEnvelope envelope) {
-        if (!envelope.carriesAccountKey()) {
+        if (envelope.carriesAccountKey()) {
+            return envelope.aggregateId();
+        }
+        boolean accountLessDecline = TransactionDeclined.EVENT_TYPE.equals(envelope.eventType())
+                && envelope.schemaVersion() == TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION;
+        if (!accountLessDecline) {
             throw new IllegalArgumentException("aggregateId must match "
                     + EventEnvelope.AGGREGATE_ID_PATTERN + ", the account key form column"
-                    + " aggregate_id records for every row this service writes, and the supplied"
+                    + " aggregate_id records for every row of " + envelope.eventType()
+                    + " at contract version " + envelope.schemaVersion() + ", and the supplied"
                     + " envelope holds " + envelope.aggregateId().length() + " characters");
         }
         return envelope.aggregateId();

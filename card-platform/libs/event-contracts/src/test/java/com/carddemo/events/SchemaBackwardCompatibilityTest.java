@@ -1729,22 +1729,46 @@ class SchemaBackwardCompatibilityTest {
      * {@code app/cbl/CBTRN02C.cbl:L372} then stops the account lookup. The other three reasons
      * follow {@code MOVE XREF-ACCT-ID TO FD-ACCT-ID} at {@code app/cbl/CBTRN02C.cbl:L394}.</p>
      *
-     * <p>What that ordering settles is which read resolved an identifier, and not which subject the
-     * decision applies to. A synchronous caller declares its own subject: {@code COTRN02C} takes an
-     * account identifier or a card number at {@code app/cbl/COTRN02C.cbl:L196-L209} and refuses a
-     * call carrying a card the cross-reference does not hold with
-     * {@code 'Card Number NOT found...'} at {@code app/cbl/COTRN02C.cbl:L626}. A decided reason 0100
-     * therefore has an eleven-digit account in hand, declared rather than resolved, and every
-     * declined record this platform publishes carries one in {@code accountId} and in
-     * {@code aggregateId}.</p>
+     * <p>What that ordering settles is which subject each reason has. The three reasons following the
+     * read carry the eleven-digit account it resolved, in {@code accountId} and in
+     * {@code aggregateId} alike. Reason 0100 has no such value: the only eleven digits within reach
+     * are the ones a caller declared, which no stored row of this platform corroborates, and a
+     * security review withdrew the revision that used them. Its subject is the sixteen-character
+     * transaction identifier the authorization service minted, and
+     * {@code schemas/transaction-declined-v2.json} is the document that declares that shape.</p>
      *
      * <p>{@code app/cbl/CBTRN02C.cbl:L448-L465} writes the 430-byte reject record for every record
-     * {@code 1500-VALIDATE-TRAN} refused, reason 0100 included, so a declined record that reaches a
-     * consumer without the account it applies to would cost that reject row.</p>
+     * {@code 1500-VALIDATE-TRAN} refused, reason 0100 included, and its eighty-byte trailer holds a
+     * reason and a text and no account. So the reject row the ledger writes for the other three
+     * reasons loses nothing it could have stored on this one: {@code rejected_transaction} declares no
+     * account column either, and the nine descriptive values it copies exist only on the request the
+     * read rejected.</p>
      */
     @Test
     void eachDeclineReasonCarriesTheAccountIdentityItsDecisionAppliesTo() {
+        java.math.BigDecimal unresolvedAmount = new java.math.BigDecimal(POSITIVE_AMOUNT);
+        TransactionDeclined accountLess = TransactionDeclined.ofUnresolvedAccount(TRANSACTION_ID,
+                unresolvedAmount, MASKED_CARD_NUMBER);
+
+        assertNull(accountLess.accountId(),
+                "reason code " + DeclineReason.INVALID_CARD_NUMBER.code() + " started carrying an "
+                        + "account, and the only candidate is a value a caller declared");
+        assertEquals(TRANSACTION_ID, accountLess.envelope().aggregateId(),
+                "reason code " + DeclineReason.INVALID_CARD_NUMBER.code() + " stopped keying on the "
+                        + "identifier this platform minted for it");
+        assertEquals(TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION,
+                accountLess.schemaVersion(),
+                "the one document declaring no accountId stopped being the one it travels under");
+        assertValid(DECLINED_UNRESOLVED, MAPPER.readTree(new String(
+                        SERIALIZER.serialize(topicFor(accountLess), accountLess),
+                        StandardCharsets.UTF_8)),
+                "the wire form of reason code " + DeclineReason.INVALID_CARD_NUMBER.code()
+                        + " stopped validating");
+
         for (DeclineReason reason : DeclineReason.values()) {
+            if (!reason.resolvesAccount()) {
+                continue;
+            }
             java.math.BigDecimal amount = new java.math.BigDecimal(POSITIVE_AMOUNT);
 
             TransactionDeclined event = TransactionDeclined.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID,
@@ -1784,28 +1808,44 @@ class SchemaBackwardCompatibilityTest {
     }
 
     /**
-     * Asserts the account-less declined document is retained rather than published, and that no
-     * producer path of this platform may write it.
+     * Asserts the account-less declined document is published, that a producer may write it, and that
+     * the detail-bearing document is published beside it.
      *
      * <p>That document forked off version one for reason 0100 alone: it stopped requiring
      * {@code accountId} and retyped {@code aggregateId} to the sixteen-character transaction
-     * identifier, which left the ledger consumer a record it could not attribute and no reject row
-     * to write for it. Reason 0100 now publishes under the detail-bearing version keyed on the
-     * account the decision applies to, so the fork has no producer left. It stays on the classpath
-     * and readable, because a record published under it before that change is still on its topic.</p>
+     * identifier. Both changes follow from where the reason is assigned.
+     * {@code app/cbl/CBTRN02C.cbl:L385} assigns it inside the {@code INVALID KEY} limb of the
+     * cross-reference read, so the read that would have resolved an account is the read that failed,
+     * and the only subject the decision has is the identifier the authorization service minted.
+     *
+     * <p>The fork was withdrawn once and restored once, and the two reviews behind that are why both
+     * postures are asserted here rather than one. A security review found reason 0100 being decided
+     * against the account the caller declared, which no stored row corroborates, and the answer was to
+     * refuse the call. A completeness review then found that refusal producing no event for a call AAP
+     * transformation rule T4 gives exactly one. Publishing this document closes both: the call is
+     * decided, one event is written, and the subject is a value this platform issued.
+     *
+     * <p>What this document cannot carry is the nine descriptive values {@code REJECT-TRAN-DATA}
+     * needs, because they exist only on the request the read rejected. The ledger consumer therefore
+     * takes its no-detail path for a version-2 record — it stores the idempotency marker, acknowledges,
+     * and writes no {@code rejected_transaction} row — and that table declares no account column
+     * either, so nothing is lost that it could have stored.</p>
      */
     @Test
-    void theAccountLessDeclinedDocumentIsRetainedAndNoProducerMayWriteIt() {
-        assertEquals(ReleasedContracts.RETAINED,
+    void theAccountLessDeclinedDocumentIsPublishedAndAProducerMayWriteIt() {
+        assertEquals(ReleasedContracts.PUBLISHED,
                 ReleasedContracts.postureOf(TransactionDeclined.EVENT_TYPE,
                         TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION),
-                "the account-less declined document is published again, and a record under it "
-                        + "carries no account for the ledger to attribute a reject row to");
+                "the account-less declined document stopped being publishable, and it is the one "
+                        + "document reason 0100 has, because that reason resolves no account");
 
-        ObjectNode retained = mutableCopy(DECLINED_UNRESOLVED);
-        assertTrue(retained.has("properties"),
+        ObjectNode published = mutableCopy(DECLINED_UNRESOLVED);
+        assertTrue(published.has("properties"),
                 DECLINED_UNRESOLVED + " left the classpath, so a record already published under it "
                         + "became unreadable");
+        assertFalse(published.path("properties").has(PAYLOAD_ACCOUNT_PROPERTY),
+                DECLINED_UNRESOLVED + " declares " + PAYLOAD_ACCOUNT_PROPERTY + " again, and the "
+                        + "point of this document is that reason 0100 resolved no account to name");
 
         TransactionDeclined accountLess = TransactionDeclined.ofUnresolvedAccount(TRANSACTION_ID,
                 new BigDecimal(POSITIVE_AMOUNT), MASKED_CARD_NUMBER);
@@ -1813,22 +1853,27 @@ class SchemaBackwardCompatibilityTest {
                 StandardCharsets.UTF_8);
 
         assertTrue(EventContracts.violationsOf(TransactionDeclined.EVENT_TYPE, payload).isEmpty(),
-                "a record under the retained account-less document stopped being readable, and "
-                        + "retention is what keeps it readable");
-        assertFalse(
+                "a record under the account-less document stopped being readable");
+        assertTrue(
                 EventContracts.publishViolationsOf(TransactionDeclined.EVENT_TYPE, payload)
                         .isEmpty(),
-                "a producer may write the retained account-less document again");
+                "a producer stopped being able to write the account-less document, which leaves "
+                        + "reason 0100 with no event and the authorization call with none: "
+                        + EventContracts.publishViolationsOf(TransactionDeclined.EVENT_TYPE,
+                                payload));
+        assertEquals(TRANSACTION_ID, MAPPER.readTree(payload).get("aggregateId").asString(),
+                "the record keys on the identifier this platform minted, so no caller chose the "
+                        + "partition a decline lands on");
 
         TransactionDeclined detailed = aDeclinedRecordAtVersionThree();
-        String published = new String(SERIALIZER.serialize(topicFor(detailed), detailed),
+        String withDetail = new String(SERIALIZER.serialize(topicFor(detailed), detailed),
                 StandardCharsets.UTF_8);
 
         assertTrue(
-                EventContracts.publishViolationsOf(TransactionDeclined.EVENT_TYPE, published)
+                EventContracts.publishViolationsOf(TransactionDeclined.EVENT_TYPE, withDetail)
                         .isEmpty(),
-                "the detail-bearing declined document stopped being publishable, and it is the one "
-                        + "version reason 0100 travels under");
+                "the detail-bearing declined document stopped being publishable, and it is the "
+                        + "version the three reasons following a resolved account travel under");
     }
 
     /**
@@ -1847,7 +1892,13 @@ class SchemaBackwardCompatibilityTest {
         assertAll(
                 () -> assertTrue(ReleasedContracts.isPublished(TransactionDeclined.EVENT_TYPE,
                                 TransactionDeclined.TRANSACTION_DETAIL_SCHEMA_VERSION),
-                        "the declined version the authorization service writes is not published"),
+                        "the declined version the three reasons following a resolved account travel"
+                                + " under is not published"),
+                () -> assertTrue(ReleasedContracts.isPublished(TransactionDeclined.EVENT_TYPE,
+                                TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION),
+                        "the declined version reason 0100 travels under is not published, so the"
+                                + " one authorization outcome that resolves no account would"
+                                + " produce no event at all"),
                 () -> assertTrue(ReleasedContracts.isPublished(TransactionAuthorized.EVENT_TYPE,
                                 TransactionAuthorized.CARD_TOKEN_SCHEMA_VERSION),
                         "the authorized version the authorization service writes is not published"),

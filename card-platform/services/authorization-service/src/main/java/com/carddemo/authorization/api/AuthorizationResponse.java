@@ -23,13 +23,13 @@ import java.util.regex.Pattern;
  * {@code app/cbl/CBTRN02C.cbl:L414-L420}, and all three read an account that resolved. An approval
  * without one cannot occur.
  *
- * <p>Every decided outcome carries one account identifier into this response, into the event
- * published beside it and into the Kafka message key. {@code TransactionAuthorized} and
- * {@code TransactionDeclined} both require those eleven digits, and the value always comes from the
- * cross-reference row {@code app/cbl/CBTRN02C.cbl:L394} reads. {@link DeclineReason#INVALID_CARD_NUMBER}
- * follows the invalid-key branch of that read at {@code app/cbl/CBTRN02C.cbl:L383-L384}, which
- * resolves no such row, so this platform refuses the call rather than deciding it and no response
- * here carries that code. No factory has to invent a substitute account identifier and none does.
+ * <p>Three of the four decided outcomes carry one account identifier into this response, into the
+ * event published beside it and into the Kafka message key. The value always comes from the
+ * cross-reference row {@code app/cbl/CBTRN02C.cbl:L394} reads, never from the request body.
+ * {@link DeclineReason#INVALID_CARD_NUMBER} follows the invalid-key branch of that read at
+ * {@code app/cbl/CBTRN02C.cbl:L383-L384}, which resolves no such row, so that one decline names no
+ * account: {@link #declineUnresolvedCard(String)} builds it and leaves {@code accountId} absent. No
+ * factory invents a substitute identifier, and none may.
  *
  * <p>A declined response carries one decline reason and its text. The source field holds a single
  * {@code PIC 9(04)} value, overwritten by whichever test fails last. This record holds one decline
@@ -43,8 +43,8 @@ import java.util.regex.Pattern;
  *
  * <p>{@link DeclineReason} serializes as four zero-padded characters, {@code "0100"} through
  * {@code "0103"}. A serialized response carries {@code "0102"} and never the number 102. The four
- * texts live on that enum, and this record restates none of them. Only three of the four reach a
- * response, because reject code {@code "0100"} resolves no subject to answer with.
+ * texts live on that enum, and this record restates none of them. All four reach a response, and
+ * {@code "0100"} is the one that reaches it without an account identifier.
  *
  * <p>No component carries a card number, masked or unmasked. None carries the card verification
  * value stored at {@code app/cpy/CVACT02Y.cpy:L7}, an amount, a merchant field, a timestamp, a card
@@ -63,10 +63,11 @@ import java.util.regex.Pattern;
  *                                 {@code app/cpy/CVACT03Y.cpy:L7}.
  *                                 {@code app/cbl/CBTRN02C.cbl:L394} reads it from the
  *                                 cross-reference record. Shaped by
- *                                 {@value #ACCOUNT_ID_PATTERN}, and absent only on a decline
- *                                 carrying {@link DeclineReason#INVALID_CARD_NUMBER}, where the
- *                                 keyed read at {@code app/cbl/CBTRN02C.cbl:L383-L384} returned an
- *                                 invalid-key condition and no account exists to name.
+ *                                 {@value #ACCOUNT_ID_PATTERN}, and absent on exactly one outcome:
+ *                                 a decline carrying
+ *                                 {@link DeclineReason#INVALID_CARD_NUMBER}, where the keyed read at
+ *                                 {@code app/cbl/CBTRN02C.cbl:L383-L384} returned an invalid-key
+ *                                 condition and no account exists to name.
  * @param approved                 {@code true} when the platform authorized the transaction.
  *                                 No COBOL ancestor. {@code app/cbl/CBTRN02C.cbl:L211} states
  *                                 the same outcome as a reject-code field holding zero.
@@ -120,9 +121,12 @@ public record AuthorizationResponse(
      * invariant. No failure text repeats a component value. A character count or a four-character
      * code stands in for it, and a card number supplied in the wrong position never reaches a log.
      *
-     * <p>An account identifier is absent on exactly one outcome: a decline carrying
-     * {@link DeclineReason#INVALID_CARD_NUMBER}. Every other outcome names an account that resolved,
-     * so the event published beside the response always has the eleven digits its contract requires.
+     * <p>An account identifier is absent on exactly one outcome and present on every other: a decline
+     * carrying {@link DeclineReason#INVALID_CARD_NUMBER} names none, because the keyed read that
+     * assigns it resolved no row, and its event travels under the one contract that declares no
+     * account. Every other outcome names an account that resolved, so the event published beside the
+     * response has the eleven digits its own contract requires. Both directions are checked: a value
+     * on the {@code 0100} outcome could only have come from the request body.
      *
      * @throws IllegalArgumentException when any of these holds:
      *                                  <ul>
@@ -192,22 +196,24 @@ public record AuthorizationResponse(
      * <p>The description comes from {@link DeclineReason#description()}, which reproduces the text
      * the source moves into {@code WS-VALIDATION-FAIL-REASON-DESC} beside each reject code.
      *
-     * <p>This factory builds the three declines a decision can reach:
+     * <p>This factory builds the three declines that resolved an account:
      * {@link DeclineReason#ACCOUNT_NOT_FOUND}, {@link DeclineReason#OVER_CREDIT_LIMIT} and
      * {@link DeclineReason#ACCOUNT_EXPIRED} are each reached only after
      * {@code app/cbl/CBTRN02C.cbl:L390-L394} read the cross-reference record and took the account
      * identifier from it. {@link DeclineReason#INVALID_CARD_NUMBER} follows the invalid-key branch of
      * that read at {@code app/cbl/CBTRN02C.cbl:L383-L387}, which resolves no account, so
-     * {@code domain/AuthorizationService} refuses that call instead of calling this factory. The
-     * identifier is required, because every decided outcome names the account it applies to and keys
-     * its event on it.
+     * {@link #declineUnresolvedCard(String)} builds that one instead and this factory refuses it. The
+     * identifier is required here, because each of these three outcomes names the account it applies
+     * to and keys its event on it.
      *
      * @param transactionId     identifier of the transaction this decision applies to, at most
      *                          {@value #TRANSACTION_ID_MAX_LENGTH} characters
      * @param accountId         the eleven-digit account identifier this decision applies to; required
-     * @param declineReasonCode the single reject code; required, any of the four
+     * @param declineReasonCode the single reject code; required, any of the three that resolved an
+     *                          account
      * @return a declined response whose description matches its decline reason
-     * @throws IllegalArgumentException when {@code declineReasonCode} is {@code null}, when
+     * @throws IllegalArgumentException when {@code declineReasonCode} is {@code null} or is
+     *                                  {@link DeclineReason#INVALID_CARD_NUMBER}, when
      *                                  {@code transactionId} is absent or too wide, or when
      *                                  {@code accountId} is absent or does not match
      *                                  {@value #ACCOUNT_ID_PATTERN}
@@ -218,18 +224,54 @@ public record AuthorizationResponse(
             throw new IllegalArgumentException(
                     "declineReasonCode must be present on a declined response");
         }
+        if (declineReasonCode == DeclineReason.INVALID_CARD_NUMBER) {
+            throw new IllegalArgumentException("a decline carrying reject code "
+                    + DeclineReason.INVALID_CARD_NUMBER.code()
+                    + " names no account, so declineUnresolvedCard builds that outcome");
+        }
         return new AuthorizationResponse(transactionId, accountId, false, declineReasonCode,
                 declineReasonCode.description());
     }
 
     /**
-     * Tests the one invariant that ties the account identifier to the outcome.
+     * Builds the declined response of a card the cross-reference resolved no account for.
      *
-     * <p>Every decided outcome names the account it applies to, and that account is always one a
-     * cross-reference row named. An approval names the account it authorized against and each decline
-     * names the account it read. Without this test a response could reach the outbox with no
-     * identifier to key its event on, and the event contract requiring eleven digits would fail after
-     * the decision had already been taken.
+     * <p>The reject code is fixed to {@link DeclineReason#INVALID_CARD_NUMBER} and the description to
+     * its text, so a caller can pair neither with anything else. No account identifier is taken,
+     * because none exists: {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns this code inside the
+     * {@code INVALID KEY} limb of the keyed read at {@code :L383-L384}, before
+     * {@code app/cbl/CBTRN02C.cbl:L394} has an identifier to move, and the account a caller may have
+     * named beside the card is corroborated by no stored row.
+     *
+     * <p>The decision is still recorded and its event still published, keyed on the transaction
+     * identifier this platform allocated. The body a caller reads therefore carries the same reject
+     * code and text as the event, and an {@code accountId} of {@code null}.
+     *
+     * @param transactionId identifier of the transaction this decision applies to, at most
+     *                      {@value #TRANSACTION_ID_MAX_LENGTH} characters
+     * @return a declined response carrying reject code {@code 0100} and no account identifier
+     * @throws IllegalArgumentException when {@code transactionId} is absent or too wide
+     */
+    public static AuthorizationResponse declineUnresolvedCard(String transactionId) {
+        return new AuthorizationResponse(transactionId, null, false,
+                DeclineReason.INVALID_CARD_NUMBER,
+                DeclineReason.INVALID_CARD_NUMBER.description());
+    }
+
+    /**
+     * Tests the one invariant that ties the account identifier to the outcome, in both directions.
+     *
+     * <p>Three decided outcomes name the account they apply to, and that account is always one a
+     * cross-reference row named. An approval names the account it authorized against, and the two
+     * declines that follow a successful read name the account they read. Without this test a response
+     * could reach the outbox with no identifier to key its event on, and the event contract requiring
+     * eleven digits would fail after the decision had already been taken.
+     *
+     * <p>The fourth outcome is the mirror image, and the mirror matters as much. A decline carrying
+     * {@link DeclineReason#INVALID_CARD_NUMBER} follows a read that resolved nothing, so it must carry
+     * no identifier at all: the only value available to fill it would be the one the caller sent
+     * beside the card number, and a response naming it would report a decision against an account no
+     * row ties to that card. This test refuses that value here rather than leaving it to review.
      *
      * <p>No failure text repeats the identifier. The outcome or the word {@code absent} stands in for
      * it.
@@ -237,10 +279,20 @@ public record AuthorizationResponse(
      * @param accountId         the shaped identifier, or {@code null}
      * @param approved          {@code true} on an approved response
      * @param declineReasonCode the reject code, or {@code null} on an approved response
-     * @throws IllegalArgumentException when the outcome names no account
+     * @throws IllegalArgumentException when an outcome that resolved an account names none, or when
+     *                                  the one that resolved none names an account
      */
     private static void requireAccountIdentity(String accountId, boolean approved,
             DeclineReason declineReasonCode) {
+        if (!approved && declineReasonCode == DeclineReason.INVALID_CARD_NUMBER) {
+            if (accountId != null) {
+                throw new IllegalArgumentException("accountId must be absent on a decline carrying "
+                        + "the reject code " + DeclineReason.INVALID_CARD_NUMBER.code()
+                        + ", because the read that assigns it resolved no account and an account "
+                        + "named on the request is not one");
+            }
+            return;
+        }
         if (accountId == null) {
             throw new IllegalArgumentException("accountId must be present on "
                     + (approved ? "an approved response" : "a decline carrying the reject code "

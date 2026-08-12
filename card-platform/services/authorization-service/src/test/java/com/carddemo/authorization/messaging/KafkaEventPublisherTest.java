@@ -88,14 +88,15 @@ class KafkaEventPublisherTest {
      * A payload declaring a retained contract version reaches no topic.
      *
      * <p>{@code contracts/released-contracts.json} records
-     * {@code schemas/transaction-declined-v2.json} as retained: a record published under it before
-     * every decline named its account is still readable, and no producer writes it. The publisher is a
-     * producer path, so it refuses one rather than putting a second key form back on a topic.
+     * {@code schemas/transaction-declined-v1.json} as retained: a record published under it before the
+     * nine descriptive values {@code REJECT-TRAN-DATA} needs were added is still readable, and no
+     * producer writes it. The publisher is a producer path, so it refuses one rather than putting a
+     * superseded shape back on a topic.
      */
     @Test
     void aRetainedContractVersionReachesNoTopic() {
-        TransactionDeclined retained = TransactionDeclined.ofUnresolvedAccount(
-                TRANSACTION_ID, new BigDecimal("1.00"), MASKED_CARD_NUMBER);
+        TransactionDeclined retained = TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
+                DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal("1.00"), MASKED_CARD_NUMBER);
         String payload = jsonMapper.writeValueAsString(retained);
 
         IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
@@ -105,6 +106,30 @@ class KafkaEventPublisherTest {
                 "the refusal names the posture that stopped the publish: " + refused.getMessage());
         verify(template, never())
                 .send(org.mockito.ArgumentMatchers.<ProducerRecord<String, String>>any());
+    }
+
+    /**
+     * The one decline that resolves no account publishes under the identifier this platform minted.
+     *
+     * <p>Reject code {@code 0100} is assigned by the cross-reference read failing, so it has no
+     * eleven-digit key, and {@code schemas/transaction-declined-v2.json} retypes {@code aggregateId} to
+     * the sixteen printable characters a transaction identifier occupies. The key check this publisher
+     * runs compares the key with {@code aggregateId} and reads {@code accountId} only when the payload
+     * declares one, so an account-less payload passes it on the value it does carry.
+     */
+    @Test
+    void theAccountLessDeclinePublishesUnderItsTransactionKey() {
+        TransactionDeclined event = TransactionDeclined.ofUnresolvedAccount(
+                TRANSACTION_ID, new BigDecimal("1.00"), MASKED_CARD_NUMBER);
+        String payload = jsonMapper.writeValueAsString(event);
+
+        assertDoesNotThrow(() -> publisher.publish(DECLINED_TOPIC, event.aggregateId(), payload));
+
+        ProducerRecord<String, String> sent = captureSend();
+        assertEquals(DECLINED_TOPIC, sent.topic(), "the record is addressed to the declined topic");
+        assertEquals(TRANSACTION_ID, sent.key(),
+                "the transaction identifier is the message key, so no caller chose the partition");
+        assertEquals(payload, sent.value(), "the payload travels unchanged");
     }
 
     /**

@@ -653,51 +653,67 @@ class EventSerdeSecurityTest {
     }
 
     @Test
-    @DisplayName("reject reason 0100 carries the account its decision applies to, and keys on it")
-    void rejectReasonOneHundredCarriesTheAccountItsDecisionAppliesTo() {
+    @DisplayName("reject reason 0100 names no account and keys on the identifier this platform minted")
+    void rejectReasonOneHundredNamesNoAccountAndKeysOnItsTransactionIdentifier() {
         assertFalse(DeclineReason.INVALID_CARD_NUMBER.resolvesAccount(),
                 "app/cbl/CBTRN02C.cbl:L383-L387 assigns reason 0100 inside the INVALID KEY limb of "
                         + "the cross-reference read, so no account identifier has been read by then");
 
-        TransactionDeclined declared = TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
-                DeclineReason.INVALID_CARD_NUMBER, new BigDecimal("50.47"), MASKED_CARD_NUMBER);
-
-        assertEquals(ACCOUNT_ID, declared.accountId(),
-                "reason 0100 stopped carrying the account its decision applies to, which a "
-                        + "synchronous caller declares at app/cbl/COTRN02C.cbl:L196-L209 even when "
-                        + "the cross-reference read resolved none");
-        assertEquals(ACCOUNT_ID, declared.aggregateId(),
-                "reason 0100 stopped keying on the account, so its records left the partition "
-                        + "every other event of that account is ordered on");
-
-        TransactionDeclined detailed = TransactionDeclined.withTransactionDetail(ACCOUNT_ID,
-                TRANSACTION_ID, DeclineReason.INVALID_CARD_NUMBER, "01", "0001", "POS TERM",
-                "Purchase at Abshire-Lowe", new BigDecimal("50.47"), "800000000", "Abshire-Lowe",
-                "North Enoshaven", "72112", MASKED_CARD_NUMBER, AUTHORIZED_AT);
-
-        assertEquals(TransactionDeclined.TRANSACTION_DETAIL_SCHEMA_VERSION,
-                detailed.schemaVersion(),
-                "reason 0100 stopped publishing under the detail-bearing version, and "
-                        + "app/cbl/CBTRN02C.cbl:L446-L465 writes a reject record for it that needs "
-                        + "those values");
-        assertTrue(detailed.carriesTransactionDetail(),
-                "the reason 0100 decline stopped carrying the reject detail the ledger persists");
-
-        TransactionDeclined retained = TransactionDeclined.ofUnresolvedAccount(
+        TransactionDeclined accountLess = TransactionDeclined.ofUnresolvedAccount(
                 TRANSACTION_ID, new BigDecimal("50.47"), MASKED_CARD_NUMBER);
 
         assertEquals(TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION,
-                retained.schemaVersion(),
-                "the retained account-less contract moved off version two, and a record already "
-                        + "published under it selects its document by that version");
-        assertNull(retained.accountId(),
-                "the retained account-less contract started carrying an account identifier");
-        assertFalse(EventContracts.publishViolationsOf(TransactionDeclined.EVENT_TYPE,
-                        serialized(retained)).isEmpty(),
-                "a producer may write the retained account-less contract again");
+                accountLess.schemaVersion(),
+                "reason 0100 moved off the one document that declares no accountId, and no other "
+                        + "declined document can carry an outcome that resolved no account");
+        assertNull(accountLess.accountId(),
+                "reason 0100 started carrying an account identifier, and the only candidate is the "
+                        + "value a caller declared, which no stored row of this platform "
+                        + "corroborates");
+        assertEquals(TRANSACTION_ID, accountLess.aggregateId(),
+                "reason 0100 stopped keying on the identifier this platform minted, which is the "
+                        + "one subject it has that no caller chose");
+        assertTrue(EventContracts.publishViolationsOf(TransactionDeclined.EVENT_TYPE,
+                        serialized(accountLess)).isEmpty(),
+                "a producer stopped being able to write the account-less contract, which would "
+                        + "leave the one outcome that resolves no account with no event: "
+                        + EventContracts.publishViolationsOf(TransactionDeclined.EVENT_TYPE,
+                                serialized(accountLess)));
         assertTrue(EventContracts.violationsOf(TransactionDeclined.EVENT_TYPE,
-                        serialized(retained)).isEmpty(),
-                "a record already published under the retained contract stopped being readable");
+                        serialized(accountLess)).isEmpty(),
+                "a record published under the account-less contract stopped being readable");
+        assertFalse(accountLess.carriesTransactionDetail(),
+                "the nine descriptive values app/cbl/CBTRN02C.cbl:L446-L465 writes exist only on "
+                        + "the request the read rejected, so this record carries none of them and "
+                        + "the ledger takes its no-detail path");
+
+        assertFalse(serialized(accountLess).contains("\"accountId\""),
+                "and no account property reaches the wire: " + serialized(accountLess));
+    }
+
+    @Test
+    @DisplayName("no factory pairs reject reason 0100 with an account identifier")
+    void noFactoryPairsRejectReasonOneHundredWithAnAccountIdentifier() {
+        IllegalArgumentException viaVersionOne = assertThrows(IllegalArgumentException.class,
+                () -> TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
+                        DeclineReason.INVALID_CARD_NUMBER, new BigDecimal("50.47"),
+                        MASKED_CARD_NUMBER),
+                "the version-one factory paired reason 0100 with an account a caller declared");
+
+        assertTrue(viaVersionOne.getMessage().contains(DeclineReason.INVALID_CARD_NUMBER.code()),
+                "the refusal names the reason that resolves no account: "
+                        + viaVersionOne.getMessage());
+
+        IllegalArgumentException viaDetail = assertThrows(IllegalArgumentException.class,
+                () -> TransactionDeclined.withTransactionDetail(ACCOUNT_ID, TRANSACTION_ID,
+                        DeclineReason.INVALID_CARD_NUMBER, "01", "0001", "POS TERM",
+                        "Purchase at Abshire-Lowe", new BigDecimal("50.47"), "800000000",
+                        "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER,
+                        AUTHORIZED_AT),
+                "the detail-bearing factory paired reason 0100 with an account a caller declared");
+
+        assertTrue(viaDetail.getMessage().contains(DeclineReason.INVALID_CARD_NUMBER.code()),
+                "the refusal names the reason that resolves no account: " + viaDetail.getMessage());
     }
 
     @Test

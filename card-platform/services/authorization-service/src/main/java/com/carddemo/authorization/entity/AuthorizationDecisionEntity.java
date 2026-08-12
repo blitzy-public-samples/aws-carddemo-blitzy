@@ -323,26 +323,30 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
     /**
      * Builds the row of a call one rule declined.
      *
-     * <p>{@code accountId} names the account the decision applied to, and every outcome this service
-     * records resolves that account from a cross-reference row. Reject code {@code 0100} at
+     * <p>{@code accountId} names the account the decision applied to, and it is always the one a
+     * cross-reference row named. Reject code {@code 0100} at
      * {@code app/cbl/CBTRN02C.cbl:L385-L387} follows the {@code INVALID KEY} branch of the read at
-     * {@code :L383}, which resolves no row, so this service refuses such a call rather than recording
-     * it. The parameter stays nullable because a row written before migration {@code V19} honestly
-     * holds none.
+     * {@code :L383}, which resolves no row, so a decision carrying that code names no account and this
+     * parameter is {@code null} for it. It is the one outcome that leaves the column empty: an account
+     * a caller declared beside the card is not a subject this service holds, so nothing else may fill
+     * it. {@code ck_authorization_decision_approved_account} keeps an approval from reaching that
+     * state.
      *
      * @param transactionId            identifier of the decided transaction
      * @param actor                    the request identity this decision is recorded against
-     * @param accountId                the account the cross-reference resolved, or {@code null}
+     * @param accountId                the account the cross-reference resolved, or {@code null} on a
+     *                                 decline carrying reject code {@code 0100}
      * @param maskedCardNumber         the card number, already masked
      * @param cardToken                the card token, or {@link PanMasker#ABSENT_CARD_TOKEN}
      * @param amount                   the decided amount, at two digits after the decimal point
      * @param declineReasonCode        the four-character reject code that stands
      * @param declineReasonDescription the text that reject code carries
      * @param decidedAt                the moment the decision was taken
-     * @param eventId                  the outbox row this decision published through. Every decline
-     *                                 names one account-keyed
-     *                                 {@code schemas/transaction-declined-v3.json} event, whichever
-     *                                 of the four reject codes stands
+     * @param eventId                  the outbox row this decision published through. A decline that
+     *                                 resolved an account names one account-keyed
+     *                                 {@code schemas/transaction-declined-v3.json} event; the one that
+     *                                 resolved none names one transaction-keyed
+     *                                 {@code schemas/transaction-declined-v2.json} event
      * @param declaredProcessingTimestamp the processing moment the caller declared, at the record
      *                                    width, or {@code null}
      * @return the declined row

@@ -212,45 +212,15 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Answers {@code 422} for a card number that resolves no cross-reference row.
-     *
-     * <p>The card branch of {@code VALIDATE-INPUT-KEY-FIELDS} reads the cross-reference by the card
-     * number the caller supplied, at {@code app/cbl/COTRN02C.cbl:L214-L223}. The {@code NOTFND} limb
-     * of that read moves {@link AuthorizationRequest#CARD_NUMBER_NOT_FOUND_MESSAGE} into
-     * {@code WS-MESSAGE} at {@code app/cbl/COTRN02C.cbl:L625-L626} and re-sends the screen, so no
-     * transaction is captured. The body carries that text verbatim.
-     *
-     * <p>Every caller reaches this arm, whatever the request body declared. Reject reason
-     * {@code 0100} is a batch outcome: the feed record of {@code app/cpy/CVTRA06Y.cpy} carries no
-     * account, so {@code app/cbl/CBTRN02C.cbl:L394} has to take the subject out of the resolved
-     * cross-reference row. A card resolving no row therefore resolves no subject, and an account a
-     * caller merely named is not one, so nothing is decided and nothing is published.
-     *
-     * <p>The text is a fixed constant of {@link AuthorizationRequest} and holds no value read from
-     * the request, so the refused card number reaches no caller and no log line. This arm precedes
-     * {@link #onRefusedRequest(IllegalArgumentException)}, whose fixed text would otherwise replace
-     * a source text with a sanitized one.
-     *
-     * @param failure the refusal the decision path raised for a card with no cross-reference row
-     * @return {@code 422} carrying the one source text
-     */
-    @ExceptionHandler(AuthorizationService.CardNumberNotFoundInCrossReferenceException.class)
-    public ResponseEntity<ApiErrorResponse> onCardNumberNotFoundInCrossReference(
-            AuthorizationService.CardNumberNotFoundInCrossReferenceException failure) {
-
-        log.info("Refusing an authorization request whose card holds no cross-reference row");
-        return unprocessable(ApiErrorResponse.UNPROCESSABLE,
-                List.of(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE));
-    }
-
-    /**
      * Answers {@code 422} for a request this service refused after binding and before deciding.
      *
      * <p>One refusal reaches here. A request naming neither identifier reproduces the
      * {@code WHEN OTHER} branch at {@code app/cbl/COTRN02C.cbl:L224-L229}, and it needs no stored row
      * to detect. The account identifier that resolves no cross-reference row is answered by
-     * {@link #onAccountNotFoundInCrossReference} above and the card number that resolves none by
-     * {@link #onCardNumberNotFoundInCrossReference}, each carrying its own source text.
+     * {@link #onAccountNotFoundInCrossReference} above, carrying its own source text. A card number
+     * that resolves no row reaches no refusal at all: it is reject reason {@code 0100} of
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387}, which {@code api/AuthorizationController} answers with
+     * a decision body and this class never sees.
      *
      * <p>The body carries {@link #REFUSED_REQUEST_MESSAGE}. A refusal raised inside a library can
      * quote the value it refused, so this arm puts no message from the failure in a response or in a

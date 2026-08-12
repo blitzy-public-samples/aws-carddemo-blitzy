@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -571,18 +572,41 @@ class RejectRecorderTest {
                             + " positions of REJECT-TRAN-DATA the row now holds whole");
         }
 
+        /**
+         * Asserts the declined contract carries reason 0100 without an account, and that no factory
+         * taking an account will build it.
+         *
+         * <p>{@code app/cbl/CBTRN02C.cbl:L385-L387} assigns the reason inside the {@code INVALID KEY}
+         * limb of the cross-reference read, so the read that would have resolved an account is the
+         * read that failed. The authorization service therefore keys the event on the transaction
+         * identifier it minted, and this consumer reads that shape rather than an account.
+         *
+         * <p>An earlier revision named the account the caller declared, which no stored row
+         * corroborates, and a security review withdrew it. The second assertion is what keeps it
+         * withdrawn: the producer factories that take an account refuse the reason outright, so the
+         * pairing cannot be rebuilt by a caller reaching for the more familiar factory.
+         */
         @Test
-        @DisplayName("the declined contract carries reason 0100 with the account it applies to")
-        void theDeclinedContractCarriesReasonZeroOneHundred() {
-            TransactionDeclined declined = TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
-                    DeclineReason.INVALID_CARD_NUMBER, AMOUNT, MASKED_CARD_NUMBER);
+        @DisplayName("the declined contract carries reason 0100 with no account at all")
+        void theDeclinedContractCarriesReasonZeroOneHundredWithNoAccount() {
+            TransactionDeclined declined = TransactionDeclined.ofUnresolvedAccount(TRANSACTION_ID,
+                    AMOUNT, MASKED_CARD_NUMBER);
 
-            assertEquals(ACCOUNT_ID, declined.accountId(),
-                    "reason 0100 names the account its decision applies to, which the caller declared"
-                            + " when the cross-reference read resolved none");
-            assertEquals(ACCOUNT_ID, declined.aggregateId(),
-                    "and it keys on that account, so the decline stays ordered with every other event"
-                            + " of it");
+            assertNull(declined.accountId(),
+                    "reason 0100 names no account, because the cross-reference read that would have"
+                            + " resolved one is the read that assigned the reason");
+            assertEquals(TRANSACTION_ID, declined.aggregateId(),
+                    "and it keys on the identifier the authorization service minted, which is the"
+                            + " one subject no caller chose");
+            assertFalse(declined.carriesTransactionDetail(),
+                    "so this consumer takes its no-detail path and writes no reject row, because"
+                            + " the nine descriptive values exist only on the rejected request");
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
+                            DeclineReason.INVALID_CARD_NUMBER, AMOUNT, MASKED_CARD_NUMBER),
+                    "a factory taking an account built reason 0100, which is the pairing a security"
+                            + " review withdrew");
         }
 
         @Test

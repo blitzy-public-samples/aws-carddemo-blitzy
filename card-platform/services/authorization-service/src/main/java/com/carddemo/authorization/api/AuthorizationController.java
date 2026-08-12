@@ -54,7 +54,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class AuthorizationController {
 
-    /** Decides one call and writes the one event a resolved call produces. */
+    /** Decides one call and writes the one event that call produces. */
     private final AuthorizationService authorizations;
 
     /**
@@ -70,8 +70,9 @@ public class AuthorizationController {
      * Authorizes one transaction.
      *
      * <p>An approval answers {@code 200}. A decline answers {@code 422}, carrying the one reject
-     * code that stands and the text {@link DeclineReason#description()} holds. No decline answers
-     * {@code 500} and none answers {@code 503}.
+     * code that stands and the text {@link DeclineReason#description()} holds. All four reject codes
+     * reach a caller through this route, and the one that resolved no account carries no
+     * {@code accountId} beside its code. No decline answers {@code 500} and none answers {@code 503}.
      *
      * <p>A rejection is a normal outcome in the source. {@code app/cbl/CBTRN02C.cbl:L229} tests the
      * reject count, and {@code app/cbl/CBTRN02C.cbl:L230} moves 4 into the return code of a batch
@@ -125,11 +126,14 @@ public class AuthorizationController {
     /**
      * Builds the body carrying one decision.
      *
-     * <p>Every decided outcome names the account it applies to, so one shape covers both bodies. An
-     * approval names the account it authorized against, and a decline names that account and its
-     * reject code. {@link DeclineReason#INVALID_CARD_NUMBER} reaches neither body: the cross-reference
-     * read at {@code app/cbl/CBTRN02C.cbl:L383-L384} took its {@code INVALID KEY} limb and resolved no
-     * account, so that call is refused before a decision and never reaches this method.
+     * <p>One shape covers every body, and which members it carries follows from what the decision
+     * resolved. An approval names the account it authorized against. A decline carrying
+     * {@link DeclineReason#ACCOUNT_NOT_FOUND}, {@link DeclineReason#OVER_CREDIT_LIMIT} or
+     * {@link DeclineReason#ACCOUNT_EXPIRED} names that account and its reject code, because each of
+     * the three follows a cross-reference read that succeeded.
+     * {@link DeclineReason#INVALID_CARD_NUMBER} names its reject code and no account: the read at
+     * {@code app/cbl/CBTRN02C.cbl:L383-L384} took its {@code INVALID KEY} limb, so no account was
+     * resolved, and this method does not substitute the one the request body may have declared.
      *
      * @param outcome the decision the service took
      * @return the body this endpoint returns for that decision
@@ -140,6 +144,9 @@ public class AuthorizationController {
 
         if (declineReason == null) {
             return AuthorizationResponse.approve(outcome.transactionId(), accountId);
+        }
+        if (declineReason == DeclineReason.INVALID_CARD_NUMBER) {
+            return AuthorizationResponse.declineUnresolvedCard(outcome.transactionId());
         }
         return AuthorizationResponse.decline(outcome.transactionId(), accountId, declineReason);
     }

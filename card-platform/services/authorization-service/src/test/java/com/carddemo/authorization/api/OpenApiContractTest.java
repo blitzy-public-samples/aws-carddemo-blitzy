@@ -336,17 +336,27 @@ final class OpenApiContractTest {
      *
      * <p>{@code app/cbl/CBTRN02C.cbl:L383} keys the cross-reference read on the card of the
      * transaction being authorized, so a supplied card number is the card the rules run on. The
-     * account identifier names the subject the decision applies to, and it resolves a card only where
-     * no card arrived, which is the {@code MOVE XREF-CARD-NUM} of {@code app/cbl/COTRN02C.cbl:L209}. A
-     * document telling a caller that its account replaces its card would describe a decision run
-     * against a card nobody presented.
+     * account identifier resolves a card where no card arrived, which is the
+     * {@code MOVE XREF-CARD-NUM} of {@code app/cbl/COTRN02C.cbl:L209}, and the subject of the decision
+     * is then the account the resolved row itself named. A document telling a caller that its account
+     * replaces its card would describe a decision run against a card nobody presented, and a document
+     * telling it that the value it sent becomes the subject would describe a decision this service
+     * declines to take: no row corroborates that value, so no decision, no event and no message key of
+     * this platform is ever built from it.
      */
     @Test
     void theDocumentDescribesWhichValueDecidesAndWhichNamesTheSubject() {
         String accountId = String.valueOf(
                 propertyOf("AuthorizationRequest", "accountId").get("description"));
-        assertTrue(accountId.contains("A value here names the subject the decision applies to"),
-                "the account identifier names the subject the decision applies to");
+        assertTrue(accountId.contains("A value here selects the card the decision runs on where "
+                        + "cardNumber does not arrive"),
+                "the account identifier selects a card rather than naming a subject");
+        assertTrue(accountId.contains("the subject of the decision is then the account the "
+                        + "cross-reference row itself named"),
+                "and the subject comes out of the resolved row");
+        assertTrue(accountId.contains("No decision and no event of this platform is ever keyed on "
+                        + "the value sent here"),
+                "the document says the declared value keys nothing");
         assertTrue(accountId.contains("app/cbl/COTRN02C.cbl:L209"),
                 "the document cites the MOVE that resolves a card from an account");
         assertTrue(accountId.contains("Where cardNumber does not arrive"),
@@ -402,13 +412,17 @@ final class OpenApiContractTest {
     }
 
     /**
-     * Asserts the response contract says which account a decline names, and that reject code 0100 is
-     * not one of the outcomes a caller can be handed.
+     * Asserts the response contract says which account each decline names, including the one that
+     * names none.
      *
-     * <p>A security review found the earlier document describing reject code {@code 0100} as a decline
-     * naming the account the caller declared. That is the behaviour that was removed, so the document
-     * has to have stopped describing it: a reader who implements against a decline branch this service
-     * cannot answer with has been misled by the contract rather than by the code.
+     * <p>Two findings shaped this test, and it holds both at once. A security review found an earlier
+     * document describing reject code {@code 0100} as a decline naming the account the caller
+     * declared, so no branch may describe that. A completeness review then found the document
+     * describing {@code 0100} as no decline at all, while AAP transformation rule T4 gives every
+     * authorization call one event and the success condition names four synchronous decline outcomes.
+     * A reader who implements against a set of decline branches that is missing one, or against one
+     * keyed on a value this platform will not key on, has been misled by the contract rather than by
+     * the code.
      */
     @Test
     void theDocumentDescribesWhichAccountADeclineNames() {
@@ -418,27 +432,49 @@ final class OpenApiContractTest {
         assertTrue(declined.contains("schemas/transaction-declined-v3.json"),
                 "every decline has to name the contract it publishes under, or a reader validates it"
                         + " against the wrong document");
+        assertTrue(declined.contains("schemas/transaction-declined-v2.json"),
+                "and the decline that names no account has to name its own contract, which is the one"
+                        + " document declaring no accountId");
         assertTrue(declined.contains("app/cbl/CBTRN02C.cbl:L383-L384"),
-                "and it has to say which read resolves the account every branch names");
-        assertTrue(declined.replaceAll("\\s+", " ").contains("refused before a decision"),
-                "and that a card resolving no row is refused rather than decided");
+                "and it has to say which read resolves the account three branches name");
+        assertTrue(declined.replaceAll("\\s+", " ").contains("pins accountId to null"),
+                "and that the fourth branch carries no account rather than an invented one");
         assertFalse(declined.contains("the account the caller declared"),
                 "no branch may describe a decision keyed on an account the request declared, which"
                         + " is the finding this document was corrected for");
         assertFalse(declined.contains("unresolved_card_attempt"),
                 "and no branch may name the withdrawn table, which migration V20 drops");
 
-        List<String> titles = asList(schemaOf("DeclinedAuthorization").get("allOf")).stream()
+        List<Map<String, Object>> branches = asList(schemaOf("DeclinedAuthorization").get("allOf"))
+                .stream()
                 .map(OpenApiContractTest::asMap)
                 .filter(member -> member.containsKey("oneOf"))
                 .flatMap(member -> asList(member.get("oneOf")).stream())
-                .map(branch -> String.valueOf(asMap(branch).get("title")))
+                .map(OpenApiContractTest::asMap)
                 .toList();
-        assertEquals(3, titles.size(),
-                "three reject codes reach a caller as a decline, and 0100 is not one of them: "
-                        + titles);
-        assertTrue(titles.stream().noneMatch(title -> title.contains("0100")),
-                "no decline branch may describe reject code 0100: " + titles);
+        List<String> titles = branches.stream()
+                .map(branch -> String.valueOf(branch.get("title")))
+                .toList();
+        assertEquals(4, titles.size(),
+                "all four reject codes reach a caller as a decline: " + titles);
+        assertEquals(1, titles.stream().filter(title -> title.contains("0100")).count(),
+                "one branch describes reject code 0100: " + titles);
+
+        Map<String, Object> unresolved = branches.stream()
+                .filter(branch -> String.valueOf(branch.get("title")).contains("0100"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("null",
+                asMap(asMap(unresolved.get("properties")).get("accountId")).get("type"),
+                "the 0100 branch has to pin accountId to null, or a body naming the account the"
+                        + " request declared would validate against it");
+        for (Map<String, Object> resolved : branches.stream()
+                .filter(branch -> !String.valueOf(branch.get("title")).contains("0100"))
+                .toList()) {
+            assertEquals(List.of("accountId"), asList(resolved.get("required")),
+                    "every branch that follows a resolved read has to require the account it names: "
+                            + resolved.get("title"));
+        }
     }
 
     /**

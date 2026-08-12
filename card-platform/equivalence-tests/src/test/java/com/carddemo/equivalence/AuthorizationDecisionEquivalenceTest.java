@@ -3,6 +3,7 @@ package com.carddemo.equivalence;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -928,32 +929,37 @@ class AuthorizationDecisionEquivalenceTest {
     class InvalidCardNumber {
 
         /**
-         * Asserts an account named in the request body cannot become the subject of this reason.
+         * Asserts an absent cross-reference row is assigned this reason, and that an account named in
+         * the request body cannot become its subject.
          *
          * <p>The batch loop resolves its subject from the cross-reference row and from nowhere else:
          * {@code app/cbl/CBTRN02C.cbl:L394} moves {@code XREF-ACCT-ID} out of that row, and the feed
          * record at {@code app/cpy/CVTRA06Y.cpy} declares twelve fields of which none is an account.
          * A read that missed therefore leaves the batch a reject file to write and no account to
-         * attribute the reject to.
+         * attribute the reject to. That is exactly the target's shape: the reason is assigned as the
+         * source assigns it, and the decision names no account.
          *
          * <p>An earlier revision decided this case against the account the caller declared, and a
          * security review found that any entitled caller could then pair an unknown card with any
-         * account. This test names that request shape and asserts the refusal, so the earlier
-         * behaviour cannot return unnoticed.
+         * account. This test names that request shape and asserts the outcome carries no account, so
+         * the earlier behaviour cannot return unnoticed.
          */
         @Test
-        @DisplayName("ADDITIVE: an absent cross-reference row is refused even when the request "
-                + "declares an account")
-        void anAbsentCrossReferenceRowIsRefusedEvenWhenTheRequestDeclaresAnAccount() {
+        @DisplayName("an absent cross-reference row is assigned reason 0100 and names no account, "
+                + "even when the request declares one")
+        void anAbsentCrossReferenceRowIsAssignedThisReasonAndNamesNoAccount() {
             DecisionHarness harness = DecisionHarness.overRows(Map.of(), Map.of());
 
-            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                    () -> harness.authorize(requestNamingBoth(ABSENT_ACCOUNT_ID,
-                            ABSENT_CARD_NUMBER, ZERO_MONEY, FEED_TIMESTAMP)),
-                    "the declared account is a value the caller chose, so it names no subject");
+            Outcome outcome = harness.authorize(requestNamingBoth(ABSENT_ACCOUNT_ID,
+                    ABSENT_CARD_NUMBER, ZERO_MONEY, FEED_TIMESTAMP));
 
-            assertEquals(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE, refused.getMessage(),
-                    "COTRN02C L625-L626 supplies the text this refusal carries");
+            assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason(),
+                    "CBTRN02C L385 assigns this reason inside the INVALID KEY limb of that read");
+            assertEquals("INVALID CARD NUMBER FOUND", outcome.declineReason().orElseThrow()
+                            .description(),
+                    "CBTRN02C L386-L387 supplies the text, and it is reproduced unaltered");
+            assertNull(outcome.accountId(),
+                    "the declared account is a value the caller chose, so it names no subject");
             assertEquals(1L, harness.crossReferences().cardLookupCount(),
                     "the miss came from the keyed read of CBTRN02C L383, not from an exception");
             assertEquals(UNREACHABLE_FROM_FIXTURES, harness.accounts().accountLookupCount(),
@@ -967,32 +973,39 @@ class AuthorizationDecisionEquivalenceTest {
         }
 
         /**
-         * Asserts a call that establishes no subject is refused ahead of any decision.
+         * Asserts a call that establishes no account is still decided, and that the decision is keyed
+         * on the identifier this platform allocated for it.
          *
          * <p>The synchronous contract of {@code app/cbl/COTRN02C.cbl:L196-L209} takes an account
-         * identifier or a card number. Where the card resolves no cross-reference row, nothing this
-         * service can vouch for names the subject a decision would apply to, and
-         * {@code app/cbl/COTRN02C.cbl:L625-L626} answers exactly that case with its own text and
-         * writes nothing. No identifier is allocated, no decision is recorded, and no event is
-         * published, so the reject reason of {@code app/cbl/CBTRN02C.cbl:L385-L387} is never
-         * assigned on this path.
+         * identifier or a card number, and its {@code NOTFND} limb at
+         * {@code app/cbl/COTRN02C.cbl:L625-L626} re-sends the screen. The batch loop is the ancestor
+         * of the decision, not that screen: {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns the reason
+         * and {@code :L446-L465} writes a reject record carrying the reason and its text, with no
+         * account field anywhere in the eighty-byte trailer.
+         *
+         * <p>So the target records one decision and publishes one event for this case, as AAP
+         * transformation rule T4 requires of every authorization call. What it has instead of an
+         * account is the sixteen-character transaction identifier it minted, which is the subject the
+         * decision names and the key the event travels under.
          */
         @Test
-        @DisplayName("ADDITIVE: a call that establishes no subject is refused before a decision")
-        void aCallThatEstablishesNoSubjectIsRefusedBeforeADecision() {
+        @DisplayName("a call that establishes no account is decided on the identifier this platform "
+                + "allocated")
+        void aCallThatEstablishesNoAccountIsDecidedOnItsAllocatedIdentifier() {
             DecisionHarness harness = DecisionHarness.overRows(Map.of(), Map.of());
 
-            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                    () -> harness.authorize(
-                            request(ABSENT_CARD_NUMBER, ZERO_MONEY, FEED_TIMESTAMP)),
-                    "a call naming neither a resolvable card nor an account establishes no subject");
+            Outcome outcome = harness.authorize(
+                    request(ABSENT_CARD_NUMBER, ZERO_MONEY, FEED_TIMESTAMP));
 
-            assertEquals(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE, refused.getMessage(),
-                    "COTRN02C L625-L626 supplies the text this refusal carries");
+            assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason(),
+                    "CBTRN02C L385 assigns this reason whether or not an account was named");
+            assertNull(outcome.accountId(), "and no account was resolved to name");
+            assertEquals(SYNTHETIC_TRANSACTION_ID, outcome.transactionId(),
+                    "the identifier the sequence allocated is the subject this decision names");
             assertEquals(1L, harness.crossReferences().cardLookupCount(),
-                    "the card was read once, at CBTRN02C L383, before the refusal");
+                    "the card was read once, at CBTRN02C L383, before the reason was assigned");
             assertEquals(UNREACHABLE_FROM_FIXTURES, harness.accounts().accountLookupCount(),
-                    "and no account read followed, because no account was named");
+                    "and no account read followed, because no account was resolved");
         }
     }
 

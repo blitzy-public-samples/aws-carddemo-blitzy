@@ -147,14 +147,14 @@ public enum DeclineReason {
      * {@code MOVE XREF-ACCT-ID TO FD-ACCT-ID} at {@code app/cbl/CBTRN02C.cbl:L394}, so an account
      * identifier is in hand.
      *
-     * <p>What this predicate does not say. It reports which read resolved an identifier, not which
-     * subject a decision applies to. A synchronous authorization call declares its own account
-     * identifier at the eleven digits {@code XREF-ACCT-ID} holds, so a decision carrying
-     * {@link #INVALID_CARD_NUMBER} still names an account, and every published
-     * {@link TransactionDeclined} is keyed on one. A caller that declared none is refused before a
-     * decision is recorded. {@code contracts/released-contracts.json} records the one version that
-     * took a second key form as retained; the rationale for that posture is in
-     * {@code card-platform/docs/decision-log.md}.
+     * <p>What this predicate decides. A decline this predicate answers {@code true} for publishes
+     * {@link TransactionDeclined#TRANSACTION_DETAIL_SCHEMA_VERSION}, keyed on the account the
+     * cross-reference row named. A decline it answers {@code false} for publishes
+     * {@link TransactionDeclined#UNRESOLVED_ACCOUNT_SCHEMA_VERSION}, which declares no account and is
+     * keyed on the transaction identifier the deciding service allocated. Both are published, both
+     * record one decision, and neither takes an account identifier from a request body: nothing ties
+     * the value a caller sends beside a card number to that card.
+     * {@code card-platform/docs/decision-log.md} carries the alternatives weighed.
      *
      * @return {@code true} for the three reasons that follow a successful cross-reference read,
      *         {@code false} for {@link #INVALID_CARD_NUMBER}
