@@ -603,9 +603,9 @@ class RuleThreeDocumentationContractTest {
 
     /**
      * A guide is a set of instructions, so a command it prints has to be one that does what the
-     * surrounding sentence says it does. A review found six ways that had stopped being true, and
-     * each had the same shape: the document restated something a committed script or the build
-     * already owned, and the copy drifted. These assertions hold the corrected form.
+     * surrounding sentence says it does. Six ways for that to stop being true share one shape: the
+     * document restates something a committed script or the build already owns, and the copy
+     * drifts. These assertions hold the document to the owner.
      *
      * <p>The credential half is the sharpest. Every service guide carried a block that set
      * seventeen of the nineteen values {@code .env.example} declares, omitting the card-token key

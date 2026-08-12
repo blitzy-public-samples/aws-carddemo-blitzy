@@ -18,9 +18,9 @@ import org.junit.jupiter.api.Test;
 /**
  * Proves the two rows a card-token rotation leaves behind describe the run and name no card.
  *
- * <p>A card token is the platform identity of one card, and a security review found the card service
- * re-deriving every stored token at start-up whenever the derivation changed. Three other stores hold
- * a token derived from the same key and hold no card number, so none can re-derive its own rows:
+ * <p>A card token is the platform identity of one card, so re-deriving every stored token at start-up
+ * whenever the derivation changes would move that identity silently. Three other stores hold a token
+ * derived from the same key and hold no card number, so none can re-derive its own rows:
  * {@code statement_transaction.card_token} and {@code notification_log.card_token} in the notification
  * service, and {@code authorization_decision.card_token} in the authorization service. A granted
  * {@code SCOPE_CARD} authority is a fourth. The mapping row is what those four are re-keyed from, and

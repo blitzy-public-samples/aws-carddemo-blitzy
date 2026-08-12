@@ -6,7 +6,7 @@
 # What it holds. docs/equivalence-results.md and README.md publish per-module and reactor test
 # counts, and this compares each published figure against the reports of a completed build. It runs
 # after the build rather than inside it, because a test cannot read the reports of the run it is
-# part of. Rationale, alternatives considered and accepted risks:
+# part of. Design decisions:
 # card-platform/docs/decision-log.md.
 #
 # What it measures

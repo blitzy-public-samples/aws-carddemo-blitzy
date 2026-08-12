@@ -92,7 +92,7 @@ class IdentifierFidelityEquivalenceTest {
                 .toList();
         assertTrue(fixtureSsns.stream().allMatch(ssn -> ssn.length() == 9),
                 "CUST-SSN PIC 9(09) at app/cpy/CVCUS01Y.cpy:L17 is nine digits wide");
-        // The six the review named. A numeric column returns 20973888 for the first of them.
+        // The six the fixture holds. A numeric column returns 20973888 for the first of them.
         List<String> leadingZeroSsns =
                 fixtureSsns.stream().filter(ssn -> ssn.startsWith("0")).sorted().toList();
         assertEquals(List.of("015027332", "017590544", "020973888", "029222192", "033922034",

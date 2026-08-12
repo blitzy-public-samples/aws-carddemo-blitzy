@@ -10,7 +10,7 @@
 -- reach. Four migrations correct the same claim, one per schema that carried it: account-service V8,
 -- authorization-service V11, card-service V4 and notification-service V6.
 --
--- Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md, under
+-- Design decisions: card-platform/docs/decision-log.md, under
 -- "What a stored row is allowed to claim".
 
 COMMENT ON TABLE cardholder_context IS

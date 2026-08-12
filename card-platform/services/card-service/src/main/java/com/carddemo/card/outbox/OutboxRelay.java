@@ -672,10 +672,12 @@ public class OutboxRelay {
     /**
      * What one sweep did, carried out of the transaction so it can be counted after the commit.
      *
-     * @param published       rows the broker accepted and this sweep marked
-     * @param failed          attempts this sweep recorded against rows it could not publish
-     * @param abandoned       rows this sweep gave up on, each named by an acknowledged diagnostic
-     * @param publishAttempts one timing sample per publish attempt this sweep made
+     * @param published          rows the broker accepted and this sweep marked
+     * @param failed             attempts this sweep recorded against rows it could not publish
+     * @param abandoned          rows this sweep gave up on, each named by an acknowledged diagnostic
+     * @param refusedDiagnostics abandonment diagnostics the broker refused, each leaving its row back
+     *                           in the claim query for a later sweep to offer again
+     * @param publishAttempts    one timing sample per publish attempt this sweep made
      */
     private record SweepResult(int published, int failed, int abandoned, int refusedDiagnostics,
             List<Timer.Sample> publishAttempts) {
@@ -717,7 +719,7 @@ public class OutboxRelay {
      * The scope is what the publish port reads to attach the two record headers.
      *
      * <p>A row recording no correlation identifier starts its own trace under its own event
-     * identifier. That covers a row written before this column existed, so every record this
+     * identifier. That covers a row predating {@code V6__outbox_correlation.sql}, so every record this
      * relay publishes carries a correlation identifier a reader can join on. A row carrying
      * neither opens a scope naming neither rather than failing the sweep.
      *
@@ -815,8 +817,8 @@ public class OutboxRelay {
      * <p>A refusal is raised rather than swallowed. This send is the one a sweep makes inside a
      * transaction — {@link #recordFailure} opened it and no other send of the sweep is inside one —
      * so the raised failure rolls the abandonment back with it, along with the attempt just recorded,
-     * and the row returns to the claim query with its attempt count as it was. A later sweep therefore offers the row and its diagnostic together, and
-     * neither is lost. Swallowing the refusal instead would leave the row terminal with its only
+     * and the row returns to the claim query with its attempt count as it was. A later sweep
+     * therefore offers the row and its diagnostic together, and neither is lost. Swallowing the refusal instead would leave the row terminal with its only
      * record nowhere, which is the loss this method exists to prevent.
      *
      * <p>The envelope is the governed form of {@code 01 ABEND-DATA} at
@@ -828,6 +830,8 @@ public class OutboxRelay {
      *
      * @param row         the row whose latest failure has just been recorded
      * @param diagnostics the four components describing that failure
+     * @param deadline    the sweep deadline on the monotonic clock, which bounds the wait for the
+     *                    broker's acknowledgement
      * @return {@code true} when the row was abandoned and the broker acknowledged its diagnostic,
      *         {@code false} when the row is still in flight
      * @throws DeadLetterRefusedException when the broker refused the diagnostic

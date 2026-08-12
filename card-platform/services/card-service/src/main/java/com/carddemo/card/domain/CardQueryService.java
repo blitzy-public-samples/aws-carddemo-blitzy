@@ -47,10 +47,9 @@ public class CardQueryService {
      * <p>The two failures this carries are a caller's, not this service's, and the difference decides
      * the status a caller reads. {@code api/CardApiExceptionHandler} answers this type with
      * {@code 400} and answers every other fault with {@code 500}, so a row count of zero is reported
-     * as the bad request it is rather than as a fault of this service. Before this type existed both
-     * left the same {@link IllegalArgumentException}, the handler could not tell one from the other,
-     * and a caller reading {@code 500} had no way to learn that correcting its own request would fix
-     * it.
+     * as the bad request it is rather than as a fault of this service. Leaving both as a plain
+     * {@link IllegalArgumentException} would give the handler no way to tell one from the other, and a
+     * caller reading {@code 500} no way to learn that correcting its own request would fix it.
      *
      * <p>The message is always one of the texts {@code api/dto/CardValidationMessages} declares and
      * never a value read from the request, because the handler puts it in the response body. The

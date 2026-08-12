@@ -15,7 +15,7 @@ package com.carddemo.account.api.dto;
  * {@code app/cbl/COACTVWC.cbl:L850} reads {@code ' in customer master.Resp: '} with one trailing
  * space, and {@code app/cbl/COACTVWC.cbl:L852} reads {@code ' REAS:'} in upper case.
  *
- * <p>Rationale for the shape of this record: {@code card-platform/docs/decision-log.md}.
+ * <p>Design decisions for the shape of this record: {@code card-platform/docs/decision-log.md}.
  *
  * @param message  the one message a read produced, up to 75 characters wide, from
  *                 {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COACTVWC.cbl:L117}. An empty

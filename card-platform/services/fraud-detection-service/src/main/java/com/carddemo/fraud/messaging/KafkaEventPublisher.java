@@ -21,12 +21,10 @@ import org.springframework.stereotype.Component;
  * The Kafka adapter behind {@link EventPublisherPort}, and the only class in this service that holds a
  * broker client.
  *
- * <p>Before this class existed, {@code outbox/OutboxRelay} injected the
- * {@code fraudEventKafkaTemplate} and called {@code send} on it, so the relay named Kafka in its own
- * signature. Every other producing service on this platform already published through a port with an
- * adapter behind it, and this one did not, which made the broker a compile-time dependency of the
- * relay rather than a configuration decision. Substituting a managed event service is now one new
- * implementation of {@link EventPublisherPort} and no change to the relay.
+ * <p>{@code outbox/OutboxRelay} names {@link EventPublisherPort} and never a broker client, so the
+ * broker is a configuration decision rather than a compile-time dependency of the relay. Every
+ * producing service on this platform publishes through the same shape. Substituting a managed event
+ * service is one new implementation of {@link EventPublisherPort} and no change to the relay.
  *
  * <p><b>What this class checks, and what it deliberately leaves to the serializer.</b> It checks the
  * message key, because that is the one property the relay supplies and the payload also carries: an

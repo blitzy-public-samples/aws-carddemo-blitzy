@@ -128,7 +128,7 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  * <h2>This file is repeated in each service</h2>
  *
  * <p>Each service ships its own copy, and each differs only in
- * {@link #apiSecurity(HttpSecurity)}. Rationale, alternatives considered and accepted risks:
+ * {@link #apiSecurity(HttpSecurity)}. Design decisions:
  * {@code card-platform/docs/decision-log.md}.
  */
 @Configuration
@@ -350,15 +350,13 @@ public class SecurityConfig {
      *
      * <p>Every decision this service takes records the name of the identity that asked for it, and
      * {@code authorization_decision.actor} is
-     * {@value AuthorizationDecisionEntity#ACTOR_MAX_LENGTH} characters wide. A wider name used to be
-     * shortened to fit, which made two identities agreeing in their leading characters share one
-     * recorded actor: the shipped nine-character monitoring identity reached the column as
-     * {@code monitor0} while the column was eight characters wide. An audit row that cannot name one
-     * identity does not audit.
+     * {@value AuthorizationDecisionEntity#ACTOR_MAX_LENGTH} characters wide. Shortening a wider name
+     * to fit would make two identities agreeing in their leading characters share one recorded actor,
+     * and an audit row that cannot name one identity does not audit.
      *
      * <p>The refusal happens at start-up rather than at the first decision. A username is not a
      * credential, so the message reports the configured value: an operator correcting the configuration
-     * needs to know which entry to correct. Rationale and the alternatives weighed:
+     * needs to know which entry to correct. Design decisions:
      * {@code card-platform/docs/decision-log.md}.
      *
      * @param username the configured username, already known to be present and non-blank
@@ -392,7 +390,7 @@ public class SecurityConfig {
      * Rejects a configured role this service grants nothing for.
      *
      * <p>A role is not a credential, so the message reports the configured word: an operator
-     * correcting a typo needs to know which one to correct. Rationale and the alternatives weighed:
+     * correcting a typo needs to know which one to correct. Design decisions:
      * {@code card-platform/docs/decision-log.md}.
      *
      * @param role the configured role, already known to be present and non-blank

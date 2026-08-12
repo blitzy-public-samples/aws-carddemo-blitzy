@@ -1,11 +1,11 @@
 -- Authorization service, migration V22.
 -- Records which card-token version the token on each decision row was taken under.
 --
--- What a security review found. authorization_decision.card_token holds a keyed code over a card
--- number, derived by cobol-compat PanMasker under CARD_TOKEN_SECRET and CARD_TOKEN_VERSION. This
--- table holds no card number, so it cannot re-derive its own rows, and nothing recorded which key or
--- version a stored token belonged to. A rotation therefore left every earlier row naming a card
--- nobody could resolve, with no way to tell a row a rotation had reached from one it had not.
+-- What the version column records. authorization_decision.card_token holds a keyed
+-- code over a card number, derived by cobol-compat PanMasker under CARD_TOKEN_SECRET and
+-- CARD_TOKEN_VERSION. This table holds no card number, so it cannot re-derive its own rows. Without
+-- the version, a rotation would leave every earlier row naming a card nobody could resolve, and
+-- nothing would tell a row a rotation had reached from one it had not.
 --
 -- What this file declares. One column and one check. The column is NOT NULL with a default of '1',
 -- which is the version card-platform/.env.example and deploy/k8s/30-configmap.yaml ship and the only
@@ -25,7 +25,7 @@
 -- the row is written, which is the only moment the value is knowable here.
 --
 -- Idempotent in the sense Flyway needs: this file runs once, and the default describes every row an
--- earlier version of this service wrote. Rationale, alternatives considered and accepted risks:
+-- earlier version of this service wrote. Design decisions:
 -- card-platform/docs/decision-log.md.
 
 ALTER TABLE authorization_decision

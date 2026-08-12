@@ -41,7 +41,7 @@ import tools.jackson.databind.JsonNode;
  * <p>This listener therefore refreshes the observation on that account's matching rows and writes no
  * mapping field. Where two cards of one account share their last four digits, both rows are refreshed.
  * That is a real imprecision and it is bounded: both rows already name this account, no mapping value
- * changes, and no authorization can be misrouted by it. Rationale and the alternatives weighed:
+ * changes, and no authorization can be misrouted by it. Design decisions:
  * {@code card-platform/docs/decision-log.md}.
  *
  * <p>The refresh and the marker commit together, and the offset is committed only once that transaction

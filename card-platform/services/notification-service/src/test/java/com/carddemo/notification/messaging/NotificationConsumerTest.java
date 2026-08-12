@@ -45,23 +45,25 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Reads the order the three listeners of this service apply one delivery in.
+ * Reads the order three of this service's four listeners apply one delivery in.
  *
  * <p>This service replaces only the cardholder-facing tail of statement generation. The batch
  * program assembled a statement once per cycle from a sorted copy of the transaction file
  * [{@code app/jcl/CREASTMT.JCL}], so it had no notion of one delivery and no duplicate detection.
  * The claim asserted here is the addition that makes a redelivery harmless.
  *
- * <p>Three listeners read three topics, and each is checked for the same four properties: the claim
- * reaches {@code processed_event} before any effect, a claim already held leaves every table
- * untouched, the acknowledgement follows the transactional unit, and a failure leaves the offset
- * uncommitted.
+ * <p>{@code TransactionPostedConsumer}, {@code FraudFlaggedConsumer} and
+ * {@code CustomerContextChangedConsumer} each read one topic, and each is checked for the same four
+ * properties: the claim reaches {@code processed_event} before any effect, a claim already held
+ * leaves every table untouched, the acknowledgement follows the transactional unit, and a failure
+ * leaves the offset uncommitted. {@code TransactionAuthorizedConsumerTest} covers the fourth
+ * listener.
  *
  * <p>A {@link TransactionTemplate} built over a replaced transaction manager runs its callback and
  * commits nothing. {@code entity/NotificationEntityPersistenceTest} owns the runtime proof that the
  * statements reach their tables.
  */
-@DisplayName("The three notification listeners: guard, apply, mark, acknowledge")
+@DisplayName("Three notification listeners: guard, apply, mark, acknowledge")
 class NotificationConsumerTest {
 
     /** The count a claim returns when this delivery is a redelivery. */

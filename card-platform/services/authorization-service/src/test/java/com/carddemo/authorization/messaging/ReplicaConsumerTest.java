@@ -120,9 +120,10 @@ class ReplicaConsumerTest {
     /**
      * The gap log both listeners open and close.
      *
-     * <p>Stubbed rather than exercised here. What it records is asserted in
-     * {@link com.carddemo.authorization.domain.ReplicaGapLogTest}, and what a decision does with a
-     * standing gap is asserted in {@code domain/AuthorizationServiceTest}.
+     * <p>Stubbed rather than exercised here, so no assertion below reaches what it writes. What a
+     * decision does with a standing gap is asserted in {@code domain/AuthorizationServiceTest},
+     * which stubs {@code existsForAggregate} true, and the table it writes is held to the entity
+     * model by {@code equivalence-tests EntitySchemaMappingContractTest}.
      */
     private ReplicaGapLog replicaGaps;
 

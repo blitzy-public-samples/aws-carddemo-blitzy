@@ -78,7 +78,6 @@ public class AuthorizationService {
     /** Name of the counter carrying events written to the outbox. */
     static final String EVENT_COUNTER = ObservabilityConfig.EVENTS_WRITTEN_COUNTER;
 
-    /** Name of the timer over one decision. */
     static final String DECISION_TIMER = ObservabilityConfig.DECISION_TIMER;
 
     /** Tag value marking the counted outcome of an approved call. */
@@ -452,10 +451,14 @@ public class AuthorizationService {
      * names the outcome, which for a decline is its reject code, and the type names the contract the
      * event was written under.
      *
-     * @param outcome    the decision the caller receives
-     * @param outcomeTag the {@code outcome} tag value this decision counts under
-     * @param eventType  the type of the one event written to the outbox, never {@code null}, because
-     *                   AAP transformation rule T4 gives every decided call one event
+     * @param outcome       the decision the caller receives
+     * @param outcomeTag    the {@code outcome} tag value this decision counts under
+     * @param eventType     the type of the one event written to the outbox, never {@code null},
+     *                      because AAP transformation rule T4 gives every decided call one event
+     * @param transactionId the identifier allocated for this decision, which the log line joins the
+     *                      request to the event by
+     * @param eventId       the identifier of that one outbox row, which the three consuming services
+     *                      deduplicate on
      */
     private record Decision(Outcome outcome, String outcomeTag, String eventType,
             String transactionId, UUID eventId) {
@@ -620,12 +623,11 @@ public class AuthorizationService {
      * does not silently authorize against numbers this service cannot vouch for.
      *
      * <p><strong>What is measured, and what deliberately is not.</strong> This check reads two
-     * properties of the <em>streams</em> and no property of the rows. An earlier form of it bounded
-     * how old a row's last observation could be, and that bound was wrong about the ordinary case
-     * rather than the failing one: the account and card services publish on a state change and on
-     * nothing else, so a card nobody edits is a perfectly correct copy whose last observation recedes
-     * for ever. Every such card crossed the bound within a day and every call for it was then refused,
-     * while readiness still reported the service up. The two measurements that replace it separate the
+     * properties of the <em>streams</em> and no property of the rows. Bounding how old a row's last
+     * observation may be would be wrong about the ordinary case rather than the failing one: the
+     * account and card services publish on a state change and on nothing else, so a card nobody edits
+     * is a perfectly correct copy whose last observation recedes for ever, and every such card would
+     * cross the bound within a day. The two measurements here separate the
      * correct copy from the damaged one:
      *
      * <ul>
@@ -929,7 +931,8 @@ public class AuthorizationService {
      * account.
      *
      * <p>The account branch reads a whole row to take one column out of it, so the row travels with
-     * the card number rather than being discarded. {@link CardCrossReferenceRule} reads
+     * the card number rather than being discarded.
+     * {@link com.carddemo.authorization.domain.rules.CardCrossReferenceRule} reads
      * {@code card_xref} keyed on the card number, and on this branch that key came out of this very
      * row: {@code card_number} is the table's primary key, so the read would return the row already
      * in hand. Carrying it means the account branch reads the table once instead of twice, and it is
@@ -1091,10 +1094,10 @@ public class AuthorizationService {
      *
      * <p>Two conditions raise it, and both are statements about the stream rather than about the age
      * of a row: a replica listener that is missing, stopped, unassigned or reporting lag above its
-     * ceiling, or a delivery for this account that failed to apply and left a gap. An earlier form
-     * fired on the elapsed time since a row was last written, which refused every unedited card once
-     * the window lapsed and never detected a failed delivery at all, because a failed application
-     * leaves {@code observed_at} exactly as recent as a successful one.
+     * ceiling, or a delivery for this account that failed to apply and left a gap. Firing on the
+     * elapsed time since a row was last written would refuse every unedited card once the window
+     * lapsed and would detect no failed delivery at all, because a failed application leaves
+     * {@code observed_at} exactly as recent as a successful one.
      *
      * <p>This is not a reject reason, and it must never become one.
      * {@code app/cbl/CBTRN02C.cbl:L385-L420} defines exactly four, {@link DeclineReason} holds
@@ -1110,8 +1113,8 @@ public class AuthorizationService {
      *
      * <p>The message names the condition by a fixed phrase and carries no account identifier, no card
      * number and no value read from any record, so a caller or a log that repeats it records no
-     * cardholder value. The earlier form named the account, which put an identifier into every
-     * message this exception produced.
+     * cardholder value. Naming the account would put an identifier into every message this exception
+     * produces.
      */
     public static class StaleReplicaException extends RuntimeException {
 

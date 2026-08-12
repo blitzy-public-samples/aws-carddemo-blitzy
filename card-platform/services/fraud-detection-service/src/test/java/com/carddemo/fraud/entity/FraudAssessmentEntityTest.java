@@ -303,7 +303,8 @@ class FraudAssessmentEntityTest {
     void representationWithholdsRating() {
         // The account identifier here is deliberately not a substring of TRANSACTION_ID. The
         // default pair would make this test pass or fail for the wrong reason, because the eleven
-        // characters of "00000000001" are the tail of the sixteen of "0000000000000001".
+        // characters of the default account identifier are the tail of the sixteen of
+        // TRANSACTION_ID.
         String distinctAccountId = "00000000429";
         FraudAssessmentEntity row = new FraudAssessmentEntity(TRANSACTION_ID, distinctAccountId, 87,
                 true, ALL_RULES, ASSESSED_AT);

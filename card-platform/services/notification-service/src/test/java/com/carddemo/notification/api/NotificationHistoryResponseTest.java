@@ -29,9 +29,10 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Envelope and serialized-body tests for {@link NotificationHistoryResponse}.
  *
- * <p>Four components carry one card's alert history. The record declares them in the order
- * {@code cardNumber}, {@code transactionCount}, {@code totalAmount}, {@code transactions}. The card
- * token that keys the read model is a storage key and reaches no response.
+ * <p>Six components carry one card's alert history. The record declares them in the order
+ * {@code cardNumber}, {@code transactionCount}, {@code totalAmount}, {@code transactions},
+ * {@code nextPageExists}, {@code nextCursor}. The last two carry the keyset page forward, and the
+ * card token that keys the read model is a storage key that reaches no response.
  *
  * <p>The statement program splits the envelope from the item. The move into
  * {@code TRNX-CARD-NUM} at {@code app/cbl/CBSTM03A.CBL:L421} runs once per card group. The move
@@ -324,14 +325,12 @@ final class NotificationHistoryResponseTest {
         assertEquals("************7065", response.cardNumber(), "the masked value");
     }
 
-    /** Asserts the display card number holds sixteen characters. */
     @Test
     void theDisplayCardNumberHoldsSixteenCharacters() {
         assertEquals(PanMasker.CARD_NUMBER_LENGTH, responseWithOneRow().cardNumber().length(),
                 "display width");
     }
 
-    /** Asserts the display card number keeps the last four digits of the card number. */
     @Test
     void theDisplayCardNumberKeepsTheLastFourDigitsOfTheCardNumber() {
         String cardNumber = fullCardNumber();
@@ -343,7 +342,6 @@ final class NotificationHistoryResponseTest {
                 "the four digits kept");
     }
 
-    /** Asserts the display card number differs from the card number it was masked from. */
     @Test
     void theDisplayCardNumberDiffersFromTheCardNumberItWasMaskedFrom() {
         NotificationHistoryResponse response = responseWithOneRow();
@@ -434,13 +432,11 @@ final class NotificationHistoryResponseTest {
                 "the display value is present");
     }
 
-    /** Asserts three rows yield a count of three. */
     @Test
     void threeRowsYieldACountOfThree() {
         assertEquals(3, responseWithThreeRows().transactionCount(), "count");
     }
 
-    /** Asserts one row yields a count of one. */
     @Test
     void oneRowYieldsACountOfOne() {
         assertEquals(1, responseWithOneRow().transactionCount(), "count");
@@ -500,7 +496,6 @@ final class NotificationHistoryResponseTest {
         }
     }
 
-    /** Asserts the rendered total carries no exponent marker. */
     @Test
     void theRenderedTotalCarriesNoExponentMarker() {
         String rendered = responseWithTotal(NINE_INTEGER_DIGIT_TOTAL).totalAmount();
@@ -523,7 +518,6 @@ final class NotificationHistoryResponseTest {
         assertEquals(9, rendered.indexOf('.'), "integer digits");
     }
 
-    /** Asserts a refund total renders with a leading minus. */
     @Test
     void aRefundTotalRendersWithALeadingMinus() {
         String rendered = responseWithTotal(REFUND_TOTAL).totalAmount();
@@ -599,7 +593,6 @@ final class NotificationHistoryResponseTest {
         assertNotEquals(floorNegative, truncatedNegative, "floor diverges on a negative total");
     }
 
-    /** Asserts a card with no row carries a count of zero. */
     @Test
     void aCardWithNoRowCarriesACountOfZero() {
         assertEquals(0, emptyResponse().transactionCount(), "count");
@@ -636,7 +629,6 @@ final class NotificationHistoryResponseTest {
         assertNotNull(response.cardNumber(), "the card is named whether or not a row exists");
     }
 
-    /** Asserts a transaction list a caller receives cannot be edited. */
     @Test
     void theTransactionListACallerReceivesCannotBeEdited() {
         List<NotificationTransactionItem> transactions = responseWithThreeRows().transactions();
@@ -658,7 +650,6 @@ final class NotificationHistoryResponseTest {
         }
     }
 
-    /** Asserts no property of the body restates an event envelope property. */
     @Test
     void noSerializedBodyRestatesAnEventEnvelopeProperty() {
         List<String> names = lowerCasePropertyNames(bodyOf(responseWithThreeRows()));

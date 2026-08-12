@@ -89,9 +89,10 @@ import static com.carddemo.notification.domain.NotificationRenderer.pic;
  * mail, message, webhook or push gateway. It renders a document, records that it rendered one, and
  * returns the document to its caller, which discards it. Every row it writes carries
  * {@link com.carddemo.notification.entity.NotificationLogEntity#RENDERED_NOT_SENT}, so no row is
- * evidence that a cardholder was told anything. Until
- * {@code src/main/resources/db/migration/V5__rendered_not_delivered.sql} the row was described as a
- * delivery attempt, which claimed a transport that has never existed.
+ * evidence that a cardholder was told anything. Reading a row as a delivery would claim a transport
+ * that has never existed, which is why
+ * {@code src/main/resources/db/migration/V5__rendered_not_delivered.sql} puts the outcome in a
+ * constrained column rather than in prose.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}. Source-to-target
  * mapping: {@code card-platform/docs/traceability-matrix.md}.
@@ -355,7 +356,7 @@ public class NotificationService {
      * <p>The balance field renders as spaces, the state {@code INITIALIZE STATEMENT-LINES} at
      * {@code app/cbl/CBSTM03A.CBL:L459} leaves it in. The one detail row and the total are built from
      * the event rather than read from the read model, so the total accumulates over a one-row set
-     * through {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at {@code app/cbl/CBSTM03A.CBL:L429}. Rationale:
+     * through {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at {@code app/cbl/CBSTM03A.CBL:L429}. Design decisions:
      * {@code card-platform/docs/decision-log.md}.</p>
      *
      * @param cardToken the token of the card the authorization named; must not be {@code null}
@@ -694,8 +695,8 @@ public class NotificationService {
      *
      * <p>There is deliberately no factory for an all-blank set. Each listener reads these fields
      * through {@link CardholderContextReader#require(String)}, which reports a missing projection row
-     * rather than substituting blanks: an alert with no name and no address is a failure that used to
-     * look like a rendering, and the only way it can be noticed is if nothing manufactures it.</p>
+     * rather than substituting blanks: an alert with no name and no address is a failure that would
+     * look like a rendering, and it can only be noticed if nothing manufactures it.</p>
      *
      * @param firstName {@code CUST-FIRST-NAME}
      * @param middleName {@code CUST-MIDDLE-NAME}

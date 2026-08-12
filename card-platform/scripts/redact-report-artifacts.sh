@@ -5,7 +5,7 @@
 #
 # Where it runs. .github/workflows/ci.yml uploads every Surefire and Failsafe report and keeps it
 # for REPORT_RETENTION_DAYS, so this runs before the upload and the stage fails while any seeded
-# value survives. Rationale, alternatives considered and accepted risks:
+# value survives. Design decisions:
 # card-platform/docs/decision-log.md.
 #
 # What counts as cardholder data here

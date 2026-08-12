@@ -251,9 +251,9 @@ class OpenApiExampleValidationTest {
      *
      * <p>All eighteen columns of table {@code customer} are declared {@code NOT NULL} by
      * {@code src/main/resources/db/migration/V1__schema.sql}, and a record serializes every
-     * component, so each of the sixteen properties is on the wire on every row. The four that used to
-     * sit outside {@code required} were {@code middleName}, {@code addressLine2},
-     * {@code phoneNumber2} and {@code eftAccountId}.
+     * component, so each of the sixteen properties is on the wire on every row. That includes
+     * {@code middleName}, {@code addressLine2}, {@code phoneNumber2} and {@code eftAccountId},
+     * which a reader might expect to be optional.
      */
     @Test
     @DisplayName("the customer view requires every property it serializes")

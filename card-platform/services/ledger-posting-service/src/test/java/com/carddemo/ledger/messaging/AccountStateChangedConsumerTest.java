@@ -48,8 +48,8 @@ import tools.jackson.databind.node.ObjectNode;
  * behind a newer change must leave the row alone: a regressed cycle balance raises nothing and quietly
  * accumulates onto a number the account service had already superseded.
  *
- * <p>The fourth is ownership, and it is the property this listener previously broke. All three value
- * columns are produced by the posting arithmetic at {@code app/cbl/CBTRN02C.cbl:L545-L560}. The account
+ * <p>The fourth is ownership, and it is the property most easily broken. All three value columns are
+ * produced by the posting arithmetic at {@code app/cbl/CBTRN02C.cbl:L545-L560}. The account
  * service applies that same arithmetic to its own record, because its
  * {@code messaging/TransactionPostedConsumer} consumes {@code TransactionPosted}, so the copy an
  * account change carries trails this projection by every posting whose event it has not consumed yet
@@ -512,7 +512,6 @@ class AccountStateChangedConsumerTest {
             assertEquals(0.0d, counter("carddemo.ledger.failures", "stage", "deserialize"));
         }
 
-        /** A successful delivery counts one consumed event, one latency and no failure. */
         @Test
         @DisplayName("a successful delivery counts one consumed event, one latency and no failure")
         void aSuccessfulDeliveryCountsConsumedAndLatencyAndNoFailure() {

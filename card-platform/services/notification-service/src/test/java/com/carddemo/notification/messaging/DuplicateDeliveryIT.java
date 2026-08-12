@@ -483,7 +483,7 @@ class DuplicateDeliveryIT {
             RecordMetadata first = publish(POSTED_TOPIC, ACCOUNT_ID, event);
             awaitCount(ROW_COUNT_SQL, 1L, "the read-model row of the card", CARD_TOKEN);
             awaitCount(MARKER_COUNT_SQL, 1L, "the marker of event " + eventId, eventId);
-            awaitCount(ATTEMPT_COUNT_SQL, 1L, "the delivery-attempt row");
+            awaitCount(ATTEMPT_COUNT_SQL, 1L, "the rendered-alert row");
 
             BigDecimal total = cardTotal(CARD_TOKEN);
             long suppressed = counterValue(DUPLICATES_SKIPPED_METER, null, null);
@@ -546,7 +546,7 @@ class DuplicateDeliveryIT {
                     () -> assertEquals(ASSESSED_TOPIC, markerTopic(eventId),
                             "the topic the marker recorded"),
                     () -> assertEquals(0L, count(ATTEMPT_COUNT_SQL),
-                            "delivery-attempt rows on the assessment path"),
+                            "rendered-alert rows on the assessment path"),
                     () -> assertNoDeadLetter(deadLetters,
                             Set.of(coordinates(first), coordinates(repeat)),
                             "a dead letter of a suppressed duplicate"));
@@ -670,7 +670,7 @@ class DuplicateDeliveryIT {
                             "read-model rows of the card"),
                     () -> assertEquals(0L, count(MARKER_COUNT_SQL, eventId),
                             "markers of the event"),
-                    () -> assertEquals(0L, count(ATTEMPT_COUNT_SQL), "delivery-attempt rows"),
+                    () -> assertEquals(0L, count(ATTEMPT_COUNT_SQL), "rendered-alert rows"),
                     () -> assertEquals(MISSING_PROJECTION_TYPE,
                             trimmedHeader(deadLetter, HEADER_REASON),
                             () -> HEADER_REASON + " holds "

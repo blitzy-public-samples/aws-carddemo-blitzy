@@ -115,7 +115,7 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  * <h2>This file is repeated in each service</h2>
  *
  * <p>Each service ships its own copy, and each differs only in
- * {@link #apiSecurity(HttpSecurity)}. Rationale, alternatives considered and accepted risks:
+ * {@link #apiSecurity(HttpSecurity)}. Design decisions:
  * {@code card-platform/docs/decision-log.md}.
  */
 @Configuration
@@ -361,7 +361,7 @@ public class SecurityConfig {
      * Rejects a configured role this service grants nothing for.
      *
      * <p>A role is not a credential, so the message reports the configured word: an operator
-     * correcting a typo needs to know which one to correct. Rationale and the alternatives weighed:
+     * correcting a typo needs to know which one to correct. Design decisions:
      * {@code card-platform/docs/decision-log.md}.
      *
      * @param role the configured role, already known to be present and non-blank

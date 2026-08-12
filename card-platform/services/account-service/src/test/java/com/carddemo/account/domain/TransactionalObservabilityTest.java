@@ -112,8 +112,7 @@ class TransactionalObservabilityTest {
      * Asserts every exit is timed exactly once.
      *
      * <p>Recording in one place rather than in each arm is what makes that true, and a reader of the
-     * series has to be able to rely on it: a call counted twice halves the reported mean, and the
-     * arms were previously counted in three separate places.
+     * series has to be able to rely on it: a call counted twice halves the reported mean.
      */
     @Test
     void everyExitIsTimedExactlyOnce() {

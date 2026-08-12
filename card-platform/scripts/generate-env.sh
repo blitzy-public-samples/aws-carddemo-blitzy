@@ -26,7 +26,7 @@
 # repository, so `mvn -B -ntp -DskipTests package` has to have run once on this machine.
 # scripts/start-demo.sh runs that first and then calls this script.
 #
-# Rationale for the choices here: card-platform/docs/decision-log.md
+# Design decisions for the choices here: card-platform/docs/decision-log.md
 # Setup guide: card-platform/docs/onboarding.md
 
 set -euo pipefail
@@ -176,8 +176,8 @@ fi
 # stop being usable, and the card-token key is the case that reaches every deployment: the
 # authorization and card services refuse to start on the demo key published here, because
 # anyone holding it and one card token can recompute the token of every card number. A file
-# written before that guard existed carries that key, no placeholder marks it, and the check at
-# the end of this script sees a complete file. The stack then fails at start-up.
+# holding that key carries no placeholder marking it, so the check at the end of this script sees
+# a complete file and the stack fails at start-up instead.
 #
 # So an assignment holding one of these values is put back to whatever the example declares for
 # that same name, which for a credential is the placeholder the generation below fills in this

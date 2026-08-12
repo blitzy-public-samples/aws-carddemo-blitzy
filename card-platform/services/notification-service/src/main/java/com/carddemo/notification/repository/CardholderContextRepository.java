@@ -26,7 +26,7 @@ import org.springframework.data.repository.query.Param;
  * {@code save} and no {@code delete} is reachable: every write travels through
  * {@link #applyContextChange}, which carries the staleness comparison in the statement itself.
  *
- * <p>Rationale sits in {@code card-platform/docs/decision-log.md}, and the source-to-target
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}, and the source-to-target
  * mapping in {@code card-platform/docs/traceability-matrix.md}.
  */
 public interface CardholderContextRepository

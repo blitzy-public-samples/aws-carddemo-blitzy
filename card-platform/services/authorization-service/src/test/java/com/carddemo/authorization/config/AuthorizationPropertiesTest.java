@@ -133,8 +133,8 @@ class AuthorizationPropertiesTest {
      * Asserts this record binds no supporting-service address, because the service reads no other
      * service.
      *
-     * <p>Two addresses used to be bound here and nothing read either one. A configured value with no
-     * reader is worse than an absent one: it tells a reader the call exists.
+     * <p>A configured supporting-service address with no reader is worse than an absent one: it tells
+     * a reader the call exists.
      */
     @Test
     @DisplayName("binds no supporting-service address, because no such call is made")
@@ -230,10 +230,10 @@ class AuthorizationPropertiesTest {
     /**
      * A duplicate-delivery claim carries no configurable horizon, and this asserts the absence.
      *
-     * <p>A security review found the marker horizon of 720 hours removing a claim while the effects
-     * it guards outlive it: a decision row kept for audit, and two replica tables kept for as long
-     * as the service runs. A claim is now permanent, so this record carries no {@code
-     * processedEvent} component and no nested {@code ProcessedEvent} type.
+     * <p>A claim is permanent, so this record carries no {@code processedEvent} component and no
+     * nested {@code ProcessedEvent} type. Any horizon would remove a claim while the effects it guards
+     * stand: a decision row kept for audit, and two replica tables kept for as long as the service
+     * runs.
      *
      * <p>The withdrawn key is set here as well. It binds nothing, which is what makes the
      * withdrawal a property of the code rather than of the shipped configuration file.

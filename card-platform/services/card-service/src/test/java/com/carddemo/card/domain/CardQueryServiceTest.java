@@ -193,10 +193,8 @@ class CardQueryServiceTest {
     /** Card verification value of that inserted row, three digits and plainly not a real one. */
     private static final String INSERTED_VERIFICATION_VALUE = "000";
 
-    /** Embossed name of that inserted row. */
     private static final String INSERTED_EMBOSSED_NAME = "Second Card On One Account";
 
-    /** Expiration date of that inserted row. */
     private static final LocalDate INSERTED_EXPIRATION_DATE = LocalDate.of(2028, 5, 4);
 
     /** Statement reading the browse key of every seeded row in ascending order. */

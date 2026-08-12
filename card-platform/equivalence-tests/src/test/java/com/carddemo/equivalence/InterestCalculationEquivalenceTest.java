@@ -152,7 +152,6 @@ class InterestCalculationEquivalenceTest {
     /** The directory holding the six service modules of the target platform. */
     private static final String SERVICE_MODULE_DIRECTORY = "card-platform/services";
 
-    /** File-name suffix of a Java source file. */
     private static final String JAVA_SOURCE_SUFFIX = ".java";
 
     /** Word a migrated interest type would carry in its name. */

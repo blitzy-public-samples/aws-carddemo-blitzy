@@ -102,7 +102,8 @@ import tools.jackson.databind.json.JsonMapper;
 class CardDataExposureTest {
 
     /**
-     * The one full Primary Account Number in this subtree, held as an exposure probe.
+     * A full Primary Account Number held as an exposure probe, taken from record 21 of
+     * {@code app/data/ASCII/cardxref.txt}.
      *
      * <p>Every assertion below hands this value to a path that could surface it, then reads the
      * output back.

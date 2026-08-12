@@ -46,7 +46,6 @@ final class AuthorizationDecisionEntityTest {
     /** The card of fixture record one, from {@code app/data/ASCII/dailytran.txt}. */
     private static final String CARD_NUMBER = "4859452612877065";
 
-    /** The amount every row below carries. */
     private static final BigDecimal AMOUNT = new BigDecimal("504.77");
 
     /** The moment every row below records. */
@@ -118,10 +117,9 @@ final class AuthorizationDecisionEntityTest {
     /**
      * Proves the row records which card-token key its stored token belongs to.
      *
-     * <p>A security review found that a card-token key change re-derived {@code card.card_token} in
-     * the card service and left this table naming a card nobody could reach. This table holds no card
-     * number, so it cannot re-derive its own rows, and without the version a stale diagnostic is
-     * indistinguishable from a current one. No caller supplies the value: a caller naming a version
+     * <p>A card-token key change re-derives {@code card.card_token} in the card service. This table
+     * holds no card number, so it cannot re-derive its own rows, and without the version a stale
+     * diagnostic is indistinguishable from a current one. No caller supplies the value: a caller naming a version
      * would be naming a key it does not hold, so the row reads the configured version at the moment
      * it is written.
      */

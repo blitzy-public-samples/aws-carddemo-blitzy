@@ -18,14 +18,14 @@ import org.junit.jupiter.api.Test;
 /**
  * Holds the build's version floors to the shape that makes them take effect.
  *
- * <p>A security review found {@code com.fasterxml.jackson.core:jackson-databind:2.21.4} on the test
- * classpath of seven modules, carrying three advisories fixed in 2.21.5. Nothing had put it there
- * deliberately. {@code spring-kafka-test} resolves {@code kafka-server}, {@code kafka-server}
- * resolves Jackson 2, and no file in this build mentioned that coordinate, so the version arrived
- * from a transitive edge and stayed.
+ * <p>{@code com.fasterxml.jackson.core:jackson-databind:2.21.4} carries three advisories fixed in
+ * 2.21.5, and no file in this build names that coordinate: {@code spring-kafka-test} resolves
+ * {@code kafka-server} and {@code kafka-server} resolves Jackson 2. An unpinned graph therefore
+ * puts that version on the test classpath of seven modules, arriving from a transitive edge and
+ * staying.
  *
- * <p>Three things had to become true for that to be a fixable class of defect rather than one
- * incident, and this class asserts all three:
+ * <p>Three things make that a fixable class of defect rather than one incident, and this class
+ * asserts all three:
  *
  * <ul>
  *   <li>Every floor is declared as a property, so a raise happens in one place.
@@ -50,9 +50,10 @@ class SupplyChainContractTest {
      *
      * <p>{@code tomcat.version} is here for the same mechanical reasons as the others and for a
      * different substantive one. It answers no advisory. It is a compatibility raise over the
-     * 11.0.22 the bill of materials manages, and {@link #theTomcatFloorIsDescribedAsPrecautionary}
-     * holds the file to saying so, because a precautionary pin recorded as a security floor invites
-     * a reader to believe an advisory was found when none was.
+     * 11.0.22 the bill of materials manages. What holds the file to saying so is
+     * {@link WhatTheDescriptorSays#theTomcatFloorIsDescribedAsPrecautionary()}, because a
+     * precautionary pin recorded as a security floor invites a reader to believe an advisory was
+     * found when none was.
      */
     private static final Map<String, List<String>> FLOORS = new LinkedHashMap<>();
 
@@ -97,7 +98,7 @@ class SupplyChainContractTest {
     /** The identifier the LZ4 advisory was wrongly recorded as, which may not reappear. */
     private static final String WITHDRAWN_LZ4_IDENTIFIER = "CVE-2026-7053";
 
-    /** The version of Jackson 2 the review found, which no floor may permit again. */
+    /** The Jackson 2 version carrying those three advisories, which no floor may permit. */
     private static final String VULNERABLE_JACKSON_2 = "2.21.4";
 
     /** The enforcer execution that checks a floor against the graph a module resolves. */
@@ -209,7 +210,7 @@ class SupplyChainContractTest {
     class WhatTheDescriptorSays {
 
         @Test
-        @DisplayName("no floor permits the Jackson 2 version the review found")
+        @DisplayName("no floor permits the vulnerable Jackson 2 version")
         void noFloorPermitsTheVulnerableJacksonTwo() throws IOException {
             assertThat(pom())
                     .as("2.21.4 carries GHSA-5gvw-p9qm-jgwh, GHSA-5jmj-h7xm-6q6v and "
@@ -464,11 +465,10 @@ class SupplyChainContractTest {
     /**
      * Holds every Java source of this platform to one import declaration per type.
      *
-     * <p>A repeated {@code import} compiles, changes nothing and warns nothing, which is why five of
-     * them accumulated across two configuration records and three test classes before a review read
-     * the files. The cost is not the line: an import list a reader cannot scan is an import list
-     * nobody scans, and the second copy of a name is exactly what makes a merge that added one look
-     * like a merge that added none.
+     * <p>A repeated {@code import} compiles, changes nothing and warns nothing, so copies
+     * accumulate unnoticed across configuration records and test classes. The cost is not the line:
+     * an import list a reader cannot scan is an import list nobody scans, and the second copy of a
+     * name is exactly what makes a merge that added one look like a merge that added none.
      *
      * <p>The check reads the sources rather than a compiler setting, because no compiler on this
      * toolchain reports a duplicate import at all — not as an error and not as a warning under

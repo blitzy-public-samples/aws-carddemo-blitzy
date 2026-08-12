@@ -2,7 +2,7 @@
 # Every value reads an environment variable and falls back to the default that
 # card-platform/.env.example documents.
 # Source: app/cbl/CBTRN02C.cbl, invoked at app/jcl/POSTTRAN.jcl:L23.
-# Rationale for the settings below: card-platform/docs/decision-log.md
+# Design decisions for the settings below: card-platform/docs/decision-log.md
 
 spring:
   application:
@@ -176,10 +176,9 @@ spring:
       # card-platform/.env.example, and the group assignor gives one partition to exactly one
       # thread. Records of one account — the account identifier is the message key — are
       # therefore still posted in publish order, which is what the balance depends on, while
-      # other accounts are posted beside them. The framework default of one thread, which
-      # this file previously left in place, posted every partition of all three topics in
-      # sequence. A value above the partition count only leaves the surplus threads with
-      # nothing assigned.
+      # other accounts are posted beside them. The framework default of one thread would post
+      # every partition of all three topics in sequence. A value above the partition count only
+      # leaves the surplus threads with nothing assigned.
       concurrency: "${SPRING_KAFKA_LISTENER_CONCURRENCY:3}"
 
   # The scheduler behind both @Scheduled methods of this service, outbox/OutboxRelay and
@@ -283,10 +282,10 @@ carddemo:
     # that outlive any window, which the migration withdrawing its horizon states in full.
     published-retention-hours: "${OUTBOX_PUBLISHED_RETENTION_HOURS:168}"
   # Duplicate-delivery claims are permanent. A claim and the side effects it guards commit in
-  # one local transaction in one database, so the two can only be restored together, and a
-  # security review found the horizon that used to expire a claim shorter than the effects it
-  # guarded. Nothing here retires a claim, domain/RetentionSweep no longer names
-  # processed_event, and the migration that withdrew the horizon states the whole rule.
+  # one local transaction in one database, so the two can only be restored together, and any
+  # horizon that expired a claim before its effects were gone would readmit a duplicate.
+  # Nothing here retires a claim, domain/RetentionSweep names no processed_event delete, and
+  # the migration that withdrew the horizon states the whole rule.
   retention:
     sweep-interval-ms: "${RETENTION_SWEEP_INTERVAL_MS:3600000}"
     # The one business table of this service that expires. COMMENT ON TABLE

@@ -87,7 +87,6 @@ class EquivalenceSuiteExecutionConfigurationTest {
     /** Executions of the integration-test plugin this module is allowed to declare. */
     private static final int PERMITTED_EXECUTION_COUNT = 1;
 
-    /** Suffix every equivalence class carries. */
     private static final String EQUIVALENCE_CLASS_SUFFIX = "EquivalenceTest.java";
 
     /** Suffix every cross-service integration class of this module carries. */
@@ -142,12 +141,12 @@ class EquivalenceSuiteExecutionConfigurationTest {
     /**
      * The integration-test plugin fails a module where it selected nothing.
      *
-     * <p>{@code failIfNoTests} defaults to {@code false}, so without this the plugin reports success
-     * on an empty selection. A review measured what that costs: a change to an include pattern, a
-     * class renamed away from {@code *IT} or {@code *EquivalenceTest}, or a moved test directory turns
-     * the integration phase into a no-op and the build stays green. Every module that declares this
-     * plugin holds at least one class its patterns select, so an empty selection is always a defect
-     * rather than a configuration a module might legitimately want.
+     * <p>{@code failIfNoTests} defaults to {@code false}, so without this the plugin reports
+     * success on an empty selection. The cost is silent: a change to an include pattern, a class
+     * renamed away from {@code *IT} or {@code *EquivalenceTest}, or a moved test directory turns
+     * the integration phase into a no-op while the build stays green. Every module that declares
+     * this plugin holds at least one class its patterns select, so an empty selection is always a
+     * defect rather than a configuration a module might legitimately want.
      *
      * <p>The setting is asserted on the parent, because every module inherits its configuration from
      * there rather than repeating it.
@@ -336,7 +335,6 @@ class EquivalenceSuiteExecutionConfigurationTest {
                 "this class does not appear among the equivalence classes it counts");
     }
 
-    /** Returns the parsed build file of this module. */
     private static Document moduleBuildFile() {
         return parse(moduleDirectory().resolve("pom.xml"));
     }

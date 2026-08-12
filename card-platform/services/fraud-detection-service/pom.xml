@@ -4,7 +4,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <!-- Rationale for the choices in this file: card-platform/docs/decision-log.md -->
+  <!-- Design decisions for this file: card-platform/docs/decision-log.md -->
 
     <!-- Net new capability. No COBOL ancestor. -->
 
@@ -96,22 +96,19 @@
       <artifactId>spring-kafka</artifactId>
     </dependency>
 
-    <!-- The broker client itself. Every one of this module's messaging and configuration
-         classes imports org.apache.kafka.clients or org.apache.kafka.common directly, so the
-         artifact those packages come from is declared here rather than reached through a
-         starter: libs/event-contracts sets the same precedent, and a module that programs
-         against an API it does not declare compiles only while something else keeps supplying
-         it. The version comes from the Spring Boot bill of materials, which resolves the 4.2.1
-         the broker image in docker-compose.yml runs. -->
+    <!-- The broker client. This module imports org.apache.kafka.clients or
+         org.apache.kafka.common directly. Version from the imported bill of materials.
+         Decisions: card-platform/docs/decision-log.md, under "Which artifacts a module
+         declares for itself, and which it reaches through a starter". -->
     <dependency>
       <groupId>org.apache.kafka</groupId>
       <artifactId>kafka-clients</artifactId>
     </dependency>
 
-    <!-- JSON binding. This module imports tools.jackson.databind directly, so the artifact is
-         declared here for the same reason kafka-clients is. jackson-core and the Jackson 2
-         annotations arrive with it and are not declared, because neither can be absent while
-         databind is present. -->
+    <!-- JSON binding. This module imports tools.jackson.databind directly. jackson-core and
+         the Jackson 2 annotations arrive with it and are not declared.
+         Decisions: card-platform/docs/decision-log.md, under "Which artifacts a module
+         declares for itself, and which it reaches through a starter". -->
     <dependency>
       <groupId>tools.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>

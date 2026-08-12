@@ -180,9 +180,9 @@ class CardApiExceptionHandlerTest {
          *
          * <p>The row count is the one request value of this service that is not text, so its
          * conversion runs while the argument is resolved, before any constraint on it. A value of
-         * {@code abc} therefore reaches no constraint and no read, and before this handler existed it
-         * fell through to the fault handler: a caller read {@code 500} for a request it could have
-         * corrected, and the container logged a stack trace at error level for it.
+         * {@code abc} therefore reaches no constraint and no read. Without this handler it would fall
+         * through to the fault handler: a caller would read {@code 500} for a request it could have
+         * corrected, and the container would log a stack trace at error level for it.
          */
         @Test
         void aRowCountThatIsNoNumberAnswersBadRequest() throws Exception {
@@ -268,7 +268,6 @@ class CardApiExceptionHandlerTest {
     @DisplayName("a request value that did not arrive")
     class MissingValues {
 
-        /** Asserts a missing query parameter answers 400 with the fixed text. */
         @Test
         void aMissingQueryParameterAnswersTheFixedText() {
             ResponseEntity<ApiErrorResponse> response = handler.onMissingRequestValue(

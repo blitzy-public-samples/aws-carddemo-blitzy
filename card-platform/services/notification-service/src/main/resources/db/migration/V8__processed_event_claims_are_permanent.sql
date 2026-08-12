@@ -1,8 +1,8 @@
 -- Notification service, migration V8.
 -- Withdraws the retention horizon of processed_event, so a duplicate-delivery claim is permanent.
 --
--- What a security review found. The horizon was 720 hours, checked at start-up against twice the
--- 168-hour broker log retention. That relationship bounds only how long the BROKER can redeliver a
+-- What a horizon could bound, and what it could not. A horizon of 720 hours checked at start-up
+-- against twice the 168-hour broker log retention bounds only how long the BROKER can redeliver a
 -- record. It says nothing about how long the side effect a claim guards stands, and here a claim
 -- guards the statement read-model row a cardholder is shown, and the rendered alert recorded beside
 -- it. A statement row is kept for 400 days and a rendered alert for its own window, and both
@@ -19,8 +19,8 @@
 -- What bounds growth instead: nothing, deliberately. One row holds a UUID, a topic name and a
 -- timestamp, and the table gains one row per event a listener of this service consumes. The
 -- partitioning work a deployment measuring real volumes would want is recorded in
--- card-platform/docs/suggested-next-tasks.md, and the alternatives weighed are in
--- card-platform/docs/decision-log.md.
+-- card-platform/docs/suggested-next-tasks.md.
+-- Design decisions: card-platform/docs/decision-log.md.
 --
 -- V1 and V4 are left as they ran. V1 stated the window as seven days and V4 corrected it to a
 -- margin over broker log retention, and the statement below supersedes both, so a fresh database

@@ -590,7 +590,7 @@ class OutboxRelayTest {
      * Records failures until one more takes the row to the attempt ceiling.
      *
      * <p>{@link OutboxEventEntity#MAX_DELIVERY_ATTEMPTS} attempts are what the entity abandons a row
-     * at, so the sweep under test has to be the last one. Driving the earlier attempts through the
+     * at, so the sweep under test has to be the last one. Driving the attempts ahead of it through the
      * relay would run nine sweeps to set up one assertion.
      *
      * @param row the row to age

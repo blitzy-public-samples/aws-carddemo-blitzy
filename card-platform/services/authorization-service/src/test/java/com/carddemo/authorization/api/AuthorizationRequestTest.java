@@ -122,7 +122,6 @@ final class AuthorizationRequestTest {
                 "an empty merchant postal code reports its own text");
     }
 
-    /** Asserts an absent field reports the same text a blank one reports. */
     @Test
     void anAbsentFieldReportsTheSameTextAsABlankOne() {
         assertEquals(messages(withTypeCode("   ")), messages(withTypeCode(null)),
@@ -456,7 +455,6 @@ final class AuthorizationRequestTest {
         }
     }
 
-    /** Asserts every accepted form of one value carries that one value at scale two. */
     @Test
     void everyAcceptedFormOfOneValueCarriesThatValueAtScaleTwo() {
         BigDecimal expected = new BigDecimal("504.77");
@@ -513,8 +511,8 @@ final class AuthorizationRequestTest {
      * left-aligned with trailing spaces and fails the numeric class test at
      * {@code app/cbl/COTRN02C.cbl:L197} and {@code :L211}.
      *
-     * <p>Widening would authorize a different identifier. Zero-padding {@code 4111} produces
-     * {@code 0000000000004111}, a valid sixteen-digit key belonging to whichever cardholder holds it.
+     * <p>Widening would authorize a different identifier. Zero-padding a four-digit entry to sixteen
+     * characters produces a valid key belonging to whichever cardholder holds it.
      *
      * <p>A short identifier reports its shape and not
      * {@value AuthorizationRequest#IDENTIFIER_REQUIRED_MESSAGE}. The field arrived filled, so

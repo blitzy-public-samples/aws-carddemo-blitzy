@@ -104,7 +104,6 @@ class AuthorizationRouteSecurityIT {
     /** The acquirer login, the workload identity a point-of-sale network presents. */
     private static final String ACQUIRER_USERNAME = "acquirer1";
 
-    /** Password of the acquirer identity. */
     static final String ACQUIRER_PASSWORD = TestIdentityPasswords.ACQUIRER_PASSWORD;
 
     /** The metrics login, which carries the monitoring role and reaches no business route. */
@@ -238,7 +237,6 @@ class AuthorizationRouteSecurityIT {
             assertProblem(response, 403, "Forbidden", FORBIDDEN_DETAIL);
         }
 
-        /** Asserts the administrator reaches the handler as well. */
         @Test
         @DisplayName("the administrator reaches the handler as well")
         void theAdministratorReachesTheHandlerAsWell() {
@@ -296,7 +294,6 @@ class AuthorizationRouteSecurityIT {
             assertProblem(response, 401, "Unauthorized", UNAUTHORIZED_DETAIL);
         }
 
-        /** Asserts the metrics identity reaches no business route. */
         @Test
         @DisplayName("the metrics identity reaches no business route")
         void theMetricsIdentityReachesNoBusinessRoute() {

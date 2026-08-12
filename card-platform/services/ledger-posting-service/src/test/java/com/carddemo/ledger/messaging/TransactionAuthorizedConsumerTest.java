@@ -1122,8 +1122,9 @@ final class TransactionAuthorizedConsumerTest {
      *
      * <p>The store is reproduced rather than prevented: {@code app/cbl/CBTRN02C.cbl:L508} and
      * {@code :L527} carry an {@code ADD} with no {@code ON SIZE ERROR} phrase, so a sum past nine
-     * integer digits keeps its low-order nine. That reproduction used to be silent at runtime, which
-     * left a balance wrong by a known amount and nothing saying so.
+     * integer digits keeps its low-order nine. The counter and the log line are what keep that
+     * reproduction from being silent, because a silent one leaves a balance wrong by a known amount
+     * with nothing saying so.
      *
      * <p>The count and the line are taken after the transaction commits, so neither claims a stored
      * balance a rollback would have removed.

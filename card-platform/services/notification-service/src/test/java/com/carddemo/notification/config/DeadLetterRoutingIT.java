@@ -598,7 +598,6 @@ class DeadLetterRoutingIT {
                 configuredBackoffMs()));
     }
 
-    /** Returns the configured delivery count. */
     private int configuredAttempts() {
         return environment.getRequiredProperty(MAX_ATTEMPTS_PROPERTY, Integer.class);
     }

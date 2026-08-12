@@ -2,10 +2,11 @@
 -- Records which card-token key and version each stored token belongs to, and makes a rotation an
 -- audited act with a mapping other stores can be re-keyed from.
 --
--- What a security review found. domain/CardTokenReconciler re-derived card.card_token at every
--- start-up whenever the derivation changed, and nothing recorded which key or version a stored token
--- belonged to. Three other places hold a token derived from the same key and hold no card number, so
--- none of them can re-derive its own rows: statement_transaction.card_token and
+-- What a stored token cannot say without its version. Re-deriving card.card_token at start-up whenever
+-- the derivation changes, with nothing recording which key or version a stored token belonged to,
+-- leaves every other holder of that token stranded. Three other places hold a token derived from the
+-- same key and hold no card number, so none of them can re-derive its own rows:
+-- statement_transaction.card_token and
 -- notification_log.card_token in the notification service, authorization_decision.card_token in the
 -- authorization service, and a SCOPE_CARD authority an operator grants in configuration. A key
 -- change therefore left those three naming a card nobody could reach, with no mapping back and no
@@ -30,8 +31,8 @@
 --
 -- card_token_rotation_mapping is the artifact the other three stores are re-keyed from: for every
 -- row a run rewrote, the token it carried and the token it now carries. The previous value is
--- derivable only because CARD_TOKEN_PREVIOUS_SECRET carries the key it was taken under, which is the
--- dual read the review asked for. Applying the mapping in reverse is the rollback.
+-- derivable only because CARD_TOKEN_PREVIOUS_SECRET carries the key it was taken under, so a run
+-- reads under both keys at once. Applying the mapping in reverse is the rollback.
 --
 -- A mapping row names its rotation and no constraint declares that relationship, because no
 -- migration on this platform declares a foreign key. One code path writes both: the rotation row is
@@ -44,7 +45,7 @@
 --
 -- Idempotent in the sense Flyway needs: this file runs once, and a fresh database and a database
 -- holding the fifty seeded rows both reach the same state, because the two column defaults describe
--- the seeded rows exactly. Rationale, alternatives considered and accepted risks:
+-- the seeded rows exactly. Design decisions:
 -- card-platform/docs/decision-log.md. The procedure is card-platform/services/card-service/README.md.
 
 ALTER TABLE card

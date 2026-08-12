@@ -45,7 +45,7 @@ import org.springframework.web.bind.annotation.RestController;
  * {@code app/cpy/CVCUS01Y.cpy:L18}, reaches it from the move at {@code :L519}. Neither value
  * reaches a response body, a log line or an event.
  *
- * <p>Rationale for the deviations this class takes part in, D5, D6, D8 and D10:
+ * <p>Design decisions for the deviations this class takes part in, D5, D6, D8 and D10:
  * {@code card-platform/docs/decision-log.md}.
  *
  * <p>Flagged source findings: {@code card-platform/docs/business-rule-flags.md}. Three of them

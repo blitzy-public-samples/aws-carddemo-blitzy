@@ -140,12 +140,12 @@ class AccountControllerIT {
     static final String USER_PASSWORD = TestIdentityPasswords.USER_PASSWORD;
 
     /**
-     * Migrations under {@code src/main/resources/db/migration}, V1 through V9.
+     * Migrations under {@code src/main/resources/db/migration}, V1 through V12.
      *
      * <p>{@code V8__subject_request_posture.sql} carries no data-definition statement. It re-issues
-     * the {@code customer.social_security_number} comment, which used to say an erasure request
-     * cleared the value with the rest of the row while no export or erasure workflow exists anywhere
-     * on this platform to do that.</p>
+     * the {@code customer.social_security_number} comment so the catalogue does not promise an
+     * erasure request that clears the value, since no export or erasure workflow exists anywhere on
+     * this platform to perform one.</p>
      *
      * <p>{@code V9__outbox_correlation.sql} adds the two nullable correlation columns
      * {@code outbox_event} records, so a published record can carry the unit of work behind it.</p>
@@ -191,10 +191,10 @@ class AccountControllerIT {
 
     /**
      * Identifier of the customer {@code account_customer_link} names for that account. Row 49 of
-     * {@code app/data/ASCII/cardxref.txt} carries card {@code 9680294154603697}, customer
-     * {@code 000000001} and account {@code 00000000001}, and {@code V4} replicates it. The update
-     * path reads that row, as {@code app/cbl/COACTUPC.cbl} derives the customer from the same
-     * cross-reference.
+     * {@code app/data/ASCII/cardxref.txt} pairs customer {@code 000000001} with account
+     * {@code 00000000001}, and {@code V7} seeds that pairing without carrying the row's card number.
+     * The update path reads that row, as {@code app/cbl/COACTUPC.cbl} derives the customer from the
+     * same cross-reference.
      */
     private static final String SEEDED_CUSTOMER_ID = "000000001";
 

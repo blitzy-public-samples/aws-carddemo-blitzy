@@ -242,9 +242,11 @@ CREATE SEQUENCE transaction_id_seq START WITH 1000000000 INCREMENT BY 1 NO CYCLE
 -- ============================================================================
 -- No source dataset carries a retention rule. app/csd/CARDDEMO.CSD defines eight files
 -- with RECOVERY(NONE) and JOURNAL(NO) and no expiry, the Job Control Language members
--- under app/jcl/ define datasets without an EXPDT or RETPD parameter, and no program
--- under app/cbl/ deletes a record: the only DELETE in the repository is IDCAMS deleting
--- a whole dataset before it is redefined. A table that only ever grows is a table whose
+-- under app/jcl/ define datasets without an EXPDT or RETPD parameter, and no migrated
+-- financial posting path deletes a record. app/cbl/COUSR03C.cbl:307 executes EXEC CICS
+-- DELETE against the security file, which the AAP places out of scope; every other DELETE
+-- in the repository is IDCAMS removing a whole dataset before it is redefined. A table that
+-- only ever grows is a table whose
 -- oldest row is as exposed as its newest, so this platform states a rule for every table
 -- it owns.
 --
@@ -261,8 +263,11 @@ CREATE SEQUENCE transaction_id_seq START WITH 1000000000 INCREMENT BY 1 NO CYCLE
 --    WHERE relkind = 'r' ORDER BY relname;
 --
 -- The retention windows below are this platform's demo baseline; a deployment replaces
--- them with the periods its jurisdiction requires. The columns and indexes a purge needs
--- are declared above.
+-- them with the periods its jurisdiction requires. domain/RetentionSweep is what applies them,
+-- ranging over the purge_key columns named below on the interval
+-- carddemo.retention.sweep-interval-ms sets, and the columns and indexes it needs are declared
+-- above. Where a purge_key reads 'none' no sweep reaches the table and erasure there is an
+-- operator action.
 
 COMMENT ON TABLE card_xref IS
     'retention=relationship; purge_key=none; personal_data=pseudonymous. Card-to-account cross-

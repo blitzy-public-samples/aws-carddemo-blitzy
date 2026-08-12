@@ -91,11 +91,15 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
      * {@code DALYTRAN-ID} at {@code app/cpy/CVTRA06Y.cpy:L5}. It names no cardholder, no account and
      * no card, so it discloses nothing a masked event does not already carry.
      *
-     * <p>RETAINED, AND NO PRODUCER WRITES IT. One released document declares this form,
-     * {@code schemas/transaction-declined-v2.json}, and
-     * {@code contracts/released-contracts.json} records it as retained rather than published. The
-     * pattern stays because a record already on a topic has to stay readable, and because every
-     * event this platform publishes is keyed on an account, which is what AAP 0.3.1 requires.
+     * <p>One released document declares this form, {@code schemas/transaction-declined-v2.json}, and
+     * {@code contracts/released-contracts.json} records it as PUBLISHED. It is the contract reject
+     * code {@code 0100} travels under: {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns that code
+     * inside the INVALID KEY limb of the cross-reference read, so no stored row names an account and
+     * there is no account identifier to key on. The authorization service keys those records on the
+     * sixteen-character transaction identifier it minted for the decision.
+     *
+     * <p>Every other published document keys on an account, so {@link #AGGREGATE_KEY_PATTERN} is the
+     * union the canonical constructor checks and each document constrains the one form it declares.
      *
      * <p>The two forms cannot be confused: eleven characters against sixteen, and this one admits
      * no value the account form admits.
@@ -128,14 +132,15 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
      * <p>Every exception message names the component that failed. The three reference components
      * must be present, {@code eventType} must hold one non-blank character, {@code schemaVersion}
      * must fall between {@link #SCHEMA_VERSION} and {@link #MAX_SCHEMA_VERSION}, and
-     * {@code aggregateId} must match {@link #AGGREGATE_ID_PATTERN}. A message reports the length
-     * of a rejected {@code aggregateId} and never the value, so no account identifier reaches a log
+     * {@code aggregateId} must match {@link #AGGREGATE_KEY_PATTERN}, which admits the eleven-digit
+     * account form and the sixteen-character transaction form. A message reports the length of a
+     * rejected {@code aggregateId} and never the value, so no account identifier reaches a log
      * through a failure.
      *
      * <p>Accepting either key form here does not let an event type choose one. A record checks the
      * form its own contract allows, and its schema document constrains the same form on the wire.
-     * Only the retained declined document of version 2 declares the transaction form, and no
-     * producer writes it, so every record this platform publishes carries an account key.
+     * The declined document of version 2 is the one published contract declaring the transaction
+     * form, and it declares it because reject code {@code 0100} resolves no account to key on.
      *
      * <p>This constructor changes no value it accepts. A component therefore survives a serialize
      * and deserialize round trip unchanged, down to the fractional digits of {@code occurredAt}.
@@ -145,7 +150,8 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
      * @throws IllegalArgumentException when {@code eventType} is blank, when {@code schemaVersion}
      *                                  falls outside {@link #SCHEMA_VERSION} through
      *                                  {@link #MAX_SCHEMA_VERSION}, or when {@code aggregateId} is
-     *                                  {@code null} or is not eleven decimal digits
+     *                                  {@code null} or matches neither form of
+     *                                  {@link #AGGREGATE_KEY_PATTERN}
      */
     public EventEnvelope {
         Objects.requireNonNull(eventId, "eventId must be present");
@@ -204,13 +210,14 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
      *
      * @param eventType   the simple name of the event type this envelope labels, for example
      *                    {@code TransactionPosted}
-     * @param aggregateId the eleven-digit account identifier the event belongs to, and the Kafka
-     *                    message key
+     * @param aggregateId the Kafka message key: the eleven-digit account identifier the event
+     *                    belongs to, or the sixteen-character transaction identifier where no
+     *                    account was resolved
      * @return an envelope carrying the two supplied components and three stamped ones
      * @throws NullPointerException     when {@code eventType} is {@code null}
      * @throws IllegalArgumentException when {@code eventType} is blank, or when
-     *                                  {@code aggregateId} is {@code null} or is not eleven
-     *                                  decimal digits
+     *                                  {@code aggregateId} is {@code null} or matches neither form
+     *                                  of {@link #AGGREGATE_KEY_PATTERN}
      */
     public static EventEnvelope of(String eventType, String aggregateId) {
         return of(eventType, aggregateId, SCHEMA_VERSION);
@@ -225,8 +232,8 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
      * {@link #MAX_SCHEMA_VERSION} is refused by the canonical constructor.
      *
      * @param eventType     the simple name of the event type this envelope labels
-     * @param aggregateId   the Kafka message key: the eleven-digit account identifier the event
-     *                      belongs to
+     * @param aggregateId   the Kafka message key, in either form of
+     *                      {@link #AGGREGATE_KEY_PATTERN}
      * @param schemaVersion the contract version, between {@link #SCHEMA_VERSION} and
      *                      {@link #MAX_SCHEMA_VERSION}
      * @return an envelope carrying the three supplied components and two stamped ones

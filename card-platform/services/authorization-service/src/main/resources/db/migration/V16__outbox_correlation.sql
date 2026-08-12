@@ -1,4 +1,4 @@
--- Authorization service, migration V15.
+-- Authorization service, migration V16.
 -- Carries the two correlation identifiers of one unit of work on the outbox row, so the relay can
 -- attach them to the record it publishes.
 --

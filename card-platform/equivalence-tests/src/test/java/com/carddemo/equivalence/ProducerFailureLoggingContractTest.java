@@ -56,7 +56,6 @@ class ProducerFailureLoggingContractTest {
             "authorization-service", "ledger-posting-service", "fraud-detection-service",
             "notification-service", "account-service", "card-service");
 
-    /** Matches one template construction. */
     private static final String TEMPLATE_CONSTRUCTION = "new KafkaTemplate<>(";
 
     /** Matches the installation that displaces the default listener. */
@@ -74,7 +73,6 @@ class ProducerFailureLoggingContractTest {
             "new LoggingProducerListener", "LoggingProducerListener<", "LoggingProducerListener(",
             "setIncludeContents");
 
-    /** Matches one line comment. */
     private static final Pattern LINE_COMMENT = Pattern.compile("//[^\\n]*");
 
     /** Matches one block comment, which is how every class here carries its javadoc. */
@@ -244,9 +242,9 @@ class ProducerFailureLoggingContractTest {
      * Proves the level and the sensitivity rules are separable, and that both still fire.
      *
      * <p>The pattern above named one level, so widening it to read the level could have widened it
-     * into matching nothing in particular. Each shape below is checked against the pattern the rules
-     * actually use, so a pattern that had stopped recognising a bare throwable, a key read or a value
-     * read is reported here rather than passing quietly in all six services at once.
+     * into matching nothing in particular. Each shape below is checked against the pattern the
+     * rules actually use, so a pattern that stops recognising a bare throwable, a key read or a
+     * value read is reported here rather than passing quietly in all six services at once.
      */
     @Test
     @DisplayName("the rules still recognise a bare throwable, a key read and a value read")

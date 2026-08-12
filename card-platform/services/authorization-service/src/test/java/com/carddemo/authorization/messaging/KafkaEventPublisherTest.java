@@ -267,12 +267,11 @@ class KafkaEventPublisherTest {
     /**
      * Asserts the publisher is declared from the bound properties rather than scanned.
      *
-     * <p>It used to be a {@code @Component} whose constructor read four property placeholders. One of
-     * them, {@code carddemo.outbox.relay.publish-timeout}, is also a component of
-     * {@code AuthorizationProperties.Outbox.Relay}, so the same value was bound twice and the
-     * {@code @Value} was the one this class read. A second binding meets none of the constraints the
-     * record declares, which is how a publish timeout of zero started the service and then failed
-     * every send the instant it was issued.
+     * <p>Reading property placeholders in this class would bind
+     * {@code carddemo.outbox.relay.publish-timeout} a second time, beside the component of
+     * {@code AuthorizationProperties.Outbox.Relay} that already binds it. A second binding meets none
+     * of the constraints the record declares, so a publish timeout of zero would start the service and
+     * then fail every send the instant it was issued.
      *
      * <p>The three assertions are what keeps that from returning: no stereotype, a declared bean in
      * the configuration that builds it, and no property annotation on any constructor parameter.

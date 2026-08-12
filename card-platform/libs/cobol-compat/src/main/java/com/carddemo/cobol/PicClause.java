@@ -191,7 +191,6 @@ public final class PicClause {
      */
     public static final int CARD_EXPIRATION_DATE_WIDTH = 10;
 
-    /** Target column type for the card expiration date. */
     public static final String CARD_EXPIRATION_DATE_COLUMN_TYPE = "DATE";
 
     /**

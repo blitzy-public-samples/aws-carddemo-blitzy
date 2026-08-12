@@ -447,10 +447,10 @@ class SecurityConfigTest {
         /**
          * Asserts a role this service grants nothing for stops start-up.
          *
-         * <p>A security review found the configured role reaching the authority list unchecked, so a
-         * typed role authenticated an identity that could reach nothing and reported no reason. The
-         * message names the configured word because an operator correcting a typo needs to know which
-         * word to correct, and a role is not a credential.
+         * <p>A configured role that reached the authority list unchecked would authenticate an
+         * identity able to reach nothing, and would report no reason. The message names the
+         * configured word because an operator correcting a typo needs to know which word to
+         * correct, and a role is not a credential.
          */
         @Test
         @DisplayName("a role this service grants nothing for stops start-up")

@@ -90,15 +90,14 @@ public class OutboxEventEntity {
      * Length of a transaction-keyed {@code aggregateId}, from {@code TRAN-ID PIC X(16)} at
      * {@code app/cpy/CVTRA05Y.cpy:L5}.
      *
-     * <p>No row written from migration {@code V19} forward carries this form, and the column keeps room
-     * for it because rows written before it do. One retained contract used it:
-     * {@code schemas/transaction-declined-v2.json}, the decline whose card resolved no cross-reference
-     * row, which declared no {@code accountId} and keyed on the transaction identifier instead. No
-     * producer writes reject code {@code 0100} at all now: a card resolving no cross-reference row
-     * resolves no subject, so {@code domain/AuthorizationService} refuses the call. {@code ck_outbox_event_aggregate_id} still admits this width, because a
-     * {@code CHECK} narrowed after those rows exist is enforced on every {@code UPDATE} of them and
-     * the relay writes a column on every row it claims; {@code outbox/OutboxWriter} holds the one
-     * form a new row may carry, and the relay publishes the older rows unchanged.
+     * <p>One published contract carries this form: {@code schemas/transaction-declined-v2.json}, the
+     * decline whose card resolved no cross-reference row. It declares no {@code accountId} and keys on
+     * the transaction identifier instead, because {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns reject
+     * code {@code 0100} inside the INVALID KEY limb, so no account resolves.
+     * {@code domain/AuthorizationService} decides that call, and {@code outbox/OutboxWriter} admits
+     * this width for reject code {@code 0100} and for nothing else.
+     * {@code ck_outbox_event_aggregate_id} has admitted both widths since
+     * {@code V4__outbox_transaction_key.sql}.
      */
     public static final int TRANSACTION_KEY_LENGTH = 16;
 

@@ -49,8 +49,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 /**
- * Shape tests for {@link NotificationLogEntity}, the delivery-attempt record of the notification
- * service.
+ * Shape tests for {@link NotificationLogEntity}, the rendered-not-sent alert record of the
+ * notification service.
  *
  * <p>Every assertion reads declared members and Jakarta Persistence (JPA) annotations through
  * reflection. No Spring context starts, no container starts and no socket opens, so
@@ -95,9 +95,8 @@ final class NotificationLogEntityTest {
      * Instance fields the class maps, statics dropped.
      *
      * <p>Seven since {@code src/main/resources/db/migration/V5__rendered_not_delivered.sql} added
-     * {@code outcome}. A security review found this table described as a delivery attempt while
-     * nothing on this platform sends anything, so the row now carries that fact in a column a
-     * {@code CHECK} constrains rather than in prose a reader has to believe.</p>
+     * {@code outcome}. Nothing on this platform sends anything, so the row carries that fact in a
+     * column a {@code CHECK} constrains rather than in prose a reader has to believe.</p>
      */
     private static final int FIELD_COUNT = 7;
 
@@ -218,7 +217,8 @@ final class NotificationLogEntityTest {
 
     /**
      * Whole names no field and no column of the table takes. Every entry names something a
-     * competent engineer would add to a delivery-attempt table, and the table takes none of them.
+     * competent engineer would add to a table recording deliveries, and this table takes none of
+     * them.
      * Comparison folds a name to lower case and drops its underscores, so one entry covers both
      * the column spelling and the field spelling.
      */
@@ -572,12 +572,10 @@ final class NotificationLogEntityTest {
         /**
          * Holds that the outcome is written by the class and not supplied by a caller.
          *
-         * <p>This is the mechanical form of the finding's resolution. The review found rows
-         * described as delivery attempts while nothing on this platform sends anything. A caller
-         * that could pass an outcome could pass {@code SENT}, and then the column would be as
-         * unreliable as the prose was. The constructor takes six values and assigns the seventh,
-         * and {@code ck_notification_log_outcome} refuses any other value written any other
-         * way.</p>
+         * <p>A caller that could pass an outcome could pass {@code SENT}, and the column would
+         * then claim a transport this service does not hold. The constructor takes six values and
+         * assigns the seventh, and {@code ck_notification_log_outcome} refuses any other value
+         * written any other way.</p>
          */
         @Test
         @DisplayName("the outcome is assigned by the class, not taken from a caller")
@@ -884,11 +882,11 @@ final class NotificationLogEntityTest {
 
     /**
      * Additions the table refuses. Every check names something a competent engineer would add to a
-     * delivery-attempt table, and the closed field set above already refuses each one. The named
-     * checks report which addition arrived.
+     * table recording deliveries, and the closed field set above already refuses each one. The
+     * named checks report which addition arrived.
      */
     @Nested
-    @DisplayName("Additions this delivery-attempt table refuses")
+    @DisplayName("Additions this rendered-alert table refuses")
     class RefusedAdditions {
 
         @Test

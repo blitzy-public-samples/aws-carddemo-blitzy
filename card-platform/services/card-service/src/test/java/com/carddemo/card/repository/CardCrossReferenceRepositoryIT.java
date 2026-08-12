@@ -164,8 +164,9 @@ class CardCrossReferenceRepositoryIT {
     private static final String ROW_1_ACCOUNT_ID = "00000000050";
 
     /**
-     * Card number of the row a test inserts to place a second card on one account. The highest
-     * seeded card number is {@code 9805583408996588}, so no seeded row carries this value.
+     * Card number of the row a test inserts to place a second card on one account. It is sixteen
+     * nines, which is above every seeded card number in {@code app/data/ASCII/cardxref.txt}, so no
+     * seeded row carries it.
      */
     private static final String INSERTED_CARD_NUMBER = "9999999999999999";
 

@@ -24,11 +24,10 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 /**
  * Turns a failure of the balance query into a problem document.
  *
- * <p>This service answered every failure with the framework default body before this class existed,
- * and that body has two problems a caller can see. It carries the resolved request path, so a caller
- * naming an account identifier read that identifier back and copied it into its own access log. And
- * it draws no line between a value the route cannot use, a dependency that is away, and a fault
- * inside this service: a paused datastore answered
+ * <p>The framework default body has two problems a caller can see, and this class is what replaces
+ * it. It carries the resolved request path, so a caller naming an account identifier reads that
+ * identifier back and copies it into its own access log. And it draws no line between a value the route
+ * cannot use, a dependency that is away, and a fault inside this service: a paused datastore answers
  * {@code {"timestamp":...,"status":500,"error":"Internal Server Error","path":"/balances/..."}},
  * which tells an operator nothing about which dependency stopped and invites no retry.
  *

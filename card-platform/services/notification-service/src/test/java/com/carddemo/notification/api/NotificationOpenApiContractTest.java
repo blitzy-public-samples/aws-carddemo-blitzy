@@ -312,7 +312,6 @@ class NotificationOpenApiContractTest {
                     "the document version and the specification version are separate values");
         }
 
-        /** Asserts the info section names the service and describes it. */
         @Test
         void theInfoSectionNamesAndDescribesTheService() {
             Map<String, Object> info = mapAt(model, "info", "the document");
@@ -373,7 +372,6 @@ class NotificationOpenApiContractTest {
             }
         }
 
-        /** Asserts the successful response declares one media type. */
         @Test
         void theSuccessfulResponseDeclaresOneMediaType() {
             Map<String, Object> response = mapAt(responses(), "200", "the successful response");
@@ -397,7 +395,6 @@ class NotificationOpenApiContractTest {
                     + namesOf(parameters()));
         }
 
-        /** Asserts the path parameter names the card token and is required. */
         @Test
         void thePathParameterIsTheRequiredCardToken() {
             Map<String, Object> cardToken = pathParameter();
@@ -494,7 +491,6 @@ class NotificationOpenApiContractTest {
                     "the default the controller applies");
         }
 
-        /** Asserts no parameter names an offset paging value. */
         @Test
         void noParameterNamesAnOffsetPagingValue() {
             List<String> declared = namesOf(parameters());
@@ -548,7 +544,6 @@ class NotificationOpenApiContractTest {
                     "the document publishes the text the answer carries");
         }
 
-        /** Asserts the operation documents none of the remaining statuses. */
         @Test
         void theOperationDocumentsNoneOfTheRemainingStatuses() {
             for (String absent : UNDECLARED_STATUSES) {
@@ -698,7 +693,6 @@ class NotificationOpenApiContractTest {
                     "the components of the response record");
         }
 
-        /** Asserts the envelope declares its properties in the order the record declares them. */
         @Test
         void theEnvelopeDeclaresItsPropertiesInRecordOrder() {
             assertEquals(componentNamesOf(NotificationHistoryResponse.class),
@@ -782,7 +776,6 @@ class NotificationOpenApiContractTest {
                     "the schema the array items name against the item record components");
         }
 
-        /** Asserts the envelope declares no offset paging property. */
         @Test
         void theEnvelopeDeclaresNoOffsetPagingProperty() {
             Set<String> declared = propertiesOf(envelopeSchema(), "the envelope").keySet();
@@ -814,7 +807,6 @@ class NotificationOpenApiContractTest {
                     components, "the components of the item record");
         }
 
-        /** Asserts the item declares its properties in the order the record declares them. */
         @Test
         void theItemDeclaresItsPropertiesInRecordOrder() {
             assertEquals(componentNamesOf(NotificationTransactionItem.class), itemPropertyOrder(),
@@ -958,7 +950,6 @@ class NotificationOpenApiContractTest {
                     "the shape of processingTimestamp");
         }
 
-        /** Asserts the two timestamp shapes differ. */
         @Test
         void theTwoTimestampShapesDiffer() {
             assertNotEquals(itemShapeOf("originTimestamp"), itemShapeOf("processingTimestamp"),
@@ -1116,7 +1107,6 @@ class NotificationOpenApiContractTest {
                     "the document carries a vendor extension");
         }
 
-        /** Asserts every reference stays inside the document. */
         @Test
         void everyReferenceStaysInsideTheDocument() {
             List<Object> references = everyValueOf(REFERENCE);
@@ -1195,7 +1185,6 @@ class NotificationOpenApiContractTest {
                     "the directives the response carries");
         }
 
-        /** Asserts no response restates an event envelope. */
         @Test
         void noResponseRestatesAnEventEnvelope() {
             Set<String> declared = everyPropertyName();

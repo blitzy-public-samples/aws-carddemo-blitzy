@@ -209,8 +209,8 @@ class RepositorySurfaceTest {
      * parameters. The reject set the source keeps is therefore bounded and self-expiring, and the
      * deletion lives in a catalogue definition rather than in a {@code PERFORM}, which is why no
      * paragraph appears to remove one. The table's own {@code COMMENT ON TABLE} declares
-     * {@code retention=90 days; purge_key=rejected_at}, and a security review found that nothing
-     * applied it.
+     * {@code retention=90 days; purge_key=rejected_at}, and a declared horizon that nothing applies
+     * bounds nothing.
      */
     private static final Map<Class<?>, String> PERMITTED_RETENTION_DELETE =
             Map.of(RejectedTransactionRepository.class, "deleteRejectedBefore");

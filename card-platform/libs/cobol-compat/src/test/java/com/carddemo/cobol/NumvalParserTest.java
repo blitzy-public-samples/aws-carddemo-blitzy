@@ -162,7 +162,6 @@ class NumvalParserTest {
     /** A money argument carrying no currency sign and no grouping comma. */
     private static final String PLAIN_MONEY_ARGUMENT = "1234.56";
 
-    /** The same value carrying one currency sign. */
     private static final String MONEY_ARGUMENT_WITH_CURRENCY_SIGN = "$1234.56";
 
     /** The same value carrying one grouping comma. */
@@ -274,7 +273,6 @@ class NumvalParserTest {
     /** A grouped argument ending on its separator. */
     private static final String TRAILING_SEPARATOR_ARGUMENT = "1,234,";
 
-    /** A currency sign carrying no digits. */
     private static final String CURRENCY_SIGN_ALONE = "$";
 
     /** Digits at {@link #MAXIMUM_DIGIT_COUNT}. */

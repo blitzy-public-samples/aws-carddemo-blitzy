@@ -939,10 +939,9 @@ class AuthorizationDecisionEquivalenceTest {
          * attribute the reject to. That is exactly the target's shape: the reason is assigned as the
          * source assigns it, and the decision names no account.
          *
-         * <p>An earlier revision decided this case against the account the caller declared, and a
-         * security review found that any entitled caller could then pair an unknown card with any
-         * account. This test names that request shape and asserts the outcome carries no account, so
-         * the earlier behaviour cannot return unnoticed.
+         * <p>Deciding this case against the account the caller declared would let any entitled
+         * caller pair an unknown card with any account. This test names that request shape and
+         * asserts the outcome carries no account, so that behaviour cannot arrive unnoticed.
          */
         @Test
         @DisplayName("an absent cross-reference row is assigned reason 0100 and names no account, "

@@ -17,7 +17,7 @@
 -- so a decision row for it carries an event identifier again. The nullable column and its constraint
 -- stay, because the constraint still bounds which shape may omit one.
 --
--- Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md.
+-- Design decisions: card-platform/docs/decision-log.md.
 
 ALTER TABLE authorization_decision
     ALTER COLUMN event_id DROP NOT NULL;

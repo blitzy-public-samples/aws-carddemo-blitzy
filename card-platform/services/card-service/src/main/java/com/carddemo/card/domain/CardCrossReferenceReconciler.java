@@ -45,7 +45,7 @@ import org.springframework.transaction.annotation.Transactional;
  * from {@link PanMasker#maskCardNumber(String)}. The three counters carry no card number, no
  * account identifier and no tag.
  *
- * <p>Rationale sits in {@code card-platform/docs/decision-log.md}, the source-to-target mapping in
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}, the source-to-target mapping in
  * {@code card-platform/docs/traceability-matrix.md}, and flagged source findings in
  * {@code card-platform/docs/business-rule-flags.md}.
  */

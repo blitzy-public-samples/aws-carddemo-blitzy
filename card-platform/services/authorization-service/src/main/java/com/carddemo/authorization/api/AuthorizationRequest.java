@@ -646,7 +646,7 @@ public record AuthorizationRequest(
      * {@code app/cpy/CVTRA06Y.cpy}, so the range refuses nothing the source accepts.
      *
      * <p>An empty component matches, because the bound on presence belongs to
-     * {@code NotBlank} and to {@link #isEitherIdentifierSupplied()} rather than to a
+     * {@code NotBlank} and to {@link #isIdentifierSupplied()} rather than to a
      * character class.
      */
     public static final String PRINTABLE_TEXT_PATTERN = "^[ -~]*$";

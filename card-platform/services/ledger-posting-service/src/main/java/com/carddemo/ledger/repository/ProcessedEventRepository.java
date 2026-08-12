@@ -12,15 +12,16 @@ import org.springframework.data.repository.query.Param;
 /**
  * Reads and writes the processed-event marker that lets a duplicate delivery change nothing.
  *
- * <p>Two listeners write this repository. {@code messaging/TransactionAuthorizedConsumer} reads
- * {@code transaction.authorized} and takes the read-then-mark order, and
+ * <p>Three listeners write this repository. {@code messaging/TransactionAuthorizedConsumer} reads
+ * {@code transaction.authorized} and {@code messaging/TransactionDeclinedConsumer} reads
+ * {@code transaction.declined}, both taking the read-then-mark order;
  * {@code messaging/AccountStateChangedConsumer} reads {@code account.state-changed} and takes the
- * one-statement claim. Both commit the marker in the same local transaction as their business
- * effect, marker after effects, and acknowledge the delivery only once that transaction commits.</p>
+ * one-statement claim. Each commits the marker in the same local transaction as its business effect,
+ * marker after effects, and acknowledges the delivery only once that transaction commits.</p>
  *
- * <p><b>The marker is keyed by the event and the topic together.</b> Those two listeners read two
- * topics, and two producing services assign the event identifiers on them independently, so two
- * different events may carry one identifier without either producer being at fault. The identifier
+ * <p><b>The marker is keyed by the event and the topic together.</b> Those listeners read separate
+ * topics whose event identifiers separate producing services assign independently, so two different
+ * events may carry one identifier without either producer being at fault. The identifier
  * alone therefore does not identify a delivery, and
  * {@code src/main/resources/db/migration/V5__processed_event_topic_key.sql} carries the reasoning at
  * length. Every operation below names both key columns for that reason.</p>

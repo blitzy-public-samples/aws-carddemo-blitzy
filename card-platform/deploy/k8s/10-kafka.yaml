@@ -15,7 +15,7 @@
 # card-platform/docker-compose.yml installs the same identities and the same entries without
 # the encryption, since it publishes on the loopback address of one machine.
 #
-# Rationale for every choice in this folder: card-platform/docs/decision-log.md
+# Design decisions for this folder: card-platform/docs/decision-log.md
 ---
 # The broker log, KRaft metadata, topic data and committed consumer offsets outlive a Pod
 # replacement.

@@ -16,7 +16,7 @@
 -- pair is what a delete names so clearing one stream does not clear the other.
 --
 -- This migration also retires carddemo.replica.max-staleness, the age bound that stood in for the
--- table. Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md.
+-- table. Design decisions: card-platform/docs/decision-log.md.
 
 CREATE TABLE replica_gap
 (

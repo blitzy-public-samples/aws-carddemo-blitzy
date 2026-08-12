@@ -1,5 +1,5 @@
 # Runtime configuration for account-service.
-# Rationale for the settings below: card-platform/docs/decision-log.md
+# Design decisions for the settings below: card-platform/docs/decision-log.md
 
 server:
   # Port inside the container. Dockerfile and docker-compose.yml probe
@@ -227,10 +227,9 @@ spring:
       # card-platform/.env.example, and the group assignor gives one partition to exactly one
       # thread, so the postings of one account — the account identifier is the message key —
       # are still applied in publish order while other accounts are applied beside them. Each
-      # apply is monotonic against the producer clock, and that is unchanged. The framework
-      # default of one thread, which this file previously left in place, applied every
-      # partition of the topic in sequence. A value above the partition count only leaves the
-      # surplus threads with nothing assigned.
+      # apply is monotonic against the producer clock. The framework default of one thread
+      # would apply every partition of the topic in sequence. A value above the partition count
+      # only leaves the surplus threads with nothing assigned.
       concurrency: ${SPRING_KAFKA_LISTENER_CONCURRENCY:3}
 
   # The scheduler behind both @Scheduled methods of this service, outbox/OutboxRelay and
@@ -328,10 +327,10 @@ carddemo:
     # that outlive any window, which the migration withdrawing its horizon states in full.
     published-retention-hours: ${OUTBOX_PUBLISHED_RETENTION_HOURS:168}
   # Duplicate-delivery claims are permanent. A claim and the side effects it guards commit in
-  # one local transaction in one database, so the two can only be restored together, and a
-  # security review found the horizon that used to expire a claim shorter than the effects it
-  # guarded. Nothing here retires a claim, domain/RetentionSweep no longer names
-  # processed_event, and the migration that withdrew the horizon states the whole rule.
+  # one local transaction in one database, so the two can only be restored together. Any horizon
+  # tied to broker log retention would expire a claim sooner than the effects it guards. Nothing
+  # here retires a claim, domain/RetentionSweep does not name processed_event, and the migration
+  # that withdrew the horizon states the whole rule.
   retention:
     sweep-interval-ms: ${RETENTION_SWEEP_INTERVAL_MS:3600000}
   # Bound on how long each locked read of one update waits for a row another writer holds.

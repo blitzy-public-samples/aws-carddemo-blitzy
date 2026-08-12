@@ -434,7 +434,7 @@ public interface CardRepository extends ListCrudRepository<CardEntity, String> {
      * converge: the second one's statement changes nothing and answers zero rather than conflicting.
      *
      * <p>The statement moves three columns together, because a token and the version it was taken
-     * under are one fact and separating them is what a security review found. It also sets the
+     * under are one fact and a row carrying one without the other cannot be read. It also sets the
      * provenance to {@code DERIVED}: whatever the row carried before, the value it carries after this
      * statement was derived by this deployment, so a later difference is a rotation rather than a
      * bootstrap. {@code V10__card_token_version_and_rotation.sql} declares the two columns.

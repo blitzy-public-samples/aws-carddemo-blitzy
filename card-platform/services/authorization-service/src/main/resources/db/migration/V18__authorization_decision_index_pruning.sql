@@ -1,4 +1,4 @@
--- Authorization service, migration V16.
+-- Authorization service, migration V18.
 -- Withdraws the two authorization_decision indexes no read path reaches.
 --
 -- What this file declares. V5__authorization_decision.sql created three indexes for three questions the

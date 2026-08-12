@@ -177,7 +177,6 @@ class CobolDecimalTruncationTest {
      */
     private static final BigDecimal TRUNCATED_WORKING_BALANCE = new BigDecimal("1534.57");
 
-    /** The half-up working balance from the same expression. */
     private static final BigDecimal HALF_UP_WORKING_BALANCE = new BigDecimal("1534.58");
 
     /**
@@ -294,7 +293,6 @@ class CobolDecimalTruncationTest {
     /** The truncated category balance the create branch writes at L510. */
     private static final BigDecimal TRUNCATED_CREATED_CATEGORY_BALANCE = new BigDecimal("75.99");
 
-    /** The half-up category balance from the same amount. */
     private static final BigDecimal HALF_UP_CREATED_CATEGORY_BALANCE = new BigDecimal("76.00");
 
     /** {@code TRAN-CAT-BAL}, {@code app/cpy/CVTRA01Y.cpy:L9}, as the update branch reads it. */
@@ -306,7 +304,6 @@ class CobolDecimalTruncationTest {
     /** The truncated category balance the update branch rewrites at L528. */
     private static final BigDecimal TRUNCATED_UPDATED_CATEGORY_BALANCE = new BigDecimal("350.49");
 
-    /** The half-up category balance from the same two operands. */
     private static final BigDecimal HALF_UP_UPDATED_CATEGORY_BALANCE = new BigDecimal("350.50");
 
     // Site 6. Bill payment. app/cbl/COBIL00C.cbl:L224 and L234.
@@ -342,16 +339,13 @@ class CobolDecimalTruncationTest {
     /** The truncated monthly interest the store into {@code WS-MONTHLY-INT} keeps. */
     private static final BigDecimal TRUNCATED_MONTHLY_INTEREST = new BigDecimal("10.41");
 
-    /** The half-up monthly interest from the same quotient. */
     private static final BigDecimal HALF_UP_MONTHLY_INTEREST = new BigDecimal("10.42");
 
     /** A category balance that drives the quotient negative. */
     private static final BigDecimal NEGATIVE_INTEREST_CATEGORY_BALANCE = new BigDecimal("-1000.00");
 
-    /** The truncated monthly interest on a negative balance. */
     private static final BigDecimal TRUNCATED_NEGATIVE_MONTHLY_INTEREST = new BigDecimal("-10.41");
 
-    /** The half-up monthly interest on the same negative balance. */
     private static final BigDecimal HALF_UP_NEGATIVE_MONTHLY_INTEREST = new BigDecimal("-10.42");
 
     /** A category balance whose product with a rate carries a third decimal digit. */
@@ -363,7 +357,6 @@ class CobolDecimalTruncationTest {
     /** The truncated product of the previous two operands. */
     private static final BigDecimal TRUNCATED_ODD_PRODUCT = new BigDecimal("7575.75");
 
-    /** The half-up product of the same two operands. */
     private static final BigDecimal HALF_UP_ODD_PRODUCT = new BigDecimal("7575.76");
 
     /** {@code WS-TOTAL-INT}, {@code app/cbl/CBACT04C.cbl:L169}, before the add at L467. */
@@ -449,7 +442,6 @@ class CobolDecimalTruncationTest {
 
     // Processing timestamp. app/cbl/CBTRN02C.cbl:L159-L174, L692-L705, and L438.
 
-    /** Nanoseconds in one hundredth of a second. */
     private static final int NANOSECONDS_PER_HUNDREDTH = 10_000_000;
 
     /** A moment whose nanosecond field lands exactly on a hundredth. */
@@ -485,7 +477,6 @@ class CobolDecimalTruncationTest {
     /** The rendered form of {@link #MOMENT_NEEDING_PADDING}. */
     private static final String RENDERED_MOMENT_NEEDING_PADDING = "2022-01-02-03.04.05.060000";
 
-    /** The 1-indexed offset of the dash separating the day from the hour. */
     private static final int ONE_INDEXED_DAY_HOUR_DASH_OFFSET = 11;
 
     /** The 1-indexed offsets of the three dashes, from the redefine at L162, L164, and L166. */
@@ -497,7 +488,6 @@ class CobolDecimalTruncationTest {
     /** The two fraction digits {@link #MOMENT_ON_A_HUNDREDTH} renders. */
     private static final String EXPECTED_HUNDREDTHS = "87";
 
-    /** The largest fraction two digits hold. */
     private static final String LARGEST_HUNDREDTHS = "99";
 
     /** The second component of every moment that sits on second 59. */

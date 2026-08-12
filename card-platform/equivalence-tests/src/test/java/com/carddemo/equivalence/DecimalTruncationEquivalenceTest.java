@@ -193,7 +193,6 @@ class DecimalTruncationEquivalenceTest {
     /** The interest program, which declares the accrual working field. */
     private static final String INTEREST_PROGRAM = "app/cbl/CBACT04C.cbl";
 
-    /** The copybook that declares the category balance. */
     private static final String CATEGORY_BALANCE_COPYBOOK = "app/cpy/CVTRA01Y.cpy";
 
     /** The copybook that declares the account balance and both cycle accumulators. */

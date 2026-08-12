@@ -708,7 +708,7 @@ class NativeStatementIT {
         /**
          * Asserts a row waiting out its backoff withholds the later rows of its own account.
          *
-         * <p>This is the ordering guarantee stated as a fact about the query. The earlier row is
+         * <p>This is the ordering guarantee stated as a fact about the query. The row ahead of it is
          * unpublished and merely waiting, so publishing the later row now would put that account's
          * events on its partition in the wrong order, and the account identifier is the message key.
          * The account waits; no other account does.
@@ -883,13 +883,12 @@ class NativeStatementIT {
         /**
          * Asserts a row of the shape written before {@code V19} stays readable, account column and all.
          *
-         * <p>Every decision this service records now names the account it applies to, because the
-         * subject comes from the cross-reference row and a call resolving none is refused before a
-         * decision. A database that ran earlier holds rows written while that outcome resolved no
-         * subject, so the column stays nullable and the mapping has to read one. {@code V13__decision_without_event.sql} dropped the {@code NOT NULL} that used to
-         * force an event identifier here, and {@code V15__unresolved_decline_is_published.sql}
-         * requires one of every new row through {@code ck_authorization_decision_event}, which is
-         * {@code NOT VALID} for the same reason.
+         * <p>A decision whose card resolved no cross-reference row has no account to name, so the
+         * column is nullable and the mapping has to read a null.
+         * {@code V13__decision_without_event.sql} carries no {@code NOT NULL} on the event identifier,
+         * and {@code V15__unresolved_decline_is_published.sql} requires one of every new row through
+         * {@code ck_authorization_decision_event}, which is {@code NOT VALID} so that rows written
+         * before it are left as they stand.
          */
         @Test
         @DisplayName("a stored row that names no account stays readable and still names its event")
@@ -1043,10 +1042,10 @@ class NativeStatementIT {
         /**
          * Proves a claim written long before any withdrawn horizon still refuses its redelivery.
          *
-         * <p>The claim is stamped two thousand days back, which is far past the 720 hours a purge
-         * once used and past the 400 days a decision row is kept. A security review found that purge
-         * removing claims while the effects they guard outlived them, so a restored or deliberately
-         * replayed record arriving afterwards was new to the guard.
+         * <p>The claim is stamped two thousand days back, which is far past any horizon a purge could
+         * carry and past the 400 days a decision row is kept. A purge on such a horizon would remove
+         * the claim while the effects it guards stand, and a restored or deliberately replayed record
+         * arriving afterwards would be new to the guard.
          *
          * <p>The claim is permanent now, so the second claim of the same event still reads
          * {@link ProcessedEventRepository#ALREADY_CLAIMED} and the row is still there to read.

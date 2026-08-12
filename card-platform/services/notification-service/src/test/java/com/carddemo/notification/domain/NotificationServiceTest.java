@@ -50,7 +50,7 @@ import org.springframework.data.domain.Limit;
  * {@code PERFORM} runs one.
  *
  * <p>Every test drives the service directly over a recording renderer, a recording
- * delivery-attempt repository and a stubbed read-model repository. No Spring application context
+ * rendered-alert repository and a stubbed read-model repository. No Spring application context
  * starts, no container runs, no broker runs and no database runs. {@code mvn test} therefore
  * passes on a clean machine with nothing else started.
  *
@@ -80,7 +80,7 @@ class NotificationServiceTest {
     private static final String FULL_CARD_NUMBER = syntheticCardNumber("123456789010");
 
     /**
-     * The masked form of {@link #FULL_CARD_NUMBER}, which the delivery-attempt row holds for
+     * The masked form of {@link #FULL_CARD_NUMBER}, which the rendered-alert row holds for
      * display. Twelve mask characters then four digits.
      */
     private static final String MASKED_CARD_NUMBER = PanMasker.maskCardNumber(FULL_CARD_NUMBER);
@@ -133,7 +133,7 @@ class NotificationServiceTest {
     }
 
     /**
-     * The instant every delivery-attempt row this class writes records.
+     * The instant every rendered-alert row this class writes records.
      *
      * <p>{@link #FIXED_CLOCK} answers it on every read, so an assertion on the stored instant is an
      * equality and not a comparison against the wall clock.</p>
@@ -685,7 +685,7 @@ class NotificationServiceTest {
     }
 
     /**
-     * A delivery-attempt repository that keeps every row handed to it.
+     * A rendered-alert repository that keeps every row handed to it.
      *
      * <p>ADDITIVE. {@code app/cbl/CBSTM03A.CBL} writes its statement records at
      * {@code app/cbl/CBSTM03A.CBL:L488-L502} and records nothing about the write, so the aggregate
@@ -1395,7 +1395,7 @@ class NotificationServiceTest {
          * <p>The loop closes at {@code app/cbl/CBSTM03A.CBL:L430} before the hop at
          * {@code app/cbl/CBSTM03A.CBL:L433-L434} and the trailer writes at
          * {@code app/cbl/CBSTM03A.CBL:L435-L437}. A fault inside the loop therefore reaches
-         * neither the renderer nor the delivery-attempt row.</p>
+         * neither the renderer nor the rendered-alert row.</p>
          */
         @Test
         @DisplayName("A row failing inside the loop reaches neither renderer nor attempt row")
@@ -1790,7 +1790,7 @@ class NotificationServiceTest {
     }
 
     /**
-     * Holds what the delivery-attempt row carries and what it never carries.
+     * Holds what the rendered-alert row carries and what it never carries.
      *
      * <p>ADDITIVE. {@code app/cbl/CBSTM03A.CBL} writes its statement records at
      * {@code app/cbl/CBSTM03A.CBL:L488-L502} and records nothing about the write, so this
@@ -1842,7 +1842,7 @@ class NotificationServiceTest {
          * attempt row follows the same count.</p>
          */
         @Test
-        @DisplayName("Each posted alert writes exactly one delivery-attempt row")
+        @DisplayName("Each posted alert writes exactly one rendered-alert row")
         void eachPostedAlertWritesOneAttemptRow() {
             holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), "10.00")));
@@ -1875,7 +1875,7 @@ class NotificationServiceTest {
          * of {@code app/cbl/CBSTM03A.CBL:L462-L485}.</p>
          */
         @Test
-        @DisplayName("A fraud alert renders and writes no delivery-attempt row")
+        @DisplayName("A fraud alert renders and writes no rendered-alert row")
         void aFraudAlertWritesNoAttemptRow() {
             NotificationService service = serviceWith(textRenderer);
 
@@ -1938,9 +1938,9 @@ class NotificationServiceTest {
          * holds it.</p>
          *
          * <p>{@code outcome} is the seventh and it arrived with
-         * {@code db/migration/V5__rendered_not_delivered.sql}. A security review found this table
-         * described as a delivery attempt while nothing on this platform sends anything, so the row
-         * now carries that fact rather than the prose carrying it.</p>
+         * {@code db/migration/V5__rendered_not_delivered.sql}. Nothing on this platform sends
+         * anything, so the row states that itself rather than leaving it to prose: the value is
+         * always {@code RENDERED_NOT_SENT} and a check constraint admits no other.</p>
          */
         @Test
         @DisplayName("The rendered-alert aggregate declares seven fields and none holds a document")

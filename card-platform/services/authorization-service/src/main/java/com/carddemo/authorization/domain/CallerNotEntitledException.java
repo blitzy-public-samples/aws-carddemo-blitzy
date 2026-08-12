@@ -14,7 +14,7 @@ package com.carddemo.authorization.domain;
  *
  * <p>{@link #DETAIL} is fixed text naming neither the account, the card nor the check that failed,
  * and {@code config/SecurityConfig} answers a route-level denial with the same text, so the two
- * refusals read alike. Rationale, alternatives considered and accepted risks:
+ * refusals read alike. Design decisions:
  * {@code card-platform/docs/decision-log.md}.
  *
  * <p>{@code api/GlobalExceptionHandler} answers {@code 403} and

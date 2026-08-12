@@ -57,7 +57,6 @@ class AmountAnomalyRuleTest {
     /** The rule under test. */
     private static final Class<AmountAnomalyRule> SUBJECT = AmountAnomalyRule.class;
 
-    /** The identifier the rule reports. */
     private static final String RULE_IDENTIFIER = "AMOUNT_ANOMALY";
 
     /** The key {@code application.yml} publishes, and the key the constructor placeholder names. */

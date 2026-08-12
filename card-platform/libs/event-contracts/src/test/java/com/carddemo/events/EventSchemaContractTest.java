@@ -111,7 +111,7 @@ class EventSchemaContractTest {
      */
     private static final String FULL_CARD_NUMBER = "0".repeat(12) + "7065";
 
-    /** The property that carries a masked card number on three of the four documents. */
+    /** The property carrying a masked card number, on every document that declares one. */
     private static final String MASKED_CARD_PROPERTY = "maskedCardNumber";
 
     /** The amount property, present on three documents. */

@@ -109,9 +109,9 @@ class ReadinessHealthConfigTest {
     /**
      * Asserts an absent registry holds readiness down rather than reading as an empty one.
      *
-     * <p>The two are different states and were previously indistinguishable. The registry bean is
-     * registered by the Kafka auto-configuration whether or not any listener exists, so an absent one
-     * means the context has not finished refreshing, and a poll arriving then has learned nothing.
+     * <p>The two are different states. The registry bean is registered by the Kafka
+     * auto-configuration whether or not any listener exists, so an absent one means the context has
+     * not finished refreshing, and a poll arriving then has learned nothing.
      */
     @Test
     @DisplayName("an absent registry holds readiness down")

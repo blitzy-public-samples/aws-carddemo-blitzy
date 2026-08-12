@@ -112,13 +112,11 @@ class ConcurrentDuplicateDeliveryIT {
     /** Capture source of the event, at the width {@code DALYTRAN-SOURCE PIC X(10)} declares. */
     private static final String SOURCE = "POS TERM  ";
 
-    /** Description of the event. */
     private static final String DESCRIPTION = "Purchase at Abshire-Lowe";
 
     /** Merchant identifier of the event. */
     private static final String MERCHANT_ID = "800000000";
 
-    /** Merchant name of the event. */
     private static final String MERCHANT_NAME = "Abshire-Lowe";
 
     /** Merchant town of the event. */
@@ -160,7 +158,6 @@ class ConcurrentDuplicateDeliveryIT {
     /** Reads rows back outside every delivery. */
     private final JdbcTemplate jdbc;
 
-    /** Runs the two deliveries. */
     private ExecutorService deliveries;
 
     @Autowired

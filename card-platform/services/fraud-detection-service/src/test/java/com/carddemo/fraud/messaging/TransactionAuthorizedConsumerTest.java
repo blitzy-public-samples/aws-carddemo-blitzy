@@ -990,9 +990,9 @@ class TransactionAuthorizedConsumerTest {
     }
 
     /**
-     * Hands the consumer back to itself. The framework supplies a transactional proxy here, so a
-     * consumer built with this provider calls its own business method directly and no transaction is
-     * started.
+     * Hands the consumer back to itself as the raw instance, not as a framework proxy. A consumer
+     * built with this provider therefore reaches its own business method directly, no transaction
+     * interceptor runs, and no transaction is started.
      */
     private static final class SelfProvider
             implements ObjectProvider<TransactionAuthorizedConsumer> {

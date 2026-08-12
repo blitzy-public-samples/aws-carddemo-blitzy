@@ -9,7 +9,7 @@ openapi: 3.1.0
 # it names the file and the line. Risk scoring has no source ancestor, and each property that has
 # none says so.
 #
-# Rationale for the choices in this document: card-platform/docs/decision-log.md
+# Design decisions for this document: card-platform/docs/decision-log.md
 
 info:
   title: CardDemo Fraud Detection Service API

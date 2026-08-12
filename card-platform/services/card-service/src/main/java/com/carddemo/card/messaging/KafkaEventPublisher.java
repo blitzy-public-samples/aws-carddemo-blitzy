@@ -50,8 +50,8 @@ import tools.jackson.databind.ObjectMapper;
  *   <li>the closed property set</li>
  * </ul>
  *
- * <p>This class previously loaded schema documents itself and derived a document name from the
- * event type. That was a second gate, able to disagree with the first, and it applied neither the
+ * <p>This class loads no schema document of its own and derives no document name from an event
+ * type. Doing so would be a second gate, able to disagree with the first, applying neither the
  * governed type list nor the size ceiling.
  *
  * <p>Every rejection message holds a JSON pointer, a broken keyword, an event type, a topic name
@@ -109,13 +109,14 @@ public class KafkaEventPublisher implements EventPublisherPort {
     /**
      * Each event type this service publishes, mapped to the topic this deployment configures.
      *
-     * <p>Two entries, and the second is the one a review found missing. {@link EventContracts#CARD_UPDATED}
-     * comes from {@code carddemo.kafka.topics.card-updated} and {@link EventContracts#DEAD_LETTER}
-     * from {@code carddemo.kafka.topics.dead-letter}. {@link #requireBoundToTopic} refuses any event
-     * type whose destination this map does not confirm, so a deployment that renamed the dead-letter
-     * topic — which {@code docker-compose.yml} and {@code deploy/k8s/30-configmap.yaml} both allow —
-     * had every terminal diagnostic refused before it was sent. That is the one record of an event the
-     * relay gave up on, and losing it leaves an abandoned row that nothing on the broker accounts for.
+     * <p>Two entries. {@link EventContracts#CARD_UPDATED} comes from
+     * {@code carddemo.kafka.topics.card-updated} and {@link EventContracts#DEAD_LETTER} from
+     * {@code carddemo.kafka.topics.dead-letter}. {@link #requireBoundToTopic} refuses any event type
+     * whose destination this map does not confirm, so the dead-letter entry has to be here: a
+     * deployment that renamed that topic — which {@code docker-compose.yml} and
+     * {@code deploy/k8s/30-configmap.yaml} both allow — would otherwise have every terminal
+     * diagnostic refused before it was sent. That diagnostic is the one record of an event the relay
+     * gave up on, and losing it leaves an abandoned row that nothing on the broker accounts for.
      *
      * <p>A blank value leaves the registry default as the only accepted name for that type, which is
      * what an unset property means.
@@ -220,12 +221,11 @@ public class KafkaEventPublisher implements EventPublisherPort {
     /**
      * Starts one send and answers the stage its acknowledgement completes.
      *
-     * <p>This method does not block. It used to wait on the send here, and the wait was the defect:
-     * the bound it applied was ten seconds while the producer was configured to keep trying for
-     * two minutes, so a wait that ran out left a send the producer still held. Nothing cancelled
-     * it and nothing observed it, the row stayed unpublished, and the next sweep published the
-     * same event a second time. The two windows are now one budget, declared together in
-     * {@code src/main/resources/application.yml}.
+     * <p>This method does not block. Waiting on the send here under a bound shorter than the
+     * producer's own retry window would leave a send the producer still held once the wait ran out:
+     * nothing would cancel it, nothing would observe it, the row would stay unpublished, and the next
+     * sweep would publish the same event a second time. The two windows are one budget, declared
+     * together in {@code src/main/resources/application.yml}.
      *
      * <p>{@code orTimeout} fails the returned stage rather than the send, so the caller learns the
      * outcome without holding a thread. {@code outbox/OutboxRelay} waits on the stage under its own

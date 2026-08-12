@@ -34,7 +34,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * records that it rendered it, and every {@code notification_log} row carries
  * {@link com.carddemo.notification.entity.NotificationLogEntity#RENDERED_NOT_SENT}.
  *
- * <p>Rationale, alternatives considered and accepted risks:
+ * <p>Design decisions:
  * {@code card-platform/docs/decision-log.md}.
  *
  * <p>Idempotency is ADDITIVE, as it is for every listener here. The source has no duplicate detection

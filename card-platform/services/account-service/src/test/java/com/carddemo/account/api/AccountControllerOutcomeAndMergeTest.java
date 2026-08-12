@@ -161,7 +161,6 @@ class AccountControllerOutcomeAndMergeTest {
                     "the postal code the record holds reaches no component");
         }
 
-        /** Asserts a read writes nothing at all. */
         @Test
         void aReadWritesNothing() {
             when(accounts.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.of(storedAccount()));
@@ -356,7 +355,6 @@ class AccountControllerOutcomeAndMergeTest {
             verify(customers, never()).findByCustomerId(any());
         }
 
-        /** Asserts the nine digits the source keys on still pass. */
         @Test
         void theNineDigitsTheSourceKeysOnStillPass() {
             resolveBoth();

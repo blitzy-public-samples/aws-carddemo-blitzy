@@ -107,7 +107,7 @@ class NotificationApplicationTest {
      *
      * <p>No auto-configuration loads here, so Spring Data builds no repository and Spring Boot
      * supplies no transaction runner. Each one arrives as a mock instead: the read model behind
-     * {@code api/NotificationHistoryController}, the delivery-attempt table behind
+     * {@code api/NotificationHistoryController}, the rendered-alert table behind
      * {@code domain/NotificationService}, and the marker table and the transaction runner behind
      * {@code messaging/TransactionPostedConsumer}.</p>
      */
@@ -138,7 +138,7 @@ class NotificationApplicationTest {
      * file with nothing reading them.
      *
      * <p>{@link EnableScheduling} activates the one retention scheduler that bounds the read model,
-     * duplicate markers, and delivery-attempt log.</p>
+     * duplicate markers, and rendered-alert log.</p>
      */
     @Test
     void carriesTheBootstrapPropertiesAndSchedulingAnnotations() {

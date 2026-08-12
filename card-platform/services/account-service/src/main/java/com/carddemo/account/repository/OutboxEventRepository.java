@@ -111,7 +111,7 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
      * them twice.
      *
      * <p>The query is written in the Jakarta Persistence Query Language rather than as native SQL, so
-     * the schema comes from the entity mapping. Rationale:
+     * the schema comes from the entity mapping. Design decisions:
      * {@code card-platform/docs/decision-log.md}.
      *
      * <p>The filter is {@code relayState = PENDING} and {@code nextAttemptAt <= now}, so a row

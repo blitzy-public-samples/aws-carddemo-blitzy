@@ -61,7 +61,6 @@ final class ApiErrorResponseTest {
     /** The component count the error payload declares. */
     private static final int EXPECTED_COMPONENT_COUNT = 3;
 
-    /** The name of the component that carries the message. */
     private static final String MESSAGE_COMPONENT_NAME = "message";
 
     /** The name of the component that carries the failing route template. */

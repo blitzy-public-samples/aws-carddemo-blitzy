@@ -79,8 +79,8 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * beside the card is a value no stored row of this platform ties to that card, and
  * {@code app/cpy/CVTRA06Y.cpy} declares twelve fields of which none is an account, which is why
  * {@code app/cbl/CBTRN02C.cbl:L394} has to take {@code XREF-ACCT-ID} out of the resolved row first.
- * The event is therefore keyed on the identifier this platform minted for the call. Rationale:
- * {@code card-platform/docs/decision-log.md}.
+ * The event is therefore keyed on the identifier this platform minted for the call. Design
+ * decisions: {@code card-platform/docs/decision-log.md}.
  *
  * <p>{@code maskedCardNumber} has no source ancestor. No CardDemo program masks a Primary Account
  * Number (PAN), and {@code app/bms/COCRDSL.bms:L96-L99} defines the card detail field at the full

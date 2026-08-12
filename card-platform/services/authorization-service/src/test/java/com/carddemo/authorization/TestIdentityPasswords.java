@@ -60,7 +60,6 @@ public final class TestIdentityPasswords {
     public static final String MONITORING_PASSWORD_HASH =
             "{bcrypt}$2a$10$mmAfX7gKiGBexXIsYhIiBO6frikRgirA.I3L5J2A9cdpBdM/U.zNG";
 
-    /** Holds constants only. */
     private TestIdentityPasswords() {
     }
 }

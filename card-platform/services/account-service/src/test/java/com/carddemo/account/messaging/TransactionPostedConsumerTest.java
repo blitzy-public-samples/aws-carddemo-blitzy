@@ -168,10 +168,10 @@ class TransactionPostedConsumerTest {
     /**
      * A rollback leaves the applied counter unmoved and counts one failure instead.
      *
-     * <p>Both outcome counters used to be raised inside the transaction, beside the work they
-     * described, so a rollback undid the account row and kept the count: a posting the store never
-     * kept was reported as one it did. They now follow the template call, which is what commits, so
-     * reaching them means the claim, the account row and the outbox row all committed.
+     * <p>Both outcome counters follow the template call, which is what commits, so reaching them
+     * means the claim, the account row and the outbox row all committed. Raising them inside the
+     * transaction, beside the work they describe, would let a rollback undo the account row and keep
+     * the count, reporting a posting the store never kept.
      */
     @Test
     @DisplayName("a rolled-back posting counts no applied posting and one failure")

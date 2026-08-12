@@ -254,17 +254,17 @@ class KafkaConsumerConfigTest {
     /**
      * Asserts the outgoing key is the aggregate identifier the envelope declares.
      *
-     * <p>Two properties at once, and a review found the second broken.
+     * <p>Two properties at once.
      *
      * <p>Sanitization: a producer controls the key, so the sentinel {@value #UNRESOLVED_ACCOUNT_KEY}
      * replaces it — eleven zeros, a value no producer can influence and no account this platform seeds
      * or issues.
      *
      * <p>Agreement with the contract: {@code schemas/dead-letter-v1.json} describes
-     * {@code aggregateId} as the Kafka message key of the envelope. The key used to be
-     * {@code topic-partition-offset}, so every diagnostic contradicted the payload it carried and one
-     * shared topic was scattered across as many partitions as there were source offsets. The
-     * coordinates are still reachable, as three declared fields of the same document, which
+     * {@code aggregateId} as the Kafka message key of the envelope. A key of
+     * {@code topic-partition-offset} would contradict the payload it carried and scatter one shared
+     * topic across as many partitions as there were source offsets. The coordinates stay reachable
+     * as three declared fields of the same document, which
      * {@code aProducerChosenHeaderIsDroppedAndTheGovernedEnvelopeTravelsInstead} asserts.
      */
     @Test

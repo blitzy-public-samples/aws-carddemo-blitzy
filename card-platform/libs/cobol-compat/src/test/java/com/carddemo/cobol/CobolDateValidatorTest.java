@@ -38,8 +38,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>Every date and every reference date below is a fixed value. No assertion reads the system
  * clock, so no method changes verdict as the calendar advances. The two-argument date-of-birth
  * overload takes today's date from {@link LocalDate#now()}, and
- * {@link #theTwoArgumentDateOfBirthOverloadAgreesWithTheThreeArgumentFormOnToday()} covers it
- * without pinning a date.
+ * {@link #theTwoArgumentDateOfBirthOverloadAgreesWithTheThreeArgumentFormOnAClockIndependentInput()}
+ * covers it without pinning a date.
  *
  * <p>Expected message texts are quoted from {@code app/cpy/CSUTLDPY.cpy} character for character,
  * keeping the leading spaces, the missing spaces, the trailing space, and the lower-case
@@ -94,10 +94,8 @@ class CobolDateValidatorTest {
     /** A date whose year is zero, which reaches the year-in-era condition. */
     private static final String YEAR_ZERO_DATE = "0000-01-01";
 
-    /** A date whose month is 13. */
     private static final String MONTH_THIRTEEN_DATE = "2022-13-01";
 
-    /** A date naming 30 February. */
     private static final String FEBRUARY_THIRTY_DATE = "2022-02-30";
 
     /** 29 February in a year divisible by four. */
@@ -118,7 +116,6 @@ class CobolDateValidatorTest {
     /** A date whose separators are solidus characters rather than the dash the mask names. */
     private static final String DATE_WITH_THE_WRONG_SEPARATORS = "2022/06/10";
 
-    /** A date shorter than the mask. */
     private static final String DATE_SHORTER_THAN_THE_MASK = "2022-06";
 
     /** A mask naming no four-character year token. */
@@ -161,10 +158,8 @@ class CobolDateValidatorTest {
     /** A date whose month is 13, in the eight-character edit form. */
     private static final String EDIT_DATE_WITH_MONTH_THIRTEEN = "20221310";
 
-    /** A date whose day is zero. */
     private static final String EDIT_DATE_WITH_DAY_ZERO = "20220600";
 
-    /** A date whose day is 32. */
     private static final String EDIT_DATE_WITH_DAY_THIRTY_TWO = "20220632";
 
     /** A date naming 31 April, a month holding 30 days. */

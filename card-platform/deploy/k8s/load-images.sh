@@ -35,7 +35,7 @@
 # builder stage, so no Java Development Kit and no Maven installation has to be present on
 # this machine.
 #
-# Rationale for the choices here: card-platform/docs/decision-log.md
+# Design decisions for the choices here: card-platform/docs/decision-log.md
 # Cluster walkthrough: card-platform/docs/onboarding.md
 
 set -euo pipefail

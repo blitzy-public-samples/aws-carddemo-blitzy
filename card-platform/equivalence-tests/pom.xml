@@ -93,10 +93,10 @@
       <scope>test</scope>
     </dependency>
 
-    <!-- The broker client and the JSON binder, declared because this module's tests import
-         org.apache.kafka.clients and tools.jackson.databind directly. libs/event-contracts and
-         the six services declare them for the same reason: a module that programs against an
-         API it does not declare compiles only while something else keeps supplying it. -->
+    <!-- The broker client. This module imports org.apache.kafka.clients or
+         org.apache.kafka.common directly. Version from the imported bill of materials.
+         Decisions: card-platform/docs/decision-log.md, under "Which artifacts a module
+         declares for itself, and which it reaches through a starter". -->
     <dependency>
       <groupId>org.apache.kafka</groupId>
       <artifactId>kafka-clients</artifactId>

@@ -163,18 +163,18 @@ class DeadLetterSanitizationTest {
     /**
      * Asserts the key a producer chose is replaced by the aggregate the envelope declares.
      *
-     * <p>Two properties are held here at once, and a review found the second one broken.
+     * <p>Two properties are held here at once.
      *
      * <p>The first is sanitization. A producer controls the key, so a key holding a card number is a
      * key this service must not carry forward, and the sentinel {@value #UNRESOLVED_ACCOUNT_KEY} is a
      * value no producer can influence: eleven zeros are not an account this platform seeds or issues.
      *
      * <p>The second is agreement with the contract. {@code schemas/dead-letter-v1.json} describes
-     * {@code aggregateId} as the Kafka message key of the envelope, and the key used to be the
-     * coordinates of the refused record — {@code topic-partition-offset} — so every diagnostic
-     * contradicted the payload it carried and scattered one shared topic across as many partitions as
-     * there were source offsets. The coordinates are not lost by the change: they are three declared
-     * fields of the same document, asserted in {@link #oneGovernedEnvelopeTravelsInstead()}.
+     * {@code aggregateId} as the Kafka message key of the envelope, so the key is that aggregate.
+     * Keying on the coordinates of the refused record — {@code topic-partition-offset} — would make
+     * every diagnostic contradict the payload it carried and would scatter one shared topic across as
+     * many partitions as there were source offsets. The coordinates are three declared fields of the
+     * same document, asserted in {@link #oneGovernedEnvelopeTravelsInstead()}.
      */
     @Test
     void theProducerKeyIsReplacedByTheDeclaredAggregate() {

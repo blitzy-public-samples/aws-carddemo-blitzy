@@ -11,7 +11,7 @@
 # The container starts all four consumers, serves GET /notifications/{cardToken}
 # and answers /actuator.
 #
-# Rationale for every choice in this folder: card-platform/docs/decision-log.md
+# Design decisions for this folder: card-platform/docs/decision-log.md
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -69,7 +69,6 @@ import org.junit.jupiter.api.Test;
  */
 final class CardListResponseTest {
 
-    /** Component that holds the rows of one page. */
     private static final String COMPONENT_CARDS = "cards";
 
     /** Component that states whether a further page exists. */

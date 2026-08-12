@@ -1,15 +1,15 @@
 -- Fraud detection service, migration V10.
 -- Withdraws the retention horizon of processed_event, so a duplicate-delivery claim is permanent.
 --
--- What a security review found. The horizon was 720 hours, checked at start-up against twice the
--- 168-hour broker log retention. That relationship bounds only how long the BROKER can redeliver a
--- record. It says nothing about how long the side effect a claim guards stands, and here a claim
--- guards the risk assessment of a transaction and the velocity counters an assessment reads. An
--- assessment is kept for 90 days and a velocity window for its configured span, each far longer
--- than any marker horizon a review found acceptable. A record archived, restored or deliberately
--- replayed after the horizon is new to the guard, and the side effect is applied a second time.
+-- What a horizon could bound, and what it could not. A horizon checked against the 168-hour broker log retention
+-- bounds only how long the BROKER can redeliver a record. It says nothing about how long the side
+-- effect a claim guards stands, and here a claim guards the risk assessment of a transaction and
+-- the velocity counters an assessment reads. An assessment is kept for 90 days and a velocity
+-- window for its configured span, each far longer than a marker horizon tied to the broker. A
+-- record archived, restored or deliberately replayed past such a horizon is new to the guard, and
+-- the side effect is applied a second time.
 --
--- The behaviour now. Nothing deletes a row of this table. domain/RetentionSweep no longer names it,
+-- Nothing deletes a row of this table. domain/RetentionSweep no longer names it,
 -- config/FraudProperties no longer binds a marker horizon, and repository/ProcessedEventRepository
 -- no longer carries a bounded delete. A claim and the effect it guards commit in one local
 -- transaction in one database, so a consistent backup and a consistent restore carry both or
@@ -18,8 +18,8 @@
 -- What bounds growth instead: nothing, deliberately. One row holds a UUID, a topic name and a
 -- timestamp, and the table gains one row per event a listener of this service consumes. The
 -- partitioning work a deployment measuring real volumes would want is recorded in
--- card-platform/docs/suggested-next-tasks.md, and the alternatives weighed are in
--- card-platform/docs/decision-log.md.
+-- card-platform/docs/suggested-next-tasks.md.
+-- Design decisions: card-platform/docs/decision-log.md.
 --
 -- V1 is left as it ran. Its COMMENT ON named the horizon as this table's retention and
 -- processed_at as its purge key, and the statement below supersedes both, so a fresh database and

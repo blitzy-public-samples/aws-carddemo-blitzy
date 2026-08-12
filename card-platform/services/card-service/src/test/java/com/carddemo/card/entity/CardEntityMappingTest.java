@@ -200,10 +200,8 @@ class CardEntityMappingTest {
     /** Synthetic embossed name, trimmed of the padding {@code PIC X(50)} carries. */
     private static final String SYNTHETIC_EMBOSSED_NAME = "Mapping Test Card";
 
-    /** Synthetic expiration date. */
     private static final LocalDate SYNTHETIC_EXPIRATION_DATE = LocalDate.of(2027, 3, 9);
 
-    /** Synthetic active status. */
     private static final String SYNTHETIC_ACTIVE_STATUS = "Y";
 
     /** Generated card verification value, held as text to preserve its width. */

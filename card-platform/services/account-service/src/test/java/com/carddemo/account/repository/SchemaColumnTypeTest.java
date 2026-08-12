@@ -56,9 +56,10 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * the two sensitive customer identifier columns. The two business keys, the one composite key, the
  * remaining character columns and the two additive tables. The seven outbox relay-state columns
  * also have their defaults, nullability and check constraints read from the catalogue. Column
- * counts, seed row counts and stored values belong to other test classes of this module.
- * {@code card-platform/docs/decision-log.md} holds the reasoning behind the storage forms the
- * assertions read back, and {@code card-platform/docs/data-model.md} draws the tables.</p>
+ * counts, seed row counts and stored values belong to other test classes of this module.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}. Table diagrams:
+ * {@code card-platform/docs/data-model.md}.</p>
  */
 @DisplayName("Account schema column types against the copybook Picture clauses")
 class SchemaColumnTypeTest extends AbstractAccountPostgresTest {

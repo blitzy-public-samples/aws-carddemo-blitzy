@@ -43,11 +43,11 @@ import tools.jackson.databind.json.JsonMapper;
  * concatenates the entity into a message, so it withholds the value. A validation message can echo
  * a rejected argument, so the guards report a width and a position and never a character.
  *
- * <p>Two exits are contracts rather than code, and a security review asked for the storage itself to
- * be removed. The plan sections above forbid that and rest the case on the value never being
- * emitted, so the two published contracts are read here as well: no version of any event schema may
- * declare a property for the value, and this service's own interface description may not declare a
- * field for it either. Both were prose promises until this class read them.
+ * <p>Two exits are contracts rather than code. The plan sections above require the value to be
+ * stored and rest the case on its never being emitted, so the two published contracts are read here
+ * as well: no version of any event schema may declare a property for the value, and this service's
+ * own interface description may not declare a field for it either. Reading them here is what makes
+ * both something other than a prose promise.
  *
  * <p>Every test runs in memory. None opens a database connection, sends a request or reads a file.
  */

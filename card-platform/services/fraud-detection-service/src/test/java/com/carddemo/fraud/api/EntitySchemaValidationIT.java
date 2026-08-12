@@ -173,17 +173,14 @@ class EntitySchemaValidationIT {
             List.of(COLUMN_TRANSACTION_ID, COLUMN_ACCOUNT_ID, COLUMN_RISK_SCORE, COLUMN_FLAGGED,
                     COLUMN_TRIGGERED_RULES, COLUMN_ASSESSED_AT);
 
-    /** Names {@code processed_event} does not carry. */
     private static final List<String> PROCESSED_EVENT_ABSENT_COLUMNS =
             List.of("event_type", "payload", "retry_count", "attempt_count", "consumer_group",
                     "status", "error_message");
 
-    /** Names {@code velocity_window} does not carry. */
     private static final List<String> VELOCITY_WINDOW_ABSENT_COLUMNS =
             List.of("window_end", "expires_at", "time_to_live", "ttl_seconds", "declined_count",
                     "flagged_count");
 
-    /** Names {@code fraud_assessment} does not carry. */
     private static final List<String> FRAUD_ASSESSMENT_ABSENT_COLUMNS =
             List.of("merchant_category", "masked_card_number", "amount", "currency",
                     "decline_reason", "model_version", "rule_count", "notes");
@@ -1361,10 +1358,10 @@ class EntitySchemaValidationIT {
     /**
      * Proves a claim stamped in 2020 still refuses its redelivery against the migrated schema.
      *
-     * <p>A purge over a 720-hour horizon used to remove it. A security review found the assessment
-     * and the velocity buckets a claim guards outliving that horizon, so an archived or replayed
-     * record arriving afterwards was scored a second time. A claim is permanent now, and the replay
-     * below still writes no row.
+     * <p>A claim is permanent, so no horizon can retire it while the assessment and the velocity
+     * buckets it guards still stand. A purge over a 720-hour horizon would remove this claim, and an
+     * archived or replayed record arriving afterwards would then be scored a second time. The replay
+     * below writes no row.
      */
     @Test
     @DisplayName("A claim stamped in 2020 still refuses its redelivery")

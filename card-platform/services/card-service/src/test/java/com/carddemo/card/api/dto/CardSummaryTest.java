@@ -78,7 +78,6 @@ final class CardSummaryTest {
     /** A synthetic account identifier, eleven digits padded on the left with zeros. */
     private static final String SYNTHETIC_ACCOUNT_ID = syntheticDigits(11, 500_001L);
 
-    /** A synthetic active status. */
     private static final String SYNTHETIC_ACTIVE_STATUS = "Y";
 
     /** Width of {@code CARD-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6}. */

@@ -72,8 +72,8 @@ class VelocityRuleTest {
      * Card token of the fixture card number, sixty-four lower-case hexadecimal characters.
      *
      * <p>Additive. No source field exists. {@code com.carddemo.cobol.PanMasker#tokenOf} writes this
-     * value from the full card number {@code 4859452612877065}, and the width and case are that
-     * method's.</p>
+     * value from the card number of record 21 of {@code app/data/ASCII/cardxref.txt}, the
+     * cross-reference row that names this account, and the width and case are that method's.</p>
      */
     private static final String CARD_TOKEN =
             "f8da0217fb8bd2e172d427a2ef66d54656a59baa9fe8f9bc2ce9d383b90e1173";

@@ -49,7 +49,6 @@ public class OutboxEventEntity {
     @Id
     private UUID eventId;
 
-    /** Name of the event type the payload carries. */
     @Column(name = "event_type", nullable = false, length = EVENT_TYPE_MAX_LENGTH)
     private String eventType;
 
@@ -62,7 +61,6 @@ public class OutboxEventEntity {
     @Column(name = "payload", nullable = false, columnDefinition = "TEXT")
     private String payload;
 
-    /** Whether this row has been published. */
     @Column(name = "published", nullable = false)
     private boolean published;
 

@@ -101,7 +101,6 @@ class DtoValidationWiringTest {
         validator = validatorFactory.getValidator();
     }
 
-    /** Closes it. */
     @AfterAll
     static void closeValidator() {
         if (validatorFactory != null) {

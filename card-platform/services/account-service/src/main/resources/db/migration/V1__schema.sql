@@ -1,4 +1,4 @@
--- Account service schema, first of four migrations.
+-- Account service, migration V1. The schema of this service.
 
 -- app/cpy/CVACT01Y.cpy, the 300-byte account record. Key width and record size come from
 -- app/jcl/ACCTFILE.jcl:L40 KEYS(11 0) and app/jcl/ACCTFILE.jcl:L41 RECORDSIZE(300 300).
@@ -216,9 +216,11 @@ CREATE TABLE processed_event (
 -- ============================================================================
 -- No source dataset carries a retention rule. app/csd/CARDDEMO.CSD defines eight files
 -- with RECOVERY(NONE) and JOURNAL(NO) and no expiry, the Job Control Language members
--- under app/jcl/ define datasets without an EXPDT or RETPD parameter, and no program
--- under app/cbl/ deletes a record: the only DELETE in the repository is IDCAMS deleting
--- a whole dataset before it is redefined. A table that only ever grows is a table whose
+-- under app/jcl/ define datasets without an EXPDT or RETPD parameter, and no migrated
+-- financial posting path deletes a record. app/cbl/COUSR03C.cbl:307 executes EXEC CICS
+-- DELETE against the security file, which the AAP places out of scope; every other DELETE
+-- in the repository is IDCAMS removing a whole dataset before it is redefined. A table that
+-- only ever grows is a table whose
 -- oldest row is as exposed as its newest, so this platform states a rule for every table
 -- it owns.
 --
@@ -237,10 +239,12 @@ CREATE TABLE processed_event (
 --
 -- The windows below are the demo baseline this platform ships with. No requirement in
 -- scope fixes a legal retention period, so a deployment replaces them with the periods
--- its own jurisdiction requires. The purge job itself is out of scope for the same
--- reason: nothing in the Agent Action Plan schedules one, and a job that deletes
--- financial records is not something to add without an owner. The columns and indexes
--- it needs are here.
+-- its own jurisdiction requires. domain/RetentionSweep is what applies them: it ranges over
+-- the purge_key column named below on the interval carddemo.retention.sweep-interval-ms sets,
+-- in a transaction per batch, so no one statement locks a whole table. A window stated here
+-- and applied nowhere would leave a reader taking these tables for bounded when they were not.
+-- Where a purge_key reads 'none' the row's life is the customer relationship and no sweep
+-- reaches it, so erasure there is an operator action.
 
 -- The range a purge job scans.
 CREATE INDEX ix_processed_event_processed_at ON processed_event (processed_at);

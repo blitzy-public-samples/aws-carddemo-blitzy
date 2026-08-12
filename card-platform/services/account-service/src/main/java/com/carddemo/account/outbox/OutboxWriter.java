@@ -177,10 +177,9 @@ public class OutboxWriter {
      * account service publishes two types and this method serves both, which is why the type and the
      * identifier arrive as arguments rather than being read from a particular record.
      *
-     * <p>The screens are the substantive change a security review asked for. A cardholder name or an
-     * address line is narrative text an administrator supplies, and until the gate ran on this path a
-     * Primary Account Number written into one of them committed with the account rewrite and reached
-     * the notification read model.
+     * <p>The screens matter most on this path. A cardholder name or an address line is narrative
+     * text an administrator supplies, so without a gate here a Primary Account Number written into
+     * one of them would commit with the account rewrite and reach the notification read model.
      *
      * <p>A refusal message holds JavaScript Object Notation pointers, broken keyword names and the
      * event identifier. None of those is a customer value, so no account identifier, cardholder

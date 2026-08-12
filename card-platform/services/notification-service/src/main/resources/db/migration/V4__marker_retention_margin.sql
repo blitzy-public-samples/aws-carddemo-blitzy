@@ -5,9 +5,9 @@
 -- window "belongs at or above the retention of every topic this service consumes". Two of those
 -- three statements are no longer true, and the third was the finding.
 --
--- The default is 720 hours rather than 168. A security review found the marker horizon set equal to
--- broker log retention, which makes duplicate suppression hold only if a swept marker and an
--- unreadable record happen at the same instant. Three ordinary events break that: segment cleanup
+-- The default is 720 hours rather than 168. A marker horizon set equal to broker log retention
+-- makes duplicate suppression hold only if a swept marker and an unreadable record happen at the
+-- same instant. Three ordinary events break that: segment cleanup
 -- is not instant, a restored backup carries a record older than the broker would still hold, and an
 -- operator resetting a consumer group replays whatever the log still has. Any one of them leaves a
 -- record readable after its marker is gone, and this service then renders and stores a second alert

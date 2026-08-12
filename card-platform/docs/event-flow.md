@@ -32,7 +32,7 @@ The account identifier is the Kafka key whenever an account is known. A Kafka pa
 
 Each consuming service reads those three partitions on three threads, from `spring.kafka.listener.concurrency`. That is a throughput setting and not an ordering one. Kafka assigns a partition to exactly one consumer of a group, so a thread never shares a partition and one account's events are never applied out of order. What the threads remove is the wait one account used to serve on another account's behalf. The relay side works the same way and for the same reason, described under [delivery mechanics](#delivery-mechanics).
 
-Card-number masking is an addition, because no masking exists anywhere in the source. The order matters. The full 16-character card number performs the cross-reference lookup first, exactly as the source does, and masking happens only at the serialization boundary. Masking before that lookup would break every authorization. Events, responses, logs, and notification keys therefore carry only the masked display form or the irreversible 64-character card token.
+Card-number masking is an addition, because no masking exists anywhere in the source. The order matters. The full 16-character card number performs the cross-reference lookup first, exactly as the source does, and masking happens only at the serialization boundary. Masking before that lookup would break every authorization. Events, responses, logs, and notification keys therefore carry only the masked display form or the 64-character card token, a keyed and versioned pseudonym rather than an irreversible digest.
 
 A card token travels in two events and is stored by three services, and only the card service holds a card number. `TransactionAuthorized` and `TransactionPosted` carry `cardToken`, and the notification read model is keyed on it. A card-token key change therefore renames every card in a store that cannot re-derive its own rows. The card service refuses to rewrite a token it derived unless an operator states the rotation, and each rewrite leaves a mapping row the other stores are re-keyed from. `card-platform/services/card-service/README.md` carries that procedure and its rollback.
 
@@ -482,13 +482,15 @@ One boundary applies the publish-side check. `PublishGate.checkedJsonOf` writes 
 
 A refusal arrives inside the caller's transaction, so the business change rolls back with it. Before this gate each writer measured the schema alone. A card number typed into a description therefore committed, reached its topic, and was refused there by the consume side, which approved a transaction that could never post.
 
-The contract library governs eight business event types and the dead-letter envelope across fourteen schema documents. `TransactionAuthorized`, `TransactionPosted` and `CardUpdated` each retain versions 1 and 2, and `TransactionDeclined` retains versions 1, 2 and 3. A producer writes the highest retained version of each of those four, and every lower version stays governed as the document a record already on the topic validates against.
+The contract library governs eight business event types and the dead-letter envelope across fourteen schema documents. `TransactionAuthorized`, `TransactionPosted` and `CardUpdated` each retain versions 1 and 2, and `TransactionDeclined` retains versions 1, 2 and 3. For the first three a producer writes version 2, and version 1 stays governed as the document a record already on the topic validates against. `TransactionDeclined` publishes two of its three, because the reject reason decides which.
 
 Every schema is a JSON Schema Draft 2020-12 document whose version sits in its filename, as in `transaction-authorized-v2.json`. `SchemaBackwardCompatibilityTest` measures every adjacent pair of versions and fails the build where a later version drops, retypes or narrows a property its predecessor required. A rising version number therefore cannot break a consumer holding the earlier one.
 
 One caution about that numbering. For `TransactionDeclined` the version axis carries two orthogonal facts rather than one. Version 2 is the account-less variant released for reason 0100, and is not a superset of version 1. Version 3 is version 1 plus the nine descriptive values.
 
-Version 2 is retained rather than published, so it is a version a consumer may still receive from the topic and no producer writes. A reader who assumes each version enriches the last will be wrong about version 2, and each document's own `$comment` says which fact it carries.
+Version 2 is published, not retained. It is the one document reason `0100` travels under. Its `aggregateId` is the sixteen-character transaction identifier, because the read that would have resolved the account is the read that failed. Version 3 is published too, and carries reasons `0101`, `0102` and `0103`.
+
+Version 1 is the retained one, still readable on the topic and written by no producer. A reader who assumes each version enriches the last will be wrong about version 2, and each document's own `$comment` says which fact it carries.
 
 Compatibility tests enforce additive evolution, and they fail the build rather than warn. An older payload stays valid under the document that first governed it, so a new consumer can be added without breaking an existing one.
 

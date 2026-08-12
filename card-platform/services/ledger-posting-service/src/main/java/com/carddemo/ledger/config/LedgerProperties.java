@@ -178,12 +178,11 @@ public record LedgerProperties(
     /**
      * How often the retention sweep runs, and how long a reject row is kept.
      *
-     * <p>The reject horizon was declared before anything applied it. {@code COMMENT ON TABLE
-     * rejected_transaction} in {@code src/main/resources/db/migration/V1__schema.sql} names ninety
-     * days from {@code rejected_at}, and {@code domain/RetentionSweep} deleted published outbox
-     * rows and duplicate markers only, so the number described an intention rather than the table.
-     * A security review found the gap. This component is what the sweep reads, so the declaration
-     * and the behaviour come from one place.
+     * <p>{@code COMMENT ON TABLE rejected_transaction} in
+     * {@code src/main/resources/db/migration/V1__schema.sql} names ninety days from
+     * {@code rejected_at}, and this component is what {@code domain/RetentionSweep} reads, so the
+     * declaration and the behaviour come from one place. A horizon declared in the catalogue and
+     * applied nowhere would describe an intention rather than the table.
      *
      * <p>A bounded reject set is faithful rather than additive. The source writes each reject to a
      * generation of a Generation Data Group, and {@code app/jcl/DALYREJS.jcl:L24-L28} defines that

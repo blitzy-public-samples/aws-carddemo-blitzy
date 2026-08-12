@@ -29,7 +29,7 @@ import java.util.UUID;
  *
  * <p>The key names the consumed topic as well as the event identifier, so a delivery is identified
  * by the event and the stream it arrived on. This service reads one topic today and carries the
- * wider key anyway. Rationale: {@code card-platform/docs/decision-log.md}.
+ * wider key anyway. Design decisions: {@code card-platform/docs/decision-log.md}.
  *
  * <p>Columns come from {@code src/main/resources/db/migration/V1__schema.sql} and
  * {@code src/main/resources/db/migration/V4__processed_event_topic_key.sql}, which Flyway 12.4.0

@@ -135,12 +135,10 @@ final class OpenApiContractTest {
     /**
      * Asserts the operation prose names the roles {@code config/SecurityConfig} actually admits.
      *
-     * <p>This is the assertion a review found missing. The operation description said access was
-     * decided by role alone and then named the wrong pair, {@code USER} and {@code ADMIN}, while the
-     * chain matched {@code hasAnyRole(ROLE_ACQUIRER, ROLE_ADMIN)}. Two paragraphs further down the
-     * same document, and the {@code 403} description beside it, had the pair right, so the file
-     * contradicted itself and a reader integrating from the top of the operation provisioned an
-     * identity the service refuses.
+     * <p>A description naming a role pair the chain does not match is worse than none: a reader
+     * integrating from the top of the operation provisions an identity the service refuses, and the
+     * {@code 403} description further down contradicts it. The chain matches
+     * {@code hasAnyRole(ROLE_ACQUIRER, ROLE_ADMIN)}, and this assertion is what holds the prose to it.
      *
      * <p>The roles are read from {@code config/SecurityConfig} rather than repeated here. A rule
      * changed there and not in the prose fails this test with the new role named, which is what
@@ -415,11 +413,11 @@ final class OpenApiContractTest {
      * Asserts the response contract says which account each decline names, including the one that
      * names none.
      *
-     * <p>Two findings shaped this test, and it holds both at once. A security review found an earlier
-     * document describing reject code {@code 0100} as a decline naming the account the caller
-     * declared, so no branch may describe that. A completeness review then found the document
-     * describing {@code 0100} as no decline at all, while AAP transformation rule T4 gives every
-     * authorization call one event and the success condition names four synchronous decline outcomes.
+     * <p>Two properties are held at once. No branch may describe reject code {@code 0100} as a
+     * decline naming the account the caller declared, because no stored row ties that value to the card.
+     * And no branch may describe {@code 0100} as no decline at all, because AAP transformation rule T4
+     * gives every authorization call one event and the success condition names four synchronous decline
+     * outcomes.
      * A reader who implements against a set of decline branches that is missing one, or against one
      * keyed on a value this platform will not key on, has been misled by the contract rather than by
      * the code.

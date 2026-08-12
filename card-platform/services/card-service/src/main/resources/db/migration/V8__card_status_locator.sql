@@ -14,11 +14,11 @@
 --
 -- The database this file corrects. The V5 file carries the corrected locator too, because
 -- a citation a reader can follow has to resolve in the file it names. A database that already applied
--- the earlier bytes refuses the corrected ones until its checksums are rewritten, and rewriting them
--- with flyway repair leaves the catalogue holding the earlier comment. This file is what corrects
--- that database. A fresh database applies both and ends in the same state, because a comment
--- statement replaces whatever text the constraint carried. Rationale, alternatives considered and
--- accepted risks: card-platform/docs/decision-log.md.
+-- V5 as it first stood refuses the corrected bytes until its checksums are rewritten, and rewriting
+-- them with flyway repair leaves the catalogue holding the text V5 first wrote. This file is what
+-- corrects that database. A fresh database applies both and ends in the same state, because a comment
+-- statement replaces whatever text the constraint carried.
+-- Design decisions: card-platform/docs/decision-log.md.
 
 COMMENT ON CONSTRAINT ck_card_active_status ON card IS
     'active_status holds Y or N and nothing else, from 88 FLG-YES-NO-VALID and the tests at

@@ -313,9 +313,9 @@ class PostingEquivalenceTest {
     /**
      * Returns the terminal state and per-record outcomes of the run.
      *
-     * <p>One run serves all forty callers. It used to rebuild the whole 300-record feed on every
-     * call: the same fixtures parsed, the same balances seeded and the same 300 records posted, forty
-     * times over, for an answer that cannot differ. Nothing about the feed depends on the caller.
+     * <p>One run serves all forty callers. Rebuilding the whole 300-record feed per call would
+     * parse the same fixtures, seed the same balances and post the same 300 records forty times
+     * over, for an answer that cannot differ. Nothing about the feed depends on the caller.
      *
      * <p>The run is safe to share because every test reads it and none writes it. That is a property
      * this class has to keep, not one it can assume: a test that mutated a returned map, list or
@@ -2098,10 +2098,10 @@ class PostingEquivalenceTest {
      * files name it.
      *
      * <p>Observed rather than read off a constant. A value with a third decimal is put through the
-     * add the posting path uses and the result decides the answer, so the assertion would notice a
-     * helper that had been changed to round half up even if every name in the code still said
-     * otherwise. The probe uses a negative value because that is where the three candidate modes
-     * disagree: truncation toward zero gives -1.23, floor gives -1.24, and half up gives -1.24.</p>
+     * add the posting path uses and the result decides the answer, so the assertion notices a
+     * helper changed to round half up even where every name in the code still says otherwise. The
+     * probe uses a negative value because that is where the three candidate modes disagree:
+     * truncation toward zero gives -1.23, floor gives -1.24, and half up gives -1.24.</p>
      *
      * @return {@code TRUNCATE_TOWARD_ZERO} when the arithmetic truncates, otherwise the mode that
      *         reproduces what it did
@@ -3207,7 +3207,6 @@ class PostingEquivalenceTest {
                     .toList();
         }
 
-        /** Returns the count of keys that received one posting count. */
         private long keysWithPostingCount(PostingRun run, long postings) {
             return run.categoryBalances().keySet().stream()
                     .filter(key -> postingsForKey(run, key) == postings)
@@ -3225,7 +3224,6 @@ class PostingEquivalenceTest {
             return Long.parseLong(matcher.group(1));
         }
 
-        /** Returns the refund records each card contributed. */
         private long refundRecordsPerCard(PostingRun run) {
             Map<String, Long> byCard = new LinkedHashMap<>();
             for (FeedOutcome outcome : run.postedOutcomes()) {
@@ -4689,10 +4687,10 @@ class PostingEquivalenceTest {
      * <p>The data part is the fixture's own record text, unchanged. That is what the source does:
      * {@code app/cbl/CBTRN02C.cbl:L447} moves the whole {@code DALYTRAN-RECORD} into
      * {@code REJECT-TRAN-DATA} in one statement, so the 350 bytes of a reject record are the bytes
-     * that were read. Nothing here re-renders a field, which matters in two places a
-     * reconstruction previously got wrong. The amount column carries a sign overpunch in the
-     * fixture — record 16 holds {@code 0000007154D} for 715.44 — and the card column carries all
-     * sixteen digits of the number. A copy reproduces both without having to model either.</p>
+     * that were read. Nothing here re-renders a field, which matters in the two places a
+     * reconstruction gets wrong. The amount column carries a sign overpunch in the fixture — record
+     * 16 holds {@code 0000007154D} for 715.44 — and the card column carries all sixteen digits of
+     * the number. A copy reproduces both without having to model either.</p>
      *
      * <p>Masking is deliberately absent. It is an addition this platform makes for its published
      * payloads and its stored rows, with no ancestor in {@code app/cbl/}, so applying it here would
@@ -4788,6 +4786,9 @@ class PostingEquivalenceTest {
      * @param feed          the record as {@code app/cpy/CVTRA06Y.cpy} lays it out
      * @param declineReason the reason a decline carried, or {@code null} on a post
      * @param path          the one reachable event path
+     * @param decision      the credit-limit inputs captured while this record was judged, whose
+     *                      {@code reason()} the canonical constructor holds equal to
+     *                      {@code declineReason}
      */
     private record FeedOutcome(int ordinal,
             CopybookRecordParser.DailyTransactionRecord feed,

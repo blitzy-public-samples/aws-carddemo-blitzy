@@ -15,10 +15,10 @@
        Editing the module below changes its digest, and a policy naming the old one refuses it: the
        deck then opens as a blank page with a refusal in the console. Recompute the digest whenever
        the module changes. PresentationAndProseContractTest recomputes it from the shipped text on
-       every build, so the drift fails there and not in front of an audience. Rationale,
-       alternatives considered and accepted risks: card-platform/docs/decision-log.md. -->
+       every build, so the drift fails there and not in front of an audience.
+       Design decisions: card-platform/docs/decision-log.md. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none';
-    script-src https://cdn.jsdelivr.net 'sha384-bcovnOgyOUwhrcLHAoO5hbbGllt5gypHejY+gq81Zet/xuGgTklxsWZxFh5RPn+Y';
+    script-src https://cdn.jsdelivr.net 'sha384-thuq/oXQ2di8VQxDLT4gzKIJyrBEcPnk1TJa8lM4H5vfow2vD3TfPiJPt2rppkuX';
     style-src https://cdn.jsdelivr.net https://fonts.googleapis.com 'unsafe-inline';
     font-src https://fonts.gstatic.com;
     img-src data:;
@@ -30,9 +30,9 @@
   <!-- Subresource integrity covers every library this deck runs. This stylesheet and the two
        scripts below carry a digest on the element that loads them. Mermaid is a single bundle
        fetched by a script element the module creates, which carries the same digest attribute, so
-       all 2.6 MB of it are verified, where a module graph would have digested only its 30 KB entry. The Google Fonts
-       stylesheet above is the one exception: it is generated per user agent, so its bytes differ
-       between readers and no one digest describes them. It is pinned by version and origin. -->
+       all 2.6 MB of it are verified. The Google Fonts stylesheet above is the one exception: it is
+       generated per user agent, so its bytes differ between readers and no one digest describes
+       them. It is pinned by version and origin. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css"
         integrity="sha384-YgvgKeZJykuztG+iQPoZHNZENTFZvOcOJ/uRzmJTje6GHYN9zAw+y5rx/L8MQKA/"
         crossorigin="anonymous">
@@ -983,11 +983,11 @@ graph LR
     /* Fetches Mermaid on its own, so a failed load leaves reveal, the icons and every other slide
        untouched. Resolves to the library, or to null once the failure is reported.
 
-       The element is created here instead of being written into the document head. A script element
-       inserted by a script loads asynchronously, so the deck's first slide draws without waiting for
-       the library, and the element carries the integrity attribute that verifies the whole bundle.
-       The digest below is the SHA-384 of mermaid@11.4.0/dist/mermaid.min.js as jsDelivr serves it.
-       Rationale: card-platform/docs/decision-log.md */
+       This module creates the script element itself. An inserted script element loads
+       asynchronously, so the deck's first slide draws without waiting for the library, and the
+       element carries the integrity attribute that verifies the whole bundle. The digest below is
+       the SHA-384 of mermaid@11.4.0/dist/mermaid.min.js as jsDelivr serves it.
+       Design decisions: card-platform/docs/decision-log.md */
     const MERMAID_SOURCE = "https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js";
     const MERMAID_DIGEST =
       "sha384-Wm9qzEgq4j1jEnuFK2FxKTlwuhbV2QqtGhcchvjDoKxeJ7WWAW7fysBq+1s6myfX";
@@ -1010,10 +1010,9 @@ graph LR
           startOnLoad: false,
           theme: "base",
           htmlLabels: false,
-          // Strict is the library's own default, stated here and not assumed. Under strict the
-          // library escapes every label it draws and refuses a click binding, so the three diagrams
-          // below cannot become a script injection point. Rationale:
-          // card-platform/docs/decision-log.md
+          // Under strict the library escapes every label it draws and refuses a click binding, so
+          // the three diagrams below cannot become a script injection point. Strict is also the
+          // library's own default. Design decisions: card-platform/docs/decision-log.md
           securityLevel: "strict",
           flowchart: {
             htmlLabels: false,
@@ -1073,17 +1072,16 @@ graph LR
     // Replaces the icon placeholders, and only while the slide on screen still holds one.
     //
     // The library offers no way to be given a container: createIcons reads
-    // document.querySelectorAll itself and replaces every placeholder in the page. So the scoping
-    // is the question asked before calling it, and the library does the work. Because the first
-    // call draws the whole deck, every slide change after it asks one question about one slide and
-    // stops, where this used to rebuild all seventeen icons in the document on every navigation.
+    // document.querySelectorAll itself and replaces every placeholder in the page. The scoping is
+    // therefore the question asked before calling it, and the library does the work. The first call
+    // draws the whole deck, so every slide change after it asks one question about one slide and
+    // stops, instead of rebuilding all seventeen icons.
     //
-    // The selector is what makes that true, and the obvious form of it does not work. The drawing
-    // the library emits carries the name attribute forward onto itself, so an element matching
-    // "[data-lucide]" is just as likely to be a finished icon as a waiting placeholder, and a
-    // guard written that way never fires on a slide that has icons at all. The drawing also always
-    // carries the class "lucide", which is what separates the two: a placeholder is an element
-    // naming an icon that has not been given that class yet.
+    // The selector is what makes that true. The drawing the library emits carries the name
+    // attribute forward onto itself, so an element matching "[data-lucide]" is as likely to be a
+    // finished icon as a waiting placeholder. The drawing also always carries the class "lucide",
+    // which is what separates the two: a placeholder is an element naming an icon that has not been
+    // given that class yet.
     function renderLucideIcons() {
       if (!window.lucide) {
         return;

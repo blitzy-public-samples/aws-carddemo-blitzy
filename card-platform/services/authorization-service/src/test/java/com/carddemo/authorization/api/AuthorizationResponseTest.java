@@ -101,7 +101,6 @@ final class AuthorizationResponseTest {
         }
     }
 
-    /** Asserts each decline following a resolved account requires it. */
     @Test
     void eachDeclineFollowingAResolvedAccountRequiresIt() {
         for (DeclineReason reason : RESOLVED_ACCOUNT_REASONS) {

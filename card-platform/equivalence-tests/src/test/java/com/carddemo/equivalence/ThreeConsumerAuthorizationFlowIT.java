@@ -80,11 +80,11 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * module as a dependency, so a call from one consumer to another cannot compile. This class adds the
  * run-time reading of the same property, and neither replaces the other.
  *
- * <p><b>The fixture.</b> Account {@code 00000000050} and card {@code 0500024453765740} are record one
- * of {@code app/data/ASCII/cardxref.txt}, and the account is seeded by every service that needs it:
+ * <p><b>The fixture.</b> Account {@code 00000000050} and the card paired with it are record one of
+ * {@code app/data/ASCII/cardxref.txt}, and the account is seeded by every service that needs it:
  * the ledger holds a balance projection for it and notification holds a cardholder context for it.
- * The event is a schema version two {@code TransactionAuthorized}, because notification requires the
- * card token that version added.
+ * The event is a schema version two {@code TransactionAuthorized}, because notification requires
+ * the card token that version added.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}. The publish and consume paths are
  * drawn in {@code card-platform/docs/event-flow.md}.
@@ -148,7 +148,7 @@ class ThreeConsumerAuthorizationFlowIT {
     /** The transaction the event names, at DALYTRAN-ID PIC X(16) width. */
     static final String TRANSACTION_ID = "3000000000000001";
 
-    /** The card token of card 0500024453765740, which schema version two requires. */
+    /** The token of the card record one of the cross-reference names, which version two requires. */
     static final String CARD_TOKEN =
             "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b";
 

@@ -267,11 +267,11 @@ class SchemaBackwardCompatibilityTest {
     private static final List<String> RECORD_BEARING_DOCUMENTS =
             List.of(AUTHORIZED, DECLINED, POSTED, FLAGGED, CLEARED);
 
-    /** The four documents that declare a masked card number. */
+    /** The documents declaring a masked card number. */
     private static final List<String> MASKED_CARD_DOCUMENTS =
             List.of(AUTHORIZED, DECLINED, POSTED, CARD_STATE_V1, CARD_STATE);
 
-    /** The three documents that declare no card number in any form. */
+    /** The documents declaring no card number in any form. */
     private static final List<String> CARD_FREE_DOCUMENTS =
             List.of(FLAGGED, CLEARED, ACCOUNT_STATE);
 
@@ -1818,11 +1818,10 @@ class SchemaBackwardCompatibilityTest {
      * cross-reference read, so the read that would have resolved an account is the read that failed,
      * and the only subject the decision has is the identifier the authorization service minted.
      *
-     * <p>The fork was withdrawn once and restored once, and the two reviews behind that are why both
-     * postures are asserted here rather than one. A security review found reason 0100 being decided
-     * against the account the caller declared, which no stored row corroborates, and the answer was to
-     * refuse the call. A completeness review then found that refusal producing no event for a call AAP
-     * transformation rule T4 gives exactly one. Publishing this document closes both: the call is
+     * <p>Both postures are asserted rather than one, because two properties have to hold together.
+     * Reject code 0100 is never decided against the account a caller declared, which no stored row
+     * corroborates. And the call is decided rather than refused, because AAP transformation rule T4
+     * gives every decided call exactly one event. Publishing this document satisfies both: the call is
      * decided, one event is written, and the subject is a value this platform issued.
      *
      * <p>What this document cannot carry is the nine descriptive values {@code REJECT-TRAN-DATA}
@@ -3796,7 +3795,7 @@ class SchemaBackwardCompatibilityTest {
     // Released-contract governance. The baseline below is what makes immutability measurable
     // rather than asserted: it names every pair of event type and contract version this platform
     // has released, records the wire contract of each as a digest, and states which of them a
-    // producer still writes. Rationale: card-platform/docs/decision-log.md.
+    // producer still writes. Design decisions: card-platform/docs/decision-log.md.
     // -----------------------------------------------------------------------------------------
 
     /** The classpath resource recording every released contract. */

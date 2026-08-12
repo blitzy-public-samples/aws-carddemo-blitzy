@@ -57,10 +57,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
  *
  * <p>This is the test that answers the question the other classes in this package cannot. Each of
  * those drives a controller object directly, which proves what a method does and proves nothing about
- * whether a request can reach it. Before this controller existed, every method of
- * {@code domain/CardQueryService} was unreachable over the Hypertext Transfer Protocol and
- * {@code domain/CardUpdateService} did not exist at all, while the unit tests around the read side
- * passed.
+ * whether a request can reach it. A service method no route maps is unreachable over the Hypertext
+ * Transfer Protocol however completely its unit tests pass, and only a dispatched request shows
+ * that.
  *
  * <p>Two things are checked, and together they cover the gap.
  *
@@ -85,7 +84,7 @@ class CardRouteWiringTest {
     private static final String ACCOUNT_ID = "00000000050";
 
     /**
-     * The irreversible token of {@link #CARD_NUMBER}, which names that card in a path and in a paging
+     * The keyed token of {@link #CARD_NUMBER}, which names that card in a path and in a paging
      * cursor alike.
      */
     private static final String CARD_TOKEN = PanMasker.cardToken(CARD_NUMBER);
@@ -167,7 +166,6 @@ class CardRouteWiringTest {
             verify(cardQueries).listForward(CARD_TOKEN, null, ACCOUNT_ID, null);
         }
 
-        /** Asserts the direction parameter selects the backward browse. */
         @Test
         void theDirectionParameterSelectsTheBackwardBrowse() throws Exception {
             mockMvc.perform(get("/cards").param("accountId", ACCOUNT_ID)
@@ -176,7 +174,6 @@ class CardRouteWiringTest {
             verify(cardQueries).listBackward(null, null, ACCOUNT_ID, null);
         }
 
-        /** Asserts the page size binds as a number. */
         @Test
         void thePageSizeBinds() throws Exception {
             mockMvc.perform(get("/cards").param("accountId", ACCOUNT_ID)
@@ -199,8 +196,8 @@ class CardRouteWiringTest {
         /**
          * Asserts the update route is mapped and reaches the update service.
          *
-         * <p>This is the assertion that would have failed before this controller existed:
-         * {@link CardUpdateService#updateCard} could not be called by any client at all.
+         * <p>Without this mapping {@link CardUpdateService#updateCard} could not be called by any
+         * client at all, which is the gap this assertion closes.
          */
         @Test
         void theUpdateRouteIsMapped() throws Exception {
@@ -262,7 +259,6 @@ class CardRouteWiringTest {
                             + result.getResponse().getContentAsString());
         }
 
-        /** Asserts a malformed cursor header answers 400. */
         @Test
         void aMalformedCursorHeaderAnswersBadRequest() throws Exception {
             MvcResult result = mockMvc.perform(get("/cards").param("accountId", ACCOUNT_ID)
@@ -390,7 +386,7 @@ class CardRouteWiringTest {
             assertEquals("^[0-9]{11}$", CardController.ACCOUNT_ID_PATTERN,
                     "CARD-ACCT-ID PIC 9(11) at app/cpy/CVACT02Y.cpy:L6");
             assertEquals(PanMasker.CARD_TOKEN_PATTERN, CardController.CURSOR_PATTERN,
-                    "the controller accepts only the irreversible token the read side resolves");
+                    "the controller accepts only the keyed token the read side resolves");
         }
 
         /**

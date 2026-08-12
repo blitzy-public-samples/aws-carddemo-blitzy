@@ -53,7 +53,6 @@ class QuietWindowTest {
     /** The window every scenario asks for, small and round so each reading count is arithmetic. */
     private static final long WINDOW_NANOS = 1_000L;
 
-    /** That window as the watch takes it. */
     private static final Duration WINDOW = Duration.ofNanos(WINDOW_NANOS);
 
     /** The record a scenario makes available part-way through, to be seen or missed. */

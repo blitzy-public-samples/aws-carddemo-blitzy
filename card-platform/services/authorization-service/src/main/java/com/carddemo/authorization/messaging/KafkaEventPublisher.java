@@ -260,11 +260,11 @@ public class KafkaEventPublisher implements EventPublisherPort {
      * Checks that the message key and the aggregate identifier hold one value.
      *
      * <p>Every document declares {@code aggregateId}. A document that also declares a non-null
-     * {@code accountId} must agree with it. One released document declares a transaction-key
+     * {@code accountId} must agree with it. One published document declares a transaction-key
      * aggregate and omits {@code accountId}, {@code schemas/transaction-declined-v2.json}, and this
-     * check reads a record of that shape without refusing it. Nothing here publishes one: that
-     * document is retained rather than published, and every event this service writes is keyed on an
-     * account.
+     * check reads a record of that shape without refusing it. That is the document reject code
+     * {@code 0100} travels under, so this service writes records keyed on an account and records keyed
+     * on the transaction identifier it minted.
      *
      * <p>No message below names a value. The identifier is the value under check, and a caller that
      * logs the failure would otherwise record it.

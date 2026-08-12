@@ -163,11 +163,10 @@ class DeadLetterMetadataTest {
      * acknowledgement one and belongs here because this list is the whole declared surface. It ships
      * as the partition count every topic of this platform carries, so the postings of one account
      * still arrive in publish order: a partition is assigned to exactly one consumer thread, and the
-     * account identifier is the message key. Omitting it left the framework default of one thread in
-     * place, which applied every partition of the topic in sequence.
+     * account identifier is the message key. Omitting it would leave the framework default of one
+     * thread in place, applying every partition of the topic in sequence.
      *
-     * <p>The two fetch ceilings are the read side of the wire ladder a security review asked for.
-     * They bound one partition fetch at 65,536 bytes and one whole fetch at 262,144, against the
+     * <p>The two fetch ceilings are the read side of the wire ladder. They bound one partition fetch at 65,536 bytes and one whole fetch at 262,144, against the
      * 8,192-byte envelope {@code EventWireBounds} governs, so a record this platform publishes always
      * fits and the memory one poll can hold is bounded. {@code KafkaDeliveryGuaranteeContractTest}
      * holds the whole ladder in order across all six services.

@@ -542,11 +542,11 @@ is not applied by default.
 | `V11__processed_event_claims_are_permanent.sql` | Withdraws the retention horizon of `processed_event` and drops `ix_processed_event_processed_at` with it. The 720-hour horizon bounded how long the broker could redeliver a record and said nothing about how long the balance and the two cycle accumulators a claim guards stand, so a record archived, restored or deliberately replayed after it was new to the guard and applied twice. Nothing removes a claim now, and nothing bounds the table's growth either — the partitioning work a deployment measuring real volumes would want is in `card-platform/docs/suggested-next-tasks.md` |
 | `V12__subject_request_procedure.sql` | Points the `customer`, `account_customer_link` and `customer.social_security_number` comments at the subject-request procedure `card-platform/docs/data-model.md` now carries, under "Subject data: purpose, retention, export and erasure". `V7` and `V8` had replaced comments promising an erasure route with ones stating that none existed. A documented operator procedure now exists, and this schema is where a request starts: `customer` is the only row on the platform holding a name, and `account_customer_link` is the hop to every account, because the account record carries no customer identifier. No endpoint, event or scheduled task erases or exports a subject, and the comments say so. Declares no table, column, index or row |
 
-`src/main/resources/db/demo/V900__demo_expiry_extension.sql` is the tenth, and it lives in
+`src/main/resources/db/demo/V900__demo_expiry_extension.sql` is that thirteenth file, and it lives in
 `db/demo` rather than `db/migration` so a plain start never applies it. It lifts every seeded account
-expiry to `2099-12-31`, because the latest expiry in `app/data/ASCII/acctdata.txt` is 2025-12-28 and
-reason 0103 at `app/cbl/CBTRN02C.cbl:L414-L420` would otherwise decline every live call carrying
-today's date. It runs only when `spring.flyway.locations` names `classpath:db/demo` beside
+expiry to `2099-12-31`. The latest expiry in `app/data/ASCII/acctdata.txt` is 2025-12-28, and reason
+0103 at `app/cbl/CBTRN02C.cbl:L414-L420` would otherwise decline every live call dated after that
+day. It runs only when `spring.flyway.locations` names `classpath:db/demo` beside
 `classpath:db/migration`, which both deployment paths do through `ACCOUNT_FLYWAY_LOCATIONS` —
 `card-platform/docker-compose.yml` and `card-platform/deploy/k8s/30-configmap.yaml`, the latter read by
 `44-account-service.yaml` — and nothing else does. Both are demo profiles, and setting that key to

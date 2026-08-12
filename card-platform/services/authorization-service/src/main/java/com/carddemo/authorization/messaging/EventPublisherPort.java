@@ -15,13 +15,15 @@ public interface EventPublisherPort {
 
     /**
      * Pattern every {@code aggregateId} argument matches, which is the pattern of the Kafka message
-     * key. Every event this platform publishes uses the eleven decimal digits of
-     * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}.
+     * key. Most events key on the eleven decimal digits of {@code XREF-ACCT-ID PIC 9(11)} at
+     * {@code app/cpy/CVACT03Y.cpy:L7}.
      *
-     * <p>A second, sixteen-character form is admitted and no producer writes it. One released
-     * document declares it, {@code schemas/transaction-declined-v2.json}, and
-     * {@code contracts/released-contracts.json} records that document as retained rather than
-     * published. The form stays admissible because a record already on a topic has to stay readable.
+     * <p>A second, sixteen-character form is admitted and published. One released document declares
+     * it, {@code schemas/transaction-declined-v2.json}, which
+     * {@code contracts/released-contracts.json} records as PUBLISHED. It is the contract reject code
+     * {@code 0100} travels under: {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns that code inside the
+     * INVALID KEY limb of the cross-reference read, so no account resolves and the key is the
+     * transaction identifier this service minted.
      *
      * <p>The value is {@link EventEnvelope#AGGREGATE_KEY_PATTERN}, so the port, the envelope and the
      * {@code aggregate_id} column all admit exactly the same two forms.
@@ -67,8 +69,8 @@ public interface EventPublisherPort {
      *
      * @param topic       the destination topic name, which the caller reads from configuration
      * @param aggregateId the value the payload carries in its own {@code aggregateId} field:
-     *                    eleven account digits for every event this platform publishes, or the
-     *                    retained sixteen-character form no producer writes
+     *                    eleven account digits, or the sixteen-character transaction identifier a
+     *                    reject code {@code 0100} decline is keyed on
      * @param payload     one event, serialized as JavaScript Object Notation (JSON) before the
      *                    call
      * @return the stage the broker acknowledgement completes, which fails when the broker refuses the

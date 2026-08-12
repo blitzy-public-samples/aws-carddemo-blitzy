@@ -11,7 +11,7 @@
 --
 -- assessed_at is stamped by this service, and two assessments of one account hold the same value
 -- whenever two authorizations arrive inside the same microsecond, which one burst on one account
--- produces. Rationale for the column choice: card-platform/docs/decision-log.md.
+-- produces. Design decisions for the column choice: card-platform/docs/decision-log.md.
 --
 -- ADDITIVE. No dataset definition under app/jcl/ declares an alternate index over a risk score, and
 -- no program under app/cbl/ scores risk, so this index has no source ancestor to reproduce.

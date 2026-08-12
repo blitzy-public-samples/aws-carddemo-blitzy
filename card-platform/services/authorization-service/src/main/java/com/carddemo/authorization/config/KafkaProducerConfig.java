@@ -31,11 +31,11 @@ import org.springframework.kafka.core.ProducerFactory;
  * condition and on to its abend routine. All eight file definitions in {@code app/csd/CARDDEMO.CSD}
  * carry {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.
  *
- * <p>Every message key this service writes is the eleven-digit account identifier of
- * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. A sixteen-character form is
- * still admitted, because one released document declares it and a record already on a topic has to
- * stay readable, and no producer writes it. A key travels as text, so leading zeros survive. A
- * broker keeps message order inside one partition and the key selects the partition.
+ * <p>A message key is either the eleven-digit account identifier of
+ * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}, or, for a reject code
+ * {@code 0100} decline that resolved no account, the sixteen-character transaction identifier this
+ * service minted. A key travels as text, so leading zeros survive. A broker keeps message order
+ * inside one partition and the key selects the partition.
  *
  * <p>Neither bean below reaches the broker while the context builds, and a producer connects on its
  * first send. A send that finds no broker fails, and the outbox row it came from stays unpublished
@@ -108,13 +108,12 @@ public class KafkaProducerConfig {
     /**
      * Builds the one publisher of this service from values the bound properties have already checked.
      *
-     * <p>The publisher used to be a scanned component whose constructor read four property
-     * placeholders of its own. Three named a topic and were harmless. The fourth,
-     * {@code carddemo.outbox.relay.publish-timeout}, was a second binding of a value
-     * {@link AuthorizationProperties.Outbox.Relay} also binds, and a second binding meets none of the
-     * constraints the record declares: zero and a negative duration both started the service and then
-     * failed every send the moment it was issued. Building the publisher here means the timeout it
-     * holds is the one the validated record produced, so a refused value stops start-up instead.
+     * <p>Building the publisher here, rather than letting it read property placeholders of its own,
+     * is what keeps one binding of {@code carddemo.outbox.relay.publish-timeout}. A second binding
+     * meets none of the constraints {@link AuthorizationProperties.Outbox.Relay} declares, so zero and
+     * a negative duration would both start the service and then fail every send the moment it was
+     * issued. The timeout this publisher holds is the one the validated record produced, so a refused
+     * value stops start-up instead.
      *
      * <p>The dead-letter topic belongs in the map for the same reason the other two do: the relay
      * names an abandoned row on it, and the publisher refuses any event type whose destination the map

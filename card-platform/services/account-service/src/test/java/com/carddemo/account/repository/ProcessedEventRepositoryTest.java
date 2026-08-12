@@ -46,9 +46,9 @@ import static org.assertj.core.api.Assertions.within;
  * {@code 2900-WRITE-TRANSACTION-FILE}, performs no duplicate check, and routes every file status
  * other than {@code '00'} to {@code 9999-ABEND-PROGRAM}.
  *
- * <p>The account service registers no listener, so no component writes a marker here today. The
- * tests below cover the operations a listener added to this service would call: existence,
- * atomic claim, write and retention purge.
+ * <p>{@code messaging/TransactionPostedConsumer} is the one listener of this service, and its claim
+ * is what writes a marker here. The tests below cover every operation that claim path calls:
+ * existence, atomic claim, write and retention purge.
  *
  * <p>Three tests reach no row. Two read the declared method surface and the identifier type
  * argument, a Universally Unique Identifier (UUID), by reflection. One reads the Jakarta Persistence
@@ -172,10 +172,10 @@ class ProcessedEventRepositoryTest extends AbstractAccountPostgresTest {
     /**
      * Asserts the surface is a claim, a question and a write, with nothing that removes a row.
      *
-     * <p>A fourth method, {@code deleteMarkersProcessedBefore}, removed claims older than 720 hours
-     * until a security review found the effect a claim guards outliving it: this service adds an
-     * amount to a balance and to one cycle accumulator, and nothing reverses that. Naming the exact
-     * set is what stops the purge returning as a convenience.
+     * <p>No method removes a row. A fourth one deleting claims older than 720 hours would expire a
+     * claim while the effect it guards stands: this service adds an amount to a balance and to one
+     * cycle accumulator, and nothing reverses that. Naming the exact set is what stops such a purge
+     * arriving as a convenience.
      */
     @Test
     @DisplayName("the interface declares existsById, save and claimEvent and no other method")

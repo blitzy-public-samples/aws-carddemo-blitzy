@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <p>Four properties are read here. Applying the binder registers each series once. Applying it
  * again changes nothing. A caller that reaches a series before the binder does still leaves the
- * description in place, which is the ordering that used to decide the outcome. And no component
+ * description in place, so construction order decides nothing. And no component
  * outside {@link ObservabilityConfig} names any shared series, so a future caller cannot reintroduce
  * a description-less registration.
  *

@@ -245,13 +245,13 @@ data:
   # card-platform/.env.example carries the same value.
   OUTBOX_RELAY_MAX_DURATION_MS: "5000"
   OUTBOX_PUBLISHED_RETENTION_HOURS: "168"
-  # No key expires a duplicate-delivery marker. A security review found the horizon that used
-  # to expire one bounded only against broker log retention, which says nothing about how long
-  # the side effect a marker guards stands, so every service keeps its claims permanently. Each
-  # service's processed_event_claims_are_permanent migration carries the whole rule.
+  # No key expires a duplicate-delivery marker. A horizon bounded against broker log retention
+  # says nothing about how long the side effect a marker guards stands, so every service keeps its
+  # claims permanently. Each service's processed_event_claims_are_permanent migration carries the
+  # whole rule.
   RETENTION_SWEEP_INTERVAL_MS: "3600000"
-  # Business-table horizons. Each was declared in a COMMENT ON TABLE before any code
-  # applied it, so the catalogue described an intention while the table only grew. A
+  # Business-table horizons. A horizon declared in a COMMENT ON TABLE and applied by no code
+  # leaves the catalogue describing an intention while the table only grows. A
   # security review found that, and each service's domain/RetentionSweep now reads the
   # matching value below. Every one of these rows is pseudonymous rather than anonymous:
   # its account or transaction identifier resolves to a named customer through the owning
@@ -539,20 +539,21 @@ data:
 
   # Flyway locations of the two services that ship a demo overlay
   # Both keys carry the demo overlay, so this deployment path is a demo profile exactly as
-  # card-platform/docker-compose.yml is. That is deliberate rather than incidental: the
-  # manifests exist so the same demonstration runs on a standard cluster, and a cluster that
-  # declined every authorization would demonstrate nothing.
+  # card-platform/docker-compose.yml is. The manifests exist so the same demonstration runs on
+  # a standard cluster, and a cluster that declined every authorization would demonstrate
+  # nothing.
   #
   # What the overlay changes. db/migration reproduces app/data/ASCII/acctdata.txt value for
-  # value, and all 50 account expiries fall in 2023 to 2025, so reason code 103 at
-  # app/cbl/CBTRN02C.cbl:L414-L420 declines a request carrying today's date. db/demo holds one
+  # value, and its 50 account expiries run from 2023-01-06 to 2025-12-28, so reason code 103 at
+  # app/cbl/CBTRN02C.cbl:L414-L420 declines a request dated after the expiry it is compared
+  # against. db/demo holds one
   # migration, V900__demo_expiry_extension.sql, that lifts those expiries to 2099-12-31 and
   # changes nothing else.
   #
   # The base-profile opt-out. Set BOTH keys to "classpath:db/migration" for a run whose output
   # is compared against the fixture. Change them together or not at all: the account service
   # owns the record the authorization service replicates and publishes its expiry on every
-  # state change, so extending one copy alone has the first posted transaction write a 2025
+  # state change, so extending one copy alone has the first posted transaction write a seeded
   # expiry back over the extended replica and decline every later call on that account.
   #
   # Neither service image carries the overlay as its own default. Each application.yml ships

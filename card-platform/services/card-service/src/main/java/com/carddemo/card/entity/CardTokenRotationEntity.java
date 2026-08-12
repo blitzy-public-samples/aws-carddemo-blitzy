@@ -15,7 +15,7 @@ import java.util.UUID;
  * behind it are additive in full. The source has no keyed identity for a card and therefore no
  * rotation of one.
  *
- * <p>The table is the audit record a security review asked for. A card token is the platform identity
+ * <p>The table is the audit record of a rotation. A card token is the platform identity
  * of one card: it keys {@code statement_transaction} and {@code notification_log} in the notification
  * service, it is recorded on {@code authorization_decision} in the authorization service, and it is
  * the subject of a {@code SCOPE_CARD} authority an operator grants in configuration. Turning the key

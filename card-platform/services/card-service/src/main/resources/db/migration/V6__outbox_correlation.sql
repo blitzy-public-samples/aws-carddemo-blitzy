@@ -1,4 +1,4 @@
--- Card service, migration V5.
+-- Card service, migration V6.
 -- Carries the two correlation identifiers of one unit of work on the outbox row, so the relay can
 -- attach them to the record it publishes.
 --

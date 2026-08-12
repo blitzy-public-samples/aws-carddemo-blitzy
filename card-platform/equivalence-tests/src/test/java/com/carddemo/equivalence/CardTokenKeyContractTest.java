@@ -46,15 +46,15 @@ import org.junit.jupiter.api.Test;
  * belongs to the build-scope key and is re-derived at start-up, and that every published contract
  * naming the token names the keyed primitive the code applies.
  *
- * <p>Four more cover a key that moves. A security review found the card service re-deriving
- * {@code card.card_token} at every start-up whenever the derivation changed, while three other stores
- * hold a token derived from the same key and hold no card number to re-derive from:
- * {@code statement_transaction.card_token} and {@code notification_log.card_token} in the notification
- * service, and {@code authorization_decision.card_token} in the authorization service. A granted
+ * <p>Four more cover a key that moves. Re-deriving {@code card.card_token} at every start-up
+ * whenever the derivation changes leaves three other stores holding a token derived from the same
+ * key and no card number to re-derive from: {@code statement_transaction.card_token} and
+ * {@code notification_log.card_token} in the notification service, and
+ * {@code authorization_decision.card_token} in the authorization service. A granted
  * {@code SCOPE_CARD} authority is a fourth. The four assertions are that no shipped path carries a
- * previous key or states a rotation, that the three rotation settings reach the one service holding a
- * card number, that the refusal and the operator procedure are both shipped, and that the two columns
- * separating a bootstrap from a rotation default to the seeded case.
+ * previous key or states a rotation, that the three rotation settings reach the one service holding
+ * a card number, that the refusal and the operator procedure are both shipped, and that the two
+ * columns separating a bootstrap from a rotation default to the seeded case.
  *
  * <p>The derivation itself is proved by {@code com.carddemo.cobol.PanMaskerTest}, the seeded literals
  * are compared against a live database by {@code CardRepositoryIT}, and the reconciliation is
@@ -386,14 +386,13 @@ class CardTokenKeyContractTest {
     }
 
     /**
-     * Proves the refusal a security review asked for is shipped, together with its procedure.
+     * Proves the refusal is shipped, together with its procedure.
      *
-     * <p>The finding was that a key change re-derived {@code card.card_token} at start-up and left
-     * {@code statement_transaction}, {@code notification_log},
-     * {@code authorization_decision} and every granted authority naming a card nobody could reach.
-     * Three things answer it: the reconciler refuses a rewrite nobody asked for, it derives the
-     * previous token so the rewrite is mappable, and the operator has the statements that apply the
-     * mapping to the other schemas.
+     * <p>A key change that re-derives {@code card.card_token} at start-up leaves
+     * {@code statement_transaction}, {@code notification_log}, {@code authorization_decision} and
+     * every granted authority naming a card nobody can reach. Three things answer that: the
+     * reconciler refuses a rewrite nobody asked for, it derives the previous token so the rewrite
+     * is mappable, and the operator has the statements that apply the mapping to the other schemas.
      */
     @Test
     @DisplayName("the rotation refusal, the dual read and the operator procedure are shipped")
@@ -500,11 +499,11 @@ class CardTokenKeyContractTest {
     /**
      * Matches a description of an unkeyed digest, whatever words surround the primitive.
      *
-     * <p>The earlier form of this check compared one exact phrase, and the two schemas spelled the
-     * claim slightly differently, so both went on describing an unkeyed digest while the check
-     * passed. The pattern therefore looks for the primitive with no {@code HMAC} in front of it,
-     * which is the property that matters: an unkeyed digest over a sixteen-digit space can be
-     * recomputed card number by card number.
+     * <p>Comparing one exact phrase misses a document that spells the claim differently, which
+     * leaves a schema describing an unkeyed digest while the check passes. The pattern therefore
+     * looks for the primitive with no {@code HMAC} in front of it, which is the property that
+     * matters: an unkeyed digest over a sixteen-digit space can be recomputed card number by card
+     * number.
      */
     private static final Pattern UNKEYED_DIGEST_CLAIM = Pattern.compile(
             "(?<!HMAC.)(?<!HMAC-)\\bSHA-?256\\b(?![^.]{0,40}\\bkey)", Pattern.CASE_INSENSITIVE);

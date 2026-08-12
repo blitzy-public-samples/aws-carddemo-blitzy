@@ -83,7 +83,7 @@ public final class UsStateZipPrefixValidator {
      */
     public static EditResult validate(String stateCode, String zipCode) {
         // ADDITIVE: a value wider than its source field forms no listed combination and is
-        // refused. Rationale: card-platform/docs/decision-log.md.
+        // refused. Design decisions: card-platform/docs/decision-log.md.
         if (exceedsDeclaredWidth(stateCode, STATE_CODE_WIDTH)
                 || exceedsDeclaredWidth(zipCode, ZIP_FIELD_WIDTH)) {
             return EditResult.failure(INVALID_ZIP_FOR_STATE_MESSAGE);

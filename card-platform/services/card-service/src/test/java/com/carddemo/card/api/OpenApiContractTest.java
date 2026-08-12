@@ -219,7 +219,6 @@ final class OpenApiContractTest {
     @DisplayName("list parameters against the controller")
     class ListParametersAgainstTheController {
 
-        /** Asserts the four parameter names are the ones the controller binds. */
         @Test
         void theFourParameterNamesAreTheOnesTheControllerBinds() {
             assertEquals(List.of(CardController.ACCOUNT_ID_PARAMETER, CardController.CURSOR_HEADER,
@@ -269,7 +268,7 @@ final class OpenApiContractTest {
             assertEquals(Boolean.FALSE, cursor.get("required"),
                     "an absent cursor asks for the first page forward or the last page back");
             assertEquals(CardController.CURSOR_PATTERN, asMap(cursor.get("schema")).get("pattern"),
-                    "the document accepts the same irreversible token as the controller");
+                    "the document accepts the same keyed token as the controller");
         }
 
         /** Asserts the direction enumerates the two values the controller accepts and defaults to
@@ -361,7 +360,6 @@ final class OpenApiContractTest {
                             + "and the protocol refusals");
         }
 
-        /** Asserts the read answers nine codes. */
         @Test
         void theReadAnswersNineCodes() {
             assertEquals(
@@ -712,7 +710,7 @@ final class OpenApiContractTest {
          * <p>{@link CardSummary} and {@link CardDetailResponse} both refuse an unmasked value in their
          * own constructors, so the document pins the same expression. A masked value names no
          * browse position, and the full card number cannot be published, so the paging cursor
-         * carries the irreversible card token instead.
+         * carries the keyed card token instead.
          */
         @Test
         void everyCardNumberAResponseCarriesIsMaskedAndTheCursorIsAToken() {

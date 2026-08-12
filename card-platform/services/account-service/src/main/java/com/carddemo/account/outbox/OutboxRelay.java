@@ -381,9 +381,10 @@ public class OutboxRelay {
      * The scope is what the publish port reads to attach the headers.
      *
      * <p>A row recording no correlation identifier starts its own trace under its own event
-     * identifier. That covers a row written before this column existed, so every record this
-     * relay publishes carries a correlation identifier a reader can join on. A row carrying
-     * neither opens a scope naming neither rather than failing the sweep.
+     * identifier. That covers a row predating {@code V9__outbox_correlation.sql}, which added the
+     * nullable column, so every record this relay publishes carries a correlation identifier a
+     * reader can join on. A row carrying neither opens a scope naming neither rather than failing
+     * the sweep.
      *
      * @param row the row this pass is working on
      * @return the open scope, closed by the try-with-resources that opened it
@@ -481,7 +482,7 @@ public class OutboxRelay {
      * {@link OutboxEventEntity#recordFailure(String, Instant, Instant)} writes that obligation in
      * the same call that abandons it, so the two facts commit together. The diagnostic is then
      * offered outside that transaction; a broker that refuses leaves the obligation standing and
-     * {@link #publishOwedDeadLetters(Instant, long)} takes it on a later sweep.
+     * {@link #publishOwedDeadLetters(long)} takes it on a later sweep.
      *
      * @param claimed      the row the broker refused, as the claim loaded it
      * @param destination  the topic selected from the stored event type, or

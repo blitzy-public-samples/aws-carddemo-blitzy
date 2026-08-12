@@ -1,4 +1,4 @@
--- Ledger posting service, migration V8.
+-- Ledger posting service, migration V9.
 -- Adds the index the relay's aggregate-head claim reads.
 --
 -- What this file declares. outbox/OutboxRelay claims the due head row of each account, so a batch never

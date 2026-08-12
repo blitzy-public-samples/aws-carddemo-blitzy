@@ -306,7 +306,6 @@ class FixtureCoverageEquivalenceTest {
             throw new IllegalArgumentException(fieldName + " is no field of this layout");
         }
 
-        /** Returns a field by name. */
         private LayoutField field(String fieldName) {
             for (LayoutField field : fields) {
                 if (field.name().equals(fieldName)) {
@@ -1854,7 +1853,6 @@ class FixtureCoverageEquivalenceTest {
             }
         }
 
-        /** Row ordinals run from one without a gap and without a repeat. */
         @Test
         @DisplayName("row ordinals run from one without gap or repeat")
         void rowOrdinalsRunFromOneWithoutGapOrRepeat() {

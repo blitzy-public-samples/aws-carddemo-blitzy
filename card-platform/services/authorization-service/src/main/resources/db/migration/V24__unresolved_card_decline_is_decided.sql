@@ -44,7 +44,7 @@
 -- the request, and card-platform/docs/suggested-next-tasks.md carries the contract a deployment would
 -- add to persist them.
 --
--- Alternatives weighed and the risk accepted: card-platform/docs/decision-log.md, under "One event
+-- Design decisions: card-platform/docs/decision-log.md, under "One event
 -- for the outcome whose card resolves nothing, keyed on the identifier this service minted".
 
 COMMENT ON TABLE authorization_decision IS

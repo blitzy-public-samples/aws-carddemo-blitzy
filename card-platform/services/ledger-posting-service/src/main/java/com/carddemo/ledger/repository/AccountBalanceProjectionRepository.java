@@ -67,7 +67,7 @@ import org.springframework.data.repository.Repository;
  * consumer-group transition must not turn two read-modify-write operations into one lost update.
  * The primary key admits one row per account, and the idempotency marker stops a redelivery.
  *
- * <p>Rationale, source mapping and flagged findings: {@code card-platform/docs/decision-log.md},
+ * <p>Design decisions, source mapping and flagged findings: {@code card-platform/docs/decision-log.md},
  * {@code card-platform/docs/traceability-matrix.md}, and
  * {@code card-platform/docs/business-rule-flags.md}.
  */

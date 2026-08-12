@@ -6,14 +6,13 @@
 -- Both comments now name carddemo.retention.decision-retention-days, the one setting
 -- domain/RetentionSweep reads for both deletes, rather than a number of their own.
 -- authorization_decision is purged by AuthorizationDecisionRepository.deleteDecidedBefore on
--- decided_at and previously read 'retention=relationship'; unresolved_card_attempt is purged by
--- UnresolvedCardAttemptRepository.deleteAttemptedBefore on attempted_at and previously carried no
--- table comment at all. equivalence-tests/RetentionSweepContractTest compares both declarations
--- against the sweep.
+-- decided_at; unresolved_card_attempt is purged by
+-- UnresolvedCardAttemptRepository.deleteAttemptedBefore on attempted_at.
+-- equivalence-tests/RetentionSweepContractTest compares both declarations against the sweep.
 --
 -- Whether a year is the right window for a declined-authorization audit trail is a business question,
--- and card-platform/docs/suggested-next-tasks.md carries it. Rationale, alternatives considered and
--- accepted risks: card-platform/docs/decision-log.md.
+-- and card-platform/docs/suggested-next-tasks.md carries it.
+-- Design decisions: card-platform/docs/decision-log.md.
 
 COMMENT ON TABLE authorization_decision IS
     'retention=carddemo.retention.decision-retention-days; purge_key=decided_at;

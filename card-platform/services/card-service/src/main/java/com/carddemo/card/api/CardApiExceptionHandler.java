@@ -208,10 +208,10 @@ public class CardApiExceptionHandler {
      * <p>The row count of the list route is the one request value of this service that is not text.
      * Its conversion runs while the argument is resolved, which is before any constraint on it can
      * run, so a value that is no number never reaches {@code @Min} or {@code @Max} and never reaches
-     * the read. Before this method existed that conversion failure fell through to
-     * {@link #onFault(Exception, HttpServletRequest)} and a caller sending {@code pageSize=abc} read
-     * {@code 500} with a stack trace logged at error level, so a request a caller could correct was
-     * reported as a fault of this service and raised an alert besides.
+     * the read. Without this method that conversion failure would fall through to
+     * {@link #onFault(Exception, HttpServletRequest)}, and a caller sending {@code pageSize=abc} would
+     * read {@code 500} with a stack trace logged at error level: a request the caller could correct
+     * reported as a fault of this service, raising an alert besides.
      *
      * <p>The submitted value reaches no response and no log line. The framework's own message quotes
      * it, and this method reads the exception for nothing but its type.
@@ -236,10 +236,10 @@ public class CardApiExceptionHandler {
      * refused before the read runs; the third is a well-formed cursor that resolves to no row, which
      * no constraint can discover because discovering it takes a read.
      *
-     * <p>Before this method existed all three left an {@link IllegalArgumentException} that fell
+     * <p>Without this method all three would leave an {@link IllegalArgumentException} falling
      * through to {@link #onFault(Exception, HttpServletRequest)}, so a caller paging from a cursor
-     * this service no longer holds read {@code 500} rather than the {@code 400} its own request had
-     * earned.
+     * this service no longer holds would read {@code 500} rather than the {@code 400} its own request
+     * had earned.
      *
      * @param unusable the refusal, whose message is a declared text
      * @param request  the failing request, read for its mapping pattern alone

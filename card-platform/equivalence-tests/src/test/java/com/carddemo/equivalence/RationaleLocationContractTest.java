@@ -24,21 +24,27 @@ import org.junit.jupiter.api.Test;
  *
  * <p>Rule 1 of this project makes {@code card-platform/docs/decision-log.md} the single source of
  * "why". A code comment carries mechanics, provenance and source locators; the decision, the
- * alternatives weighed against it and the risks accepted belong in the log. A review found decision
- * essays in twenty-four migration headers and in javadoc across the services, and found fifteen
- * javadoc blocks separated from the declaration they described by a second javadoc block. Both were
- * corrected once. This class is what keeps them corrected.
+ * alternatives weighed against it and the risks accepted belong in the log.
  *
- * <p>Three properties are read out of the shipped text of the whole platform. No migration or demo
+ * <p>Five properties are read out of the shipped text of the whole platform. No migration or demo
  * header opens a rationale banner. No javadoc heading frames its block as a rationale essay. No
- * javadoc block is immediately followed by another javadoc block, which matters because the compiler
- * and every generated document attach the second block and leave the first describing a declaration
- * it does not belong to. A fourth property keeps the pointers usable: a shipped file that sends a
- * reader to the log names it at one path, and that path resolves.
+ * shipped file of any format opens a rationale essay, and no shipped comment of any format argues a
+ * choice inside the line. No javadoc block is immediately followed by another javadoc block, which
+ * matters because the compiler and every generated document attach the second block and leave the
+ * first describing a declaration it does not belong to. A fifth property keeps the pointers usable:
+ * a shipped file that sends a reader to the log names it at one path, and that path resolves.
+ *
+ * <p>No scan exempts a pointer. A pointer spelled with the concise label of {@link #POINTER_LABELS}
+ * matches no detector, so the compliant form passes on its own text. A label that enumerates the
+ * decision, the alternatives and the risks does match, and exempting it covered whatever else the
+ * line carried: appending {@code Rationale, alternatives considered and accepted risks: <path>} to
+ * a design argument made the argument compliant.
+ * {@link #collectInlineRationale(String, List, List)} no longer grants that exemption, and neither
+ * does {@link #collectEssayOpeners(String, String, int, List)}.
  *
  * <p>A rule that matches nothing passes by finding nothing, so
- * {@link #theDetectorsFireOnTextCarryingEachDefect()} runs all three detectors over text that
- * carries each defect and over text that carries none.
+ * {@link #theDetectorsFireOnTextCarryingEachDefect()} runs every detector over text that carries
+ * each defect and over text that carries none.
  */
 @DisplayName("Rationale location and javadoc attachment, whole platform")
 class RationaleLocationContractTest {
@@ -66,9 +72,9 @@ class RationaleLocationContractTest {
     /**
      * Banner headings, in capitals, that open a rationale essay in a migration header.
      *
-     * <p>Capitals are read exactly. {@code -- What the rule reads.} and {@code -- Where it applies.}
-     * are mechanics headings and stay; {@code -- WHY THIS FILE EXISTS} and {@code -- WHAT WENT WRONG}
-     * are the banner form the review named.
+     * <p>Capitals are read exactly. {@code -- What the rule reads.} and
+     * {@code -- Where it applies.} are mechanics headings and stay; {@code -- WHY THIS FILE EXISTS}
+     * and {@code -- WHAT WENT WRONG} are the banner form this pattern refuses.
      */
     private static final Pattern SQL_BANNER_HEADING =
             Pattern.compile("^\\s*--\\s*(WHY|WHAT|HOW|ALTERNATIVES?|RISKS?)\\b");
@@ -116,12 +122,12 @@ class RationaleLocationContractTest {
      *
      * <p>Every comment marker this platform ships is read: {@code *}, {@code //}, {@code --} and
      * {@code #}. A banner word alone is not enough, because {@code # What it does} is a mechanics
-     * heading and stays; the capitals after it are the essay form the review named.
+     * heading and stays; the capitals after it are the essay form this pattern refuses.
      *
-     * <p>Any opening tag may stand between the marker and the word. An earlier revision of this
-     * pattern named {@code <h1>} through {@code <h6>} and {@code <b>}, which are the shapes a page
-     * heading takes, and missed {@code <p>} — the shape a javadoc paragraph takes, and the one the
-     * finding's own example used at {@code notification/messaging/TransactionAuthorizedConsumer}.
+     * <p>Any opening tag may stand between the marker and the word. Naming {@code <h1>} through
+     * {@code <h6>} and {@code <b>} reaches only the shapes a page heading takes and misses
+     * {@code <p>}, which is the shape a javadoc paragraph takes and the one a banner inside a class
+     * comment uses.
      */
     private static final Pattern SHIPPED_BANNER_HEADING = Pattern.compile(
             "^\\s*(?:\\*|//|--|#)\\s*(?:<[a-zA-Z][^>]*>\\s*)?"
@@ -148,10 +154,10 @@ class RationaleLocationContractTest {
      * A comment that argues a choice inside the line rather than announcing it in a heading.
      *
      * <p>The heading detectors above read the shape of an opener, so a file that never writes one
-     * carries rationale past them. A review measured that: the composition argued its transport
-     * posture over thirty lines, the namespace manifest argued a pinned admission version, the
-     * workflow justified a stage, the deck's script justified how it loads a library, and the
-     * aggregator justified a raised dependency. None of them opened with "Why".
+     * carries rationale past them. None of these shapes opens with "Why": a composition arguing its
+     * transport posture over thirty lines, a namespace manifest arguing a pinned admission version,
+     * a workflow justifying a stage, a deck script justifying how it loads a library, and an
+     * aggregator justifying a raised dependency.
      *
      * <p>Nine shapes are read, and each one is a decision being defended rather than behaviour being
      * described: a claim that a choice was deliberate or was not an oversight, a statement of what
@@ -191,6 +197,15 @@ class RationaleLocationContractTest {
     private static final String POINTER_TOKEN = "decision-log.md";
 
     /**
+     * The label a shipped comment introduces the log with, and the only other spelling of it.
+     *
+     * <p>Neither matches {@link #INLINE_RATIONALE} or {@link #SHIPPED_RATIONALE_HEADING}, which is
+     * what lets both essay scans run with no exemption at all: the compliant pointer passes on its
+     * own text rather than on a rule that forgives it.
+     */
+    private static final List<String> POINTER_LABELS = List.of("Design decisions:", "Decisions:");
+
+    /**
      * Shipped text formats the essay scan reads, each with the fewest files it must reach.
      *
      * <p>The floors are per format on purpose. A single total would stay satisfied by the seven
@@ -220,10 +235,10 @@ class RationaleLocationContractTest {
      * Formats no comment scan reads, each with the reason it carries no rationale comment.
      *
      * <p>This map is the other half of {@link #SHIPPED_TEXT_FLOORS}, and
-     * {@link #everyShippedFormatIsEitherScannedOrClassified()} holds every format of the tree to one
-     * of the two. A format added to the platform is therefore either scanned or classified here, and
-     * cannot arrive unread: the guard this replaced read two formats and reported on all of them,
-     * which is the defect the review named.
+     * {@link #everyShippedFormatIsEitherScannedOrClassified()} holds every format of the tree to
+     * one of the two. A format added to the platform is therefore either scanned or classified
+     * here, and cannot arrive unread. A guard that reads two formats while reporting on all of them
+     * reports a clean tree it never scanned.
      */
     private static final Map<String, String> UNSCANNED_FORMATS = Map.of(
             ".md", "documentation, which is where Rule 1 puts rationale and Rule 5 scores its prose",
@@ -357,13 +372,13 @@ class RationaleLocationContractTest {
     /**
      * No shipped comment of any format argues a choice inside the line.
      *
-     * <p>This is the other half of {@link #noShippedTextOpensARationaleEssay()}. That test reads the
-     * shape of an opener, and a review found five artifacts carrying rationale past it because none
-     * of them wrote one: {@code docker-compose.yml} argued its transport posture, alternatives and
-     * accepted risk over thirty lines; {@code deploy/k8s/00-namespace.yaml} argued a pinned admission
-     * version; {@code .github/workflows/ci.yml} justified a stage; the deck's script justified how it
-     * loads its renderer; and {@code pom.xml} justified a raised dependency. Each argument was
-     * already in the log, so each was a second copy of a decision Rule 1 keeps in one place.
+     * <p>This is the other half of {@link #noShippedTextOpensARationaleEssay()}. That test reads
+     * the shape of an opener, so an artifact that writes no opener carries rationale past it:
+     * {@code docker-compose.yml} arguing its transport posture, alternatives and accepted risk over
+     * thirty lines; {@code deploy/k8s/00-namespace.yaml} arguing a pinned admission version;
+     * {@code .github/workflows/ci.yml} justifying a stage; the deck's script justifying how it
+     * loads its renderer; and {@code pom.xml} justifying a raised dependency. An argument already
+     * in the log is a second copy of a decision Rule 1 keeps in one place.
      *
      * <p>Every format is read as its comments. A marked format is read line by line, and the deck is
      * read as its HTML comments, its block comments and its line comments, which is where a page
@@ -397,7 +412,14 @@ class RationaleLocationContractTest {
     }
 
     /**
-     * Collects every comment line that argues a choice, exempting the pointer form.
+     * Collects every comment line that argues a choice.
+     *
+     * <p>No line is exempt. A pointer to the log is spelled {@code Design decisions:} or
+     * {@code Decisions:} followed by the path, and neither spelling matches
+     * {@link #INLINE_RATIONALE}, so the compliant form needs no exemption to pass. A label that
+     * enumerates what the log carries does match, and a label is where a design essay hid:
+     * appending {@code Rationale, alternatives considered and accepted risks: <path>} to an
+     * argument satisfied the exemption this method used to grant.
      *
      * @param where     the file, relative to the repository root
      * @param comments  the comment lines of that file, in order
@@ -405,21 +427,10 @@ class RationaleLocationContractTest {
      */
     private static void collectInlineRationale(String where, List<CommentLine> comments,
             List<String> offending) {
-        for (int at = 0; at < comments.size(); at++) {
-            CommentLine comment = comments.get(at);
-            if (!INLINE_RATIONALE.matcher(comment.text()).find()) {
-                continue;
+        for (CommentLine comment : comments) {
+            if (INLINE_RATIONALE.matcher(comment.text()).find()) {
+                offending.add(where + ":" + comment.number() + " " + comment.text().trim());
             }
-            boolean pointsAtTheLog = comment.text().contains(POINTER_TOKEN);
-            if (!pointsAtTheLog && at + 1 < comments.size()) {
-                CommentLine next = comments.get(at + 1);
-                pointsAtTheLog = next.number() == comment.number() + 1
-                        && next.text().contains(POINTER_TOKEN);
-            }
-            if (pointsAtTheLog) {
-                continue;
-            }
-            offending.add(where + ":" + comment.number() + " " + comment.text().trim());
         }
     }
 
@@ -579,11 +590,6 @@ class RationaleLocationContractTest {
             if (!banner && !heading) {
                 continue;
             }
-            String next = at + 1 < lines.length ? lines[at + 1] : "";
-            boolean pointsAtTheLog = lines[at].contains(POINTER_TOKEN) || next.contains(POINTER_TOKEN);
-            if (heading && !banner && pointsAtTheLog) {
-                continue;
-            }
             offending.add(where + ":" + (lineOffset + at + 1) + " " + lines[at].trim());
         }
     }
@@ -702,12 +708,19 @@ class RationaleLocationContractTest {
                 "a paragraph naming its pointers was read as a rationale heading");
 
         List<String> flagged = new ArrayList<>();
+        collectEssayOpeners("sample", "# Design decisions: card-platform/docs/decision-log.md.\n",
+                0, flagged);
+        assertEquals(List.of(), flagged,
+                "the concise pointer label this platform ships opens no essay, which is why the two"
+                        + " essay scans need no exemption");
+
         collectEssayOpeners("sample", "# Why a reservation rather than an aggregate:\n"
                 + "# card-platform/docs/decision-log.md.\n", 0, flagged);
-        assertEquals(List.of(), flagged,
-                "a heading answered by the log on the next line is a pointer, which is the shape this"
-                        + " platform uses to ask in the file and answer in one place");
+        assertEquals(1, flagged.size(),
+                "a heading asking why fails even when the log answers it on the next line, because"
+                        + " the concise label asks nothing: " + flagged);
 
+        flagged.clear();
         collectEssayOpeners("sample", "# Why one pass is several transactions. Because a claim that\n"
                 + "# spans a send holds a row open.\n", 0, flagged);
         assertEquals(1, flagged.size(),
@@ -726,10 +739,17 @@ class RationaleLocationContractTest {
                 "a javadoc paragraph opening on a banner in capitals is an essay: " + flagged);
 
         flagged.clear();
-        collectEssayOpeners("sample", " * <p>Rationale, alternatives considered and accepted risks:\n"
-                + " * {@code card-platform/docs/decision-log.md}.\n", 0, flagged);
+        collectEssayOpeners("sample", " * <p>Design decisions: "
+                + "{@code card-platform/docs/decision-log.md}.\n", 0, flagged);
         assertEquals(List.of(), flagged,
                 "the pointer paragraph this platform ships in place of an essay is not an essay");
+
+        flagged.clear();
+        collectEssayOpeners("sample", " * <p>Rationale, alternatives considered and accepted risks:\n"
+                + " * {@code card-platform/docs/decision-log.md}.\n", 0, flagged);
+        assertEquals(1, flagged.size(),
+                "a label enumerating what the log carries states the decision in two places, and it"
+                        + " is the label a design essay was appended to: " + flagged);
 
         assertTrue(INLINE_RATIONALE.matcher(
                         "each is a deliberate choice for this stack rather than an oversight:").find(),
@@ -766,18 +786,26 @@ class RationaleLocationContractTest {
 
         flagged.clear();
         collectInlineRationale("sample", List.of(
-                new CommentLine(9, " Alternatives weighed and the risk accepted:"),
-                new CommentLine(10, " card-platform/docs/decision-log.md")), flagged);
+                new CommentLine(9, " Design decisions: card-platform/docs/decision-log.md,"),
+                new CommentLine(10, " under \"One event per decided authorization\".")), flagged);
         assertEquals(List.of(), flagged,
-                "an argument answered by the log on the next line is the pointer form this platform"
-                        + " ships");
+                "the concise pointer, and the row it names, argue nothing and need no exemption");
+
+        flagged.clear();
+        collectInlineRationale("sample", List.of(new CommentLine(9,
+                " Alternatives considered: a starter supplies it transitively."
+                        + " card-platform/docs/decision-log.md")), flagged);
+        assertEquals(1, flagged.size(),
+                "a pointer appended to an argument is still an argument, and exempting it is what"
+                        + " let a design essay ship: " + flagged);
 
         flagged.clear();
         collectInlineRationale("sample", List.of(
-                new CommentLine(9, " Alternatives weighed and the risk accepted:"),
-                new CommentLine(40, " card-platform/docs/decision-log.md")), flagged);
+                new CommentLine(9, " Rationale, alternatives considered and accepted risks:"),
+                new CommentLine(10, " card-platform/docs/decision-log.md")), flagged);
         assertEquals(1, flagged.size(),
-                "a log named thirty lines later answers nothing a reader met: " + flagged);
+                "an enumerating label is reported even when a pointer follows it on the next line,"
+                        + " because the label is the half a reader takes for the whole: " + flagged);
 
         assertEquals(List.of(" a block comment", "", " a line one"),
                 commentLines(".html", "<p>x</p>\n/* a block comment\n*/\n// a line one\n").stream()

@@ -40,10 +40,10 @@ import org.junit.jupiter.api.Test;
  * <h2>The report artifacts</h2>
  *
  * <p>Every Surefire and Failsafe report is uploaded and kept, so whatever a test wrote to standard
- * output is readable for a fortnight by everyone who can read the run. A review found one seeded card
- * number in one report, and the way it arrived is the general case: a PostgreSQL constraint violation
- * quotes the whole failing row in its detail, and the framework's own logger renders that message.
- * Two controls answer it, and this class holds both. The services turn that logger off, and
+ * output is readable for a fortnight by everyone who can read the run. A seeded card number reaches
+ * a report by a general route: a PostgreSQL constraint violation quotes the whole failing row in
+ * its detail, and the framework's own logger renders that message. Two controls answer that, and
+ * this class holds both. The services turn that logger off, and
  * {@code scripts/redact-report-artifacts.sh} masks the seeded values in the reports and then fails
  * the run while any survive.</p>
  *
@@ -120,11 +120,9 @@ class CardholderDataInArtifactsContractTest {
     /** Text of the scanner configuration. */
     private static final String CONFIGURATION = read(PLATFORM_ROOT.resolve(SCANNER_CONFIGURATION));
 
-    /** Text of the workflow. */
     private static final String WORKFLOW_TEXT =
             read(PLATFORM_ROOT.getParent().resolve(WORKFLOW));
 
-    /** Returns the platform root. */
     private static Path platformRoot() {
         Path base = Path.of("").toAbsolutePath().normalize();
         while (base != null && !Files.isRegularFile(base.resolve(SCANNER_CONFIGURATION))) {
@@ -537,9 +535,9 @@ class CardholderDataInArtifactsContractTest {
          * <p>This is the one property the workflow's own secret-scan stage cannot demonstrate. That
          * stage scans this repository and passes, which shows the exemptions are wide enough; it
          * cannot show they are narrow enough, because a secret it fails to report is a secret that
-         * is not there to report. Planting one is the only way to see the difference, and the
-         * difference is exactly what a review found: under the earlier configuration this same
-         * planted token was invisible.</p>
+         * is not there to report. Planting one is the only way to see the difference: a
+         * configuration whose exemptions are too wide reports nothing about this planted token
+         * either.</p>
          *
          * <p>The repository-wide scans are deliberately not repeated here. The workflow runs both
          * modes against this same configuration with {@code --exit-code 1}, and running them again

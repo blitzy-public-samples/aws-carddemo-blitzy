@@ -1548,13 +1548,12 @@ public class OutboxRelayTest {
         /**
          * Asserts a row the relay gave up on is recorded as abandoned, never as published.
          *
-         * <p>This is the property a review found broken. The relay closed such a row by calling
-         * {@code markPublished}, so an event that reached no consumer was
-         * {@link OutboxEventEntity.RelayState#PUBLISHED}: indistinguishable in the table, in the
-         * retention sweep and in every metric from an assessment the broker acknowledged. The only
-         * thing that had been published was the diagnostic saying it had not been.
+         * <p>Closing such a row with {@code markPublished} would leave an event that reached no
+         * consumer marked {@link OutboxEventEntity.RelayState#PUBLISHED}: indistinguishable in the
+         * table, in the retention sweep and in every metric from an assessment the broker
+         * acknowledged. The only thing published would be the diagnostic saying it was not.
          *
-         * <p>What the row carries now is the truth in three parts. {@code ABANDONED} is terminal, and
+         * <p>What the row carries is the truth in three parts. {@code ABANDONED} is terminal, and
          * {@code claimDueRows} never returns it, so the row is closed exactly as before.
          * {@code published} stays false and {@code published_at} stays absent, because nothing was
          * published. {@code dead_letter_state} reads {@code PUBLISHED} with a moment beside it, which
@@ -2039,9 +2038,9 @@ public class OutboxRelayTest {
          * The adapter is the only class in this service that may name a broker client or template, and it
          * is required to pin the two settings a terminal diagnostic depends on.
          *
-         * <p>The relay is read for its imports rather than its whole text, because its class comment
-         * names the template it used to hold and explains why it no longer does. Documenting a removed
-         * dependency is not holding one, and the assertion above this one is what proves the structure.
+         * <p>The relay is read for its imports rather than its whole text, because its field comment
+         * names the broker client it must not hold. Naming a dependency in prose is not holding one,
+         * and the assertion above this one is what proves the structure.
          *
          * <p>One broker-package import is admitted and it is not a transport dependency:
          * {@code org.apache.kafka.common.errors.SerializationException} is the failure

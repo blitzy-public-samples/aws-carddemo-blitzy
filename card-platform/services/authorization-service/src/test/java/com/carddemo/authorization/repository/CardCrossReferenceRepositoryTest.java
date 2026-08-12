@@ -50,7 +50,6 @@ final class CardCrossReferenceRepositoryTest {
                         + "index returns duplicate keys in");
     }
 
-    /** Asserts the single-row lookup carries the same ordering and reads one row. */
     @Test
     void theSingleRowLookupCarriesTheSameOrderingAndReadsOneRow() {
         PartTree tree = new PartTree(SINGLE_ROW_METHOD, CardCrossReferenceEntity.class);
@@ -72,7 +71,6 @@ final class CardCrossReferenceRepositoryTest {
                         + "matches at most one row");
     }
 
-    /** Asserts the two account lookups return the shapes their callers read. */
     @Test
     void theTwoAccountLookupsReturnTheShapesTheirCallersRead() {
         assertEquals(List.class, returnTypeOf(ORDERED_LIST_METHOD),

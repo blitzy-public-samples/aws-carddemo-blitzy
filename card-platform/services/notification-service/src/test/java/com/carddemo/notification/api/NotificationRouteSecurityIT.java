@@ -258,7 +258,6 @@ class NotificationRouteSecurityIT {
                                     + "cannot tell an unheld card from one with no history"));
         }
 
-        /** Asserts the metrics identity reaches no business route. */
         @Test
         @DisplayName("the metrics identity reaches no business route")
         void theMetricsIdentityReachesNoBusinessRoute() {

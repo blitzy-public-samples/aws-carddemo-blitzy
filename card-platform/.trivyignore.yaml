@@ -24,9 +24,8 @@
 # Scope. Nothing here excuses a finding in an image this project builds. The six service images are
 # scanned in the same stage with no exception file at all, and their gate is zero fixable findings.
 #
-# Mechanics, alternatives considered and accepted risks:
-# card-platform/docs/decision-log.md, under "Two pinned infrastructure images carry a dated
-# exception rather than an unpinned upgrade".
+# Design decisions: card-platform/docs/decision-log.md, under "Two pinned infrastructure images
+# carry a dated exception rather than an unpinned upgrade".
 
 vulnerabilities:
   # postgres:18.4 - fifteen Go standard-library findings in one helper binary.

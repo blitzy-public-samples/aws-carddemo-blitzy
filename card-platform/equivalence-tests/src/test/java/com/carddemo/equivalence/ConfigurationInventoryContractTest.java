@@ -96,12 +96,12 @@ class ConfigurationInventoryContractTest {
      * Declaring it in the example invited an operator to give every replica one identity, which is
      * what turns stranded-claim recovery into a second publish.
      *
-     * <p>{@code PROCESSED_EVENT_RETENTION_HOURS} is the third, and it is retired rather than renamed.
-     * It set a horizon after which a duplicate-delivery claim was deleted, and a security review found
-     * every effect a claim guards outliving that horizon: a posted balance, a category balance, a
-     * cycle accumulator, a read-model row. A claim is permanent now, so the key would name a
-     * behaviour no service has. Retiring it is what stops a deployment reintroducing the horizon by
-     * setting a variable.
+     * <p>{@code PROCESSED_EVENT_RETENTION_HOURS} is the third, and it is retired rather than
+     * renamed. It would set a horizon after which a duplicate-delivery claim is deleted, and every
+     * effect a claim guards outlives such a horizon: a posted balance, a category balance, a cycle
+     * accumulator, a read-model row. A claim is permanent, so the key would name a behaviour no
+     * service has. Retiring it is what stops a deployment reintroducing the horizon by setting a
+     * variable.
      */
     private static final List<String> RETIRED_KEYS = List.of(
             "GROUP_AUTHORIZATION",

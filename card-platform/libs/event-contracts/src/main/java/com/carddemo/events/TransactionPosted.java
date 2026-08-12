@@ -234,10 +234,13 @@ public record TransactionPosted(
     public static final int DETAIL_SCHEMA_VERSION = TRANSACTION_DETAIL_SCHEMA_VERSION;
 
     /**
-     * The characters {@link #cardToken()} holds: the hexadecimal rendering of a SHA-256 digest.
+     * The characters {@link #cardToken()} holds: 64 lower-case hexadecimal characters encoding an
+     * HMAC-SHA-256 value derived under the deployment key and version.
      *
      * <p>{@code PanMasker.cardToken} in {@code card-platform/libs/cobol-compat} derives the value,
-     * and this module declares the width rather than depending on that module.
+     * and this module declares the width rather than depending on that module. A token is a keyed,
+     * versioned stable pseudonym: the same card number under the same key and version always yields
+     * the same token, so tokens are linkable, and recovering the card number requires the key.
      */
     public static final int CARD_TOKEN_LENGTH = 64;
 

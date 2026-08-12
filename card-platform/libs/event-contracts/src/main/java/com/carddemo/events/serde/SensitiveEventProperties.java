@@ -228,10 +228,10 @@ public final class SensitiveEventProperties {
      * {@code CUST-SSN PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L20}, which
      * {@link #GOVERNMENT_IDENTIFIER} cannot see because that pattern reads the separated form.
      *
-     * <p>A security review found both gaps by writing a verification value into
-     * {@code description} and an unseparated government identifier into {@code merchantName}, and
-     * both reached a topic. {@link #NARRATIVE_BARE_CODE} and {@link #NARRATIVE_DIGIT_RUN} are what
-     * refuse them now.
+     * <p>{@link #NARRATIVE_BARE_CODE} and {@link #NARRATIVE_DIGIT_RUN} are what close the two shapes
+     * only a prose field carries: a verification value written into {@code description}, and an
+     * unseparated government identifier written into {@code merchantName}. Neither screen above
+     * reaches either one.
      *
      * <p>The seven cardholder properties are here because {@code CustomerContextChanged} carries the
      * ten fields {@code app/cbl/CBSTM03A.CBL:L458-L504} renders on a statement, and until this
@@ -319,9 +319,10 @@ public final class SensitiveEventProperties {
      *
      * <p>A screened value is read chain by chain, and each chain's digits are counted with its
      * punctuation removed, so a card number written for a human reader is found however it is
-     * punctuated: {@code 4111 1111 1111 1111}, {@code 4111-1111-1111-1111},
-     * {@code 4111.1111.1111.1111}, {@code 4111/1111/1111/1111}, {@code 4111(1111)1111(1111)},
-     * {@code 4111*1111*1111*1111} and any mixture of those all carry the same sixteen digits. A
+     * punctuated: {@code dddd dddd dddd dddd}, {@code dddd-dddd-dddd-dddd},
+     * {@code dddd.dddd.dddd.dddd}, {@code dddd/dddd/dddd/dddd}, {@code dddd(dddd)dddd(dddd)},
+     * {@code dddd*dddd*dddd*dddd} and any mixture of those all carry the same sixteen digits, where
+     * each {@code d} stands for one decimal digit. A
      * named separator set cannot do this: free text admits every printable character, so a chain
      * joins on everything that is not a digit or a letter rather than on a list of the separators
      * anybody thought of.
@@ -464,8 +465,8 @@ public final class SensitiveEventProperties {
      * unseparated, and the unseparated form is not sought here: nine digits is a plausible merchant
      * identifier and refusing it would refuse valid traffic. The separated form is not, and the
      * separator is not restricted to the space and the hyphen a human usually types:
-     * {@code 020.97.3888} and {@code 020/97/3888} name the same identifier as
-     * {@code 020-97-3888}.
+     * {@code ddd.dd.dddd} and {@code ddd/dd/dddd} name the same identifier as
+     * {@code ddd-dd-dddd}, where each {@code d} stands for one decimal digit.
      *
      * <p>The group widths are what keep this pattern off ordinary data. A ten-character date such
      * as {@code 2022-06-10} cannot match, because the first group must be exactly three digits with
@@ -619,8 +620,9 @@ public final class SensitiveEventProperties {
      * <li>A property whose folded name sits in {@link #FREE_TEXT_PROPERTIES}, and every property
      * inside an {@link #EXTENSION_PROPERTY} object, takes the STRUCTURED screen: the value is sought
      * for a run of {@code [0-9]} twelve characters or longer, both as written and with grouping
-     * characters removed so {@code 4111 1111 1111 1111} is caught with {@code 4111111111111111},
-     * and for the three-two-four shape of a United States government identifier, and for a
+     * characters removed, so a sixteen-digit value written in four groups of four is caught along
+     * with the same value written unbroken, and for the three-two-four shape of a United States
+     * government identifier, and for a
      * verification code beside a word that names one.</li>
      * <li>A property whose folded name also sits in {@link #NARRATIVE_PROPERTIES} takes the
      * NARRATIVE screen, which is the structured screen plus two shapes that only a prose field can
@@ -684,9 +686,9 @@ public final class SensitiveEventProperties {
         if (node.isArray()) {
             for (JsonNode element : node) {
                 // The name reported is the property that OWNS the array, not the array's own
-                // position and not the subtree the screen was inherited from. A card number inside
-                // triggeredRules used to be reported as "extensions", which named a property the
-                // event did not carry and sent a reader looking in the wrong place.
+                // position and not the subtree the screen was inherited from. Reporting the subtree
+                // would name a property the event does not carry, so a card number inside
+                // triggeredRules must be reported as triggeredRules.
                 if (screen != Screen.NONE && carriesSensitiveText(element, screen)) {
                     return owner;
                 }

@@ -10,7 +10,7 @@
 -- Three listeners write this table: messaging/TransactionAuthorizedConsumer,
 -- messaging/TransactionDeclinedConsumer and messaging/AccountStateChangedConsumer.
 --
--- Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md, under
+-- Design decisions: card-platform/docs/decision-log.md, under
 -- "What identifies one delivery of one event". Corrections to an applied migration arrive as a new
 -- migration because Flyway compares the checksum of every applied file at start-up.
 
@@ -44,4 +44,4 @@ ALTER TABLE processed_event
 -- not asked to forget. ix_processed_event_processed_at from V1__schema.sql still serves the
 -- ordering.
 COMMENT ON CONSTRAINT pk_processed_event ON processed_event IS
-    'One event identifier per consumed topic. Two listener groups read two topics whose identifiers two producing services assign independently, so the identifier alone does not identify a delivery.';
+    'One event identifier per consumed topic. Separate listener groups read separate topics whose identifiers separate producing services assign independently, so the identifier alone does not identify a delivery.';

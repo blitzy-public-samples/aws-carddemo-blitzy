@@ -44,18 +44,15 @@ import org.springframework.transaction.support.TransactionTemplate;
  * any kind: every dataset's lifetime belongs to the Job Control Language, and
  * {@code app/jcl/POSTTRAN.jcl} deletes and redefines its output rather than pruning it.
  *
- * <p>Two defects these tests close. The first is a bounded delete issued once per hourly sweep: the
- * bound keeps one statement short, and without a drain the surplus above one batch an hour is left
- * behind for ever, so a table grows without limit even though every statement against it was small.
- * The second is narrower and was the more serious of the two. {@code velocity_window} had a bounded,
- * ordered delete written and documented, and no production path called it, so one row per account
- * per span accumulated for the life of the schema while the method that would have removed them sat
- * unreferenced.
+ * <p>Two properties these tests hold. A bounded delete issued once per hourly sweep leaves the
+ * surplus above one batch behind for ever, so the sweep drains until a pass removes nothing and
+ * every table it names stays bounded. A bounded, ordered delete that no production path calls
+ * removes nothing at all, so one test asserts this sweep reaches {@code velocity_window} and not
+ * only the tables beside it.
  *
  * <p>{@code processed_event} is absent from every assertion below, and one test asserts that absence
- * directly. A security review found the marker horizon expiring claims while the assessment and the
- * velocity buckets they guard stayed, so a claim is now permanent and this sweep holds no store over
- * that table.
+ * directly. A claim is permanent, so this sweep holds no store over that table: a marker horizon
+ * would expire a claim while the assessment and the velocity buckets it guards stayed.
  *
  * <p>Nothing here opens a database connection. Each repository is a stand-in that answers with a row
  * count, and the transaction template runs its callback directly so the number of transactions is
@@ -319,7 +316,7 @@ class RetentionSweepTest {
     }
 
     @Nested
-    @DisplayName("The assessment table, whose declared horizon nothing applied")
+    @DisplayName("The assessment table, whose declared horizon this sweep applies")
     class AssessmentTable {
 
         @Test
@@ -347,7 +344,7 @@ class RetentionSweepTest {
     }
 
     @Nested
-    @DisplayName("The velocity table, which no production path used to sweep")
+    @DisplayName("The velocity table, which the scheduled sweep must reach")
     class VelocityTable {
 
         @Test

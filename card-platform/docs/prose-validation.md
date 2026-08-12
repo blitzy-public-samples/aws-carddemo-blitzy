@@ -31,10 +31,10 @@ One row per target. `Paragraphs` counts the prose blocks scoring reads and `Sent
 
 | # | Target | Paragraphs | Sentences | Over thirty words | Paragraphs over five | Buzzwords |
 |---:|---|---:|---:|---:|---:|---:|
-| 1 | `docs/decision-log.md` | 45 | 141 | 0 | 0 | 0 |
+| 1 | `docs/decision-log.md` | 46 | 143 | 0 | 0 | 0 |
 | 2 | `docs/traceability-matrix.md` | 39 | 108 | 0 | 0 | 0 |
 | 3 | `docs/architecture-before-after.md` | 51 | 136 | 0 | 0 | 0 |
-| 4 | `docs/event-flow.md` | 146 | 387 | 0 | 0 | 0 |
+| 4 | `docs/event-flow.md` | 147 | 392 | 0 | 0 | 0 |
 | 5 | `docs/data-model.md` | 156 | 385 | 0 | 0 | 0 |
 | 6 | `docs/onboarding.md` | 196 | 520 | 0 | 0 | 0 |
 | 7 | `docs/suggested-next-tasks.md` | 343 | 835 | 0 | 0 | 0 |
@@ -42,11 +42,11 @@ One row per target. `Paragraphs` counts the prose blocks scoring reads and `Sent
 | 9 | `docs/equivalence-results.md` | 91 | 260 | 0 | 0 | 0 |
 | 10 | `docs/prose-validation.md` | 134 | 212 | 0 | 0 | 0 |
 | 11 | `README.md` | 133 | 259 | 0 | 0 | 0 |
-| 12 | `services/authorization-service/README.md` | 193 | 438 | 0 | 0 | 0 |
+| 12 | `services/authorization-service/README.md` | 193 | 439 | 0 | 0 | 0 |
 | 13 | `services/ledger-posting-service/README.md` | 145 | 313 | 0 | 0 | 0 |
 | 14 | `services/fraud-detection-service/README.md` | 118 | 290 | 0 | 0 | 0 |
 | 15 | `services/notification-service/README.md` | 168 | 380 | 0 | 0 | 0 |
-| 16 | `services/account-service/README.md` | 175 | 395 | 0 | 0 | 0 |
+| 16 | `services/account-service/README.md` | 175 | 396 | 0 | 0 | 0 |
 | 17 | `services/card-service/README.md` | 165 | 421 | 0 | 0 | 0 |
 | 18 | `../README.md` | 26 | 47 | 0 | 0 | 0 |
 | 19 | `presentation/executive-summary.html` | 108 | 114 | 0 | 0 | 0 |
@@ -97,29 +97,29 @@ Each digest is the SHA-256 of one target's bytes, in lower-case hexadecimal. It 
 
 | # | Target | SHA-256 of the text scored |
 |---:|---|---|
-| 1 | `docs/decision-log.md` | `978c6b8583a131d0454e921b7a7de30b106815692ed9d5ea4eeb8f463e6a936c` |
-| 2 | `docs/traceability-matrix.md` | `093bd5a2c62107751c36b7136a7923d82ca4b322476a08a39755094dd174f356` |
+| 1 | `docs/decision-log.md` | `d7bd7ab3c009dfef64244691bbd4c2d357aa0733bd1ea994f7522f47313e4c4a` |
+| 2 | `docs/traceability-matrix.md` | `3ed7a3bbd942894cb0d5b0864366a036d75ed596ab3dc3ffa5016b61eb8b6611` |
 | 3 | `docs/architecture-before-after.md` | `b5490d7ca84183d6687c2d40ac65e896205af76420d658cf2c3ccf0668848b65` |
-| 4 | `docs/event-flow.md` | `65d12248847404ab3b27913f99faff1f341b02f5bf48896f762e1d04f54f86ee` |
-| 5 | `docs/data-model.md` | `736faf17dcd414b8bd69573990b3f045e608bd5f9e0de42e8acf5fc91d86c07f` |
+| 4 | `docs/event-flow.md` | `871d398449f07d976e2db85c60b8d3c49bebe5ae465af3f6448f2a95c59117e0` |
+| 5 | `docs/data-model.md` | `3975095cb4236cfd7abb995c0cb073af0331ae74f48a2e143cea03d4b615c831` |
 | 6 | `docs/onboarding.md` | `741dad9dee60e55581f4907e7bfd241c744f24269fe9981a2dad5c6a5fde95f6` |
 | 7 | `docs/suggested-next-tasks.md` | `c356f5c1053f1c4aceba0549415ef499adae97f9ea5755eb55da9f9cc544666b` |
 | 8 | `docs/business-rule-flags.md` | `c8a64ce8f9ef0e69a452daccac5f899ba669d03c8ae4b67568aeae525868ff78` |
 | 9 | `docs/equivalence-results.md` | `e32b935feded7dada739f2e3e65b6d4e0d5112358cdb86d120ab49d21f1d882e` |
 | 10 | `docs/prose-validation.md` | This report carries no digest: a file cannot publish the digest of its own bytes |
 | 11 | `README.md` | `fb869d94586050645b18df18b8b6e01a501a86779d2ff2a4ee758b75c8c31019` |
-| 12 | `services/authorization-service/README.md` | `36a7b748f19a41f9f18ef051980b64345748e331276851759245a1a35f6fcda3` |
-| 13 | `services/ledger-posting-service/README.md` | `c7bd28fc01fad4264007129c44bb8581f9146f4cd22ad14d45df0f4dcae30ea8` |
+| 12 | `services/authorization-service/README.md` | `d75ff1a3e7287cbd640e74149a5c88cc942b49de97ab190d01dbf6365ec5f1f3` |
+| 13 | `services/ledger-posting-service/README.md` | `26551346efa39e835fec5623f58aeb632c6e427f274103f4d637fff1a0c7035d` |
 | 14 | `services/fraud-detection-service/README.md` | `3656f02434700b14776fc1848f5ca80bf0629f373e619325c3501d82d1e21559` |
 | 15 | `services/notification-service/README.md` | `890d89a81d52f30f8320161724e2f3df921ae382b8c3e8e5161b437d9dcc9632` |
-| 16 | `services/account-service/README.md` | `c3d7669b2c7c38d12250c080d675822c3677cd0cec7a66cf5d60d1db5ec063e2` |
+| 16 | `services/account-service/README.md` | `1d4ed482fcadefb52714d49fc3a5930872f261a01c1e69f52a0c34d1b6f2e78f` |
 | 17 | `services/card-service/README.md` | `892ad96b10147398f2341ad530e14b0a3ebba389357ed9f725c397cc47716690` |
 | 18 | `../README.md` | `c1c52514d703fdceb71234da75f6c6901860dc8b34a380a7bbfa05f3ec96191f` |
-| 19 | `presentation/executive-summary.html` | `874572ee11def54109a6b9ff611fe554af51b15e595f1559c5d2f7e2b6091843` |
+| 19 | `presentation/executive-summary.html` | `0f66ded6ab2314f9e0dd63e9a47c4780dd3bc33bc0d14f4e81e4806063f3ead4` |
 | 20 | `deploy/k8s/README.md` | `5cfd8099f17f96fb167a4de4deb2669084862367c44dd0753f461486562357ad` |
 | 21 | `services/authorization-service/src/main/resources/openapi.yaml` | `a7d7f4f696615f1093bbd35dad33514597522127c299a873e98050d5907db5d3` |
 | 22 | `services/ledger-posting-service/src/main/resources/openapi.yaml` | `c14e366701f9054ed4c63b379ea83bc6b88c69de3ecb51db6a5ea372823b286a` |
-| 23 | `services/fraud-detection-service/src/main/resources/openapi.yaml` | `d984dddb30eeb1d3d684c25a10565d763aa364e635a992eea405a68412ac8b24` |
+| 23 | `services/fraud-detection-service/src/main/resources/openapi.yaml` | `d2f7c51dcbe85979e20a2e992f335af3ff204f17b3a8b4f1487fba052f2b5202` |
 | 24 | `services/notification-service/src/main/resources/openapi.yaml` | `dbb3d114d0246a7e6d50b018416ff08e0423a0d0ea3ece0f0e18c66966652005` |
 | 25 | `services/account-service/src/main/resources/openapi.yaml` | `3243cf2170daffdb119cad14f76652576a35dd62e538f46549c26e367e09cb5e` |
 | 26 | `services/card-service/src/main/resources/openapi.yaml` | `1b48e071cd945b3c86d11147bc14838540f086cf94b2b435cef8518d7618d936` |
@@ -138,7 +138,7 @@ Each digest is the SHA-256 of one target's bytes, in lower-case hexadecimal. It 
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `BigDecimal` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 45 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 46 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Migration strategy`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `card-platform/` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Arithmetic and numeric fidelity` |
@@ -151,7 +151,7 @@ Each digest is the SHA-256 of one target's bytes, in lower-case hexadecimal. It 
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Concurrency and identifiers` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Defects reproduced rather than fixed` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `CP00` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 45 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 46 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Validations deliberately not added` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `CBTRN02C` rather than restating what it is |
@@ -243,7 +243,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `eventId` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 146 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 147 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Payload conventions`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `eventType` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Topics and consumer groups` |
@@ -256,7 +256,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `State-change projection flow` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Delivery mechanics` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `aggregateId` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 146 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 147 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `The two dead-letter wire forms` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `docs/decision-log.md` rather than restating what it is |

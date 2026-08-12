@@ -243,11 +243,11 @@ class KubernetesDeploymentContractTest {
     /**
      * Holds the two upstream images to a digest, which is the only reference a node verifies.
      *
-     * <p>A security review found the six platform images named by a mutable tag. Six of the eight
-     * images here cannot carry a digest as this repository ships, because a locally built image has
-     * no manifest digest until it is pushed. The two that are pulled from a registry can, both
-     * already do, and this assertion is what keeps a later edit from replacing either with a bare
-     * tag. A digest is content-addressed: the pull yields exactly those bytes or it fails.
+     * <p>Six of the eight images here cannot carry a digest as this repository ships, because a
+     * locally built image has no manifest digest until it is pushed, so each is named by a mutable
+     * tag. The two that are pulled from a registry can carry one, both already do, and this
+     * assertion is what keeps a later edit from replacing either with a bare tag. A digest is
+     * content-addressed: the pull yields exactly those bytes or it fails.
      */
     @Test
     @DisplayName("both upstream images are pinned by digest and never by tag alone")
@@ -415,9 +415,8 @@ class KubernetesDeploymentContractTest {
      * <p>Two volumes hold everything this platform stores. One carries all six schemas, including
      * fifty full card numbers, fifty card verification values and the only table describing an
      * identifiable person. The other carries every event published, including the ten cardholder
-     * fields {@code CustomerContextChanged} holds. A security review found neither claim naming a
-     * storage class and no manifest requiring an encrypted one, so a cluster bound each with whatever
-     * default it had.
+     * fields {@code CustomerContextChanged} holds. A claim naming no storage class, with no
+     * manifest requiring an encrypted one, is bound with whatever default the cluster has.
      *
      * <p>The base still names no class, because the documented demonstration binds on kind, minikube
      * and Docker Desktop with no edit. What it names instead is the requirement, as annotations a

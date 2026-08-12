@@ -70,7 +70,6 @@ class AuthorizationDemoDataTest {
     /** The synthetic expiry the demo migration writes. */
     private static final String DEMO_EXPIRY = "2099-12-31";
 
-    /** File name of the demo migration. */
     private static final String DEMO_MIGRATION = "V900__demo_expiry_extension.sql";
 
     /** Accounts in {@code app/data/ASCII/acctdata.txt}. */

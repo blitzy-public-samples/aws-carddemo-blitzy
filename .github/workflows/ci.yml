@@ -20,8 +20,8 @@
 #
 # Provenance is a stage of its own. It runs on a push only and is the one job holding
 # `id-token: write` and `attestations: write`; the image build holds `contents: read`
-# and nothing else on every event. Rationale, alternatives considered and accepted
-# risks: card-platform/docs/decision-log.md.
+# and nothing else on every event.
+# Design decisions: card-platform/docs/decision-log.md.
 #
 # Every stage fails the run. No step is permitted to continue past an error, to
 # discard a status, or to succeed regardless: a finding stops the pipeline, and
@@ -68,7 +68,7 @@
 #
 # Setup on a developer machine, and the local form of every command below:
 # card-platform/docs/onboarding.md
-# Rationale for every choice here: card-platform/docs/decision-log.md
+# Design decisions for this file: card-platform/docs/decision-log.md
 
 name: Card platform continuous integration
 
@@ -183,14 +183,14 @@ jobs:
   # engagement adds to, so the scope of the change stays mechanically auditable. The
   # scan target is still the whole repository: only the configuration path is scoped.
   #
-  # What a security review found. This stage read the whole history of every ref on
-  # every event, with no baseline. That scan reports 113 findings on 39 commits dated
-  # from 2025-10-25 to 2026-08-08, none of them reachable from this branch's HEAD and
-  # none inside the range this engagement authored: they belong to unrelated branches
-  # of a shared sample repository. Every push therefore failed before an image was
-  # built, which is a gate that can never pass and so a gate nobody reads.
+  # What a baseline-free scan costs. Reading the whole history of every ref on every
+  # event reports 113 findings on 39 commits dated from 2025-10-25 to 2026-08-08, none
+  # of them reachable from this branch's HEAD and none inside the range this engagement
+  # authored: they belong to unrelated branches of a shared sample repository. Every
+  # push then fails before an image is built, which is a gate that can never pass and so
+  # a gate nobody reads.
   #
-  # What replaced it. Three scans with three different jobs.
+  # What this stage does instead. Three scans with three different jobs.
   #   1. The working tree, unchanged. Every file as it stands has to be clean.
   #   2. The commit range under review rather than the whole history, so a secret this
   #      change introduces fails the change that introduced it.
@@ -325,7 +325,7 @@ jobs:
 
       # The canary. This step plants a secret and requires the scanner to find it, because a
       # clean scan says the repository holds no secret and does not say the scanner would still
-      # fail on one. Rationale, alternatives considered and accepted risks:
+      # fail on one. Design decisions:
       # card-platform/docs/decision-log.md.
       #
       # Two cases run
@@ -485,9 +485,9 @@ jobs:
       # Ahead of every upload below, and on a failed run as well as a passing one, because the
       # reports of a failed run are the ones carrying output. An uploaded report is readable by
       # everyone who can read the run for REPORT_RETENTION_DAYS days, so whatever a test wrote to
-      # standard output is published for a fortnight. A review found a seeded card number in one
-      # report, put there by a PostgreSQL constraint violation whose DETAIL quotes the whole failing
-      # row. The services no longer log that line, and this step is the second control: it rewrites
+      # standard output is published for a fortnight. A PostgreSQL constraint violation whose DETAIL
+      # quotes the whole failing row puts a seeded card number in a report. The services do not log
+      # that line, and this step is the second control: it rewrites
       # every seeded card number and social security number in the reports to a masked form and then
       # fails the run when any of them survived. The seeded values come out of app/data/ASCII at scan
       # time, so no value is written down anywhere.
@@ -572,9 +572,9 @@ jobs:
       # Ahead of every upload below, and on a failed run as well as a passing one, because the
       # reports of a failed run are the ones carrying output. An uploaded report is readable by
       # everyone who can read the run for REPORT_RETENTION_DAYS days, so whatever a test wrote to
-      # standard output is published for a fortnight. A review found a seeded card number in one
-      # report, put there by a PostgreSQL constraint violation whose DETAIL quotes the whole failing
-      # row. The services no longer log that line, and this step is the second control: it rewrites
+      # standard output is published for a fortnight. A PostgreSQL constraint violation whose DETAIL
+      # quotes the whole failing row puts a seeded card number in a report. The services do not log
+      # that line, and this step is the second control: it rewrites
       # every seeded card number and social security number in the reports to a masked form and then
       # fails the run when any of them survived. The seeded values come out of app/data/ASCII at scan
       # time, so no value is written down anywhere.
@@ -646,9 +646,9 @@ jobs:
       # Ahead of every upload below, and on a failed run as well as a passing one, because the
       # reports of a failed run are the ones carrying output. An uploaded report is readable by
       # everyone who can read the run for REPORT_RETENTION_DAYS days, so whatever a test wrote to
-      # standard output is published for a fortnight. A review found a seeded card number in one
-      # report, put there by a PostgreSQL constraint violation whose DETAIL quotes the whole failing
-      # row. The services no longer log that line, and this step is the second control: it rewrites
+      # standard output is published for a fortnight. A PostgreSQL constraint violation whose DETAIL
+      # quotes the whole failing row puts a seeded card number in a report. The services do not log
+      # that line, and this step is the second control: it rewrites
       # every seeded card number and social security number in the reports to a masked form and then
       # fails the run when any of them survived. The seeded values come out of app/data/ASCII at scan
       # time, so no value is written down anywhere.
@@ -707,8 +707,8 @@ jobs:
   # known advisories. A finding fails the run.
   #
   # It reads the aggregate bill of materials, which is the resolved graph with test
-  # scope included, rather than the descriptors. Rationale, alternatives considered and
-  # accepted risks: card-platform/docs/decision-log.md.
+  # scope included, rather than the descriptors.
+  # Design decisions: card-platform/docs/decision-log.md.
   #
   # The file has to be named bom.json: the scanner recognises a bill of materials by
   # the file name its specification defines and refuses any other.
@@ -825,7 +825,7 @@ jobs:
       - name: Package the six service Java Archive files
         # This stage packages rather than reading an archive the compile stage built: the
         # archives are produced in the job that consumes them, which is the six image builds
-        # a few steps below. Rationale, alternatives considered and accepted risks:
+        # a few steps below. Design decisions:
         # card-platform/docs/decision-log.md. The hand-off this leaves open:
         # card-platform/docs/suggested-next-tasks.md.
         run: mvn -B -ntp -DskipTests package
@@ -915,9 +915,9 @@ jobs:
           test "${fixable_total}" -eq 0
 
       - name: Scan the two infrastructure images this platform deploys
-        # A security review found this stage scanning the six images this project builds and
-        # none of the two it consumes, so a green stage said nothing about the broker or the
-        # database. Both are scanned here at the exact reference each deployment carries.
+        # Scanning only the six images this project builds leaves the two it consumes unscanned,
+        # so a green stage would say nothing about the broker or the database. Both are scanned
+        # here at the exact reference each deployment carries.
         #
         # The reference is read out of the shipped files rather than written again here. A
         # digest copied into this workflow would be a third copy of a value that already
@@ -931,7 +931,7 @@ jobs:
         # exception per package for the findings section 0.5.1 of the plan leaves no route to
         # fix. Every entry names its owner, its justification and the day it stops being
         # honoured, and trivy stops honouring it on that day: the finding returns and this
-        # step fails. Rationale, alternatives considered and accepted risks:
+        # step fails. Design decisions:
         # card-platform/docs/decision-log.md.
         run: |
           mkdir -p target/image-scans

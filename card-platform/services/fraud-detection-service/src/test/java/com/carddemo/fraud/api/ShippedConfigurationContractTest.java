@@ -193,7 +193,6 @@ final class ShippedConfigurationContractTest {
     private static final List<String> PUBLISHED_HOST_PORTS =
             List.of("8081", "8082", "8083", "8084", "8085", "8086");
 
-    /** File names a Logback configuration takes. */
     private static final List<String> LOGBACK_FILE_NAMES = List.of("logback.xml", "logback-spring.xml");
 
     /** File name extensions a Spring profile variant takes. */
@@ -295,7 +294,6 @@ final class ShippedConfigurationContractTest {
     /** The shipped schema migration, character for character. */
     private static String rawMigration;
 
-    /** Base directory of this module. */
     private static Path moduleBase;
 
     @BeforeAll

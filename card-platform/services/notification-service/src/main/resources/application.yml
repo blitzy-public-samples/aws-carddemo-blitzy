@@ -1,6 +1,6 @@
 # card-platform notification-service — the runtime contract for one container.
 #
-# Rationale for the settings below: card-platform/docs/decision-log.md
+# Design decisions for the settings below: card-platform/docs/decision-log.md
 #
 # Values that change between environments read a variable and fall back to a
 # working demo default, so the service starts with no .env file present.
@@ -120,10 +120,10 @@ spring:
         password="${KAFKA_SASL_PASSWORD}";
 
     # This module registers no business-event producer, so it carries no
-    # spring.kafka.producer block. It consumes three topics and publishes only
+    # spring.kafka.producer block. It consumes four topics and publishes only
     # sanitized dead-letter records.
 
-    # Three listeners read three topics under three group identifiers, named further down
+    # Four listeners read four topics under four group identifiers, named further down
     # under carddemo. Each listener names its own group, and the value below is the
     # default the listener container factory applies to a listener that names none.
     consumer:
@@ -158,12 +158,12 @@ spring:
       # card-platform/.env.example, and the group assignor gives one partition to exactly one
       # thread, so the records of one account — the account identifier is the message key —
       # still reach the read model in publish order while other accounts are applied beside
-      # them. The framework default of one thread, which this file previously left in place,
-      # applied every partition of all four topics in sequence. A value above the partition
-      # count only leaves the surplus threads with nothing assigned.
+      # them. The framework default of one thread would apply every partition of all four
+      # topics in sequence. A value above the partition count only leaves the surplus threads
+      # with nothing assigned.
       concurrency: "${SPRING_KAFKA_LISTENER_CONCURRENCY:3}"
 
-# Platform properties the three listeners and the dead-letter route read
+# Platform properties the four listeners and the dead-letter route read
 carddemo:
   # Request surface bounds. This service answers reads alone, so it declares no body
   # ceiling; the two settings below bound who may reach a state-changing route and how fast
@@ -232,9 +232,9 @@ carddemo:
       dead-letter-suffix: "${TOPIC_DEAD_LETTER_SUFFIX:.DLT}"
 
   # Duplicate-delivery claims are permanent. A claim and the side effects it guards commit in
-  # one local transaction in one database, so the two can only be restored together, and a
-  # security review found the horizon that used to expire a claim shorter than the effects it
-  # guarded. Nothing here retires a claim, domain/RetentionSweep no longer names
+  # one local transaction in one database, so the two can only be restored together. Any
+  # horizon tied to broker log retention would expire a claim sooner than the effects it
+  # guards. Nothing here retires a claim, domain/RetentionSweep does not name
   # processed_event, and the migration that withdrew the horizon states the whole rule.
   # This service publishes nothing, so it declares no outbox either.
 

@@ -206,7 +206,6 @@ class CardEventPublicationTest {
     /** Expiry year of that row, from {@code CARD-EXPIRAION-DATE PIC X(10)}. */
     private static final String SEEDED_EXPIRY_YEAR = "2023";
 
-    /** Expiry month of that row. */
     private static final String SEEDED_EXPIRY_MONTH = "03";
 
     /** Day of the month of that row, which the card update path carries forward unchanged. */

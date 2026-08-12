@@ -1,6 +1,6 @@
 # Runtime configuration for the authorization service.
 #
-# Rationale for every value here: card-platform/docs/decision-log.md
+# Design decisions for every value here: card-platform/docs/decision-log.md
 
 server:
   port: 8080
@@ -127,7 +127,7 @@ spring:
     # The publish-side schema gate runs in outbox/OutboxWriter.java at write time.
     # config/KafkaProducerConfig.java pins these four settings on the factory it builds,
     # so they hold even if the keys below are overridden.
-    # Why text and not a record serializer: card-platform/docs/decision-log.md.
+    # Design decisions: card-platform/docs/decision-log.md.
     #
     # The four timeouts below are one budget, and outbox/OutboxRelay is why. A relay pass bounds
     # itself with carddemo.outbox.relay.max-duration-ms so a broker that accepts a connection and
@@ -192,9 +192,8 @@ spring:
       # card-platform/.env.example, and the group assignor gives one partition to exactly one
       # thread, so the records of one account — the account identifier is the message key —
       # are still applied in publish order while other accounts are applied beside them. The
-      # framework default of one thread, which this file previously left in place, applied
-      # every partition of both topics in sequence. A value above the partition count only
-      # leaves the surplus threads with nothing assigned.
+      # framework default of one thread applies every partition of both topics in sequence. A
+      # value above the partition count only leaves the surplus threads with nothing assigned.
       concurrency: ${SPRING_KAFKA_LISTENER_CONCURRENCY:3}
 
   # The scheduler behind both @Scheduled methods of this service, outbox/OutboxRelay and
@@ -284,24 +283,24 @@ carddemo:
     # that outlive any window, which the migration withdrawing its horizon states in full.
     published-retention-hours: ${OUTBOX_PUBLISHED_RETENTION_HOURS:168}
   # Duplicate-delivery claims are permanent. A claim and the side effects it guards commit in
-  # one local transaction in one database, so the two can only be restored together, and a
-  # security review found the horizon that used to expire a claim shorter than the effects it
-  # guarded. Nothing here retires a claim, domain/RetentionSweep no longer names
-  # processed_event, and the migration that withdrew the horizon states the whole rule.
+  # one local transaction in one database, so the two can only be restored together, and any
+  # horizon that expired a claim before its effects were gone would readmit a duplicate.
+  # Nothing here retires a claim, domain/RetentionSweep names no processed_event delete, and
+  # the migration that withdrew the horizon states the whole rule.
   retention:
     sweep-interval-ms: ${RETENTION_SWEEP_INTERVAL_MS:3600000}
     # Days a row of authorization_decision remains. It is the attribution record of a
-    # financial decision, so it outlives its outbox row. unresolved_card_attempt shared
-    # this horizon until V20 withdrew it: a card resolving no cross-reference row is now
-    # refused rather than decided, so nothing writes that table.
+    # financial decision, so it outlives its outbox row. A card resolving no cross-reference
+    # row is decided like any other outcome and its decision row is swept on this horizon
+    # too; no separate table records such an attempt.
     decision-retention-days: ${DECISION_RETENTION_DAYS:365}
 
   # When the two replica tables may be authorized against. The question is asked of the
   # streams that maintain them and never of the age of a row, and the difference is not a
   # refinement: the account and card services publish on a state change and on nothing
   # else, so a card nobody edits is a correct copy whose last observation recedes for ever.
-  # An earlier form of this block bounded that recession, which refused every unedited card
-  # a day after it was seeded while readiness still reported the service up.
+  # Bounding that recession would refuse every unedited card a day after it was seeded while
+  # readiness still reported the service up.
   #
   # messaging/KafkaReplicaSynchronization reads, per replica topic, whether a listener
   # exists, is running, holds partitions, and reports records-lag-max at or under the
@@ -343,8 +342,7 @@ carddemo:
   # otherwise hold its exposure for ever and shrink available credit until every call
   # declined, which is the monotonic-shrink failure card-platform/docs/onboarding.md warns
   # about for the accumulators themselves.
-  # Why a reservation rather than an aggregate over authorization_decision:
-  # card-platform/docs/decision-log.md.
+  # Design decisions: card-platform/docs/decision-log.md.
   decision:
     lock-wait-ms: ${DECISION_LOCK_WAIT_MS:3000}
     reservation-ttl: ${DECISION_RESERVATION_TTL:PT15M}
@@ -354,7 +352,7 @@ carddemo:
   # cycle accumulators and the expiry date from account_credit_snapshot in the same schema, so
   # one authorization call waits on no other service. The two listeners above are what keep
   # those tables current.
-  # Why replication rather than a synchronous read: card-platform/docs/decision-log.md.
+  # Design decisions: card-platform/docs/decision-log.md.
   consumer:
     retry:
       max-attempts: ${CONSUMER_MAX_RETRY_ATTEMPTS:3}

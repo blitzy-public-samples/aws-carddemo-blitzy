@@ -194,12 +194,11 @@ public class NotificationHistoryController {
      * chain requires for the token in the path, so it holds on every page alike: paging changes which
      * rows of one card are returned and never which card.
      *
-     * <p>This read is bounded in both of its parts, and it did not used to be. It passed
-     * {@link Limit#unlimited()} and then totalled in memory, so one request read every retained row
-     * of a card, mapped all of them and copied the list: query work, heap and response bytes all grew
-     * with one card's history and nothing capped any of them.
+     * <p>This read is bounded in both of its parts. Passing {@link Limit#unlimited()} and totalling
+     * in memory would read every retained row of a card, map all of them and copy the list, so query
+     * work, heap and response bytes would each grow with one card's history.
      *
-     * <p>What replaces it keeps the source's own claim exactly. The count and the total still cover
+     * <p>The bound keeps the source's own claim exactly. The count and the total cover
      * the whole card, because {@code app/cbl/CBSTM03A.CBL} reads every row between two key breaks and
      * {@code app/cbl/CBSTM03A.CBL:L429} totals all of them, so a count or a total over one page would
      * describe a statement the source never produced. Both come from

@@ -19,10 +19,9 @@ import java.util.Set;
  * service. The dead-letter routing itself has no ancestor, because the source answers a failure by
  * ending the run.
  *
- * <p>This record exists because five services previously declared the same four fields as five
- * unrelated types with no shared document. One handler could therefore read no dead-letter topic but
- * its own. Every service now converts its local diagnostics into this envelope, and
- * {@code schemas/dead-letter-v1.json} is the single contract a handler validates against.
+ * <p>This is the one dead-letter type the platform publishes. Every service converts its local
+ * diagnostics into this envelope, and {@code schemas/dead-letter-v1.json} is the single contract a
+ * handler validates against, so one handler reads every dead-letter topic rather than only its own.
  *
  * <p><strong>The envelope never carries the record that failed.</strong> A failed payload can hold a
  * full Primary Account Number, a cardholder name and an amount, and a dead-letter topic is read by

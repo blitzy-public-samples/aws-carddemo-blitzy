@@ -10,7 +10,7 @@
 -- Two listeners write this table: messaging/CardUpdatedConsumer reading card.updated, and
 -- messaging/AccountStateChangedConsumer reading account.state-changed.
 --
--- Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md, under
+-- Design decisions: card-platform/docs/decision-log.md, under
 -- "What identifies one delivery of one event". Corrections to an applied migration arrive as a new
 -- migration because Flyway compares the checksum of every applied file at start-up.
 

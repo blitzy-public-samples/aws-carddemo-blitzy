@@ -28,7 +28,7 @@ import org.springframework.stereotype.Component;
  * <p>No credential is reported here, and none can be: a topic name is not a credential, and the
  * class reads nothing else. No card number reaches this class either.
  *
- * <p>Rationale, alternatives considered and accepted risks:
+ * <p>Design decisions:
  * {@code card-platform/docs/decision-log.md}.
  */
 @Component

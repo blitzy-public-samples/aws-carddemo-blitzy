@@ -126,10 +126,8 @@ final class FraudApiContractTest {
     /** Name of the error schema the description publishes. */
     private static final String PROBLEM_SCHEMA = "Problem";
 
-    /** Path prefixes no mapping value may carry. */
     private static final List<String> BANNED_MAPPING_PREFIXES = List.of("/api", "/v1");
 
-    /** Actions no mapping value may name. */
     private static final List<String> BANNED_MAPPING_ACTIONS =
             List.of("score", "replay", "reset", "recalculate", "trigger", "simulate");
 
@@ -200,7 +198,6 @@ final class FraudApiContractTest {
     /** Key naming an internal reference. */
     private static final String REFERENCE_KEY = "$ref";
 
-    /** Prefix every reference in the description carries. */
     private static final String REFERENCE_PREFIX = "#/";
 
     /** Scheme no reference may carry. */

@@ -157,10 +157,9 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * has run.</p>
      *
      * <p>{@code V11} withdraws the retention horizon of {@code processed_event} and drops the index
-     * that purge ranged over. A security review found the horizon expiring duplicate-delivery claims
-     * while the balance and cycle accumulators they guard stayed, so a claim is permanent now. It
-     * drops an index and adds no table, so the table assertion and the seeded row counts are
-     * unchanged once more.</p>
+     * that purge ranged over, so a claim is permanent: a horizon would expire a duplicate-delivery
+     * claim while the balance and cycle accumulators it guards stayed. It drops an index and adds no
+     * table, so the table assertion and the seeded row counts are unchanged once more.</p>
      *
      * <p>{@code V12} carries no data-definition statement either. It points the {@code customer},
      * {@code account_customer_link} and {@code customer.social_security_number} comments at the

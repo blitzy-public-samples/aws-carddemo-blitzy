@@ -43,11 +43,12 @@ class ContinuousIntegrationWorkflowContractTest {
                     "provenance");
 
     /**
-     * The three stages a security review found missing, and the tool each one runs.
+     * The three security stages, and the tool each one runs.
      *
-     * <p>The review found compilation, tests, schema compatibility and container builds, and no
-     * static analysis, secret scan, advisory review, image scan, bill of materials or provenance.
-     * Six controls over three new jobs and one widened one, and every one of them fails the run.
+     * <p>Compilation, tests, schema compatibility and container builds say nothing about static
+     * analysis, committed credentials, published advisories, image contents, a bill of materials or
+     * provenance. Six controls sit across these three jobs and one widened one, and every one of
+     * them fails the run.
      */
     private static final Map<String, String> SECURITY_STAGE_TOOLS =
             Map.of(
@@ -390,13 +391,12 @@ class ContinuousIntegrationWorkflowContractTest {
     /**
      * Holds every action to an immutable reference and every failure to a fatal one.
      *
-     * <p>A security review found six {@code actions/checkout@v4}, six
-     * {@code actions/setup-java@v4} and four {@code actions/upload-artifact@v4}, and this test
-     * required exactly that form. A major-version tag is a moving reference: whoever controls the
-     * action repository can point {@code v4} at other code, and every run afterwards executes it.
-     * The remedy is the same one the manifests under {@code deploy/k8s} use for an upstream image:
-     * name the bytes, not a label that can be moved over them. A full commit identifier names the
-     * bytes; the trailing release comment keeps the reference readable.
+     * <p>A major-version tag such as {@code actions/checkout@v4}, {@code actions/setup-java@v4} or
+     * {@code actions/upload-artifact@v4} is a moving reference: whoever controls the action
+     * repository can point {@code v4} at other code, and every run afterwards executes it. The
+     * remedy is the same one the manifests under {@code deploy/k8s} use for an upstream image: name
+     * the bytes, not a label that can be moved over them. A full commit identifier names the bytes;
+     * the trailing release comment keeps the reference readable.
      */
     @Test
     @DisplayName("every action runs at a named commit, and no job weakens a failure")
@@ -454,11 +454,11 @@ class ContinuousIntegrationWorkflowContractTest {
     }
 
     /**
-     * Holds the six controls the review found missing, each one able to fail the run.
+     * Holds the six security controls, each one able to fail the run.
      *
-     * <p>The review found compilation, tests, schema compatibility and container builds, and none
-     * of six controls: static analysis of the sources, a scan for committed credentials, a review
-     * of dependencies against published advisories, a scan of the images that were built, a bill of
+     * <p>Compilation, tests, schema compatibility and container builds leave six controls
+     * unchecked: static analysis of the sources, a scan for committed credentials, a review of
+     * dependencies against published advisories, a scan of the images that were built, a bill of
      * materials, and provenance for the archives. Each of the six is an assertion here.
      */
     @Test

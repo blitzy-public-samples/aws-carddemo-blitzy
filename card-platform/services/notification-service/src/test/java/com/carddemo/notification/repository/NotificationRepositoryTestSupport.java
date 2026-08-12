@@ -29,10 +29,9 @@ import org.springframework.test.context.DynamicPropertySource;
  *
  * <p>No configuration class is nested here and none is named. The bean definitions arrive from the
  * class annotated {@code SpringBootConfiguration}, which is what a slice finds when nothing else is
- * declared. An earlier form of this class supplied the container as a Spring bean annotated
- * {@code ServiceConnection}, and that bean is why a configuration class had to be named: Spring
- * Framework 7.0 detects a nested one, ignores it, and warns that 7.1 will stop ignoring it. The
- * bean is gone, so the warning has nothing to fire on. Naming the datasource through
+ * declared. Supplying the container as a Spring bean annotated {@code ServiceConnection} would
+ * require naming a configuration class, and Spring Framework 7.0 detects a nested one, ignores it,
+ * and warns that 7.1 will stop ignoring it. Naming the datasource through
  * {@code DynamicPropertySource} also keeps the container out of the context lifecycle, and a
  * container Spring does not own is a container Spring cannot close while another class is still
  * reading its own database in it.

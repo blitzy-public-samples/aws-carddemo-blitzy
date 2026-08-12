@@ -407,9 +407,9 @@ Three of the four growing tables of this schema are swept on one hourly schedule
 
 ### Notification database
 
-**Figure 4 — Notification read model, cardholder context, attempts, and duplicate guard**
+**Figure 4 — Notification read model, cardholder context, rendered alerts, and duplicate guard**
 
-Figure 4 shows two private read models and an attempt log serving four listeners.
+Figure 4 shows two private read models and a rendered-alert log serving four listeners.
 
 ```mermaid
 erDiagram

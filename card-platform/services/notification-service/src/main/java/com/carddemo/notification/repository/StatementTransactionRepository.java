@@ -25,13 +25,13 @@ import org.springframework.data.repository.query.Param;
  * renders at most {@code NotificationRenderer.MAXIMUM_STATEMENT_ROWS} rows and passes that number,
  * and {@code GET /notifications/&#123;cardToken&#125;} passes one page.
  *
- * <p>No read of this interface is unbounded. The history route once passed
- * {@link Limit#unlimited()}, so one request materialised every retained row of a card, totalled them
- * in memory and copied the list: the work and the response both grew with one card's history and
- * nothing capped either. The route now reads whole-history metadata through
- * {@link #totalsOfCard(String)}, which is one aggregate over the key, and returns detail rows one
- * bounded page at a time through {@link #findPageOfCard(String, String, Limit)}. The count and the
- * total still cover the whole card, so they describe the row set
+ * <p>No read of this interface is unbounded. Passing {@link Limit#unlimited()} would materialise
+ * every retained row of a card, total them in memory and copy the list, so the work and the response
+ * would both grow with one card's history. The history route instead reads whole-history metadata
+ * through {@link #totalsOfCard(String)}, which is one aggregate over the key, and returns detail
+ * rows one bounded page at a time through
+ * {@link #findByIdCardTokenAndIdTransactionIdGreaterThanOrderByIdTransactionIdAsc(String, String,
+ * Limit)}. The count and the total cover the whole card, so they describe the row set
  * {@code app/cbl/CBSTM03A.CBL:L429} would have totalled between two key breaks.
  *
  * <p>An alert reads the descending finder under
@@ -45,9 +45,9 @@ import org.springframework.data.repository.query.Param;
  * {@code 01 LK-M03B-AREA} at {@code app/cbl/CBSTM03B.CBL:L100-L112}, whose operation code
  * dispatches every read and write behind one subroutine.
  *
- * <p>Rationale sits in {@code card-platform/docs/decision-log.md}, the source-to-target mapping in
- * {@code card-platform/docs/traceability-matrix.md}, and flagged findings in
- * {@code card-platform/docs/business-rule-flags.md} (all planned).
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}. Source-to-target mapping:
+ * {@code card-platform/docs/traceability-matrix.md}. Flagged findings:
+ * {@code card-platform/docs/business-rule-flags.md}.
  */
 public interface StatementTransactionRepository
         extends ListCrudRepository<StatementTransactionEntity,
@@ -201,11 +201,11 @@ public interface StatementTransactionRepository
     /**
      * Stores one read-model row under its composite key, whether or not that key is already held.
      *
-     * <p>One statement, and that is the point of it. The consumer previously read the key to choose a
-     * diagnostic line and then called {@code save}, which for an entity carrying an assigned key is a
-     * merge and performs a select of its own: three round trips for one event, of which two answered
-     * the same question. This upsert is one, and it is the {@code WRITE} and {@code REWRITE} of
-     * {@code app/cbl/CBSTM03B.CBL} expressed as the single operation the read model actually needs.
+     * <p>One statement, and that is the point of it. Reading the key to choose a diagnostic line and
+     * then calling {@code save} would take three round trips for one event, since {@code save} on an
+     * entity carrying an assigned key is a merge and performs a select of its own. This upsert is one
+     * statement, and it is the {@code WRITE} and {@code REWRITE} of {@code app/cbl/CBSTM03B.CBL}
+     * expressed as the single operation the read model needs.
      *
      * <p>Statement-level atomicity is what makes a duplicate delivery harmless here. It runs in the
      * transaction that claims the processed-event marker, so the row and the marker commit together,

@@ -86,8 +86,8 @@ class ObservabilityConfigTest {
      * Deliveries this service consumed, recognised and deliberately applied nothing for.
      *
      * <p>Today that is one case: a contract version predating the card token both of this service's
-     * tables are keyed on. Such a delivery is counted here, reported once and acknowledged, where it
-     * was previously refused, retried and dead-lettered as though a governed event were poison.
+     * tables are keyed on. Such a delivery is counted here, reported once and acknowledged. Refusing,
+     * retrying and dead-lettering it would treat a governed event as poison.
      */
     private static final String EVENTS_UNAPPLIED = "carddemo.notification.events.unapplied";
 

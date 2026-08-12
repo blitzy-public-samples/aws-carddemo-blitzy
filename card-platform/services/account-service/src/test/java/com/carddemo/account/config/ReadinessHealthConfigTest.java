@@ -80,14 +80,13 @@ class ReadinessHealthConfigTest {
     /**
      * Asserts an empty registry holds readiness down, because this service consumes.
      *
-     * <p>This test asserted the opposite, and its reason was that this service consumes nothing. It
-     * does: {@code TransactionPostedConsumer} follows the posted feed and is what keeps the account
-     * balance current. An empty registry has nothing that is not running, so the old rule reported
-     * ready, and an instance whose listener never registered was declared fit to receive traffic while
-     * every balance it served went stale.
+     * <p>{@code TransactionPostedConsumer} follows the posted feed and is what keeps the account
+     * balance current. An empty registry has nothing that is not running, so a rule reading only what
+     * registered would report ready, and an instance whose listener never registered would be
+     * declared fit to receive traffic while every balance it served went stale.
      *
-     * <p>Readiness now reads the number of listeners this service declares, so the two states the old
-     * rule could not tell apart are separated: nothing is broken, and nothing is there.
+     * <p>Readiness reads the number of listeners this service declares, which separates the two
+     * states such a rule cannot tell apart: nothing is broken, and nothing is there.
      */
     @Test
     @DisplayName("an empty registry holds readiness down, because this service consumes")
@@ -135,9 +134,9 @@ class ReadinessHealthConfigTest {
     /**
      * Asserts an absent registry holds readiness down rather than reading as an empty one.
      *
-     * <p>The two are different states and were previously indistinguishable. The registry bean is
-     * registered by the Kafka auto-configuration whether or not any listener exists, so an absent one
-     * means the context has not finished refreshing, and a poll arriving then has learned nothing.
+     * <p>The two are different states. The registry bean is registered by the Kafka
+     * auto-configuration whether or not any listener exists, so an absent one means the context has
+     * not finished refreshing, and a poll arriving then has learned nothing.
      */
     @Test
     @DisplayName("an absent registry holds readiness down")

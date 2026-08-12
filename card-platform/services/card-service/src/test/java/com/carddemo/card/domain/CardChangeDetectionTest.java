@@ -81,10 +81,11 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  *
  * <h2>How a stale snapshot reaches the service</h2>
  *
- * <p>{@link CardUpdateService#applyUpdate(CardUpdateRequest, RefreshedCard, LocalDate)} takes the
+ * <p>{@link CardUpdateService#applyUpdate(String, CardUpdateRequest,
+ * CardUpdateResponse.RefreshedCard, LocalDate)} takes the
  * values the caller last saw as its second argument. The source does the same:
  * {@code app/cbl/COCRDUPC.cbl:L1503-L1508} compares the locked record against the
- * {@code CCUP-OLD-} fields {@code 9000-READ-DATA.} filled on an earlier pass.
+ * {@code CCUP-OLD-} fields {@code 9000-READ-DATA.} filled on the preceding screen turn.
  *
  * <p>Each test builds that snapshot from the values {@code V2__seed.sql} loaded. It then changes
  * the row through {@link JdbcTemplate} on a separate connection that commits at once, and calls
@@ -1169,11 +1170,11 @@ class CardChangeDetectionTest {
          * The applied count follows the commit rather than predicting it.
          *
          * <p>{@code applyUpdate} carries {@code @Transactional}, so the commit happens after it
-         * returns. The count and the log line used to be taken on the last lines of the method,
-         * which is before that commit: a deferred constraint, a lost connection or a rollback-only
-         * marker discarded the update while the counter had already moved and the log already said
-         * the update committed. {@code entityManager.flush()} does not close the gap, because it
-         * sends the statements and leaves the commit where it was.
+         * returns. Taking the count and the log line on the last lines of the method would take them
+         * before that commit: a deferred constraint, a lost connection or a rollback-only marker
+         * would discard the update while the counter had already moved and the log already said the
+         * update committed. {@code entityManager.flush()} does not close that gap, because it sends
+         * the statements and leaves the commit where it was.
          *
          * <p>This test opens the transaction itself and marks it rollback-only, so the inner call
          * joins a transaction that is going to be discarded. The count must not move.

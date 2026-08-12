@@ -243,11 +243,11 @@ class ComposeEnvironmentIsolationContractTest {
     /**
      * Holds the transport posture of the local stack: one operator, one machine, synthetic fixtures.
      *
-     * <p><b>What this stands over.</b> A review found three transports here carrying a credential
-     * without encrypting it, or encrypting without authenticating the peer: HTTP Basic over HTTP on
-     * the six service ports, {@code SASL_PLAINTEXT} on the broker, and {@code sslmode=require}
-     * against a server that signs its own certificate. Its resolution offered two routes, and this
-     * platform took the second: state the posture and enforce it.
+     * <p><b>What this stands over.</b> Three transports here carry a credential without encrypting
+     * it, or encrypt without authenticating the peer: HTTP Basic over HTTP on the six service
+     * ports, {@code SASL_PLAINTEXT} on the broker, and {@code sslmode=require} against a server
+     * that signs its own certificate. Two routes answer that, and this platform takes the second:
+     * state the posture and enforce it.
      *
      * <p>Enforcement is what this class adds. A posture stated in a comment is a promise, and the
      * binding is the thing that makes it true, so every published port is read here and a mapping
@@ -431,9 +431,9 @@ class ComposeEnvironmentIsolationContractTest {
     }
 
     private static Map<String, Set<String>> requiredServiceKeys() {
-        // PROCESSED_EVENT_RETENTION_HOURS is deliberately absent. It set a horizon after which a
-        // duplicate-delivery claim was deleted, and a security review found every effect a claim
-        // guards outliving that horizon, so a claim is permanent and no service binds the key.
+        // PROCESSED_EVENT_RETENTION_HOURS is absent by design. It would set a horizon after which a
+        // duplicate-delivery claim is deleted, and every effect a claim guards outlives such a
+        // horizon, so a claim is permanent and no service binds the key.
         Set<String> producerRetention = Set.of(
                 "OUTBOX_PUBLISHED_RETENTION_HOURS",
                 "RETENTION_SWEEP_INTERVAL_MS");

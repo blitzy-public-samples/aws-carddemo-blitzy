@@ -30,8 +30,8 @@ import org.hibernate.type.SqlTypes;
  * message, webhook or push gateway; its own README lists all four under deliberate non-additions.
  * {@link #getOutcome()} returns {@link #RENDERED_NOT_SENT} and the constructor offers no way to
  * write another value, and {@code ck_notification_log_outcome} refuses one written any other way.
- * Until {@code V5__rendered_not_delivered.sql} this class called a row a delivery attempt, which
- * claimed a transport that has never existed.
+ * {@code V5__rendered_not_delivered.sql} is the migration that puts that fact in the column and the
+ * constraint, where reading a row as a delivery would claim a transport that has never existed.
  *
  * <p>No COBOL ancestor: this class has no source ancestor. No Common Business Oriented Language
  * (COBOL) program in CardDemo records a rendered alert. Every locator below is a reference.

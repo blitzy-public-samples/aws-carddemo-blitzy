@@ -22,7 +22,7 @@
 -- truncated value back from a real database.
 --
 -- A correction to an applied migration arrives as a new migration because Flyway compares the
--- checksum of every applied file at start-up. Rationale, alternatives considered and accepted risks,
+-- checksum of every applied file at start-up. Design decisions,
 -- including why the columns are not widened: card-platform/docs/decision-log.md.
 
 COMMENT ON COLUMN transaction_category_balance.category_balance IS

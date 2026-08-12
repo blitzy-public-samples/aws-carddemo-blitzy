@@ -715,13 +715,13 @@ final class ProcessedEventEntityTest {
         /**
          * Asserts the table declares no index and no second key.
          *
-         * <p>It declared one, {@link #WITHDRAWN_PURGE_INDEX}, for a retention purge that ranged over
-         * {@link #PROCESSED_AT_COLUMN}. A security review found that purge expiring claims while the
-         * read-model row and the rendered alert they guard stayed, so the purge is withdrawn and the
-         * index it served went with it: an index nothing reads costs a write on every claim.
+         * <p>{@link #WITHDRAWN_PURGE_INDEX} served a retention purge that ranged over
+         * {@link #PROCESSED_AT_COLUMN}. That purge would expire claims while the read-model row and
+         * the rendered alert they guard stayed, so it is withdrawn and the index went with it: an
+         * index nothing reads costs a write on every claim.
          */
         @Test
-        @DisplayName("no index and no second lookup key, since the purge that needed one is gone")
+        @DisplayName("no index and no second lookup key, because no purge ranges over this table")
         void declaresNoSecondLookupKey() {
             Table table = table();
 

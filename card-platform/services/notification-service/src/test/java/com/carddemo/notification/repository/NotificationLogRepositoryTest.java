@@ -25,7 +25,7 @@ import org.springframework.boot.jpa.test.autoconfigure.TestEntityManager;
 import org.springframework.data.repository.Repository;
 
 /**
- * Proves a delivery attempt reaches {@code notification_log}, and proves
+ * Proves a rendered alert reaches {@code notification_log}, and proves
  * {@link NotificationLogRepository} declares no read path over the table.
  *
  * <p>Four tests cover two behaviours. Three write a row and flush it, which makes PostgreSQL apply
@@ -36,7 +36,7 @@ import org.springframework.data.repository.Repository;
  * <p>{@link NotificationRepositoryTestSupport} supplies the database carrying that migrated schema.
  *
  * <p>ADDITIVE, with no Common Business Oriented Language (COBOL) ancestor. No CardDemo program
- * records a delivery attempt. {@code app/cbl/CBSTM03A.CBL:L488-L502} writes fifteen statement lines
+ * records a rendered alert. {@code app/cbl/CBSTM03A.CBL:L488-L502} writes fifteen statement lines
  * to a sequential dataset and records nothing about the write.
  *
  * <p>The contract under test descends from {@code app/cbl/CBSTM03B.CBL}. The parameter area
@@ -52,7 +52,7 @@ import org.springframework.data.repository.Repository;
  * <p>The masked and the unmasked card-number form both occupy sixteen characters:
  * {@code card-platform/docs/suggested-next-tasks.md}.
  */
-@DisplayName("NotificationLogRepository, the delivery-attempt log")
+@DisplayName("NotificationLogRepository, the rendered-alert log")
 final class NotificationLogRepositoryTest extends NotificationRepositoryTestSupport {
 
     /**

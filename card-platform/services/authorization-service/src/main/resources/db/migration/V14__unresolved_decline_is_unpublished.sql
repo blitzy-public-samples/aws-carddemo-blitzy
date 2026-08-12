@@ -17,7 +17,7 @@
 -- account form (V4__outbox_transaction_key.sql). The comment below on unresolved_card_attempt states
 -- that nothing is published for the outcome, and V15 restates it.
 --
--- Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md.
+-- Design decisions: card-platform/docs/decision-log.md.
 
 COMMENT ON COLUMN outbox_event.aggregate_id IS
     'The Kafka message key. Eleven decimal digits, the account identifier, from XREF-ACCT-ID

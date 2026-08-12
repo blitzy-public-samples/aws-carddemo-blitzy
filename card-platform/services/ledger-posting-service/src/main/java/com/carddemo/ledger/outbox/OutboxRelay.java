@@ -65,7 +65,7 @@ import tools.jackson.databind.json.JsonMapper;
  * later raised alone, and the cancellation on expiry is what stops this pass observing a send it has
  * given up on and would otherwise publish a second time.
  *
- * <p>Rationale: {@code card-platform/docs/decision-log.md}.
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Component
 public class OutboxRelay {
@@ -524,8 +524,8 @@ public class OutboxRelay {
      * The scope is what the publish port reads to attach the headers.
      *
      * <p>A row recording no correlation identifier starts its own trace under its own event
-     * identifier. That covers a row written before this column existed, so every record this
-     * relay publishes carries a correlation identifier a reader can join on. A row carrying
+     * identifier, so every record this relay publishes carries a correlation identifier a reader can
+     * join on. A row carrying
      * neither opens a scope naming neither rather than failing the sweep.
      *
      * @param row the row this pass is working on

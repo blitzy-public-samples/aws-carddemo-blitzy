@@ -634,7 +634,7 @@
       service integration stage and the equivalence stage both name it because the unit
       stage has already run every Surefire test in the reactor and kept its reports.
 
-      Rationale, alternatives considered and accepted risks:
+      Design decisions:
       card-platform/docs/decision-log.md.
     -->
     <profile>

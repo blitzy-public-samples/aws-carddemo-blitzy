@@ -20,7 +20,7 @@ import org.springframework.stereotype.Component;
  * and no balance arithmetic from that program.
  *
  * <p>The comparison reads the absolute amount, so a refund scores like a purchase of the same size
- * and does not clear the rule by carrying a negative sign. Rationale:
+ * and does not clear the rule by carrying a negative sign. Design decisions:
  * {@code card-platform/docs/decision-log.md}.
  */
 @Component

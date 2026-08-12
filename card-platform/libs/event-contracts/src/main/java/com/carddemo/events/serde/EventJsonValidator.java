@@ -27,12 +27,12 @@ import tools.jackson.databind.json.JsonMapper;
  * there, because handing it a {@link String} would write a JSON string literal rather than the object
  * the string already holds.
  *
- * <p>Before this class existed, a service in that position loaded schema documents itself and derived
- * a document name by lower-casing its {@code eventType}. Two gates then decided what a valid event
- * was, they could disagree, and neither the platform size ceiling nor the governed-type list applied
- * to the second one. This class removes the second gate: it reads
- * {@link EventSchemas#SCHEMA_RESOURCES}, the same table both serde classes read, and applies the same
- * {@link EventWireBounds} limits.
+ * <p>This class is the only gate for a caller holding text, which is what keeps one definition of a
+ * valid event. It reads {@link EventSchemas#SCHEMA_RESOURCES}, the same table both serde classes
+ * read, and applies the same {@link EventWireBounds} limits. A service that loaded schema documents
+ * itself and derived a document name from its {@code eventType} would be a second gate that can
+ * disagree with this one, and neither the platform size ceiling nor the governed-type list would
+ * reach it.
  *
  * <p>The checks run in the same order the consume side uses, each before the work it protects: the
  * byte ceiling, then the parse under the platform's parser limits, then the governed event type, then

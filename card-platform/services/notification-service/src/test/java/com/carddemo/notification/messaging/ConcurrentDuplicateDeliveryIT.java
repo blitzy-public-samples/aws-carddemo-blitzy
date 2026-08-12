@@ -52,7 +52,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * <p><b>What holds the invariant here.</b> Not a read followed by a write.
  * {@code ProcessedEventRepository.claimEvent} is one statement carrying
  * {@code ON CONFLICT (event_id, consumed_topic) DO NOTHING}, and it runs inside the transaction that
- * also carries the read-model row and the delivery-attempt row. A second delivery of one event on one
+ * also carries the read-model row and the rendered-alert row. A second delivery of one event on one
  * topic therefore blocks on the first, then reports {@code ALREADY_CLAIMED} and writes nothing. The
  * consequence, asserted below, is that BOTH deliveries return and BOTH commit their offsets: the
  * loser is refused by the claim rather than by an exception, so nothing is redelivered and nothing
@@ -186,7 +186,6 @@ class ConcurrentDuplicateDeliveryIT {
     /** Reads rows back outside every delivery. */
     private final JdbcTemplate jdbc;
 
-    /** Runs the deliveries. */
     private ExecutorService deliveries;
 
     @Autowired
@@ -227,7 +226,7 @@ class ConcurrentDuplicateDeliveryIT {
     }
 
     @Test
-    @DisplayName("one read-model row, one marker and one delivery attempt survive the race")
+    @DisplayName("one read-model row, one marker and one rendered alert survive the race")
     void oneOfTwoSimultaneousDeliveriesWritesTheRowAndTheAttempt() throws Exception {
         TransactionPosted event = aPostedEvent();
         List<Outcome> outcomes = racePostedDeliveries(event);
@@ -238,7 +237,7 @@ class ConcurrentDuplicateDeliveryIT {
                 () -> assertEquals(ONE_ROW, markerRows(event.eventId()),
                         "one marker for the event on the topic it arrived on"),
                 () -> assertEquals(ONE_ROW, attemptRows(),
-                        "one delivery attempt, so one alert was rendered and not two"),
+                        "one rendered alert, so one alert was rendered and not two"),
                 () -> assertEquals(AMOUNT, storedAmount(),
                         "the row carries the amount the event carried"),
                 () -> assertEquals(CONCURRENT_DELIVERIES,
@@ -466,13 +465,13 @@ class ConcurrentDuplicateDeliveryIT {
                 + " AND transaction_id = ?", CARD_TOKEN, TRANSACTION_ID);
     }
 
-    /** @return how many delivery attempts the deliveries left */
+    /** @return how many rendered alerts the deliveries left */
     private long attemptRows() {
         return count("SELECT count(*) FROM notification_log");
     }
 
     /**
-     * Counts the delivery attempts naming the card and transaction a posted delivery carries.
+     * Counts the rendered alerts naming the card and transaction a posted delivery carries.
      *
      * @return that count
      */

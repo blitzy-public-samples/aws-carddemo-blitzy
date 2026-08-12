@@ -39,12 +39,12 @@ import tools.jackson.databind.module.SimpleModule;
  * <p>Seven checks run on every call, in this order.
  *
  * <ol>
- * <li>The event must be one of the five records of {@code com.carddemo.events}. The class of the
- * argument selects the event type. The five records of this module resolve through
- * {@link #EVENT_TYPES_BY_CLASS}. A mutation record of a service resolves through its own simple
- * name, which {@link EventContracts#isRegistered(String)} must recognise. An arbitrary object or
- * map whose JSON happens to carry a supported {@code eventType} is therefore rejected before
- * anything is written.</li>
+ * <li>The event must be a record {@link #EVENT_TYPES_BY_CLASS} names. The class of the argument
+ * selects the event type, and that map holds the shared records of {@code com.carddemo.events},
+ * {@code DeadLetterEnvelope} among them. A mutation record of a service resolves through its own
+ * simple name instead, which {@link EventContracts#isRegistered(String)} must recognise. An
+ * arbitrary object or map whose JSON happens to carry a supported {@code eventType} is therefore
+ * rejected before anything is written.</li>
  * <li>{@link EventContracts} must bind that event type to the topic the caller named. A producer
  * that sends an approval to the declined topic therefore fails here rather than at a consumer.
  * {@code FraudFlagged} and {@code FraudCleared} both bind to {@code fraud.assessed}, which is the
@@ -101,9 +101,9 @@ import tools.jackson.databind.module.SimpleModule;
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  *
- * @param <T> the event this serializer writes. Either one of the five records in
- *            {@code com.carddemo.events}, or a mutation event record of the service that owns the
- *            aggregate. Its {@code eventType} names a schema in {@link EventSchemas}
+ * @param <T> the event this serializer writes. Either a shared record {@link #EVENT_TYPES_BY_CLASS}
+ *            names, or a mutation event record of the service that owns the aggregate. Its
+ *            {@code eventType} names a schema in {@link EventSchemas}
  */
 public final class JsonSchemaValidatingSerializer<T> implements Serializer<T> {
 
@@ -303,7 +303,7 @@ public final class JsonSchemaValidatingSerializer<T> implements Serializer<T> {
     /**
      * The event types this serializer accepts, sorted so a failure message reads the same each time.
      *
-     * @return the five event types, comma separated
+     * @return the event types {@link #EVENT_TYPES_BY_CLASS} names, comma separated
      */
     private static String supportedEventTypes() {
         return EVENT_TYPES_BY_CLASS.values().stream().sorted().reduce((left, right)

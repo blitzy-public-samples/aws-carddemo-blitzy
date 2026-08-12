@@ -1,4 +1,4 @@
--- Card service, migration V5.
+-- Card service, migration V7.
 -- Adds the index the relay's aggregate-head claim reads.
 --
 -- What this file declares. outbox/OutboxRelay claims the due head row of each account, so a batch never

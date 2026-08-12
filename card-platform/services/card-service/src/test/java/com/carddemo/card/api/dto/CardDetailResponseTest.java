@@ -38,17 +38,17 @@ import org.junit.jupiter.api.Test;
  * {@code app/bms/COCRDSL.bms:L96-L100}. A search for the darkened-field attribute {@code DRK}
  * returns zero hits in that Basic Mapping Support file. Six other Basic Mapping Support files carry
  * the attribute, and {@code app/bms/COCRDUP.bms} applies it to the card expiry day at L142 and to a
- * function-key line at L163. The masking claim in this file covers the card-number field alone.
+ * function-key line at L163.
  *
- * <p>Two readings this test class adopts carry entries in
- * {@link #fixtureRecordOneResponseHidesItsCardVerificationValue()}, and the field-scoped reading of
- * the darkened-attribute evidence stated above.
+ * <p>{@link #aResponseHidesTheCardVerificationValueAndTheLeadingCardNumberCharacters()} holds the
+ * masking claim this class rests on, over the card-number field alone.
  *
  * <p>The card update program validates a card number with a numeric class test alone at
  * {@code app/cbl/COCRDUPC.cbl:L784}. The two comments above it at
  * {@code app/cbl/COCRDUPC.cbl:L782-L783} name a numeric test and a sixteen-character test, and no
- * length test follows. That finding sits in
- * card-number length, or the active status as an authorization gate.
+ * length test follows. {@code card-platform/docs/business-rule-flags.md} carries that finding as
+ * item 24, and the card status the source never reads before posting as item 3. Neither check is
+ * added here.
  */
 final class CardDetailResponseTest {
 

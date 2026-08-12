@@ -388,7 +388,6 @@ final class NotificationHistoryControllerTest {
                     "produces condition holds " + MediaType.APPLICATION_JSON_VALUE);
         }
 
-        /** Asserts no declared method carries a write mapping annotation. */
         @Test
         void noDeclaredMethodCarriesAWriteMappingAnnotation() {
             for (Method method : NotificationHistoryController.class.getDeclaredMethods()) {
@@ -572,7 +571,6 @@ final class NotificationHistoryControllerTest {
             }
         }
 
-        /** Asserts no property of the body restates an event-envelope property. */
         @Test
         void theBodyRestatesNoEventEnvelopeProperty() throws Exception {
             List<String> properties = propertyNamesOf(MAPPER.readTree(historyBody()));
@@ -599,7 +597,6 @@ final class NotificationHistoryControllerTest {
             }
         }
 
-        /** Asserts the body carries no reject reason code. */
         @Test
         void theBodyCarriesNoRejectReasonCode() throws Exception {
             String rejectReason = Integer.toString(100 + 9);
@@ -875,7 +872,6 @@ final class NotificationHistoryControllerTest {
     @Nested
     class PathValueReachingTheLookup {
 
-        /** Asserts the lookup receives the derived token and never the card number. */
         @Test
         void theLookupReceivesTheDerivedTokenAndNeverTheCardNumber() throws Exception {
             when(statementTransactions
@@ -901,7 +897,6 @@ final class NotificationHistoryControllerTest {
                     "the lookup received a sixteen-digit run");
         }
 
-        /** Asserts the derivation is the one the read model was written under. */
         @Test
         void theDerivationMatchesTheOneTheReadModelWasWrittenUnder() {
             assertEquals(PanMasker.cardToken(FULL_CARD_NUMBER), CARD_TOKEN,
@@ -934,7 +929,6 @@ final class NotificationHistoryControllerTest {
                     "the finder name fixes an order");
         }
 
-        /** Asserts every declared finder returning rows fixes an order in its name. */
         @Test
         void everyDeclaredFinderReturningRowsFixesAnOrder() {
             for (Method method : StatementTransactionRepository.class.getDeclaredMethods()) {
@@ -1381,10 +1375,9 @@ final class NotificationHistoryControllerTest {
         /**
          * Asserts the count and the total in the body come from the aggregate over the card's key.
          *
-         * <p>They used to be taken over the list the lookup returned, which was every row of the card
-         * because the lookup was unbounded. With a bounded page that would report a statement over
-         * part of a card, and {@code app/cbl/CBSTM03A.CBL:L429} totals every row of one card between
-         * two key breaks. Both figures are therefore read once over the key.
+         * <p>Taking them over the list a bounded page returns would report a statement over part of
+         * a card, and {@code app/cbl/CBSTM03A.CBL:L429} totals every row of one card between two key
+         * breaks. Both figures are therefore read once over the key.
          */
         @Test
         void theCountAndTheTotalComeFromTheAggregate() throws Exception {

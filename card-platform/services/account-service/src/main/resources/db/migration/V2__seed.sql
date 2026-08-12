@@ -1,5 +1,5 @@
--- Account service seed data, second of four migrations. V1__schema.sql declares the
--- eight tables of this schema, and Flyway applies it first by version order.
+-- Account service, migration V2. Seed data. V1__schema.sql declares the eight tables it
+-- lands in, and Flyway applies that migration first by version order.
 -- 151 rows land here: 50 into account, 50 into customer, 51 into disclosure_group.
 -- Every table name below stays unqualified, and spring.flyway.schemas in
 -- src/main/resources/application.yml names the schema they land in.

@@ -68,10 +68,8 @@ final class OpenApiContractTest {
     /** The account route, which carries a read and an update. */
     private static final String ACCOUNT_PATH = "/accounts/{accountId}";
 
-    /** The cycle-close route. */
     private static final String CYCLE_CLOSE_PATH = "/accounts/{accountId}/cycle-close";
 
-    /** The customer route. */
     private static final String CUSTOMER_PATH = "/customers/{customerId}";
 
     /**
@@ -128,7 +126,6 @@ final class OpenApiContractTest {
                     "each call produces one event, so the verb is not the idempotent one");
         }
 
-        /** Asserts the customer route carries a read alone. */
         @Test
         void theCustomerRouteCarriesAReadAlone() {
             assertEquals(Set.of("get"), operationsOn(CUSTOMER_PATH).keySet(),
@@ -866,11 +863,6 @@ final class OpenApiContractTest {
     }
 
     /**
-     * @param schema the schema name
-     * @return the properties of one schema
-     */
-    @SuppressWarnings("unchecked")
-    /**
      * Returns the JSON type a property describing {@code component} must declare.
      *
      * <p>An unmapped type is an error rather than a default. Letting one fall through to a number is
@@ -950,6 +942,11 @@ final class OpenApiContractTest {
                 && bound.using() == tools.jackson.databind.ser.std.ToStringSerializer.class;
     }
 
+    /**
+     * @param schema the schema name
+     * @return the properties of one schema
+     */
+    @SuppressWarnings("unchecked")
     private static Map<String, Object> propertiesOf(String schema) {
         Map<String, Object> schemas = (Map<String, Object>) components().get("schemas");
         Map<String, Object> declared = asMap(schemas.get(schema));

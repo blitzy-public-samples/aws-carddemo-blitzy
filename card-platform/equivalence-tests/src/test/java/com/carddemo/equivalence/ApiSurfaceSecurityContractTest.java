@@ -210,10 +210,9 @@ class ApiSurfaceSecurityContractTest {
     /**
      * The one exception handler each service declares, by module.
      *
-     * <p>Every service declares exactly one, so no route of any service can answer a failure with the
-     * framework default body. The ledger handler was the last to arrive: that service answered every
-     * failure with the framework body, which carries the resolved request path, so a caller naming an
-     * account identifier read it back.
+     * <p>Every service declares exactly one, so no route of any service can answer a failure with
+     * the framework default body. A service without one answers every failure with that body, which
+     * carries the resolved request path, so a caller naming an account identifier reads it back.
      */
     private static final Map<String, String> API_EXCEPTION_HANDLERS = Map.of(
             "authorization-service", "GlobalExceptionHandler.java",
@@ -442,26 +441,24 @@ class ApiSurfaceSecurityContractTest {
      * {@code app/cbl/COCRDLIC.cbl}, {@code app/cbl/COCRDSLC.cbl} and {@code app/cbl/COCRDUPC.cbl}
      * all address one collection of cards. One handler sits beside it.</p>
      *
-     * <p>The ledger controller carries one too, and it was the last of the six to arrive. That
-     * service answered every failure with the framework default body, which carries the resolved
-     * request path, so a caller naming an account identifier read that identifier back. The same body
-     * also answered {@code 500} for a datastore that was merely away, which invites no retry and
-     * names no dependency.</p>
+     * <p>The ledger controller carries one too. Without it that service answers every failure with
+     * the framework default body, which carries the resolved request path, so a caller naming an
+     * account identifier reads that identifier back. The same body also answers {@code 500} for a
+     * datastore that is merely away, which invites no retry and names no dependency.</p>
      *
-     * <p>The fraud controller carries one. The framework's own handling answered a refused query
+     * <p>The fraud controller carries one. The framework's own handling answers a refused query
      * parameter with a body shaped unlike every other refusal this platform returns, so the module
-     * declares a handler that answers the media type and the four members its
-     * {@code openapi.yaml} publishes, and {@code ErrorBodyExposure} measures the body it returns.</p>
+     * declares a handler that answers the media type and the four members its {@code openapi.yaml}
+     * publishes, and {@code ErrorBodyExposure} measures the body it returns.</p>
      *
-     * <p>None of the six names a base package, and that is deliberate rather than an omission. Spring
-     * selects an advice by the type of the handler it resolved, so a request that matches no mapping
-     * resolves none and a scoped advice is skipped for exactly the failures raised before a handler is
-     * chosen: an unsupported media type, an unacceptable one and an unsupported method. Scoping was
-     * measured across all six and reverted. What keeps a handler away from the management port is
-     * {@code config/ReadinessHealthConfig} in each service, which
-     * {@link #noReadinessIndicatorLetsADependencyFailureEscape} measures: every indicator that
-     * reaches a dependency catches its own failure, so the actuator always has a document to render
-     * and no health poll leaves through the error path at all.</p>
+     * <p>None of the six names a base package. Spring selects an advice by the type of the handler
+     * it resolved, so a request that matches no mapping resolves none and a scoped advice is
+     * skipped for exactly the failures raised before a handler is chosen: an unsupported media
+     * type, an unacceptable one and an unsupported method. What keeps a handler away from the
+     * management port is {@code config/ReadinessHealthConfig} in each service, which
+     * {@link WebSurfaceAccessControl#noReadinessIndicatorLetsADependencyFailureEscape()} measures:
+     * every indicator that reaches a dependency catches its own failure, so the actuator always has
+     * a document to render and no health poll leaves through the error path at all.</p>
      */
     private static final Set<String> ENDPOINT_SOURCE_FILES = Set.of(
             "account-service/AccountController.java",
@@ -1804,9 +1801,10 @@ class ApiSurfaceSecurityContractTest {
         }
 
         /**
-         * The error body refuses a resolved path and accepts a template. A route such as
-         * {@code /cards/1234567890123456} would put the number in the body and in every log line that
-         * copies it, and the constructor refuses any run of more than four digits.
+         * The error body refuses a resolved path and accepts a template. A route under
+         * {@code /cards/} carrying a resolved sixteen-digit card number would put that number in
+         * the body and in every log line that copies it, and the constructor refuses any run of
+         * more than four digits.
          */
         @Test
         @DisplayName("the error body refuses a resolved route and accepts a template")
@@ -2689,11 +2687,11 @@ class ApiSurfaceSecurityContractTest {
     /**
      * The identity allowlist each service applies to the configuration it is handed.
      *
-     * <p>A security review found an operator-supplied role and scope reaching the authority list
-     * unchecked. A role outside the platform's four produces an authority no rule of any service
-     * names, and a scope of an unknown kind or a mis-shaped value reaches no row: both authenticate an
-     * identity that can reach nothing while reading as a working one. The refusals live in six copies
-     * of {@code config/SecurityConfig}, so something has to read all six.
+     * <p>An operator-supplied role or scope that reaches the authority list unchecked reads as a
+     * working identity and reaches nothing. A role outside the platform's four produces an
+     * authority no rule of any service names, and a scope of an unknown kind or a mis-shaped value
+     * reaches no row. The refusals live in six copies of {@code config/SecurityConfig}, so
+     * something has to read all six.
      *
      * <p>The allowlist is platform-wide rather than per service, and one route rule is the reason.
      * {@code ROLE_ACQUIRER} reaches {@code POST /authorizations} alone, and an identity list composed
@@ -2855,7 +2853,6 @@ class ApiSurfaceSecurityContractTest {
                     "a commented key is not a declaration");
         }
 
-        /** The serialized-key reader reports the keys of an object in the order it carries them. */
         @Test
         @DisplayName("the serialized-key reader reports the keys of an object in order")
         void theSerializedKeyReaderReportsTheKeysOfAnObjectInOrder() {

@@ -37,9 +37,10 @@ import org.springframework.web.bind.annotation.RestController;
  * variable that misses the eleven-digit pattern answers {@code 400}. A projection table this service
  * cannot reach answers {@code 503}, and anything else answers {@code 500}.
  *
- * <p>The three failing answers used to be one framework default body, which carried the resolved
- * request path. A caller naming an account identifier read that identifier back and copied it into its
- * own access log, and a paused datastore answered {@code 500} with nothing an operator could act on.
+ * <p>Each failing answer is a problem document {@code api/LedgerApiExceptionHandler} builds. The
+ * framework default body would carry the resolved request path, so a caller naming an account
+ * identifier would read that identifier back into its own access log, and a paused datastore would
+ * answer {@code 500} with nothing an operator could act on.
  *
  * <p>The operation reads and changes no row. An event drives the balance update at
  * {@code app/cbl/CBTRN02C.cbl:L545-L560}, and no route here reaches it.

@@ -1,14 +1,13 @@
 -- Authorization service, migration V20.
 -- Withdraws unresolved_card_attempt, because the outcome it recorded is no longer decided.
 --
--- What a security review found. V19 gave reject code 0100 the account the caller declared as its
--- subject, and that value is the one thing on the request no stored row of this platform ties to the
--- card presented. A caller holding a broad role -- the acquirer identity this route exists for, or an
--- administrator -- could therefore present an unknown sixteen-digit card together with any
--- eleven-digit account and have this service write an unresolved_card_attempt row, an
--- authorization_decision row and a declined event, all keyed on an account it had merely named. The
--- audit trail of that account then held a refusal that account had nothing to do with, and the Kafka
--- partition of that account carried the record.
+-- The subject this outcome takes, and the one it must not. The account a caller declares beside a card is the one
+-- value on the request that no stored row of this platform ties to the card presented. Keying reject
+-- code 0100 on it would let a caller holding a broad role -- the acquirer identity this route exists
+-- for, or an administrator -- pair an unknown sixteen-digit card with any eleven-digit account and
+-- have this service write rows and a declined event against an account it had merely named. That
+-- account's audit trail would hold a refusal it had nothing to do with, and its Kafka partition would
+-- carry the record.
 --
 -- What the source does with the same case. The feed record the batch path validates carries no account
 -- at all: app/cpy/CVTRA06Y.cpy declares twelve fields and none of them is an account identifier, which
@@ -31,7 +30,7 @@
 -- carried -- that a card reached this service and no cross-reference row held it -- is kept as a metric
 -- instead: config/ObservabilityConfig.UNRESOLVED_CARD_STAGE counts each refusal on
 -- carddemo.authorization.failures, so a caller probing card numbers shows up as a rising count that
--- holds no cardholder value at all. Alternatives weighed: card-platform/docs/decision-log.md.
+-- holds no cardholder value at all. Design decisions: card-platform/docs/decision-log.md.
 --
 -- Rows already present are dropped with the table. They record decisions taken under V14, V15 and V19,
 -- and the authorization_decision row of each of those calls stays: the decision is the record of what
@@ -45,7 +44,7 @@
 -- migration still reads it. What no producer path writes any more is a reason-0100 decline of any
 -- version.
 --
--- Alternatives weighed and the risk accepted: card-platform/docs/decision-log.md.
+-- Design decisions: card-platform/docs/decision-log.md.
 --
 -- Idempotent in the sense Flyway needs: this file runs once, and IF EXISTS lets it run against a
 -- database at any of the states V3, V14, V15 and V19 could leave.

@@ -39,8 +39,7 @@
 -- app/cbl/CBTRN02C.cbl:L187 are untouched by this change and stay reproduced, defects included.
 --
 -- The two columns answer in constant time and are exact.
--- card-platform/docs/decision-log.md carries the alternatives weighed against them, a query over
--- authorization_decision among them.
+-- Design decisions: card-platform/docs/decision-log.md.
 --
 -- The expiry. A reservation is released when the posting it anticipates is reported back, and
 -- pending_expires_at bounds the case where no posting ever arrives: a reservation past its expiry

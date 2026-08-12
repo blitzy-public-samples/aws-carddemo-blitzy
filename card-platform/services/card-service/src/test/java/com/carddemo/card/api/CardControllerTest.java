@@ -84,8 +84,8 @@ import tools.jackson.databind.ObjectMapper;
  * constants to the same literals.
  *
  * <p>The single stubbed card is row one of {@code app/data/ASCII/carddata.txt}, a file of fifty
- * records at one hundred and fifty bytes. Its card verification value {@code 747} occurs once in
- * that record, and on one other row inside a card number whose own value is {@code 218}.
+ * records at one hundred and fifty bytes. Its card verification value occurs once in that record,
+ * and on one other row inside a card number whose own verification value differs.
  *
  * <p>No application context, no database and no broker takes part.
  *
@@ -121,7 +121,8 @@ class CardControllerTest {
     /**
      * {@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}.
      *
-     * <p>The card verification value of the stubbed row. No response body and no event carries it.
+     * <p>The card verification value of the stubbed row, three digits. No response body and no
+     * event carries it.
      */
     private static final String CARD_VERIFICATION_VALUE = "747";
 
@@ -314,7 +315,6 @@ class CardControllerTest {
                     "the row count reached the read side as a value rather than as an absence");
         }
 
-        /** Asserts a requested row count reaches the read side unchanged. */
         @Test
         void aRequestedRowCountReachesTheReadSideUnchanged() {
             when(cardQueries.listForward(any(), any(), any(), any())).thenReturn(emptyPage());
@@ -753,7 +753,6 @@ class CardControllerTest {
                             "the read side and the update side, and no predicate"));
         }
 
-        /** Reads the fixture card. */
         private ResponseEntity<?> readFixtureCard() {
             return controller.readCard(CARD_TOKEN);
         }
@@ -1062,8 +1061,8 @@ class CardControllerTest {
          * Asserts the row this handler resolved is the row it hands on, so nothing reads it twice.
          *
          * <p>Resolving a token to a card is the only way this route can name a card at all, so the
-         * row is in hand before the update side is called. It used to be called without it and read
-         * the same key again: two statements answering the same question with the same row.
+         * row is in hand before the update side is called. Calling it without the row would read the
+         * same key again: two statements answering the same question with the same row.
          *
          * <p>The identity of the instance is asserted, not its values. A row read a second time
          * carries the same values, so comparing values would pass either way and prove nothing.
@@ -1471,7 +1470,6 @@ class CardControllerTest {
     @DisplayName("the constructor")
     class Constructor {
 
-        /** Asserts every collaborator is required. */
         @Test
         void everyCollaboratorIsRequired() {
             assertAll(
@@ -1573,7 +1571,7 @@ class CardControllerTest {
     }
 
     /**
-     * Derives the irreversible card token of one card number.
+     * Derives the keyed card token of one card number.
      *
      * <p>The build supplies the key through the two surefire system properties the aggregator
      * declares, so no test prepares anything.

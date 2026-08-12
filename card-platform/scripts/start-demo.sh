@@ -36,7 +36,7 @@
 # 29.7.0, Docker Compose 5.3.1, OpenSSL 3.5.3, curl 8.14.1, git 2.51.0. The build refuses an
 # older Java or Maven itself, and the loop below refuses a missing tool by name.
 #
-# Rationale for the choices here: card-platform/docs/decision-log.md
+# Design decisions for the choices here: card-platform/docs/decision-log.md
 # Setup guide, ports, demo requests and pitfalls: card-platform/docs/onboarding.md
 
 set -euo pipefail

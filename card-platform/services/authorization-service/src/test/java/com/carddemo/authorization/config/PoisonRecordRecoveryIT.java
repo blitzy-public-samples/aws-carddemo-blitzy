@@ -66,8 +66,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * so the same diagnostic was published again, indefinitely, and every record behind it waited.
  *
  * <p>Three properties are measured here, and none of them can be measured without a broker. The
- * committed offset is broker state. The count of diagnostics is topic state. And the reassignment
- * that used to reread the record only happens inside a real consumer group.
+ * committed offset is broker state. The count of diagnostics is topic state. And a reassignment that
+ * rereads the record only happens inside a real consumer group.
  *
  * <p>The poison record is a document whose envelope members are nested under one object, so the
  * required members are absent from the top level. {@code JsonSchemaValidatingDeserializer} refuses it

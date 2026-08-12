@@ -155,11 +155,11 @@ class PresentationAndProseContractTest {
      * <p>Every path is resolved against the platform root, so {@code ../README.md} reaches the
      * repository-root guide that the report scores one section of.
      *
-     * <p>A review found the inventory at nineteen while the report claimed every authored document.
-     * Seven were missing: the deployment guide, and the description prose of all six OpenAPI
-     * documents. An OpenAPI document is written for a reader as much as any guide is, so its
-     * descriptions are governed prose. They are appended rather than interleaved, which keeps every
-     * number the report already published attached to the target it was measured against.
+     * <p>The report claims every authored document, so the inventory has to reach the deployment
+     * guide and the description prose of all six OpenAPI documents as well as the guides. An
+     * OpenAPI document is written for a reader as much as any guide is, so its descriptions are
+     * governed prose. They are appended rather than interleaved, which keeps every number the
+     * report already published attached to the target it was measured against.
      */
     private static final List<String> PROSE_TARGETS =
             List.of(
@@ -269,7 +269,6 @@ class PresentationAndProseContractTest {
     /** Principles an over-long paragraph offends. */
     private static final Set<String> PARAGRAPH_PRINCIPLES = Set.of("V2");
 
-    /** Principles a buzzword offends. */
     private static final Set<String> BUZZWORD_PRINCIPLES = Set.of("V5", "A6");
 
     private static final int LONG_SENTENCE_WORDS = 30;
@@ -377,9 +376,9 @@ class PresentationAndProseContractTest {
         /**
          * Returns the verdict the rule's own severity scale gives these counts.
          *
-         * <p>CLEAN is zero hard violations and at most two soft ones. An earlier revision admitted
-         * three soft, which published CLEAN for a target the rule calls NEEDS WORK. ROUGH DRAFT is
-         * four or more hard violations, and everything between the two is NEEDS WORK.
+         * <p>CLEAN is zero hard violations and at most two soft ones. Admitting a third soft
+         * violation would publish CLEAN for a target the rule calls NEEDS WORK. ROUGH DRAFT is four
+         * or more hard violations, and everything between the two is NEEDS WORK.
          *
          * @return CLEAN, NEEDS WORK or ROUGH DRAFT
          */
@@ -583,13 +582,12 @@ class PresentationAndProseContractTest {
     /**
      * Asserts the deck states a policy, and that the policy admits its own script and nothing else.
      *
-     * <p>A review found no policy at all. The deck is one file opened from disk, so a header is not
-     * available and a meta element is the only place a policy can be stated. Three properties are
-     * read. Every directive is present with the value it was verified under. The inline module is
-     * admitted by the digest of its own text rather than by an unsafe-inline keyword, which is what
-     * makes an injected script inert. And the digest is recomputed here from the script the deck
-     * actually holds, so an edit to that script fails this test rather than silently disabling the
-     * only script the policy allows.
+     * <p>The deck is one file opened from disk, so a header is not available and a meta element is
+     * the only place a policy can be stated. Three properties are read. Every directive is present
+     * with the value it was verified under. The inline module is admitted by the digest of its own
+     * text rather than by an unsafe-inline keyword, which is what makes an injected script inert.
+     * And the digest is recomputed here from the script the deck actually holds, so an edit to that
+     * script fails this test rather than silently disabling the only script the policy allows.
      */
     @Test
     @DisplayName("the deck states a policy that admits its own module by digest and nothing else")
@@ -701,13 +699,11 @@ class PresentationAndProseContractTest {
     /**
      * Returns every class name applied to an element in the deck's markup.
      *
-     * <p>The style block is removed first, and that is the whole point. An earlier form of the
-     * assertion above read {@code deck.contains("." + className)} and then
-     * {@code deck.contains(className)}: the second follows from the first, because a rule named
-     * {@code .kpi-card} contains the text {@code kpi-card}. A review found it could not fail for the
-     * reason it existed — a class defined in the theme and applied to nothing passed both checks.
-     * Collecting the {@code class} attributes of the remaining markup asks the question the second
-     * assertion was written to ask.</p>
+     * <p>The style block is removed first, and that is the whole point. Reading
+     * {@code deck.contains("." + className)} and then {@code deck.contains(className)} asserts one
+     * thing twice, because a rule named {@code .kpi-card} contains the text {@code kpi-card}: a
+     * class defined in the theme and applied to nothing passes both. Collecting the {@code class}
+     * attributes of the remaining markup asks whether the markup applies the class.</p>
      *
      * @param deck the whole HTML document
      * @return the class names the markup applies, each once
@@ -1139,10 +1135,9 @@ class PresentationAndProseContractTest {
     /**
      * The twelve Vonnegut principle names, exactly as the governing rules document writes them.
      *
-     * <p>An earlier revision of the report invented names for V8 and V10 through V12, so a reader
-     * comparing the report against the rule could not tell which principle a row scored. The names
-     * are asserted rather than the numbers alone because the number without the rule's own name is
-     * what allowed the drift.
+     * <p>A report that invents a name for a principle leaves a reader comparing it against the rule
+     * unable to tell which principle a row scored. The names are asserted rather than the numbers
+     * alone, because a number without the rule's own name lets that drift pass.
      */
     private static final List<String> VONNEGUT_PRINCIPLES =
             List.of(
@@ -1354,11 +1349,11 @@ class PresentationAndProseContractTest {
     /**
      * Holds every principle row to a judged result and to evidence a reader can check.
      *
-     * <p>A review found seventeen of the twenty-two principles reading {@code Not measured} with no
-     * evidence beside them, which is a review that was not performed. Four results are admitted now
-     * and {@code Not measured} is not among them: {@code Pass}, {@code Soft violation},
-     * {@code Hard violation} and {@code Not applicable}. The last one is for a principle a technical
-     * reference cannot offend, and it owes a reason like any other.
+     * <p>A principle reading {@code Not measured} with no evidence beside it is a review that was
+     * not performed. Four results are admitted and {@code Not measured} is not among them:
+     * {@code Pass}, {@code Soft violation}, {@code Hard violation} and {@code Not applicable}. The
+     * last one is for a principle a technical reference cannot offend, and it owes a reason like
+     * any other.
      *
      * <p>Five principles carry a mechanical result, and the four length and buzzword figures decide
      * it. Their evidence is mechanical too: a pass on sentence length has to publish the longest
@@ -1486,12 +1481,12 @@ class PresentationAndProseContractTest {
     /**
      * Requires one complete entry for every violation counted, not one for the worst of each kind.
      *
-     * <p>A review found a target publishing 28 soft violations under two entries. Rule 5 asks for a
-     * quote, a named principle, a rewrite and a reason for each violation, so a count of 28 with two
-     * entries beside it is 26 counts a reader cannot check. Three rules follow. Every over-length
-     * sentence measured is quoted by some V3 entry, and no V3 entry quotes a sentence the measurement
-     * did not find. Every over-long paragraph measured is named by a split point that begins one of
-     * its own sentences. Every buzzword counted is named by an A6 entry.
+     * <p>Rule 5 asks for a quote, a named principle, a rewrite and a reason for each violation, so
+     * a target publishing 28 soft violations under two entries leaves 26 counts a reader cannot
+     * check. Three rules follow. Every over-length sentence measured is quoted by some V3 entry,
+     * and no V3 entry quotes a sentence the measurement did not find. Every over-long paragraph
+     * measured is named by a split point that begins one of its own sentences. Every buzzword
+     * counted is named by an A6 entry.
      *
      * <p>A target with nothing measured says so, in one sentence, so silence is never mistaken for an
      * omission.
@@ -1705,10 +1700,9 @@ class PresentationAndProseContractTest {
      * content the slide carries and assistive technology reads, so counting it keeps the ceiling on the
      * conservative side of what a reader receives.
      *
-     * <p>An earlier revision of this method also removed tables, headings, metric grids and icon rows.
-     * Those are where a slide of this deck carries most of its words, so four slides stood at 103, 94,
-     * 88 and 43 visible words against a ceiling of {@value #RULE_FOUR_WORD_LIMIT} while this test
-     * reported every one of them as passing.
+     * <p>Removing tables, headings, metric grids and icon rows before counting would drop most of
+     * what a slide of this deck carries, so slides holding 103, 94, 88 and 43 visible words would
+     * pass a ceiling of {@value #RULE_FOUR_WORD_LIMIT}.
      *
      * @param slideBody the markup of one slide
      * @return how many visible words it carries
@@ -1834,10 +1828,10 @@ class PresentationAndProseContractTest {
      *
      * <p>Three artifacts state the size of {@code docs/business-rule-flags.md}: the deck's
      * findings-surfaced metric card, the deck's business-value table, and the platform guide's
-     * document index. A review found all three stating sixty-five while the register carried
-     * sixty-six rows, which is stale evidence in the two artifacts a customer and a new developer
-     * read first. The register's own heading is already held to its rows by
-     * {@code DocumentationContractTest}, so binding these three to the same figure closes the loop.
+     * document index. A figure stated in three places and measured in none goes stale in the two
+     * artifacts a customer and a new developer read first. The register's own heading is already
+     * held to its rows by {@code DocumentationContractTest}, so binding these three to the same
+     * figure closes the loop.
      */
     @Test
     @DisplayName("the deck and the platform guide state the register's own finding count")
@@ -1904,12 +1898,12 @@ class PresentationAndProseContractTest {
     /**
      * Binds the prose report to the exact text it scored.
      *
-     * <p>A review found the report claiming every target CLEAN against text that had moved beneath it:
-     * the root guide, the deck, the onboarding guide, the equivalence results, the flagged-rule
-     * register, the decision log and the traceability matrix had all changed after the scoring pass,
-     * so the verdicts described documents that no longer existed. A digest per target turns that from
-     * something a reader has to notice into something this build refuses: change a scored file and the
-     * report fails here until the pass is run again over the new text.
+     * <p>A report can claim every target CLEAN against text that has moved beneath it: edit the
+     * root guide, the deck, the onboarding guide, the equivalence results, the flagged-rule
+     * register, the decision log or the traceability matrix after a scoring pass, and the verdicts
+     * describe documents that no longer exist. A digest per target turns that from something a
+     * reader has to notice into something this build refuses: change a scored file and the report
+     * fails here until the pass is run again over the new text.
      *
      * <p>Target 10 is the report itself and carries no digest, because a file cannot publish a digest
      * of its own bytes. The report says so in the row where a digest would sit, and this test requires

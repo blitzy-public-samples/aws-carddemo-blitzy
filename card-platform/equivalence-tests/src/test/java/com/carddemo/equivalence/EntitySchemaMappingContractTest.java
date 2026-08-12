@@ -123,7 +123,7 @@ class EntitySchemaMappingContractTest {
      * {@code TRAN-PROC-TS} on the record it captures, and this column is where the synchronous path
      * records the same value.</p>
      *
-     * <p>One column left this count deliberately. The account service replaced its card-keyed
+     * <p>One column is absent from this count. The account service replaced its card-keyed
      * {@code card_xref} replica with {@code account_customer_link}, which holds the account and
      * customer pair of {@code app/cpy/CVACT03Y.cpy:L6-L7} and drops {@code XREF-CARD-NUM} at
      * {@code :L5}: no query in that service reads a card, so the column stored a Primary Account
@@ -133,9 +133,10 @@ class EntitySchemaMappingContractTest {
      * {@code REJECT-TRAN-DATA PIC X(350)} whole rather than field by field, so the twelve fields
      * {@code app/cbl/CBTRN02C.cbl:L446-L465} copies onto the reject record reach one column instead
      * of one column each, beside the transaction identifier, the four-digit reason code, its
-     * seventy-six-character text and the moment. That is what the source writes: a four-hundred-and
-     * -thirty-byte record of the daily-transaction block followed by an eighty-byte trailer, and a
-     * block re-parsed on demand cannot disagree with the bytes the reject dataset held.</p>
+     * seventy-six-character text and the moment. That is what the source writes: a
+     * four-hundred-and-thirty-byte record of the daily-transaction block followed by an eighty-byte
+     * trailer, and a block re-parsed on demand cannot disagree with the bytes the reject dataset
+     * held.</p>
      *
      * <p>The six most recent belong to the authorization service's {@code replica_gap}, created by
      * {@code V12__replica_gap.sql}: the account and the stream that make up its key, the first and
@@ -151,19 +152,19 @@ class EntitySchemaMappingContractTest {
      * programs.</p>
      *
      * <p>Seven columns left the model most recently, and the whole of the authorization service's
-     * {@code unresolved_card_attempt} table with them. {@code V20__unresolved_card_attempt_withdrawn.sql}
-     * drops it because the outcome it recorded is no longer decided: a card that resolves no
-     * cross-reference row is refused rather than decided against the account a caller named in the
-     * request body, which is what a security review found. The observation that an unknown card was
-     * presented is kept as a metric, and a metric has no column.</p>
+     * {@code unresolved_card_attempt} table with them.
+     * {@code V20__unresolved_card_attempt_withdrawn.sql} drops it because the outcome it recorded
+     * is no longer decided: a card that resolves no cross-reference row is refused rather than
+     * decided against the account a caller named in the request body. The observation that an
+     * unknown card was presented is kept as a metric, and a metric has no column.</p>
      *
-     * <p>Sixteen arrived with the card-token rotation a security review asked for, and none has a
-     * COBOL ancestor because the source holds no token: {@code app/bms/COCRDSL.bms:L99} shows a card
-     * in full. Three of the sixteen record which key a stored token belongs to and where it came
-     * from, two on {@code card} and one on {@code authorization_decision}, and thirteen make up the
-     * two tables {@code V10__card_token_version_and_rotation.sql} creates. Eight of those thirteen
-     * are the audit record of one rotation run and five are one re-keyed card, which is what the
-     * three stores holding a token and no card number are re-keyed from.</p>
+     * <p>Sixteen arrived with the card-token rotation, and none has a COBOL ancestor because the
+     * source holds no token: {@code app/bms/COCRDSL.bms:L99} shows a card in full. Three of the
+     * sixteen record which key a stored token belongs to and where it came from, two on
+     * {@code card} and one on {@code authorization_decision}, and thirteen make up the two tables
+     * {@code V10__card_token_version_and_rotation.sql} creates. Eight of those thirteen are the
+     * audit record of one rotation run and five are one re-keyed card, which is what the three
+     * stores holding a token and no card number are re-keyed from.</p>
      */
     private static final int MAPPED_COLUMN_COUNT = 281;
 
@@ -1085,7 +1086,6 @@ class EntitySchemaMappingContractTest {
                     "the platform declares " + ENTITY_COUNT + " entities across its six services");
         }
 
-        /** Every entity maps a table the migration of its own service creates. */
         @Test
         @DisplayName("every entity maps a table its own migration creates")
         void everyEntityMapsATableItsOwnMigrationCreates() {
@@ -1696,11 +1696,10 @@ class EntitySchemaMappingContractTest {
         /**
          * The parser reads a later migration that renames a column and its index.
          *
-         * <p>A rename leaves nothing of the old name in the schema, so a comparison that missed it
-         * would report the entity's new field as mapping a column no migration declares and the
-         * migration's old column as mapped by nothing, which is exactly the pair of failures the
-         * notification rename produced before this pass existed. The key and the index column list
-         * follow the rename, because both name the column rather than copy it.
+         * <p>A rename leaves nothing of the old name in the schema, so a comparison that misses it
+         * reports the entity's new field as mapping a column no migration declares and the
+         * migration's old column as mapped by nothing. The key and the index column list follow the
+         * rename, because both name the column rather than copy it.
          */
         @Test
         @DisplayName("the parser applies a later RENAME COLUMN and ALTER INDEX RENAME TO")

@@ -68,7 +68,6 @@ class LogHygieneContractTest {
             "authorization-service", "ledger-posting-service", "fraud-detection-service",
             "notification-service", "account-service", "card-service");
 
-    /** Matches one line comment. */
     private static final Pattern LINE_COMMENT = Pattern.compile("//[^\\n]*");
 
     /** Matches one block comment, which is how every class carries its javadoc. */

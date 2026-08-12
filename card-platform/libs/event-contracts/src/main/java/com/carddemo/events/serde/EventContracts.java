@@ -28,12 +28,13 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>No COBOL program and no copybook in this repository declares an event bus, a topic or a
  * schema.
  *
- * <p>Seven event types are registered, which is every event the platform publishes at runtime:
- * {@code TransactionAuthorized}, {@code TransactionDeclined} and {@code TransactionPosted} for the
- * transaction path, {@code FraudFlagged} and {@code FraudCleared} for the risk path, and
- * {@code AccountStateChanged} and {@code CardUpdated} for the two supporting services. A
- * service that publishes an event outside this set has no contract, and
- * {@link #schemaResourceFor(String)} rejects it.
+ * <p>{@link #DEFAULT_TOPICS} is the registered set, and reading it is how a caller learns what that
+ * set holds rather than trusting a figure in this comment. It covers the transaction path with
+ * {@code TransactionAuthorized}, {@code TransactionDeclined} and {@code TransactionPosted}, the risk
+ * path with {@code FraudFlagged} and {@code FraudCleared}, the supporting services with
+ * {@code AccountStateChanged}, {@code CustomerContextChanged} and {@code CardUpdated}, and the
+ * failure path with {@code DeadLetterEnvelope}. A service that publishes an event outside that set
+ * has no contract, and {@link #schemaResourceFor(String)} rejects it.
  *
  * <p>{@link #defaultTopicFor(String)} answers which topic one event type belongs on.
  * {@code FraudFlagged} and {@code FraudCleared} share {@code fraud.assessed}, so a consumer of that
@@ -316,11 +317,10 @@ public final class EventContracts {
      * reading one. It must fit {@link EventWireBounds#MAX_EVENT_BYTES}. And the version it declares
      * must be one a producer may still write, which {@link ReleasedContracts} decides.
      *
-     * <p>The two screens and the ceiling used to be absent here, and that absence is why this method
-     * exists in this form. An outbox writer wrote its own text, measured it against the document
-     * alone and stored it, so a card number in a free-text property committed with the business state
-     * and reached a topic, where the consume side refused it. The produce and consume contracts now
-     * name the same refusals whichever path a producer takes.
+     * <p>The produce and consume contracts name the same refusals whichever path a producer takes.
+     * A writer that measured its own text against the schema document alone would store a card number
+     * carried in a free-text property, commit it with the business state, and have the consume side
+     * refuse it after the fact.
      *
      * <p>{@link PublishGate#checkedJsonOf(Record)} is the boundary a producer holding a RECORD
      * crosses, and it adds the two checks text cannot carry: the class must name a registered event

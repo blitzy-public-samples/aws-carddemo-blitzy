@@ -108,7 +108,7 @@ public class ObservabilityConfig {
         /** Category-balance stores that lost the high-order digits of their sum. */
         private final Counter categoryBalanceWrapped;
 
-        /** Events read from the two topics this service subscribes to. */
+        /** Events read from the topics this service subscribes to. */
         private final Counter eventsConsumed;
 
         /** Postings applied, the successor of {@code WS-TRANSACTION-COUNT}. */

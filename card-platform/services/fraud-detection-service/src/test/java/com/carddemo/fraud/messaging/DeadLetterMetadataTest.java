@@ -64,7 +64,6 @@ import static org.mockito.Mockito.when;
 @DisplayName("DeadLetterMetadata, the values that travel to the dead-letter topic")
 final class DeadLetterMetadataTest {
 
-    /** The component that holds the failure code. */
     private static final String COMPONENT_FAILURE_CODE = "abendCode";
 
     /** The component that names the failing part. */

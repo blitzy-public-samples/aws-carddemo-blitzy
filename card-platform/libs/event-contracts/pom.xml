@@ -16,8 +16,8 @@
   account identifier everywhere except transaction-declined-v2, where no account has
   been resolved and the key is the transaction identifier.
 
-  Rationale for the choices in this file, including the language level and the
-  bill-of-materials import below: card-platform/docs/decision-log.md
+  Design decisions, including the language level and the bill-of-materials import
+  below: card-platform/docs/decision-log.md
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -62,8 +62,10 @@
       <artifactId>json-schema-validator</artifactId>
     </dependency>
 
-    <!-- kafka-clients supplies the Serializer and Deserializer interfaces, and the record header
-         types com.carddemo.events.correlation writes the two correlation identifiers into. -->
+    <!-- The broker client. Supplies the Serializer and Deserializer interfaces, and the record
+         header types com.carddemo.events.correlation writes the two correlation identifiers into.
+         Decisions: card-platform/docs/decision-log.md, under "Which artifacts a module
+         declares for itself, and which it reaches through a starter". -->
     <dependency>
       <groupId>org.apache.kafka</groupId>
       <artifactId>kafka-clients</artifactId>

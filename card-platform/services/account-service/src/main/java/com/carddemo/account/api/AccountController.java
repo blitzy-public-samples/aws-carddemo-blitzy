@@ -78,7 +78,7 @@ import org.springframework.web.bind.annotation.RestController;
  * government-issued identifier at {@code :L18} reaches a response, a log line or an event. A failed
  * edit names the field it refused and none of the submitted value.
  *
- * <p>Rationale for the deviations this class takes part in, D1 and D4 through D10:
+ * <p>Design decisions for the deviations this class takes part in, D1 and D4 through D10:
  * {@code card-platform/docs/decision-log.md}. Flagged source findings, among them the two
  * unreachable guards at {@code app/cbl/COACTVWC.cbl:L704} and {@code :L713} whose only setters are
  * commented out at {@code :L792} and {@code :L842}:

@@ -55,7 +55,7 @@ public final class AlphabeticOptionalValidator {
 
     /**
      * ADDITIVE. Opens the message text for a value wider than the edited field; no source literal
-     * carries this text. Rationale: {@code card-platform/docs/decision-log.md}.
+     * carries this text. Design decisions: {@code card-platform/docs/decision-log.md}.
      */
     private static final String ADDITIVE_NO_LONGER_THAN = " must be no longer than ";
 

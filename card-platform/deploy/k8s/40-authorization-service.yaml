@@ -201,10 +201,11 @@ spec:
             # Flyway locations, read from the ConfigMap rather than fixed here, so this path
             # offers the same base-profile opt-out card-platform/docker-compose.yml offers
             # through AUTHORIZATION_FLYWAY_LOCATIONS. The shipped value names two locations:
-            # db/migration reproduces app/data/ASCII/acctdata.txt value for value, and all 50
-            # of its account expiries fall in 2023 to 2025, so reason code 103 at
-            # app/cbl/CBTRN02C.cbl:L414-L420 declines a request carrying today's date. db/demo
-            # extends those expiries to 2099-12-31 and touches nothing else. 30-configmap.yaml
+            # db/migration reproduces app/data/ASCII/acctdata.txt value for value, and its 50
+            # account expiries run from 2023-01-06 to 2025-12-28, so reason code 103 at
+            # app/cbl/CBTRN02C.cbl:L414-L420 declines a request dated after the expiry it is
+            # compared against. db/demo extends those expiries to 2099-12-31 and touches
+            # nothing else. 30-configmap.yaml
             # carries the reason, the opt-out and the rule that this key and the account one
             # change together.
             - name: SPRING_FLYWAY_LOCATIONS
@@ -342,8 +343,9 @@ spec:
       appProtocol: https
 ---
 # Network policy for the authorization pod. Ingress separates the business and
-# management surfaces. Egress admits only Domain Name System (DNS), PostgreSQL,
-# Kafka, and the two supporting query services this service calls.
+# management surfaces. Egress admits Domain Name System (DNS), PostgreSQL and
+# Kafka, and nothing else: this service holds no HTTP client, and its decline
+# rules read the account and card replicas in its own schema.
 #
 # The management surface is already authenticated. config/SecurityConfig leaves
 # /actuator/health open for probes and requires ROLE_MONITORING for metrics and
@@ -444,9 +446,8 @@ spec:
     # rather than weakening it: an authorization decision cannot be delayed or failed by a
     # service it never calls.
     #
-    # An earlier revision of this file granted egress to both on 8080 with a comment saying
-    # the rules query them synchronously. No such call exists: this service holds no HTTP
-    # client, no service-URL environment variable and opens no socket to either. A granted
-    # permission nothing uses is worse than absent, because it tells the next reader the call
-    # is expected and it is the first thing a future change will reach for instead of an
-    # event. The grant is therefore removed rather than merely re-commented.
+    # No egress to either service on 8080 is granted, because no such call exists: this service
+    # holds no HTTP client, no service-URL environment variable and opens no socket to either. A
+    # granted permission nothing uses is worse than absent, because it tells the next reader the
+    # call is expected and it is the first thing a future change reaches for instead of an
+    # event.

@@ -19,7 +19,7 @@
 -- than a correction; AAP 0.1.1 specifies this service as rendering a cardholder alert, and
 -- card-platform/docs/suggested-next-tasks.md carries the task. V1 is left as it ran.
 --
--- Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md.
+-- Design decisions: card-platform/docs/decision-log.md.
 
 ALTER TABLE notification_log
     RENAME COLUMN attempted_at TO rendered_at;
@@ -58,8 +58,8 @@ COMMENT ON TABLE notification_log IS
      CHECK permits nothing else. The row exists to explain what was rendered and when, and it
      expires with that question: carddemo.history.log-retention-days is the window,
      domain/RetentionSweep applies it, and that setting is the authority rather than the
-     ninety days named here. An earlier version of this comment described the row as a
-     delivery attempt, which was never true.';
+     ninety days named here. The row is not a delivery attempt: this service reaches no
+     transport at all.';
 
 COMMENT ON COLUMN notification_log.rendered_at IS
     'The instant domain/NotificationService finished rendering the alert, from its injected

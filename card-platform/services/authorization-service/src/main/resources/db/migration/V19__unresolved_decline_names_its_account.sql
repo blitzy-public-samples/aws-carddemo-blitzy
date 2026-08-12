@@ -30,8 +30,8 @@
 -- carries the eleven-digit account key, and outbox/OutboxWriter refuses anything else before a row is
 -- built. ck_outbox_event_aggregate_id still admits the sixteen-character form, because a PostgreSQL
 -- CHECK marked NOT VALID skips the rows present when it is added and is still enforced on every UPDATE
--- of them, and the relay writes a column on every row it claims, retries or abandons. The alternatives
--- weighed and the risk accepted: card-platform/docs/decision-log.md.
+-- of them, and the relay writes a column on every row it claims, retries or abandons.
+-- Design decisions: card-platform/docs/decision-log.md.
 --
 -- The nullable column and its NOT VALID clause. A database that ran under V14 or V15 holds
 -- unresolved_card_attempt rows whose decision resolved no subject. No account identifier can honestly

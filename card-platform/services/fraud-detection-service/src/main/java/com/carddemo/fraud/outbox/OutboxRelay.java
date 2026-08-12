@@ -62,8 +62,8 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <h2>The row that runs out of attempts</h2>
  *
- * <p>A row the broker keeps refusing is a third case, and it used to be the silent one. After
- * {@link OutboxEventEntity#MAX_DELIVERY_ATTEMPTS} attempts the row becomes
+ * <p>A row the broker keeps refusing is a third case, and it is the one nothing else would name.
+ * After {@link OutboxEventEntity#MAX_DELIVERY_ATTEMPTS} attempts the row becomes
  * {@link OutboxEventEntity.RelayState#ABANDONED}, and since the claim query returns
  * {@link OutboxEventEntity.RelayState#PENDING} rows only, the tick that abandoned it was the last
  * tick to look at it. The assessment reached no consumer and nothing named it anywhere but this
@@ -152,11 +152,11 @@ public class OutboxRelay {
      * The one seam this relay reaches a broker through.
      *
      * <p>{@code messaging/KafkaEventPublisher} is the shipped implementation and the only class in this
-     * service that holds a broker client. This relay used to hold the {@code KafkaTemplate} itself,
-     * which named Kafka in its own signature and made the broker a compile-time dependency of the
-     * relay; every other producing service on this platform already published through a port. The
-     * payload is written, validated against its schema document and checked against its topic inside
-     * the configured serializer, which is why an event record travels through here rather than text.
+     * service that holds a broker client. Holding the broker client here would name Kafka in this
+     * relay's own signature and make the broker a compile-time dependency rather than a configuration
+     * decision. The payload is written, validated against its schema document and checked against its
+     * topic inside the configured serializer, which is why an event record travels through here
+     * rather than text.
      */
     private final EventPublisherPort publisher;
 
@@ -396,9 +396,10 @@ public class OutboxRelay {
      * The scope is what the publish port reads to attach the headers.
      *
      * <p>A row recording no correlation identifier starts its own trace under its own event
-     * identifier. That covers a row written before this column existed, so every record this
-     * relay publishes carries a correlation identifier a reader can join on. A row carrying
-     * neither opens a scope naming neither rather than failing the sweep.
+     * identifier. That covers a row predating {@code V7__outbox_correlation.sql}, which added the
+     * nullable column, so every record this relay publishes carries a correlation identifier a
+     * reader can join on. A row carrying neither opens a scope naming neither rather than failing
+     * the sweep.
      *
      * @param row the row this pass is working on
      * @return the open scope, closed by the try-with-resources that opened it
@@ -462,7 +463,7 @@ public class OutboxRelay {
      * A row records its obligation in the same write that abandons it, so the obligation survives the
      * broker outage, the restart or the redeployment that stopped the diagnostic reaching a topic.
      * Nothing else would ever look at the row again: it is {@link OutboxEventEntity.RelayState#ABANDONED}
-     * and {@link OutboxEventEntity#claimDueRows} returns {@link OutboxEventEntity.RelayState#PENDING}
+     * and {@link OutboxEventRepository#claimDueRows} returns {@link OutboxEventEntity.RelayState#PENDING}
      * rows only.
      *
      * <p>The set is empty while the relay is healthy, and the partial index
@@ -841,22 +842,24 @@ public class OutboxRelay {
      * partition of the account it concerns.
      *
      * <p><strong>The row is abandoned before the diagnostic is sent, and it is never marked
-     * published.</strong> This method used to call {@code markPublished} once the send returned, which
-     * recorded an event that reached no consumer as {@link OutboxEventEntity.RelayState#PUBLISHED}: in
-     * the table, in the retention sweep and in every metric it was then indistinguishable from an
-     * assessment the broker acknowledged, and the only thing that had actually been published was the
-     * diagnostic saying it had not been. {@link OutboxEventEntity#abandon(String, Instant)} writes the
-     * truthful state instead, and it writes it first, so the obligation is durable before anything is
-     * attempted. A diagnostic the broker refuses therefore leaves
-     * {@link OutboxEventEntity.DeadLetterState#REQUIRED} standing and
-     * {@link #dischargeOwedDiagnostics(long)} offers it again at the head of a later pass; a crash
+     * published.</strong> {@link OutboxEventEntity#abandon(String, Instant)} writes that state
+     * first, so the obligation is durable before anything is attempted. Marking the row
+     * {@link OutboxEventEntity.RelayState#PUBLISHED} would record an event that reached no consumer
+     * as one the broker acknowledged. The table, the retention sweep and every metric would then
+     * read it as a published assessment, when the only thing published was the diagnostic saying it
+     * was not.
+     *
+     * <p>A diagnostic the broker refuses leaves
+     * {@link OutboxEventEntity.DeadLetterState#REQUIRED} standing, and
+     * {@link #dischargeOwedDiagnostics(long)} offers it again at the head of a later pass. A crash
      * between the two writes lands in the same place. Only an acknowledgement clears it.
      *
-     * @param row          the row this relay cannot publish
+     * @param claimed      the row this relay cannot publish, as the claim loaded it and still in
+     *                     {@link OutboxEventEntity.RelayState#CLAIMED}
      * @param metadata     the four diagnostic values, each already held to its own width
      * @param failureClass the failure recorded on the row, naming a type and never a value
      * @param deadline     the pass deadline on the monotonic clock
-     * @return {@code true} when the dead letter reached the broker
+     * @return what this attempt did to the counts one tick totals
      */
     private Attempt closeUnpublishableRow(OutboxEventEntity claimed, DeadLetterMetadata metadata,
             String failureClass, long deadline) {

@@ -18,12 +18,10 @@ import org.junit.jupiter.api.Test;
 /**
  * Asserts the account mutation event passes the one gate every event of this platform passes.
  *
- * <p>This service previously published its mutation event with a plain string serializer while the
- * shared schema-validating serializer governed only the five core events. The payload of an account
- * change was therefore never checked against the contract that describes it, so neither the closed
- * property set nor the size ceiling nor the governed-type list applied to it. The event is now
- * produced by the shared serializer and checked again by the shared validator on the way to the
- * broker.
+ * <p>The event is produced by the shared serializer and checked again by the shared validator on the
+ * way to the broker. Publishing it with a plain string serializer instead would leave the payload of
+ * an account change unchecked against the contract that describes it, so neither the closed property
+ * set nor the size ceiling nor the governed-type list would apply to it.
  *
  * <p>The event exists because the authorization service keeps a credit projection current from it:
  * the credit limit, both cycle accumulators and the expiry date the decline rules read. Those are the

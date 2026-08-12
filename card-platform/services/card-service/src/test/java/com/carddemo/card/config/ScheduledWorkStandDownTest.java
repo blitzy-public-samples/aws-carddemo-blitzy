@@ -81,14 +81,11 @@ class ScheduledWorkStandDownTest {
     /**
      * Marks a class that reaches the module's database through the facility that owns it.
      *
-     * <p>This is the second half of the same question, and it exists because the answer used to be
-     * one pattern. Every test class here once constructed a database container of its own, so an
-     * {@code @Container} field was a reliable sign that a context of this module was talking to
-     * infrastructure. The container is now started once per module fork and handed out a database at
-     * a time, so nine of the ten classes this rule governs no longer declare a container field at
-     * all - and a rule that looked only for that field would have quietly narrowed to the one class
-     * that still keeps a broker, while the nine it stopped reading are exactly the nine that carry
-     * the property remedy.
+     * <p>This is the second half of the same question, and one pattern cannot answer it. The
+     * container is started once per module fork and handed out a database at a time, so nine of the
+     * ten classes this rule governs declare no {@code @Container} field at all. A rule looking only
+     * for that field would narrow to the one class that keeps a broker, and the nine it stopped
+     * reading are exactly the nine that carry the property remedy.
      *
      * <p>The lifetime the rule protects has not shortened. A context is cached beyond the class that
      * built it and evicted later, its pool closes when it goes, and the databases these classes

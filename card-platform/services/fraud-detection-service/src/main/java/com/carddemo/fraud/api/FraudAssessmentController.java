@@ -49,45 +49,26 @@ import org.springframework.web.bind.annotation.RestController;
  * {@code 400} through the framework's default problem document, and so does a page number, a page
  * size or a sort order the collection route does not accept.
  *
- * <h2>Pages are reached by position, not by counting</h2>
+ * <h2>The paging contract</h2>
  *
  * <p>{@link #assessmentsOfAccount(String, String, String, String, String)} carries a page forward in
  * the {@code X-Fraud-Cursor} header, which names the assessment time and transaction identifier of
- * the last row the previous page served. The next page is the rows after that position, which is a
- * range read of {@code ix_fraud_assessment_account_cursor}: the tenth page and the ten-thousandth
- * cost the same.
- *
- * <p>A page number cannot do that. An offset is reached by reading every row before it and throwing
- * them away, so the work grows with the page reached rather than with the page returned. The
- * {@code page} parameter is therefore refused with {@code 400} rather than served, for the reason
- * {@code sort} is: a route that quietly answered page one to a request for page five thousand would
- * report success for something it did not do.
- *
- * <p>A cursor is also exact where an offset is not. Assessment time is not unique — one consumer
- * batch assesses several transactions and the rows can share a microsecond — so a page boundary
- * counted by row number can land inside a group of equal times, repeat one row on the next page and
- * skip another. The cursor names both columns, and the primary key makes the order total.
+ * the last row the previous page served. The next page is the rows after that position, read as a
+ * range of {@code ix_fraud_assessment_account_cursor}, so the tenth page and the ten-thousandth cost
+ * the same. Assessment time is not unique: one consumer batch can record several verdicts in the
+ * same microsecond. The cursor therefore names both columns, and the primary key makes the order
+ * total.
  *
  * <p>The cursor names a position and not an entitlement. Every read is bound to the {@code accountId}
  * the request asked for, so a cursor issued for one account reads no other account's rows.
  *
- * <h2>The paging contract refuses rather than adjusts</h2>
- *
- * <p>{@code size} arrives as text with a stated bound, so a value outside that bound answers
- * {@code 400}. Text separates an omitted parameter from one that arrived carrying no characters: a
- * parameter declared as a number with a default reads {@code ?size=} as an omitted {@code size} and
- * answers {@code 200}. A caller therefore learns which page it received.
- *
- * <p>A framework {@code Pageable} argument would decide silently instead. It coerces an unparsable
- * size to the default and clamps a size above the configured maximum down to that maximum, both with
- * a {@code 200} and no statement of what it did. A caller asking for 5,000 rows would receive the
- * first 2,000 and be told nothing, which is the wrong answer to give about somebody's fraud history.
- *
- * <p>{@code sort} is refused outright rather than accepted and dropped. The repository finder orders
- * by assessment time descending in its own name, so any order a caller asked for would be ignored
- * while the response still claimed success. The refusal sits inside the one handler the collection
- * route has, so {@code src/main/resources/openapi.yaml} describes the parameter and its answer on the
- * operation a caller reads.
+ * <p>{@code size} arrives as text with a stated bound, and a value outside that bound answers
+ * {@code 400}. Text separates an omitted parameter from one that arrived carrying no characters,
+ * where a number with a default reads {@code ?size=} as omitted. {@code page} and {@code sort} are
+ * refused with {@code 400} rather than served. The finder fixes the order in its own name, and an
+ * offset is reached by reading and discarding every row before it. Both refusals sit inside the one
+ * handler the collection route has, so {@code src/main/resources/openapi.yaml} describes each
+ * parameter and its answer on the operation a caller reads.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */

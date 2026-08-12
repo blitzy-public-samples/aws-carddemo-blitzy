@@ -128,7 +128,6 @@ class PanMaskerTest {
     /** Sixteen mask characters, the result for an argument of four characters or fewer. */
     private static final String FULLY_MASKED_CARD_NUMBER = "****************";
 
-    /** A card verification value at the stored width. */
     private static final String CARD_VERIFICATION_VALUE = "451";
 
     /** Three mask characters, the complete result of a card verification value redaction. */

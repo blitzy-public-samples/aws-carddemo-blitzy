@@ -479,9 +479,8 @@ public class OutboxRelay {
      * The scope is what the publish port reads to attach the headers.
      *
      * <p>A row recording no correlation identifier starts its own trace under its own event
-     * identifier. That covers a row written before this column existed, so every record this
-     * relay publishes carries a correlation identifier a reader can join on. A row carrying
-     * neither opens a scope naming neither rather than failing the sweep.
+     * identifier, so every record this relay publishes carries one a reader can join on. A row
+     * carrying neither opens a scope naming neither rather than failing the sweep.
      *
      * @param row the row this pass is working on
      * @return the open scope, closed by the try-with-resources that opened it
@@ -808,10 +807,10 @@ public class OutboxRelay {
     /**
      * Names the abandonment an owed diagnostic reports, when the failure that caused it is gone.
      *
-     * <p>A diagnostic offered on a later pass has no live exception behind it: the failure that
-     * abandoned the row happened in an earlier pass, and only the redacted reason {@code last_error}
-     * kept survives. This exception carries that reason so {@link DeadLetterMetadata#fromFailure} names
-     * the same culprit it would have named at the time.
+     * <p>A diagnostic offered on a later pass has no live exception behind it. The failure that
+     * abandoned the row belongs to the pass that abandoned it, and the redacted reason
+     * {@code last_error} holds is all that survives. This exception carries that reason so
+     * {@link DeadLetterMetadata#fromFailure} names the culprit the abandoning pass named.
      */
     private static final class AbandonedRowException extends RuntimeException {
 

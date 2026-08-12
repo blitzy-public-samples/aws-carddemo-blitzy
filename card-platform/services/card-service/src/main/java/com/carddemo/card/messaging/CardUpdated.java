@@ -40,7 +40,7 @@ import com.carddemo.events.serde.PublishGate;
  * {@code app/cpy/CVACT02Y.cpy:L7} reaches no event, no log line and no response body. The trailing
  * filler at {@code app/cpy/CVACT02Y.cpy:L11} holds no data. The embossed cardholder name is used
  * by the synchronous card update and detail surfaces and reaches no consumer, so it is neither
- * persisted in the outbox payload nor published. Rationale:
+ * persisted in the outbox payload nor published. Design decisions:
  * {@code card-platform/docs/decision-log.md}.
  *
  * <p>{@link #ofUnmaskedCardNumber} masks the card number, and the canonical constructor rejects an
@@ -53,7 +53,8 @@ import com.carddemo.events.serde.PublishGate;
  *
  * <p>This name belongs to the event and to nothing else. The synchronous answer the same update
  * returns is {@code CardUpdateApplied} in {@code src/main/resources/openapi.yaml}, which carries the
- * outcome of one request rather than the state of a card, and which used to carry this name too.
+ * outcome of one request rather than the state of a card, and the two names are deliberately
+ * distinct.
  *
  * @param eventId          the identifier every consumer records to detect a duplicate delivery
  * @param eventType        the routing discriminator, always {@link #EVENT_TYPE}

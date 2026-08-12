@@ -214,7 +214,7 @@ public interface CardCrossReferenceRepository
      * their last four digits both rows are refreshed, no mapping moves, and no authorization can be
      * misrouted by it. The statement is an {@code UPDATE} and not an upsert: a {@code CardUpdated}
      * message carries a masked card number and this table is keyed by the full sixteen characters, so
-     * the message names no key. Rationale, alternatives considered and accepted risks:
+     * the message names no key. Design decisions:
      * {@code card-platform/docs/decision-log.md}.
      *
      * <p>The {@code WHERE} clause carries the same newer-wins guard as

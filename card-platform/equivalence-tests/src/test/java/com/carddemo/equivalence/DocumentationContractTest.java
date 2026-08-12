@@ -132,8 +132,8 @@ class DocumentationContractTest {
      *
      * <p>One path sits at the repository root and is named individually, because the engagement
      * delivers it and no directory argument reaches it. The root {@code README.md} is the one
-     * pre-existing document this work updates. A review found it absent from the matrix's inventory,
-     * which is how a document claiming closure over the whole tree closed over less than it.
+     * pre-existing document this work updates. Leaving it out of the matrix's inventory is how a
+     * document claiming closure over the whole tree closes over less than it.
      *
      * <p>A second root file was named here and has since been withdrawn. A {@code .gitattributes}
      * declaring the guide's line endings sits outside the three paths this engagement is allowed to
@@ -255,7 +255,6 @@ class DocumentationContractTest {
     private static final Pattern DECLARED_REGISTER_SIZE =
             Pattern.compile("## Register coverage\\s*\\n\\s*All (\\d+) register items");
 
-    /** The identifier the first register finding carries. */
     private static final int FIRST_REGISTER_IDENTIFIER = 1;
 
     /**
@@ -316,10 +315,8 @@ class DocumentationContractTest {
     /** Report directory the integration-test plugin writes, relative to a module directory. */
     private static final String INTEGRATION_TEST_REPORTS = "target/failsafe-reports";
 
-    /** Prefix every report file carries. */
     private static final String REPORT_PREFIX = "TEST-";
 
-    /** Suffix every report file carries. */
     private static final String REPORT_SUFFIX = ".xml";
 
     /** One executed case inside a report. Counted, because the {@code tests} attribute under-reports. */
@@ -488,9 +485,9 @@ class DocumentationContractTest {
      * <p>The contract has two parts, and this test enforces both. Identifiers 1 to 26 are the block
      * the Agent Action Plan fixes, in the order it fixes them, so those 26 numbers must be present
      * and in order. Every later finding is appended, so the identifiers above 26 must form one
-     * contiguous run starting at 27 with no gap and no repeat. Appending is what an earlier revision
-     * failed to do: it collapsed the register onto the specification's numbering and lost eleven
-     * findings, which is why the run below is checked rather than the total counted.</p>
+     * contiguous run starting at 27 with no gap and no repeat. The run is checked rather than the
+     * total counted, because a register collapsed onto the specification's numbering loses every
+     * finding above 26 while still totalling plausibly.</p>
      */
     @Test
     void theBusinessRuleRegisterKeepsStableIdentifiersInASpecificationBlockAndAnAppendedBlock() {
@@ -1011,17 +1008,16 @@ class DocumentationContractTest {
     /**
      * Every published test count is measured, and no published figure is checked against another.
      *
-     * <p>A review found the previous form of this test to be algebraically self-referential. It
-     * subtracted the published module total from the published reactor total and compared the
-     * remainder with the other modules' reports, so changing both published figures by the same
-     * amount passed. The module's own integration figure was closed against a sum of another
-     * published table, which is the same defect one level down.</p>
+     * <p>Subtracting one published figure from another and comparing the remainder with a third is
+     * algebraically self-referential: changing two published figures by the same amount passes.
+     * Closing a module's own integration figure against a sum drawn from another published table is
+     * the same defect one level down.</p>
      *
-     * <p><strong>What replaced it.</strong> The results document now carries one row per reactor
-     * module. Every module but this one is compared against <em>its own</em> reports, so a wrong
-     * figure has to be wrong against a measurement rather than against another claim. The reactor
-     * totals are then required to be the sum of those rows, which removes the only place two figures
-     * could move together.</p>
+     * <p><strong>What this test holds instead.</strong> The results document carries one row per
+     * reactor module. Every module but this one is compared against <em>its own</em> reports, so a
+     * wrong figure has to be wrong against a measurement rather than against another claim. The
+     * reactor totals are then required to be the sum of those rows, which removes the only place
+     * two figures could move together.</p>
      *
      * <p><strong>The one figure this test cannot measure, and what does.</strong> This module's own
      * two counts are unmeasurable from inside it: the unit report for this very class does not exist
@@ -1295,16 +1291,14 @@ class DocumentationContractTest {
      * states that count four times in prose plus once per group in the closure table. A published
      * count is evidence, so a count that drifts from the tree is a Rule 1 defect rather than a
      * typographical one. This test derives the figure from the rows themselves and requires every
-     * statement of it to agree, which is what a review found stale in the citations two ledger
-     * column comments carried.
+     * statement of it to agree.
      *
-     * <p>The disk anchor is the whole delivered tree, compared in both directions. An earlier form of
-     * this test checked only that every row's path existed and that every schema migration owned a
-     * row, on the reasoning that enumerating the tree would mean reproducing the working copy's
-     * ignore rules. It would not: git applies those rules itself, and
-     * {@code git ls-files --cached --others --exclude-standard} names exactly the delivered set. The
-     * narrow form left the count complete by luck — a review found it would pass while a delivered
-     * file carried no row, which is the one thing Rule 1's backward direction exists to prevent.
+     * <p>The disk anchor is the whole delivered tree, compared in both directions. Checking only
+     * that every row's path exists and that every schema migration owns a row leaves the count
+     * complete by luck: it passes while a delivered file carries no row, which is the one thing
+     * Rule 1's backward direction exists to prevent. Enumerating the tree costs nothing, because
+     * git applies the working copy's ignore rules itself and
+     * {@code git ls-files --cached --others --exclude-standard} names exactly the delivered set.
      *
      * <p>The {@code --others --exclude-standard} half matters and is easy to leave off. A plain
      * {@code git ls-files} lists tracked paths only, so a file this session added is invisible to it
@@ -1314,10 +1308,9 @@ class DocumentationContractTest {
      *
      * <p>The set the command names is every path this engagement creates or updates, which is why
      * {@link #DELIVERED_SET_ARGUMENTS} names a file at the repository root as well as the two
-     * directories. Scoping it to the directories alone left the root {@code README.md} outside a
-     * closure that claimed to cover the delivered tree, and a review measured the gap. A withdrawn
-     * path holds no row by the same rule, so the matrix records those operations in a section of its
-     * own below the closure.
+     * directories. Scoping it to the directories alone leaves the root {@code README.md} outside a
+     * closure that claims to cover the delivered tree. A withdrawn path holds no row by the same
+     * rule, so the matrix records those operations in a section of its own below the closure.
      */
     @Test
     @DisplayName("the backward traceability count matches its rows, its groups and the delivered tree")
@@ -1415,14 +1408,13 @@ class DocumentationContractTest {
      * Holds the delivered-set definition closed against the repository rather than against itself.
      *
      * <p>{@link #DELIVERED_SET_ARGUMENTS} names two directories and one file, so a path written
-     * anywhere else is invisible to every closure built on it. That is how the root
-     * {@code README.md} went unrowed: the command could not see it, so the count it produced agreed
-     * with the rows and both were short of the tree. A review measured the gap, which no test
-     * could.
+     * anywhere else is invisible to every closure built on it. An unseen path is how a document
+     * goes unrowed while its count still agrees with its rows: both fall short of the tree by the
+     * same amount, so no closure built on that command can see the difference.
      *
-     * <p>This one can. Every top-level entry git resolves is either covered by the delivered set or
-     * named in {@link #ENTRIES_OUTSIDE_THE_DELIVERED_SET} with the reason it is not. A new file or
-     * directory at the repository root therefore fails here until it is either delivered or
+     * <p>This test can. Every top-level entry git resolves is either covered by the delivered set
+     * or named in {@link #ENTRIES_OUTSIDE_THE_DELIVERED_SET} with the reason it is not. A new file
+     * or directory at the repository root therefore fails here until it is either delivered or
      * excluded on the record, rather than passing unnoticed.
      */
     @Test
@@ -1495,10 +1487,11 @@ class DocumentationContractTest {
      * Holds the published store-ownership table to the tables the migrations actually create.
      *
      * <p>Rule 2 asks the paired views to be accurate, and a table naming what a service owns is the
-     * part of them a reader trusts without checking. A review found the card row naming four tables
-     * while its migrations create six: {@code V10__card_token_version_and_rotation.sql} adds
-     * {@code card_token_rotation} and {@code card_token_rotation_mapping}, and neither reached the
-     * document. Nothing detected it, because the row is prose.
+     * part of them a reader trusts without checking. A row is prose, so a store it omits goes
+     * unnoticed unless something recounts the migrations: the card service's
+     * {@code V10__card_token_version_and_rotation.sql} adds {@code card_token_rotation} and
+     * {@code card_token_rotation_mapping}, which a row naming four tables leaves out of a set of
+     * six.
      *
      * <p>The migrations are the anchor, read as created minus dropped. Authorization creates
      * {@code unresolved_card_attempt} in {@code V13} and drops it in {@code V20}, and the account
@@ -1573,11 +1566,11 @@ class DocumentationContractTest {
      * <p>The matrix defines its own labels: source-derived names at least one member under
      * {@code app/}, and additive has no ancestor whether or not it cites one. A row classified
      * source-derived whose provenance cell names no member therefore contradicts the definition in
-     * the same document, and a review found two such rows — {@code card-updated-v2.json} and the
-     * account {@code V6__processed_event_topic_key.sql} migration, both additive behaviour published
-     * as migrated behaviour. Rule 1's traceability is only worth reading if a label means what the
-     * document says it means, so the two are measured against each other here rather than compared
-     * by eye.
+     * the same document. {@code card-updated-v2.json} and the account
+     * {@code V6__processed_event_topic_key.sql} migration are additive behaviour, and either would
+     * read as migrated behaviour if its label drifted. Rule 1's traceability is only worth reading
+     * if a label means what the document says it means, so the label and the cell are measured
+     * against each other here rather than compared by eye.
      *
      * <p>The published breakdown is measured the same way. Eight labels each carry a count in the
      * coverage row, and those counts have to be the counts of the rows below and to sum to the
@@ -1669,10 +1662,9 @@ class DocumentationContractTest {
      * Requires every Mermaid figure of one document to be titled, legended and referenced in prose.
      *
      * <p>Rule 2 asks for three things around a diagram, and counting fenced blocks measures none of
-     * them. A review found the event-flow guard asserting only that three blocks existed, which would
-     * pass against three untitled diagrams with no legend and no sentence pointing at them — the
-     * state Rule 2 exists to prevent. This checks each of the three properties against the figure it
-     * belongs to:</p>
+     * them. Asserting only that three blocks exist passes against three untitled diagrams with no
+     * legend and no sentence pointing at them — the state Rule 2 exists to prevent. This checks
+     * each of the three properties against the figure it belongs to:</p>
      *
      * <ul>
      *   <li>a caption of the form {@code **Figure N — title**} above the block, whose title is long
@@ -1863,12 +1855,12 @@ class DocumentationContractTest {
     /**
      * Holds every backward row's Source provenance cell to the members its own file really names.
      *
-     * <p>Row presence was already asserted above, and a review found that insufficient: 59 rows
-     * passed it while stating the wrong provenance. Seven said no source was cited by a file that
-     * cites one, eight named a member absent from the file, one carried a path with a trailing full
-     * stop inside the backticks, and the {@code and N more} counts disagreed with the sets they
-     * summarise. Every one of those is a Rule 1 defect rather than a typographical one, because the
-     * column is published as read out of the code.
+     * <p>Row presence is asserted above and does not reach this: a row can be present and still
+     * state the wrong provenance. Four shapes of wrongness pass a presence check — a cell claiming
+     * no source against a file that cites one, a cell naming a member the file does not, a path
+     * carrying a trailing full stop inside the backticks, and an {@code and N more} count that
+     * disagrees with the set it summarises. Every one is a Rule 1 defect rather than a
+     * typographical one, because the column is published as read out of the code.
      *
      * <p>The expected cell is therefore recomputed here from the bytes of the file each row names:
      * every {@code app/<dir>/<member>} reference the file carries, discarded unless it resolves to a

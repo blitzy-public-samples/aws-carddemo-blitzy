@@ -42,11 +42,12 @@ import java.util.Objects;
  * a caller that owns nothing.
  *
  * <p>The account this check reads is the resolved one, and no account read from the request body
- * reaches it or reaches any other decision. A security review found the earlier behaviour, where a
- * card resolving no row was decided against the account the caller had declared: any caller owning
- * any account could then pair it with an unknown card and learn from the answer whether that card
- * existed. {@code domain/AuthorizationService} now refuses such a call outright, immediately after
- * this check, and {@code card-platform/docs/decision-log.md} records what the review found.
+ * reaches it or reaches any other decision. Deciding a card that resolves no row against the account
+ * the caller declared would let any caller owning any account pair it with an unknown card and learn
+ * from the answer whether that card existed. {@code domain/AuthorizationService} decides such a call
+ * with reject code {@code 0100} and no account identifier at all, so the answer names nothing the
+ * caller did not already supply. Design decisions:
+ * {@code card-platform/docs/decision-log.md}.
  *
  * <p>Where this check runs is as important as what it decides. {@code domain/AuthorizationService}
  * applies it after the chain has resolved the card and the account, before the refusal above and

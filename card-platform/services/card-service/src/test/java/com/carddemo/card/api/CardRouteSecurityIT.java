@@ -294,7 +294,6 @@ class CardRouteSecurityIT {
             assertProblem(response, 403, "Forbidden", FORBIDDEN_DETAIL);
         }
 
-        /** Asserts the metrics identity reaches no business route. */
         @Test
         @DisplayName("the metrics identity reaches no business route")
         void theMetricsIdentityReachesNoBusinessRoute() {
@@ -323,7 +322,6 @@ class CardRouteSecurityIT {
                             "the answer came from the handler: " + response.statusCode()));
         }
 
-        /** Asserts the administrator reads any card. */
         @Test
         @DisplayName("the administrator reads any card")
         void theAdministratorReadsAnyCard() {
@@ -370,7 +368,6 @@ class CardRouteSecurityIT {
                             "the path value was never edited, because the chain answered first"));
         }
 
-        /** Asserts the metrics identity reaches no business route. */
         @Test
         @DisplayName("the metrics identity reaches no business route")
         void theMetricsIdentityReachesNoBusinessRoute() {
@@ -401,7 +398,6 @@ class CardRouteSecurityIT {
             assertProblem(response, 403, "Forbidden", FORBIDDEN_DETAIL);
         }
 
-        /** Asserts the administrator reaches the handler. */
         @Test
         @DisplayName("the administrator reaches the handler")
         void theAdministratorReachesTheHandler() {

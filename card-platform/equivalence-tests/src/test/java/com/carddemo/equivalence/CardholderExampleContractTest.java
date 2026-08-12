@@ -21,11 +21,10 @@ import org.junit.jupiter.api.Test;
 /**
  * Holds every document and contract to carrying no card number a reader could replay.
  *
- * <p>A security review found full card numbers normalized into the authorization and card guides
- * and into both OpenAPI documents: eighteen occurrences of four numbers, every one of them a card
- * the seed migrations load. An example carrying a seeded number is a working credential for the demo
- * stack, it survives every copy of the guide, and it teaches by demonstration that printing a
- * Primary Account Number is normal.
+ * <p>A card number normalized into the authorization or card guide, or into either OpenAPI
+ * document, is a card the seed migrations load. An example carrying a seeded number is a working
+ * credential for the demo stack, it survives every copy of the guide, and it teaches by
+ * demonstration that printing a Primary Account Number is normal.
  *
  * <p>The assertions read the fixtures rather than a list of numbers, which is what makes them hold
  * as the fixtures change. {@code app/data/ASCII/carddata.txt} holds 50 records of 150 characters
@@ -35,13 +34,14 @@ import org.junit.jupiter.api.Test;
  * misses it. Every check below therefore searches for the value as a substring.
  *
  * <p>Two rules run over the delivered surface, and that surface takes in {@code .github} as well as
- * {@code card-platform}. The first refuses a value: no file outside {@link #PERMITTED_FILES} carries
- * a number either fixture holds. The second refuses a shape: no file carries a sixteen-digit literal
- * that the file itself labels a card number, whatever that value resolves to. Each rule caught what
- * the other missed. A synthetic literal in an OpenAPI example satisfied the value rule for as long as
- * it was published, and the business smoke of {@code .github/workflows/ci.yml} held a seeded number
- * that no sweep starting at {@code card-platform} could reach. Rationale, alternatives considered and
- * accepted risks: {@code card-platform/docs/decision-log.md}.
+ * {@code card-platform}. The first refuses a value: no file outside {@link #PERMITTED_FILES}
+ * carries a number either fixture holds. The second refuses a shape: no file carries a
+ * sixteen-digit literal that the file itself labels a card number, whatever that value resolves to.
+ * Neither rule reaches what the other does: a synthetic literal in an OpenAPI example satisfies the
+ * value rule, and a seeded number in the business smoke of {@code .github/workflows/ci.yml} lies
+ * outside any sweep starting at {@code card-platform}.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 class CardholderExampleContractTest {
 
@@ -204,15 +204,15 @@ class CardholderExampleContractTest {
         }
 
         /**
-         * Drives the shape rule over the four forms the review found and four it must leave alone.
+         * Drives the shape rule over the four offending forms and four it must leave alone.
          *
          * <p>A rule nobody has seen fire is a rule nobody can trust. The offending samples are the
-         * shapes the delivered files carried: a shell assignment naming its variable for the field, an
-         * OpenAPI example member, a YAML example list sitting three lines under its property name, and
-         * a sentence quoting a number beside the words that name it. The accepted samples are the
-         * shapes that made a wider rule wrong: a transaction identifier under its own key, a masked
-         * value, a run in prose that names no card, and a YAML label too far above the value to be
-         * its key.
+         * shapes a delivered file can carry: a shell assignment naming its variable for the field,
+         * an OpenAPI example member, a YAML example list sitting three lines under its property
+         * name, and a sentence quoting a number beside the words that name it. The accepted samples
+         * are the shapes a wider rule would wrongly reject: a transaction identifier under its own
+         * key, a masked value, a run in prose that names no card, and a YAML label too far above
+         * the value to be its key.
          */
         @Test
         @DisplayName("the shape rule fires on a labelled card number and on nothing else")
@@ -342,14 +342,15 @@ class CardholderExampleContractTest {
         }
 
         /**
-         * Each file that used to print a number names where a real one comes from instead.
+         * Each file that carries no number names where a real one comes from instead.
          *
-         * <p>Removing a value without naming its source turns a runnable guide into a broken one, so
-         * the five files below are required to name a fixture. Four of them are the files the review
-         * named. The fifth is {@code .github/workflows/ci.yml}, whose business smoke authorizes a real
-         * card: it reads the value with {@code cut} at run time, which keeps the command working while
-         * the file itself carries no number. How each one satisfies the shape rule differs. Both guides
-         * read the fixture into a shell variable. The authorization contract publishes no card-number
+         * <p>Removing a value without naming its source turns a runnable guide into a broken one,
+         * so the five files below are required to name a fixture. Four of them are the
+         * authorization and card guides and their two OpenAPI documents. The fifth is
+         * {@code .github/workflows/ci.yml}, whose business smoke authorizes a real card: it reads
+         * the value with {@code cut} at run time, which keeps the command working while the file
+         * itself carries no number. How each one satisfies the shape rule differs. Both guides read
+         * the fixture into a shell variable. The authorization contract publishes no card-number
          * example and documents the command on the property that owns the field.
          *
          * <p>Four of the five also name the command. {@code services/card-service/openapi.yaml} does

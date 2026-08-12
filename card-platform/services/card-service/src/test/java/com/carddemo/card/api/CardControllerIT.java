@@ -179,9 +179,9 @@ import tools.jackson.databind.json.JsonMapper;
  * file under {@code app/} is touched.
  *
  * <p>DEVIATION, the card verification value assertion covers single-record bodies alone.
- * {@code V2__seed.sql} loads all fifty rows and the fixture is read-only. The string {@code 747}
- * appears outside the card verification value of row one only inside card number
- * {@code 9349107475869214}, which masks to {@code ************9214}.
+ * {@code V2__seed.sql} loads all fifty rows and the fixture is read-only. Outside the card
+ * verification value of row one, the same three digits occur only inside one seeded card number,
+ * whose masked form ends in different digits and so does not collide with the assertion.
  *
  * <p>DEVIATION, the dead declarations this class does not exercise. The three
  * {@code SEARCHED-*} texts at {@code app/cbl/COCRDUPC.cbl:L189}, {@code L191} and {@code L193} are
@@ -458,7 +458,7 @@ class CardControllerIT {
     }
 
     /**
-     * The container, the two migrations and the fifty rows they load.
+     * The container, the migrations and the fifty rows {@code V2__seed.sql} loads.
      *
      * <p>The context starting at all carries the mapping check.
      * {@code src/main/resources/application.yml} sets {@code spring.jpa.hibernate.ddl-auto} to
@@ -469,7 +469,7 @@ class CardControllerIT {
     class ContainerAndMigration {
 
         /**
-         * Both migrations ran and loaded the row counts {@code V2__seed.sql} carries.
+         * Flyway ran every migration and loaded the row counts {@code V2__seed.sql} carries.
          *
          * <p>{@code app/data/ASCII/carddata.txt} holds fifty records of 150 bytes and
          * {@code app/data/ASCII/cardxref.txt} holds fifty of 36 bytes. The second is narrower than

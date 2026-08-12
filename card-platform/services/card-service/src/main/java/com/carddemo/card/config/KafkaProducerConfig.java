@@ -136,13 +136,12 @@ public class KafkaProducerConfig {
     /**
      * Builds the one publisher of this service from values the bound properties have already checked.
      *
-     * <p>The publisher used to be a scanned component whose constructor read three property
-     * placeholders of its own. Two named a topic and were harmless. The third,
-     * {@code carddemo.outbox.relay.publish-timeout}, was a second binding of a value
-     * {@link CardProperties.Outbox.Relay} also binds, and a second binding meets none of the
-     * constraints the record declares: zero and a negative duration both started the service and then
-     * failed every send the moment it was issued. Building the publisher here means the timeout it
-     * holds is the one the validated record produced, so a refused value stops start-up instead.
+     * <p>Building it here rather than scanning it as a component keeps the timeout it holds the one
+     * the validated record produced, so a refused value stops start-up. A constructor reading
+     * {@code carddemo.outbox.relay.publish-timeout} as a placeholder of its own would be a second
+     * binding of a value {@link CardProperties.Outbox.Relay} already binds, and a second binding meets
+     * none of the constraints that record declares: zero and a negative duration would each start the
+     * service and then fail every send the moment it was issued.
      *
      * @param kafkaTemplate the pinned template every card event travels through
      * @param properties    the bound and validated {@code carddemo} block

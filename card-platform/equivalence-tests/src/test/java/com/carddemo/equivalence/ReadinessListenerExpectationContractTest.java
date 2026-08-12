@@ -59,10 +59,8 @@ class ReadinessListenerExpectationContractTest {
     private static final Pattern DECLARED_CONSTANT =
             Pattern.compile("static final int DECLARED_LISTENERS\\s*=\\s*(\\d+)\\s*;");
 
-    /** Matches one listener annotation. */
     private static final Pattern LISTENER_ANNOTATION = Pattern.compile("@KafkaListener\\b");
 
-    /** Matches one line comment. */
     private static final Pattern LINE_COMMENT = Pattern.compile("//[^\\n]*");
 
     /** Matches one block comment, which is how every class carries its javadoc. */

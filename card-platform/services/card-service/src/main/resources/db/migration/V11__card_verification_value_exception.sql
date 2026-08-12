@@ -6,12 +6,11 @@
 -- altered or removed, and the retention and purge_key tokens
 -- equivalence-tests/RetentionSweepContractTest reads are re-issued unchanged.
 --
--- What a security review found. card_verification_value holds three cleartext digits of
+-- The condition this file records. card_verification_value holds three cleartext digits of
 -- authentication data, V2__seed.sql loads a value into all fifty rows, and no delivered business
--- rule reads the column. The review asked for the column, the mapping, the seed values and the
--- preservation test to be removed by a forward migration, and offered a second route: keep the
--- column under a formal exception carrying encryption, minimal access, audit and destruction
--- controls.
+-- rule reads the column. Two routes answer that: remove the column, the mapping, the seed values and
+-- the preservation test by a forward migration, or keep the column under a formal exception carrying
+-- encryption, minimal access, audit and destruction controls.
 --
 -- What makes removal unavailable. Removal is not available to this engagement. Section 0.4.1 of the Agent
 -- Action Plan requires this service to store the value, section 0.6.4 states that it "is persisted
@@ -49,7 +48,7 @@
 -- destruction procedure. Nothing here expires on a date, because a date this engagement invented
 -- would be a date nobody agreed to.
 --
--- Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md, under
+-- Design decisions: card-platform/docs/decision-log.md, under
 -- "The stored card verification value keeps a formal exception".
 
 COMMENT ON TABLE card IS

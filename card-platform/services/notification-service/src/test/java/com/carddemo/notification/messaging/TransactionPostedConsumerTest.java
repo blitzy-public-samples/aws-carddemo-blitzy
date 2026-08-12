@@ -214,7 +214,6 @@ class TransactionPostedConsumerTest {
     /** Every diagnostic line the listener wrote during one test. */
     private ListAppender<ILoggingEvent> logRecords;
 
-    /** The logger the listener writes to. */
     private ch.qos.logback.classic.Logger listenerLogger;
 
     /** The level that logger carried before this test lowered it. */
@@ -1092,7 +1091,7 @@ class TransactionPostedConsumerTest {
                 Instant sourceOccurredAt, Instant observedAt) { throw unused(); }
     }
 
-    /** Store of delivery-attempt rows, which the overridden alert operation never reaches. */
+    /** Store of rendered-alert rows, which the overridden alert operation never reaches. */
     private static final class FakeDeliveryAttempts implements NotificationLogRepository {
 
         @Override public NotificationLogEntity save(NotificationLogEntity attempt) {

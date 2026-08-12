@@ -24,10 +24,10 @@ import org.yaml.snakeyaml.Yaml;
  * Asserts the checked-in interface description matches the one route this service serves.
  *
  * <p>{@code src/main/resources/openapi.yaml} is hand-written, so nothing keeps it true except a test
- * that reads both it and the code. This service was the last of the six to gain one, and it gained it
- * with {@link LedgerApiExceptionHandler}: before that handler existed the document published three
- * statuses and the service answered five, and the two it did not publish were the two an operator
- * needs, because a datastore that was merely away answered the same {@code 500} a defect answers.
+ * that reads both it and the code. The document has to publish every status
+ * {@link LedgerApiExceptionHandler} answers, and the two an operator most needs are the two that
+ * separate a datastore which is merely away from a defect: without both, the away case answers the
+ * same {@code 500} a defect answers.
  *
  * <p>Every assertion below reads a value out of the document and compares it against the code that
  * has to honour it. Nothing here restates the document to itself.
@@ -167,9 +167,8 @@ final class OpenApiContractTest {
      * paused datastore, {@code 500} where {@code 503} is what a caller can act on.
      *
      * <p>{@code 405} and {@code 406} are the two protocol refusals
-     * {@link LedgerApiExceptionHandler#onUnsupportedRequest} carries the framework status of. A wrong
-     * method answered {@code 500} before that arm existed, so publishing the status is what tells a
-     * caller the two answers are different things.
+     * {@link LedgerApiExceptionHandler#onUnsupportedRequest} carries the framework status of.
+     * Publishing them is what tells a caller a wrong method is a different answer from a fault.
      */
     @Test
     @DisplayName("every published status is one the code answers, and every one it answers is published")
@@ -422,12 +421,10 @@ final class OpenApiContractTest {
         return asMap(asMap(asMap(paths().get(path)).get("get")).get("responses")).keySet();
     }
 
-    /** Returns the paths block. */
     private static Map<String, Object> paths() {
         return asMap(document.get("paths"));
     }
 
-    /** Returns the security schemes block. */
     private static Map<String, Object> securitySchemes() {
         return asMap(asMap(document.get("components")).get("securitySchemes"));
     }

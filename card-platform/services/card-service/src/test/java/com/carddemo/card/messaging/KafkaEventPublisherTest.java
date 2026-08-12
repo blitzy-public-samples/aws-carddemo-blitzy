@@ -236,14 +236,14 @@ class KafkaEventPublisherTest {
     /**
      * Asserts a terminal diagnostic reaches the dead-letter topic this deployment configures.
      *
-     * <p>This is the assertion a review found missing, and the defect it stands over was total for one
-     * configuration. The publisher bound the card-update topic alone, so
-     * {@link com.carddemo.events.EventContracts#isBoundToTopic} was asked to confirm
-     * {@code DeadLetterEnvelope} against a configured name of {@code null} and confirmed it only
-     * against the registry default. A deployment that renamed {@code carddemo.kafka.topics.dead-letter}
-     * — which {@code docker-compose.yml} and {@code deploy/k8s/30-configmap.yaml} both allow — had
-     * every diagnostic refused before it was sent, and the one broker-side record of an outbox row the
-     * relay gave up on was lost.
+     * <p>The failure this stands over is total for one configuration. Binding the card-update topic
+     * alone would leave
+     * {@link EventContracts#isBoundToTopic(String, String, String)}
+     * confirming {@code DeadLetterEnvelope} against a configured name of {@code null}, and so only
+     * against the registry default. A deployment that renamed {@code carddemo.kafka.topics.dead-letter} — which
+     * {@code docker-compose.yml} and {@code deploy/k8s/30-configmap.yaml} both allow — would then have
+     * every diagnostic refused before it was sent, losing the one broker-side record of an outbox row
+     * the relay gave up on.
      *
      * <p>{@link #RENAMED_DEAD_LETTER_TOPIC} is deliberately not the default, so binding by default
      * cannot make this pass.
@@ -327,7 +327,6 @@ class KafkaEventPublisherTest {
         template.verifyNothingSent();
     }
 
-    /** Asserts that two accounts reach the broker under two different keys. */
     @Test
     void twoAccountsReachTheBrokerUnderTwoDifferentKeys() {
         String secondAccountKey = "00000000123";

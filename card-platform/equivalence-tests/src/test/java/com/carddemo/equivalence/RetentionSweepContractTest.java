@@ -166,11 +166,11 @@ class RetentionSweepContractTest {
     /**
      * Asserts each producer binds the horizons it applies, and binds none for a claim.
      *
-     * <p>The processed-event record used to carry two components, a marker horizon and the broker log
-     * retention it was checked against. A security review found the horizon expiring claims while the
-     * effects they guard stood, so the record is gone and the marker store exposes no delete. Both
-     * absences are asserted, because either alone can be undone: a component with no delete is a
-     * setting that does nothing, and a delete with no component is a horizon in the code.
+     * <p>A marker horizon, and a broker log retention to check it against, expires claims while the
+     * effects they guard stand. No properties record therefore carries either component and no
+     * marker store exposes a delete. Both absences are asserted, because either alone can be
+     * undone: a component with no delete is a setting that does nothing, and a delete with no
+     * component is a horizon in the code.
      */
     @Test
     void everyProducerBindsItsAppliedHorizonsAndNoneForAClaim() throws Exception {
@@ -192,7 +192,7 @@ class RetentionSweepContractTest {
             // A horizon delete rather than any delete. The card service's store extends a
             // create-read-update-delete base and inherits deleteById, which removes one named row
             // and expires nothing. What may not exist is a delete taking a moment: that is a
-            // horizon, and a horizon is what a security review found expiring claims.
+            // horizon, and a horizon expires a claim while the effects it guards stand.
             assertThat(Arrays.stream(service.processedRepository().getMethods())
                             .filter(method -> method.getName()
                                     .toLowerCase(java.util.Locale.ROOT).contains("delete"))
@@ -210,10 +210,10 @@ class RetentionSweepContractTest {
      * Every table whose {@code COMMENT ON TABLE} declares a retention horizon must have a sweep
      * that applies it.
      *
-     * <p>This is the general form of the defect a security review found. Six tables carried
-     * {@code retention=} in their catalogue comment while nothing deleted a row of them:
-     * {@code fraud_assessment}, {@code velocity_window} and {@code rejected_transaction} were the
-     * three that mattered, and a reader took each for bounded when it only grew. Asserting the
+     * <p>This is the general form of that defect. A table carrying {@code retention=} in its
+     * catalogue comment while nothing deletes a row of it reads as bounded to whoever consults the
+     * catalogue while it only grows, and {@code fraud_assessment}, {@code velocity_window} and
+     * {@code rejected_transaction} are the three where that costs the most. Asserting the
      * relationship rather than the three names is what stops the seventh table from repeating it: a
      * migration that writes a horizon into a comment and no caller fails here, and so does a sweep
      * that stops calling one.

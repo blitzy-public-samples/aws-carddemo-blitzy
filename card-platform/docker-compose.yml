@@ -56,9 +56,8 @@
 # An authenticated Transport Layer Security profile for this file is designed and not
 # delivered: card-platform/docs/suggested-next-tasks.md carries the procedure and the check.
 #
-# Why each choice above, the alternatives weighed and the risk accepted:
-# card-platform/docs/decision-log.md, under "A local stack states its transport posture and
-# binds it to one machine".
+# Design decisions: card-platform/docs/decision-log.md, under "A local stack states its
+# transport posture and binds it to one machine".
 #
 ---
 # CLONE_INDEX suffixes the project name. A second checkout runs its own stack.
@@ -818,9 +817,10 @@ services:
       SPRING_FLYWAY_DEFAULT_SCHEMA: ${AUTHORIZATION_DB_SCHEMA:-authorization_service}
       SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${AUTHORIZATION_DB_SCHEMA:-authorization_service}
       # Two Flyway locations. db/migration carries the schema and the seed taken from
-      # app/data/ASCII/acctdata.txt, whose 50 expiries all fall in 2025. Reason code 103
-      # at app/cbl/CBTRN02C.cbl:L414-L420 therefore declines a request carrying today's
-      # date as its origin timestamp. db/demo extends those expiries to 2099-12-31 and
+      # app/data/ASCII/acctdata.txt, whose 50 expiries run from 2023-01-06 to 2025-12-28.
+      # Reason code 103 at app/cbl/CBTRN02C.cbl:L414-L420 declines an origin timestamp
+      # later than the expiry it is compared against, so any date after 2025-12-28 is
+      # later than all 50. db/demo extends those expiries to 2099-12-31 and
       # touches nothing else. Drop the second location for a run compared against the
       # fixture.
       SPRING_FLYWAY_LOCATIONS: ${AUTHORIZATION_FLYWAY_LOCATIONS:-classpath:db/migration,classpath:db/demo}
@@ -1099,10 +1099,10 @@ services:
     restart: unless-stopped
 
   # ------------------------------------------------------------------------- #
-  # Notification service. Three listeners read transaction.posted, fraud.assessed
-  # and customer.context-changed, each on a consumer group of its own. It publishes
-  # no domain event, routes exhausted failures to source-specific dead-letter topics
-  # and calls no other service.
+  # Notification service. Four listeners read transaction.authorized, transaction.posted,
+  # fraud.assessed and customer.context-changed, each on a consumer group of its own. It
+  # publishes no domain event, routes exhausted failures to source-specific dead-letter
+  # topics and calls no other service.
   # ------------------------------------------------------------------------- #
   notification-service:
     # The tag this image carries once built. One tag serves the three places that name
@@ -1136,7 +1136,7 @@ services:
       SPRING_FLYWAY_DEFAULT_SCHEMA: ${NOTIFICATION_DB_SCHEMA:-notification_service}
       SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${NOTIFICATION_DB_SCHEMA:-notification_service}
       # This service's own broker identity. The entries the broker installs for it
-      # cover exactly what its configuration names: three topics under three groups of
+      # cover exactly what its configuration names: four topics under four groups of
       # its own, and no business-event publish. An entry naming another service's group
       # is absent, so a compromise here cannot take another listener's partitions. A
       # username is not a credential and carries a fallback; the password carries none.
@@ -1175,7 +1175,6 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
-    # This service runs three listeners.
     depends_on: *database-and-broker
     healthcheck: *actuator-healthcheck
     networks:
@@ -1218,8 +1217,9 @@ services:
       SPRING_FLYWAY_DEFAULT_SCHEMA: ${ACCOUNT_DB_SCHEMA:-account_service}
       SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${ACCOUNT_DB_SCHEMA:-account_service}
       # Two Flyway locations, for the same reason the authorization service names two.
-      # db/migration reproduces app/data/ASCII/acctdata.txt value for value, and all 50 of
-      # its expiries fall in 2025. db/demo extends them to 2099-12-31 and touches nothing
+      # db/migration reproduces app/data/ASCII/acctdata.txt value for value, and its 50
+      # expiries run from 2023-01-06 to 2025-12-28, eleven in 2023, fourteen in 2024 and
+      # twenty-five in 2025. db/demo extends them to 2099-12-31 and touches nothing
       # else. The two copies of this record carry one overlay or neither: this service
       # publishes its expiry on every state change and the authorization replica applies it,
       # so extending the replica alone would have the first posted transaction write a past
@@ -1353,8 +1353,8 @@ services:
       # version, so turning the key over without raising the version needs one setting.
       CARD_TOKEN_PREVIOUS_VERSION: ${CARD_TOKEN_PREVIOUS_VERSION:-}
       # The operator's statement that a rotation is intended. Left false, domain/CardTokenReconciler
-      # refuses to start rather than rewriting an identity three other stores already name, which is
-      # the silent rewrite a security review found. services/card-service/README.md is the procedure.
+      # refuses to start rather than silently rewriting an identity three other stores already
+      # name. services/card-service/README.md is the procedure.
       CARD_TOKEN_ROTATION_ENABLED: ${CARD_TOKEN_ROTATION_ENABLED:-false}
       CARD_DB_NAME: ${CARD_DB_NAME:-carddemo_card}
       SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${CARD_DB_NAME:-carddemo_card}?currentSchema=${CARD_DB_SCHEMA:-card_service}&sslmode=require
@@ -1395,10 +1395,9 @@ services:
       SPRING_KAFKA_PRODUCER_VALUE_SERIALIZER: org.apache.kafka.common.serialization.StringSerializer
       SPRING_KAFKA_PRODUCER_PROPERTIES_ENABLE_IDEMPOTENCE: "true"
       SPRING_KAFKA_PRODUCER_PROPERTIES_MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION: "5"
-      # The three send timeouts are deliberately NOT set here, and a review found
-      # why it matters. This block used to carry DELIVERY_TIMEOUT_MS 120000,
-      # REQUEST_TIMEOUT_MS 30000 and MAX_BLOCK_MS 5000, which made the window of one
-      # send MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS = 125 seconds while
+      # The three send timeouts are not set here, and the arithmetic is why. Carrying
+      # DELIVERY_TIMEOUT_MS 120000, REQUEST_TIMEOUT_MS 30000 and MAX_BLOCK_MS 5000 makes the
+      # window of one send MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS = 125 seconds while
       # OUTBOX_RELAY_MAX_DURATION_MS below bounds the whole sweep at 5 seconds. Every
       # send then outlived the deadline that was meant to bound it: the relay gave up
       # waiting while the producer kept trying, so a row could be published by an

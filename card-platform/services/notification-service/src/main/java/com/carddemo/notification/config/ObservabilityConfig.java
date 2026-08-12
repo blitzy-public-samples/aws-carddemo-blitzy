@@ -244,9 +244,9 @@ public class ObservabilityConfig {
          *
          * <p>The unit is one delivery. It moves for a governed, valid event this service consumed and
          * chose to apply nothing for, which today is exactly one case: a contract version that
-         * predates the card token both of this service's tables are keyed on. Such a record was
-         * previously refused, retried three times and dead-lettered, which reported a valid event as a
-         * poison record and lost it to a topic nobody reads.
+         * predates the card token both of this service's tables are keyed on. Refusing such a
+         * record, retrying it three times and dead-lettering it would report a valid event as a
+         * poison record and lose it to a topic nobody reads.
          *
          * <p>It is separate from every other series here for a reason each. It is not a
          * {@link #failures(String)}, because nothing failed. It is not a

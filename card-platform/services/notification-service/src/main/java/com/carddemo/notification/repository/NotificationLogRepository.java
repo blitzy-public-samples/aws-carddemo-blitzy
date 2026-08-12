@@ -18,10 +18,10 @@ import org.springframework.data.repository.query.Param;
  *
  * <p>A row is not evidence of a delivery. This service reaches no mail, message, webhook or push
  * gateway, and every row carries {@link NotificationLogEntity#RENDERED_NOT_SENT} in its
- * {@code outcome} column, which {@code ck_notification_log_outcome} holds to that one value. Until
- * {@code V5__rendered_not_delivered.sql} the table, the column and this interface all called a row
- * a delivery attempt, which claimed a transport that has never existed and would have let an
- * operator read a row count as proof that a cardholder was told something.
+ * {@code outcome} column, which {@code ck_notification_log_outcome} holds to that one value.
+ * {@code V5__rendered_not_delivered.sql} names the table, the column and this interface for what
+ * they hold, because a row count read as proof that a cardholder was told something would be read
+ * from a table no transport writes.
  *
  * <p>The column {@code masked_card_number} holds the masked card number, twelve asterisks then the
  * last four digits, and no full Primary Account Number (PAN) reaches {@code notification_log}.

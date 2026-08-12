@@ -622,17 +622,14 @@ class AccountRouteSecurityIT {
         }
     }
 
-    /** Returns the route of one account. */
     private static String accountRoute(String accountId) {
         return "/accounts/" + accountId;
     }
 
-    /** Returns the route of one customer. */
     private static String customerRoute(String customerId) {
         return "/customers/" + customerId;
     }
 
-    /** Returns the cycle-close route of one account. */
     private static String cycleCloseRoute(String accountId) {
         return "/accounts/" + accountId + "/cycle-close";
     }

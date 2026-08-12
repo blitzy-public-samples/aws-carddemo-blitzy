@@ -27,7 +27,7 @@
 -- databases no service may reach into. card-platform/docs/suggested-next-tasks.md carries the
 -- orchestration.
 --
--- Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md, under
+-- Design decisions: card-platform/docs/decision-log.md, under
 -- "A subject request is a procedure before it is an orchestration".
 
 COMMENT ON TABLE cardholder_context IS

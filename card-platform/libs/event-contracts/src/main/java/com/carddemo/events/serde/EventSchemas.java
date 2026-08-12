@@ -41,7 +41,7 @@ import com.networknt.schema.SchemaRegistry;
  * type present in {@link #SCHEMA_RESOURCES} but absent from {@link #RECORD_TYPES} is one this module
  * validates but does not bind, because the record belongs to the service that owns the aggregate.
  * That service supplies its own record class to
- * {@link JsonSchemaValidatingDeserializer#JsonSchemaValidatingDeserializer(Map)}.
+ * {@link JsonSchemaValidatingDeserializer#JsonSchemaValidatingDeserializer(Class)}.
  */
 public final class EventSchemas {
 
@@ -93,18 +93,19 @@ public final class EventSchemas {
      * the classpath, so a record retained on a topic under an earlier document remains readable
      * under that document. A version is never deleted and a released document is never rewritten;
      * {@code SchemaBackwardCompatibilityTest} measures both against the released-contract baseline
-     * in {@code schemas/released-contracts.json}. Read the table for the versions each type carries
+     * in {@code contracts/released-contracts.json}. Read the table for the versions each type carries
      * rather than a figure in this comment: {@link #governedEventTypes()} and
      * {@link #governedVersions(String)} answer from the entries below.
      *
      * <p>{@code TransactionDeclined} version 1 governs a decline whose account the cross-reference
-     * resolved. Version 2 governs reject reason {@code 0100} at
-     * {@code app/cbl/CBTRN02C.cbl:L385-L387} in the shape it was released under, declaring no
-     * account identifier; it is retained rather than published, so a record already on a topic stays
-     * readable and no producer writes it. Version 3 carries the same four reject codes as version 1
-     * together with the nine descriptive values {@code app/cbl/CBTRN02C.cbl:L446-L465} copies into
-     * its reject record, which is what lets a consumer persist that record, and every decline
-     * publishes under it.
+     * resolved, and it is retained. Version 2 is published, and it is the one contract reject reason
+     * {@code 0100} at {@code app/cbl/CBTRN02C.cbl:L385-L387} travels under: that code is assigned
+     * inside the INVALID KEY limb of the cross-reference read, so the document declares no account
+     * identifier and its {@code aggregateId} is the sixteen-character transaction identifier.
+     * Version 3 is published too, and carries the same four reject codes as version 1 together with
+     * the nine descriptive values {@code app/cbl/CBTRN02C.cbl:L446-L465} copies into its reject
+     * record, which is what lets a consumer persist that record. Reasons {@code 0101},
+     * {@code 0102} and {@code 0103} publish under version 3.
      *
      * <p>{@code TransactionAuthorized} version 2 adds the card token, the card identity a masked
      * card number cannot supply. {@code TransactionPosted} version 2 adds that token and the

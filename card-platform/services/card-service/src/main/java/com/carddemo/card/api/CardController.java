@@ -47,7 +47,7 @@ import org.springframework.web.bind.annotation.RestController;
  * <h2>Where an identifier may appear</h2>
  *
  * <p><strong>No card number appears in any path of this service.</strong> The two routes that name one
- * card carry the irreversible card token, and this controller resolves that token to the row before
+ * card carry the keyed card token, and this controller resolves that token to the row before
  * anything else happens. Transaction {@code CCDL} at {@code app/csd/CARDDEMO.CSD:L347-L348} is the
  * read and transaction {@code CCUP} at {@code app/csd/CARDDEMO.CSD:L367-L369} is the update; both
  * still reach the row by the primary key {@code app/cbl/COCRDSLC.cbl:L740} reads by, and only the
@@ -61,8 +61,12 @@ import org.springframework.web.bind.annotation.RestController;
  * {@code card.card_token} under a unique constraint, and reaches at most one row.
  *
  * <p>The paging cursor of the list route travels in the {@value #CURSOR_HEADER} request header. That
- * cursor is the irreversible card token of a row. {@link CardQueryService} resolves the token to
+ * cursor is the keyed card token of a row. {@link CardQueryService} resolves the token to
  * the browse key that {@code app/cbl/COCRDLIC.cbl:L488-L489} reads back.
+ *
+ * <p>A token is a stable pseudonym rather than an irreversible digest. The same card always yields
+ * the same token, so two records naming it are linkable, and a holder of the deployment key can
+ * recompute it for any candidate number. It is protected like the number it stands for.
  *
  * <p>The account identifier is not a card number. It travels as the
  * {@value #ACCOUNT_ID_PARAMETER} query parameter. The filter chain of
@@ -174,7 +178,7 @@ public class CardController {
      */
     public static final String ACCOUNT_ID_PRESENT_PATTERN = "^(?!0{11}$).*$";
 
-    /** Shape of the irreversible paging token the card read side issues. */
+    /** Shape of the keyed paging token the card read side issues. */
     public static final String CURSOR_PATTERN = PanMasker.CARD_TOKEN_PATTERN;
 
     /** Shape of the direction: one of the two values this controller accepts. */

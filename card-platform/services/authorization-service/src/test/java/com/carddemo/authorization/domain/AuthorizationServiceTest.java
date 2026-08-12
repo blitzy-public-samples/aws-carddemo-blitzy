@@ -340,7 +340,6 @@ final class AuthorizationServiceTest {
                 "the token disclosed the last four digits of the card");
     }
 
-    /** Asserts the written approval carries the masked card number and never the full one. */
     @Test
     void theWrittenApprovalCarriesTheMaskedCardNumberAndNeverTheFullOne() {
         resolveCard();
@@ -360,13 +359,12 @@ final class AuthorizationServiceTest {
      * Asserts a card that resolves no cross-reference row is declined under reject code {@code 0100}
      * and that the account the request declared reaches nothing at all.
      *
-     * <p>Two findings meet in this one test. A security review found an earlier form of this service
-     * taking the account off the request as the subject of the {@code 0100} decision, so a caller
-     * holding the acquirer or administrator role could present an unknown sixteen-digit card together
-     * with any eleven-digit account and have this service record a decision, an audit row and a
-     * declined event against an account it had merely named. Nothing tied that account to the card. A
-     * completeness review then found the replacement — refusing the call outright — producing no event
-     * for a call AAP transformation rule T4 gives one.
+     * <p>Two properties are held at once. The account on the request is never the subject of a
+     * {@code 0100} decision, because nothing ties that value to the card: taking it would let a caller
+     * holding the acquirer or administrator role pair an unknown sixteen-digit card with any
+     * eleven-digit account and have this service record a decision, an audit row and a declined event
+     * against an account it had merely named. And the call is decided rather than refused, because AAP
+     * transformation rule T4 gives every authorization call one event.
      *
      * <p>Both hold at once, and the request shape here is the one that proves it: the call is decided,
      * one event is written, and neither the decision nor the event names the declared account. The
@@ -683,7 +681,6 @@ final class AuthorizationServiceTest {
                 "the text comes from app/cbl/CBTRN02C.cbl:L411-L412");
     }
 
-    /** Asserts a transaction exactly at the credit limit is approved. */
     @Test
     void aTransactionExactlyAtTheCreditLimitIsApproved() {
         resolveCard();
@@ -1121,7 +1118,6 @@ final class AuthorizationServiceTest {
                 "the credit test and the expiry test never ran, so neither overwrote this answer");
     }
 
-    /** Asserts an approval naming a reject reason cannot be built. */
     @Test
     void anApprovalNamingARejectReasonCannotBeBuilt() {
         IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
@@ -1133,7 +1129,6 @@ final class AuthorizationServiceTest {
                 "the message names the component that broke the check");
     }
 
-    /** Asserts a decline naming no reject reason cannot be built. */
     @Test
     void aDeclineNamingNoRejectReasonCannotBeBuilt() {
         IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
@@ -1144,7 +1139,6 @@ final class AuthorizationServiceTest {
                 "the message names the component that broke the check");
     }
 
-    /** Asserts an approval naming no account cannot be built. */
     @Test
     void anApprovalNamingNoAccountCannotBeBuilt() {
         IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
@@ -1154,7 +1148,6 @@ final class AuthorizationServiceTest {
                 "the message names the component that broke the check");
     }
 
-    /** Asserts an account identifier carrying a scale cannot be built. */
     @Test
     void anAccountIdentifierCarryingAScaleCannotBeBuilt() {
         IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
@@ -1167,11 +1160,12 @@ final class AuthorizationServiceTest {
     /**
      * Names one decided outcome, with the reject reason the source assigns to it.
      *
-     * <p>Four values, and they are every outcome this service decides. The reject reasons of
-     * {@code app/cbl/CBTRN02C.cbl:L380-L420} number four, and reject code {@code 0100} is the one that
-     * is not decided here: it is assigned in the {@code INVALID KEY} limb of a read that resolved no
-     * account, so the call is refused rather than decided, and
-     * {@link #anUnresolvedCardIsRefusedEvenWhenTheRequestDeclaresAnAccount()} measures that instead.
+     * <p>Four values. The reject reasons of {@code app/cbl/CBTRN02C.cbl:L380-L420} number four, and
+     * reject code {@code 0100} is absent from this enum because its decision carries no account
+     * identifier: it is assigned in the {@code INVALID KEY} limb of a read that resolved none, so it
+     * publishes under {@code TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION} keyed on the
+     * transaction identifier. {@link #anUnresolvedCardIsDeclinedAndTheDeclaredAccountReachesNothing()}
+     * measures that outcome.
      */
     private enum DecidedOutcome {
 
@@ -1198,10 +1192,10 @@ final class AuthorizationServiceTest {
     /**
      * Asserts every decided outcome writes exactly one outbox row and names it on the decision.
      *
-     * <p>This is transformation rule T4 measured across the whole decided outcome set rather than one
-     * branch at a time. Every row is keyed on the eleven-digit account the cross-reference resolved,
-     * which is the only subject a decision of this service has. Reject code {@code 0100} is absent from
-     * the set because it resolves no account and is refused rather than decided.
+     * <p>This is transformation rule T4 measured across these four outcomes rather than one branch at
+     * a time. Every row here is keyed on the eleven-digit account the cross-reference resolved. Reject
+     * code {@code 0100} is measured separately because its row is keyed on the transaction identifier
+     * instead.
      *
      * @param outcomeUnderTest the outcome to arrange and measure
      */
@@ -1469,11 +1463,10 @@ final class AuthorizationServiceTest {
      * nothing they read can be out of date. This service reads copies kept current by state-change
      * events, and a copy whose events stopped arriving keeps answering with whatever it last knew.
      *
-     * <p>What is asserted here is the shape of the question. An earlier form of this control compared
-     * the age of a replica row against a window, and the first test below is the case that made it
-     * wrong: both producers publish on a state change and on nothing else, so an untouched card is a
-     * correct copy whose last observation recedes for ever. The two conditions that do refuse follow
-     * it.
+     * <p>What is asserted here is the shape of the question. Comparing the age of a replica row
+     * against a window would be wrong, and the first test below is the case that makes it wrong: both
+     * producers publish on a state change and on nothing else, so an untouched card is a correct copy
+     * whose last observation recedes for ever. The two conditions that do refuse follow it.
      */
     @Nested
     @DisplayName("Replica usability")

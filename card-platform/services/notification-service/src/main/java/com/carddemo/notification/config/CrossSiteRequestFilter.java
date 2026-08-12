@@ -27,7 +27,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * transaction identifier reaches {@code app/csd/CARDDEMO.CSD} only from a terminal a signed-on
  * operator holds, so the source had no cross-site vector to defend against. HTTP Basic does have
  * one, because a browser attaches a cached credential to a request a page made without being asked.
- * This service answers reads alone, and its read model is written by the three listeners rather
+ * This service answers reads alone, and its read model is written by its Kafka listeners rather
  * than by a caller. That is the reason the filter is here rather than the reason it is not: the
  * read-only shape of this surface becomes an enforced property instead of a fact a reader has to go
  * and check, and the first write added is refused from a foreign page without anyone remembering to

@@ -581,10 +581,10 @@ class RejectRecorderTest {
          * read that failed. The authorization service therefore keys the event on the transaction
          * identifier it minted, and this consumer reads that shape rather than an account.
          *
-         * <p>An earlier revision named the account the caller declared, which no stored row
-         * corroborates, and a security review withdrew it. The second assertion is what keeps it
-         * withdrawn: the producer factories that take an account refuse the reason outright, so the
-         * pairing cannot be rebuilt by a caller reaching for the more familiar factory.
+         * <p>The account a caller declares is never the subject, because no stored row corroborates
+         * it. The second assertion is what keeps that closed: the producer factories that take an
+         * account refuse the reason outright, so the pairing cannot be rebuilt by a caller reaching for
+         * the more familiar factory.
          */
         @Test
         @DisplayName("the declined contract carries reason 0100 with no account at all")
@@ -729,9 +729,9 @@ class RejectRecorderTest {
         /**
          * This class raises no counter at all, which is what keeps a rollback from leaving one.
          *
-         * <p>The reject counter used to be raised here, beside the row and inside the transaction, so
-         * a rollback left a durable increment reporting a reject the store never kept. The reflective
-         * check is what catches a counter reintroduced here: a count added back would pass every
+         * <p>A reject counter raised here, beside the row and inside the transaction, would leave a
+         * rollback with a durable increment reporting a reject the store never kept. The reflective
+         * check is what catches a counter added here: a count added would pass every
          * behavioural assertion in this class, because the failure it causes is only observable after
          * a rollback.
          */

@@ -295,9 +295,9 @@ public final class CardValidationMessages {
      * ADDITIVE. Reported when a paging cursor is not the token the card list issues.
      *
      * <p>The source keeps a full card number in working storage between screen turns. A REST
-     * response cannot publish that Primary Account Number, so the target carries the irreversible
-     * card token from {@code PanMasker} instead. No source message corresponds because the source
-     * has no token-shaped input.
+     * response cannot publish that Primary Account Number, so the target carries the keyed card
+     * token from {@code PanMasker} instead, which is a stable pseudonym and not an irreversible
+     * digest. No source message corresponds because the source has no token-shaped input.
      */
     public static final String ADDITIVE_CARD_CURSOR_MALFORMED =
             "Card cursor must be a 64-character lower-case hexadecimal token";

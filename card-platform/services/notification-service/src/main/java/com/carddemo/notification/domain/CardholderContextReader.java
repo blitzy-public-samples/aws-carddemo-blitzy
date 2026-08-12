@@ -15,19 +15,19 @@ import org.springframework.stereotype.Component;
  * no customer record, so it keeps a projection of the ten fields that paragraph reads and nothing
  * else.
  *
- * <p>WHY A MISSING ROW IS A FAULT. Each listener previously answered a missing row with an all-blank
- * set of fields, so an alert rendered with no name, no address and no credit score, and nothing
- * recorded that it had. The factory that produced those blanks has been removed, so no listener can
- * reach for it again. The failure was silent and it was on the cardholder-facing
- * path: the alert went out looking like a rendering with nothing to say rather than like an error.
- * Reporting the gap is the only way it can be noticed.
+ * <p>A MISSING ROW IS A FAULT. Answering a missing row with an all-blank set of fields would render
+ * an alert with no name, no address and no credit score, and record nothing about it. No factory for
+ * such a set exists, so no listener can reach for one. The failure would be silent and on the
+ * cardholder-facing path: the alert would look like a rendering with nothing to say rather than like
+ * an error. Reporting the gap is the only way it can be noticed.
  *
  * <p>A missing row is a transient state: the account service owns the customer record and publishes
  * {@code CustomerContextChanged}, so a transaction can be authorized before that context arrives. The
  * exception below stays under the retryable default of {@code config/KafkaConsumerConfig}, which
  * registers only a refused deserialization as permanent, so a delivery that finds no context is taken
- * again and only a record whose attempts run out reaches the dead-letter topic. Rationale,
- * alternatives considered and accepted risks: {@code card-platform/docs/decision-log.md}.
+ * again and only a record whose attempts run out reaches the dead-letter topic.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  *
  * <p>{@code db/migration/V2__seed.sql} bootstraps the projection for the fifty accounts of
  * {@code app/data/ASCII/custdata.txt}, so the shipped demo renders complete alerts from its first

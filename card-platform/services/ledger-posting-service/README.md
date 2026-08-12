@@ -339,7 +339,7 @@ Legend for Figure 1:
 
 - Hexagons are Kafka topics. Thick arrows are a Kafka consume or publish, which is where at-least-once delivery makes duplication possible.
 - Rectangles are components in this service. Plain arrows are in-process control flow.
-- The diamond is the duplicate-delivery guard, keyed on the event identifier together with the topic the delivery arrived on. A duplicate skips every write and commits the offset, which is what makes redelivery harmless. The topic belongs in the key because the two listeners read two topics whose producers assign identifiers independently.
+- The diamond is the duplicate-delivery guard, keyed on the event identifier together with the topic the delivery arrived on. A duplicate skips every write and commits the offset, which is what makes redelivery harmless. The topic belongs in the key because the three listeners read three topics whose identifiers separate producing services assign independently.
 - The cylinder is the private schema. Every row it names commits in a single local transaction, and no other service reads it.
 - Dotted arrows are the two terminal routes, taken only after retries are spent or a row is abandoned.
 - No arrow leaves this service toward another service, because none exists.
@@ -393,7 +393,7 @@ Flyway owns this schema and runs eleven migrations on every start, in this order
 | `V2__seed.sql` | Loads fifty category balances from `app/data/ASCII/tcatbal.txt`, fifty projection rows, and the transaction-type and transaction-category lookups |
 | `V3__account_state_replica.sql` | Adds the provenance columns the `AccountStateChanged` listener compares against |
 | `V4__account_state_ownership.sql` | Records which writer owns each value column of `account_balance_projection`, correcting the table comment `V3` set: an arriving account change no longer replaces a column the posting path advances |
-| `V5__processed_event_topic_key.sql` | Makes the consumed topic part of the duplicate-delivery marker's identity, so the two listener groups sharing the table can each claim the same event identifier once |
+| `V5__processed_event_topic_key.sql` | Makes the consumed topic part of the duplicate-delivery marker's identity, so the three listener groups sharing the table can each claim the same event identifier once |
 | `V6__cycle_column_locators.sql` | Re-issues the `cycle_credit` and `cycle_debit` comments with the copybook lines they actually come from, `app/cpy/CVACT01Y.cpy:L13` and `:L14`. `V4` cited `:L12` and `:L13`, one line above each field, and `:L12` is a date. It is a migration rather than an edit because `V4` has run |
 | `V7__category_balance_ceiling.sql` | Records what the four monetary columns do with a sum wider than the COBOL field behind them. They keep the low-order digits and the sign, because none of the five `ADD` statements at `app/cbl/CBTRN02C.cbl:L508`, `:L527`, `:L547`, `:L549` and `:L551` carries an `ON SIZE ERROR` phrase. Until that store was reproduced a sum past nine integer digits reached `category_balance NUMERIC(11,2)`, SQLSTATE 22003 rolled the posting back and an approved authorization reached the dead-letter topic. It is a migration rather than an edit because `V1` has run |
 | `V8__outbox_correlation.sql` | Adds `outbox_event.correlation_id` and `outbox_event.causation_id`, so the posted event the relay publishes names the authorization it came from and the event that caused it |

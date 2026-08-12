@@ -2133,12 +2133,11 @@ final class AuthorizationControllerTest {
          * move, and {@code :L446-L465} writes the reject record for it as for the other three reasons.
          * So the outcome is a decline and this route answers it as one.
          *
-         * <p>The account on the request is what this test watches. An earlier form of this route
-         * answered {@code 0100} naming that account, which let a caller holding a broad role write a
-         * decision, an audit row and a declined event against an account it had merely typed. The body
-         * now carries the reject code, its verbatim text and {@code accountId} as JSON null — never the
-         * declared value. The card number is constructed, since the code is reached zero times over the
-         * fixtures.
+         * <p>The account on the request is what this test watches. The body carries the reject code,
+         * its verbatim text and {@code accountId} as JSON null, never the declared value. Answering
+         * {@code 0100} against the declared account would let a caller holding a broad role write a
+         * decision, an audit row and a declined event against an account it had merely typed. The card
+         * number is constructed, since the code is reached zero times over the fixtures.
          */
         @Test
         void aCardNoRowCarriesDeclinesAndNamesNoDeclaredAccount() throws Exception {

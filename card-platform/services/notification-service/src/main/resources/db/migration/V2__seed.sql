@@ -22,7 +22,7 @@
 -- observed_at carries the same instant, and it is the column a staleness report orders by. No
 -- retention sweep deletes from this table.
 --
--- Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md.
+-- Design decisions: card-platform/docs/decision-log.md.
 
 INSERT INTO cardholder_context (account_id, first_name, middle_name, last_name,
                                 address_line_1, address_line_2, address_line_3,

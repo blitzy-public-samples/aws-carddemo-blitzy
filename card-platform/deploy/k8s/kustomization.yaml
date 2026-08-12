@@ -2,8 +2,8 @@
 #
 # What it holds. The six platform image references, so pinning them by digest is one edit
 # here rather than six spread across six Deployments, with the procedure below beside the
-# values it changes. The tag they carry today, 1.0.0-SNAPSHOT, is mutable. Rationale,
-# alternatives considered and accepted risks: card-platform/docs/decision-log.md.
+# values it changes. The tag they carry today, 1.0.0-SNAPSHOT, is mutable.
+# Design decisions: card-platform/docs/decision-log.md.
 #
 # TWO KINDS OF IMAGE LIVE IN THIS FOLDER, AND ONLY ONE OF THEM CAN CARRY A DIGEST TODAY.
 #

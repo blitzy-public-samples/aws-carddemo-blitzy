@@ -19,31 +19,28 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Holds every consumer and every relay of the platform to the delivery guarantees a review found
- * unevenly applied: three from a security review, and two more from a performance review.
+ * Holds every consumer and every relay of the platform to five delivery guarantees, three about
+ * correctness and two about the throughput a service gives up to reach it.
  *
- * <p>Each of the three was a property some services had and others did not, which is the shape of
- * finding that a review catches once and a test has to catch from then on. A dead-lettered record
+ * <p>Each correctness property is one a service can hold while a peer does not, which is the shape
+ * of defect a reader catches once and a test has to catch from then on. A dead-lettered record
  * whose offset stays uncommitted is read again after a rebalance, so one refused record becomes two
- * dead letters: four services committed the recovered offset and the fifth did not. A record whose
- * key does not name the aggregate its payload names arrived on a partition that does not order that
- * aggregate, so applying it writes to a row whose ordering guarantee was never held: three
- * consumers
- * refused such a record and five did not. And a duplicate-suppression marker swept while the record
- * it suppresses is still readable suppresses nothing, which the shipped configuration allowed by
- * setting the marker horizon equal to broker log retention.
+ * dead letters. A record whose key does not name the aggregate its payload names arrives on a
+ * partition that does not order that aggregate, so applying it writes to a row whose ordering
+ * guarantee was never held. And a duplicate-suppression marker swept while the record it suppresses
+ * is still readable suppresses nothing, which is what a marker horizon equal to broker log
+ * retention produces.
  *
- * <p>The two the performance review added are the other half of the same subject: what the platform
- * gives up to hold per-account order. A relay that publishes one row at a time holds every account
- * behind whichever account it is publishing, and a listener container running one thread reads every
+ * <p>The two throughput properties are the other half of the same subject: what the platform gives
+ * up to hold per-account order. A relay that publishes one row at a time holds every account behind
+ * whichever account it is publishing, and a listener container running one thread reads every
  * partition of its topic in sequence. Neither is required by the ordering guarantee, because the
  * account identifier is the message key and Kafka assigns one partition to one consumer, so both
- * were serialization the guarantee did not ask for.
+ * are serialization the guarantee did not ask for.
  *
  * <p>Every assertion reads a shipped source or a shipped configuration file. No application
- * context,
- * no database and no broker takes part, so a service that drifts from its peers fails the unit-test
- * phase rather than being noticed in a review.
+ * context, no database and no broker takes part, so a service that drifts from its peers fails the
+ * unit-test phase rather than waiting to be noticed by a reader.
  */
 @DisplayName("Kafka delivery guarantees across the six services")
 class KafkaDeliveryGuaranteeContractTest {
@@ -78,7 +75,8 @@ class KafkaDeliveryGuaranteeContractTest {
      * Every listener method of the platform, as module and source file.
      *
      * <p>Listed rather than discovered, because the point of the list is that it is complete: a
-     * consumer added without an entry here fails {@link #everyListenerSourceIsListed()}.
+     * consumer added without an entry here fails
+     * {@link MessageKeyGuard#everyListenerSourceIsListed()}.
      */
     private static final Map<String, List<String>> LISTENERS = Map.of(
             "authorization-service", List.of(
@@ -322,11 +320,11 @@ class KafkaDeliveryGuaranteeContractTest {
      * A duplicate-suppression claim outlasts every window its record can return through, by never
      * being removed.
      *
-     * <p>The horizon these assertions used to hold was 720 hours, checked at start-up against twice
-     * the 168-hour broker log retention. That relationship bounds only how long the broker can
-     * redeliver a record, and a security review found every effect a claim guards outliving it: a
-     * posted transaction, a category balance, a cycle accumulator, a read-model row. An archived,
-     * restored or deliberately replayed record arriving after the horizon was new to the guard.
+     * <p>A horizon of 720 hours checked at start-up against twice the 168-hour broker log retention
+     * bounds only how long the broker can redeliver a record. Every effect a claim guards outlives
+     * that: a posted transaction, a category balance, a cycle accumulator, a read-model row. An
+     * archived, restored or deliberately replayed record arriving after such a horizon is new to
+     * the guard.
      *
      * <p>The assertions below therefore hold the absence rather than the margin. No service reads a
      * marker horizon, no properties record binds one, and no deployment artifact carries the setting
@@ -514,14 +512,14 @@ class KafkaDeliveryGuaranteeContractTest {
     /**
      * A consumer reads a partition at a time, and unrelated partitions are read beside each other.
      *
-     * <p>Ordering and throughput pull in opposite directions here, and the partition is what settles
-     * them. Kafka assigns one partition to exactly one consumer of a group, so a listener container
-     * running one thread per partition never splits a partition and never reorders one account: the
-     * account identifier is the message key on every event this platform publishes. What it does
-     * remove is the serialization of accounts that have nothing to do with each other. Every one of
-     * these five services read its topics on a single thread before this contract existed — four by
-     * leaving the framework default in place and the fraud service by declaring it — so three
-     * partitions of authorized transactions were scored, posted and rendered one record at a time.
+     * <p>Ordering and throughput pull in opposite directions here, and the partition is what
+     * settles them. Kafka assigns one partition to exactly one consumer of a group, so a listener
+     * container running one thread per partition never splits a partition and never reorders one
+     * account: the account identifier is the message key on every event this platform publishes.
+     * What it does remove is the serialization of accounts that have nothing to do with each other.
+     * Leaving the framework default in place, or declaring one thread as a properties record can,
+     * has three partitions of authorized transactions scored, posted and rendered one record at a
+     * time.
      */
     @Nested
     @DisplayName("Consumer throughput is bounded by partitions, not by one thread")
@@ -600,12 +598,11 @@ class KafkaDeliveryGuaranteeContractTest {
     /**
      * Every wire ceiling of the transport sits above the envelope the application governs.
      *
-     * <p>A security review found no ceiling stated anywhere. The application refuses an event above
-     * {@link EventWireBounds#MAX_EVENT_BYTES} before its outbox row is written, and every ceiling
-     * the transport applies was left at a client default orders of magnitude above that, so a record
-     * this platform would never publish was one the transport would happily carry. The same review
-     * found hostname verification relying on a client default, which a future release could change
-     * without any deployment noticing.
+     * <p>The application refuses an event above {@link EventWireBounds#MAX_EVENT_BYTES} before its
+     * outbox row is written. A transport ceiling left at a client default sits orders of magnitude
+     * above that, so a record this platform would never publish is one the transport would happily
+     * carry. Hostname verification left to a client default is the same exposure, because a future
+     * release could change it without any deployment noticing.
      *
      * <p>The five figures form a ladder, each above the one below it. The envelope leaves room for
      * record overhead in the producer request, the producer request leaves room for compression and

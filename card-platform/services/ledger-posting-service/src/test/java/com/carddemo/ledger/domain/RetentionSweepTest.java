@@ -46,8 +46,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * from the configuration.
  *
  * <p>{@code processed_event} is absent from every assertion below, and one test asserts that absence
- * directly. A security review found the marker horizon expiring claims while the posting they guard
- * stayed, so a claim is now permanent and this sweep holds no store over that table.
+ * directly. A claim is permanent and this sweep holds no store over that table, because any horizon
+ * would expire a claim while the posting it guards stands.
  *
  * <p>Nothing here opens a database connection. Each repository is a stand-in that answers with a row
  * count, and the transaction template runs its callback directly so the number of transactions is

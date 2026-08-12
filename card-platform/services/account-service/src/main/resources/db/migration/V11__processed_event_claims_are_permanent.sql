@@ -1,8 +1,8 @@
 -- Account service, migration V11.
 -- Withdraws the retention horizon of processed_event, so a duplicate-delivery claim is permanent.
 --
--- What a security review found. The horizon was 720 hours, checked at start-up against twice the
--- 168-hour broker log retention. That relationship bounds only how long the BROKER can redeliver a
+-- What a horizon could bound, and what it could not. A horizon of 720 hours checked at start-up
+-- against twice the 168-hour broker log retention bounds only how long the BROKER can redeliver a
 -- record. It says nothing about how long the side effect a claim guards stands, and here a claim
 -- guards the account balance and the two cycle accumulators a posted transaction moves. The balance
 -- has no horizon at all: domain/PostedTransactionService adds an amount to it, and nothing in this
@@ -18,8 +18,8 @@
 -- What bounds growth instead: nothing, deliberately. One row holds a UUID, a topic name and a
 -- timestamp, and the table gains one row per event a listener of this service consumes. The
 -- partitioning work a deployment measuring real volumes would want is recorded in
--- card-platform/docs/suggested-next-tasks.md, and the alternatives weighed are in
--- card-platform/docs/decision-log.md.
+-- card-platform/docs/suggested-next-tasks.md.
+-- Design decisions: card-platform/docs/decision-log.md.
 --
 -- V1 is left as it ran. Its COMMENT ON named the horizon as this table's retention and
 -- processed_at as its purge key, and the statement below supersedes both, so a fresh database and

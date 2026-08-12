@@ -172,9 +172,9 @@ class CardRepositoryIT {
      * <p>Version 3 is {@code V3__processed_event_topic_key.sql}, which re-keys
      * {@code processed_event} on the event and the topic together. Version 4 is
      * {@code V4__subject_request_posture.sql} and carries no data-definition statement: it re-issues
-     * the {@code card_xref} table comment, which used to say an erasure request had to reach the
-     * row while no export or erasure workflow exists anywhere on this platform to send one. The
-     * correction is a migration rather than an edit to {@code V1} because {@code V1} has run, and a
+     * the {@code card_xref} table comment so the catalogue does not promise that an erasure request
+     * reaches the row, since no export or erasure workflow exists anywhere on this platform to send
+     * one. The correction is a migration rather than an edit to {@code V1} because {@code V1} has run, and a
      * comment-only migration adds a history row and changes no table, so every other assertion in
      * this class reads exactly as it did at version 3.
      *
@@ -245,10 +245,8 @@ class CardRepositoryIT {
      */
     private static final String SYNTHETIC_CARD_VERIFICATION_VALUE = "000";
 
-    /** Embossed name every inserted row carries. */
     private static final String SYNTHETIC_EMBOSSED_NAME = "Integration Test Row";
 
-    /** Expiration date every inserted row carries. */
     private static final LocalDate SYNTHETIC_EXPIRATION_DATE = LocalDate.of(2027, 12, 31);
 
     /**
@@ -940,13 +938,13 @@ class CardRepositoryIT {
     /**
      * Proves a stored token records which key it belongs to, and that moving one is an audited act.
      *
-     * <p>A security review found this service re-deriving {@code card.card_token} at every start-up
-     * whenever the derivation changed, with nothing recording which key a stored token belonged to.
-     * Three other stores hold a token derived from the same key and hold no card number, so none can
+     * <p>Re-deriving {@code card.card_token} at start-up whenever the derivation changes, with
+     * nothing recording which key a stored token belonged to, would leave four other holders stranded.
+     * Three stores hold a token derived from the same key and hold no card number, so none can
      * re-derive its own rows: {@code statement_transaction.card_token} and
      * {@code notification_log.card_token} in the notification service, and
      * {@code authorization_decision.card_token} in the authorization service. A granted
-     * {@code SCOPE_CARD} authority is a fourth. A silent rewrite therefore left all four naming a card
+     * {@code SCOPE_CARD} authority is the fourth. A silent rewrite would leave all four naming a card
      * nobody could reach, with no mapping back and no way to undo it.
      *
      * <p>{@code V10__card_token_version_and_rotation.sql} separates the two reasons a stored token can
@@ -965,7 +963,6 @@ class CardRepositoryIT {
         /** A key of the minimum width, standing for the key a rotation is leaving behind. */
         private static final String PREVIOUS_KEY = "card-repository-it-previous-key-01";
 
-        /** Reads one column of one card row. */
         private String cardColumn(String column, String cardNumber) {
             return jdbcTemplate.queryForObject("SELECT " + column + " FROM " + schema
                     + ".card WHERE card_number = ?", String.class, cardNumber);
@@ -1206,14 +1203,12 @@ class CardRepositoryIT {
                             "a refused rotation writes no mapping row"));
         }
 
-        /** Rows the audit table holds. */
         private int rotationRowCount() {
             Integer count = jdbcTemplate.queryForObject(
                     "SELECT count(*) FROM " + schema + ".card_token_rotation", Integer.class);
             return count == null ? 0 : count;
         }
 
-        /** Rows the mapping table holds. */
         private int mappingRowCount() {
             Integer count = jdbcTemplate.queryForObject(
                     "SELECT count(*) FROM " + schema + ".card_token_rotation_mapping",
@@ -2256,9 +2251,8 @@ class CardRepositoryIT {
          * save: nothing in the service writes a marker. The table exists because the shape is
          * uniform across the six schemas, so the rows here are written through the driver.
          *
-         * <p>A purge over a 720-hour horizon used to remove the older row. A security review found
-         * that horizon expiring claims while the rows they guard stayed, so a claim is permanent now
-         * and the store exposes nothing that removes one.
+         * <p>A claim is permanent and the store exposes nothing that removes one. A purge over a
+         * 720-hour horizon would remove the older row here while the rows it guards stayed.
          */
         @Test
         @DisplayName("a claim stamped in 2020 is still readable, because nothing expires one")

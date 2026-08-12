@@ -35,12 +35,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * taken before the first request lists each one at zero. And each recording method moves its own
  * meter alone.
  *
- * <p>The events-consumed counter has a test of its own, and what that test asserts changed with the
- * listener this service now runs. It previously held the counter at zero and refused a recording
- * method for it, because the account service read no topic at all. It reads
- * {@code transaction.posted} now, so the counter moves once per delivery and the two posting
- * outcomes are separable: an applied posting and a duplicate the marker suppressed are
- * indistinguishable on a consumed count and mean opposite things.
+ * <p>The events-consumed counter has a test of its own, because this service reads
+ * {@code transaction.posted}. The counter moves once per delivery, which is what makes the two
+ * posting outcomes separable: an applied posting and a duplicate the marker suppressed mean opposite
+ * things and are indistinguishable on a consumed count alone.
  *
  * <p>The update service, the cycle-close service, the posted-amount listener and the outbox relay
  * that call these methods arrive with {@code domain/AccountUpdateService.java},
@@ -50,7 +48,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("ObservabilityConfig, the account-service meter set")
 class ObservabilityConfigTest {
 
-    /** Prefix every meter name carries. */
     private static final String PREFIX = "carddemo.account.";
 
     /** Events this service consumed, one per delivery of a posted transaction. */

@@ -15,18 +15,18 @@
 # same file is never reported. That was measured against gitleaks 8.30.1 with a file holding
 # a real-shaped GitHub personal access token: under a top-level path allowlist the token was
 # invisible, and under a rule-scoped allowlist it was reported while the intended value stayed
-# exempt. A review named the earlier form of this file as CWE-693, and the whole-file skip is
-# the sharpest edge of it.
+# exempt. A whole-file skip is the sharpest edge of that failure, and CWE-693 names the class
+# it belongs to.
 # Pairing that path with `condition = "AND"` does not narrow it either, measured the same way:
 # the path still excuses the whole file, so a shape is the only thing worth writing down.
 #
 # Second, by the text of the value rather than by where it sits. No entry below names a path
 # at all. Each one matches the value together with the context that makes it safe: the
 # constant it is assigned to, the JSON field it appears under, the placeholder wording of a
-# template. That is why the same secret pasted into the same file still fails the scan. The
-# earlier form of this file excluded 64 lowercase hexadecimal characters everywhere, which is
-# the shape of a card token and equally the shape of a 256-bit key written as hex; no entry
-# below exempts that shape on its own, and
+# template. That is why the same secret pasted into the same file still fails the scan.
+# Excluding 64 lowercase hexadecimal characters everywhere would exempt the shape of a card
+# token and equally the shape of a 256-bit key written as hex; no entry below exempts that
+# shape on its own, and
 # card-platform/equivalence-tests CardholderDataInArtifactsContractTest fails the build if one
 # ever does.
 #

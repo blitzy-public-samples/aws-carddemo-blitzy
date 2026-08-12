@@ -95,10 +95,8 @@ class SubjectDataGovernanceContractTest {
     /** The heading the exception names as the home of the destruction procedure. */
     private static final String DESTRUCTION_HEADING = "Stored card verification value";
 
-    /** The column the exception is about. */
     private static final String EXCEPTION_COLUMN = "card_verification_value";
 
-    /** The migration that records the exception. */
     private static final String EXCEPTION_MIGRATION =
             "services/card-service/src/main/resources/db/migration/"
                     + "V11__card_verification_value_exception.sql";

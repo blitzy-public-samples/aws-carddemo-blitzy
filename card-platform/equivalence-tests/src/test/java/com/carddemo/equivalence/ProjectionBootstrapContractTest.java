@@ -122,7 +122,6 @@ class ProjectionBootstrapContractTest {
             "DROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(\\w+)",
             Pattern.CASE_INSENSITIVE);
 
-    /** Prefix a date literal carries in a seed. */
     private static final String DATE_LITERAL_PREFIX = "DATE ";
 
     /**

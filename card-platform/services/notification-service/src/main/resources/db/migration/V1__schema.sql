@@ -104,8 +104,8 @@ CREATE TABLE statement_transaction (
 CREATE INDEX ix_statement_transaction_processing_timestamp
     ON statement_transaction (processing_timestamp);
 
--- notification_log carries one row per delivery attempt. Additive: no COBOL program
--- records a delivery attempt.
+-- notification_log carries one row per rendered-not-sent alert. Additive: no COBOL
+-- program records a rendered alert.
 -- card_token names the card the same way statement_transaction does, and
 -- masked_card_number carries the same display value and identifies no single card.
 -- channel names the rendered format. The application supplies id.
@@ -210,9 +210,11 @@ CREATE TABLE processed_event (
 -- ============================================================================
 -- No source dataset carries a retention rule. app/csd/CARDDEMO.CSD defines eight files
 -- with RECOVERY(NONE) and JOURNAL(NO) and no expiry, the Job Control Language members
--- under app/jcl/ define datasets without an EXPDT or RETPD parameter, and no program
--- under app/cbl/ deletes a record: the only DELETE in the repository is IDCAMS deleting
--- a whole dataset before it is redefined. Every table this schema owns states a rule.
+-- under app/jcl/ define datasets without an EXPDT or RETPD parameter, and no migrated
+-- financial posting path deletes a record. app/cbl/COUSR03C.cbl:307 executes EXEC CICS
+-- DELETE against the security file, which the AAP places out of scope; every other DELETE
+-- in the repository is IDCAMS removing a whole dataset before it is redefined. Every table
+-- this schema owns states a rule.
 --
 -- Each COMMENT below reads as four fields followed by a sentence, so an operator can
 -- read the policy out of the catalogue rather than out of a document:
@@ -250,7 +252,7 @@ CREATE TABLE processed_event (
 -- NotificationLogRepository.deleteRenderedBefore orders by this column before applying
 -- its LIMIT, so this index serves both the range and the ordering. Without the ordering
 -- successive batches could revisit the same rows and never converge. V5 renames the column
--- to rendered_at and the index with it, because the value was never a delivery attempt.
+-- to rendered_at and the index with it, because the value is when a renderer finished.
 CREATE INDEX ix_notification_log_attempted_at ON notification_log (attempted_at);
 
 -- The range RetentionSweep scans, and the order its batches take. The bounded delete
@@ -272,8 +274,8 @@ COMMENT ON TABLE statement_transaction IS
 
 COMMENT ON TABLE notification_log IS
     'retention=90 days; purge_key=attempted_at; personal_data=pseudonymous;
-     purge_op=NotificationLogRepository.deleteRenderedBefore. One delivery attempt, carrying
-     the card token, the transaction identifier and the masked card number the alert showed.
+     purge_op=NotificationLogRepository.deleteRenderedBefore. One rendered-not-sent alert,
+     carrying the card token, the transaction identifier and the masked card number it showed.
      It carries no account identifier: this table names a card, and the account behind that
      card is resolved through the account service. The window is
      carddemo.history.log-retention-days in src/main/resources/application.yml, 90 days by

@@ -50,8 +50,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * is not a consequence of a restart, because three other places hold the same token and hold no card
  * number: {@code statement_transaction.card_token} and {@code notification_log.card_token} in the
  * notification service, {@code authorization_decision.card_token} in the authorization service, and a
- * granted {@code SCOPE_CARD} authority. A security review found this class rewriting such a row
- * silently, which left all three naming a card nobody could reach. It now refuses to start unless
+ * granted {@code SCOPE_CARD} authority. Rewriting such a row silently would leave all three naming a
+ * card nobody could reach, so this class refuses to start unless
  * {@value PanMasker#CARD_TOKEN_ROTATION_VARIABLE} states that an operator asked for the rotation.
  *
  * <h2>What a rotation produces, so the rest of the platform can follow it</h2>

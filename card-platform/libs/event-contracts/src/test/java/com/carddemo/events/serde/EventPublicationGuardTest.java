@@ -134,8 +134,8 @@ class EventPublicationGuardTest {
     }
 
     /**
-     * Asserts a value that is not one of the five event records cannot be serialized, whatever its
-     * JSON looks like.
+     * Asserts a value whose class {@code EVENT_TYPES_BY_CLASS} does not name cannot be serialized,
+     * whatever its JSON looks like.
      *
      * <p>The map below carries every property the authorized document requires and a supported
      * {@code eventType}. Selecting the event type from the class of the argument is what refuses it.
@@ -203,7 +203,11 @@ class EventPublicationGuardTest {
     }
 
     /**
-     * Asserts each of the five records serializes onto its own topic and returns bytes.
+     * Asserts each of the five domain records serializes onto its own topic and returns bytes.
+     *
+     * <p>{@code DeadLetterEnvelope} is the sixth record the serializer accepts. It travels on the one
+     * dead-letter topic rather than on a topic of its own, so it has no place in a per-topic
+     * assertion, and {@code EventSerdeSecurityTest} is what holds its publish path.
      */
     @Test
     void everyEventRecordSerializesOntoItsOwnTopic() {

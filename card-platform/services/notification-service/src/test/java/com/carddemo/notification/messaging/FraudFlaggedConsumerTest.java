@@ -414,11 +414,11 @@ class FraudFlaggedConsumerTest {
     /**
      * A refused payload is still measured, on the {@code unknown} series of both families.
      *
-     * <p>The consumed count and the latency used to be recorded inside the two apply methods, which a
-     * refused payload never reaches, so a rejected delivery moved neither and was indistinguishable
-     * from one that never arrived. {@code unknown} is already a declared value of the
-     * {@code eventType} tag, so measuring it introduces no new tag value and the meter count stays
-     * fixed.
+     * <p>Recording the consumed count and the latency inside the two apply methods would leave a
+     * refused payload moving neither, since it never reaches them, and a rejected delivery would then
+     * be indistinguishable from one that never arrived. {@code unknown} is already a declared value
+     * of the {@code eventType} tag, so measuring it introduces no new tag value and the meter count
+     * stays fixed.
      */
     @Test
     @DisplayName("A refused payload is counted and timed on the unknown series")
@@ -516,14 +516,14 @@ class FraudFlaggedConsumerTest {
      */
     @Test
     @DisplayName("The listener holds five collaborators, and writes neither read-model nor "
-            + "delivery-attempt row")
+            + "rendered-alert row")
     void theListenerHoldsFiveCollaboratorsAndReachesNoRowStore() {
         deliver(flaggedEvent(UUID.randomUUID(), RISK_SCORE, RULES));
         deliver(clearedEvent(UUID.randomUUID()));
 
         List<Class<?>> collaborators = collaboratorTypes();
         assertThat(this.storesReached)
-                .as("no statement_transaction row and no delivery-attempt row is written")
+                .as("no statement_transaction row and no rendered-alert row is written")
                 .isEmpty();
         assertThat(collaborators).containsExactlyInAnyOrder(CardholderContextReader.class,
                 ProcessedEventRepository.class, NotificationService.class,

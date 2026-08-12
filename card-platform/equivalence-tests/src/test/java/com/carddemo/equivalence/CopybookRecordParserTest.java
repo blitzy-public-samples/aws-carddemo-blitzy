@@ -1197,9 +1197,10 @@ class CopybookRecordParserTest {
 
     // Redacted comparison. Every assertion below runs against a card-number-shaped or a
     // verification-value-shaped value, and a failing assertion writes both sides into the Surefire
-    // report, which .github/workflows/ci.yml uploads and keeps. A review found a seeded card number
-    // in a published report and named the assertion output as the same exposure, so these values are
-    // compared for equality and reported in a masked form. The redaction runs only on the failure
+    // report, which .github/workflows/ci.yml uploads and keeps. A seeded card number in a published
+    // report is the same exposure whether a log line or an assertion message put it there, so these
+    // values are compared for equality and reported in a masked form. The redaction runs only on the
+    // failure
     // path, so a passing run pays nothing for it.
 
     /**

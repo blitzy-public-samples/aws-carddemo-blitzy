@@ -329,7 +329,7 @@ class DemoBootstrapContractTest {
          *
          * <p>The two are handled differently. A published key is regenerated, because every reader
          * of this repository holds it. An overridden setting is reported with both values and left
-         * alone, so the operator decides. Rationale: {@code card-platform/docs/decision-log.md}
+         * alone, so the operator decides. Design decisions: {@code card-platform/docs/decision-log.md}
          */
         @Test
         @DisplayName("regenerates a published card-token key and names an overridden setting")
@@ -762,14 +762,14 @@ class DemoBootstrapContractTest {
         }
 
         /**
-         * Three things a reader can act on have to be true at once here, and a review found all
-         * three wrong. The apply command has to be one that works: a glob over this folder reaches
-         * {@code kustomization.yaml}, which is not an API object, so {@code kubectl apply -f} fails
-         * on it. The image step has to be one that puts images where a node looks: a host
-         * {@code docker build} leaves them in this machine's daemon, which is not kind's or
-         * minikube's store. And a tag override has to either reach the manifests or be refused,
-         * because {@code imagePullPolicy: Never} turns a tag the manifests do not request into the
-         * same {@code ErrImageNeverPull} as no image at all.
+         * Three things a reader can act on have to be true at once here. The apply command has to
+         * be one that works: a glob over this folder reaches {@code kustomization.yaml}, which is
+         * not an API object, so {@code kubectl apply -f} fails on it. The image step has to be one
+         * that puts images where a node looks: a host {@code docker build} leaves them in this
+         * machine's daemon, which is not kind's or minikube's store. And a tag override has to
+         * either reach the manifests or be refused, because {@code imagePullPolicy: Never} turns a
+         * tag the manifests do not request into the same {@code ErrImageNeverPull} as no image at
+         * all.
          */
         @Test
         @DisplayName("names an apply path that works, an image step that loads, and a tag that reaches the manifests")

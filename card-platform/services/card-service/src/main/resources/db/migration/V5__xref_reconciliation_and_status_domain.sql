@@ -26,7 +26,7 @@
 -- V2__seed.sql loads those fifty rows unchanged, so the constraint validates against the existing
 -- table.
 --
--- Rationale for both, and the alternatives weighed: card-platform/docs/decision-log.md. No column
+-- Design decisions for both: card-platform/docs/decision-log.md. No column
 -- is added, dropped or retyped and no row is touched. V1 and V4 are left as they ran.
 
 ALTER TABLE card

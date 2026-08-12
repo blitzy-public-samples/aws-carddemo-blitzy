@@ -1,11 +1,11 @@
 -- Gives one account's assessment page a total order, and withdraws the two indexes that only
 -- carried part of it.
 --
--- api/FraudAssessmentController reads one account's assessments newest first. It used to reach a
--- page by counting rows from the start of the account's history and discarding them, which reads
--- every row before the page and returns none of them. It now names a position instead: the
--- assessment time and transaction identifier of the last row it served. The predicate that follows
--- that position is a range, so the tenth page and the ten-thousandth cost the same.
+-- api/FraudAssessmentController reads one account's assessments newest first, and it reaches a
+-- page by naming a position: the assessment time and transaction identifier of the last row it
+-- served. The predicate that follows that position is a range, so the tenth page and the
+-- ten-thousandth cost the same. Counting rows from the start of the account's history instead
+-- would read every row before the page and return none of them.
 --
 -- The order needs both columns. assessed_at is not unique: one consumer batch assesses several
 -- transactions and the rows can carry the same microsecond, so ordering by time alone leaves an

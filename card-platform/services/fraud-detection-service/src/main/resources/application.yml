@@ -7,7 +7,7 @@
 #
 # This service is net new: no COBOL program in app/cbl/ is an ancestor.
 #
-# Rationale for every value here: card-platform/docs/decision-log.md
+# Design decisions for every value here: card-platform/docs/decision-log.md
 
 server:
   # The container listens on 8080, and docker-compose.yml publishes a host port
@@ -152,8 +152,7 @@ spring:
     # The value serializer it installs is JsonSchemaValidatingSerializer, which takes an
     # event record rather than the text named below, so the key named below applies only
     # to a template built from these keys alone.
-    # Why fraud validates on publish while the other services publish text:
-    # card-platform/docs/decision-log.md.
+    # Design decisions: card-platform/docs/decision-log.md.
     #
     # The four timeouts below are one budget, and outbox/OutboxRelay is why. A relay tick bounds
     # itself with carddemo.outbox.relay.max-duration-ms so a broker that accepts a connection and
@@ -315,16 +314,16 @@ carddemo:
     # that outlive any window, which the migration withdrawing its horizon states in full.
     published-retention-hours: "${OUTBOX_PUBLISHED_RETENTION_HOURS:168}"
   # Duplicate-delivery claims are permanent. A claim and the side effects it guards commit in
-  # one local transaction in one database, so the two can only be restored together, and a
-  # security review found the horizon that used to expire a claim shorter than the effects it
-  # guarded. Nothing here retires a claim, domain/RetentionSweep no longer names
+  # one local transaction in one database, so the two can only be restored together. Any horizon
+  # tied to broker log retention would expire a claim while the assessment and velocity counters
+  # it guards still stand. Nothing here retires a claim, domain/RetentionSweep does not name
   # processed_event, and the migration that withdrew the horizon states the whole rule.
   retention:
     sweep-interval-ms: "${RETENTION_SWEEP_INTERVAL_MS:3600000}"
     # The two business tables of this service. Each declares its horizon in its own
-    # COMMENT ON TABLE in db/migration/V1__schema.sql, and until a security review nothing
-    # applied either: domain/RetentionSweep deleted outbox rows and duplicate markers only,
-    # so ninety days and seven days described an intention rather than the table. Both rows
+    # COMMENT ON TABLE in db/migration/V1__schema.sql, and the settings below are what
+    # domain/RetentionSweep applies to them. A horizon declared in the catalogue and applied
+    # nowhere would describe an intention rather than the table. Both rows
     # are pseudonymous - account_id and transaction_id resolve to a named customer through
     # the account and ledger services - so these are privacy horizons, not housekeeping.
     #

@@ -39,10 +39,9 @@ import static org.mockito.Mockito.when;
  * that it enforces them through an explicit transaction rather than through an annotation a
  * self-invocation would bypass.
  *
- * <p>{@code processed_event} is not among them. A security review found the marker horizon expiring
- * duplicate-delivery claims while the read-model row and the rendered alert they guard outlived them,
- * so a claim is permanent now and one test below asserts this sweep holds no store over that
- * table.
+ * <p>{@code processed_event} is not among them. A claim is permanent, and one test below asserts
+ * this sweep holds no store over that table: a marker horizon would expire a claim while the
+ * read-model row and the rendered alert it guards outlived it.
  *
  * <p>The horizons are additive in full. No program under {@code app/cbl/} expires a record: a Virtual
  * Storage Access Method dataset was reorganised by an operator and a Generation Data Group aged its
@@ -181,12 +180,11 @@ class RetentionSweepTest {
             // whose lexical order is its chronological order, which is the property the delete
             // itself relies on.
             //
-            // The earlier form of this assertion compared only the four-digit year against a second
-            // Instant.now() read after the sweep. It agreed with itself on every day but one: a
-            // sweep whose horizon fell on the last instant of a year and an assertion evaluated
-            // after midnight read two different years and failed for a reason unrelated to the
-            // rendering under test. Bracketing removes that, and pins all 26 characters instead of
-            // the first four.
+            // Comparing only the four-digit year against a second Instant.now() read after the
+            // sweep would agree with itself on every day but one: a sweep whose horizon fell on the
+            // last instant of a year and an assertion evaluated after midnight would read two
+            // different years and fail for a reason unrelated to the rendering under test.
+            // Bracketing removes that, and pins all 26 characters instead of the first four.
             assertThat(stamped)
                     .as("the horizon the sweep rendered, %d days back from a clock read between "
                             + "%s and %s", STATEMENT_RETENTION_DAYS, before, after)
@@ -258,8 +256,8 @@ class RetentionSweepTest {
          *
          * <p>Stated structurally, because a sweep holding no store over {@code processed_event}
          * cannot delete from it however it is scheduled or configured. The effects a claim guards are
-         * a read-model row kept for four hundred days and a rendered alert kept for ninety, and both
-         * outlived the 720-hour marker horizon this replaced.
+         * a read-model row kept for four hundred days and a rendered alert kept for ninety, each
+         * outliving any horizon a broker figure could justify.
          */
         @Test
         @DisplayName("do not include the marker store, so no pass expires a claim")

@@ -30,8 +30,8 @@ import java.util.Objects;
  * <p>An implementation is polled once per authorization call, so it answers from state it already
  * holds and issues no broker request of its own.
  *
- * @see KafkaReplicaSynchronization the delivered implementation, which reads the lag each replica
- *      listener already measures
+ * @see com.carddemo.authorization.messaging.KafkaReplicaSynchronization the delivered
+ *      implementation, which reads the lag each replica listener already measures
  */
 public interface ReplicaSynchronization {
 

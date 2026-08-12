@@ -13,14 +13,16 @@
 --
 -- What the rule reads. Reason code 103 approves only while the account expiry is greater than or equal
 -- to the first ten characters of the origin timestamp, at app/cbl/CBTRN02C.cbl:L414-L420, comparing raw
--- text. All fifty accounts of app/data/ASCII/acctdata.txt carry a 2025 expiry, the latest being
--- 2025-12-28, and all three hundred transactions of app/data/ASCII/dailytran.txt carry origin date
--- 2022-06-10, so the fixture passes the rule and a caller sending today's date does not.
+-- text. The fifty accounts of app/data/ASCII/acctdata.txt carry expiries from 2023-01-06 through
+-- 2025-12-28, eleven in 2023, fourteen in 2024 and twenty-five in 2025. All three hundred
+-- transactions of app/data/ASCII/dailytran.txt carry origin date 2022-06-10, which is earlier than
+-- every one of those expiries, so the fixture passes the rule. A request whose origin timestamp is
+-- dated after 2025-12-28 does not.
 --
 -- No line of this file may carry a dollar sign followed by a brace. Flyway substitutes placeholders
 -- across the whole text of a migration, comments included, and refuses to start on an unknown one.
 --
--- Rationale, alternatives considered and accepted risks, including why the overlay is a separate
+-- Design decisions, including why the overlay is a separate
 -- location and why the value is 2099-12-31: card-platform/docs/decision-log.md.
 
 UPDATE account_credit_snapshot

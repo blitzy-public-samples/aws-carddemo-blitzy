@@ -43,15 +43,13 @@ import org.springframework.transaction.support.TransactionTemplate;
  * by the relay on a fixed delay, so one statement holding every expired row under one lock blocks
  * both of them for a duration nobody can predict from the configuration.
  *
- * <p>The statement here was genuinely unbounded rather than bounded and undrained, so the bound and
- * the drain arrived together. Either alone is worse than it looks: an unbounded statement blocks for
- * an unpredictable time, and a bounded statement issued once an hour leaves every row above one batch
- * behind for ever.
+ * <p>The bound and the drain are one property here, because either alone is worse than it looks: an
+ * unbounded statement blocks for an unpredictable time, and a bounded statement issued once an hour
+ * leaves every row above one batch behind for ever.
  *
  * <p>{@code processed_event} is absent from every assertion below, and one test asserts that absence
- * directly. A security review found the marker horizon expiring claims while the balance and cycle
- * arithmetic they guard stayed, so a claim is now permanent and this sweep holds no store over that
- * table.
+ * directly. A claim is permanent, so this sweep holds no store over that table: a marker horizon
+ * would expire a claim while the balance and cycle arithmetic it guards stayed.
  *
  * <p>Nothing here opens a database connection. The repository is a stand-in that answers with a row
  * count, and the transaction template runs its callback directly so the number of transactions is

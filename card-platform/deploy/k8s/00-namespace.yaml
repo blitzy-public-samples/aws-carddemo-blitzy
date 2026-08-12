@@ -27,7 +27,7 @@
 #      object, and a plain `kubectl apply -f` over this folder fails on it with
 #      "no matches for kind Kustomization".
 #
-# Rationale for the choices in this folder: card-platform/docs/decision-log.md
+# Design decisions for this folder: card-platform/docs/decision-log.md
 ---
 apiVersion: v1
 kind: Namespace
@@ -52,8 +52,7 @@ metadata:
     # runAsNonRoot, allowPrivilegeEscalation false, all capabilities dropped,
     # seccompProfile RuntimeDefault and a read-only root filesystem.
     #
-    # Why this version and not another, with the alternatives and the risk:
-    # card-platform/docs/decision-log.md
+    # Design decisions: card-platform/docs/decision-log.md
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/enforce-version: v1.25
     pod-security.kubernetes.io/audit: restricted

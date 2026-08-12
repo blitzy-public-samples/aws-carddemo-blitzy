@@ -1420,10 +1420,10 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
          * day the comparison runs against as an argument. One captured date supplies both the
          * submitted value and the reference, so the pair cannot disagree about which day it is.
          *
-         * <p>This used to read {@code LocalDate.now()} for the value while production read it again
-         * for the comparison. A run that crossed local midnight between those two reads submitted
-         * yesterday's date against today's reference, which passes, and the assertion that today is
-         * refused failed for a reason that had nothing to do with the rule.
+         * <p>Reading {@code LocalDate.now()} here for the value while production read it again for
+         * the comparison would leave a run that crossed local midnight between the two reads
+         * submitting yesterday's date against today's reference, which passes, so the assertion that
+         * today is refused would fail for a reason unrelated to the rule.
          */
         @Test
         @DisplayName("CSUTLDPY L350 compares with strict greater-than, so the reference day is "

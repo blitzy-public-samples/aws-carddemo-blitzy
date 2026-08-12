@@ -66,10 +66,9 @@ public interface RejectedTransactionRepository
      *
      * <p>{@code COMMENT ON TABLE rejected_transaction} in
      * {@code src/main/resources/db/migration/V1__schema.sql} declares
-     * {@code retention=90 days; purge_key=rejected_at}, and until this method existed nothing
-     * applied it. {@code domain/RetentionSweep} deleted published outbox rows and duplicate markers
-     * only, so the ninety days described an intention while the table grew by one row per refused
-     * feed record and never shrank. A security review found the gap.
+     * {@code retention=90 days; purge_key=rejected_at}, and this method is what applies it. Without
+     * it the ninety days would describe an intention while the table grew by one row per refused feed
+     * record and never shrank.
      *
      * <p>The row is pseudonymous, not anonymous: it carries the transaction identifier, the amount,
      * the merchant and a masked card number, and the first of those resolves to a named customer

@@ -26,7 +26,7 @@
 -- carddemo.history.statement-retention-days (400 by default), so the history response grows with
 -- one card's retained transactions.
 --
--- Rationale for the unlimited history read and for the additive alert ceiling:
+-- Design decisions for the unlimited history read and for the additive alert ceiling:
 -- card-platform/docs/decision-log.md.
 --
 -- Nothing else changes. No column, no index, no constraint and no row. V1 is left as it ran.

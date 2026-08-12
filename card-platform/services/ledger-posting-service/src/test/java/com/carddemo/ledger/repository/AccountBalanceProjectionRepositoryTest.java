@@ -50,7 +50,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * stand-in replaces the producer template and the relay.
  */
 @SpringBootTest(properties = {
-    // The two listeners of this service must not retry an absent broker.
+    // No listener of this service may retry an absent broker.
     "spring.kafka.listener.auto-startup=false",
     "TOPIC_DEAD_LETTER_SUFFIX=.DLT",
     // One of the four credentials application.yml leaves without a default. The value below is a

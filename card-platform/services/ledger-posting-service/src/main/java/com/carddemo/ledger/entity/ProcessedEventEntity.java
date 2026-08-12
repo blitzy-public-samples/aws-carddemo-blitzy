@@ -20,21 +20,21 @@ import java.util.UUID;
  * {@code pk_processed_event}, and {@code processed_at} carries the retention index. No Common
  * Business Oriented Language (COBOL) program carries an equivalent record.</p>
  *
- * <p>The contract is fixed for both consumers that write the marker.
- * {@code messaging/TransactionAuthorizedConsumer} reads {@code transaction.authorized} and
+ * <p>The contract is fixed for every consumer that writes the marker.
+ * {@code messaging/TransactionAuthorizedConsumer} reads {@code transaction.authorized},
+ * {@code messaging/TransactionDeclinedConsumer} reads {@code transaction.declined} and
  * {@code messaging/AccountStateChangedConsumer} reads {@code account.state-changed}. One row commits
  * inside the same local transaction as the side effects of its event, marker after effects, and the
  * delivery is acknowledged only once that transaction commits. A redelivery finds the row present
  * and does nothing.</p>
  *
- * <p><b>The topic is part of the identity.</b> Two listener groups share this table and read two
- * topics, and the event identifiers on those topics are assigned independently by two different
- * producing services. Two events on two topics may therefore carry the same identifier without
- * either producer being at fault. Keyed on the identifier alone, the second of the two lost its
- * claim to the first and its listener applied nothing at all: the right outcome for a redelivery,
- * and a silently dropped replica row for a different event. Keyed on the identifier and the topic,
- * duplicate suppression within one topic is unchanged and the cross-topic collision stops being
- * one.</p>
+ * <p><b>The topic is part of the identity.</b> Those listener groups share this table, and the event
+ * identifiers on their topics are assigned independently by different producing services. Two events
+ * on two topics may therefore carry the same identifier without either producer being at fault. Keyed
+ * on the identifier alone, the second of the two would lose its claim to the first and its listener
+ * would apply nothing at all: the right outcome for a redelivery, and a silently dropped row for a
+ * different event. Keyed on the identifier and the topic, duplicate suppression within one topic is
+ * unchanged and the cross-topic collision stops being one.</p>
  */
 @Entity
 @Table(name = "processed_event")

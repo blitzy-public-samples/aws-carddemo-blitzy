@@ -1157,15 +1157,14 @@ class CardUpdateServiceTest {
     }
 
     /**
-     * Builds an unmanaged row carrying the stored values of one card.
+     * Builds an update request that renames one card and changes nothing else.
      *
-     * <p>This is what {@code api/CardController} hands the update side: a row it read for itself.
-     * Reading it back out of the database keeps the five values the change comparison reads exactly
-     * the values the row holds, so a test of the supplied-row path is not also a test of a row that
-     * disagrees with its own table.
+     * <p>The expiry and the status are taken from the row as it stands, so the only value the change
+     * comparison finds different is the embossed name.
      *
-     * @param cardNumber the card to read
-     * @return an unmanaged entity carrying that row's values
+     * @param storedRow the row as {@code storedRow(String)} read it back
+     * @param newName   the embossed name the request carries
+     * @return a request naming that row's expiry and status, and the supplied name
      */
     private CardUpdateRequest requestRenaming(List<String> storedRow, String newName) {
         String[] expiry = storedRow.get(4).split("-");
@@ -1187,6 +1186,17 @@ class CardUpdateServiceTest {
         return RENAMED_CARDHOLDER.equals(storedName) ? "Marisol Reyes" : RENAMED_CARDHOLDER;
     }
 
+    /**
+     * Builds an unmanaged row carrying the stored values of one card.
+     *
+     * <p>This is what {@code api/CardController} hands the update side: a row it read for itself.
+     * Reading it back out of the database keeps the five values the change comparison reads exactly
+     * the values the row holds, so a test of the supplied-row path is not also a test of a row that
+     * disagrees with its own table.
+     *
+     * @param cardNumber the card to read
+     * @return an unmanaged entity carrying that row's values
+     */
     private CardEntity rowFor(String cardNumber) {
         List<String> row = storedRow(cardNumber);
         return new CardEntity(row.get(0), row.get(1), row.get(2), row.get(3),

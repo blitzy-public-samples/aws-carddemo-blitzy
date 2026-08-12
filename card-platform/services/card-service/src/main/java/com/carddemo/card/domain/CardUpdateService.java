@@ -424,6 +424,8 @@ public class CardUpdateService {
      *
      * @param cardNumber the card the update names
      * @param request    the submitted update
+     * @param resolved   the row the caller already read for {@code cardNumber}, or {@code null} to
+     *                   have this method read it. A row naming another card is not used
      * @return the outcome
      */
     private CardUpdateResponse decide(String cardNumber, CardUpdateRequest request,
@@ -725,12 +727,12 @@ public class CardUpdateService {
      * {@code app/cbl/COCRDUPC.cbl:L1513} carries it into {@code CCUP-OLD-CRDNAME}. The value the
      * operator reviews after a lost race is therefore the folded one.
      *
-     * <p>An earlier revision answered with the unfolded value on the ground that
-     * {@code GET /cards/&#123;cardToken&#125;} returns the mixed-case name for the same row. That
-     * reasoning traded source fidelity for internal consistency and contradicted the decision
-     * recorded under "The embossed name is folded on both sides of the concurrency comparison" in
-     * {@code card-platform/docs/decision-log.md}. The account service legitimately does the opposite,
-     * because {@code app/cbl/COACTUPC.cbl:L4109-L4193} folds a copy rather than the record area.
+     * <p>Answering with the unfolded value because {@code GET /cards/&#123;cardToken&#125;} returns
+     * the mixed-case name for the same row would trade source fidelity for internal consistency, and
+     * would contradict the decision recorded under "The embossed name is folded on both sides of the
+     * concurrency comparison" in {@code card-platform/docs/decision-log.md}. The account service
+     * legitimately does the opposite, because {@code app/cbl/COACTUPC.cbl:L4109-L4193} folds a copy
+     * rather than the record area.
      *
      * <p>{@code app/cbl/COCRDUPC.cbl:L1512-L1517} refreshes exactly these once the comparison at
      * {@code app/cbl/COCRDUPC.cbl:L1503-L1508} fails. Every value is carried as text, matching the

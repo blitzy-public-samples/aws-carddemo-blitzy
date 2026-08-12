@@ -154,8 +154,7 @@ public final class PanMasker {
      *
      * <p>A rotation rewrites a value other stores and granted authorities already name, so it is an
      * act an operator performs rather than a consequence of a restart. Without this statement the
-     * card service refuses to start rather than rewriting a token silently, which is the behaviour a
-     * security review found.
+     * card service refuses to start rather than rewriting a token silently.
      */
     public static final String CARD_TOKEN_ROTATION_PROPERTY =
             "carddemo.card-token.rotation-enabled";

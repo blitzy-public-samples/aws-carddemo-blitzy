@@ -573,8 +573,8 @@ public class KafkaConsumerConfig {
      * <p>The container calls a recoverer only once the backoff is spent, so every record arriving here
      * is one this service will not attempt again. That is counted once per RECORD under
      * {@code carddemo.ledger.dead.letters}, which is the denominator no stage of
-     * {@code carddemo.ledger.failures} carries: those count attempts, and a poison message previously
-     * showed only as a rising per-attempt figure with nothing marking the point of abandonment.
+     * {@code carddemo.ledger.failures} carries: those count attempts, so without this counter a poison
+     * message would show only as a rising per-attempt figure with nothing marking abandonment.
      *
      * <p>The count follows the send rather than preceding it, so the two outcomes are distinguishable:
      * {@code published} once the diagnostic has reached the broker, and {@code failed} when the send

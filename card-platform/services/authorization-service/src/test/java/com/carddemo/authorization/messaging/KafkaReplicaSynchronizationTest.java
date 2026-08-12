@@ -223,7 +223,6 @@ class KafkaReplicaSynchronizationTest {
                     "a stopped consumer measures nothing, so no measurement is claimed");
         }
 
-        /** Asserts a running container with no assignment refuses. */
         @Test
         void aRunningContainerWithNoAssignmentRefuses() {
             ReplicaSynchronization.Verdict verdict = verdictOf(LAG_CEILING,

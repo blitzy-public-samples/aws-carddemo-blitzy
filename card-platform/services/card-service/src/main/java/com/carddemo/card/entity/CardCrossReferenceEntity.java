@@ -47,9 +47,11 @@ import java.util.UUID;
  * in no card program.</p>
  *
  * <p>No listener of this service consumes an event, so no event maintains these rows: they hold
- * what {@code src/main/resources/db/migration/V2__seed.sql} loaded.
- * {@link #markObserved(UUID, Instant, Instant)} is the one method that mutates a field, and it
- * mutates only the three provenance columns.</p>
+ * what {@code src/main/resources/db/migration/V2__seed.sql} loaded. Two methods mutate a field.
+ * {@link #markObserved(UUID, Instant, Instant)} writes the three provenance columns and no mapping
+ * column. {@link #reconcileAccountId(String, Instant)} writes {@code accountId} and
+ * {@code observedAt}, and {@code domain/CardCrossReferenceReconciler} is its one caller, reached
+ * from a card update.</p>
  *
  * <p>The key strategy comes from the Job Control Language (JCL) member that defines the Virtual
  * Storage Access Method (VSAM) dataset. {@code KEYS(16 0)} at {@code app/jcl/XREFFILE.jcl:L43}

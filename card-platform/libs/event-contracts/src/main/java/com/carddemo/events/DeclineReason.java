@@ -154,7 +154,7 @@ public enum DeclineReason {
      * keyed on the transaction identifier the deciding service allocated. Both are published, both
      * record one decision, and neither takes an account identifier from a request body: nothing ties
      * the value a caller sends beside a card number to that card.
-     * {@code card-platform/docs/decision-log.md} carries the alternatives weighed.
+     * Design decisions: {@code card-platform/docs/decision-log.md}.
      *
      * @return {@code true} for the three reasons that follow a successful cross-reference read,
      *         {@code false} for {@link #INVALID_CARD_NUMBER}

@@ -74,19 +74,18 @@ class ReadinessHealthConfigTest {
     /**
      * Asserts readiness reports up once every declared listener is running.
      *
-     * <p>This is the regression this class previously encoded backwards. The indicator named two
-     * listeners while the service declared three, so readiness could never report up: the compose
-     * health check never passed and both Kubernetes probes failed for good. The test did not catch it
-     * because it registered two containers as well, matching the literal instead of the service.
+     * <p>An indicator naming fewer listeners than the service declares can never report up: the
+     * compose health check would never pass and both Kubernetes probes would fail for good. A test
+     * registering the same wrong number would match the literal instead of the service and miss it.
      *
      * <p>The four listeners are {@code TransactionAuthorizedConsumer},
      * {@code TransactionPostedConsumer}, {@code FraudFlaggedConsumer} and
-     * {@code CustomerContextChangedConsumer}. Readiness reads a declared count again, because counting
-     * only what registered reported ready for an empty registry. The count is a floor this time, so the
-     * failure recorded above cannot repeat: a fifth listener registering and running still reports up.
+     * {@code CustomerContextChangedConsumer}. Readiness reads a declared count, because counting only
+     * what registered would report ready for an empty registry. The count is a floor, so a fifth
+     * listener registering and running still reports up.
      *
-     * <p>What made the old literal dangerous was that nothing compared it with the service. That
-     * comparison now runs at build time in {@code equivalence-tests}
+     * <p>A literal is only safe while something compares it with the service. That
+     * comparison runs at build time in {@code equivalence-tests}
      * {@code ReadinessListenerExpectationContractTest}, which reads the count and counts the
      * {@code @KafkaListener} methods of this module, so a disagreement costs a build and not a
      * deployment.

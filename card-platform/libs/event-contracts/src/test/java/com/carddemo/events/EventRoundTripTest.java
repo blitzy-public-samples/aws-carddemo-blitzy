@@ -40,8 +40,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Sends every event of this module through the publish-side serializer and the consume-side
- * deserializer, then compares what arrived with what was written.
+ * Sends each of the five domain event records through the publish-side serializer and the
+ * consume-side deserializer, then compares what arrived with what was written.
+ *
+ * <p>{@code DeadLetterEnvelope} is the sixth record {@code JsonSchemaValidatingSerializer} accepts
+ * and it is not round-tripped here. It carries diagnostics rather than a domain fact, and
+ * {@code EventRedactionTest} and {@code EventSerdeSecurityTest} are what hold its wire form.
  *
  * <p>No COBOL program and no copybook in this repository defines this class. The CardDemo
  * source holds no Java and no test of any kind, so nothing here translates a source construct. The
@@ -896,7 +900,6 @@ class EventRoundTripTest {
         }
     }
 
-    /** Asserts neither risk assessment carries a card number in any form. */
     @Test
     void neitherRiskAssessmentCarriesACardNumberInAnyForm() {
         JsonNode flagged = wireFormOf(aFlaggedAssessment());

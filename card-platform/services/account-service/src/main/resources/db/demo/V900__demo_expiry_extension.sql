@@ -10,11 +10,15 @@
 -- card-platform/deploy/k8s/30-configmap.yaml name both, and nothing else does. Both locations are
 -- named together with the authorization overlay or neither is, because AccountStateChanged carries the
 -- expiry and the authorization listener applies it, so a posting on an account would otherwise write
--- this record's 2025 expiry over the extended replica and every later authorization on that account
+-- this record's seeded expiry over the extended replica and every later authorization on that account
 -- would decline 0103 at app/cbl/CBTRN02C.cbl:L414-L420.
 --
--- Rationale, alternatives considered and accepted risks, including why the overlay is a separate
--- location and why the value is 2099-12-31: card-platform/docs/decision-log.md.
+-- The seeded expiries this replaces run from 2023-01-06 to 2025-12-28 across the fifty rows of
+-- app/data/ASCII/acctdata.txt: 11 fall in 2023, 14 in 2024 and 25 in 2025. All 300 records of
+-- app/data/ASCII/dailytran.txt carry origin date 2022-06-10, so the fixture feed passes 0103 on
+-- every row; a request dated after 2025-12-28 is what would decline without this extension.
+--
+-- Design decisions: card-platform/docs/decision-log.md.
 
 UPDATE account
    SET expiration_date = '2099-12-31';

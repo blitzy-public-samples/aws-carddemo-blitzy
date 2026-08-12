@@ -37,8 +37,7 @@ import tools.jackson.databind.json.JsonMapper;
  * or an absolute path on disk. An instance holds no mutable state a caller can observe, so service
  * threads may call every method here.
  *
- * <p>Rationale, alternatives considered and accepted risks:
- * {@code card-platform/docs/decision-log.md}.
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public final class ReleasedContracts {
 

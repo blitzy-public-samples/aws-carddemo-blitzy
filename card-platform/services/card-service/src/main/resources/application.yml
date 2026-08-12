@@ -1,6 +1,6 @@
 # Runtime configuration for card-service. One document, no profile.
 #
-# Rationale for every value here: card-platform/docs/decision-log.md
+# Design decisions for every value here: card-platform/docs/decision-log.md
 
 server:
   # Port inside the container. docker-compose.yml publishes it on a host port.
@@ -309,9 +309,9 @@ carddemo:
     # domain/RetentionSweep removes only published rows after this diagnostic horizon.
     published-retention-hours: ${OUTBOX_PUBLISHED_RETENTION_HOURS:168}
   # Duplicate-delivery claims are permanent. A claim and the side effects it guards commit in
-  # one local transaction in one database, so the two can only be restored together, and a
-  # security review found the horizon that used to expire a claim shorter than the effects it
-  # guarded. Nothing here retires a claim, domain/RetentionSweep no longer names
+  # one local transaction in one database, so the two can only be restored together. Any
+  # horizon tied to broker log retention would expire a claim sooner than the effects it
+  # guards. Nothing here retires a claim, domain/RetentionSweep does not name
   # processed_event, and the migration that withdrew the horizon states the whole rule.
   retention:
     sweep-interval-ms: ${RETENTION_SWEEP_INTERVAL_MS:3600000}

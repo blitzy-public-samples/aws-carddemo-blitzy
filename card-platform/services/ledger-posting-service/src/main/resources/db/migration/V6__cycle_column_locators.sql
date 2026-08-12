@@ -9,7 +9,7 @@
 -- the credit locator pointed at a date. The comments below carry L13 and L14.
 --
 -- A correction to an applied migration arrives as a new migration because Flyway compares the
--- checksum of every applied file at start-up. Rationale, alternatives considered and accepted risks:
+-- checksum of every applied file at start-up. Design decisions:
 -- card-platform/docs/decision-log.md.
 
 COMMENT ON COLUMN account_balance_projection.cycle_credit IS

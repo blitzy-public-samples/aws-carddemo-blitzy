@@ -194,8 +194,9 @@ spec:
             # Flyway locations, read from the ConfigMap for the same reason
             # 40-authorization-service.yaml reads its own: the opt-out belongs beside the value
             # rather than inside a Deployment. The shipped value names two locations.
-            # db/migration reproduces app/data/ASCII/acctdata.txt value for value and all 50 of
-            # its expiries fall in 2023 to 2025; db/demo extends them to 2099-12-31 and touches
+            # db/migration reproduces app/data/ASCII/acctdata.txt value for value and its 50
+            # expiries run from 2023-01-06 to 2025-12-28; db/demo extends them to 2099-12-31 and
+            # touches
             # nothing else. This service publishes its expiry on every state change and the
             # authorization replica applies it, so the two copies of one record carry one
             # overlay or neither, which is why 30-configmap.yaml sets the two keys together.

@@ -108,9 +108,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SchemaConstraintAbsenceTest extends AbstractAccountPostgresTest {
 
     /**
-     * The nine tables the four migrations create. The Flyway history table is not one of them,
-     * and it carries a column named {@code version}. A scan for a row version therefore reads this
-     * list and never the whole schema.
+     * Every table this schema holds once its migrations have run. {@code V4} creates
+     * {@code card_xref} and {@code V7} drops it, so it is not among them. Neither is the Flyway
+     * history table, which carries a column named {@code version}. A scan for a row version
+     * therefore reads this list and never the whole schema.
      */
     private static final List<String> MIGRATED_TABLES = List.of(
             "account",

@@ -41,7 +41,6 @@ import org.springframework.core.MethodParameter;
 @DisplayName("the account error body")
 class AccountApiExceptionHandlerTest {
 
-    /** The subject. */
     private final AccountApiExceptionHandler handler = new AccountApiExceptionHandler();
 
     /** The four codes the handler answers, and the shape each body carries. */
@@ -260,7 +259,6 @@ class AccountApiExceptionHandlerTest {
                     "the refusal names the member, and it reads: " + refused.getMessage());
         }
 
-        /** Asserts the three standard members are required. */
         @Test
         void theThreeStandardMembersAreRequired() {
             assertThrows(NullPointerException.class,

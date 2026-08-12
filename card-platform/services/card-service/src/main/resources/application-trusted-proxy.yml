@@ -24,7 +24,7 @@
 # immediate peer matches internal-proxies. A request arriving from anywhere else keeps its own
 # address and its own host, so a caller reaching the container directly cannot claim forwarding.
 #
-# Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md, under
+# Design decisions: card-platform/docs/decision-log.md, under
 # "Forwarded headers are trusted in one profile, and only behind a named proxy".
 
 server:

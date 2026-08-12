@@ -48,9 +48,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * predictable leak.
  *
  * <p>{@code processed_event} is absent from every assertion below, and one test asserts that
- * absence directly. A security review found the marker horizon expiring claims while the
- * cross-reference replica they guard stayed, so a claim is now permanent and this sweep holds no
- * store over that table.
+ * absence directly. A claim is permanent, so this sweep holds no store over that table: a marker
+ * horizon would expire a claim while the cross-reference replica it guards stayed.
  *
  * <p>Nothing here opens a database connection. The repository is a stand-in that answers with a row
  * count, and the transaction template runs its callback directly so the number of transactions is

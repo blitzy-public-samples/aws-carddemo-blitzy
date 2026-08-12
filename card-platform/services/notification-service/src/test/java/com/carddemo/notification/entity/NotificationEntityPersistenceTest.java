@@ -84,7 +84,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * form both fitting {@code CHAR(16)}: {@code card-platform/docs/suggested-next-tasks.md}.
  */
 @SpringBootTest(properties = {
-    // The three listeners this module runs would retry an absent broker for the life of the run.
+    // The listeners this module runs would retry an absent broker for the life of the run.
     "spring.kafka.listener.auto-startup=false",
     // One of the four credentials application.yml leaves without a default, so a context can start.
     // config/SecurityConfig refuses a blank or published value at start-up, and SecurityConfigTest
@@ -151,7 +151,7 @@ class NotificationEntityPersistenceTest {
     /** The read model taken from {@code app/cpy/COSTM01.CPY}. */
     private static final String STATEMENT_TRANSACTION = "statement_transaction";
 
-    /** One row per delivery attempt. Additive: no COBOL program records one. */
+    /** One row per rendered-not-sent alert. Additive: no COBOL program records one. */
     private static final String NOTIFICATION_LOG = "notification_log";
 
     /** One row per consumed event identifier. Additive: no COBOL program detects a duplicate. */
@@ -460,7 +460,7 @@ class NotificationEntityPersistenceTest {
     @Autowired
     private StatementTransactionRepository statementTransactions;
 
-    /** Executes bounded retention deletes over delivery attempts. */
+    /** Executes bounded retention deletes over rendered alerts. */
     @Autowired
     private NotificationLogRepository notificationLogs;
 
@@ -706,11 +706,11 @@ class NotificationEntityPersistenceTest {
     /**
      * Proves a claim stamped in 2020 still refuses its redelivery.
      *
-     * <p>This is the behaviour a security review found missing. A purge removed claims older than
-     * 720 hours, and the read-model row and rendered alert they guard are kept for four hundred days
-     * and ninety days, so an archived or replayed record arriving after the purge was applied a
-     * second time. A claim is permanent now, and the assertions below read it back after an interval
-     * no horizon would have survived.
+     * <p>A claim is permanent, and the assertions below read it back after an interval no horizon
+     * would have survived. A purge removing claims older than 720 hours would leave the read-model
+     * row and the rendered alert it guards standing, since those are kept for four hundred days and
+     * ninety days, so an archived or replayed record arriving afterwards would be applied a second
+     * time.
      */
     @Test
     @DisplayName("A claim stamped in 2020 still refuses its redelivery")
@@ -923,7 +923,7 @@ class NotificationEntityPersistenceTest {
      * Asserts the migrated schema holds the four tables {@code V1__schema.sql} declares, and no
      * relay table.
      *
-     * <p>This service consumes three topics and publishes nothing, so it owns no
+     * <p>This service consumes four topics and publishes nothing, so it owns no
      * {@value #ABSENT_TABLE} table. Flyway's own bookkeeping table is excluded by name, since the
      * migration does not declare it.</p>
      */
@@ -1077,7 +1077,7 @@ class NotificationEntityPersistenceTest {
     /**
      * Asserts the two additive tables hold the column types their declarations carry.
      *
-     * <p>Neither table has a source ancestor. No COBOL program records a delivery attempt, and none
+     * <p>Neither table has a source ancestor. No COBOL program records a rendered alert, and none
      * detects a duplicate delivery.</p>
      */
     @Test

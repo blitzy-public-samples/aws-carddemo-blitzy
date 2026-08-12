@@ -53,9 +53,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * would have relied on was the opposite of the behaviour.
  *
  * <p>{@code processed_event} is absent from every assertion below, and one test asserts that
- * absence directly. A security review found the marker horizon removing claims while the decision
- * row and the two replica tables they guard outlived it, so a claim is now permanent and this sweep
- * holds no store over that table.
+ * absence directly. A claim is permanent and this sweep holds no store over that table, because any
+ * horizon would remove a claim while the decision row and the two replica tables it guards stand.
  *
  * <p>Nothing here opens a database connection. Each store is a stand-in that answers with a row
  * count, and the transaction template runs its callback directly, so the number of recorded
@@ -191,10 +190,10 @@ class RetentionSweepTest {
 
             sweep.purgeExpiredRows();
 
-            // unresolved_card_attempt was one of four until migration V20 withdrew it. A card that
-            // resolves no cross-reference row is now refused rather than decided, so nothing writes
-            // that table and no delete has to reach it. A sweep still naming it would fail against a
-            // migrated database rather than quietly doing nothing.
+            // No table records an unresolved card attempt: a card that resolves no cross-reference
+            // row is decided like any other outcome, and its authorization_decision and outbox_event
+            // rows are swept by the two verifications below. A sweep naming a table migration V20
+            // withdrew would fail against a migrated database rather than quietly doing nothing.
             verify(outboxEvents).deletePublishedBefore(any(Instant.class), anyInt());
             verify(decisions).deleteDecidedBefore(any(Instant.class), anyInt());
             assertEquals(SWEPT_TABLES, transactions.size(),
@@ -207,7 +206,7 @@ class RetentionSweepTest {
          * <p>Stated structurally rather than behaviourally, because a sweep holding no store over
          * {@code processed_event} cannot delete from it however it is scheduled or configured. The
          * effects a claim guards are a decision row kept for audit and two replica tables kept for
-         * as long as the service runs, all of which outlived the 720-hour horizon this replaced.
+         * as long as the service runs, so no horizon shorter than those outlives them.
          */
         @Test
         @DisplayName("no constructor takes a store over processed_event, so no claim expires")

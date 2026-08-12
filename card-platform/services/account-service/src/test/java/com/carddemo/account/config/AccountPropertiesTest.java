@@ -129,10 +129,10 @@ class AccountPropertiesTest {
     /**
      * A duplicate-delivery claim carries no configurable horizon, and this asserts the absence.
      *
-     * <p>A security review found the marker horizon of 720 hours removing a claim while the effects
-     * it guards outlive it: a balance and two cycle accumulators an amount was added to, which
-     * nothing reverses. A claim is now permanent, so this record carries no {@code processedEvent}
-     * component and no nested {@code ProcessedEvent} type.
+     * <p>A claim is permanent, so this record carries no {@code processedEvent} component and no
+     * nested {@code ProcessedEvent} type. A marker horizon of 720 hours would remove a claim while
+     * the effects it guards outlive it: a balance and two cycle accumulators an amount was added to,
+     * which nothing reverses.
      *
      * <p>The withdrawn key is set here as well. It binds nothing, which is what makes the
      * withdrawal a property of the code rather than of the shipped configuration file.
