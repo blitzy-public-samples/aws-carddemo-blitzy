@@ -724,6 +724,14 @@ jobs:
   #
   # The file has to be named bom.json: the scanner recognises a bill of materials by
   # the file name its specification defines and refuses any other.
+  #
+  # The stage covers a second kind of dependency as well. card-platform/presentation
+  # loads three libraries from a content-delivery network by URL, and a URL inside one
+  # HTML file appears in no dependency graph the scanner above reads, so those three
+  # were reviewed by nothing in this build. card-platform/.cdn-pins.json records each
+  # pin and the advisories accepted against it with the day each acceptance stops, and
+  # card-platform/scripts/check-cdn-advisories.sh resolves the pins against an advisory
+  # database and fails the stage on an advisory no unexpired entry accepts.
   supply-chain:
     name: Review the resolved dependency graph
     needs: compile
@@ -766,6 +774,18 @@ jobs:
             --output target/advisories.json
           osv-scanner scan source -L target/bom.json --format table
 
+      - name: Resolve the presentation's content-delivery pins against the advisory database
+        # The step above reads the resolved Maven graph. The three libraries the deck
+        # fetches by URL are in no graph it reads, so this is the only step of this build
+        # that resolves them. The pins come out of .cdn-pins.json and the check requires
+        # each one to agree with presentation/executive-summary.html in both directions,
+        # so a pin recorded in one file and not the other fails here rather than leaving a
+        # review describing a deck nobody ships. An advisory fails the stage unless an
+        # entry of that file accepts it and the day it names has not passed. The check
+        # also queries a version known to carry advisories on every run, and fails when
+        # the database answers with none, which is the canary the image stage has.
+        run: scripts/check-cdn-advisories.sh
+
       - name: Review the dependency change of this pull request
         # A pull request is the only event that has a base to compare against, so
         # this step names one. It adds a second opinion on a change rather than
@@ -784,6 +804,7 @@ jobs:
           path: |
             card-platform/target/bom.json
             card-platform/target/advisories.json
+            card-platform/target/cdn-advisories.json
           retention-days: ${{ env.REPORT_RETENTION_DAYS }}
           if-no-files-found: error
 

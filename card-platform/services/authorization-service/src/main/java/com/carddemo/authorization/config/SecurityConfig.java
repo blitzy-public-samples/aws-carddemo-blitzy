@@ -73,13 +73,15 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  * {@code ROLE_MONITORING} is additive: it carries no API access and exists only so a metrics
  * scrape can authenticate without holding a business role.
  *
- * <p>{@code ROLE_ACQUIRER} is additive too, and it is the only role that reaches
- * {@code POST /authorizations}. The route accepts a card in the request body and authorizes
- * against whichever account the cross-reference resolves it to, so it grants its caller reach
- * over every card the platform holds. A cardholder identity must therefore not hold it: an
- * ordinary {@code ROLE_USER} carries ownership scopes over its own account, customer and card,
- * and this route consults none of them. The acquirer is a machine identity a point-of-sale
- * network presents, it owns no row, and it is configured separately from every cardholder.
+ * <p>{@code ROLE_ACQUIRER} is additive too, and it is one of the two roles that reach
+ * {@code POST /authorizations}: {@link #apiSecurity(HttpSecurity)} admits it and
+ * {@code ROLE_ADMIN}, and refuses every other identity including {@code ROLE_USER}. The route
+ * accepts a card in the request body and authorizes against whichever account the cross-reference
+ * resolves it to, so it grants its caller reach over every card the platform holds. A cardholder
+ * identity must therefore not hold either role: an ordinary {@code ROLE_USER} carries ownership
+ * scopes over its own account, customer and card, and this route consults none of them. The
+ * acquirer is a machine identity a point-of-sale network presents, it owns no row, and it is
+ * configured separately from every cardholder.
  *
  * <p>DEVIATION, deliberate: the source comparison at {@code app/cbl/COSGN00C.cbl:L223} is a
  * plaintext comparison of two eight-character fields. This class does not reproduce it. Each
@@ -147,10 +149,12 @@ public class SecurityConfig {
     static final String ROLE_MONITORING = "MONITORING";
 
     /**
-     * Additive role the acquiring workload carries, and the only role that authorizes a card.
+     * Additive role the acquiring workload carries, and one of the two that authorize a card.
      *
-     * <p>It reaches {@code POST /authorizations} and nothing else. No cardholder identity carries
-     * it, because the route reaches every card the platform holds rather than the caller's own.
+     * <p>It reaches {@code POST /authorizations} and nothing else, and it shares that route with
+     * {@link #ROLE_ADMIN}, which {@link #apiSecurity(HttpSecurity)} admits alongside it. No
+     * cardholder identity carries either one, because the route reaches every card the platform
+     * holds rather than the caller's own.
      */
     static final String ROLE_ACQUIRER = "ACQUIRER";
 

@@ -23,6 +23,8 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.yaml.snakeyaml.Yaml;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import com.carddemo.authorization.config.CrossSiteRequestFilter;
 
@@ -280,6 +282,12 @@ class ContinuousIntegrationWorkflowContractTest {
 
     /** The dated exceptions the infrastructure image scan runs under. */
     private static final String EXCEPTION_FILE = ".trivyignore.yaml";
+
+    /** The pins and dated acceptances the presentation's content-delivery review runs under. */
+    private static final String CDN_PIN_FILE = ".cdn-pins.json";
+
+    /** The check the supply-chain stage runs over those pins. */
+    private static final String CDN_CHECK = "scripts/check-cdn-advisories.sh";
 
     /** Where every rationale this platform ships points. */
     private static final String DECISION_LOG = "card-platform/docs/decision-log.md";
@@ -1485,23 +1493,112 @@ class ContinuousIntegrationWorkflowContractTest {
     }
 
     /**
+     * Holds the deck's content-delivery pins to a stage that resolves them and to a dated acceptance.
+     *
+     * <p>The supply-chain stage reads the resolved Maven graph, and the three libraries
+     * {@code presentation/executive-summary.html} fetches by URL sit in no graph it reads. A
+     * security review found one of them carrying nine published advisories that nothing in this
+     * build would ever have reported. Four properties close that, and all four are read here: the
+     * stage runs the check, the check's report is kept with the other supply-chain reports, every
+     * pin is recorded in one machine-readable file, and every advisory accepted against a pin names
+     * what is excused, who accepted it, why, and the day the acceptance stops.
+     *
+     * <p>The expiry is the same day {@link #EXCEPTION_FILE} carries, so one review answers the
+     * image exceptions and these together. The check is what enforces it at run time: it stops
+     * honouring an entry the day after, and the advisory fails the stage again.
+     */
+    @Test
+    @DisplayName("the supply-chain stage resolves every content-delivery pin under a dated acceptance")
+    void theSupplyChainStageResolvesEveryContentDeliveryPinUnderADatedAcceptance() {
+        Path manifest = platformRoot.resolve(CDN_PIN_FILE);
+        Path check = platformRoot.resolve(CDN_CHECK);
+        assertTrue(Files.isRegularFile(manifest),
+                "the pin manifest the stage resolves has to exist at " + CDN_PIN_FILE);
+        assertTrue(Files.isRegularFile(check) && Files.isExecutable(check),
+                CDN_CHECK + " has to exist and be executable, because the stage runs it directly");
+
+        Map<String, Map<?, ?>> steps = stepsByName("supply-chain");
+        Map<?, ?> resolving = steps.get(
+                "Resolve the presentation's content-delivery pins against the advisory database");
+        assertNotNull(resolving,
+                "the supply-chain stage has to carry the step that resolves the deck's pins, or the"
+                        + " three libraries it loads are reviewed by nothing in this build");
+        assertTrue(String.valueOf(resolving.get("run")).contains(CDN_CHECK),
+                "that step runs " + CDN_CHECK + " rather than restating the check inline, so the"
+                        + " same procedure is available to a reader on a laptop");
+        assertTrue(workflow.contains("card-platform/target/cdn-advisories.json"),
+                "the advisory report the check writes is kept with the other supply-chain reports");
+        assertTrue(indexOfStepNamed(stepList("supply-chain"),
+                        "Resolve the presentation's content-delivery pins")
+                        < indexOfStepNamed(stepList("supply-chain"), "Keep the bill of materials"),
+                "the report is written before the upload that keeps it");
+
+        JsonNode pins = readJson(manifest);
+        assertEquals(3, pins.get("pins").size(),
+                "one entry per library the deck loads from the network, which Rule 4 fixes at three");
+        Set<String> pinned = new LinkedHashSet<>();
+        for (JsonNode pin : pins.get("pins")) {
+            pinned.add(pin.get("package").asString() + "@" + pin.get("version").asString());
+        }
+
+        String manifestText = readFile(manifest);
+        assertTrue(manifestText.contains(DECISION_LOG),
+                "the manifest points at the decision its acceptances were taken under");
+        assertTrue(pins.get("control").get("minimum_advisories").asInt() >= 1,
+                "the control probe names a version known to carry advisories, so a database that has"
+                        + " gone quiet fails the stage instead of reporting every pin clean");
+        assertFalse(pinned.contains(pins.get("control").get("package").asString() + "@"
+                        + pins.get("control").get("version").asString()),
+                "the control is a version this deck does not load, or a clean pin and a firing"
+                        + " canary would be the same measurement");
+
+        Set<String> expiries = new LinkedHashSet<>();
+        for (JsonNode accepted : pins.get("accepted")) {
+            String identifier = accepted.get("id").asString();
+            for (String field : List.of("id", "package", "version", "severity", "fixed_in", "owner",
+                    "statement", "expired_at", "reviewed_on")) {
+                assertTrue(accepted.hasNonNull(field) && !accepted.get(field).asString().isBlank(),
+                        "the acceptance of " + identifier + " has to name " + field);
+            }
+            String subject = accepted.get("package").asString() + "@"
+                    + accepted.get("version").asString();
+            assertTrue(pinned.contains(subject),
+                    "the acceptance of " + identifier + " names " + subject + ", which no pin of"
+                            + " this manifest loads, so it excuses a version the deck does not run");
+            assertEquals("project owner", accepted.get("owner").asString(),
+                    "every acceptance names who accepted it");
+            assertTrue(accepted.get("statement").asString()
+                            .startsWith(subject + " | owner: project owner |"),
+                    "and reads in the form the image exceptions use, opening with the asset and its"
+                            + " owner: " + accepted.get("statement").asString());
+            expiries.add(accepted.get("expired_at").asString());
+        }
+        assertEquals(expiryDatesOf(readFile(platformRoot.resolve(EXCEPTION_FILE))), expiries,
+                "the pins expire on the day the image exceptions expire, so one review answers both"
+                        + " rather than two reviews spread over a year");
+    }
+
+    /**
      * Asserts the decision every new security artifact cites is recorded under the heading it names.
      *
      * <p>Rule 1 puts rationale in one place and has each file point at it, which makes a quoted
      * heading a reference that can dangle. Nothing else in this build resolves one: the pointer
-     * check reads the path and stops there, and it reads no YAML at all. Both headings the two
-     * artifacts of this review name are resolved here against the log itself.
+     * check reads the path and stops there, and it reads no YAML at all. Every heading the security
+     * artifacts of this platform name is resolved here against the log itself.
      */
     @Test
     @DisplayName("the decision each security artifact quotes is recorded under that exact heading")
     void theDecisionEachSecurityArtifactQuotesIsRecorded() {
         String log = readFile(platformRoot.resolve("docs/decision-log.md"));
         String citing = unwrapComments(workflow)
-                + unwrapComments(readFile(platformRoot.resolve(EXCEPTION_FILE)));
+                + unwrapComments(readFile(platformRoot.resolve(EXCEPTION_FILE)))
+                + readFile(platformRoot.resolve(CDN_PIN_FILE));
         List<String> quoted = List.of(
                 "A secret scan reads the change under review, and the whole history on a schedule",
                 "Two pinned infrastructure images carry a dated exception rather than an unpinned"
-                        + " upgrade");
+                        + " upgrade",
+                "The deck's content-delivery pins are reviewed on every build under a dated"
+                        + " acceptance");
         for (String heading : quoted) {
             assertTrue(citing.contains(heading),
                     "no shipped file quotes this heading any longer, so the assertion below is"
@@ -1546,6 +1643,16 @@ class ContinuousIntegrationWorkflowContractTest {
             byName.put(String.valueOf(body.get("name")), body);
         }
         return byName;
+    }
+
+    /**
+     * Reads one shipped JSON file as a tree.
+     *
+     * @param file the file to read
+     * @return its root node
+     */
+    private static JsonNode readJson(Path file) {
+        return JsonMapper.builder().build().readTree(readFile(file));
     }
 
     /** Answers with every distinct expiry the exception file declares. */

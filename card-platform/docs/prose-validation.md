@@ -32,12 +32,12 @@ One row per target. `Paragraphs` counts the prose blocks scoring reads and `Sent
 | # | Target | Paragraphs | Sentences | Over thirty words | Paragraphs over five | Buzzwords |
 |---:|---|---:|---:|---:|---:|---:|
 | 1 | `docs/decision-log.md` | 51 | 161 | 0 | 0 | 0 |
-| 2 | `docs/traceability-matrix.md` | 40 | 111 | 0 | 0 | 0 |
+| 2 | `docs/traceability-matrix.md` | 40 | 112 | 0 | 0 | 0 |
 | 3 | `docs/architecture-before-after.md` | 52 | 138 | 0 | 0 | 0 |
 | 4 | `docs/event-flow.md` | 148 | 396 | 0 | 0 | 0 |
 | 5 | `docs/data-model.md` | 161 | 405 | 0 | 0 | 0 |
 | 6 | `docs/onboarding.md` | 197 | 528 | 0 | 0 | 0 |
-| 7 | `docs/suggested-next-tasks.md` | 365 | 887 | 0 | 0 | 0 |
+| 7 | `docs/suggested-next-tasks.md` | 367 | 892 | 0 | 0 | 0 |
 | 8 | `docs/business-rule-flags.md` | 54 | 178 | 0 | 0 | 0 |
 | 9 | `docs/equivalence-results.md` | 91 | 260 | 0 | 0 | 0 |
 | 10 | `docs/prose-validation.md` | 134 | 212 | 0 | 0 | 0 |
@@ -97,17 +97,17 @@ Each digest is the SHA-256 of one target's bytes, in lower-case hexadecimal. It 
 
 | # | Target | SHA-256 of the text scored |
 |---:|---|---|
-| 1 | `docs/decision-log.md` | `cc45f826285b8da3a180d81a6ea1ef5de56f9803eeb906d544b3debdb6ac0414` |
-| 2 | `docs/traceability-matrix.md` | `8df3f07a7fbabf610223969b6920afd89c0a696d4c499808f8d2f9605d1a4cd5` |
+| 1 | `docs/decision-log.md` | `4561f5dd3f6b61abbe3594f7e59efc8248152e84a698f56342c16196bb5eaa66` |
+| 2 | `docs/traceability-matrix.md` | `d56f64455bfe66fd719a551ebc0cbf831022285658e4f2162ccec0e3f457ada0` |
 | 3 | `docs/architecture-before-after.md` | `75c6ed8f39121b049b0690bd3b54369e10c68a73f82d28b329f671d5fdc4092d` |
 | 4 | `docs/event-flow.md` | `de590b730a68e0e15ac13b1eef62131b2b9acafe26411f10730259c4ddaf95fe` |
 | 5 | `docs/data-model.md` | `78b98183187d16086b54c58ac47649a3e9efbdb981a0d2c4e40f723a805d4698` |
 | 6 | `docs/onboarding.md` | `d7d6be619efa337ecaf7825d58feced882f50de945ee225956e22e6846184b80` |
-| 7 | `docs/suggested-next-tasks.md` | `bb4dd21c095a483e4adcbc88dac172359e7fe2e02d58e9a4bffd2a4877b5dccf` |
+| 7 | `docs/suggested-next-tasks.md` | `fe8660804cf0e7b01fbaf9ee4c65c4514a6686138e6e6eefb6fe903d96511d0e` |
 | 8 | `docs/business-rule-flags.md` | `bb7120115681f582354dbc21a3010ac49efceb7dcaf60b1b646ed908ea13de22` |
-| 9 | `docs/equivalence-results.md` | `8b4f3ff0b317dabb1806a22a8030f9434d71a3d31bf8601461741c08f13ae02e` |
+| 9 | `docs/equivalence-results.md` | `f9b8db1137f7bf5fbe87c517edd3d91c89ced4d7b399898abed78c12ed2053ab` |
 | 10 | `docs/prose-validation.md` | This report carries no digest: a file cannot publish the digest of its own bytes |
-| 11 | `README.md` | `36ec31a2392627123d1dc9e5c55c412ef82f510801a37f8f57a4d00d145e903b` |
+| 11 | `README.md` | `b7edf70623d6e167dabeed0e9fd6c1d50a1f300efa5ee73b045f66074abbd7b8` |
 | 12 | `services/authorization-service/README.md` | `ec22fd6f9d4f8efa86c8350c5089b23594b0bb8c6dd0c39df82bb1f637161bf6` |
 | 13 | `services/ledger-posting-service/README.md` | `cf4c9d8e8515defd89b0a412c1809a8a58d6c4a7c13b70ec78cdb93f080af988` |
 | 14 | `services/fraud-detection-service/README.md` | `3656f02434700b14776fc1848f5ca80bf0629f373e619325c3501d82d1e21559` |
@@ -348,7 +348,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `CreditLimitRule` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 365 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 367 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Widen the credit-limit working precision`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `WS-TEMP-BAL PIC S9(09)V99` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Correct the refund sign convention` |
@@ -361,7 +361,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Confirm the target meaning of reason 109` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Validations deliberately not added` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `:L14` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 365 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 367 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Add card-number checksum validation` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `ACCT-CREDIT-LIMIT` rather than restating what it is |

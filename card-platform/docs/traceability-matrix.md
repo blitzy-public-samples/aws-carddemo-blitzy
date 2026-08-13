@@ -1,6 +1,6 @@
 # Traceability Matrix
 
-Rule 1 requires every source construct to reach a target or a documented exclusion. The matrix also reads backward, from every one of the 928 delivered target paths to source provenance or a net-new marker. Coverage arithmetic closes each source inventory before any mapping detail. Design rationale lives in the [decision log](decision-log.md), flagged source ambiguities in [business-rule flags](business-rule-flags.md), and the paired architecture views in [architecture before and after](architecture-before-after.md).
+Rule 1 requires every source construct to reach a target or a documented exclusion. The matrix also reads backward, from every one of the 930 delivered target paths to source provenance or a net-new marker. Coverage arithmetic closes each source inventory before any mapping detail. Design rationale lives in the [decision log](decision-log.md), flagged source ambiguities in [business-rule flags](business-rule-flags.md), and the paired architecture views in [architecture before and after](architecture-before-after.md).
 
 ## Coverage summary
 
@@ -16,9 +16,9 @@ Every count in this document was measured in the repository. Where a measurement
 | `app/cpy-bms/` | 17 source copybooks | All excluded for the same reason; `.gitkeep` is not a source member | 17 |
 | `app/data/ASCII/` | 9 | All reused as fixtures or seed sources | 9 |
 | `app/data/EBCDIC/` | 12 data artifacts | All retained as binary or width references; `.gitkeep` is excluded from the count | 12 |
-| Delivered target tree | 928 tracked files | 308 source-derived, 250 verification source-derived, 164 verification additive, 141 additive, 45 net new platforms, 11 rule-mandated documents, 8 rule 3 documents, 1 rule 3 update | 928 |
+| Delivered target tree | 930 tracked files | 308 source-derived, 250 verification source-derived, 165 verification additive, 142 additive, 45 net new platforms, 11 rule-mandated documents, 8 rule 3 documents, 1 rule 3 update | 930 |
 
-The backward direction closes on its own count. The delivered tree holds 928 tracked target paths. The two module-level tables below resolve them in 53 rows, each naming a module or a uniform group rather than a file. Every one of the 928 then appears once in [backward: every target path](#backward-every-target-path), so the target side is enumerated rather than summarised.
+The backward direction closes on its own count. The delivered tree holds 930 tracked target paths. The two module-level tables below resolve them in 53 rows, each naming a module or a uniform group rather than a file. Every one of the 930 then appears once in [backward: every target path](#backward-every-target-path), so the target side is enumerated rather than summarised.
 
 ## Forward: COBOL programs
 
@@ -375,13 +375,13 @@ The build, container, deployment, and document deliverables trace to a rule or a
 
 ## Backward: every target path
 
-Rule 1 closes in both directions, so the forward inventories above are matched by a row for every target path this engagement delivers. The list is complete rather than representative: `git ls-files --cached --others --exclude-standard card-platform .github README.md | wc -l` reports 928 delivered paths, and the tables below carry 928 rows. The two flags are not decoration. A plain `git ls-files` lists tracked paths only, so it reports fewer in any session that added a file, because a file is untracked until it is committed. The closure table at the end sums the rows per group, so that figure can be checked without counting by hand.
+Rule 1 closes in both directions, so the forward inventories above are matched by a row for every target path this engagement delivers. The list is complete rather than representative: `git ls-files --cached --others --exclude-standard card-platform .github README.md | wc -l` reports 930 delivered paths, and the tables below carry 930 rows. The two flags are not decoration. A plain `git ls-files` lists tracked paths only, so it reports fewer in any session that added a file, because a file is untracked until it is committed. The closure table at the end sums the rows per group, so that figure can be checked without counting by hand.
 
 That command names one path outside `card-platform/` and `.github/`, and it belongs in the count. The root `README.md` is the one pre-existing document this engagement updates, and a review found it missing here, so it now carries a row of its own. A `.gitattributes` was named alongside it and has since been withdrawn, because the AAP confines this engagement's writes to `card-platform/`, that guide and `.github/`. The four remaining root files — `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `LICENSE` and `NOTICE` — are untouched, so nothing delivers them and none carries a row. Everything under `blitzy/` is run evidence rather than platform code, so git excludes it and no row states provenance for it.
 
-The Source provenance column names what the file itself records. Every delivered file that derives from a source member cites that member in its own comments, so the column is read out of the code rather than asserted over it. **663 of the 928 paths name at least one member under `app/`, and the remaining 265 name none.** Every one of those 265 cells opens with `None cited`, and what follows says why: 194 read `None cited in the file`, and the other 71 name the absence itself, such as `None cited; the source scores no risk and runs no rules engine`. Where a file cites more than four members the cell names four and counts the rest, because the point of a row is provenance rather than a citation list.
+The Source provenance column names what the file itself records. Every delivered file that derives from a source member cites that member in its own comments, so the column is read out of the code rather than asserted over it. **663 of the 930 paths name at least one member under `app/`, and the remaining 267 name none.** Every one of those 267 cells opens with `None cited`, and what follows says why: 195 read `None cited in the file`, and the other 72 name the absence itself, such as `None cited; the source scores no risk and runs no rules engine`. Where a file cites more than four members the cell names four and counts the rest, because the point of a row is provenance rather than a citation list.
 
-A cell that names no member says so in one of five wordings rather than one. The plain wording `None cited in the file` accounts for 194 rows, the fraud wording for 42, and the build wording for 26. Two further wordings cover the remaining 3. All 265 mean the same measured thing — the file carries no reference to any member under `app/` — and the wording records only why. `DocumentationContractTest` recomputes all 928 sets from disk and fails on any cell that disagrees, so this column cannot drift from the files again.
+A cell that names no member says so in one of five wordings rather than one. The plain wording `None cited in the file` accounts for 195 rows, the fraud wording for 42, and the build wording for 26. Two further wordings cover the remaining 4. All 267 mean the same measured thing — the file carries no reference to any member under `app/` — and the wording records only why. `DocumentationContractTest` recomputes all 930 sets from disk and fails on any cell that disagrees, so this column cannot drift from the files again.
 
 **A citation is not automatically provenance, and two groups of rows say so in the cell itself**. Build, container and deployment artifacts name the members whose behaviour the artifact runs. The repository carries no build manifest of any kind, so those citations are context.
 
@@ -1345,16 +1345,18 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/deploy/k8s/kustomization.yaml` | None cited; no source build, container or deployment manifest exists | Net new platform |
 | `card-platform/deploy/k8s/load-images.sh` | None cited; no source build, container or deployment manifest exists | Net new platform |
 | `card-platform/deploy/k8s/overlays/encrypted-storage/kustomization.yaml` | None cited in the file | Additive |
-### Demo scripts — 4 paths
+### Demo scripts — 5 paths
 | Target path | Source provenance | Classification |
 | --- | --- | --- |
+| `card-platform/scripts/check-cdn-advisories.sh` | None cited; no source build, report or verification harness exists | Verification, additive |
 | `card-platform/scripts/check-published-test-counts.sh` | None cited; no source build, report or verification harness exists | Verification, additive |
 | `card-platform/scripts/redact-report-artifacts.sh` | `app/cpy/CVACT02Y.cpy`, `app/cpy/CVCUS01Y.cpy`, `app/data/ASCII/carddata.txt`, `app/data/ASCII/cardxref.txt` and 1 more | Verification, additive |
 | `card-platform/scripts/generate-env.sh` | Context only, because no source build, container or deployment manifest exists: `app/cbl/COSGN00C.cbl` | Net new platform |
 | `card-platform/scripts/start-demo.sh` | None cited; no source build, container or deployment manifest exists | Net new platform |
-### Repository-root platform files — 8 paths
+### Repository-root platform files — 9 paths
 | Target path | Source provenance | Classification |
 | --- | --- | --- |
+| `card-platform/.cdn-pins.json` | None cited in the file | Additive |
 | `card-platform/.dockerignore` | None cited; no source build, container or deployment manifest exists | Net new platform |
 | `card-platform/.env.example` | Context only, because no source build, container or deployment manifest exists: `app/cbl/CBTRN02C.cbl`, `app/cbl/COSGN00C.cbl`, `app/cpy/CVACT02Y.cpy`, `app/cpy/CVTRA06Y.cpy` and 4 more | Net new platform |
 | `card-platform/.gitignore` | None cited; no source build, container or deployment manifest exists | Net new platform |
@@ -1392,17 +1394,17 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | Documents | 10 |
 | Presentation | 1 |
 | Deployment artifacts | 15 |
-| Demo scripts | 4 |
-| Repository-root platform files | 8 |
+| Demo scripts | 5 |
+| Repository-root platform files | 9 |
 | Continuous integration | 4 |
 | Repository root outside the platform tree | 1 |
-| **Total** | **928** |
+| **Total** | **930** |
 
-**Backward closure:** 928 rows against 928 tracked paths, so every target path carries a classification and a provenance statement.
+**Backward closure:** 930 rows against 930 tracked paths, so every target path carries a classification and a provenance statement.
 
 The last review of this platform measured 878 delivered paths and found this section closed against 876. Its remediation added 31 paths and withdrew 2, taking the tree to 907. The review after it added one migration and withdrew one root path, leaving the same figure. The remediation after that added two tests and one migration, taking the tree to 910.
 
-This round adds eighteen paths, taking the tree to 928. They are one continuous-integration configuration, six container error documents with six tests beside them, a declared-width edit with its test, one migration and two contract tests. The arithmetic is stated so the two figures reconcile without a second measurement. Withdrawn paths are listed below, because a path the tree no longer carries can hold no row above.
+The review after that added eighteen paths, taking the tree to 928. They were one continuous-integration configuration, six container error documents with six tests beside them, a declared-width edit with its test, one migration and two contract tests. This round adds two paths, taking the tree to 930: the content-delivery pin manifest the presentation's advisory review reads, and the check that resolves it. The arithmetic is stated so the two figures reconcile without a second measurement. Withdrawn paths are listed below, because a path the tree no longer carries can hold no row above.
 
 ## Withdrawn target paths
 

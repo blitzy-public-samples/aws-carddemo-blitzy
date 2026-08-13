@@ -1,0 +1,193 @@
+{
+  "about": {
+    "what_this_file_is": "The content-delivery pins presentation/executive-summary.html loads, and the advisories accepted against them for a bounded time. Rule 4 fixes each version and the deck carries a Subresource Integrity digest for every asset that can hold one; this file is what an advisory review reads, because a library referenced by a URL inside one HTML file sits in no dependency graph a manifest scanner reads.",
+    "read_by": [
+      "scripts/check-cdn-advisories.sh, run by the supply-chain stage of .github/workflows/ci.yml",
+      "equivalence-tests PresentationAndProseContractTest, which holds every pin here to the deck's own bytes",
+      "equivalence-tests ContinuousIntegrationWorkflowContractTest, which holds every acceptance entry to its four required fields"
+    ],
+    "advisory_database": "https://api.osv.dev/v1/query",
+    "threshold": "Any advisory the database reports against a pinned version fails the stage. That is the threshold the Maven dependency graph answers to rather than the high-and-critical threshold the image scan uses, because a browser library carries no severity floor this platform has agreed to.",
+    "what_an_expiry_does": "The check stops honouring an entry the day after expired_at. The advisory then fails the stage, which is what makes the date a decision rather than a comment. Every entry expires on the same day as the entries of .trivyignore.yaml, so one review answers all of them.",
+    "owner": "The project owner of this repository. This platform is a demonstration and has no operations team, so the owner is the person who accepts the demonstration posture the statements below rely on.",
+    "what_would_close_the_accepted_set": "A Mermaid version carrying the published fixes, which is 11.16.1 or later. Rule 4 names 11.4.0, so the raise needs the owner of that rule and not only an engineer. docs/suggested-next-tasks.md carries the task and docs/decision-log.md carries the decision.",
+    "scope": "Nothing here excuses an advisory against a Maven coordinate. The dependency graph is scanned in the same stage with no exception file at all.",
+    "decisions": "card-platform/docs/decision-log.md",
+    "decision_heading": "The deck's content-delivery pins are reviewed on every build under a dated acceptance"
+  },
+  "pins": [
+    {
+      "package": "reveal.js",
+      "ecosystem": "npm",
+      "version": "5.1.0",
+      "purpose": "The presentation framework Rule 4 requires, and the stylesheet it draws with.",
+      "assets": [
+        {
+          "url": "https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css",
+          "integrity": "sha384-YgvgKeZJykuztG+iQPoZHNZENTFZvOcOJ/uRzmJTje6GHYN9zAw+y5rx/L8MQKA/"
+        },
+        {
+          "url": "https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js",
+          "integrity": "sha384-M/JtqCVlLcK9lwVnBnMXP0V577CBULkjodKsR/PITOe4MSKNbbwqCemEyluOw0+5"
+        }
+      ]
+    },
+    {
+      "package": "mermaid",
+      "ecosystem": "npm",
+      "version": "11.4.0",
+      "purpose": "The renderer for the deck's three graph LR diagrams, fetched as one bundle so a single digest covers every byte.",
+      "assets": [
+        {
+          "url": "https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js",
+          "integrity": "sha384-Wm9qzEgq4j1jEnuFK2FxKTlwuhbV2QqtGhcchvjDoKxeJ7WWAW7fysBq+1s6myfX"
+        }
+      ]
+    },
+    {
+      "package": "lucide",
+      "ecosystem": "npm",
+      "version": "0.460.0",
+      "purpose": "The icon set Rule 4 requires in place of an emoji.",
+      "assets": [
+        {
+          "url": "https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js",
+          "integrity": "sha384-ieG+IKD0d/ZPXyCBTMVAbqsQdns8QGJR/e26WMw7M4fkaI/rHcS/YIoi+ah9WGge"
+        }
+      ]
+    }
+  ],
+  "control": {
+    "package": "mermaid",
+    "ecosystem": "npm",
+    "version": "10.2.0",
+    "minimum_advisories": 1,
+    "purpose": "A version known to carry advisories. The check queries it on every run and fails when the database answers with none, because a detector that has gone quiet reports a clean deck it never examined."
+  },
+  "unresolvable": [
+    {
+      "origin": "https://fonts.googleapis.com",
+      "resource": "The three typefaces Rule 4 fixes, requested as one generated stylesheet.",
+      "reason": "A generated stylesheet is not a package, so it carries no version an advisory database resolves and no stable bytes a digest describes. It is pinned by origin and by the typeface versions the query names, and the deck's policy admits that origin for style alone."
+    }
+  ],
+  "accepted": [
+    {
+      "id": "GHSA-7rqq-prvp-x9jh",
+      "aliases": ["CVE-2025-54881"],
+      "package": "mermaid",
+      "version": "11.4.0",
+      "severity": "MODERATE",
+      "class": "Sequence-diagram label cross-site scripting",
+      "fixed_in": "11.10.0",
+      "owner": "project owner",
+      "reviewed_on": "2026-08-13",
+      "statement": "mermaid@11.4.0 | owner: project owner | Improper sanitizing of a sequence-diagram label. The deck draws three graph LR flowcharts and no sequence diagram, and every character the renderer reads is diagram text authored in this repository. What is accepted is the exposure of a slide deck one presenter opens, under a policy that admits no script but the deck's own module by digest, for as long as the date below allows.",
+      "expired_at": "2026-11-30"
+    },
+    {
+      "id": "GHSA-8gwm-58g9-j8pw",
+      "aliases": ["CVE-2025-54880"],
+      "package": "mermaid",
+      "version": "11.4.0",
+      "severity": "MODERATE",
+      "class": "Architecture-diagram icon text cross-site scripting",
+      "fixed_in": "11.10.0",
+      "owner": "project owner",
+      "reviewed_on": "2026-08-13",
+      "statement": "mermaid@11.4.0 | owner: project owner | Improper sanitizing of architecture-diagram icon text. The deck declares no architecture diagram and no icon text reaches the renderer, and its configuration sets htmlLabels false and the strict security level. What is accepted is the exposure of a slide deck one presenter opens, under a policy that admits no script but the deck's own module by digest, for as long as the date below allows.",
+      "expired_at": "2026-11-30"
+    },
+    {
+      "id": "GHSA-ghcm-xqfw-q4vr",
+      "aliases": ["CVE-2026-41149"],
+      "package": "mermaid",
+      "version": "11.4.0",
+      "severity": "MODERATE",
+      "class": "classDef HTML injection",
+      "fixed_in": "11.15.0",
+      "owner": "project owner",
+      "reviewed_on": "2026-08-13",
+      "statement": "mermaid@11.4.0 | owner: project owner | Improper sanitizing of a classDef directive. No diagram in the deck writes a classDef, and no text outside this repository reaches the three it does write. What is accepted is the exposure of a slide deck one presenter opens, under a policy that admits no script but the deck's own module by digest, for as long as the date below allows.",
+      "expired_at": "2026-11-30"
+    },
+    {
+      "id": "GHSA-xcj9-5m2h-648r",
+      "aliases": ["CVE-2026-41148"],
+      "package": "mermaid",
+      "version": "11.4.0",
+      "severity": "MODERATE",
+      "class": "classDefs CSS injection",
+      "fixed_in": "11.15.0",
+      "owner": "project owner",
+      "reviewed_on": "2026-08-13",
+      "statement": "mermaid@11.4.0 | owner: project owner | CSS injection through a classDefs directive. Reachability is NOT claimed for the injected-style class of advisory: the deck's policy relaxes style-src to unsafe-inline, because reveal writes element styles and the renderer appends a style element beside every drawing. What bounds it is that no diagram here writes a classDefs directive and no text outside this repository is drawn. What is accepted is that exposure, for as long as the date below allows.",
+      "expired_at": "2026-11-30"
+    },
+    {
+      "id": "GHSA-87f9-hvmw-gh4p",
+      "aliases": ["CVE-2026-41159"],
+      "package": "mermaid",
+      "version": "11.4.0",
+      "severity": "MODERATE",
+      "class": "Configuration CSS injection",
+      "fixed_in": "11.15.0",
+      "owner": "project owner",
+      "reviewed_on": "2026-08-13",
+      "statement": "mermaid@11.4.0 | owner: project owner | CSS injection through the renderer's configuration. Reachability is NOT claimed for the injected-style class of advisory, for the reason the classDefs entry states. What bounds it is that the deck calls initialize once with a fixed object written in this repository, and no value in it comes from a query string, a fragment or a fetch. What is accepted is that exposure, for as long as the date below allows.",
+      "expired_at": "2026-11-30"
+    },
+    {
+      "id": "GHSA-6x64-9x62-f2gx",
+      "aliases": ["CVE-2026-50159"],
+      "package": "mermaid",
+      "version": "11.4.0",
+      "severity": "MODERATE",
+      "class": "CSS injection reaching sibling elements",
+      "fixed_in": "11.16.1",
+      "owner": "project owner",
+      "reviewed_on": "2026-08-13",
+      "statement": "mermaid@11.4.0 | owner: project owner | Injected style reaching elements beside the drawing. Reachability is NOT claimed for the injected-style class of advisory, for the reason the classDefs entry states. What bounds it is that the three drawings are built from text this repository ships and the deck loads no other document. What is accepted is that exposure, for as long as the date below allows.",
+      "expired_at": "2026-11-30"
+    },
+    {
+      "id": "GHSA-6m6c-36f7-fhxh",
+      "aliases": ["CVE-2026-41150"],
+      "package": "mermaid",
+      "version": "11.4.0",
+      "severity": "MODERATE",
+      "class": "Gantt chart infinite-loop denial of service",
+      "fixed_in": "11.15.0",
+      "owner": "project owner",
+      "reviewed_on": "2026-08-13",
+      "statement": "mermaid@11.4.0 | owner: project owner | An input that sends the Gantt parser into an infinite loop. The deck declares no Gantt chart, and a hung renderer would cost this deck a drawing rather than a service: the module reports the failure into the diagram block and leaves reveal, the icons and every other slide untouched. What is accepted is the exposure of a slide deck one presenter opens, for as long as the date below allows.",
+      "expired_at": "2026-11-30"
+    },
+    {
+      "id": "GHSA-2v8p-3f2j-5mp7",
+      "aliases": ["CVE-2026-71436"],
+      "package": "mermaid",
+      "version": "11.4.0",
+      "severity": "MODERATE",
+      "class": "XY chart infinite-loop denial of service",
+      "fixed_in": "11.16.1",
+      "owner": "project owner",
+      "reviewed_on": "2026-08-13",
+      "statement": "mermaid@11.4.0 | owner: project owner | An input that sends the XY-chart parser into an infinite loop. The deck declares no XY chart, and the failure mode is the one the Gantt entry states. What is accepted is the exposure of a slide deck one presenter opens, for as long as the date below allows.",
+      "expired_at": "2026-11-30"
+    },
+    {
+      "id": "GHSA-c4c3-pg64-4m4v",
+      "aliases": ["CVE-2026-71438"],
+      "package": "mermaid",
+      "version": "11.4.0",
+      "severity": "LOW",
+      "class": "Prototype pollution through the configuration interface",
+      "fixed_in": "11.16.1",
+      "owner": "project owner",
+      "reviewed_on": "2026-08-13",
+      "statement": "mermaid@11.4.0 | owner: project owner | The configuration interface admits a key that reaches an object prototype. The deck calls initialize once, with the object it ships, and passes no caller-supplied key. What is accepted is the exposure of a slide deck one presenter opens, under a policy that admits no script but the deck's own module by digest, for as long as the date below allows.",
+      "expired_at": "2026-11-30"
+    }
+  ]
+}
