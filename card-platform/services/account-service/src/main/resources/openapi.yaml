@@ -29,6 +29,12 @@ info:
     app/cbl/CBTRN02C.cbl:L549-L551.
 
 
+    A request target refused before any route ran is answered by config/ContainerErrorDocument
+    rather than by an operation below, because the request reached none. That answer carries the
+    ApiProblem shape under application/problem+json, the same shape this document declares for 401
+    and 403. It names no method, no path and no value the caller sent.
+
+
     SYNTHETIC DATA ONLY. Every name, address, telephone number, Social Security part, government
     identifier, date of birth, electronic funds transfer account and credit score in this document
     comes from one of two places. It is a value from the public repository fixtures

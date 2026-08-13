@@ -258,6 +258,62 @@ class OutboxRelayStateTest {
         }
     }
 
+    @Nested
+    @DisplayName("A claim released without an attempt")
+    class ReleasingAnUnattemptedClaim {
+
+        @Test
+        @DisplayName("the row is due again and has spent no attempt")
+        void theRowIsDueAgainAndHasSpentNoAttempt() {
+            OutboxEventEntity row = newRow();
+            Instant dueAt = row.getNextAttemptAt();
+            row.claim(RELAY_ID, WRITTEN_AT);
+
+            row.releaseUnattemptedClaim();
+
+            assertEquals(RelayState.PENDING, row.getRelayState(), "the row is claimable again");
+            assertNull(row.getClaimedBy(), "the claim is released");
+            assertNull(row.getClaimedAt(), "both halves of the claim are released");
+            assertEquals(0, row.getAttemptCount(),
+                    "no send was issued, so no attempt of the ten may be spent");
+            assertNull(row.getLastAttemptAt(), "no attempt ran, so none is recorded");
+            assertNull(row.getLastError(), "nothing failed, so no reason is recorded");
+            assertEquals(dueAt, row.getNextAttemptAt(),
+                    "the row was due when it was claimed, so it is due again at once. That is the"
+                            + " whole point: the account behind it waits for a backoff rather than"
+                            + " for the claim timeout");
+        }
+
+        @Test
+        @DisplayName("a row holding no claim refuses the release")
+        void aRowHoldingNoClaimRefusesTheRelease() {
+            OutboxEventEntity pending = newRow();
+
+            assertThrows(IllegalStateException.class, pending::releaseUnattemptedClaim,
+                    "releasing a claim nobody holds would hide a defect in the caller");
+        }
+
+        @Test
+        @DisplayName("a published row refuses the release, which would resurrect it")
+        void aPublishedRowRefusesTheRelease() {
+            OutboxEventEntity row = newRow();
+            row.claim(RELAY_ID, WRITTEN_AT);
+            row.markPublished(WRITTEN_AT.plusSeconds(1));
+
+            assertThrows(IllegalStateException.class, row::releaseUnattemptedClaim,
+                    "a published row returned to PENDING would be published a second time");
+        }
+
+        @Test
+        @DisplayName("an abandoned row refuses the release too")
+        void anAbandonedRowRefusesTheRelease() {
+            OutboxEventEntity row = abandonedRow();
+
+            assertThrows(IllegalStateException.class, row::releaseUnattemptedClaim,
+                    "the terminal states are terminal for this transition as well");
+        }
+    }
+
     /**
      * Builds a row the relay has given up on.
      *

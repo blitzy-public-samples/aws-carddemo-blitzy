@@ -294,9 +294,16 @@ class TransactionPostedConsumerTest {
 
         assertThat(this.processedEvents.claimedEvents()).containsExactly(event.eventId());
         assertThat(this.statementTransactions.storedRows()).hasSize(1);
+        // One alert per format, in the order RenderedFormat declares them.
+        // app/cbl/CBSTM03A.CBL:L44-L47 declares one output file per format and the program writes
+        // both in one run, so a delivery that rendered one of them left the other renderer
+        // unreachable and its counter at zero.
         assertThat(this.notificationService.alerts())
-                .containsExactly(List.of(CARD_TOKEN, MASKED_CARD, TRANSACTION_ID, ACCOUNT_ID,
-                        NEW_BALANCE, expectedCardholder(), RenderedFormat.PLAIN_TEXT));
+                .containsExactly(
+                        List.of(CARD_TOKEN, MASKED_CARD, TRANSACTION_ID, ACCOUNT_ID, NEW_BALANCE,
+                                expectedCardholder(), RenderedFormat.PLAIN_TEXT),
+                        List.of(CARD_TOKEN, MASKED_CARD, TRANSACTION_ID, ACCOUNT_ID, NEW_BALANCE,
+                                expectedCardholder(), RenderedFormat.HTML));
         assertThat(this.metrics.eventsConsumed(NotificationMetrics.EVENT_TRANSACTION_POSTED)
                 .count()).isEqualTo(1);
     }
@@ -310,10 +317,12 @@ class TransactionPostedConsumerTest {
     void theClaimTheRowAndTheAlertCommitAsOneUnit() {
         deliver(postedEvent());
 
-        assertThat(this.sequence).containsExactly(TRANSACTION_BEGUN, MARKER_CLAIMED,
-                ROW_WRITTEN, ALERT_RENDERED, TRANSACTION_COMMITTED, OFFSET_COMMITTED);
+        assertThat(this.sequence).containsExactlyElementsOf(withOneAlertPerFormat(
+                List.of(TRANSACTION_BEGUN, MARKER_CLAIMED, ROW_WRITTEN),
+                List.of(TRANSACTION_COMMITTED, OFFSET_COMMITTED)));
         assertThat(insideTheUnit()).as("the callback the listener handed the template ran")
-                .containsExactly(MARKER_CLAIMED, ROW_WRITTEN, ALERT_RENDERED)
+                .containsExactlyElementsOf(withOneAlertPerFormat(
+                        List.of(MARKER_CLAIMED, ROW_WRITTEN), List.of()))
                 .doesNotContain(OFFSET_COMMITTED);
         assertThat(this.transactionManager.unitsBegun()).isEqualTo(1);
         assertThat(this.transactionManager.unitsCommitted()).isEqualTo(1);
@@ -337,7 +346,8 @@ class TransactionPostedConsumerTest {
         assertThat(this.sequence).containsExactly(TRANSACTION_BEGUN, MARKER_CLAIMED,
                 TRANSACTION_COMMITTED, OFFSET_COMMITTED);
         assertThat(this.statementTransactions.storedRows()).hasSize(1);
-        assertThat(this.notificationService.alerts()).hasSize(1);
+        // The first delivery rendered its alert once per format; the repeat renders none.
+        assertThat(this.notificationService.alerts()).hasSize(RenderedFormat.values().length);
         assertThat(this.sequence).containsOnlyOnce(OFFSET_COMMITTED);
     }
 
@@ -829,6 +839,28 @@ class TransactionPostedConsumerTest {
         return value.charAt(position - 1);
     }
 
+    /**
+     * Builds an expected call sequence with {@link #ALERT_RENDERED} repeated once per rendered format.
+     *
+     * <p>{@code app/cbl/CBSTM03A.CBL:L44-L47} declares one output file per format,
+     * {@code FD-STMTFILE-REC PIC X(80)} at L45 and {@code FD-HTMLFILE-REC PIC X(100)} at L47, and one
+     * run of the source wrote both. One delivery therefore renders its alert once per
+     * {@link RenderedFormat}. Reading the count from {@code RenderedFormat.values()} keeps this
+     * assertion true of the formats the service registers rather than of a number written down here.
+     *
+     * @param before the calls the listener records before it renders
+     * @param after  the calls it records after the last rendering
+     * @return the whole expected sequence
+     */
+    private static List<String> withOneAlertPerFormat(List<String> before, List<String> after) {
+        List<String> expected = new ArrayList<>(before);
+        for (int rendering = 0; rendering < RenderedFormat.values().length; rendering++) {
+            expected.add(ALERT_RENDERED);
+        }
+        expected.addAll(after);
+        return List.copyOf(expected);
+    }
+
     /** Lists the calls recorded between the opening of the transaction and its commit. */
     private List<String> insideTheUnit() {
         return this.sequence.subList(this.sequence.indexOf(TRANSACTION_BEGUN) + 1,
@@ -949,7 +981,7 @@ class TransactionPostedConsumerTest {
         }
 
         @Override
-        public CardHistoryTotals totalsOfCard(String cardToken) { throw unused(); }
+        public Optional<CardHistoryTotals> totalsOfCard(String cardToken) { throw unused(); }
 
         @Override public boolean existsById(StatementTransactionId key) { throw unused(); }
         @Override public List<StatementTransactionEntity> findAll() { throw unused(); }

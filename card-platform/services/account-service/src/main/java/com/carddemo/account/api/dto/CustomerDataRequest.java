@@ -30,6 +30,14 @@ import jakarta.validation.constraints.Size;
  * {@code app/cbl/COACTUPC.cbl:L1200} through {@code app/cbl/COACTUPC.cbl:L1676} perform. Each
  * edit reports one failing field with the message text its source paragraph composes.</p>
  *
+ * <p>The nineteen width bounds are enforced on the update route by {@code api/AccountRecordMapper},
+ * which reads every submitted value against its width before it maps anything. Most of them are
+ * also enforced a second time by the field edit that owns the component — the alphabetic,
+ * alphanumeric, numeric and mandatory edits each refuse content past the width they are given,
+ * under the same wording — and the components whose edit reads no width at all reach only that
+ * pass. Either way one message leaves a validation pass, and
+ * {@code src/main/resources/openapi.yaml} publishes the same numbers as {@code maxLength}.</p>
+ *
  * <p>Components {@code socialSecurityPart1}, {@code socialSecurityPart2} and
  * {@code socialSecurityPart3} hold the three parts of the Social Security Number that
  * {@code app/cbl/COACTUPC.cbl:L830-L833} declares. Paragraph {@code 1265-EDIT-US-SSN} at
@@ -579,6 +587,31 @@ public record CustomerDataRequest(
 
     /** Label at {@code app/cbl/COACTUPC.cbl:L1545}. */
     public static final String FICO_CREDIT_SCORE_LABEL = "FICO Score";
+
+    /**
+     * Label {@code addressLine2} is named by: {@value #ADDRESS_LINE_2_LABEL}.
+     *
+     * <p>The program moves no label for this component. Edit 16 at
+     * {@code app/cbl/COACTUPC.cbl:L1584} names the first address line alone, and the screen carries
+     * one {@code INITIAL='Address:'} literal at {@code app/bms/COACTUP.bms:L355} above three
+     * fields. The text is therefore the first line's label with its number changed, which is what
+     * {@code ACUP-NEW-CUST-ADDR-LINE-2} at {@code app/cbl/COACTUPC.cbl:L806} names the field. The
+     * width edit {@code domain/validation/DeclaredWidthValidator} runs is the one message this
+     * component carries.
+     */
+    public static final String ADDRESS_LINE_2_LABEL = "Address Line 2";
+
+    /**
+     * Label {@code governmentIssuedId} is named by: {@value #GOVERNMENT_ISSUED_ID_LABEL}.
+     *
+     * <p>The program moves no label for this component either, because no edit of
+     * {@code app/cbl/COACTUPC.cbl} reads it. The text comes from the screen:
+     * {@code INITIAL='Government Issued Id Ref    : '} at {@code app/bms/COACTUP.bms:L432}, less
+     * the padding and the colon the screen carries. The width edit
+     * {@code domain/validation/DeclaredWidthValidator} runs is the one message this component
+     * carries.
+     */
+    public static final String GOVERNMENT_ISSUED_ID_LABEL = "Government Issued Id Ref";
 
     /**
      * The characters a free-text component may hold: printable ones and nothing else.

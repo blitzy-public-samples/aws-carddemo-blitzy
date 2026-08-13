@@ -512,4 +512,31 @@ public class OutboxEventEntity {
             this.nextAttemptAt = retryAt;
         }
     }
+
+    /**
+     * Returns a claim this relay took and never attempted to {@link RelayState#PENDING}.
+     *
+     * <p>A pass claims a batch and can reach its deadline with rows of that batch still unattempted.
+     * Those rows carry a live claim and no failure, so the claim query passes over them and the only
+     * thing that frees them is the claim timeout: one whole aggregate then waits for a lease to
+     * expire rather than for a retry. This method is what a pass calls instead, so the wait is
+     * bounded by the backoff of a real failure and by nothing else.
+     *
+     * <p>Nothing here records an attempt. {@code attemptCount}, {@code lastAttemptAt} and
+     * {@code lastError} are left exactly as the claim found them, because no send was issued, and
+     * {@code nextAttemptAt} is left alone as well: the row was due when it was claimed, so it is due
+     * again the moment the claim is released. That is the difference from
+     * {@link #recordFailure(String, Instant, Instant)}, which exists for a row that was attempted
+     * and answers by spending one of its attempts.
+     *
+     * @throws IllegalStateException if this row holds no claim
+     */
+    public void releaseUnattemptedClaim() {
+        if (relayState != RelayState.CLAIMED) {
+            throw new IllegalStateException("a " + relayState + " row holds no claim to release");
+        }
+        this.claimedBy = null;
+        this.claimedAt = null;
+        this.relayState = RelayState.PENDING;
+    }
 }

@@ -54,6 +54,14 @@ info:
     caller holding the ownership authority for the card it names. The demo stack
     binds the published port to the loopback address and seeds only synthetic
     fixture data, so nothing real is exposed either way.
+
+
+    A request target refused before any route ran is answered by
+    config/ContainerErrorDocument rather than by an operation below,
+    because the request reached none. That answer carries the Problem
+    shape under application/problem+json, the same shape this document
+    declares for 401 and 403. It names no method, no path and no value the
+    caller sent.
   version: 1.0.0
 
 servers:
@@ -88,12 +96,13 @@ paths:
         the last entry returns 404 for the same reason.
 
 
-        The count and the total cover every entry the read model holds for the
-        card, not the page. The program app/cbl/CBSTM03A.CBL reads every row of
-        one card between two key breaks and app/cbl/CBSTM03A.CBL:L429 totals all
-        of them. A count or a total over part of a history would therefore
-        describe a statement the source never produced. Both are read as one
-        aggregate over the key, which costs the same at any history length.
+        The count and the total cover every entry the read model holds for the card,
+        not the page. The source reads every row of one card between two key breaks
+        at app/cbl/CBSTM03A.CBL, and app/cbl/CBSTM03A.CBL:L429 totals all of them. A
+        count or a total over part of a history would describe a statement the source
+        never produced. Both are read from one row of statement_card_total, a summary
+        V10__statement_card_totals.sql maintains beside the rows it describes, so both
+        cost one index lookup at any history length.
 
 
         The entries are paged because a card's history grows by one entry per

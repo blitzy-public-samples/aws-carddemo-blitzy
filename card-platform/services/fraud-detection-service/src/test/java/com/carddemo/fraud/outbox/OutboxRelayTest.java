@@ -915,7 +915,10 @@ public class OutboxRelayTest {
                     eq(OutboxEventEntity.DeadLetterState.REQUIRED), any());
             verify(outboxEvents).findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
                     eq(OutboxEventEntity.RelayState.CLAIMED), any(), any());
-            verify(outboxEvents).claimDueRows(any(), any());
+            // Two claims, not one: a tick repeats its claim until nothing more is due, and the
+            // second call is the one that finds the store empty. Recovery and the owed-diagnostic
+            // read run once each, on the first cycle alone.
+            verify(outboxEvents, times(2)).claimDueRows(any(), any());
             verify(outboxEvents, times(1)).findById(first.getEventId());
             verify(outboxEvents, times(1)).findById(second.getEventId());
             verify(outboxEvents, times(2)).save(first);
@@ -1642,9 +1645,10 @@ public class OutboxRelayTest {
 
             verify(kafkaTemplate, times(1)).send(anyRecord());
             // The claim and the mark of the one tick that had work; the second tick claims nothing,
-            // so it writes nothing.
+            // so it writes nothing. Three claim calls: the first tick claims the row, claims again to
+            // see whether anything followed it, and the second tick claims once and finds nothing.
             verify(outboxEvents, times(2)).save(row);
-            verify(outboxEvents, times(2)).claimDueRows(any(), any());
+            verify(outboxEvents, times(3)).claimDueRows(any(), any());
         }
 
         @Test
@@ -1888,16 +1892,16 @@ public class OutboxRelayTest {
 
     /**
      * The row exposes no setter, so every state change it can undergo is one of a closed set of named
-     * transitions. Enumerating that set here is what keeps it closed: a sixth mutator arriving without
-     * a decision behind it fails this test rather than reaching the table.
+     * transitions. Enumerating that set here is what keeps it closed: an eighth mutator arriving
+     * without a decision behind it fails this test rather than reaching the table.
      */
     @Nested
     @DisplayName("Row mutator surface")
     class RowMutatorSurface {
 
         @Test
-        @DisplayName("the row declares no setter and six named mutators")
-        void rowDeclaresNoSetterAndSixNamedMutators() {
+        @DisplayName("the row declares no setter and seven named mutators")
+        void rowDeclaresNoSetterAndSevenNamedMutators() {
             List<String> setters = Arrays.stream(OutboxEventEntity.class.getDeclaredMethods())
                     .map(Method::getName)
                     .filter(name -> name.startsWith("set"))
@@ -1917,7 +1921,8 @@ public class OutboxRelayTest {
                     "markDeadLetterPublished",
                     "markPublished",
                     "recordCorrelation",
-                    "recordFailure");
+                    "recordFailure",
+                    "releaseUnattemptedClaim");
         }
 
         @Test

@@ -227,6 +227,27 @@ class ContinuousIntegrationWorkflowContractTest {
     /** The local composite action every job that runs Maven installs its toolchain through. */
     private static final String TOOLCHAIN_ACTION = ".github/actions/setup-build-toolchain";
 
+    /** The configuration the static-analysis stage hands to the analysis it runs. */
+    private static final String CODEQL_CONFIG = ".github/codeql/codeql-config.yml";
+
+    /**
+     * The header every service requires of a state-changing request.
+     *
+     * <p>It is what a browser form cannot add, so its presence is what separates a deliberate
+     * client from a forged submission. A request without it is answered 403 before any rule runs.
+     */
+    private static final String CROSS_SITE_HEADER = "X-CardDemo-Request";
+
+    /**
+     * The one query of the analysis suite whose result this platform accepts.
+     *
+     * <p>It reports the two stateless filter chains in each of the six services, which hold no
+     * session and read no cookie, so the framework's forgery token has nothing to protect there.
+     * {@code config/CrossSiteRequestFilter} is the control that stands in its place. The record of
+     * the choice is in {@code card-platform/docs/decision-log.md}.
+     */
+    private static final String ACCEPTED_CODEQL_QUERY = "java/spring-disabled-csrf-protection";
+
     /**
      * How many jobs reach the toolchain through {@link #TOOLCHAIN_ACTION}.
      *
@@ -495,6 +516,32 @@ class ContinuousIntegrationWorkflowContractTest {
         assertTrue(workflow.contains("upload: never"),
                 "the result file is read here, so the workflow needs no code-scanning write"
                         + " scope");
+        assertTrue(workflow.contains("config-file: " + CODEQL_CONFIG),
+                "the analysis reads the configuration that carries the one finding this platform"
+                        + " accepts, so the acceptance is a file a reviewer can read rather than a"
+                        + " threshold nobody can see");
+        Path codeqlConfig = platformRoot.getParent().resolve(CODEQL_CONFIG);
+        assertTrue(Files.isRegularFile(codeqlConfig),
+                "the configuration the init step names has to exist at " + CODEQL_CONFIG);
+        String codeql = readFile(codeqlConfig);
+        assertTrue(codeql.contains("query-filters:") && codeql.contains("- exclude:"),
+                "the acceptance is stated as a query filter, which leaves every other query and"
+                        + " the severity threshold exactly as they were");
+        assertTrue(codeql.contains("id: " + ACCEPTED_CODEQL_QUERY),
+                "and the query it excludes is " + ACCEPTED_CODEQL_QUERY);
+        assertEquals(1, occurrences(codeql, "- exclude:"),
+                "one accepted finding, so one exclusion. A second needs its own row in the"
+                        + " decision log before it is added here");
+        assertTrue(codeql.contains("CrossSiteRequestFilter"),
+                "and the file names the control that answers the query, because an exclusion"
+                        + " without a compensating control is an unprotected chain");
+        assertTrue(readFile(platformRoot.resolve("docs/decision-log.md"))
+                        .contains(ACCEPTED_CODEQL_QUERY),
+                "Rule 1 keeps rationale out of the workflow, so the acceptance is recorded in"
+                        + " docs/decision-log.md with what it was chosen over");
+        assertTrue(workflow.contains("select(((.suppressions // []) | length) == 0)"),
+                "a result the analysis reports as suppressed is not counted, so an alert"
+                        + " dismissed at its source cannot fail a run it was dismissed in");
 
         assertTrue(workflow.contains("cyclonedx-maven-plugin:2.9.3:makeAggregateBom"),
                 "a bill of materials describes what the build resolves");
@@ -1047,6 +1094,16 @@ class ContinuousIntegrationWorkflowContractTest {
                 "the smoke calls the one synchronous entry point of the platform");
         assertTrue(script.contains("SMOKE_ADMIN_PASSWORD"),
                 "the call is authenticated, so it exercises the filter chain as a caller would");
+        assertTrue(script.contains("--header '" + CROSS_SITE_HEADER + ": ")
+                        || script.contains(CROSS_SITE_HEADER_VARIABLE + ":-" + CROSS_SITE_HEADER),
+                "every service refuses a state-changing request that carries no non-simple header,"
+                        + " so a smoke without " + CROSS_SITE_HEADER + " is answered 403 and never"
+                        + " reaches the authorization rules. The three consumer readings behind it"
+                        + " then never run, which is how this stage stayed red while the platform"
+                        + " was correct. The name may be written out or read from"
+                        + " " + CROSS_SITE_HEADER_VARIABLE + ", the variable the containers"
+                        + " themselves read, so renaming the header in one place cannot leave this"
+                        + " call sending the old one");
         assertTrue(script.contains("'\"approved\":true'"),
                 "a declined answer is not a passing smoke");
         assertTrue(script.contains("transactionId"),

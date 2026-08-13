@@ -640,12 +640,19 @@
 
       Design decisions:
       card-platform/docs/decision-log.md.
+
+      THE ACTIVATION READS THE VALUE, NOT THE PRESENCE. Without the value below, Maven
+      activates the profile whenever the property is named at all, so
+      -DskipUnitTests=false skipped the suite an operator had just asked for and reported
+      a green build over nothing. -DskipUnitTests alone still activates it, because Maven
+      assigns "true" to a flag given no value.
     -->
     <profile>
       <id>skip-unit-tests</id>
       <activation>
         <property>
           <name>skipUnitTests</name>
+          <value>true</value>
         </property>
       </activation>
       <build>

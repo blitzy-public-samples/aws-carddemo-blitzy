@@ -345,6 +345,13 @@ public class RequestRateCeilingFilter extends OncePerRequestFilter {
         response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
+        // The two headers the security chain writes on every answer it reaches. This refusal is
+        // written before that chain runs, so it carries them itself; a refusal that omitted them
+        // would be the one answer of this service a browser may sniff or frame.
+        response.setHeader(ContainerErrorDocument.CONTENT_TYPE_OPTIONS,
+                ContainerErrorDocument.NO_SNIFF);
+        response.setHeader(ContainerErrorDocument.FRAME_OPTIONS,
+                ContainerErrorDocument.DENY_FRAMING);
         response.setHeader(HttpHeaders.RETRY_AFTER, Long.toString(retryAfterSeconds));
         response.getWriter().write(REFUSAL_BODY);
     }

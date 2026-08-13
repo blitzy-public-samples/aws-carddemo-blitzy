@@ -138,8 +138,9 @@ class FraudFlaggedConsumerTest {
     /** Commits the offset, and is the one Kafka type this test names. */
     private final Acknowledgment acknowledgment = () -> this.sequence.add(OFFSET_COMMITTED);
 
-    /** The three fakes the listener holds: marker store, alert renderer, transaction opener. */
+    /** The four fakes the listener holds: marker store, projection store, renderer, opener. */
     private FakeProcessedEvents processedEvents;
+    private FakeCardholderContexts cardholderContexts;
     private FakeAlertRenderer alertRenderer;
     private FakeTransactionManager transactionManager;
 
@@ -164,8 +165,9 @@ class FraudFlaggedConsumerTest {
                 unreachedStore(StatementTransactionRepository.class),
                 unreachedStore(NotificationLogRepository.class), this.metrics);
         this.transactionManager = new FakeTransactionManager(this.sequence);
+        this.cardholderContexts = new FakeCardholderContexts(this.sequence);
         this.consumer = new FraudFlaggedConsumer(
-                new CardholderContextReader(new FakeCardholderContexts(this.sequence)),
+                new CardholderContextReader(this.cardholderContexts),
                 this.processedEvents, this.alertRenderer,
                 new TransactionTemplate(this.transactionManager), this.metrics);
 
@@ -224,15 +226,21 @@ class FraudFlaggedConsumerTest {
      * fields, and it carries no monetary value: neither assessment outcome declares one.
      */
     @Test
-    @DisplayName("One flagged delivery claims the event once and renders one alert")
+    @DisplayName("One flagged delivery claims the event once and renders one alert per format")
     void oneFlaggedDeliveryClaimsTheEventAndRendersOneAlert() {
         FraudFlagged event = flaggedEvent(UUID.randomUUID(), RISK_SCORE, RULES);
 
         deliver(event);
 
         assertThat(this.processedEvents.claimedEvents()).containsExactly(event.eventId());
-        assertThat(this.alertRenderer.alerts()).containsExactly(List.of(TRANSACTION_ID, ACCOUNT_ID,
-                RISK_SCORE, RULES, expectedCardholder(), RenderedFormat.PLAIN_TEXT));
+        // One alert per format, in the order RenderedFormat declares them.
+        // app/cbl/CBSTM03A.CBL:L44-L47 declares one output file per format and the program writes
+        // both in one run.
+        assertThat(this.alertRenderer.alerts()).containsExactly(
+                List.of(TRANSACTION_ID, ACCOUNT_ID, RISK_SCORE, RULES, expectedCardholder(),
+                        RenderedFormat.PLAIN_TEXT),
+                List.of(TRANSACTION_ID, ACCOUNT_ID, RISK_SCORE, RULES, expectedCardholder(),
+                        RenderedFormat.HTML));
         assertThat(this.alertRenderer.alerts().get(0))
                 .as("no monetary value travels on either assessment outcome")
                 .noneMatch(value -> value instanceof BigDecimal);
@@ -250,9 +258,10 @@ class FraudFlaggedConsumerTest {
         deliver(flaggedEvent(UUID.randomUUID(), RISK_SCORE, RULES));
 
         assertThat(this.sequence).containsExactly(TRANSACTION_BEGUN, MARKER_CLAIMED,
-                CARDHOLDER_READ, ALERT_RENDERED, TRANSACTION_COMMITTED, OFFSET_COMMITTED);
+                CARDHOLDER_READ, ALERT_RENDERED, ALERT_RENDERED, TRANSACTION_COMMITTED,
+                OFFSET_COMMITTED);
         assertThat(insideTheUnit()).as("the callback the listener handed the template ran")
-                .containsExactly(MARKER_CLAIMED, CARDHOLDER_READ, ALERT_RENDERED)
+                .containsExactly(MARKER_CLAIMED, CARDHOLDER_READ, ALERT_RENDERED, ALERT_RENDERED)
                 .doesNotContain(OFFSET_COMMITTED);
         assertThat(this.transactionManager.unitsBegun()).isEqualTo(1);
         assertThat(this.transactionManager.unitsCommitted()).isEqualTo(1);
@@ -284,6 +293,34 @@ class FraudFlaggedConsumerTest {
     }
 
     /**
+     * A missing projection row is reported on this path as well, and no alert is rendered from it.
+     *
+     * <p>{@code domain/CardholderContextReader} refuses to fill an alert it has no row for, and both
+     * listeners of this service read through it. Only the read-model listener asserted that refusal,
+     * so this path held the guarantee and demonstrated none of it: a change answering a missing row
+     * with blank fields was caught on one listener and not on the other. The refusal names no
+     * cardholder field, because it reaches a log line and the dead-letter diagnostic.
+     */
+    @Test
+    @DisplayName("A missing cardholder projection is reported rather than rendered blank")
+    void aMissingCardholderProjectionIsReported() {
+        this.cardholderContexts.holdNoRow();
+
+        assertThatThrownBy(() -> deliver(flaggedEvent(UUID.randomUUID(), RISK_SCORE, RULES)))
+                .isInstanceOf(CardholderContextReader.CardholderContextMissingException.class)
+                .hasMessageNotContaining(ACCOUNT_ID)
+                .hasMessageNotContaining("Kessler");
+
+        assertThat(this.alertRenderer.alerts()).isEmpty();
+        assertThat(this.sequence).containsExactly(TRANSACTION_BEGUN, MARKER_CLAIMED, CARDHOLDER_READ,
+                        TRANSACTION_ROLLED_BACK)
+                .doesNotContain(ALERT_RENDERED, OFFSET_COMMITTED);
+        assertThat(this.transactionManager.unitsRolledBack()).isEqualTo(1);
+        assertThat(this.metrics.failures(NotificationMetrics.FAILURE_RENDERING).count())
+                .isEqualTo(1);
+    }
+
+    /**
      * A repeat delivery renders no second alert, where the unguarded write at
      * {@code app/cbl/CBTRN02C.cbl:L562-L579} met a duplicate key and ended the run. The listener
      * calls the claim once per delivery and acts only on the call that took the marker; the double
@@ -302,7 +339,8 @@ class FraudFlaggedConsumerTest {
 
         assertThat(this.sequence).containsExactly(TRANSACTION_BEGUN, MARKER_CLAIMED,
                 TRANSACTION_COMMITTED, OFFSET_COMMITTED).containsOnlyOnce(OFFSET_COMMITTED);
-        assertThat(this.alertRenderer.alerts()).hasSize(1);
+        // The first delivery rendered one alert per format; the repeat adds none.
+        assertThat(this.alertRenderer.alerts()).hasSize(RenderedFormat.values().length);
         assertThat(this.processedEvents.claimedEvents()).containsExactly(event.eventId());
         assertThat(this.processedEvents.claimCalls()).isEqualTo(2);
         assertThat(this.processedEvents.existenceReads()).as("existsById is never called").isZero();
@@ -392,7 +430,8 @@ class FraudFlaggedConsumerTest {
 
         deliver(clearedEvent(UUID.randomUUID()));
 
-        assertThat(alertsAfterFlagged).isEqualTo(1);
+        // The flagged outcome renders one alert per format; the cleared outcome renders none.
+        assertThat(alertsAfterFlagged).isEqualTo(RenderedFormat.values().length);
         assertThat(this.alertRenderer.alerts()).hasSize(alertsAfterFlagged);
         assertThat(FraudFlagged.EVENT_TYPE).isNotEqualTo(FraudCleared.EVENT_TYPE);
         assertThat(this.processedEvents.claimCalls()).isEqualTo(2);
@@ -545,7 +584,9 @@ class FraudFlaggedConsumerTest {
         deliver(flaggedEvent(UUID.randomUUID(), FraudFlagged.MINIMUM_RISK_SCORE, RULES));
         deliver(flaggedEvent(UUID.randomUUID(), FraudFlagged.MAXIMUM_RISK_SCORE, RULES));
 
+        // Two deliveries, and one alert per format on each, so each score appears once per format.
         assertThat(this.alertRenderer.scores()).containsExactly(FraudFlagged.MINIMUM_RISK_SCORE,
+                FraudFlagged.MINIMUM_RISK_SCORE, FraudFlagged.MAXIMUM_RISK_SCORE,
                 FraudFlagged.MAXIMUM_RISK_SCORE);
         assertThatThrownBy(() -> flaggedEvent(UUID.randomUUID(),
                 FraudFlagged.MINIMUM_RISK_SCORE - 1, RULES))
@@ -581,7 +622,9 @@ class FraudFlaggedConsumerTest {
         deliver(flaggedEvent(UUID.randomUUID(), RISK_SCORE, RULES));
         deliver(flaggedEvent(UUID.randomUUID(), RISK_SCORE, RULES.reversed()));
 
-        assertThat(this.alertRenderer.rules()).hasSize(2)
+        // Two deliveries, each rendered once per format, so four renderings carry the same set.
+        assertThat(this.alertRenderer.rules())
+                .hasSize(2 * RenderedFormat.values().length)
                 .allSatisfy(rendered -> assertThat(rendered).hasSameElementsAs(RULES));
         assertThat(this.processedEvents.claimedEvents()).hasSize(2);
         assertThat(this.metrics.duplicatesSkipped().count()).isZero();
@@ -844,19 +887,25 @@ class FraudFlaggedConsumerTest {
         public void deleteAll(Iterable<? extends ProcessedEventEntity> batch) { throw unused(); }
     }
 
-    /** Store of the account-keyed cardholder projection, holding one row. */
+    /** Store of the account-keyed cardholder projection, holding one row or none. */
     private static final class FakeCardholderContexts implements CardholderContextRepository {
 
         private final List<String> sequence;
+        private boolean holdsARow = true;
 
         FakeCardholderContexts(List<String> sequence) {
             this.sequence = sequence;
         }
 
+        /** Empties the projection, which is the state a newly opened account arrives in. */
+        void holdNoRow() {
+            this.holdsARow = false;
+        }
+
         @Override
         public Optional<CardholderContextEntity> findById(String accountId) {
             this.sequence.add(CARDHOLDER_READ);
-            return Optional.of(heldContext());
+            return this.holdsARow ? Optional.of(heldContext()) : Optional.empty();
         }
 
         @Override

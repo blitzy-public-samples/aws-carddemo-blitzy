@@ -250,10 +250,16 @@ public class TransactionPostedConsumer {
         }
 
         upsertReadModelRow(row);
-        notificationService.renderPostedTransactionAlert(row.getId().getCardToken(),
-                event.maskedCardNumber(), event.transactionId(), event.accountId(),
-                event.newBalance(), cardholderDetails(event.accountId()),
-                RenderedFormat.PLAIN_TEXT);
+        CardholderDetails cardholder = cardholderDetails(event.accountId());
+        // One alert per format, as app/cbl/CBSTM03A.CBL writes one statement per output file:
+        // FD-STMTFILE-REC PIC X(80) at :L45 and FD-HTMLFILE-REC PIC X(100) at :L47, both written in
+        // the same run. Rendering one format here left the other renderer registered and
+        // unreachable, and its counter permanently at zero.
+        for (RenderedFormat format : RenderedFormat.values()) {
+            notificationService.renderPostedTransactionAlert(row.getId().getCardToken(),
+                    event.maskedCardNumber(), event.transactionId(), event.accountId(),
+                    event.newBalance(), cardholder, format);
+        }
     }
 
     /**

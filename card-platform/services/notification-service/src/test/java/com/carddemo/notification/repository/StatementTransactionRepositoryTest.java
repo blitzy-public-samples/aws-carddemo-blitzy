@@ -80,6 +80,9 @@ class StatementTransactionRepositoryTest extends NotificationRepositoryTestSuppo
     /** Display value of every row: twelve mask characters then four digits. */
     private static final String MASKED_CARD_NUMBER = "*".repeat(12) + "4321";
 
+    /** Row ceiling one retention statement takes, standing in for the sweep's own bound. */
+    private static final int PURGE_BOUND = 500;
+
     /** Ceiling wide enough that no assertion below is served a short list. */
     private static final Limit WHOLE_CARD = Limit.of(500);
 
@@ -466,5 +469,213 @@ class StatementTransactionRepositoryTest extends NotificationRepositoryTestSuppo
         assertThat(refund.getMerchantCity().strip()).isEqualTo("Portland");
         assertThat(refund.getMerchantZip().strip()).isEqualTo("97204");
         assertThat(refund.getDescription().strip()).isEqualTo("Refund of a duplicate charge");
+    }
+
+    /**
+     * The upsert counts one new row into that card's totals and nothing into another card's.
+     *
+     * <p>The three figures beside a page of history come from one row of
+     * {@code statement_card_total}, and the upsert is what puts them there. A performance review
+     * found them coming from an aggregate that scanned the card: 1,228 buffers and 7.775 ms on a card
+     * holding 21,299 rows, on every request whatever the page size.
+     */
+    @Test
+    @DisplayName("The upsert counts one new row into that card's totals alone")
+    void theUpsertCountsOneNewRowIntoThatCardsTotals() {
+        upsert(row(FIRST_CARD_TOKEN, "10", new BigDecimal("194.00"), "First delivery"));
+
+        StatementTransactionRepository.CardHistoryTotals totals = totalsOf(FIRST_CARD_TOKEN);
+        assertThat(totals.getTransactionCount()).isEqualTo(1L);
+        assertThat(totals.getTotalAmount()).isEqualByComparingTo(new BigDecimal("194.00"));
+        assertThat(totals.getAbsoluteTotal()).isEqualByComparingTo(new BigDecimal("194.00"));
+        assertThat(totals.getMaskedCardNumber()).isEqualTo(MASKED_CARD_NUMBER);
+        assertThat(statementTransactions.totalsOfCard(SECOND_CARD_TOKEN)).isEmpty();
+    }
+
+    /**
+     * A second upsert of one key moves the total by the difference and counts nothing.
+     *
+     * <p>This is the path a redelivered {@code TransactionPosted} event takes. The delta is derived
+     * from the row as it stood before the statement, so a rewrite of one transaction leaves the count
+     * alone and moves the two sums by the difference between the two amounts. Counting the redelivery
+     * would report a history the card does not hold.
+     */
+    @Test
+    @DisplayName("A second upsert of one key moves the total by the difference and counts nothing")
+    void aSecondUpsertOfOneKeyMovesTheTotalByTheDifference() {
+        upsert(row(FIRST_CARD_TOKEN, "10", new BigDecimal("194.00"), "First delivery"));
+        upsert(row(FIRST_CARD_TOKEN, "10", new BigDecimal("212.75"), "Second delivery"));
+
+        StatementTransactionRepository.CardHistoryTotals totals = totalsOf(FIRST_CARD_TOKEN);
+        assertThat(totals.getTransactionCount()).isEqualTo(1L);
+        assertThat(totals.getTotalAmount()).isEqualByComparingTo(new BigDecimal("212.75"));
+        assertThat(totals.getAbsoluteTotal()).isEqualByComparingTo(new BigDecimal("212.75"));
+    }
+
+    /**
+     * One card's totals equal an aggregate over that card's rows, refunds included.
+     *
+     * <p>The maintained figures replace an aggregate, so equality with that aggregate is the whole
+     * contract. A refund is the case that separates the two sums: it lowers the total and raises the
+     * sum of magnitudes, and it is the second of those that
+     * {@code domain/NotificationService.totalOfCard} reads to prove the running total of
+     * {@code app/cbl/CBSTM03A.CBL:L429} could not have overflowed.
+     */
+    @Test
+    @DisplayName("One card's totals equal an aggregate over its rows, refunds included")
+    void theCardTotalsEqualAnAggregateOverTheRows() {
+        upsert(row(FIRST_CARD_TOKEN, "10", new BigDecimal("194.00"), "Coffee and a pastry"));
+        upsert(row(FIRST_CARD_TOKEN, "11", new BigDecimal("-45.50"), "Refund"));
+        upsert(row(FIRST_CARD_TOKEN, "12", new BigDecimal("1200.00"), "Airline ticket"));
+        upsert(row(SECOND_CARD_TOKEN, "20", new BigDecimal("17.25"), "Another card"));
+
+        for (String token : List.of(FIRST_CARD_TOKEN, SECOND_CARD_TOKEN)) {
+            List<StatementTransactionEntity> rows = statementTransactions
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(token, WHOLE_CARD);
+            BigDecimal sum = BigDecimal.ZERO;
+            BigDecimal magnitudes = BigDecimal.ZERO;
+            for (StatementTransactionEntity held : rows) {
+                sum = sum.add(held.getAmount());
+                magnitudes = magnitudes.add(held.getAmount().abs());
+            }
+
+            StatementTransactionRepository.CardHistoryTotals totals = totalsOf(token);
+            assertThat(totals.getTransactionCount()).as(token).isEqualTo(rows.size());
+            assertThat(totals.getTotalAmount()).as(token).isEqualByComparingTo(sum);
+            assertThat(totals.getAbsoluteTotal()).as(token).isEqualByComparingTo(magnitudes);
+        }
+    }
+
+    /**
+     * The retention delete answers how many rows it removed and takes them off the card's totals.
+     *
+     * <p>{@code domain/RetentionSweep} reads the returned count to tell a pass that finished from one
+     * that filled its bound, so the statement has to keep answering the number of rows it deleted
+     * while also correcting the totals those rows were part of.
+     */
+    @Test
+    @DisplayName("The retention delete reports its removed rows and takes them off the totals")
+    void theRetentionDeleteTakesItsRowsOffTheCardTotals() {
+        upsert(rowProcessedAt(FIRST_CARD_TOKEN, "10", new BigDecimal("194.00"),
+                "2024-01-05-08.00.00.000000"));
+        upsert(rowProcessedAt(FIRST_CARD_TOKEN, "11", new BigDecimal("-45.50"),
+                "2024-01-06-08.00.00.000000"));
+        upsert(rowProcessedAt(FIRST_CARD_TOKEN, "12", new BigDecimal("1200.00"),
+                "2024-06-01-08.00.00.000000"));
+
+        int removed = statementTransactions
+                .deleteProcessedBefore("2024-02-01-00.00.00.000000", PURGE_BOUND);
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThat(removed).isEqualTo(2);
+        StatementTransactionRepository.CardHistoryTotals totals = totalsOf(FIRST_CARD_TOKEN);
+        assertThat(totals.getTransactionCount()).isEqualTo(1L);
+        assertThat(totals.getTotalAmount()).isEqualByComparingTo(new BigDecimal("1200.00"));
+        assertThat(totals.getAbsoluteTotal()).isEqualByComparingTo(new BigDecimal("1200.00"));
+    }
+
+    /**
+     * A card whose every row retention removed keeps a totals row carrying zero.
+     *
+     * <p>The route answers 404 for such a card, which is what it answered before this table existed.
+     * The row stays because the set of them is bounded by the cards the read model has ever held, and
+     * because a count of zero is the answer rather than the absence of one.
+     */
+    @Test
+    @DisplayName("A card whose every row is removed keeps a totals row carrying zero")
+    void aCardWhoseEveryRowIsRemovedKeepsATotalsRowCarryingZero() {
+        upsert(rowProcessedAt(FIRST_CARD_TOKEN, "10", new BigDecimal("194.00"),
+                "2024-01-05-08.00.00.000000"));
+
+        int removed = statementTransactions
+                .deleteProcessedBefore("2024-02-01-00.00.00.000000", PURGE_BOUND);
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThat(removed).isEqualTo(1);
+        StatementTransactionRepository.CardHistoryTotals totals = totalsOf(FIRST_CARD_TOKEN);
+        assertThat(totals.getTransactionCount()).isZero();
+        assertThat(totals.getTotalAmount()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(totals.getAbsoluteTotal()).isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
+    /**
+     * A card the read model has never held answers no totals row at all.
+     *
+     * <p>The aggregate this replaced always answered, with a count of zero, so the route read the
+     * count to tell the two cases apart. A keyed read answers nothing instead, and
+     * {@code api/NotificationHistoryController} treats an absent row and a zero count as the one
+     * answer it has for a card with no history.
+     */
+    @Test
+    @DisplayName("A card the read model never held answers no totals row")
+    void aCardTheReadModelNeverHeldAnswersNoTotalsRow() {
+        upsert(row(FIRST_CARD_TOKEN, "10"));
+
+        assertThat(statementTransactions.totalsOfCard(ABSENT_CARD_TOKEN)).isEmpty();
+    }
+
+    /**
+     * Stores one row through the upsert the consumer uses, then drops the persistence context.
+     *
+     * @param held the row to store
+     */
+    private void upsert(StatementTransactionEntity held) {
+        statementTransactions.upsertRow(held.getId().getCardToken(),
+                held.getId().getTransactionId(),
+                held.getMaskedCardNumber(),
+                held.getTypeCode(),
+                held.getCategoryCode(),
+                held.getSource(),
+                held.getDescription(),
+                held.getAmount(),
+                held.getMerchantId(),
+                held.getMerchantName(),
+                held.getMerchantCity(),
+                held.getMerchantZip(),
+                held.getOriginTimestamp(),
+                held.getProcessingTimestamp());
+        entityManager.flush();
+        entityManager.clear();
+    }
+
+    /**
+     * Reads one card's totals and fails the test rather than answering empty.
+     *
+     * @param token the card token
+     * @return that card's totals
+     */
+    private StatementTransactionRepository.CardHistoryTotals totalsOf(String token) {
+        return statementTransactions.totalsOfCard(token)
+                .orElseThrow(() -> new AssertionError("no totals row for card " + token));
+    }
+
+    /**
+     * Builds one row carrying a chosen processing timestamp, which is what the retention horizon
+     * compares against as characters.
+     *
+     * @param token the card token, the first key part
+     * @param transactionTail the digits closing the transaction identifier
+     * @param amount the transaction amount at scale two
+     * @param processedAt the twenty-six character processing timestamp
+     * @return a row ready to store
+     */
+    private static StatementTransactionEntity rowProcessedAt(String token, String transactionTail,
+            BigDecimal amount, String processedAt) {
+        StatementTransactionEntity built = row(token, transactionTail, amount, "Retention subject");
+        return new StatementTransactionEntity(built.getId(),
+                built.getMaskedCardNumber(),
+                built.getTypeCode(),
+                built.getCategoryCode(),
+                built.getSource(),
+                built.getDescription(),
+                built.getAmount(),
+                built.getMerchantId(),
+                built.getMerchantName(),
+                built.getMerchantCity(),
+                built.getMerchantZip(),
+                built.getOriginTimestamp(),
+                processedAt);
     }
 }

@@ -28,7 +28,10 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
  * {@code 500} as well. Without this class those two statuses were answered by the container's error
  * dispatch instead, in {@code application/json} carrying {@code timestamp}, {@code status},
  * {@code error} and {@code path} — a second shape for a client to parse, and one whose {@code path}
- * member copies the resolved request path into the body and into any log built from it.
+ * member copies the resolved request path into the body and into any log built from it. A request
+ * target refused before this class can run reaches no handler at all, and
+ * {@code config/ContainerErrorDocument} answers that one in the same shape, so the second shape
+ * reaches a caller from nowhere.
  *
  * <p>Four kinds of failure reach {@code 400}, and they are all the same client error: a value the
  * route declared a constraint for did not meet it. The framework reports that condition under four

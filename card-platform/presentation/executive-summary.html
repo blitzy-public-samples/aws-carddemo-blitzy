@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Executive summary of the AWS CardDemo modernization: one synchronous authorization call, one event, and three services consuming it independently.">
   <title>AWS CardDemo Modernization — Executive Summary</title>
   <!-- Content Security Policy. The deck is one file opened from disk, so this is the only place a
        policy can be stated. It names the two origins this deck reads from and nothing else, and it
@@ -18,7 +19,7 @@
        every build, so the drift fails there and not in front of an audience.
        Design decisions: card-platform/docs/decision-log.md. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none';
-    script-src https://cdn.jsdelivr.net 'sha384-thuq/oXQ2di8VQxDLT4gzKIJyrBEcPnk1TJa8lM4H5vfow2vD3TfPiJPt2rppkuX';
+    script-src https://cdn.jsdelivr.net 'sha384-FjIVnnFZ1f+BwGPCnpvDQPYuUTmT5hkfhy67ZGuaSa+EDDCirGggZyKJ0oRErRCT';
     style-src https://cdn.jsdelivr.net https://fonts.googleapis.com 'unsafe-inline';
     font-src https://fonts.gstatic.com;
     img-src data:;
@@ -26,8 +27,17 @@
     base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Both stylesheets below stay on the critical path, for one reason: each has to be in effect
+       before the first paint or the reader watches the slide rearrange itself. This one declares
+       the three faces, and a face is only fetched once its declaration is registered, so taking it
+       off the path delays the faces past the paint and the title heading is then redrawn a size
+       larger under the reader. Measured both ways: off the path, one run in fourteen shifted the
+       heading; on it, the shift is not possible. It costs 1,514 bytes. -->
   <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&amp;family=Inter:wght@400;500;600;700&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" rel="stylesheet">
-  <!-- Subresource integrity covers every library this deck runs. This stylesheet and the two
+  <!-- This one decides which of the sixteen slides is on screen, so a first paint without it
+       shows all sixteen stacked and then reflows to one.
+
+       Subresource integrity covers every library this deck runs. This stylesheet and the two
        scripts below carry a digest on the element that loads them. Mermaid is a single bundle
        fetched by a script element the module creates, which carries the same digest attribute, so
        all 2.6 MB of it are verified. The Google Fonts stylesheet above is the one exception: it is
@@ -153,6 +163,12 @@
       font-family: var(--ff-body);
     }
 
+    /* The page surface again, on the element reveal names. Reveal paints its viewport element white,
+       and that element is the body, so the rule above cannot reach it. */
+    .reveal-viewport {
+      background: var(--blitzy-surface-1);
+    }
+
     .reveal {
       color: var(--blitzy-text);
       font-family: var(--ff-body);
@@ -218,7 +234,6 @@
     }
 
     .slide-title {
-      background: var(--gradient-hero);
       color: var(--blitzy-text-invert);
       display: grid !important;
       grid-template-columns: minmax(0, 1fr) var(--hero-column);
@@ -249,7 +264,6 @@
 
     .slide-divider {
       align-content: center;
-      background: var(--gradient-divider);
       color: var(--blitzy-text-invert);
       display: grid !important;
       justify-items: center;
@@ -270,7 +284,23 @@
       gap: var(--space-5);
     }
 
-    /* Paints the full-viewport background element reveal generates for the closing slide. */
+    /* Paints the full-viewport background element reveal generates for each dark slide, and paints it
+       there only. Reveal copies a section's classes onto that element, so a background declared on
+       the section reaches both boxes: the section is the scaled stage, the background element is the
+       whole viewport, and one gradient rasterised over two differently proportioned boxes meets
+       along the stage edge as a step in colour.
+       The colour beside each gradient is what reveal reads to decide a slide is dark, which is what
+       turns its navigation chevrons and its slide-jump input white. */
+    .reveal .slide-background.slide-title {
+      background-color: var(--blitzy-primary);
+      background-image: var(--gradient-hero);
+    }
+
+    .reveal .slide-background.slide-divider {
+      background-color: var(--blitzy-primary-dark);
+      background-image: var(--gradient-divider);
+    }
+
     .reveal .slide-background.slide-closing {
       background-color: var(--blitzy-primary-navy);
     }
@@ -317,10 +347,21 @@
       line-height: 1.25;
     }
 
+    /* A height and a width have no effect on an inline box, and only the placeholders that are grid
+       items were turned into block boxes by their container. These two rules give the remaining ten
+       the box their icon will occupy, so a blocked icon library costs no layout. */
     .kpi-icon {
       color: var(--blitzy-primary);
+      display: inline-block;
       height: var(--icon-kpi);
       width: var(--icon-kpi);
+    }
+
+    .icon-row [data-lucide] {
+      display: inline-block;
+      height: var(--icon-row);
+      margin-bottom: var(--space-3);
+      width: var(--icon-row);
     }
 
     .eyebrow {
@@ -415,7 +456,32 @@
       min-height: var(--diagram-frame-min-height);
       overflow: hidden;
       padding: var(--space-3) var(--space-5);
+      position: relative;
       width: 100%;
+    }
+
+    /* Names what an empty frame is waiting for. A diagram block carries mermaid's own
+       data-processed attribute once its drawing is in place, so this line shows only while a
+       drawing is still being produced. */
+    .mermaid-frame:has(> pre.mermaid:not([data-processed]):not(.diagram-fallback))::after {
+      color: var(--blitzy-text);
+      content: "Drawing the diagram";
+      font-family: var(--ff-body);
+      font-size: var(--type-kpi-label);
+      left: 0;
+      position: absolute;
+      right: 0;
+      text-align: center;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+
+    /* Lays a slide out without painting it. A diagram measures its own text against the box it
+       sits in, and a slide the deck has not reached has no box, so a drawing produced there
+       collapses to nothing. The deck adds this class for the length of one drawing. */
+    .reveal .slides section.diagram-measuring {
+      display: block !important;
+      opacity: 0 !important;
     }
 
     .mermaid {
@@ -462,11 +528,23 @@
       position: static;
     }
 
+    /* Each slide is its own containing block, so the slide number in the corner of a slide belongs
+       to that slide. Without it every badge in the deck stacks on one point. */
     body.deck-static .reveal .slides section {
       display: block !important;
       margin-bottom: var(--space-6);
       pointer-events: auto;
-      position: static;
+      position: relative;
+    }
+
+    /* The two gradient slide types paint their own section in this reading order, because reveal
+       generates no background element when its script never runs. */
+    body.deck-static .slide-title {
+      background-image: var(--gradient-hero);
+    }
+
+    body.deck-static .slide-divider {
+      background-image: var(--gradient-divider);
     }
 
     .diagram-legend {
@@ -496,36 +574,56 @@
       width: 1px;
     }
 
-    .reveal table th {
-      background: var(--blitzy-surface-2);
-      border-bottom: var(--table-head-rule) solid var(--blitzy-primary);
-      color: var(--blitzy-primary-navy);
-      font-weight: 700;
+    /* What every cell shares, whichever role it plays. The alignment is here and not on the data
+       cells alone, because a row whose name sits on one line and whose data sits on another reads as
+       two rows. */
+    .reveal table th,
+    .reveal table td {
       padding: var(--table-pad-block) var(--table-pad-inline);
       text-align: left;
-    }
-
-    .reveal table td {
-      border-bottom: var(--hairline) solid var(--blitzy-border);
-      color: var(--blitzy-text);
-      padding: var(--table-pad-block) var(--table-pad-inline);
       vertical-align: top;
     }
 
+    /* The column-header band, scoped to the head. Every table in this deck also names its rows, and
+       an unscoped header rule paints those row names as a second header band running down the first
+       column, which leaves the reader looking for the table's real heading. */
+    .reveal table thead th {
+      background: var(--blitzy-surface-2);
+      border-bottom: var(--hairline) solid var(--blitzy-border);
+      color: var(--blitzy-primary-navy);
+      font-weight: 700;
+    }
+
+    .reveal table thead th:first-child {
+      border-top-left-radius: var(--radius-table);
+    }
+
+    .reveal table thead th:last-child {
+      border-top-right-radius: var(--radius-table);
+    }
+
+    /* Body cells. The row name is still the emphatic cell of its row, at a weight below the column
+       headers so the two cannot be confused. */
+    .reveal table tbody th,
+    .reveal table tbody td {
+      border-bottom: var(--hairline) solid var(--blitzy-border);
+      color: var(--blitzy-text);
+    }
+
+    .reveal table tbody th {
+      color: var(--blitzy-primary-navy);
+      font-weight: 600;
+    }
+
+    /* The stripe carries the row name too, so a striped row is striped across its whole width. */
+    .reveal table tbody tr:nth-child(odd) th,
     .reveal table tbody tr:nth-child(odd) td {
       background: var(--blitzy-surface-0);
     }
 
+    .reveal table tbody tr:nth-child(even) th,
     .reveal table tbody tr:nth-child(even) td {
       background: var(--blitzy-surface-3);
-    }
-
-    .reveal table th:first-child {
-      border-top-left-radius: var(--radius-table);
-    }
-
-    .reveal table th:last-child {
-      border-top-right-radius: var(--radius-table);
     }
 
     .split-correctness {
@@ -552,13 +650,15 @@
       margin: 0.5em 0;
     }
 
-    .reveal .slide-number {
-      background: none;
-      bottom: auto;
+    /* The authored slide numbers carry a deck-private class name. Reveal reserves slide-number for
+       the counter its own configuration draws, styles that class in its stylesheet, and hides it
+       outright in two of its view modes, so a deck that borrows the name inherits all three. */
+    .reveal .deck-slide-number {
       color: var(--blitzy-text);
+      display: block;
       font-family: var(--ff-mono);
       font-size: var(--type-slide-number);
-      padding: 0;
+      line-height: 1;
       position: absolute;
       right: var(--slide-number-inset-inline);
       top: var(--slide-number-inset-block);
@@ -568,9 +668,9 @@
       display: none !important;
     }
 
-    .slide-title .slide-number,
-    .slide-divider .slide-number,
-    .slide-closing .slide-number {
+    .slide-title .deck-slide-number,
+    .slide-divider .deck-slide-number,
+    .slide-closing .deck-slide-number {
       color: var(--blitzy-text-invert);
     }
 
@@ -590,13 +690,101 @@
       color: var(--blitzy-text-invert);
     }
 
+    /* The deck has no vertical slides, so these two controls never become usable and their boxes
+       sit outside the viewport. */
+    .reveal .controls .navigate-up,
+    .reveal .controls .navigate-down {
+      display: none;
+    }
+
+    /* A paused deck covers the slide with an opaque panel. The navigation controls underneath it
+       are neither visible nor usable, so they leave the focus order with it. Reveal writes the
+       controls' own display value onto the element, which is what this has to outrank. */
+    .reveal.paused .controls {
+      display: none !important;
+    }
+
+    /* Pressed state. Hover turns the glyph; a press adds a filled disc behind it, so holding the
+       control down looks different from pointing at it. */
+    .reveal .controls button:active {
+      background: var(--blitzy-border-soft);
+      border-radius: var(--radius-pill);
+    }
+
     .reveal .controls button:focus-visible,
     .reveal .jump-to-slide-input:focus-visible,
+    .reveal .resume-button:focus-visible,
     .reveal a:focus-visible {
       border-radius: var(--radius-code);
       box-shadow: 0 0 0 var(--focus-halo) var(--blitzy-primary-deep);
       outline: var(--focus-ring) solid var(--blitzy-accent-teal);
       outline-offset: var(--focus-ring);
+      /* Reveal fades the backward chevron to three tenths, and a faded element fades the ring drawn
+         around it along with itself, so the focused control announced one colour and painted another.
+         The declaration is forced because the rule doing the fading names six classes. */
+      opacity: 1 !important;
+    }
+
+    /* The export layout. Reveal replaces the stage with one page per slide when the address carries
+       print-pdf, and its own rules clear the padding and the display mode of every section, which
+       pushes body text past the page edge and drops the grid slide types to a single column. These
+       two rules restore the authored page frame inside that layout, and pin each section to the top
+       of its page: reveal offsets a section by an inline top computed from the height its content
+       had before the section was stretched to the page, and a section that then centres its own
+       content again lands the bottom of it past the page edge. They sit outside a print media query
+       on purpose: the export layout applies to the screen as soon as the address asks for it. */
+    html.reveal-print.print-pdf .reveal .slides section {
+      padding-block: var(--stage-pad-block) !important;
+      padding-inline: var(--stage-pad-inline) !important;
+      top: 0 !important;
+    }
+
+    html.reveal-print.print-pdf .reveal .slides section.slide-title,
+    html.reveal-print.print-pdf .reveal .slides section.slide-divider,
+    html.reveal-print.print-pdf .reveal .slides section.slide-closing {
+      display: grid !important;
+    }
+
+    @media print {
+      /* Printing the page without asking for the export layout hides reveal's background elements,
+         so the two gradient slide types paint their own section there as well. */
+      html:not(.print-pdf) .slide-title {
+        background-image: var(--gradient-hero);
+      }
+
+      html:not(.print-pdf) .slide-divider {
+        background-image: var(--gradient-divider);
+      }
+    }
+
+    /* A control drawn at part strength composites its focus ring at that strength too, because a
+       partial opacity paints the element and its outline together. The keyboard ring is drawn at
+       full strength for that reason. */
+    .reveal .controls button:focus-visible {
+      opacity: 1 !important;
+    }
+
+    /* The slide-jump field carries its own label, and the pinned stylesheet paints the label in the
+       inherited colour at half strength. Both are set here so the field reads on a light slide and
+       on a dark one. */
+    .reveal .jump-to-slide-input {
+      color: var(--blitzy-primary-navy);
+    }
+
+    .reveal .jump-to-slide-input::placeholder {
+      color: var(--blitzy-primary-navy);
+      opacity: 1;
+    }
+
+    .reveal.has-dark-background .jump-to-slide-input,
+    .reveal:has(section.present.has-dark-background) .jump-to-slide-input {
+      color: var(--blitzy-text-invert);
+    }
+
+    .reveal.has-dark-background .jump-to-slide-input::placeholder,
+    .reveal:has(section.present.has-dark-background) .jump-to-slide-input::placeholder {
+      color: var(--blitzy-text-invert);
+      opacity: 1;
     }
 
     /* Motion preference. Slide and background transitions are removed while the reveal
@@ -609,13 +797,102 @@
         transition: none !important;
       }
     }
+
+    /* Touch and tablet widths. The pinned reveal stylesheet sizes its navigation controls in ems
+       from the control region's own font size, so one value moves the whole hit area. This one puts
+       each chevron above the forty-four pixel floor a finger needs. */
+    @media (max-width: 1024px) {
+      .reveal .controls {
+        font-size: 13.5px;
+      }
+    }
+
+    /* Forced colours. A forced palette replaces every colour the deck sets, and on the three dark
+       slides it takes the gradient, the white heading, the teal icon and the accent bar with it: the
+       slide loses the surface that says it is a title, a section divider or a closing slide, and each
+       icon is left painted in the colour of what sits behind it. Those three slide kinds keep the
+       deck's own palette instead, which measures 7.6:1 on the title, 10.4:1 on the divider and
+       16.4:1 on the closing slide, above the floor a forced palette would guarantee. The thirteen
+       remaining slides follow the forced palette in full, and their icons, table rules and headings
+       are painted in it. The navigation chevrons are drawn in the control colour, so they follow the
+       slide they sit on: over a dark slide they keep the deck's white, and over a light one the
+       forced palette gives them its own text colour. */
+    @media (forced-colors: active) {
+      .slide-title,
+      .slide-divider,
+      .slide-closing,
+      .reveal .slide-background.slide-title,
+      .reveal .slide-background.slide-divider,
+      .reveal .slide-background.slide-closing,
+      .reveal.has-dark-background .controls,
+      .reveal:has(section.present.has-dark-background) .controls {
+        forced-color-adjust: none;
+      }
+
+      /* Each chevron is two filled bars taking the control colour, and a forced palette fills them
+         with the colour of the surface behind them, which leaves nothing to see. Over a light slide
+         they take the forced text colour; over a dark slide the control region above keeps the deck's
+         palette, so they take the white the deck already paints them. */
+      .reveal .controls .controls-arrow::before,
+      .reveal .controls .controls-arrow::after {
+        background-color: CanvasText;
+      }
+
+      .reveal.has-dark-background .controls .controls-arrow::before,
+      .reveal.has-dark-background .controls .controls-arrow::after,
+      .reveal:has(section.present.has-dark-background) .controls .controls-arrow::before,
+      .reveal:has(section.present.has-dark-background) .controls .controls-arrow::after {
+        background-color: currentColor;
+      }
+    }
+
+    /* A preference for more contrast. Every border takes the darkest brand colour and doubles in
+       weight, and body copy moves off the near-black grey onto the same navy, which reads at 14.1:1
+       on the lightest surface where the grey reads at 12.6:1. */
+    @media (prefers-contrast: more) {
+      :root {
+        --blitzy-border: #1A105F;
+        --blitzy-border-soft: #1A105F;
+        --blitzy-text: #1A105F;
+        --hairline: 2px;
+      }
+
+      /* The pressed control fills itself with the soft border colour, which is now solid navy and
+         would swallow a white chevron on a dark slide. A ring in the control's own colour reads on
+         every slide and still tells a press apart from a hover. */
+      .reveal .controls button:active {
+        background: none;
+        outline: var(--hairline) solid currentColor;
+      }
+    }
+
+    /* Print. The three dark slides keep their own surface on paper, and the pinned reveal
+       stylesheet paints every heading, paragraph and list item black, which leaves light text
+       unreadable on them. Their text is restored to the inverted token here. */
+    @media print {
+      .reveal .slides section.slide-title h1,
+      .reveal .slides section.slide-title h2,
+      .reveal .slides section.slide-title p,
+      .reveal .slides section.slide-divider h2,
+      .reveal .slides section.slide-closing h2,
+      .reveal .slides section.slide-closing p,
+      .reveal .slides section.slide-closing li {
+        color: var(--blitzy-text-invert) !important;
+      }
+    }
+
+    /* Export to a portable document gives every slide its own page and numbers the pages, so the
+       deck's own badge is dropped there as the pinned stylesheet drops it from print. */
+    html.print-pdf .reveal .slide-number {
+      display: none;
+    }
   </style>
 </head>
 <body>
-  <div class="reveal">
-    <div class="slides">
+  <div class="reveal" aria-label="Executive summary deck, sixteen slides">
+    <div class="slides" role="main">
       <section class="slide-title" aria-label="Slide 1 of 16, one authorization and independent reactions">
-        <span class="slide-number" aria-hidden="true">01</span>
+        <span class="deck-slide-number" aria-hidden="true">01</span>
         <div>
           <div class="eyebrow">AWS CardDemo modernization</div>
           <h1>One authorization.<br>Independent reactions.</h1>
@@ -626,10 +903,10 @@
       </section>
 
       <section aria-label="Slide 2 of 16, measured from source to demo">
-        <span class="slide-number" aria-hidden="true">02</span>
+        <span class="deck-slide-number" aria-hidden="true">02</span>
         <div class="eyebrow">Delivered scope</div>
         <h2>Measured from source to demo</h2>
-        <div class="kpi-grid" aria-label="Headline modernization metrics">
+        <div class="kpi-grid" role="group" aria-label="Headline modernization metrics">
           <div class="kpi-card">
             <i class="kpi-icon" data-lucide="file-text" aria-hidden="true"></i>
             <div class="kpi-value">28</div>
@@ -659,7 +936,7 @@
       </section>
 
       <section aria-label="Slide 3 of 16, Figure 1, from shared files to owned schemas">
-        <span class="slide-number" aria-hidden="true">03</span>
+        <span class="deck-slide-number" aria-hidden="true">03</span>
         <div class="eyebrow">Architecture</div>
         <h2>Figure 1 — From shared files to owned schemas</h2>
         <p>Figure 1 pairs the source state with the delivered one. Detail: <code>docs/architecture-before-after.md</code>.</p>
@@ -675,7 +952,7 @@ graph LR
     C -.-> V[("8 shared VSAM datasets")]
     J -.-> V
   end
-  subgraph A["After: 6 services, 6 private schemas"]
+  subgraph A["After: 6 private schemas"]
     direction TB
     R["REST client"] --> U["authorization-service"]
     U ==> K{{"transaction.authorized keyed by account"}}
@@ -698,17 +975,17 @@ graph LR
   V ~~~ R
           </pre>
         </div>
-        <div class="diagram-legend">Legend: solid = synchronous · double = event · dotted = datastore access · cylinder = datastore</div>
+        <div class="diagram-legend">Legend: solid = synchronous call · double = event · dotted = reads and writes · cylinder = one datastore · hexagon = topic</div>
       </section>
 
       <section class="slide-divider" aria-label="Slide 4 of 16, how the event flow works">
-        <span class="slide-number" aria-hidden="true">04</span>
+        <span class="deck-slide-number" aria-hidden="true">04</span>
         <i class="divider-icon" data-lucide="share-2" aria-hidden="true"></i>
         <h2>How the event flow works</h2>
       </section>
 
       <section aria-label="Slide 5 of 16, Figure 2, one outcome event starts the work">
-        <span class="slide-number" aria-hidden="true">05</span>
+        <span class="deck-slide-number" aria-hidden="true">05</span>
         <div class="eyebrow">Independent reactions</div>
         <h2>Figure 2 — One outcome event starts the work</h2>
         <p>Figure 2 shows one event starting three independent reactions. No arrow joins the three consumers. Detail in <code>docs/event-flow.md</code>.</p>
@@ -735,17 +1012,17 @@ graph LR
   AC -.-> SH{{"carddemo.dead-letter fallback"}}
           </pre>
         </div>
-        <div class="diagram-legend">Legend: labelled arrow = publishing outcome · dotted = dead-letter route · hexagon = topic</div>
+        <div class="diagram-legend">Legend: solid = call · double = event · label = outcome · dotted = dead-letter · hexagon = topic</div>
       </section>
 
       <section class="slide-divider" aria-label="Slide 6 of 16, business value">
-        <span class="slide-number" aria-hidden="true">06</span>
+        <span class="deck-slide-number" aria-hidden="true">06</span>
         <i class="divider-icon" data-lucide="trending-up" aria-hidden="true"></i>
         <h2>Business value</h2>
       </section>
 
       <section aria-label="Slide 7 of 16, room to change safely">
-        <span class="slide-number" aria-hidden="true">07</span>
+        <span class="deck-slide-number" aria-hidden="true">07</span>
         <div class="eyebrow">What changed</div>
         <h2>Room to change safely</h2>
         <table>
@@ -766,7 +1043,7 @@ graph LR
               <td>Authorization untouched</td>
             </tr>
             <tr>
-              <th scope="row">All 66 flagged source rules carry file and line citations.</th>
+              <th scope="row">All 66 flagged source rules carry a file citation, and a line wherever a line exists.</th>
               <td>Owner decisions</td>
             </tr>
           </tbody>
@@ -774,13 +1051,13 @@ graph LR
       </section>
 
       <section class="slide-divider" aria-label="Slide 8 of 16, correctness and parity">
-        <span class="slide-number" aria-hidden="true">08</span>
+        <span class="deck-slide-number" aria-hidden="true">08</span>
         <i class="divider-icon" data-lucide="calculator" aria-hidden="true"></i>
         <h2>Correctness and parity</h2>
       </section>
 
       <section aria-label="Slide 9 of 16, money truncates and never rounds">
-        <span class="slide-number" aria-hidden="true">09</span>
+        <span class="deck-slide-number" aria-hidden="true">09</span>
         <div class="eyebrow">Highest-risk finding</div>
         <h2>Money truncates; it never rounds</h2>
         <p><code>ROUNDED</code> appears zero times in 28 source programs. Every service pins <code>RoundingMode.DOWN</code>.</p>
@@ -813,7 +1090,7 @@ graph LR
       </section>
 
       <section aria-label="Slide 10 of 16, every source class has a disposition">
-        <span class="slide-number" aria-hidden="true">10</span>
+        <span class="deck-slide-number" aria-hidden="true">10</span>
         <div class="eyebrow">Coverage</div>
         <h2>Every source class has a disposition</h2>
         <table>
@@ -838,13 +1115,13 @@ graph LR
       </section>
 
       <section class="slide-divider" aria-label="Slide 11 of 16, risk and mitigation">
-        <span class="slide-number" aria-hidden="true">11</span>
+        <span class="deck-slide-number" aria-hidden="true">11</span>
         <i class="divider-icon" data-lucide="shield-alert" aria-hidden="true"></i>
         <h2>Risk and mitigation</h2>
       </section>
 
       <section aria-label="Slide 12 of 16, risk is visible and testable">
-        <span class="slide-number" aria-hidden="true">12</span>
+        <span class="deck-slide-number" aria-hidden="true">12</span>
         <div class="eyebrow">Known risk</div>
         <h2>Risk is visible and testable</h2>
         <table>
@@ -877,13 +1154,13 @@ graph LR
       </section>
 
       <section class="slide-divider" aria-label="Slide 13 of 16, delivery and continued development">
-        <span class="slide-number" aria-hidden="true">13</span>
+        <span class="deck-slide-number" aria-hidden="true">13</span>
         <i class="divider-icon" data-lucide="git-branch" aria-hidden="true"></i>
         <h2>Delivery and continued development</h2>
       </section>
 
       <section aria-label="Slide 14 of 16, Figure 3, each capability starts from a proven contract">
-        <span class="slide-number" aria-hidden="true">14</span>
+        <span class="deck-slide-number" aria-hidden="true">14</span>
         <div class="eyebrow">Dependency order</div>
         <h2>Figure 3 — Each capability starts from a proven contract</h2>
         <p>Figure 3 orders delivery by dependency. Equivalence checks run alongside every stage.</p>
@@ -907,11 +1184,11 @@ graph LR
       </section>
 
       <section aria-label="Slide 15 of 16, developers get a tested path into the system">
-        <span class="slide-number" aria-hidden="true">15</span>
+        <span class="deck-slide-number" aria-hidden="true">15</span>
         <div class="eyebrow">Ready to extend</div>
         <h2>A tested path into the system</h2>
         <p><code>docs/onboarding.md</code> goes from clean machine to running stack. <code>docs/suggested-next-tasks.md</code> lists what follows.</p>
-        <div class="icon-row" aria-label="Onboarding and extension paths">
+        <div class="icon-row" role="group" aria-label="Onboarding and extension paths">
           <div>
             <i data-lucide="zap" aria-hidden="true"></i>
             <strong>One command starts it</strong>
@@ -926,13 +1203,13 @@ graph LR
           </div>
           <div>
             <i data-lucide="layers" aria-hidden="true"></i>
-            <strong>One class adds a rule</strong>
+            <strong>A rule: one class plus contract edits</strong>
           </div>
         </div>
       </section>
 
       <section class="slide-closing" aria-label="Slide 16 of 16, one event and three independent consumers">
-        <span class="slide-number" aria-hidden="true">16</span>
+        <span class="deck-slide-number" aria-hidden="true">16</span>
         <i class="closing-icon" data-lucide="circle-check" aria-hidden="true"></i>
         <div class="eyebrow">Executive takeaway</div>
         <h2>One event, three independent consumers</h2>
@@ -947,28 +1224,74 @@ graph LR
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"
+  <!-- Both libraries are deferred. Every slide is already in the markup above, so neither has to
+       run before the parser reaches the end of the document, and the larger of the two is the
+       heaviest asset the deck fetches. Deferred classic scripts still execute in document order,
+       and still execute before the module below, so Reveal and the icon library are defined by the
+       time it runs. -->
+  <script defer src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"
           integrity="sha384-M/JtqCVlLcK9lwVnBnMXP0V577CBULkjodKsR/PITOe4MSKNbbwqCemEyluOw0+5"
           crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"
+  <script defer src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"
           integrity="sha384-ieG+IKD0d/ZPXyCBTMVAbqsQdns8QGJR/e26WMw7M4fkaI/rHcS/YIoi+ah9WGge"
           crossorigin="anonymous"></script>
   <script type="module">
-    /* Original definition of every diagram block, captured before the first render. */
-    const mermaidSources = new WeakMap();
-    document.querySelectorAll("pre.mermaid").forEach((node) => {
-      mermaidSources.set(node, node.textContent.trim());
+    /* Original definition of every diagram block, in the order the blocks appear, plus the
+       position written onto each block as an attribute. */
+    const mermaidDefinitions = [];
+    document.querySelectorAll("pre.mermaid").forEach((node, position) => {
+      node.setAttribute("data-diagram", String(position));
+      mermaidDefinitions.push(node.textContent.trim());
     });
+
+    /* The definition each block holds, keyed on the block itself. */
+    const mermaidSources = new WeakMap();
 
     /* Diagram slides waiting for a render, and the chain that serializes those renders. */
     const pendingDiagramSlides = new Set();
     // The source each block was last drawn from. A block whose entry equals its source is already
     // showing that drawing, so returning to its slide restores nothing and redraws nothing. An
-    // entry is written only after a successful run. A diagram that failed is therefore attempted
-    // again on the next visit, and does not stay blank for the rest of the talk.
+    // entry is written only after a run that produced a drawing with a measurable box. A diagram
+    // that failed, or one drawn where it could not measure itself, is therefore attempted again on
+    // the next visit, and does not stay blank for the rest of the talk.
     const mermaidRendered = new WeakMap();
 
     let mermaidRenderQueue = Promise.resolve();
+
+    /* Fills both caches for every block that has no entry yet, which is every block in the page
+       after the page has replaced one. Reveal's scroll view reads the slide container as a string
+       when it takes the deck over and writes that string back when it hands the deck back, so each
+       block returns as a different object and a cache keyed on the object comes back empty. The
+       position is an attribute, so it survives that round trip and points at the definition. A
+       block that returns still carrying mermaid's own data-processed attribute and a drawing is
+       recorded as drawn, so it is left alone. */
+    function seedMermaidCaches() {
+      document.querySelectorAll("pre.mermaid").forEach((node) => {
+        if (mermaidSources.has(node)) {
+          return;
+        }
+        const source = mermaidDefinitions[Number(node.getAttribute("data-diagram"))];
+        if (source === undefined) {
+          return;
+        }
+        mermaidSources.set(node, source);
+        if (node.getAttribute("data-processed") === "true" && hasMeasuredDrawing(node)) {
+          mermaidRendered.set(node, source);
+        }
+      });
+    }
+
+    /* Whether a block holds a drawing with a box a reader could see. A diagram drawn on a slide
+       the deck has not laid out measures its text at nothing and produces a drawing sixteen pixels
+       across, which is the one outcome this separates from a real drawing. */
+    function hasMeasuredDrawing(node) {
+      const drawing = node.querySelector("svg");
+      if (!drawing) {
+        return false;
+      }
+      const box = drawing.getBoundingClientRect();
+      return box.width > 1 && box.height > 1;
+    }
 
     /* Replaces a diagram frame with a readable line when the library or a diagram fails. */
     function reportDiagramFailure(nodes, error) {
@@ -1040,6 +1363,7 @@ graph LR
       if (!slide) {
         return;
       }
+      seedMermaidCaches();
       const nodes = Array.from(slide.querySelectorAll("pre.mermaid")).filter(
         (node) => mermaidRendered.get(node) !== mermaidSources.get(node)
       );
@@ -1059,7 +1383,23 @@ graph LR
         });
         try {
           await mermaid.run({ nodes });
-          nodes.forEach((node) => mermaidRendered.set(node, mermaidSources.get(node)));
+          nodes.forEach((node) => {
+            const drawing = node.querySelector("svg");
+            if (drawing) {
+              /* The library writes its own stylesheet into the drawing and names the drawing's
+                 role after the diagram type. Reveal builds the line it announces on a slide change
+                 from the slide's text, and takes both of those with it, so both are hidden from
+                 the reading of the slide. The title and description stay: they are the diagram's
+                 text alternative. */
+              drawing.querySelectorAll("style").forEach((sheet) => {
+                sheet.setAttribute("aria-hidden", "true");
+              });
+              drawing.removeAttribute("aria-roledescription");
+            }
+            if (hasMeasuredDrawing(node)) {
+              mermaidRendered.set(node, mermaidSources.get(node));
+            }
+          });
           if (window.Reveal && typeof window.Reveal.layout === "function") {
             window.Reveal.layout();
           }
@@ -1069,52 +1409,287 @@ graph LR
       });
     }
 
-    // Replaces the icon placeholders, and only while the slide on screen still holds one.
+    /* Draws every diagram the deck holds, one at a time, with each slide laid out for the length
+       of its own drawing. Printing, exporting and a jump straight to a diagram slide all arrive
+       without the slide change the drawings otherwise wait for. A slide whose diagram is already
+       drawn costs one query. */
+    async function drawEveryDiagramOnce() {
+      const slides = Array.from(document.querySelectorAll(".reveal .slides section"));
+      for (const slide of slides) {
+        if (!slide.querySelector("pre.mermaid")) {
+          continue;
+        }
+        slide.classList.add("diagram-measuring");
+        renderMermaidFor(slide);
+        await mermaidRenderQueue;
+        slide.classList.remove("diagram-measuring");
+      }
+    }
+
+    /* One pass at a time. Two passes at once could lay a slide out and take the layout away from
+       each other, which is the one thing a drawing in progress cannot survive. */
+    let diagramWarmUp = Promise.resolve();
+
+    function drawEveryDiagram() {
+      diagramWarmUp = diagramWarmUp.then(drawEveryDiagramOnce);
+      return diagramWarmUp;
+    }
+
+    /* Runs one pass once the browser is idle, and no later than the deadline. */
+    function whenIdle(pass) {
+      if (typeof window.requestIdleCallback === "function") {
+        window.requestIdleCallback(pass, { timeout: 1500 });
+        return;
+      }
+      window.setTimeout(pass, 1200);
+    }
+
+    // Replaces the icon placeholders, and only while the page still holds one.
     //
     // The library offers no way to be given a container: createIcons reads
-    // document.querySelectorAll itself and replaces every placeholder in the page. The scoping is
-    // therefore the question asked before calling it, and the library does the work. The first call
-    // draws the whole deck, so every slide change after it asks one question about one slide and
-    // stops, instead of rebuilding all seventeen icons.
+    // document.querySelectorAll itself and replaces every placeholder in the page. So the guard is
+    // the question asked before calling it, and the library does the work. The first call draws the
+    // whole deck; every call after it finds nothing waiting and returns, where this used to rebuild
+    // all seventeen icons in the document on every navigation.
     //
-    // The selector is what makes that true. The drawing the library emits carries the name
-    // attribute forward onto itself, so an element matching "[data-lucide]" is as likely to be a
-    // finished icon as a waiting placeholder. The drawing also always carries the class "lucide",
-    // which is what separates the two: a placeholder is an element naming an icon that has not been
-    // given that class yet.
+    // The question is asked of the document and not of the slide on screen. Six of the sixteen
+    // slides hold no placeholder of their own, so a guard that read only the current slide returned
+    // early on arrival at any of those six and left all seventeen icons undrawn — which is what
+    // opening the deck at a link to one of them did. The document-wide question cannot go wrong
+    // that way, and it also keeps this function clear of reveal, so it still runs when reveal is
+    // the library that did not load.
+    //
+    // The selector is what makes the guard work, and the obvious form of it does not. The drawing
+    // the library emits carries the name attribute forward onto itself, so an element matching
+    // "[data-lucide]" is just as likely to be a finished icon as a waiting placeholder, and a
+    // guard written that way never returns early at all. The drawing also always carries the class
+    // "lucide", which is what separates the two: a placeholder is an element naming an icon that
+    // has not been given that class yet.
     function renderLucideIcons() {
       if (!window.lucide) {
         return;
       }
-      const slide = Reveal.getCurrentSlide();
-      if (slide && !slide.querySelector("[data-lucide]:not(.lucide)")) {
+      if (!document.querySelector("[data-lucide]:not(.lucide)")) {
         return;
       }
       window.lucide.createIcons();
+    }
+
+    /* Export to a portable document asks for every slide at once and never changes slide, so the
+       drawings are produced before the deck starts and each page is measured with its diagram in
+       place. */
+    const printExport = /print-pdf/i.test(window.location.search);
+
+    /* Names the parts reveal injects into the page. The slide-jump field ships with placeholder
+       text and nothing else, and a field loses its placeholder the moment something is typed into
+       it, so it is given a name that stays. */
+    function describeRevealControls() {
+      const jump = document.querySelector(".reveal .jump-to-slide-input");
+      if (jump && !jump.hasAttribute("aria-label")) {
+        jump.setAttribute("aria-label", "Jump to slide number");
+        jump.maxLength = 8;
+      }
+      /* The control region arrives as an unnamed aside, which assistive technology reports as a
+         region with nothing to say about what it holds. */
+      const controls = document.querySelector(".reveal .controls");
+      if (controls && !controls.hasAttribute("aria-label")) {
+        controls.setAttribute("aria-label", "Slide navigation");
+      }
+      describeHelpPanel();
+    }
+
+    /* Reveal's keyboard-shortcut panel arrives as a plain container with an unnamed close control,
+       and the deck behind it keeps every one of its own tab stops, so a keyboard user can leave the
+       panel without closing it. The panel is named and given the role of a dialog, the rest of the
+       deck is put out of reach for as long as it is open, and focus is moved onto its close
+       control. Closing the panel gives the deck back. */
+    function describeHelpPanel() {
+      const deck = document.querySelector(".reveal");
+      if (!deck) {
+        return;
+      }
+      const panel = deck.querySelector(".overlay");
+      if (!panel) {
+        deck.querySelectorAll("[data-deck-reachable]").forEach((part) => {
+          part.removeAttribute("inert");
+          part.removeAttribute("data-deck-reachable");
+        });
+        return;
+      }
+      const close = panel.querySelector(".close");
+      if (!panel.hasAttribute("role")) {
+        panel.setAttribute("role", "dialog");
+        panel.setAttribute("aria-modal", "true");
+        panel.setAttribute("aria-label", "Keyboard shortcuts");
+        if (close) {
+          close.setAttribute("aria-label", "Close keyboard shortcuts");
+        }
+      }
+      Array.from(deck.children).forEach((part) => {
+        if (part === panel || part.hasAttribute("inert")) {
+          return;
+        }
+        part.setAttribute("inert", "");
+        part.setAttribute("data-deck-reachable", "");
+      });
+      if (close && !panel.contains(document.activeElement)) {
+        close.focus({ preventScroll: true });
+      }
+    }
+
+    /* Keeps the tab order inside the shortcut panel while it is open. Putting the deck out of reach
+       covers the deck's own controls; the page body is a tab stop of its own and is outside the
+       deck, so the wrap is done here. */
+    function keepFocusInHelpPanel(event) {
+      if (event.key !== "Tab") {
+        return;
+      }
+      const panel = document.querySelector(".reveal .overlay");
+      if (!panel) {
+        return;
+      }
+      const stops = Array.from(
+        panel.querySelectorAll("a[href], button, input, .viewport, [tabindex]:not([tabindex='-1'])")
+      );
+      if (stops.length === 0) {
+        return;
+      }
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      const inside = panel.contains(document.activeElement);
+      if (event.shiftKey && (!inside || document.activeElement === first)) {
+        last.focus({ preventScroll: true });
+        event.preventDefault();
+      } else if (!event.shiftKey && (!inside || document.activeElement === last)) {
+        first.focus({ preventScroll: true });
+        event.preventDefault();
+      }
+    }
+
+    /* Reveal turns all four navigation controls off and back on again on every slide change, and a
+       control switched off while it holds focus hands focus back to the document. The control the
+       presenter is working is given it back once that update is done. */
+    let lastFocusedControl = null;
+
+    function watchControlFocus() {
+      document.addEventListener("focusin", (event) => {
+        const target = event.target;
+        lastFocusedControl = target && target.closest
+          ? target.closest(".reveal .controls button")
+          : null;
+      });
+    }
+
+    function restoreControlFocus() {
+      if (!lastFocusedControl || document.activeElement !== document.body) {
+        return;
+      }
+      const usable = lastFocusedControl.classList.contains("enabled")
+        ? lastFocusedControl
+        : document.querySelector(".reveal .controls button.enabled");
+      if (usable) {
+        usable.focus({ preventScroll: true });
+        lastFocusedControl = usable;
+      }
+    }
+
+    /* Reveal adds the slide-jump field and the help panel to the page the first time each is asked
+       for, so each one is described as it arrives instead of once at the start. */
+    function watchRevealInjections() {
+      const deck = document.querySelector(".reveal");
+      if (!deck) {
+        return;
+      }
+      new MutationObserver(describeRevealControls).observe(deck, { childList: true });
     }
 
     if (window.Reveal) {
       Reveal.on("ready", (event) => {
         renderMermaidFor(event.currentSlide);
         renderLucideIcons();
+        describeRevealControls();
+        watchRevealInjections();
+        watchControlFocus();
+        /* Every diagram is drawn once the load is idle, before anything asks for one. A print is
+           the reason it cannot wait: the browser hands out no time inside its print event, so a
+           diagram that is not already in the page is missing from the paper. Measured, on a deck
+           printed the moment it loaded: pages carrying 6 to 23 drawing operations where a drawn
+           diagram carries 72 to 89. The cost is a few hundred milliseconds of the main thread
+           during the load, and it buys a deck that prints, exports and opens on any slide with
+           every diagram present. */
+        whenIdle(drawEveryDiagram);
       });
 
       Reveal.on("slidechanged", (event) => {
         renderMermaidFor(event.currentSlide);
         renderLucideIcons();
+        queueMicrotask(restoreControlFocus);
       });
+
+      /* The overview lays out the whole deck at once, and the export layout builds one page
+         per slide. Reveal announces both, and neither announces a slide change. */
+      Reveal.on("overviewshown", drawEveryDiagram);
+      Reveal.on("pdf-ready", drawEveryDiagram);
+
+      /* Overview mode is left with Escape or with the letter O. Enter is what a presenter reaches
+         for after arrowing across the thumbnails, so it leaves as well. */
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && Reveal.isOverview()) {
+          Reveal.toggleOverview(false);
+          event.preventDefault();
+        }
+      });
+
+      document.addEventListener("keydown", keepFocusInHelpPanel, true);
+
+      /* Reveal's scroll view writes the slide container's contents back when it hands the deck
+         over, which replaces every diagram block and every drawn icon in it, and it hands the deck
+         over from inside a layout. Both passes run again on the frame after a layout, over whatever
+         is in the page by then. A pass with nothing to do costs one query and returns. */
+      Reveal.on("resize", () => {
+        window.requestAnimationFrame(() => {
+          renderMermaidFor(Reveal.getCurrentSlide());
+          renderLucideIcons();
+          whenIdle(drawEveryDiagram);
+        });
+      });
+
+      /* A print asked for from the browser gives no time to produce a drawing, so this is a second
+         line behind the pass that runs when the deck loads. */
+      window.addEventListener("beforeprint", drawEveryDiagram);
+
+      if (printExport) {
+        await drawEveryDiagram();
+      }
 
       Reveal.initialize({
         hash: true,
+        history: true,
         transition: "slide",
         controlsTutorial: false,
+        controlsBackArrows: "visible",
+        viewDistance: 16,
+        /* The reveal script hands a narrow viewport to its own scrolling reader, which replaces the
+           slide markup, hides the navigation controls and clips whatever overflows one page. A deck
+           of fixed-size slides has nothing to gain from it and loses its diagrams, its icons and its
+           controls to it, so the width that triggers it is turned off and every viewport gets the
+           same deck. */
+        scrollActivationWidth: null,
+        /* How far the stage is allowed to shrink. The stage is a fixed pixel size, and the floor the
+           reveal script ships stops shrinking it at a fifth of that width, which is wider than a
+           small phone and clips whatever falls outside. A tenth fits the whole slide into any
+           viewport the deck is likely to meet. */
+        minScale: 0.1,
         width: 1920,
         height: 1080
       });
     } else {
       console.error("Reveal did not load, so slide navigation is unavailable");
       document.body.classList.add("deck-static");
-      document.querySelectorAll(".reveal .slides section").forEach(renderMermaidFor);
+      /* Every slide, without asking whether it is laid out. The class added above puts all sixteen
+         in the reading order, and there is no later navigation here that could pick up one that was
+         skipped. */
+      document.querySelectorAll(".reveal .slides section").forEach((slide) => renderMermaidFor(slide));
       renderLucideIcons();
     }
   </script>

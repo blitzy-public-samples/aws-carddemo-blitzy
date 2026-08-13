@@ -223,7 +223,7 @@ sequenceDiagram
     participant AccountRelay as Account relay
 
     Client->>Authorization: POST /authorizations
-    Authorization->>AuthDB: Lock the account row, then write the decision, one outbox row and the reserved exposure of an approval
+    Authorization->>AuthDB: Lock the account row, then write<br/>the decision, one outbox row and<br/>the reserved exposure of an approval
     AuthDB-->>Authorization: Commit
     Authorization-->>Client: Approved or declined response
 
@@ -241,7 +241,7 @@ sequenceDiagram
     FraudRelay->>Kafka: Publish FraudFlagged or FraudCleared
 
     Kafka-->>Notification: TransactionAuthorized
-    Notification->>NotifyDB: Claim event and record the authorization alert
+    Notification->>NotifyDB: Claim event and record<br/>the authorization alert
     NotifyDB-->>Notification: Commit before acknowledge
 
     Kafka-->>Notification: TransactionPosted
@@ -253,11 +253,11 @@ sequenceDiagram
     NotifyDB-->>Notification: Commit before acknowledge
 
     Kafka-->>Account: TransactionPosted
-    Account->>AccountDB: Claim event, add the amount, queue the state change
-    AccountDB-->>Account: Commit balance, accumulator and outbox row
+    Account->>AccountDB: Claim event, add the amount,<br/>queue the state change
+    AccountDB-->>Account: Commit balance,<br/>accumulator and outbox row
     AccountRelay->>Kafka: Publish AccountStateChanged
     Kafka-->>Authorization: AccountStateChanged
-    Authorization->>AuthDB: Refresh the credit snapshot reason 102 reads
+    Authorization->>AuthDB: Refresh the credit snapshot<br/>reason 102 reads
 ```
 
 **Legend**
@@ -340,7 +340,7 @@ The outbox exists so no service has to write its database and the broker in one 
 
 The outbox, the `processed_event` marker, and the dead-letter route are additions rather than translations. The source detects no duplicates, and it rolls back none of its three posting writes, so the last two have no counterpart in it. Only the outbox has a source ancestor, named at the end of this document.
 
-The demo relay checks every 500 milliseconds and claims at most 100 rows. Producers enable idempotence and require acknowledgements from all broker replicas. Those four values are configuration, not measured limits.
+The demo relay checks every 500 milliseconds and claims at most 100 rows a pass, across as many claim-and-publish cycles as that pass takes to reach them. Producers enable idempotence and require acknowledgements from all broker replicas. Those four values are configuration, not measured limits.
 
 Kafka delivery is at least once. Rebalances, restarts, or a crash after side effects but before offset commit can deliver the same event again.
 
@@ -355,6 +355,8 @@ A single transaction spanning the pass held a connection and every row lock of t
 Every claim query returns the due head row of each account, so recording results separately cannot reorder one account's events. One unpublishable row delays its own account rather than the whole table. A row the relay has abandoned releases its account, so a terminal row cannot wedge the stream it was part of. A pass issues the sends of distinct accounts together, up to the producer's own in-flight window of five, and waits for them against the one deadline the pass already had. One account therefore never waits for another to be published, which is the only serialization per-account ordering ever required.
 
 `ix_outbox_event_aggregate_head` is the partial index that claim reads, and each of the five schemas ships it. All five producing services carry the clause, and each proves it against a real database rather than inheriting it by convention.
+
+One pass claims repeatedly rather than once. Each cycle takes the head an account has after the previous head is published, so a burst on one account drains inside one pass. A pass that runs out of time releases the rows it claimed and never attempted. The account behind such a row then waits for a retry backoff rather than for the two-minute claim lease.
 
 One duplicate path is not a platform choice. A broker that has already appended a record can lose the acknowledgement. The producer then reports a failure the log does not share, and the next attempt appends a second copy. No producer setting removes that, and `enable.idempotence` does not either, because the two copies come from two `send` calls carrying their own sequence numbers. Both copies carry the same `eventId`, so every consumer's `processed_event` marker suppresses the second one.
 

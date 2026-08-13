@@ -252,9 +252,12 @@ public class NotificationHistoryController {
             return badRequest(PAGE_SIZE_MESSAGE);
         }
 
+        // One index lookup answers the three whole-card figures a page is described by. A card the
+        // read model has never held answers nothing, and a card whose every row retention has removed
+        // answers a count of zero. Both are the same thing to a caller: this card has no history.
         StatementTransactionRepository.CardHistoryTotals totals =
-                statementTransactions.totalsOfCard(cardToken);
-        if (totals.getTransactionCount() == 0L) {
+                statementTransactions.totalsOfCard(cardToken).orElse(null);
+        if (totals == null || totals.getTransactionCount() == 0L) {
             return notFound();
         }
 

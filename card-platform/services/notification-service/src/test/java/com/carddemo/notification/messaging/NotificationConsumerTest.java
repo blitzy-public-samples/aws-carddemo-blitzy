@@ -10,6 +10,7 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -22,6 +23,7 @@ import com.carddemo.events.TransactionPosted;
 import com.carddemo.notification.config.ObservabilityConfig;
 import com.carddemo.notification.domain.CardholderContextReader;
 import com.carddemo.notification.entity.CardholderContextEntity;
+import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
 import com.carddemo.notification.domain.NotificationService;
 import com.carddemo.notification.repository.CardholderContextRepository;
 import com.carddemo.notification.repository.ProcessedEventRepository;
@@ -216,8 +218,11 @@ class NotificationConsumerTest {
 
             InOrder order = inOrder(processedEvents, notificationService, acknowledgment);
             order.verify(processedEvents).claimEvent(any(), any(), eq("fraud.assessed"));
-            order.verify(notificationService).renderFraudAlert(eq(TRANSACTION_ID), eq(ACCOUNT_ID),
-                    anyInt(), any(), any(), any());
+            // One render per format, and every one of them behind the claim.
+            // app/cbl/CBSTM03A.CBL:L44-L47 declares one output file per format.
+            order.verify(notificationService, times(RenderedFormat.values().length))
+                    .renderFraudAlert(eq(TRANSACTION_ID), eq(ACCOUNT_ID), anyInt(), any(), any(),
+                            any());
             order.verify(acknowledgment).acknowledge();
         }
 

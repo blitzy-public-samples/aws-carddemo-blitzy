@@ -27,10 +27,23 @@
 #
 #   docker compose down --volumes && scripts/start-demo.sh
 #
-# Set CLONE_INDEX to run a second stack beside the first, with POSTGRES_PORT and KAFKA_PORT
-# moved to free host ports:
+# Set CLONE_INDEX to run a second stack beside the first. CLONE_INDEX moves the project name,
+# the container names and the volume names, and it moves no published port: all fourteen host
+# ports come from their own variables and each one still on its default is refused while the
+# first stack holds it. Move the whole set:
 #
-#   CLONE_INDEX=2 POSTGRES_PORT=5442 KAFKA_PORT=9102 scripts/start-demo.sh
+#   CLONE_INDEX=2 \
+#   POSTGRES_PORT=5442 KAFKA_PORT=9102 \
+#   AUTHORIZATION_PORT=8181 LEDGER_PORT=8182 FRAUD_PORT=8183 \
+#   NOTIFICATION_PORT=8184 ACCOUNT_PORT=8185 CARD_PORT=8186 \
+#   AUTHORIZATION_MANAGEMENT_PORT=9181 LEDGER_MANAGEMENT_PORT=9182 \
+#   FRAUD_MANAGEMENT_PORT=9183 NOTIFICATION_MANAGEMENT_PORT=9184 \
+#   ACCOUNT_MANAGEMENT_PORT=9185 CARD_MANAGEMENT_PORT=9186 \
+#   scripts/start-demo.sh
+#
+# The health check below asks Compose for each published port, so it follows the move without
+# further help. Give a second stack its own consumer groups too, from the GROUP_ variables of
+# .env.example, so two stacks do not share read positions on the same topics.
 #
 # Tested toolchain: Eclipse Temurin OpenJDK 25.0.4+7, Apache Maven 3.9.16, Docker Engine
 # 29.7.0, Docker Compose 5.3.1, OpenSSL 3.5.3, curl 8.14.1, git 2.51.0. The build refuses an

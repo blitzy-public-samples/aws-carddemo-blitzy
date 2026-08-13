@@ -525,6 +525,13 @@ class EntitySchemaMappingContractTest {
         classified.put("account-service.us_state_zip_prefix",
                 "Seeded from app/cpy/CSLKPCDY.cpy and read through "
                         + "com.carddemo.cobol.reference.UsStateZipPrefixes");
+        classified.put("notification-service.statement_card_total",
+                "One card's whole-history count and totals, added by V10__statement_card_totals.sql "
+                        + "so a page of GET /notifications/{cardToken} stops aggregating the card. "
+                        + "Both writers and the one reader are native statements of "
+                        + "StatementTransactionRepository, which maintain it by delta inside the "
+                        + "statements that change the rows it describes, so nothing loads it as an "
+                        + "object");
         return Map.copyOf(classified);
     }
 

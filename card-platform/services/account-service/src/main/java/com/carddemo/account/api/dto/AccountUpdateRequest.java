@@ -38,9 +38,14 @@ package com.carddemo.account.api.dto;
  * {@code AccountUpdateService.editMapInputs} is the single validator: it runs the field edits of
  * {@code app/cbl/COACTUPC.cbl:L1205-L1280} in source order and stops at the first failure, yielding
  * the one {@code domain/validation/EditResult} that {@code WS-RETURN-MSG PIC X(75)} at
- * {@code app/cbl/COACTUPC.cbl:L479} models. {@link AccountDataRequest} and
- * {@link CustomerDataRequest} keep their own component bounds as documentation of field shape and
- * are not reached through this record.
+ * {@code app/cbl/COACTUPC.cbl:L479} models. The component bounds {@link AccountDataRequest} and
+ * {@link CustomerDataRequest} declare are not reached through this record either, and Bean
+ * Validation is not what enforces them on this route: {@code api/AccountRecordMapper} reads every
+ * submitted value against its declared width before it maps anything, and answers the width message
+ * {@code domain/validation/DeclaredWidthValidator} composes. A cascade marker would enforce those
+ * bounds and would also run every field edit a second time, in no defined order, against the
+ * ordered single message the source produces — which is why the bounds are enforced ahead of the
+ * mapping instead.
  *
  * <p>{@code toString()} names both components and withholds every value. Rationale for the identity,
  * cascade and validation-order choices: {@code card-platform/docs/decision-log.md}. Field mapping:

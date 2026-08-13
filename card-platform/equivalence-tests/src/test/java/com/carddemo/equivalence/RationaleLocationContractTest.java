@@ -6,8 +6,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -498,14 +501,9 @@ class RationaleLocationContractTest {
             if (!Files.isDirectory(root)) {
                 continue;
             }
-            try (Stream<Path> tree = Files.walk(root)) {
-                tree.filter(Files::isRegularFile)
-                        .filter(RationaleLocationContractTest::isDeliveredFile)
-                        .sorted()
-                        .forEach(path -> firstFileOfFormat.putIfAbsent(
-                                formatKeyOf(path.getFileName().toString()), relative(path)));
-            } catch (IOException unreadable) {
-                throw new UncheckedIOException("unreadable directory " + root, unreadable);
+            for (Path path : prunedWalk(root, RationaleLocationContractTest::isDeliveredFile)) {
+                firstFileOfFormat.putIfAbsent(
+                        formatKeyOf(path.getFileName().toString()), relative(path));
             }
         }
 
@@ -866,19 +864,58 @@ class RationaleLocationContractTest {
             if (!Files.isDirectory(root)) {
                 continue;
             }
-            try (Stream<Path> tree = Files.walk(root)) {
-                tree.filter(Files::isRegularFile)
-                        .filter(RationaleLocationContractTest::isScannedText)
-                        .sorted()
-                        .forEach(path -> {
-                            String key = formatKeyOf(path.getFileName().toString());
-                            byFormat.computeIfAbsent(key, any -> new ArrayList<>()).add(path);
-                        });
-            } catch (IOException unreadable) {
-                throw new UncheckedIOException("unreadable directory " + root, unreadable);
+            for (Path path : prunedWalk(root, RationaleLocationContractTest::isScannedText)) {
+                String key = formatKeyOf(path.getFileName().toString());
+                byFormat.computeIfAbsent(key, any -> new ArrayList<>()).add(path);
             }
         }
         return byFormat;
+    }
+
+    /**
+     * Returns every regular file under one root that one test accepts, without entering a directory
+     * this class does not scan.
+     *
+     * <p>{@link #UNSCANNED_DIRECTORIES} is applied to the directory rather than to the file, so a
+     * pruned tree is never entered. {@code target} of a module is written while this test runs, as
+     * the report of each finished class lands there, so a walk that enters it holds a listing that
+     * is already out of date and fails on the entry that moved.
+     *
+     * @param root     the directory to walk
+     * @param accepted the test one file has to pass to be returned
+     * @return the accepted files, in a stable order
+     */
+    private static List<Path> prunedWalk(Path root, java.util.function.Predicate<Path> accepted) {
+        List<Path> found = new ArrayList<>();
+        try {
+            Files.walkFileTree(root, new SimpleFileVisitor<Path>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path directory,
+                        BasicFileAttributes attributes) {
+                    Path name = directory.getFileName();
+                    return name != null && UNSCANNED_DIRECTORIES.contains(name.toString())
+                            ? FileVisitResult.SKIP_SUBTREE
+                            : FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) {
+                    if (attributes.isRegularFile() && accepted.test(file)) {
+                        found.add(file);
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFileFailed(Path file, IOException unreadable) {
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("unreadable directory " + root, unreadable);
+        }
+        found.sort(Comparator.naturalOrder());
+        return found;
     }
 
     /**

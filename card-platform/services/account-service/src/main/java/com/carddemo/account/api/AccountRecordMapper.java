@@ -5,9 +5,11 @@ import com.carddemo.account.api.dto.AccountView;
 import com.carddemo.account.domain.AccountSnapshot;
 import com.carddemo.account.api.dto.CustomerDataRequest;
 import com.carddemo.account.api.dto.CustomerView;
+import com.carddemo.account.domain.validation.DeclaredWidthValidator;
 import com.carddemo.account.domain.validation.EditResult;
 import com.carddemo.account.domain.validation.NumericRequiredValidator;
 import com.carddemo.account.domain.validation.SignedDecimalValidator;
+import com.carddemo.account.domain.validation.UsSocialSecurityNumberValidator;
 import com.carddemo.account.entity.AccountEntity;
 import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.cobol.CobolDecimal;
@@ -34,6 +36,16 @@ import org.slf4j.LoggerFactory;
  * {@code 1200-EDIT-MAP-INPUTS} at {@code app/cbl/COACTUPC.cbl:L1470-L1676} edits them, using the
  * validator that owns the message text. Every other edit runs inside
  * {@code domain/AccountUpdateService}.
+ *
+ * <p>{@link #convertibleValues} opens with a width pass, because a conversion is the wrong place to
+ * discover that a value never fitted its field. The source read every one of these fields from a
+ * fixed-width area of the map {@code app/bms/COACTUP.bms} defines, so a wider value could not be
+ * keyed; a request body carries one freely. The widths the request records declare are the widths
+ * {@code src/main/resources/openapi.yaml} publishes, and
+ * {@code domain/validation/DeclaredWidthValidator} writes the one message a caller reads. Without
+ * that pass a monetary value wider than {@code PIC X(15)} was converted and stored with its
+ * high-order digits dropped, and a text value wider than its column reached the database and was
+ * answered as a fault rather than as a refused field.
  *
  * <p>Field mapping and the source constructs that reach no component:
  * {@code card-platform/docs/traceability-matrix.md}.
@@ -84,6 +96,11 @@ final class AccountRecordMapper {
     /**
      * Reports the first supplied value this class cannot convert, in source edit order.
      *
+     * <p>Two passes run, and the width pass runs first. {@link #withinDeclaredWidths} refuses a
+     * value wider than the field it was submitted for, because in the source a wider value never
+     * reached an edit at all: the map field bounded it. Only a value the field can hold reaches the
+     * conversion pass below.</p>
+     *
      * <p>The five monetary fields run in the order
      * {@code app/cbl/COACTUPC.cbl:L1484}, {@code app/cbl/COACTUPC.cbl:L1496},
      * {@code app/cbl/COACTUPC.cbl:L1509}, {@code app/cbl/COACTUPC.cbl:L1515} and
@@ -96,10 +113,15 @@ final class AccountRecordMapper {
      *                 none
      * @param customer the customer section of the request, or {@code null} when the body carries
      *                 none
-     * @return a passing verdict when every supplied value converts, otherwise a failing verdict
-     *         carrying the message the source edit writes
+     * @return a passing verdict when every supplied value fits its field and converts, otherwise a
+     *         failing verdict carrying one message
      */
     static EditResult convertibleValues(AccountDataRequest account, CustomerDataRequest customer) {
+
+        EditResult widths = withinDeclaredWidths(account, customer);
+        if (!widths.valid()) {
+            return widths;
+        }
 
         EditResult verdict = amountConverts(AccountDataRequest.CREDIT_LIMIT_LABEL,
                 account == null ? null : account.creditLimit());
@@ -127,6 +149,162 @@ final class AccountRecordMapper {
             return verdict;
         }
         return creditScoreConverts(customer == null ? null : customer.ficoCreditScore());
+    }
+
+    /**
+     * Reports the first submitted value wider than the field it was submitted for, in the order the
+     * two source groups declare their fields.
+     *
+     * <p>{@code 10 ACUP-NEW-ACCT-DATA.} at {@code app/cbl/COACTUPC.cbl:L758-L796} declares the
+     * account fields and {@code 10 ACUP-NEW-CUST-DATA.} at {@code app/cbl/COACTUPC.cbl:L797}
+     * onward declares the customer fields, and this method reads them in that order: the order an
+     * operator met them down the screen, rather than the order
+     * {@code 1200-EDIT-MAP-INPUTS} edits them. A width failure is not a field edit. It says the
+     * value could not have been keyed into the field at all, which the fixed-width map area of
+     * {@code app/bms/COACTUP.bms} made impossible and a Representational State Transfer body does
+     * not.</p>
+     *
+     * <p>Only the fields whose own edit takes no width reach this pass. The monetary edit at
+     * {@code app/cbl/COACTUPC.cbl:L2180} reads its value whole and checks no width; the date edits
+     * of {@code app/cpy/CSUTLDPY.cpy} slice four, two and two characters and read nothing past
+     * position eight; and the group identifier, the second address line, the two telephone numbers,
+     * the three Social Security Number parts and the government identifier take no edit that reads
+     * a width. Every other field is bounded by its own edit — the alphabetic, alphanumeric, numeric
+     * and mandatory edits each refuse content past the width they are given, under the same message
+     * this pass writes — so adding a second bound here would report the same text from a different
+     * place and would move a message ahead of the source's own edit order.</p>
+     *
+     * <p>Two consequences are worth stating. A value that fits its field keeps every store
+     * semantic the source has, including the high-order truncation {@link #amountOf} performs for a
+     * figure that fits {@code PIC X(15)} and not {@code PIC S9(10)V99}. And a value that does not
+     * fit is answered as a refused field, where before this pass existed a monetary value lost its
+     * high-order digits silently and a text value reached its column and was answered as a
+     * fault.</p>
+     *
+     * @param account  the account section of the request, or {@code null} when the body carries
+     *                 none
+     * @param customer the customer section of the request, or {@code null} when the body carries
+     *                 none
+     * @return a passing verdict when every submitted value fits its field, otherwise a failing
+     *         verdict carrying one message naming the field and its width
+     */
+    private static EditResult withinDeclaredWidths(AccountDataRequest account,
+            CustomerDataRequest customer) {
+
+        EditResult verdict = accountWidths(account);
+        if (!verdict.valid()) {
+            return verdict;
+        }
+
+        return customerWidths(customer);
+    }
+
+    /**
+     * Reads the account fields of {@code app/cbl/COACTUPC.cbl:L758-L796} against their widths.
+     *
+     * @param account the account section of the request, or {@code null} when the body carries none
+     * @return a passing verdict when every submitted value fits its field, otherwise the first
+     *         failing verdict
+     */
+    private static EditResult accountWidths(AccountDataRequest account) {
+        if (account == null) {
+            return EditResult.ok();
+        }
+
+        // Field order of the source group. app/cbl/COACTUPC.cbl:L762 opens it with the status,
+        // whose own edit at :L1856 bounds it, and :L796 closes it with the group identifier.
+        return firstFailure(
+                width(AccountDataRequest.CURRENT_BALANCE_LABEL, account.currentBalance(),
+                        AccountDataRequest.MONEY_MAX_LENGTH),
+                width(AccountDataRequest.CREDIT_LIMIT_LABEL, account.creditLimit(),
+                        AccountDataRequest.MONEY_MAX_LENGTH),
+                width(AccountDataRequest.CASH_CREDIT_LIMIT_LABEL, account.cashCreditLimit(),
+                        AccountDataRequest.MONEY_MAX_LENGTH),
+                width(AccountDataRequest.OPEN_DATE_LABEL, account.openDate(),
+                        AccountDataRequest.DATE_MAX_LENGTH),
+                width(AccountDataRequest.EXPIRY_DATE_LABEL, account.expirationDate(),
+                        AccountDataRequest.DATE_MAX_LENGTH),
+                width(AccountDataRequest.REISSUE_DATE_LABEL, account.reissueDate(),
+                        AccountDataRequest.DATE_MAX_LENGTH),
+                width(AccountDataRequest.CURRENT_CYCLE_CREDIT_LABEL, account.currentCycleCredit(),
+                        AccountDataRequest.MONEY_MAX_LENGTH),
+                width(AccountDataRequest.CURRENT_CYCLE_DEBIT_LABEL, account.currentCycleDebit(),
+                        AccountDataRequest.MONEY_MAX_LENGTH),
+                width(AccountDataRequest.GROUP_ID_LABEL, account.groupId(),
+                        AccountDataRequest.GROUP_ID_MAX_LENGTH));
+    }
+
+    /**
+     * Reads the customer fields of {@code app/cbl/COACTUPC.cbl:L797} onward against their widths.
+     *
+     * <p>The customer identifier is absent from this pass because
+     * {@code api/AccountController} edits it against
+     * {@code CustomerDataRequest#CUSTOMER_ID_PATTERN} before this class is reached, which is the
+     * search-key order of {@code app/cbl/COACTUPC.cbl:L1433-L1449}.</p>
+     *
+     * @param customer the customer section of the request, or {@code null} when the body carries
+     *                 none
+     * @return a passing verdict when every submitted value fits its field, otherwise the first
+     *         failing verdict
+     */
+    private static EditResult customerWidths(CustomerDataRequest customer) {
+        if (customer == null) {
+            return EditResult.ok();
+        }
+
+        // Field order of the source group, from the first address line at
+        // app/cbl/COACTUPC.cbl:L805 to the date of birth at :L837.
+        return firstFailure(
+                width(CustomerDataRequest.ADDRESS_LINE_1_LABEL, customer.addressLine1(),
+                        CustomerDataRequest.ADDRESS_LINE_1_MAX_LENGTH),
+                width(CustomerDataRequest.ADDRESS_LINE_2_LABEL, customer.addressLine2(),
+                        CustomerDataRequest.ADDRESS_LINE_2_MAX_LENGTH),
+                width(CustomerDataRequest.PHONE_NUMBER_1_LABEL, customer.phoneNumber1(),
+                        CustomerDataRequest.PHONE_NUMBER_MAX_LENGTH),
+                width(CustomerDataRequest.PHONE_NUMBER_2_LABEL, customer.phoneNumber2(),
+                        CustomerDataRequest.PHONE_NUMBER_MAX_LENGTH),
+                width(UsSocialSecurityNumberValidator.PART1_LABEL, customer.socialSecurityPart1(),
+                        CustomerDataRequest.SOCIAL_SECURITY_PART_1_MAX_LENGTH),
+                width(UsSocialSecurityNumberValidator.PART2_LABEL, customer.socialSecurityPart2(),
+                        CustomerDataRequest.SOCIAL_SECURITY_PART_2_MAX_LENGTH),
+                width(UsSocialSecurityNumberValidator.PART3_LABEL, customer.socialSecurityPart3(),
+                        CustomerDataRequest.SOCIAL_SECURITY_PART_3_MAX_LENGTH),
+                width(CustomerDataRequest.GOVERNMENT_ISSUED_ID_LABEL, customer.governmentIssuedId(),
+                        CustomerDataRequest.GOVERNMENT_ISSUED_ID_MAX_LENGTH),
+                width(CustomerDataRequest.DATE_OF_BIRTH_LABEL, customer.dateOfBirth(),
+                        CustomerDataRequest.DATE_OF_BIRTH_MAX_LENGTH));
+    }
+
+    /**
+     * Applies the width edit to one field.
+     *
+     * @param label the field name the message opens with
+     * @param value the submitted text, which may be {@code null}
+     * @param width the width the source field declares
+     * @return the verdict {@link DeclaredWidthValidator} produced
+     */
+    private static EditResult width(String label, String value, int width) {
+        return DeclaredWidthValidator.validate(label, value, width);
+    }
+
+    /**
+     * Returns the first failing verdict of a pass, or a passing verdict when none failed.
+     *
+     * <p>One message leaves a validation pass, which is what {@code WS-RETURN-MSG PIC X(75)} at
+     * {@code app/cbl/COACTUPC.cbl:L479} holds and what the guard {@code IF WS-RETURN-MSG-OFF}
+     * keeps.</p>
+     *
+     * @param verdicts the verdicts of one pass, in the order the source declares the fields
+     * @return the first failing verdict, or {@link EditResult#ok()}
+     */
+    private static EditResult firstFailure(EditResult... verdicts) {
+        for (EditResult verdict : verdicts) {
+            if (!verdict.valid()) {
+                return verdict;
+            }
+        }
+
+        return EditResult.ok();
     }
 
     /**

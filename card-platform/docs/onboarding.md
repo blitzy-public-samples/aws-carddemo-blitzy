@@ -246,7 +246,7 @@ Eight topics carry every message the platform sends:
 | `card.updated` | card | `authorization-card-updated` |
 | `carddemo.dead-letter` | every service | nothing; it is read by hand |
 
-Each business topic also has a `.DLT` companion for a record its own consumer cannot process, and `carddemo.dead-letter` is the shared fallback. [Event Flow](event-flow.md) gives the delivery guarantee behind each row.
+Six of the seven business topics also have a `.DLT` companion for a record its own consumer cannot process. `card.updated` has none, because its one consumer routes a spent record to the shared fallback `carddemo.dead-letter` instead. That makes fourteen topics on the broker: seven business, six `.DLT`, and the fallback. [Event Flow](event-flow.md) gives the delivery guarantee behind each row.
 
 Figure 1 shows which address to dial from where, because the answer differs between the host and a container.
 
@@ -256,7 +256,7 @@ Figure 1 shows which address to dial from where, because the answer differs betw
 graph LR
     DEV["Developer machine<br/>curl, psql, kubectl"]
 
-    subgraph HOST["Published on 127.0.0.1 only"]
+    subgraph HOST["Published on 127.0.0.1"]
         BUS["8081 to 8086<br/>business routes"]
         MGMT["9081 to 9086<br/>management routes"]
         KHOST["9092<br/>Kafka"]
@@ -300,7 +300,7 @@ Three management endpoints are exposed: `health`, `metrics`, and `prometheus`. H
 
 Logs are structured JavaScript Object Notation (JSON) in logstash format. Every record carries a `service` member naming which of the six services wrote it. A record written while handling a request or a delivery also carries `correlationId`, `causationId`, `eventId`, `eventType` and `transactionId`, each as a top-level member.
 
-Following one authorization across all six services means filtering on `correlationId`. Send `X-Correlation-Id` on the request and that value is used; send nothing and the service generates one and returns it in the same response header. Each event carries it onward in the `carddemo-correlation-id` Kafka header, and every consumer puts it back on its own records. `causationId` names the immediate parent event, so a chain can be read one hop at a time rather than only as a set.
+Following one authorization across all six services means filtering on `correlationId`: send `X-Correlation-Id` holding one Universally Unique Identifier and that value is used. Send nothing, or anything that is not a rendered identifier, and the service generates one instead. A value such as `qa-corr-plain` is replaced without an error, so read the identifier back off the response header. Each event carries it onward in the `carddemo-correlation-id` Kafka header, and every consumer puts it back on its own records. `causationId` names the immediate parent event, so a chain can be read one hop at a time rather than only as a set.
 
 The root logger and `com.carddemo` both default to INFO, from `LOG_LEVEL` and `LOG_LEVEL_CARDDEMO`. Raise `LOG_LEVEL_CARDDEMO` to DEBUG for one run when you want the per-step detail behind a correlated chain, and lower it afterwards. DEBUG adds volume rather than joinability, which the correlation members already supply at INFO.
 
@@ -561,7 +561,9 @@ No producer changes are required. Fraud detection proves the path, because it ha
 
 ### Add a decline rule
 
-Add a class implementing `DeclineRule` under the authorization service's `domain/rules/`. Preserve the source ordering, and add the matching event-schema and equivalence coverage. Nothing existing is edited.
+Add a class implementing `DeclineRule` under the authorization service's `domain/rules/`, annotated `@Order` with a value that keeps the source sequence. The delivered four are `@Order(10)`, `(20)`, `(30)` and `(40)`. `domain/AuthorizationChainCompositionTest` asserts both the order and the segment each rule belongs to, so the annotation is a requirement rather than a convention.
+
+The class is the first edit and not the only one. A reject code is a governed part of the wire contract, and several tests hold the set of codes closed on purpose. The enum, both declined schemas, the OpenAPI document, the equivalence coverage and those tests all change with it. [How to extend the authorization service](../services/authorization-service/README.md#how-to-extend) lists every file, in the order the build asks for them, and it counts seventeen. Run `mvn -B -ntp verify` from `card-platform/` after the first edit and work down the failures.
 
 The source marks the seam itself. `ADD MORE VALIDATIONS HERE` sits at `app/cbl/CBTRN02C.cbl:L377`, inside the validation paragraph that begins at `app/cbl/CBTRN02C.cbl:L370`. The original author marked the extension point, and the target honours it by making extension mean adding a class.
 
@@ -781,9 +783,9 @@ The profile uses Tomcat's `native` strategy rather than the framework's. The fra
 
 ## Where to go next
 
-`suggested-next-tasks.md` is the first stop for a second contributor. It carries 69 tasks in 21 groups, each with the evidence that raised it and the criterion that would close it. The groups begin with correctness decisions only a human should make, then the validations this migration deliberately did not add. The rest cover interest and cycle ownership, projection lifecycle, security migration, source hygiene, and test depth.
+`suggested-next-tasks.md` is the first stop for a second contributor. It carries 72 tasks in 22 groups, each with the evidence that raised it and the criterion that would close it. The groups begin with correctness decisions only a human should make, then the validations this migration deliberately did not add. The rest cover interest and cycle ownership, projection lifecycle, security migration, source hygiene, and test depth.
 
-- [Suggested Next Tasks](suggested-next-tasks.md) — the 69 follow-up tasks, with verification criteria
+- [Suggested Next Tasks](suggested-next-tasks.md) — the 72 follow-up tasks, with verification criteria
 - [Platform README](../README.md) — repository map and short quickstart
 - [Architecture, Before and After](architecture-before-after.md) — both migration states, at full size
 - [Event Flow](event-flow.md) — every topic, group, and delivery guarantee

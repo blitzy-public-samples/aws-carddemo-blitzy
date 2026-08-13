@@ -14,8 +14,10 @@ import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -327,44 +329,112 @@ public class OutboxRelay {
      *
      * <p>The sweep is idle when no card changed, since a card list and a card read store no row.
      *
+     * <p>One claim is one event per account, so a sweep that claimed once published one event per
+     * account however many that account was owed, and the scheduled delay set the rate: a burst on
+     * one account drained at two events a second whatever {@code batch-size} allowed. A sweep
+     * therefore repeats the claim-and-publish cycle. Each cycle takes the head each account now has,
+     * which is the row behind the one the previous cycle published, so the ordering guarantee above
+     * is the same guarantee it always was.
+     *
+     * <p>{@code batch-size} still bounds one sweep, and that is the bound the cycles share: a sweep
+     * claims at most that many rows in total, however many cycles it takes to reach them. What
+     * changed is that those rows no longer have to name distinct accounts. A sweep also stops when
+     * the claim answers nothing, when a cycle publishes nothing, or when the deadline arrives, and it
+     * claims any one row at most once: a broker refusing everything costs one batch of attempts per
+     * sweep rather than the whole sweep. The claim itself carries that last guard, so a row a later
+     * cycle is offered again is left {@code PENDING} and untouched rather than claimed and handed
+     * back.
+     *
+     * <p>A row this sweep claimed and did not attempt is released rather than left holding its claim.
+     * The claim query passes over a claimed row, so a row left that way waited for the claim timeout
+     * and its whole account waited with it; released, it is due again immediately and the next sweep
+     * takes it.
+     *
      * @param deadline the monotonic instant this sweep must not publish beyond
      * @return what this sweep published, how many failures it recorded and how many rows it abandoned
      */
     private SweepResult runOnePass(long deadline) {
-        Instant now = Instant.now();
-        Recovery recovery = recoverStrandedClaims(now, deadline);
+        Recovery recovery = recoverStrandedClaims(Instant.now(), deadline);
         int failures = recovery.attempts();
         int abandoned = recovery.abandoned();
         int refusedDiagnostics = recovery.refusedDiagnostics();
         List<Timer.Sample> publishAttempts = new ArrayList<>();
 
-        List<OutboxEventEntity> rows = claimBatch(now);
         int published = 0;
+        Set<UUID> attempted = new HashSet<>();
 
-        for (int from = 0; from < rows.size(); from += sendsInFlight) {
-            if (System.nanoTime() - deadline >= 0L) {
-                log.debug("The card outbox sweep reached its deadline with {} claimed rows "
-                        + "unattempted; the next sweep recovers them", rows.size() - from);
+        while (attempted.size() < batchSize && System.nanoTime() - deadline < 0L) {
+            List<OutboxEventEntity> rows = claimBatch(Instant.now(), attempted, batchSize - attempted.size());
+            if (rows.isEmpty()) {
                 break;
             }
-            List<OutboxEventEntity> window =
-                    rows.subList(from, Math.min(from + sendsInFlight, rows.size()));
-            List<Dispatch> dispatched = new ArrayList<>(window.size());
-            for (OutboxEventEntity row : window) {
-                dispatched.add(dispatch(row));
-            }
-            for (Dispatch attempt : dispatched) {
-                Attempt outcome = settle(attempt, deadline);
-                published = published + outcome.published();
-                failures = failures + outcome.failed();
-                abandoned = abandoned + outcome.abandoned();
-                refusedDiagnostics = refusedDiagnostics + outcome.refusedDiagnostics();
-                if (outcome.sample() != null) {
-                    publishAttempts.add(outcome.sample());
+
+            int publishedThisCycle = 0;
+            int at = 0;
+            for (; at < rows.size(); at += sendsInFlight) {
+                if (System.nanoTime() - deadline >= 0L) {
+                    break;
                 }
+                List<OutboxEventEntity> window =
+                        rows.subList(at, Math.min(at + sendsInFlight, rows.size()));
+                List<Dispatch> dispatched = new ArrayList<>(window.size());
+                for (OutboxEventEntity row : window) {
+                    dispatched.add(dispatch(row));
+                }
+                for (Dispatch attempt : dispatched) {
+                    Attempt outcome = settle(attempt, deadline);
+                    publishedThisCycle = publishedThisCycle + outcome.published();
+                    failures = failures + outcome.failed();
+                    abandoned = abandoned + outcome.abandoned();
+                    refusedDiagnostics = refusedDiagnostics + outcome.refusedDiagnostics();
+                    if (outcome.sample() != null) {
+                        publishAttempts.add(outcome.sample());
+                    }
+                }
+            }
+            published = published + publishedThisCycle;
+
+            if (at < rows.size()) {
+                List<OutboxEventEntity> unattempted = rows.subList(at, rows.size());
+                log.debug("The card outbox sweep reached its deadline with {} claimed rows "
+                        + "unattempted; they are released for the next sweep", unattempted.size());
+                releaseUnattemptedClaims(unattempted);
+                break;
+            }
+            if (publishedThisCycle == 0) {
+                break;
             }
         }
         return new SweepResult(published, failures, abandoned, refusedDiagnostics, publishAttempts);
+    }
+
+    /**
+     * Returns rows this sweep claimed and did not attempt to {@code PENDING}, in one transaction.
+     *
+     * <p>Each row is re-read inside that transaction rather than saved from the copy the claim
+     * loaded, for the reason {@link #markPublished(UUID)} re-reads it, and only a row this instance
+     * still holds is released: a claim another instance has since recovered and re-taken belongs to
+     * that instance.
+     *
+     * @param claimed rows this sweep holds and issued no send for, possibly empty
+     */
+    private void releaseUnattemptedClaims(List<OutboxEventEntity> claimed) {
+        if (claimed.isEmpty()) {
+            return;
+        }
+        transactionTemplate.execute(status -> {
+            for (OutboxEventEntity row : claimed) {
+                outboxEvents.findById(row.getEventId())
+                        .filter(stored -> stored.getRelayState()
+                                        == OutboxEventEntity.RelayState.CLAIMED
+                                && instanceId.equals(stored.getClaimedBy()))
+                        .ifPresent(stored -> {
+                            stored.releaseUnattemptedClaim();
+                            outboxEvents.save(stored);
+                        });
+            }
+            return null;
+        });
     }
 
     /**
@@ -380,14 +450,20 @@ public class OutboxRelay {
      * @param now the moment this sweep started
      * @return the claimed rows, longest-waiting first, at most one row per account
      */
-    private List<OutboxEventEntity> claimBatch(Instant now) {
+    private List<OutboxEventEntity> claimBatch(Instant now, Set<UUID> alreadyTaken,
+            int allowance) {
         List<OutboxEventEntity> claimed = transactionTemplate.execute(status -> {
-            List<OutboxEventEntity> due = outboxEvents.claimDueRows(now, Limit.of(batchSize));
+            List<OutboxEventEntity> due = outboxEvents.claimDueRows(now, Limit.of(allowance));
+            List<OutboxEventEntity> taken = new ArrayList<>(due.size());
             for (OutboxEventEntity row : due) {
+                if (!alreadyTaken.add(row.getEventId())) {
+                    continue;
+                }
                 row.claim(instanceId, now);
                 outboxEvents.save(row);
+                taken.add(row);
             }
-            return List.copyOf(due);
+            return List.copyOf(taken);
         });
         return claimed == null ? List.of() : claimed;
     }

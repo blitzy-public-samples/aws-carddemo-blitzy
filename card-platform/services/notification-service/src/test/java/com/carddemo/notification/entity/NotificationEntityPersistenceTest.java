@@ -160,9 +160,21 @@ class NotificationEntityPersistenceTest {
     /** The account-keyed cardholder projection one alert reports from. */
     private static final String CARDHOLDER_CONTEXT = "cardholder_context";
 
-    /** The four tables {@code V1__schema.sql} declares. */
+    /**
+     * One card's whole-history totals, maintained by delta beside the read-model rows.
+     *
+     * <p>Added by {@code V10__statement_card_totals.sql}. No entity maps it: both writers and the one
+     * reader are native statements of {@code StatementTransactionRepository}, so nothing loads it as
+     * an object and the column facts below cover the four mapped tables alone.
+     */
+    private static final String STATEMENT_CARD_TOTAL = "statement_card_total";
+
+    /** Columns of {@value #STATEMENT_CARD_TOTAL}: the key, three figures, and the display value. */
+    private static final int STATEMENT_CARD_TOTAL_COLUMNS = 5;
+
+    /** The five tables the migrations declare. */
     private static final Set<String> MIGRATION_TABLES = Set.of(STATEMENT_TRANSACTION,
-            NOTIFICATION_LOG, PROCESSED_EVENT, CARDHOLDER_CONTEXT);
+            NOTIFICATION_LOG, PROCESSED_EVENT, CARDHOLDER_CONTEXT, STATEMENT_CARD_TOTAL);
 
     /** Flyway's own bookkeeping table, which the migration does not declare. */
     private static final String FLYWAY_HISTORY = "flyway_schema_history";
@@ -203,7 +215,8 @@ class NotificationEntityPersistenceTest {
      * migrated tables therefore carries a value, which is what a read model built only from events
      * should look like: a column nothing fills is a column no consumer can bring current.</p>
      */
-    private static final Set<String> NULLABLE_COLUMNS = Set.of();
+    private static final Set<String> NULLABLE_COLUMNS =
+            Set.of(STATEMENT_CARD_TOTAL + ".masked_card_number");
 
     /** What {@code information_schema} reports for a {@code CHAR(n)} column. */
     private static final String FIXED_CHARACTER = "character";
@@ -920,20 +933,20 @@ class NotificationEntityPersistenceTest {
     // ---------------------------------------------------------------------------------------
 
     /**
-     * Asserts the migrated schema holds the four tables {@code V1__schema.sql} declares, and no
-     * relay table.
+     * Asserts the migrated schema holds the five tables the migrations declare, and no relay table.
      *
-     * <p>This service consumes four topics and publishes nothing, so it owns no
-     * {@value #ABSENT_TABLE} table. Flyway's own bookkeeping table is excluded by name, since the
-     * migration does not declare it.</p>
+     * <p>Four come from {@code V1__schema.sql} and the fifth from
+     * {@code V10__statement_card_totals.sql}. This service consumes four topics and publishes
+     * nothing, so it owns no {@value #ABSENT_TABLE} table. Flyway's own bookkeeping table is
+     * excluded by name, since no migration declares it.</p>
      */
     @Test
-    void theSchemaHoldsTheFourMigratedTablesAndNoRelayTable() {
+    void theSchemaHoldsTheFiveMigratedTablesAndNoRelayTable() {
         Set<String> tables = migratedTables();
 
         assertAll("the tables of schema " + schema,
                 () -> assertEquals(new TreeSet<>(MIGRATION_TABLES), tables,
-                        "the migration declares exactly four tables"),
+                        "the migrations declare exactly five tables"),
                 () -> assertFalse(tables.contains(ABSENT_TABLE),
                         "a service that publishes nothing owns no " + ABSENT_TABLE + " table"));
     }
@@ -947,8 +960,10 @@ class NotificationEntityPersistenceTest {
      * {@code FILLER PIC X(20)} at {@code app/cpy/COSTM01.CPY:L36} is dropped, and the group
      * {@code 05 TRNX-REST.} at {@code app/cpy/COSTM01.CPY:L24} carries no column of its own.
      *
-     * <p>No column across the four tables accepts a null.
-     * {@code processed_event.consumed_topic} was the one that did, and
+     * <p>One column across the five tables accepts a null, and it is
+     * {@value #STATEMENT_CARD_TOTAL}{@code .masked_card_number}: a card whose every row retention
+     * has removed stays known and has no masked form left to carry.
+     * {@code processed_event.consumed_topic} used to accept one, and
      * {@code src/main/resources/db/migration/V3__processed_event_topic_key.sql} made it half of the
      * primary key.</p>
      */
@@ -975,9 +990,12 @@ class NotificationEntityPersistenceTest {
                         PROCESSED_EVENT + " columns"),
                 () -> assertEquals(CARDHOLDER_CONTEXT_COLUMNS, counts.get(CARDHOLDER_CONTEXT),
                         CARDHOLDER_CONTEXT + " columns"),
+                () -> assertEquals(STATEMENT_CARD_TOTAL_COLUMNS, counts.get(STATEMENT_CARD_TOTAL),
+                        STATEMENT_CARD_TOTAL + " columns"),
                 () -> assertEquals(NULLABLE_COLUMNS, nullable,
-                        "every column of the four migrated tables carries a value, so no consumer "
-                                + "leaves one it cannot bring current"));
+                        "every column a consumer writes carries a value. The one exception is the "
+                                + "display value of " + STATEMENT_CARD_TOTAL + ", which a card that "
+                                + "is known and holds no row has nothing to carry"));
     }
 
     /**
@@ -1171,13 +1189,14 @@ class NotificationEntityPersistenceTest {
         }).list();
 
         assertAll("keys and indexes of schema " + schema,
-                () -> assertEquals(4, primaryKeys.size(),
+                () -> assertEquals(5, primaryKeys.size(),
                         "one primary key per migrated table, found " + primaryKeys),
                 () -> assertEquals(Map.of(
                                 STATEMENT_TRANSACTION, "pk_statement_transaction",
                                 NOTIFICATION_LOG, "pk_notification_log",
                                 PROCESSED_EVENT, "pk_processed_event",
-                                CARDHOLDER_CONTEXT, "pk_cardholder_context"), primaryKeys,
+                                CARDHOLDER_CONTEXT, "pk_cardholder_context",
+                                STATEMENT_CARD_TOTAL, "pk_statement_card_total"), primaryKeys,
                         "each primary key carries the name the migration gives it"),
                 () -> assertEquals(Set.of("pk_statement_transaction",
                                 "ix_statement_transaction_processing_timestamp"),
@@ -1191,7 +1210,11 @@ class NotificationEntityPersistenceTest {
                         indexes.get(PROCESSED_EVENT), PROCESSED_EVENT + " indexes"),
                 () -> assertEquals(Set.of("pk_cardholder_context",
                                 "ix_cardholder_context_observed_at"),
-                        indexes.get(CARDHOLDER_CONTEXT), CARDHOLDER_CONTEXT + " indexes"));
+                        indexes.get(CARDHOLDER_CONTEXT), CARDHOLDER_CONTEXT + " indexes"),
+                () -> assertEquals(Set.of("pk_statement_card_total"),
+                        indexes.get(STATEMENT_CARD_TOTAL),
+                        STATEMENT_CARD_TOTAL + " is read by its key alone, so it carries no index "
+                                + "besides that key"));
     }
 
     /**

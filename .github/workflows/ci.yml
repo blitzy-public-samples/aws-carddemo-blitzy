@@ -396,6 +396,16 @@ jobs:
   # higher, which is CodeQL's high and critical band, and reports every result
   # below that without failing. Failing on all of them would make one style alert
   # indistinguishable from an injection, and the report holds both either way.
+  #
+  # ONE ACCEPTED FINDING. .github/codeql/codeql-config.yml excludes exactly one
+  # query of the suite's eighty: java/spring-disabled-csrf-protection, which reports
+  # the two stateless filter chains in each of the six services. Those chains hold no
+  # session and read no cookie, and config/CrossSiteRequestFilter refuses a
+  # state-changing request that declares a foreign site or origin or carries no
+  # non-simple header. The reasoning, and what the exclusion gives up, are in
+  # card-platform/docs/decision-log.md. The gate below also passes over a result the
+  # analysis itself reports as suppressed, so an alert dismissed at its source cannot
+  # fail a run while still appearing in the artifact this stage keeps.
   static-analysis:
     name: Analyse the sources
     needs: compile
@@ -416,6 +426,7 @@ jobs:
         with:
           languages: java-kotlin
           build-mode: manual
+          config-file: .github/codeql/codeql-config.yml
 
       - name: Compile the reactor for the database
         run: mvn -B -ntp -DskipTests compile
@@ -440,12 +451,13 @@ jobs:
               [.runs[]? as $run
                 | ($run.tool.driver.rules // []) as $rules
                 | $run.results[]?
+                | select(((.suppressions // []) | length) == 0)
                 | ($rules[(.ruleIndex // -1)]?.properties["security-severity"] // "0" | tonumber)
               ] | [length, (map(select(. >= 7.0)) | length)] | @tsv' "${file}")"
             reported=$((reported + $(echo "${counts}" | cut -f1)))
             severe=$((severe + $(echo "${counts}" | cut -f2)))
           done
-          echo "CodeQL reported ${reported} results, ${severe} of them at security severity 7.0 or higher"
+          echo "CodeQL reported ${reported} unsuppressed results, ${severe} of them at security severity 7.0 or higher"
           test "${severe}" -eq 0
 
       - name: Keep the static-analysis results

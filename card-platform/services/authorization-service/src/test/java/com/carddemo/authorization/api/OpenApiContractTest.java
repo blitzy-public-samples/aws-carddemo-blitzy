@@ -23,6 +23,7 @@ import java.util.TreeSet;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.yaml.snakeyaml.Yaml;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Agreement tests between {@code src/main/resources/openapi.yaml} and the records it describes.
@@ -54,6 +55,15 @@ final class OpenApiContractTest {
     private static final Set<String> STRUCTURAL_KEYS = Set.of("content", "schema", "schemas",
             "properties", "example", "examples", "value", "items", "allOf", "oneOf", "anyOf",
             "additionalProperties", "application/json");
+
+    /** Writes a body the way a caller receives it, so member names can be read off the output. */
+    private static final JsonMapper MAPPER = JsonMapper.builder().build();
+
+    /** A transaction identifier at the width {@code TRAN-ID PIC X(16)} declares. */
+    private static final String EXAMPLE_TRANSACTION_ID = "0000000000000001";
+
+    /** An account identifier at the width {@code XREF-ACCT-ID PIC 9(11)} declares. */
+    private static final String EXAMPLE_ACCOUNT_ID = "00000000011";
 
     /** The parsed document every test below reads. */
     private static Map<String, Object> openApi;
@@ -514,6 +524,31 @@ final class OpenApiContractTest {
     void theErrorSchemaMatchesTheErrorRecord() {
         assertEquals(componentNamesOf(ApiErrorResponse.class), propertyNamesOf("ApiErrorResponse"),
                 "the document describes exactly the components the error record declares");
+    }
+
+    /**
+     * Asserts the documented property names are the member names a caller actually receives.
+     *
+     * <p>The two tests above read the record components through reflection. A component keeps its name
+     * there while the wire carries another: one binding annotation renames a member, and both sides of
+     * those comparisons stay equal because both read the declaration rather than the output. A review
+     * of a renamed member found it caught by the endpoint tests and by nothing that reads this
+     * document, so the document-to-wire link was the one link nothing asserted.
+     *
+     * <p>Both bodies are serialized populated. A decline carries all five members of a decision, and
+     * an error carries all four, so no member is absent for want of a value.
+     */
+    @Test
+    void theDocumentedPropertyNamesAreTheOnesTheWireCarries() {
+        assertEquals(propertyNamesOf("AuthorizationResponse"),
+                serializedNamesOf(AuthorizationResponse.decline(EXAMPLE_TRANSACTION_ID,
+                        EXAMPLE_ACCOUNT_ID, DeclineReason.ACCOUNT_EXPIRED)),
+                "the document has to name the members a decision is written with. A renamed member"
+                        + " reaches a caller under the new name and this document under the old one");
+        assertEquals(propertyNamesOf("ApiErrorResponse"),
+                serializedNamesOf(ApiErrorResponse.of(422, ApiErrorResponse.UNPROCESSABLE,
+                        AuthorizationRequest.CARD_NUMBER_NOT_NUMERIC_MESSAGE)),
+                "and the members an error body is written with, for the same reason");
     }
 
     /**
@@ -1037,6 +1072,18 @@ final class OpenApiContractTest {
     private static Set<String> propertyNamesOf(String schemaName) {
         return new LinkedHashSet<>(
                 ((Map<String, Object>) schemaOf(schemaName).get("properties")).keySet());
+    }
+
+    /**
+     * Returns the member names one body carries once written.
+     *
+     * @param body the body to write
+     * @return the member names in the order they are written
+     */
+    @SuppressWarnings("unchecked")
+    private static Set<String> serializedNamesOf(Object body) {
+        return new LinkedHashSet<>(
+                MAPPER.readValue(MAPPER.writeValueAsString(body), Map.class).keySet());
     }
 
     /**

@@ -10,6 +10,7 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -177,6 +178,30 @@ class TransactionAuthorizedConsumerTest {
             verify(acknowledgment).acknowledge();
         }
 
+        /**
+         * Asserts the alert is rendered in every format the enum declares.
+         *
+         * <p>{@code app/cbl/CBSTM03A.CBL} declares one output file per format at
+         * {@code app/cbl/CBSTM03A.CBL:L44-L47} and writes both in one run, so a listener that
+         * rendered one of them left the other renderer registered and unreachable, and its counter
+         * permanently at zero. That is what this case guards against returning.</p>
+         */
+        @Test
+        @DisplayName("renders every format app/cbl/CBSTM03A.CBL writes, not one of them")
+        void rendersEveryFormatTheSourceWrites() {
+            consumer.onTransactionAuthorized(authorized(), acknowledgment, ACCOUNT_ID, TOPIC);
+
+            for (RenderedFormat format : RenderedFormat.values()) {
+                verify(notificationService).renderAuthorizationAlert(eq(CARD_TOKEN),
+                        eq(MASKED_CARD), eq(TRANSACTION_ID), eq(ACCOUNT_ID),
+                        eq("GROCERY PURCHASE"), eq(AMOUNT),
+                        any(NotificationService.CardholderDetails.class), eq(format));
+            }
+            verify(notificationService, times(RenderedFormat.values().length))
+                    .renderAuthorizationAlert(anyString(), anyString(), anyString(), anyString(),
+                            anyString(), any(), any(), any());
+        }
+
         @Test
         @DisplayName("guards before it renders, and marks before it acknowledges")
         void guardsBeforeItRendersAndMarksBeforeItAcknowledges() {
@@ -184,8 +209,11 @@ class TransactionAuthorizedConsumerTest {
 
             InOrder order = inOrder(processedEvents, notificationService, acknowledgment);
             order.verify(processedEvents).claimEvent(any(), any(), eq(TOPIC));
-            order.verify(notificationService).renderAuthorizationAlert(anyString(), anyString(),
-                    anyString(), anyString(), anyString(), any(), any(), any());
+            // One render per format, and every one of them behind the claim and ahead of the
+            // acknowledgement. app/cbl/CBSTM03A.CBL:L44-L47 declares one output file per format.
+            order.verify(notificationService, times(RenderedFormat.values().length))
+                    .renderAuthorizationAlert(anyString(), anyString(), anyString(), anyString(),
+                            anyString(), any(), any(), any());
             order.verify(acknowledgment).acknowledge();
         }
 

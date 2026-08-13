@@ -238,9 +238,15 @@ public class FraudFlaggedConsumer {
         try {
             transactionTemplate.executeWithoutResult(status -> {
                 if (claimed(event.eventId(), consumedTopic)) {
-                    notificationService.renderFraudAlert(event.transactionId(), event.accountId(),
-                            event.riskScore(), event.triggeredRules(),
-                            cardholderDetails(event.accountId()), RenderedFormat.PLAIN_TEXT);
+                    CardholderDetails cardholder = cardholderDetails(event.accountId());
+                    // One alert per format, as app/cbl/CBSTM03A.CBL writes one statement per output
+                    // file: FD-STMTFILE-REC PIC X(80) at :L45 and FD-HTMLFILE-REC PIC X(100) at
+                    // :L47, both written in the same run.
+                    for (RenderedFormat format : RenderedFormat.values()) {
+                        notificationService.renderFraudAlert(event.transactionId(),
+                                event.accountId(), event.riskScore(), event.triggeredRules(),
+                                cardholder, format);
+                    }
                 }
             });
         } catch (RuntimeException failure) {

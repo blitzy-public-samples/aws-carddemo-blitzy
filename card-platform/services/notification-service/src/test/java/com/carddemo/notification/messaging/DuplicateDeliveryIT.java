@@ -19,6 +19,7 @@ import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
 import com.carddemo.notification.NotificationServiceDatabase;
 import com.carddemo.notification.TestIdentityPasswords;
 import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
+import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
 import com.carddemo.notification.entity.ProcessedEventEntity;
 import com.carddemo.notification.repository.ProcessedEventRepository;
 import io.micrometer.core.instrument.Counter;
@@ -326,6 +327,17 @@ class DuplicateDeliveryIT {
     private static final String EVERY_ROW_COUNT_SQL =
             "SELECT count(*) FROM " + SERVICE_SCHEMA + ".statement_transaction";
 
+    /**
+     * Attempt rows one committed alert leaves behind: one per rendered format.
+     *
+     * <p>{@code app/cbl/CBSTM03A.CBL:L44-L47} declares one output file per format,
+     * {@code FD-STMTFILE-REC PIC X(80)} at L45 and {@code FD-HTMLFILE-REC PIC X(100)} at L47, and one
+     * run of the source wrote both. One delivery therefore renders its alert once per
+     * {@link RenderedFormat} and records an attempt for each. What a repeat delivery has to leave
+     * unchanged is one alert's worth of rows, which is this count, not one row.
+     */
+    private static final long ONE_ALERT_ROWS = RenderedFormat.values().length;
+
     private static final String COLUMN_NAMES_SQL = "SELECT column_name FROM"
             + " information_schema.columns WHERE table_schema = ? AND table_name = ?"
             + " ORDER BY ordinal_position";
@@ -483,7 +495,8 @@ class DuplicateDeliveryIT {
             RecordMetadata first = publish(POSTED_TOPIC, ACCOUNT_ID, event);
             awaitCount(ROW_COUNT_SQL, 1L, "the read-model row of the card", CARD_TOKEN);
             awaitCount(MARKER_COUNT_SQL, 1L, "the marker of event " + eventId, eventId);
-            awaitCount(ATTEMPT_COUNT_SQL, 1L, "the rendered-alert row");
+            awaitCount(ATTEMPT_COUNT_SQL, ONE_ALERT_ROWS,
+                    "the delivery-attempt row of every rendered format");
 
             BigDecimal total = cardTotal(CARD_TOKEN);
             long suppressed = counterValue(DUPLICATES_SKIPPED_METER, null, null);
@@ -495,10 +508,10 @@ class DuplicateDeliveryIT {
                 RecordMetadata repeat = publish(POSTED_TOPIC, ACCOUNT_ID, event);
                 awaitCounter(DUPLICATES_SKIPPED_METER, null, null, suppressed + 1L,
                         "the delivery the marker suppressed");
-                assertHoldsThroughout("one row, one marker and one attempt row",
+                assertHoldsThroughout("one row, one marker and one alert's attempt rows",
                         () -> count(ROW_COUNT_SQL, CARD_TOKEN) == 1L
                                 && count(MARKER_COUNT_SQL, eventId) == 1L
-                                && count(ATTEMPT_COUNT_SQL) == 1L);
+                                && count(ATTEMPT_COUNT_SQL) == ONE_ALERT_ROWS);
 
                 assertAll("the state a repeat delivery left",
                         () -> assertEquals(0, total.compareTo(cardTotal(CARD_TOKEN)),
@@ -616,8 +629,9 @@ class DuplicateDeliveryIT {
                 "one marker per topic for identifier " + sharedId, sharedId);
 
         assertAll("the state a cross-topic collision leaves",
-                () -> assertEquals(1L, count(ATTEMPT_COUNT_SQL),
-                        "the delivery rendered an alert and recorded the attempt"),
+                () -> assertEquals(ONE_ALERT_ROWS, count(ATTEMPT_COUNT_SQL),
+                        "the delivery rendered its alert once per format and recorded an attempt"
+                                + " for each"),
                 () -> assertEquals(suppressed,
                         counterValue(DUPLICATES_SKIPPED_METER, null, null),
                         "nothing was suppressed, so the duplicates counter stands still"));

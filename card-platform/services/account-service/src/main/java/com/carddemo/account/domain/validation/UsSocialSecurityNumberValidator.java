@@ -34,14 +34,20 @@ public final class UsSocialSecurityNumberValidator {
     /** Stored width of {@code WS-EDIT-US-SSN-PART3 PIC X(4)} at app/cbl/COACTUPC.cbl:L127. */
     private static final int PART3_WIDTH = 4;
 
-    /** Label literal at app/cbl/COACTUPC.cbl:L2439, which opens every part one message. */
-    private static final String PART1_LABEL = "SSN: First 3 chars";
+    /**
+     * Label literal at app/cbl/COACTUPC.cbl:L2439, which opens every part one message.
+     *
+     * <p>{@code api/AccountRecordMapper} writes the same label into the width message
+     * {@code DeclaredWidthValidator} composes, so one part carries one name whichever edit refuses
+     * it.</p>
+     */
+    public static final String PART1_LABEL = "SSN: First 3 chars";
 
     /** Label literal at app/cbl/COACTUPC.cbl:L2469, carrying an ampersand. */
-    private static final String PART2_LABEL = "SSN 4th & 5th chars";
+    public static final String PART2_LABEL = "SSN 4th & 5th chars";
 
     /** Label literal at app/cbl/COACTUPC.cbl:L2481. */
-    private static final String PART3_LABEL = "SSN Last 4 chars";
+    public static final String PART3_LABEL = "SSN Last 4 chars";
 
     /**
      * Literal at app/cbl/COACTUPC.cbl:L2457, forty-eight characters wide.

@@ -308,6 +308,8 @@ That division is why a claim survives the process death it was written for. It i
 
 The claim query returns the due head row of each account, never two rows of one account. Recording each result separately would otherwise let an older row fail while a newer row of the same account succeeded. The account identifier is the message key, so the retry would reach the topic out of order. The same restriction stops one unpublishable row blocking the table: a refusal pauses that account for the pass and leaves every other account eligible.
 
+One pass claims repeatedly rather than once. Each cycle takes the head an account has after the previous head is published, so a burst on one account drains inside one pass. `carddemo.outbox.relay.batch-size` still bounds the pass rather than a cycle. A pass that reaches its deadline releases the rows it claimed and never attempted. The account behind such a row then waits for a retry backoff rather than for the claim lease.
+
 A record this service can never apply reaches the dead-letter topic after bounded retries, and its offset is committed once the diagnostic is published. The record is therefore named once rather than on every later assignment. A row this service can never publish is abandoned and records a durable obligation to name itself, in the same transaction that abandons it. The obligation clears only against a broker acknowledgement, because an abandoned row is terminal and no later claim would ever return to it.
 
 Either diagnostic carries the four fields of `01 ABEND-DATA` at `app/cpy/CSMSG02Y.cpy:L21-L29`, and nothing read from the record itself. A diagnostic whose row is keyed by a transaction identifier travels under the aggregate identifier `00000000000`, since `schemas/dead-letter-v1.json` accepts eleven digits, and `failedEventId` still names the row exactly.
@@ -471,49 +473,71 @@ Figure 2 places the source path beside the delivered one. The platform-wide pair
 
 ```mermaid
 graph TB
-    subgraph BEFORE["Before. Nightly batch validation"]
-        FEED[("DALYTRAN daily feed. 300 records at 350 bytes")]
-        JOB["POSTTRAN STEP15 runs CBTRN02C"]
-        SHARED[("Shared VSAM datasets. RECOVERY NONE and JOURNAL NO")]
-        REJ[("DALYREJS generation data group. LRECL 430")]
+    subgraph BEFORE["Before. Nightly batch"]
+        FEED[("DALYTRAN daily feed.<br/>300 records at 350 bytes")]
+        JOB["POSTTRAN STEP15<br/>runs CBTRN02C"]
+        SHARED[("Shared VSAM datasets.<br/>RECOVERY NONE<br/>and JOURNAL NO")]
+        REJ[("DALYREJS generation<br/>data group. LRECL 430")]
         FEED -->|"read sequentially"| JOB
         JOB -.->|"three writes. No rollback"| SHARED
         JOB -->|"reject records"| REJ
     end
 
-    subgraph AFTER["After. One synchronous decision"]
+    subgraph AFTER["After. Synchronous call"]
         REQ["POST /authorizations"]
-        RULES["Four decline rules in source order"]
-        PRIV[("Private schema authorization_service. Outbox included")]
-        EVENT{{"At most one outcome event per call"}}
-        CONS["Three independent consumers"]
+        RULES["Four decline rules<br/>in source order"]
+        PRIV[("Private schema<br/>authorization_service.<br/>Outbox included")]
+        EVENT{{"At most one outcome<br/>event per call"}}
+        CONS["Three independent<br/>consumers"]
         REQ -->|"decides and returns"| RULES
         RULES -->|"one local transaction"| PRIV
         PRIV ==>|"relay publishes after commit"| EVENT
         EVENT ==> CONS
     end
+
+    BEFORE ~~~ AFTER
 ```
 
 Legend for Figure 2:
 
-- **Left subgraph** — the source path. A clock starts the work, a sequential file feeds it, and every dataset is shared with other programs.
-- **Right subgraph** — the delivered path. A client request starts the work and the schema is private to this service.
-- **Plain arrow** — in-process or synchronous flow. **Thick arrow** — an asynchronous publish or consume, which exists only on the right.
+- **Upper subgraph** — the source path. A clock starts the work, a sequential file feeds it, and every dataset is shared with other programs.
+- **Lower subgraph** — the delivered path. A client request starts the work and the schema is private to this service. An invisible link holds it below the source path, so the figure reads top to bottom.
+- **Plain arrow** — in-process or synchronous flow. **Thick arrow** — an asynchronous publish or consume, which exists only in the lower subgraph.
 - **Dotted arrow** — direct access to a dataset that other programs also write.
 - **Cylinder** — stored data. **Hexagon** — a Kafka topic.
-- The three writes on the left run unconditionally with no rollback, and every shared dataset disables recovery and journalling. Both properties are why the right side commits its decision and its event together.
+- The three writes in the upper subgraph run unconditionally with no rollback, and every shared dataset disables recovery and journalling. Both properties are why the lower subgraph commits its decision and its event together.
 
 <br/>
 
 ## How to extend
 
-- **Add a decline rule.** The seam is not invented: `app/cbl/CBTRN02C.cbl:L377` marks it. It is also not a one-file change, because the reason code is a governed part of the wire contract. Six edits are required, all but the first outside this module:
-  1. Add a class implementing `DeclineRule` under `domain/rules/`, annotated `@Order` with a value that keeps the source sequence. The delivered four are `@Order(10)`, `(20)`, `(30)` and `(40)`, and `domain/AuthorizationChainCompositionTest` asserts both the order and the segment each rule belongs to.
-  2. Add the code and its verbatim source text to `libs/event-contracts/src/main/java/com/carddemo/events/DeclineReason.java`. That enum, not a local resource, is the registry every service reads.
-  3. Extend the `declineReasonCode` and `declineReasonDescription` enumerations in `libs/event-contracts/src/main/resources/schemas/transaction-declined-v1.json` and `transaction-declined-v3.json`, which is the version every decline publishes under. Leave `transaction-declined-v2.json` alone: it is retained rather than published, its two fields are fixed to the single `const` value `0100`, and `contracts/released-contracts.json` records that no producer may write it.
-  4. Add the value to `libs/event-contracts/src/test/java/com/carddemo/events/SchemaBackwardCompatibilityTest.java`, which fails the build on a change an existing consumer could not read. Widening an enumeration is compatible; narrowing one is not.
-  5. Add the code to the `declineReasonCode` enumeration and the 422 example of `src/main/resources/openapi.yaml`, which `api/OpenApiContractTest` compares against the delivered controller.
-  6. Add a row to `equivalence-tests/src/test/resources/expected/dailytran-authorization-decisions-model-a.csv` if the new rule can fire against the shipped fixture, and a constructed case to `AuthorizationDecisionEquivalenceTest` if it cannot.
+- **Add a decline rule.** The seam is not invented: `app/cbl/CBTRN02C.cbl:L377` marks it. It is not a one-file change either, because the reason code is a governed part of the wire contract that several tests hold closed. **Seventeen files change to reach a green build**: fourteen carrying the code and the contract, and three documents the build holds to them. The count was measured rather than estimated, by adding a fifth reason to a disposable copy and running `mvn -B -ntp verify` until it passed.
+
+  **In this module — seven files, in the order the build asks for them.**
+  1. Add a class implementing `DeclineRule` under `domain/rules/`, annotated `@Order` with a value that keeps the source sequence. The delivered four are `@Order(10)`, `(20)`, `(30)` and `(40)`, and `domain/AuthorizationChainCompositionTest` asserts both the order and the segment each rule belongs to. The annotation is a requirement, not a convention.
+  2. Add the code and its text to the two `AuthorizationResponse` enumerations of `src/main/resources/openapi.yaml`, and add the matching branch to `DeclinedAuthorization` beside it. `api/OpenApiContractTest` compares both enumerations against `DeclineReason` and fails on either alone. It does not read the branch list, so that half is a duty rather than a gate. A document missing the branch describes a 422 body without naming its code.
+  3. Raise the closed-set count in `api/AuthorizationControllerTest`, `domain/AuthorizationChainCompositionTest` and `messaging/EventSerializationTest`. Each asserts the number of codes the source assigns, which is the guard that makes an accidental fifth code fail rather than ship.
+  4. Add the reason to the factory-coverage list of `api/AuthorizationResponseTest`. A reason that resolves an account is built by `AuthorizationResponse.decline`; one that resolves none needs its own factory beside `declineUnresolvedCard`, which is a change to `api/AuthorizationResponse.java` as well.
+  5. Raise the expected series count of `ObservabilityConfig.DECISIONS_COUNTER` in `config/MeterDeclarationTest`. The binder pre-registers one series per reason from the enum, so the meter needs no edit and the expected count does.
+
+  **In `libs/event-contracts` — six files.**
+  6. Add the code and its verbatim source text to `src/main/java/com/carddemo/events/DeclineReason.java`. That enum, not a local resource, is the registry every service reads.
+  7. Extend the `declineReasonCode` and `declineReasonDescription` enumerations, and add the matching `oneOf` pair, in **both** `src/main/resources/schemas/transaction-declined-v1.json` and `src/main/resources/schemas/transaction-declined-v3.json`. Version 3 is the contract this service publishes for a decline that resolved an account, and version 1 is the ancestor it must stay compatible with. Widening one and not the other fails `SchemaBackwardCompatibilityTest.everyVersionAcceptsWhatItsPredecessorRequires`, because a version admitting fewer values than its predecessor breaks a consumer as surely as a removal does.
+  8. Leave `transaction-declined-v2.json` alone unless the new rule can fire before an account is resolved. That document fixes both fields to the single `const` value `0100`, because a reason-0100 decline names no account and is keyed by transaction instead. `domain/AuthorizationService` refuses a chain that declines without resolving an account under any other code, so extending version 2 is a deliberate act rather than an accident.
+  9. Add the value to `src/test/java/com/carddemo/events/SchemaBackwardCompatibilityTest.java`, which fails the build on a change an existing consumer could not read. Widening an enumeration is compatible; narrowing one is not.
+  10. Extend the two switch expressions of `src/test/java/com/carddemo/events/EventRoundTripTest.java` that map a reason to its code and to its text. Both are exhaustive over the enum, so this one is a compilation failure rather than a test failure.
+  11. Add the pair to the decline map of `src/test/java/com/carddemo/events/EventSchemaContractTest.java`, which proves each code pairs only with its own text.
+
+  **In `services/ledger-posting-service` — one file.**
+  12. Raise the two closed-set assertions in `services/ledger-posting-service/src/test/java/com/carddemo/ledger/domain/RejectRecorderTest.java`. The reject recorder reads the code off the event, so that module's production path needs no edit.
+
+  **Three documents the build holds to the code.**
+  13. Give the new class a backward row in the `## Backward: every target path` table of [the traceability matrix](../../docs/traceability-matrix.md). The provenance cell must name the members the file's own comments cite, or open `None cited` when it cites none, because `DocumentationContractTest` recomputes every cell from disk. Then raise the closure arithmetic the same section publishes: its group row, its total, and each sentence stating the delivered-path count. Rule 1 asks for one row per delivered path, so a new file with no row and stale arithmetic fails three assertions at once.
+  14. Restate the affected rows of the per-module count table in [equivalence results](../../docs/equivalence-results.md) once the suite is green, along with the reactor total and the sentence that repeats it. A class parameterized over the enum gains cases: the ledger module gained three in the measured walk. `DocumentationContractTest.thePublishedTestCountsAreTheOnesThisBuildMeasured` compares the published figures against this build's own reports, and `scripts/check-published-test-counts.sh` is the oracle to run afterwards.
+  15. Re-publish, in [the prose report](../../docs/prose-validation.md), the digest and measurement of every scored document the work above changed — this guide included. `PresentationAndProseContractTest` binds each scored document to its own bytes, so an edited document with a stale digest fails the build.
+
+  **Coverage, once the rule can be exercised against the fixture.**
+  16. Add a row to `equivalence-tests/src/test/resources/expected/dailytran-authorization-decisions-model-a.csv` if the new rule can fire against the shipped fixture, and a constructed case to `AuthorizationDecisionEquivalenceTest` if it cannot. Neither is a build gate. Both are what keeps the parity evidence covering the whole delivered chain.
 - **Add a consumer of this service's events.** Subscribe a new service to `transaction.authorized` under its own consumer group. **No change to this service is required**, which is the extensibility claim made concrete.
 - **Swap the event bus.** Provide another implementation of `messaging/EventPublisherPort`, the platform's single event-bus seam.
 

@@ -454,9 +454,11 @@ public class SecurityConfig {
                         // continuation through this chain as well. Neither is a request a
                         // caller made, and authorizing them again turns every 404 into a 403
                         // and hides the real status from a client. The original request was
-                        // authorized or refused before either dispatch was created, and
-                        // src/main/resources/application.yml leaves every
-                        // server.error.include-* key at a value that reveals no detail.
+                        // authorized or refused before either dispatch was created,
+                        // src/main/resources/application.yml sets every
+                        // server.error.include-* key to the value that reveals no detail,
+                        // and config/ContainerErrorDocument answers the error dispatch
+                        // itself, so no framework body reaches a caller.
                         .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.ASYNC)
                             .permitAll()
                         .requestMatchers(EndpointRequest.to("health")).permitAll()
@@ -530,9 +532,11 @@ public class SecurityConfig {
                         // continuation through this chain as well. Neither is a request a
                         // caller made, and authorizing them again turns every 404 into a 403
                         // and hides the real status from a client. The original request was
-                        // authorized or refused before either dispatch was created, and
-                        // src/main/resources/application.yml leaves every
-                        // server.error.include-* key at a value that reveals no detail.
+                        // authorized or refused before either dispatch was created,
+                        // src/main/resources/application.yml sets every
+                        // server.error.include-* key to the value that reveals no detail,
+                        // and config/ContainerErrorDocument answers the error dispatch
+                        // itself, so no framework body reaches a caller.
                         .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.ASYNC)
                             .permitAll()
                         // Ahead of every route rule, because a request refused here must be

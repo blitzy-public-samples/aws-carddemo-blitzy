@@ -374,7 +374,14 @@ The following tasks modify the read-only legacy tree. They belong to the source 
 - **Check:** Resolve every legacy sample-data link after the source owner approves the edit.
 - **Behavior change:** Documentation only.
 
-That path stays as it is here for a scope reason, not an oversight. Correcting it has nothing to do with this migration, so it was recorded rather than folded into a scope the project owner deliberately constrained. Rule 3 also asks a contributor to fill gaps rather than edit content that is already accurate for its own audience. Apart from this one path, the legacy instructions are accurate.
+### Correct the first table-of-contents anchor of the root README
+
+- **Change:** Point the first contents entry of the root `README.md` at the heading it names.
+- **Where:** `README.md:L3` links to `#carddemo----mainframe-card-demo-application`, and the heading it names at `README.md:L1` renders the anchor `#carddemo----mainframe-carddemo-application`. `CardDemo` is one word, so the generated anchor carries no hyphen between `card` and `demo`, and the link resolves to nothing. Every one of the other 33 links in that file resolves.
+- **Check:** Open the rendered file and follow the first contents entry to the title.
+- **Behavior change:** Documentation only. The line predates this engagement and sits inside content it preserves verbatim, so the edit belongs to the source owner.
+
+Both items stay as they are here for a scope reason, not an oversight. Correcting either has nothing to do with this migration, so both were recorded rather than folded into a scope the project owner deliberately constrained. Rule 3 also asks a contributor to fill gaps rather than edit content that is already accurate for its own audience. Apart from that path and that anchor, the legacy instructions are accurate.
 
 ## Work the integration remediation surfaced
 
@@ -640,3 +647,25 @@ Five appended items read the same way. Item 32 records that five batch programs 
 - **Why now is not necessary:** 11.0.25 does not exist yet. Maven Central publishes nothing above 11.0.24 on the 11.0.x line, which the artifact metadata confirms. Apache rates the advisory Low, it covers 11.0.0-M20 through 11.0.24, and its subject is the WebSocket chat sample of the examples web application. An embedded Tomcat ships no examples web application and no service here declares a WebSocket endpoint, so the affected code is absent rather than reachable.
 - **Check:** `curl -sI https://repo1.maven.org/maven2/org/apache/tomcat/embed/tomcat-embed-core/11.0.25/tomcat-embed-core-11.0.25.pom` answering 200 rather than 404 is the signal to act. After raising, `mvn -B -ntp -o clean verify` and confirm the enforcer reports no floor below the pin.
 - **Behavior change:** None. The change is a patch release of the servlet container, and no code of this platform reaches the example the advisory names.
+
+## Work the automated-test gate QA pass surfaced
+
+Two gaps in the gate itself were measured rather than closed. Each would add tooling or runtime the plan does not carry, so each is a decision for an owner.
+
+### Measure code coverage and publish the figure
+
+- **Change:** Add a coverage tool to the build, publish the line and branch figure per module, and decide afterwards whether a threshold should fail the build.
+- **Where:** No coverage plugin is declared in any of the ten build descriptors, and `.github/workflows/ci.yml` runs no coverage step. `docs/equivalence-results.md` publishes case counts, which count tests rather than measure reach.
+- **Procedure:** Choose a tool that supports class-file release 25, declare it in `card-platform/pom.xml` under `pluginManagement`, and bind its report goal after the test phases. Upload the report from the unit stage beside the report artifacts that stage already keeps. Leave the threshold unset in the first change, so the figure is read before it gates anything.
+- **Check:** Run `CI=true mvn -B -ntp clean verify` and read the per-module report. The published test counts must not move, because measuring coverage adds no test.
+- **Why it is still here:** Section 0.5.1 of the plan pins every dependency this build resolves and lists the four it deliberately excludes. A coverage agent is a new hand-pinned dependency that instruments every test JVM, and no requirement asks for one. The evidence of reach today is mutation sensitivity: sixteen deliberate defects were planted during testing and every one was caught. That is a measure of quality without a percentage, which is why this is a task rather than a fix.
+- **Behavior change:** No. Nothing a service does changes.
+
+### Apply the Kubernetes manifests in the gate
+
+- **Change:** Apply the eleven manifests under `deploy/k8s/` to a throwaway cluster in the pipeline and read the platform there, as the Compose path is read already.
+- **Where:** The Compose path is exercised on every run. The container stage of `.github/workflows/ci.yml` builds the six images and runs `docker compose up --detach --wait`. It then requires UP from all six management ports, posts one authenticated authorization, and reads each consumer's own `processed_event` row for the event it produced. Nothing does the same for the manifests: `kubectl`, `kind`, `minikube` and `helm` appear nowhere in the workflow, and `KubernetesDeploymentContractTest` reads the eleven files as text. `scripts/start-demo.sh` is the other artifact no run executes: it is parsed with `bash -n` and read as text by `DemoBootstrapContractTest`.
+- **Procedure:** Add one stage after the container stage. It starts a single-node cluster, loads the six images with `deploy/k8s/load-images.sh`, and applies the manifests in name order. It then waits for every Deployment to report available and makes the same authorization reading the container stage makes. Delete the cluster in a step that runs whether the stage passed or failed. A second and cheaper stage can run `scripts/start-demo.sh` against a clean checkout, because that is the path `docs/onboarding.md` advertises.
+- **Check:** The new stage must fail when a manifest is broken. Prove that once by pointing one Deployment at an image tag that does not exist, then restore it.
+- **Why it is still here:** The plan calls this a demo rather than a production deployment and asks for minimal, swappable infrastructure. A cluster started on every run is neither. What the gate cannot regress-detect is narrower than it first looks. The behaviour is covered by the container stage, and by integration suites that run against a real PostgreSQL and a real broker. It is the manifests and the advertised bootstrap script that no run exercises.
+- **Behavior change:** No. The change is to the pipeline.

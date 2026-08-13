@@ -411,9 +411,14 @@ class OutboxRelayTest {
         OutboxEventEntity mine = postedRow();
         OutboxEventEntity theirs = postedRow();
         OutboxRelay other = relayIdentifiedAs(OTHER_INSTANCE);
+        // A pass claims until the claim answers nothing, so each of the two passes below makes two
+        // calls: one that takes its own row and one that finds the table holding nothing due. The
+        // empty answer between the two rows is what the real query does after a row is claimed.
         when(outboxEvents.claimDueRows(any(), any()))
                 .thenReturn(List.of(mine))
-                .thenReturn(List.of(theirs));
+                .thenReturn(List.of())
+                .thenReturn(List.of(theirs))
+                .thenReturn(List.of());
         when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
                 .thenAnswer(call -> CompletableFuture.completedFuture(null));
 
@@ -424,7 +429,7 @@ class OutboxRelayTest {
         assertTrue(theirs.isPublished());
         assertThat(mine.getEventId()).isNotEqualTo(theirs.getEventId());
         verify(kafkaTemplate, times(2)).send(recordFor(POSTED_TOPIC, ACCOUNT_ID));
-        verify(outboxEvents, times(2)).claimDueRows(any(), any());
+        verify(outboxEvents, times(4)).claimDueRows(any(), any());
     }
 
     @Test
@@ -632,6 +637,160 @@ class OutboxRelayTest {
     private static OutboxEventEntity rowOfUnknownType() {
         return new OutboxEventEntity(UUID.randomUUID(), UNCONFIGURED_EVENT_TYPE, ACCOUNT_ID,
                 "{}", Instant.now().minus(Duration.ofMinutes(1L)));
+    }
+
+    /**
+     * One account's backlog drains inside one pass, in the order the claim query hands the rows over.
+     *
+     * <p>This is the property a performance review found missing. {@code claimDueRows} answers with
+     * the due head row of each aggregate, so a pass that claimed once published one event per account
+     * and the scheduled delay then set the rate: five events owed to one account took five passes,
+     * which at a five-hundred-millisecond delay is two a second whatever {@code batch-size} allowed.
+     * A pass now repeats the claim, and each cycle takes the head that account has once the previous
+     * head is published.
+     *
+     * <p>The claim is stubbed here as the real query behaves rather than as a fixed list: the oldest
+     * non-terminal row of each aggregate whose attempt is due, bounded by the limit it was asked for.
+     * A fixed list would prove nothing about a second cycle, because it answers the same rows however
+     * many times it is called. The expected order is read from the rows themselves under the query's
+     * own ordering rather than written out, so a tie between two creation stamps cannot make this
+     * assertion arbitrary.
+     */
+    @Test
+    void oneAccountsBacklogDrainsInOnePassInTheOrderTheClaimHandsItOver() {
+        List<OutboxEventEntity> backlog = new ArrayList<>();
+        for (int at = 0; at < 5; at++) {
+            backlog.add(postedRowWithTransactionId(String.format("%016d", 683580 + at)));
+        }
+        answerClaimAsTheQueryWould(backlog);
+        List<String> sent = new ArrayList<>();
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
+                .thenAnswer(call -> {
+                    ProducerRecord<String, Object> record = call.getArgument(0);
+                    sent.add(((TransactionPosted) record.value()).transactionId());
+                    return CompletableFuture.completedFuture(null);
+                });
+
+        relay.publishPendingEvents();
+
+        assertThat(backlog).allMatch(OutboxEventEntity::isPublished);
+        assertThat(sent).containsExactlyElementsOf(backlog.stream()
+                .sorted(java.util.Comparator.comparing(OutboxEventEntity::getCreatedAt)
+                        .thenComparing(OutboxEventEntity::getEventId))
+                .map(row -> readTransactionId(row))
+                .toList());
+        verify(kafkaTemplate, times(5)).send(recordFor(POSTED_TOPIC, ACCOUNT_ID));
+        // One count per pass, carrying what the pass published, so five events reached the broker
+        // inside the single pass this test ran.
+        verify(meters).recordEventsPublished(5L);
+    }
+
+    /**
+     * The batch size still bounds one pass, across every cycle that pass runs.
+     *
+     * <p>Repeating the claim would otherwise make {@code batch-size} bound a cycle and leave a pass
+     * bounded only by its deadline. A pass claims at most the configured number of rows in total, so
+     * the three rows below take two passes even though all three are owed to one account and all
+     * three are due throughout.
+     */
+    @Test
+    void onePassClaimsNoMoreRowsThanTheConfiguredBatchSize() {
+        List<OutboxEventEntity> backlog = List.of(
+                postedRowWithTransactionId("0000000000683580"),
+                postedRowWithTransactionId("0000000000683581"),
+                postedRowWithTransactionId("0000000000683582"));
+        answerClaimAsTheQueryWould(backlog);
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
+                .thenAnswer(call -> CompletableFuture.completedFuture(null));
+        OutboxRelay bounded = new OutboxRelay(outboxEvents, kafkaTemplate,
+                JsonMapper.builder().build(), transactionTemplate,
+                propertiesWithBatchSizeOf(2), meters);
+
+        bounded.publishPendingEvents();
+
+        assertThat(backlog.stream().filter(OutboxEventEntity::isPublished).count())
+                .withFailMessage("a pass publishes no more rows than its batch size")
+                .isEqualTo(2L);
+        OutboxEventEntity waiting = backlog.stream()
+                .filter(row -> !row.isPublished())
+                .findFirst()
+                .orElseThrow();
+        assertThat(waiting.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.PENDING);
+        assertThat(waiting.getAttemptCount())
+                .withFailMessage("a row a pass never reached has spent no attempt")
+                .isZero();
+        assertThat(waiting.getClaimedBy()).isNull();
+
+        bounded.publishPendingEvents();
+
+        assertThat(backlog).allMatch(OutboxEventEntity::isPublished);
+    }
+
+    /**
+     * Answers the claim the way the real query does, so a cycle sees the effect of the one before it.
+     *
+     * <p>The query returns the oldest non-terminal row of each aggregate whose attempt is due,
+     * ordered by that due time, bounded by the limit. Modelling it is what lets a test assert
+     * anything about a second cycle: the rows this answers change as the pass publishes them.
+     *
+     * @param rows every row the store holds, in write order
+     */
+    private void answerClaimAsTheQueryWould(List<OutboxEventEntity> rows) {
+        when(outboxEvents.claimDueRows(any(), any())).thenAnswer(call -> {
+            Instant now = call.getArgument(0);
+            Limit bound = call.getArgument(1);
+            Map<String, OutboxEventEntity> heads = new java.util.LinkedHashMap<>();
+            rows.stream()
+                    .filter(row -> row.getRelayState() == OutboxEventEntity.RelayState.PENDING
+                            || row.getRelayState() == OutboxEventEntity.RelayState.CLAIMED)
+                    .sorted(java.util.Comparator.comparing(OutboxEventEntity::getCreatedAt)
+                            .thenComparing(OutboxEventEntity::getEventId))
+                    .forEach(row -> heads.putIfAbsent(row.getAggregateId(), row));
+            return heads.values().stream()
+                    .filter(row -> row.getRelayState() == OutboxEventEntity.RelayState.PENDING)
+                    .filter(row -> !row.getNextAttemptAt().isAfter(now))
+                    .limit(bound.max())
+                    .toList();
+        });
+    }
+
+    /**
+     * Writes one posted-event row for the shared account, carrying the transaction identifier given.
+     *
+     * @param transactionId sixteen characters, so each row of one account is distinguishable on the
+     *                      wire
+     * @return the stored row
+     */
+    private OutboxEventEntity postedRowWithTransactionId(String transactionId) {
+        return writer.write(TransactionPosted.forAccount(ACCOUNT_ID, transactionId, POSTED_BALANCE,
+                POSTED_AT, POSTED_AMOUNT, MASKED_CARD_NUMBER));
+    }
+
+    /**
+     * Reads the transaction identifier out of one stored payload.
+     *
+     * @param row the stored row
+     * @return the identifier its payload carries
+     */
+    private static String readTransactionId(OutboxEventEntity row) {
+        return JsonMapper.builder().build()
+                .readValue(row.getPayload(), TransactionPosted.class).transactionId();
+    }
+
+    /**
+     * Builds settings that differ from the shipped ones in the batch size alone.
+     *
+     * @param batchSize rows one pass may claim in total
+     * @return the configuration
+     */
+    private static LedgerProperties propertiesWithBatchSizeOf(int batchSize) {
+        LedgerProperties shipped = properties();
+        LedgerProperties.Outbox.Relay relay = shipped.outbox().relay();
+        return new LedgerProperties(shipped.kafka(), shipped.consumer(),
+                new LedgerProperties.Outbox(new LedgerProperties.Outbox.Relay(
+                        relay.fixedDelayMs(), batchSize, relay.instanceId(), relay.claimTimeout(),
+                        relay.maxDurationMs()), shipped.outbox().publishedRetentionHours()),
+                shipped.retention());
     }
 
     /**

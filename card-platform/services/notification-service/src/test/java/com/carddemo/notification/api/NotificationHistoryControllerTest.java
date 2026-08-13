@@ -42,6 +42,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -296,12 +297,12 @@ final class NotificationHistoryControllerTest {
      * @param total the total those rows carry
      */
     private void aggregateOver(List<StatementTransactionEntity> rows, BigDecimal total) {
-        when(statementTransactions.totalsOfCard(CARD_TOKEN)).thenReturn(new FakeTotals(
+        when(statementTransactions.totalsOfCard(CARD_TOKEN)).thenReturn(Optional.of(new FakeTotals(
                 rows.size(), total,
                 rows.stream().map(StatementTransactionEntity::getAmount)
                         .map(BigDecimal::abs)
                         .reduce(BigDecimal.ZERO.setScale(2), BigDecimal::add),
-                rows.isEmpty() ? null : rows.get(0).getMaskedCardNumber()));
+                rows.isEmpty() ? null : rows.get(0).getMaskedCardNumber())));
         when(notifications.totalOfCard(eq(CARD_TOKEN), any())).thenReturn(total);
     }
 
@@ -951,7 +952,7 @@ final class NotificationHistoryControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.transactionCount").value(3));
 
-            // Two reads answer one request: the aggregate over the key, and one bounded page of it.
+            // Two reads answer one request: the card's summary row, and one bounded page of it.
             // The continuation finder belongs to a request carrying a cursor and this one carries none.
             verify(statementTransactions).totalsOfCard(CARD_TOKEN);
             verify(statementTransactions)
@@ -1028,8 +1029,9 @@ final class NotificationHistoryControllerTest {
      *
      * <p>{@code app/cbl/CBSTM03A.CBL} reads every row of one card between two key breaks and
      * {@code app/cbl/CBSTM03A.CBL:L429} totals all of them, so the count and the total this route
-     * publishes cover the whole card. They are read as one aggregate over the key, which is what lets
-     * the entries themselves be paged without reporting a statement over part of a card.</p>
+     * publishes cover the whole card. They are read from one row of {@code statement_card_total}, which
+     * is what lets the entries themselves be paged without reporting a statement over part of a
+     * card.</p>
      *
      * <p>The entries are paged because the route once read every retained row of a card into one
      * response. A card's history grows by one entry per posted transaction until retention removes
@@ -1399,8 +1401,9 @@ final class NotificationHistoryControllerTest {
          */
         @Test
         void theCountDescribesTheHistoryAndNotThePage() throws Exception {
-            when(statementTransactions.totalsOfCard(CARD_TOKEN)).thenReturn(new FakeTotals(
-                    900L, THREE_ROW_TOTAL, THREE_ROW_TOTAL.abs(), MASKED_CARD_NUMBER));
+            when(statementTransactions.totalsOfCard(CARD_TOKEN)).thenReturn(Optional.of(
+                    new FakeTotals(900L, THREE_ROW_TOTAL, THREE_ROW_TOTAL.abs(),
+                            MASKED_CARD_NUMBER)));
 
             mockMvc.perform(get(ROUTE, CARD_TOKEN))
                     .andExpect(status().isOk())

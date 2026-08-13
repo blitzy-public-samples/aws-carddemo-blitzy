@@ -218,12 +218,18 @@
       service integration stage all behave exactly as before. It sits in this module
       rather than in the parent because the parent is also the parent of
       equivalence-tests, whose Failsafe classes are the very ones that stage runs.
+
+      The activation reads the value and not the presence. Without it Maven activates the
+      profile whenever the property is named at all, so -DskipServiceIntegrationTests=false
+      skipped the suite an operator had just asked for and reported a green build over
+      nothing. The flag given no value still activates it, because Maven assigns "true".
     -->
     <profile>
       <id>skip-service-integration-tests</id>
       <activation>
         <property>
           <name>skipServiceIntegrationTests</name>
+          <value>true</value>
         </property>
       </activation>
       <build>

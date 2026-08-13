@@ -32,6 +32,13 @@ import jakarta.validation.constraints.Size;
  * {@code domain} performs the parse. Neither runs here. Rationale for the constraint split and for
  * the {@code groupId} restriction: {@code card-platform/docs/decision-log.md}.</p>
  *
+ * <p>The width bounds are enforced on the update route by {@code api/AccountRecordMapper}, which
+ * reads every submitted value against the width below before it maps anything and answers the one
+ * message {@code domain/validation/DeclaredWidthValidator} composes. The declaration here and that
+ * pass carry the same numbers, and {@code src/main/resources/openapi.yaml} publishes them as
+ * {@code maxLength}. A caller validating this record directly through Bean Validation — which
+ * {@code src/test/java} does — reads the same bounds from the annotations.</p>
+ *
  * <p>The record carries no account identifier. {@code ACUP-NEW-ACCT-ID-X PIC X(11)} at
  * {@code app/cbl/COACTUPC.cbl:L759} reaches the enclosing request type. The record also carries no
  * customer identifier, since {@code 10 ACUP-NEW-CUST-DATA.} opens at
@@ -264,6 +271,18 @@ public record AccountDataRequest(
      * exactly {@link #EDIT_VARIABLE_NAME_WIDTH} characters wide, so the move keeps every character.
      */
     public static final String CURRENT_CYCLE_DEBIT_LABEL = "Current Cycle Debit Limit";
+
+    /**
+     * Label {@link #groupId()} is named by: {@value #GROUP_ID_LABEL}.
+     *
+     * <p>The program moves no label for this component, because no edit of
+     * {@code app/cbl/COACTUPC.cbl} reads it. The text comes from the screen instead:
+     * {@code INITIAL='Account Group:'} at {@code app/bms/COACTUP.bms:L228} is what an operator saw
+     * beside the field, and the colon belongs to the screen rather than to the name. The width edit
+     * {@code domain/validation/DeclaredWidthValidator} runs is the one message this component
+     * carries.
+     */
+    public static final String GROUP_ID_LABEL = "Account Group";
 
     /**
      * The characters {@code groupId} may hold: printable ones and nothing else.

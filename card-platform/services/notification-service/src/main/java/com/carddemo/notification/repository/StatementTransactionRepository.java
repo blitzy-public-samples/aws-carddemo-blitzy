@@ -4,6 +4,7 @@ import com.carddemo.cobol.PanMasker;
 import com.carddemo.notification.entity.StatementTransactionEntity;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -25,13 +26,14 @@ import org.springframework.data.repository.query.Param;
  * renders at most {@code NotificationRenderer.MAXIMUM_STATEMENT_ROWS} rows and passes that number,
  * and {@code GET /notifications/&#123;cardToken&#125;} passes one page.
  *
- * <p>No read of this interface is unbounded. Passing {@link Limit#unlimited()} would materialise
- * every retained row of a card, total them in memory and copy the list, so the work and the response
- * would both grow with one card's history. The history route instead reads whole-history metadata
- * through {@link #totalsOfCard(String)}, which is one aggregate over the key, and returns detail
- * rows one bounded page at a time through
+ * <p>No read of this interface is unbounded. The history route once passed
+ * {@link Limit#unlimited()}, so one request materialised every retained row of a card, totalled them
+ * in memory and copied the list: the work and the response both grew with one card's history and
+ * nothing capped either. The route now reads whole-history metadata through
+ * {@link #totalsOfCard(String)}, which is one keyed read of {@code statement_card_total}, and
+ * returns detail rows one bounded page at a time through
  * {@link #findByIdCardTokenAndIdTransactionIdGreaterThanOrderByIdTransactionIdAsc(String, String,
- * Limit)}. The count and the total cover the whole card, so they describe the row set
+ * Limit)}. The count and the total still cover the whole card, so they describe the row set
  * {@code app/cbl/CBSTM03A.CBL:L429} would have totalled between two key breaks.
  *
  * <p>An alert reads the descending finder under
@@ -130,13 +132,21 @@ public interface StatementTransactionRepository
                     String cardToken, String afterTransactionId, Limit limit);
 
     /**
-     * Returns one card's whole-history metadata as a single aggregate row.
+     * Returns one card's whole-history metadata as a single row, or empty when the read model has
+     * never held a row for that card.
      *
-     * <p>One statement over the primary-key prefix {@code card_token} answers everything the history
+     * <p>One primary-key lookup of {@code statement_card_total} answers everything the history
      * response needs about the rows it does not carry: how many there are, what they sum to, and the
-     * masked number that names the card. Reading them as an aggregate is what lets the response hold
-     * a bounded page while still describing the whole card, and it replaces a read of every row
-     * followed by an in-memory total.
+     * masked number that names the card. Reading them from a maintained row is what lets the response
+     * hold a bounded page while still describing the whole card, at a cost that does not grow with
+     * the card.
+     *
+     * <p>This was an aggregate over {@code card_token} until a performance review measured it. On a
+     * card holding 21,299 rows it cost a sequential scan of 1,228 buffers and 7.775 ms on every
+     * request, against 4 buffers and 0.048 ms on a card holding one, and the page size changed
+     * neither figure: the page was bounded and the three numbers beside it were not.
+     * {@code src/main/resources/db/migration/V10__statement_card_totals.sql} maintains those numbers
+     * by delta instead, in the same statements that change the rows they describe.
      *
      * <p>{@code absoluteTotal} is the reason this returns three numbers rather than two.
      * {@code domain/NotificationService} reproduces {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at
@@ -148,25 +158,26 @@ public interface StatementTransactionRepository
      * addition could have overflowed, and the sum is then exactly what the source would have
      * accumulated. That is the test {@code NotificationService} applies.
      *
-     * <p>A card with no row answers one row of zeros carrying a {@code null} masked number, because
-     * {@code COUNT} always answers. The route reads {@code transactionCount} to tell that case from a
-     * card that has history.
+     * <p>A card the read model has never held answers nothing, where the aggregate answered one row
+     * of zeros. A card whose every row retention has removed answers a row carrying a count of zero,
+     * because the card stays known. Both mean the same thing to the route, which has one answer for
+     * a card with no history.
      *
      * @param cardToken the stored card token
-     * @return the aggregate over that card's rows, never {@code null}
+     * @return that card's totals, or empty when no row of this table names the card
      */
     @Query(value = """
-            SELECT COUNT(*)                        AS transactionCount,
-                   COALESCE(SUM(amount), 0)        AS totalAmount,
-                   COALESCE(SUM(ABS(amount)), 0)   AS absoluteTotal,
-                   MIN(masked_card_number)         AS maskedCardNumber
-              FROM statement_transaction
+            SELECT transaction_count  AS transactionCount,
+                   total_amount       AS totalAmount,
+                   absolute_total     AS absoluteTotal,
+                   masked_card_number AS maskedCardNumber
+              FROM statement_card_total
              WHERE card_token = :cardToken
             """, nativeQuery = true)
-    CardHistoryTotals totalsOfCard(@Param("cardToken") String cardToken);
+    Optional<CardHistoryTotals> totalsOfCard(@Param("cardToken") String cardToken);
 
     /**
-     * The aggregate {@link #totalsOfCard(String)} answers with.
+     * The row {@link #totalsOfCard(String)} answers with.
      *
      * <p>An interface rather than a record, so Spring Data maps the aliased columns of the native
      * statement by accessor name without a constructor contract to keep in step.
@@ -191,9 +202,9 @@ public interface StatementTransactionRepository
         BigDecimal getAbsoluteTotal();
 
         /**
-         * @return the masked card number the card's rows carry, or {@code null} when there is no row.
-         *         Every row of one card carries the same masked form, so which row answers cannot
-         *         matter
+         * @return the masked card number the card's rows carry, or {@code null} for a card whose
+         *         every row retention has removed. Every row of one card carries the same masked
+         *         form, so which row the value was taken from cannot matter
          */
         String getMaskedCardNumber();
     }
@@ -217,6 +228,20 @@ public interface StatementTransactionRepository
      * rather than accumulated, so a later delivery of one transaction carries the same values and
      * replacing them cannot lose anything a previous delivery established.
      *
+     * <p>The statement also carries this card's totals forward, which is why it opens with two
+     * common table expressions. {@code prior} reads the row as it stood before the statement, and
+     * {@code totals} adds the difference that reading implies to
+     * {@code statement_card_total}: one row and this amount where the key was not held, and no row
+     * and the difference between the two amounts where it was. PostgreSQL runs a data-modifying
+     * expression exactly once and to completion whether or not the statement that follows reads its
+     * output, and every expression here sees the same snapshot, so the delta describes the row this
+     * statement is about to replace rather than the row it leaves behind. The totals therefore stay
+     * equal to an aggregate over the rows, and they stay equal through a redelivery.
+     *
+     * <p>That is what makes the history route's whole-card figures cost one index lookup. See
+     * {@link #totalsOfCard(String)} and
+     * {@code src/main/resources/db/migration/V10__statement_card_totals.sql}.
+     *
      * @param cardToken           the card token, the first part of the key
      * @param transactionId       the transaction identifier, the second part
      * @param maskedCardNumber    masked card number, display data alone
@@ -235,6 +260,27 @@ public interface StatementTransactionRepository
      */
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query(value = """
+            WITH prior AS (
+                SELECT amount
+                  FROM statement_transaction
+                 WHERE card_token = :cardToken
+                   AND transaction_id = :transactionId
+            ), totals AS (
+                INSERT INTO statement_card_total AS held (card_token, transaction_count,
+                            total_amount, absolute_total, masked_card_number)
+                     VALUES (:cardToken,
+                            CASE WHEN EXISTS (SELECT 1 FROM prior) THEN 0 ELSE 1 END,
+                            :amount - COALESCE((SELECT amount FROM prior), 0),
+                            ABS(:amount) - COALESCE((SELECT ABS(amount) FROM prior), 0),
+                            :maskedCardNumber)
+                ON CONFLICT ON CONSTRAINT pk_statement_card_total DO UPDATE
+                        SET transaction_count  = held.transaction_count
+                                                 + EXCLUDED.transaction_count,
+                            total_amount       = held.total_amount + EXCLUDED.total_amount,
+                            absolute_total     = held.absolute_total + EXCLUDED.absolute_total,
+                            masked_card_number = EXCLUDED.masked_card_number
+                  RETURNING held.card_token
+            )
             INSERT INTO statement_transaction (card_token, transaction_id, masked_card_number,
                         type_code, category_code, source, description, amount, merchant_id,
                         merchant_name, merchant_city, merchant_zip, origin_timestamp,
@@ -287,6 +333,20 @@ public interface StatementTransactionRepository
      * transaction and backs {@code GET /notifications/&#123;cardNumber&#125;}, so its horizon is the
      * longest this service applies.
      *
+     * <p>The statement subtracts what it removes from {@code statement_card_total} in the same
+     * breath. {@code doomed} is the bounded set of rows this call takes, {@code removed} groups it
+     * per card, and {@code adjusted} takes those figures off each card's totals; the {@code DELETE}
+     * that follows removes the same rows and is what the return value counts, because
+     * {@code domain/RetentionSweep} reads that number to tell a pass that finished from one that
+     * filled its bound. PostgreSQL runs {@code adjusted} exactly once and to completion even though
+     * the {@code DELETE} reads none of its output, and both read one materialised {@code doomed}, so
+     * the rows counted off the totals are the rows removed and no others.
+     *
+     * <p>A card whose every row this removes keeps its totals row, carrying a count of zero. That is
+     * a card the read model knows and holds nothing for, which is the answer
+     * {@code GET /notifications/&#123;cardToken&#125;} already gave: no history. The set of such rows
+     * is bounded by the number of cards the read model has ever held.
+     *
      * @param horizon the timestamp text before which a row is removed, in the source's own
      *                twenty-six character form
      * @param limit   the most rows one statement removes, at least one
@@ -294,12 +354,32 @@ public interface StatementTransactionRepository
      */
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query(value = """
-            DELETE FROM statement_transaction
-            WHERE (card_token, transaction_id) IN (SELECT card_token, transaction_id
-                                                     FROM statement_transaction
-                                                    WHERE processing_timestamp < :horizon
-                                                    ORDER BY processing_timestamp
-                                                    LIMIT :limit)
+            WITH doomed AS (
+                SELECT card_token, transaction_id, amount
+                  FROM statement_transaction
+                 WHERE processing_timestamp < :horizon
+                 ORDER BY processing_timestamp
+                 LIMIT :limit
+            ), removed AS (
+                SELECT card_token,
+                       COUNT(*)         AS rows_removed,
+                       SUM(amount)      AS amount_removed,
+                       SUM(ABS(amount)) AS magnitude_removed
+                  FROM doomed
+                 GROUP BY card_token
+            ), adjusted AS (
+                UPDATE statement_card_total AS held
+                   SET transaction_count = held.transaction_count - removed.rows_removed,
+                       total_amount      = held.total_amount - removed.amount_removed,
+                       absolute_total    = held.absolute_total - removed.magnitude_removed
+                  FROM removed
+                 WHERE held.card_token = removed.card_token
+              RETURNING held.card_token
+            )
+            DELETE FROM statement_transaction AS stored
+             USING doomed
+             WHERE stored.card_token = doomed.card_token
+               AND stored.transaction_id = doomed.transaction_id
             """, nativeQuery = true)
     int deleteProcessedBefore(@Param("horizon") String horizon, @Param("limit") int limit);
 }

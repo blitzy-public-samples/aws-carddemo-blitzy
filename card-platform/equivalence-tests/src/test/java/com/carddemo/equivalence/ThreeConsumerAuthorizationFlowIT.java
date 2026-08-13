@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.carddemo.fraud.FraudApplication;
 import com.carddemo.ledger.LedgerApplication;
 import com.carddemo.notification.NotificationApplication;
+import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -683,13 +684,17 @@ class ThreeConsumerAuthorizationFlowIT {
         /**
          * Asserts notification rendered an alert for the card the one event named.
          *
-         * <p>The rendered text itself is not persisted, so the row this service writes is the durable
-         * evidence that it rendered one: {@code recordAttempt} writes it after the renderer returns,
-         * inside the transaction that also claims the event. The stored card number is asserted to be
-         * the masked form, which is what AAP 0.6.4 requires of every stored rendering of a card.
+         * <p>The rendered text itself is not persisted, so the rows this service writes are the durable
+         * evidence that it rendered: {@code recordAttempt} writes one after each renderer returns,
+         * inside the transaction that also claims the event. One alert is rendered per
+         * {@link RenderedFormat}, as {@code app/cbl/CBSTM03A.CBL} declares one output file per format
+         * at {@code app/cbl/CBSTM03A.CBL:L44-L47} and writes both in one run, so the count asserted
+         * here is one row per format from the one event rather than one row. The stored card number is
+         * asserted to be the masked form, which is what AAP 0.6.4 requires of every stored rendering
+         * of a card.
          */
         @Test
-        @DisplayName("it renders an alert for the card and records the event once")
+        @DisplayName("it renders an alert per format for the card and records the event once")
         void itRendersAnAlertAndRecordsTheEvent() {
             JdbcTemplate jdbc = new JdbcTemplate(dataSource);
 
@@ -699,23 +704,32 @@ class ThreeConsumerAuthorizationFlowIT {
                     CARD_TOKEN);
             List<Map<String, Object>> rows = jdbc.queryForList(
                     "SELECT transaction_id, masked_card_number, channel FROM notification_log"
-                            + " WHERE card_token = ?", CARD_TOKEN);
+                            + " WHERE card_token = ? ORDER BY channel", CARD_TOKEN);
+            List<String> formats = List.of(RenderedFormat.values()).stream()
+                    .map(Enum::name).sorted().toList();
 
             assertAll(
                     () -> assertEquals(AUTHORIZED_TOPIC, markerTopic,
                             "the marker records the topic the one event arrived on"),
-                    () -> assertEquals(1, logged,
-                            "notification recorded exactly one alert against that card token"),
+                    () -> assertEquals(formats.size(), logged,
+                            "notification recorded one alert per rendered format against that card"
+                                    + " token, and nothing beyond the one event"),
                     () -> assertFalse(rows.isEmpty(), "the alert left a row to read"),
-                    () -> assertEquals(TRANSACTION_ID,
-                            String.valueOf(rows.getFirst().get("transaction_id")).trim(),
-                            "the alert names the transaction the event named"),
-                    () -> assertEquals(MASKED_CARD_NUMBER,
-                            String.valueOf(rows.getFirst().get("masked_card_number")).trim(),
+                    () -> assertEquals(List.of(TRANSACTION_ID),
+                            rows.stream()
+                                    .map(row -> String.valueOf(row.get("transaction_id")).trim())
+                                    .distinct().toList(),
+                            "every row names the transaction the event named, and no other"),
+                    () -> assertEquals(List.of(MASKED_CARD_NUMBER),
+                            rows.stream()
+                                    .map(row -> String.valueOf(row.get("masked_card_number")).trim())
+                                    .distinct().toList(),
                             "the stored card number is the masked form and nothing else"),
-                    () -> assertEquals("PLAIN_TEXT",
-                            String.valueOf(rows.getFirst().get("channel")).trim(),
-                            "the authorization alert is rendered as text"));
+                    () -> assertEquals(formats,
+                            rows.stream()
+                                    .map(row -> String.valueOf(row.get("channel")).trim()).toList(),
+                            "the authorization alert is rendered once as text and once as markup,"
+                                    + " which is the pair app/cbl/CBSTM03A.CBL writes"));
         }
 
         /** Asserts this context holds neither sibling consumer and no outbound client. */

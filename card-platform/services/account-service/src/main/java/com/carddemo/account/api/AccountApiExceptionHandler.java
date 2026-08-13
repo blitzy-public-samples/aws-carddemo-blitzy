@@ -173,8 +173,10 @@ public class AccountApiExceptionHandler {
      * serve, a media type this service cannot write, and a path that matches no route. Each carries
      * its own status and its own headers, and {@code Allow} on a {@code 405} names the methods the
      * route does serve. Answering these here keeps every failure of this service in one document
-     * shape; the container's own error dispatch writes a second shape whose {@code path} member
-     * copies the resolved request path into the body.
+     * shape. A request target refused before this class could run — one the security firewall or
+     * Tomcat itself rejects — is answered in the same shape by
+     * {@code config/ContainerErrorDocument}, so no framework body and no HTML page reaches a
+     * caller of this service.
      *
      * <p>A {@code 406} carries no body: a caller that accepts no type this service writes cannot be
      * sent a problem document either.

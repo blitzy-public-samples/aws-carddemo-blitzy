@@ -550,6 +550,14 @@ class RequestRateCeilingFilterTest {
                         .startsWith(MediaType.APPLICATION_PROBLEM_JSON_VALUE),
                 response.getContentType());
         assertEquals("no-store", response.getHeader(HttpHeaders.CACHE_CONTROL));
+        assertEquals(ContainerErrorDocument.NO_SNIFF,
+                response.getHeader(ContainerErrorDocument.CONTENT_TYPE_OPTIONS),
+                "a refusal written before the security chain has to carry the sniffing header"
+                        + " itself");
+        assertEquals(ContainerErrorDocument.DENY_FRAMING,
+                response.getHeader(ContainerErrorDocument.FRAME_OPTIONS),
+                "a refusal written before the security chain has to carry the framing header"
+                        + " itself");
         assertTrue(Long.parseLong(response.getHeader(HttpHeaders.RETRY_AFTER)) >= 1L,
                 response.getHeader(HttpHeaders.RETRY_AFTER));
         assertEquals(RequestRateCeilingFilter.REFUSAL_BODY, response.getContentAsString());

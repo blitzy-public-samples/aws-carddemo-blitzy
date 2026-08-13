@@ -31,32 +31,32 @@ One row per target. `Paragraphs` counts the prose blocks scoring reads and `Sent
 
 | # | Target | Paragraphs | Sentences | Over thirty words | Paragraphs over five | Buzzwords |
 |---:|---|---:|---:|---:|---:|---:|
-| 1 | `docs/decision-log.md` | 47 | 146 | 0 | 0 | 0 |
-| 2 | `docs/traceability-matrix.md` | 39 | 108 | 0 | 0 | 0 |
-| 3 | `docs/architecture-before-after.md` | 51 | 136 | 0 | 0 | 0 |
-| 4 | `docs/event-flow.md` | 147 | 392 | 0 | 0 | 0 |
-| 5 | `docs/data-model.md` | 156 | 385 | 0 | 0 | 0 |
-| 6 | `docs/onboarding.md` | 196 | 520 | 0 | 0 | 0 |
-| 7 | `docs/suggested-next-tasks.md` | 348 | 846 | 0 | 0 | 0 |
-| 8 | `docs/business-rule-flags.md` | 53 | 175 | 0 | 0 | 0 |
+| 1 | `docs/decision-log.md` | 51 | 161 | 0 | 0 | 0 |
+| 2 | `docs/traceability-matrix.md` | 40 | 111 | 0 | 0 | 0 |
+| 3 | `docs/architecture-before-after.md` | 52 | 138 | 0 | 0 | 0 |
+| 4 | `docs/event-flow.md` | 148 | 396 | 0 | 0 | 0 |
+| 5 | `docs/data-model.md` | 161 | 405 | 0 | 0 | 0 |
+| 6 | `docs/onboarding.md` | 197 | 528 | 0 | 0 | 0 |
+| 7 | `docs/suggested-next-tasks.md` | 365 | 887 | 0 | 0 | 0 |
+| 8 | `docs/business-rule-flags.md` | 54 | 178 | 0 | 0 | 0 |
 | 9 | `docs/equivalence-results.md` | 91 | 260 | 0 | 0 | 0 |
 | 10 | `docs/prose-validation.md` | 134 | 212 | 0 | 0 | 0 |
 | 11 | `README.md` | 134 | 261 | 0 | 0 | 0 |
-| 12 | `services/authorization-service/README.md` | 193 | 439 | 0 | 0 | 0 |
-| 13 | `services/ledger-posting-service/README.md` | 145 | 314 | 0 | 0 | 0 |
+| 12 | `services/authorization-service/README.md` | 209 | 481 | 0 | 0 | 0 |
+| 13 | `services/ledger-posting-service/README.md` | 145 | 315 | 0 | 0 | 0 |
 | 14 | `services/fraud-detection-service/README.md` | 118 | 290 | 0 | 0 | 0 |
-| 15 | `services/notification-service/README.md` | 168 | 380 | 0 | 0 | 0 |
-| 16 | `services/account-service/README.md` | 175 | 396 | 0 | 0 | 0 |
+| 15 | `services/notification-service/README.md` | 171 | 395 | 0 | 0 | 0 |
+| 16 | `services/account-service/README.md` | 176 | 398 | 0 | 0 | 0 |
 | 17 | `services/card-service/README.md` | 165 | 421 | 0 | 0 | 0 |
 | 18 | `../README.md` | 26 | 47 | 0 | 0 | 0 |
 | 19 | `presentation/executive-summary.html` | 108 | 114 | 0 | 0 | 0 |
 | 20 | `deploy/k8s/README.md` | 28 | 76 | 0 | 0 | 0 |
-| 21 | `services/authorization-service/src/main/resources/openapi.yaml` | 163 | 395 | 0 | 0 | 0 |
-| 22 | `services/ledger-posting-service/src/main/resources/openapi.yaml` | 44 | 103 | 0 | 0 | 0 |
-| 23 | `services/fraud-detection-service/src/main/resources/openapi.yaml` | 76 | 180 | 0 | 0 | 0 |
-| 24 | `services/notification-service/src/main/resources/openapi.yaml` | 74 | 184 | 0 | 0 | 0 |
-| 25 | `services/account-service/src/main/resources/openapi.yaml` | 190 | 425 | 0 | 0 | 0 |
-| 26 | `services/card-service/src/main/resources/openapi.yaml` | 183 | 441 | 0 | 0 | 0 |
+| 21 | `services/authorization-service/src/main/resources/openapi.yaml` | 164 | 398 | 0 | 0 | 0 |
+| 22 | `services/ledger-posting-service/src/main/resources/openapi.yaml` | 45 | 106 | 0 | 0 | 0 |
+| 23 | `services/fraud-detection-service/src/main/resources/openapi.yaml` | 77 | 183 | 0 | 0 | 0 |
+| 24 | `services/notification-service/src/main/resources/openapi.yaml` | 75 | 187 | 0 | 0 | 0 |
+| 25 | `services/account-service/src/main/resources/openapi.yaml` | 191 | 428 | 0 | 0 | 0 |
+| 26 | `services/card-service/src/main/resources/openapi.yaml` | 184 | 444 | 0 | 0 | 0 |
 
 ## Summary
 
@@ -97,32 +97,32 @@ Each digest is the SHA-256 of one target's bytes, in lower-case hexadecimal. It 
 
 | # | Target | SHA-256 of the text scored |
 |---:|---|---|
-| 1 | `docs/decision-log.md` | `37b75f3cdcebd0e3892e7736d7c401922b1406e79cc3cff266994c9e85fe3f4e` |
-| 2 | `docs/traceability-matrix.md` | `f7aa27fcad19b55dde816495147d85a5c74a4a903c2121a36d2317ccd365939c` |
-| 3 | `docs/architecture-before-after.md` | `b5490d7ca84183d6687c2d40ac65e896205af76420d658cf2c3ccf0668848b65` |
-| 4 | `docs/event-flow.md` | `871d398449f07d976e2db85c60b8d3c49bebe5ae465af3f6448f2a95c59117e0` |
-| 5 | `docs/data-model.md` | `3975095cb4236cfd7abb995c0cb073af0331ae74f48a2e143cea03d4b615c831` |
-| 6 | `docs/onboarding.md` | `741dad9dee60e55581f4907e7bfd241c744f24269fe9981a2dad5c6a5fde95f6` |
-| 7 | `docs/suggested-next-tasks.md` | `f589a78422d3f091d94130b0c9b2018c3dd3fc771306bddb6a68406fb1462fb5` |
-| 8 | `docs/business-rule-flags.md` | `c8a64ce8f9ef0e69a452daccac5f899ba669d03c8ae4b67568aeae525868ff78` |
-| 9 | `docs/equivalence-results.md` | `9a65d7a82e39b6505e943e8b74ae19ce06c6a57050e9f1336e977b1ea71f440d` |
+| 1 | `docs/decision-log.md` | `cc45f826285b8da3a180d81a6ea1ef5de56f9803eeb906d544b3debdb6ac0414` |
+| 2 | `docs/traceability-matrix.md` | `8df3f07a7fbabf610223969b6920afd89c0a696d4c499808f8d2f9605d1a4cd5` |
+| 3 | `docs/architecture-before-after.md` | `75c6ed8f39121b049b0690bd3b54369e10c68a73f82d28b329f671d5fdc4092d` |
+| 4 | `docs/event-flow.md` | `de590b730a68e0e15ac13b1eef62131b2b9acafe26411f10730259c4ddaf95fe` |
+| 5 | `docs/data-model.md` | `78b98183187d16086b54c58ac47649a3e9efbdb981a0d2c4e40f723a805d4698` |
+| 6 | `docs/onboarding.md` | `d7d6be619efa337ecaf7825d58feced882f50de945ee225956e22e6846184b80` |
+| 7 | `docs/suggested-next-tasks.md` | `bb4dd21c095a483e4adcbc88dac172359e7fe2e02d58e9a4bffd2a4877b5dccf` |
+| 8 | `docs/business-rule-flags.md` | `bb7120115681f582354dbc21a3010ac49efceb7dcaf60b1b646ed908ea13de22` |
+| 9 | `docs/equivalence-results.md` | `8b4f3ff0b317dabb1806a22a8030f9434d71a3d31bf8601461741c08f13ae02e` |
 | 10 | `docs/prose-validation.md` | This report carries no digest: a file cannot publish the digest of its own bytes |
-| 11 | `README.md` | `c5611a2851fcd73c56942c820e40f45ba8d67ab38c2f825edebb48558c3ad7ff` |
-| 12 | `services/authorization-service/README.md` | `d75ff1a3e7287cbd640e74149a5c88cc942b49de97ab190d01dbf6365ec5f1f3` |
-| 13 | `services/ledger-posting-service/README.md` | `1f3c3d2f487c7d2420a34044bcd64131d3f6eec348ff1587aedbc7c863cb8582` |
+| 11 | `README.md` | `36ec31a2392627123d1dc9e5c55c412ef82f510801a37f8f57a4d00d145e903b` |
+| 12 | `services/authorization-service/README.md` | `ec22fd6f9d4f8efa86c8350c5089b23594b0bb8c6dd0c39df82bb1f637161bf6` |
+| 13 | `services/ledger-posting-service/README.md` | `cf4c9d8e8515defd89b0a412c1809a8a58d6c4a7c13b70ec78cdb93f080af988` |
 | 14 | `services/fraud-detection-service/README.md` | `3656f02434700b14776fc1848f5ca80bf0629f373e619325c3501d82d1e21559` |
-| 15 | `services/notification-service/README.md` | `890d89a81d52f30f8320161724e2f3df921ae382b8c3e8e5161b437d9dcc9632` |
-| 16 | `services/account-service/README.md` | `1d4ed482fcadefb52714d49fc3a5930872f261a01c1e69f52a0c34d1b6f2e78f` |
+| 15 | `services/notification-service/README.md` | `060df1ca0763c0e6aa8db308ccab5e415f7a10e620cf136d14777021bfab9dd9` |
+| 16 | `services/account-service/README.md` | `70f8e52e99620fa9b230350961cdbb70521deeba2a1614337d642753dfaaf8b1` |
 | 17 | `services/card-service/README.md` | `892ad96b10147398f2341ad530e14b0a3ebba389357ed9f725c397cc47716690` |
 | 18 | `../README.md` | `06b761b27685428336f1f12fa5b2e9c6c975b5c8a881781630ab8e8a8e75ec28` |
-| 19 | `presentation/executive-summary.html` | `0f66ded6ab2314f9e0dd63e9a47c4780dd3bc33bc0d14f4e81e4806063f3ead4` |
+| 19 | `presentation/executive-summary.html` | `06aa497803dca59210a7486b798806a14a310287d0b66d4819d092e64f109337` |
 | 20 | `deploy/k8s/README.md` | `5cfd8099f17f96fb167a4de4deb2669084862367c44dd0753f461486562357ad` |
-| 21 | `services/authorization-service/src/main/resources/openapi.yaml` | `b3f159822219b261a4962fd19ebb3c620a22a0e513f0632e12d26c7b01d4179c` |
-| 22 | `services/ledger-posting-service/src/main/resources/openapi.yaml` | `c14e366701f9054ed4c63b379ea83bc6b88c69de3ecb51db6a5ea372823b286a` |
-| 23 | `services/fraud-detection-service/src/main/resources/openapi.yaml` | `d2f7c51dcbe85979e20a2e992f335af3ff204f17b3a8b4f1487fba052f2b5202` |
-| 24 | `services/notification-service/src/main/resources/openapi.yaml` | `dbb3d114d0246a7e6d50b018416ff08e0423a0d0ea3ece0f0e18c66966652005` |
-| 25 | `services/account-service/src/main/resources/openapi.yaml` | `3243cf2170daffdb119cad14f76652576a35dd62e538f46549c26e367e09cb5e` |
-| 26 | `services/card-service/src/main/resources/openapi.yaml` | `1b48e071cd945b3c86d11147bc14838540f086cf94b2b435cef8518d7618d936` |
+| 21 | `services/authorization-service/src/main/resources/openapi.yaml` | `dc34e70bc62e417d5df0c28f2fa091fa76f92e3523b9ba14e933efe2ba2ba51c` |
+| 22 | `services/ledger-posting-service/src/main/resources/openapi.yaml` | `fb425b6235b63a1c578c374d1f196d6dab5af1b069de825032f2b33c85f8cb4f` |
+| 23 | `services/fraud-detection-service/src/main/resources/openapi.yaml` | `e599c2d9514ef989f0a83e4a44c7394de0821e9d5d5fb3dd8c468b7ccf64c543` |
+| 24 | `services/notification-service/src/main/resources/openapi.yaml` | `e965e9cb04f21f79c431037e1b0ce201520103e949f06ba4d54de6b2e4f129ee` |
+| 25 | `services/account-service/src/main/resources/openapi.yaml` | `34fafcec821712df015f7a12a090f6bdd8cd1dcabc4b0d0c189b53ac6ccdc51e` |
+| 26 | `services/card-service/src/main/resources/openapi.yaml` | `2cbc72ad0e39334e27cb506b91cc7cc04df5f211d7e507a4b6aac1ee856c03c7` |
 
 ## Per-document reports
 
@@ -138,7 +138,7 @@ Each digest is the SHA-256 of one target's bytes, in lower-case hexadecimal. It 
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `BigDecimal` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 47 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 51 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Migration strategy`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `card-platform/` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Arithmetic and numeric fidelity` |
@@ -151,7 +151,7 @@ Each digest is the SHA-256 of one target's bytes, in lower-case hexadecimal. It 
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Concurrency and identifiers` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Defects reproduced rather than fixed` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `CP00` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 47 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 51 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Validations deliberately not added` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `CBTRN02C` rather than restating what it is |
@@ -173,7 +173,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `.gitkeep` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 39 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 40 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Forward: COBOL programs`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `libs/cobol-compat` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Primary migration sources` |
@@ -186,7 +186,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Excluded programs` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Forward: copybooks` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `CARDFILE` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 39 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 40 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Record layouts` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `XREFFILE` rather than restating what it is |
@@ -208,7 +208,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 28 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `diagrams/` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 51 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 52 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Shared file reachability`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `EXEC CICS XCTL` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Posting job allocations` |
@@ -221,7 +221,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Component-by-component correspondence` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `What changed structurally` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `:L94` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 51 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 52 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Shared datasets became private stores` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `//STEP10 EXEC PROC=TRANREPT` rather than restating what it is |
@@ -243,7 +243,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `eventId` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 147 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 148 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Payload conventions`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `eventType` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Topics and consumer groups` |
@@ -256,7 +256,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `State-change projection flow` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Delivery mechanics` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `aggregateId` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 147 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 148 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `The two dead-letter wire forms` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `docs/decision-log.md` rather than restating what it is |
@@ -278,7 +278,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `PIC 9(n)` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 156 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 161 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Two date treatments`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `NUMERIC(n,0)` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Service schemas` |
@@ -291,7 +291,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Ledger database` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Balance and lookup tables` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `VARCHAR(n)` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 156 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 161 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Fraud database` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `CHAR(n)` rather than restating what it is |
@@ -313,7 +313,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `README.md` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 196 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 197 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Prerequisites`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `CONTRIBUTING.md` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Start with one command` |
@@ -326,7 +326,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Build and start` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Ports, schemas, and topics` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `[25,26)` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 196 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 197 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Verify the running stack` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `[3.9.16,3.10.0)` rather than restating what it is |
@@ -348,7 +348,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `CreditLimitRule` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 348 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 365 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Widen the credit-limit working precision`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `WS-TEMP-BAL PIC S9(09)V99` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Correct the refund sign convention` |
@@ -361,7 +361,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Confirm the target meaning of reason 109` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Validations deliberately not added` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `:L14` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 348 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 365 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Add card-number checksum validation` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `ACCT-CREDIT-LIMIT` rather than restating what it is |
@@ -383,7 +383,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `:L34` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 53 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 54 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `The largest item: a named program that does not exist`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `COPAUA0C` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `The widest item: five posting stores that drop a digit` |
@@ -396,7 +396,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Measurement discrepancies against the specification` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Platform values that are chosen rather than measured` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `1500-VALIDATE-TRAN` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 53 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 54 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Departures this platform makes from the source` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `:L370` rather than restating what it is |
@@ -523,7 +523,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `authorization-service` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 193 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 209 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Purpose`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `POST /authorizations` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Source provenance` |
@@ -536,7 +536,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Decision chain` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Replica currency` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `transaction-declined-v2` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 193 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 209 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Events` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `schemas/transaction-declined-v3.json` rather than restating what it is |
@@ -628,7 +628,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `notification-service` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 168 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 171 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Purpose`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `com.carddemo.notification` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Source provenance` |
@@ -641,7 +641,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `A contract version this service cannot act on` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Architecture` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `ST-LINE15` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 168 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 171 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Endpoints` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `01 HTML-LINES.` rather than restating what it is |
@@ -663,7 +663,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `account-service` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 175 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 176 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Purpose`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `com.carddemo.account` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Source provenance` |
@@ -676,7 +676,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Events` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Domain context` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `:L560` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 175 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 176 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `What a billing cycle is` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `AccountStateChanged` rather than restating what it is |
@@ -768,7 +768,7 @@ None. This target has no measured violation.
 |---|---|---|---|
 | V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Measured from source to demo` |
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 3 sentences |
-| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 18 words |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 24 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `AWS CardDemo Modernization — Executive Summary` earns the line it takes |
 | V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 108 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Figure 1 — From shared files to owned schemas`, with no hedge in front of it |
@@ -779,7 +779,7 @@ None. This target has no measured violation.
 | V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `Independent reactions.` unaided |
 | V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
 | A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Business value` |
-| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 18 words |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 24 words |
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Room to change safely` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Correctness and parity` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `Delivered scope` |
@@ -840,7 +840,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `operationId: authorizeTransaction` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 163 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 164 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `ApiProblem`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `ApiErrorResponse` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `AuthorizationRequest` |
@@ -853,7 +853,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `AuthorizationResponse` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Problem` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `DeclinedAuthorization` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 163 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 164 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `ApiErrorResponse` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `ApprovedAuthorization` rather than restating what it is |
@@ -875,7 +875,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `operationId: getAccountBalance` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 44 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 45 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `ApiProblem`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `AccountBalance` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `AccountBalance` |
@@ -888,7 +888,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `ApiProblem` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `AccountBalance` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `operationId: getAccountBalance` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 44 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 45 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `operationId: getAccountBalance` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `AccountBalance` rather than restating what it is |
@@ -910,7 +910,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `operationId: assessmentOfTransaction` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 76 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 77 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `/fraud-assessments/{transactionId}`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `operationId: assessmentsOfAccount` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `AssessmentPage` |
@@ -923,7 +923,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `TooManyRequests` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `BadRequest` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `MethodNotAllowed` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 76 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 77 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Unauthorized` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `Forbidden` rather than restating what it is |
@@ -945,7 +945,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `operationId: getNotificationHistory` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 74 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 75 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `Problem`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `StatementTransaction` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `ApiError` |
@@ -958,7 +958,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `operationId: getNotificationHistory` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `/notifications/{cardToken}` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `Problem` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 74 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 75 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Problem` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `/notifications/{cardToken}` rather than restating what it is |
@@ -980,7 +980,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `operationId: readCustomer` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 190 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 191 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `/accounts/{accountId}/cycle-close`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `operationId: closeBillingCycle` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `/customers/{customerId}` |
@@ -993,7 +993,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `AccountUpdateRequest` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `AccountDataRequest` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `InternalFailure` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 190 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 191 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `CustomerDataRequest` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `MethodNotAllowed` rather than restating what it is |
@@ -1015,7 +1015,7 @@ None. This target has no measured violation.
 | V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
 | V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
 | V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `operationId: updateCard` earns the line it takes |
-| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 183 scored paragraphs |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 184 scored paragraphs |
 | V6: Say what you mean | Raised | Pass | Names the thing itself under `/cards/{cardToken}`, with no hedge in front of it |
 | V7: Pity the reader | Raised | Pass | Explains `operationId: readCard` where a reader first meets it |
 | V8: Start close to the end | Standard | Pass | The claim arrives before its support under `ApiError` |
@@ -1028,7 +1028,7 @@ None. This target has no measured violation.
 | A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `CardList` onward |
 | A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `CardDetail` show |
 | A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `CardUpdateConflict` |
-| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 183 scored paragraphs |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 184 scored paragraphs |
 | A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
 | A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `CardUpdateRequest` does |
 | A9: Efficiency Over Polish | Standard | Pass | Refers back to `CardUpdateNotFound` rather than restating what it is |

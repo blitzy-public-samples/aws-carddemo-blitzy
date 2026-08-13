@@ -58,6 +58,14 @@ info:
     Field widths come from the card record copybook app/cpy/CVACT02Y.cpy, and
     every refusal text comes from api/dto/CardValidationMessages, which records
     the source line that writes each one.
+
+
+    A request target refused before any route ran is answered by
+    config/ContainerErrorDocument rather than by an operation below,
+    because the request reached none. That answer carries the Problem
+    shape under application/problem+json, the same shape this document
+    declares for 401 and 403. It names no method, no path and no value the
+    caller sent.
   version: 1.0.0
 
 servers:

@@ -95,7 +95,7 @@ Figure 1 shows the four topics reaching four consumer groups and the duplicate c
 
 No arrow leaves the module carrying a business event, and no arrow reaches another service. Those two absences are the design. The paired platform-wide before-and-after views are in [architecture, before and after](../../docs/architecture-before-after.md).
 
-**Two of the three rendered alerts leave a row in `notification_log`, and the fraud alert leaves none**. `NotificationService.renderAuthorizationAlert` and `renderPostedTransactionAlert` each call `recordRendered`. That writes one row carrying the card token, the masked card number, the transaction identifier and `outcome = RENDERED_NOT_SENT`.
+**Two of the three rendered alerts leave rows in `notification_log`, and the fraud alert leaves none**. `NotificationService.renderAuthorizationAlert` and `renderPostedTransactionAlert` each call `recordRendered`. That writes one row per rendered format, carrying the card token, the masked card number, the transaction identifier, the format in `channel` and `outcome = RENDERED_NOT_SENT`. Every listener renders every format, so one authorization leaves a `PLAIN_TEXT` row and an `HTML` row, matching the two output files `app/cbl/CBSTM03A.CBL` declares at lines 45 and 47.
 
 `renderFraudAlert` does not. `FraudFlagged` carries no card token and no masked card number, and `notification_log` requires both. Neither can be recovered from an event that names only a transaction, an account, a score and the rules that fired. That alert is therefore rendered from the cardholder context and the assessment, counted on `carddemo.notification.notifications.rendered`, logged, and returned to a consumer that discards the string. It reaches no table and no cardholder.
 
@@ -117,6 +117,7 @@ graph LR
     subgraph TX["one local transaction"]
         MARK[("processed_event")]
         ST[("statement_transaction")]
+        SCT[("statement_card_total")]
         CX[("cardholder_context")]
         LOG[("notification_log")]
     end
@@ -179,11 +180,13 @@ One endpoint, served by `NotificationHistoryController`.
 
 `cardToken` is the value column `statement_transaction.card_token` already holds: 64 lower-case hexadecimal characters `PanMasker.cardToken` derives from the whole card number under the deployment key. The route reads by it directly and derives nothing, so no digit of `TRNX-CARD-NUM PIC X(16)` at `app/cpy/COSTM01.CPY` line 22 reaches a request line. The response body holds `cardNumber` masked, `transactionCount`, `totalAmount`, a `transactions` array, `nextPageExists` and, where a further page exists, `nextCursor`. Each array item carries twelve fields, one for every field of the layout at `app/cpy/COSTM01.CPY` except the card number, which the envelope names once, and the dropped filler.
 
-**The count and the total cover the whole card; the array carries one page.** `app/cbl/CBSTM03A.CBL` reads every row of one card between two key breaks, and line 429 totals all of them. A count or a total over one page would describe a statement the source never produced. Both are read as one aggregate over the primary-key prefix `card_token`, which costs the same at any history length. `NotificationService.totalOfCard` turns that aggregate into the value the source would have accumulated.
+**The count and the total cover the whole card; the array carries one page.** `app/cbl/CBSTM03A.CBL` reads every row of one card between two key breaks, and line 429 totals all of them. A count or a total over one page would describe a statement the source never produced. Both are read from one row of `statement_card_total`, keyed by the card, and `NotificationService.totalOfCard` turns those figures into the value the source would have accumulated.
+
+Those two figures were an aggregate over `card_token` until a performance review measured what that cost. On a card holding 21,299 rows it scanned 1,228 buffers in 7.775 ms per request, whatever the page size, against 4 buffers and 0.048 ms on a card holding one. `V10__statement_card_totals.sql` maintains them by delta instead, inside the two statements that change those rows. The figures therefore cost one index lookup at any history length, and still equal an aggregate over the rows.
 
 **The entries are paged, and the walk is a keyset cursor rather than an offset.** A card's history grows by one entry per posted transaction until retention removes entries. A response carrying all of them made the query work, the heap and the response size a function of how long a cardholder had been transacting. The route once passed `Limit.unlimited()` and totalled in memory.
 
-Send `pageSize` for a different page size and the `nextCursor` a response hands back in the `X-Notification-Cursor` header for the next page, until `nextPageExists` reads false. Both the page finder and the aggregate walk the primary key `(card_token, transaction_id)`, so no page costs more because of where in a history it sits. No offset means no page is reachable by reading and discarding the entries before it. `NotificationRenderer.MAXIMUM_STATEMENT_ROWS` bounds one rendered alert and is also the largest page this route serves.
+Send `pageSize` for a different page size and the `nextCursor` a response hands back in the `X-Notification-Cursor` header for the next page, until `nextPageExists` reads false. The page finder walks the primary key `(card_token, transaction_id)`, so no page costs more for sitting late in a history. No offset means no page is reached by reading and discarding the entries before it. `NotificationRenderer.MAXIMUM_STATEMENT_ROWS` bounds one rendered alert and is also the largest page this route serves.
 
 ```bash
 # The administrator identity these calls authenticate as. scripts/generate-env.sh wrote its
@@ -252,13 +255,14 @@ Both filters count in this process, so several replicas bound each replica rathe
 
 ## Domain and data ownership
 
-Four tables in the private schema `notification_service`, inside the database `carddemo_notification`.
+Five tables in the private schema `notification_service`, inside the database `carddemo_notification`.
 
 | Table | Derivation |
 | :--- | :--- |
 | `statement_transaction` | `app/cpy/COSTM01.CPY` lines 20–36. **Composite primary key `(card_token, transaction_id)`**, derived from `KEYS(32 0)` at `app/jcl/CREASTMT.JCL` line 30. The 20-byte `FILLER` at `COSTM01.CPY` line 36 is dropped |
+| `statement_card_total` | One row per card the read model has held, carrying that card's row count, the sum of its amounts and the sum of their magnitudes. Added by `V10__statement_card_totals.sql` and maintained by delta in the two statements that write the read model, so the history route's whole-card figures cost one keyed read |
 | `cardholder_context` | Account-keyed name, address and credit score, kept current by `CustomerContextChanged` |
-| `notification_log` | New abstraction: one record per alert this service **rendered and did not send**. Every row carries `outcome = RENDERED_NOT_SENT`, and `ck_notification_log_outcome` permits no other value, so no row here is evidence that a cardholder was told anything |
+| `notification_log` | New abstraction: one record per rendered format of each alert this service **rendered and did not send**, named in `channel`. Every row carries `outcome = RENDERED_NOT_SENT`, and `ck_notification_log_outcome` permits no other value, so no row here is evidence that a cardholder was told anything |
 | `processed_event` | Composite primary key of event identifier and consumed topic, plus the processed timestamp. A claim here is permanent: `V8__processed_event_claims_are_permanent.sql` withdraws the horizon that expired one |
 
 The key derivation is arithmetic, not preference. `KEYS(32 0)` names a 32-byte key at offset zero, which is exactly `TRNX-CARD-NUM` at 16 bytes plus `TRNX-ID` at 16 bytes, the group `05 TRNX-KEY.` at `COSTM01.CPY` line 21. The sort at line 53 orders on the card number at offset 263 for sixteen bytes, then on the transaction identifier at offset 1 for sixteen bytes. Offset 263 is where `TRAN-CARD-NUM` sits in the 350-byte transaction record of `app/cpy/CVTRA05Y.cpy`, so the sort key follows the record layout.
@@ -267,7 +271,7 @@ The key derivation is arithmetic, not preference. `KEYS(32 0)` names a 32-byte k
 
 `V2__seed.sql` seeds `cardholder_context` alone, one row per fixture account, each stamped at the Unix epoch so the first real `CustomerContextChanged` supersedes it. No fixture seeds `statement_transaction`: the read model is built by consuming events. `V3__processed_event_topic_key.sql` completes the set, making the consumed topic part of the duplicate-delivery marker's identity so the four listener groups sharing that table can each claim the same event identifier once.
 
-Nine migrations run on every start. The three above come first, in that order, and `V4__marker_retention_margin.sql`, `V5__rendered_not_delivered.sql`, `V6__subject_request_posture.sql`, `V7__statement_read_bounds.sql`, `V8__processed_event_claims_are_permanent.sql` and `V9__subject_request_procedure.sql` follow, each described below. There is no tenth.
+Ten migrations run on every start. The three above come first, in that order, and `V4__marker_retention_margin.sql`, `V5__rendered_not_delivered.sql`, `V6__subject_request_posture.sql`, `V7__statement_read_bounds.sql`, `V8__processed_event_claims_are_permanent.sql`, `V9__subject_request_procedure.sql` and `V10__statement_card_totals.sql` follow, each described below. There is no eleventh.
 
 `V3__processed_event_topic_key.sql` widens the duplicate-delivery key from the event identifier alone to `(event_id, consumed_topic)`. Four listeners read four topics, and two of those topics can carry the same event identifier, so a single-column key let whichever listener claimed first silence the others. The key names the topic because the claim is per delivery path and not per event.
 
@@ -277,11 +281,10 @@ Nine migrations run on every start. The three above come first, in that order, a
 
 `V6__subject_request_posture.sql` corrects the `cardholder_context` comment, which described an export and erasure workflow nothing on this platform implements.
 
-**What a subject request reaches here, and why the projection is not smaller.** All three tables of
-this schema hold something about a subject, and the erasure procedure clears them first, before the
-account rows that feed them. The reason for that order is `CustomerContextChanged`: erasing the
-account row first and this projection second lets a record published in between restore what was just
-cleared.
+**What a subject request reaches here, and why the projection is not smaller.** The tables of
+this schema that hold something about a subject are cleared first, before the account rows that feed
+them. The reason for that order is `CustomerContextChanged`: erasing the account row first and this
+projection second lets a record published in between restore what was just cleared.
 
 The projection carries ten cardholder fields and none can be dropped for privacy. Each one is
 rendered by `app/cbl/CBSTM03A.CBL:L458-L504`, so removing any of them breaks the statement parity the
@@ -296,13 +299,17 @@ purpose, retention, export and erasure*.
 
 The table is keyed on a card token, and a token that links every row of one card is a pseudonym rather than nothing. The earlier value would have let a reader of the catalogue skip the table during a request. No endpoint, event or scheduled task erases or exports a subject, and both comments say so.
 
-`V7__statement_read_bounds.sql` records the read bounds of `statement_transaction` on its primary-key constraint, superseding the `V1__schema.sql` line comment that claimed every read of the table names a limit. Two reads exist and they differ. `GET /notifications/{cardNumber}` scans the key forward with `Limit.unlimited()` and returns every row of the card, which is what `app/cbl/CBSTM03A.CBL:L429` did between two key breaks. One rendered alert scans it backward under `NotificationRenderer.MAXIMUM_STATEMENT_ROWS`, an additive ceiling of 200 that bounds the alert alone. It changes no column, index, constraint or row.
+`V7__statement_read_bounds.sql` records the read bounds of `statement_transaction` on its primary-key constraint, superseding the `V1__schema.sql` line comment that claimed every read of the table names a limit. It changes no column, index, constraint or row. Its own wording describes the unbounded history read the delivered code no longer performs, and `V10__statement_card_totals.sql` supersedes it in turn.
 
-Two tables of the four are bounded, and `domain/RetentionSweep` is what bounds them. It runs on `carddemo.history.sweep-interval-ms` and sweeps `statement_transaction` and `notification_log` in that order, each against its own configured horizon: `carddemo.history.statement-retention-days` and `carddemo.history.log-retention-days`. Each delete takes a row ceiling, and the sweep repeats it in a transaction per batch until the table is clear or the table's wall-clock ceiling is reached. No one statement therefore locks a whole table, and no backlog outlives the pass that found it.
+`V10__statement_card_totals.sql` adds `statement_card_total` and backfills it from the rows already held. Every read of the read model now names a limit. The history route serves a bounded keyset page and takes the whole-card count and totals from one row of the new table. One rendered alert scans the key backward under `NotificationRenderer.MAXIMUM_STATEMENT_ROWS`, an additive ceiling of 200 that bounds the alert alone.
 
-The other two are deliberately unbounded. `cardholder_context` holds a row for as long as the customer relationship lasts. `processed_event` holds a claim for good, because the rows a claim guards outlive any horizon it could carry.
+The totals are maintained by delta inside the two statements that write the read model. They therefore commit with the rows they describe and stay equal to an aggregate over them. `V10` changes no existing column, index, constraint or row; it restates two comments.
 
-`observed_at` is the ordering guard rather than a purge key, and `messaging/CustomerContextChangedConsumer` refuses an event older than the row it would overwrite. `V6__subject_request_posture.sql` removed the earlier claim that it served an erasure request, because no export or erasure workflow exists on this platform, here or upstream. The horizons are a demo baseline, and [suggested next tasks](../../docs/suggested-next-tasks.md) carries the task of replacing them with the periods a deployment's jurisdiction requires.
+Two tables of the five are swept, and `domain/RetentionSweep` is what sweeps them. It runs on `carddemo.history.sweep-interval-ms` and sweeps `statement_transaction` and `notification_log` in that order, each against its own configured horizon: `carddemo.history.statement-retention-days` and `carddemo.history.log-retention-days`. Each delete takes a row ceiling, and the sweep repeats it in a transaction per batch until the table is clear or the table's wall-clock ceiling is reached. No one statement locks a whole table, and no backlog outlives the pass that found it.
+
+`statement_card_total` needs no sweep of its own. It holds one row per card the read model has ever held. The statement-transaction sweep decrements that row as it removes the rows behind it, leaving a zero row rather than an orphan. `cardholder_context` is deliberately unbounded: a row lives as long as the customer relationship, and no window expires it.
+
+`processed_event` is unbounded by the decision `V8` records, because the rows a claim guards outlive any horizon it could carry. `observed_at` is the ordering guard rather than a purge key: `messaging/CustomerContextChangedConsumer` refuses an event older than the row it would overwrite. `V6__subject_request_posture.sql` removed the earlier claim that it served an erasure request, because no export or erasure workflow exists on this platform, here or upstream. The horizons are a demo baseline, and [suggested next tasks](../../docs/suggested-next-tasks.md) carries the task of replacing them with the periods a deployment's jurisdiction requires.
 
 No table here is shared with another service, and this module reaches no other schema. Flyway owns every table, and Jakarta Persistence (JPA) runs with `ddl-auto: validate`, so a mapping that disagrees with the migrated schema stops start-up.
 
@@ -494,7 +501,7 @@ That command takes the same keyed code `PanMasker.cardToken` takes, over the lab
 docker compose logs --no-log-prefix --tail 40 notification-service
 ```
 
-Set `CLONE_INDEX`, `POSTGRES_PORT` and `KAFKA_PORT` when another copy of the stack already runs on the same machine.
+Move all fourteen host-port variables when another copy of the stack already runs on the same machine. `CLONE_INDEX` renames the project, the containers and the volumes, and it moves no port. Each host port has its own variable: `POSTGRES_PORT`, `KAFKA_PORT`, the six service ports `AUTHORIZATION_PORT` through `CARD_PORT`, and the six `*_MANAGEMENT_PORT` values. One left on its default is refused with `port is already allocated`. The full command sits in the parallel-stacks block of `.env.example`, and `scripts/start-demo.sh` repeats it in its header.
 
 <br/>
 

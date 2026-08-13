@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.account.api.dto.AccountDataRequest;
 import com.carddemo.account.api.dto.CustomerDataRequest;
+import com.carddemo.account.domain.validation.EditResult;
 import com.carddemo.account.entity.AccountEntity;
 import com.carddemo.account.entity.CustomerEntity;
 import java.math.BigDecimal;
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -544,6 +546,192 @@ class AccountRecordMapperTest {
                     "a character among spaces is still a supplied value");
             assertTrue(AccountRecordMapper.isSupplied("0"),
                     "a zero is a value, not an absence");
+        }
+    }
+
+    @Nested
+    @DisplayName("The width a submitted field can hold")
+    class DeclaredWidths {
+
+        /**
+         * Asserts every component whose own edit reads no width is refused past its declared width.
+         *
+         * <p>Each case is one component, the width its Picture clause declares, and the message a
+         * caller reads. The submitted value carries one character past the width, which is the
+         * narrowest failure there is: a gate off by one would pass it. Every one of these values
+         * reached a column before this pass existed — the monetary and date components with their
+         * high-order digits dropped and the text components as a database fault — so each case is a
+         * defect that was observed rather than imagined.</p>
+         *
+         * @param component the request component this case submits
+         * @param submitted the value it submits, one character past its width
+         * @param expected  the message the caller reads
+         */
+        @ParameterizedTest(name = "{0} past its width reads: {2}")
+        @CsvSource({
+            "currentBalance,12345678901234.56,Current Balance must be no longer than 15 characters.",
+            "creditLimit,1234567890123.456,Credit Limit must be no longer than 15 characters.",
+            "cashCreditLimit,1234567890123.456,"
+                    + "Cash Credit Limit must be no longer than 15 characters.",
+            "openDate,201104229,Open Date must be no longer than 8 characters.",
+            "expirationDate,209912319,Expiry Date must be no longer than 8 characters.",
+            "reissueDate,202303099,Reissue Date must be no longer than 8 characters.",
+            "currentCycleCredit,1234567890123.456,"
+                    + "Current Cycle Credit Limi must be no longer than 15 characters.",
+            "currentCycleDebit,1234567890123.456,"
+                    + "Current Cycle Debit Limit must be no longer than 15 characters.",
+            "groupId,ABCDEFGHIJK,Account Group must be no longer than 10 characters."})
+        @DisplayName("refuses an account component past its width, before anything is converted")
+        void refusesAnAccountComponentPastItsWidth(String component, String submitted,
+                String expected) {
+
+            EditResult verdict = AccountRecordMapper.convertibleValues(
+                    accountRequestWith(component, submitted), null);
+
+            assertFalse(verdict.valid(), component + " carries a value its field cannot hold");
+            assertEquals(expected, verdict.message(),
+                    "the message names the field and the width and no character of the value");
+        }
+
+        /**
+         * Asserts the same for the customer components whose edit reads no width.
+         *
+         * @param component the request component this case submits
+         * @param submitted the value it submits, one character past its width
+         * @param expected  the message the caller reads
+         */
+        @ParameterizedTest(name = "{0} past its width reads: {2}")
+        @CsvSource({
+            "addressLine1,DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD,"
+                    + "Address Line 1 must be no longer than 50 characters.",
+            "addressLine2,EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE,"
+                    + "Address Line 2 must be no longer than 50 characters.",
+            "phoneNumber1,(212)301-08271234,Phone Number 1 must be no longer than 15 characters.",
+            "phoneNumber2,(315)985-92831234,Phone Number 2 must be no longer than 15 characters.",
+            "socialSecurityPart1,1234,SSN: First 3 chars must be no longer than 3 characters.",
+            "socialSecurityPart2,456,SSN 4th & 5th chars must be no longer than 2 characters.",
+            "socialSecurityPart3,67890,SSN Last 4 chars must be no longer than 4 characters.",
+            "governmentIssuedId,999999999999999999999,"
+                    + "Government Issued Id Ref must be no longer than 20 characters.",
+            "dateOfBirth,196012010,Date of Birth must be no longer than 8 characters."})
+        @DisplayName("refuses a customer component past its width, before anything is converted")
+        void refusesACustomerComponentPastItsWidth(String component, String submitted,
+                String expected) {
+
+            Map<String, String> values = new LinkedHashMap<>();
+            values.put(component, submitted);
+            EditResult verdict =
+                    AccountRecordMapper.convertibleValues(null, customerRequest(values));
+
+            assertFalse(verdict.valid(), component + " carries a value its field cannot hold");
+            assertEquals(expected, verdict.message(),
+                    "the message names the field and the width and no character of the value");
+        }
+
+        @Test
+        @DisplayName("reports the account section before the customer section, as the groups run")
+        void reportsTheAccountSectionFirst() {
+            Map<String, String> customer = new LinkedHashMap<>();
+            customer.put("governmentIssuedId", "9".repeat(21));
+
+            EditResult verdict = AccountRecordMapper.convertibleValues(
+                    accountRequestWith("currentBalance", "12345678901234.56"),
+                    customerRequest(customer));
+
+            assertEquals("Current Balance must be no longer than 15 characters.",
+                    verdict.message(),
+                    "10 ACUP-NEW-ACCT-DATA at app/cbl/COACTUPC.cbl:L758 declares its fields before "
+                            + "10 ACUP-NEW-CUST-DATA at :L797, and one message leaves a pass");
+        }
+
+        @Test
+        @DisplayName("reports a width before a conversion, because the field bounded the value first")
+        void reportsAWidthBeforeAConversion() {
+            AccountDataRequest request = new AccountDataRequest(null, "12345678901234.56",
+                    "not a number", null, null, null, null, null, null, null);
+
+            assertEquals("Current Balance must be no longer than 15 characters.",
+                    AccountRecordMapper.convertibleValues(request, null).message(),
+                    "a value the field could not hold never reached an edit in the source");
+        }
+
+        /**
+         * Asserts a figure that fits the submitted field keeps the store semantics it had.
+         *
+         * <p>This is the boundary the gate must not cross. Eleven integer digits fit
+         * {@code PIC X(15)} and do not fit {@code PIC S9(10)V99}, and the source has no
+         * {@code ON SIZE ERROR} phrase anywhere in {@code app/cbl/}, so the store drops the
+         * high-order digit and keeps the rest. That behaviour is documented on
+         * {@code AccountRecordMapper} and stays.</p>
+         */
+        @Test
+        @DisplayName("admits eleven integer digits inside the field, and the store still truncates")
+        void admitsElevenIntegerDigitsAndStillTruncates() {
+            String elevenIntegerDigits = "12345678901.99";
+
+            assertTrue(elevenIntegerDigits.length() <= AccountDataRequest.MONEY_MAX_LENGTH,
+                    "fourteen characters fit the fifteen the request field holds");
+            assertTrue(AccountRecordMapper.convertibleValues(
+                            accountRequestWith("currentBalance", elevenIntegerDigits), null).valid(),
+                    "the width gate admits a value the field can hold");
+            assertEquals(new BigDecimal("2345678901.99"),
+                    AccountRecordMapper.accountOf(ACCOUNT_ID,
+                            accountRequestWith("currentBalance", elevenIntegerDigits))
+                            .getCurrentBalance(),
+                    "a MOVE into PIC S9(10)V99 drops the high-order digit it cannot hold");
+        }
+
+        @Test
+        @DisplayName("admits a value padded past its width, because padding is not content")
+        void admitsAValuePaddedPastItsWidth() {
+            assertTrue(AccountRecordMapper.convertibleValues(
+                            accountRequestWith("currentBalance", "492.00" + " ".repeat(20)), null)
+                            .valid(),
+                    "the source moves a whole fixed-width field into its edit area, so trailing "
+                            + "spaces are the padding it carries");
+        }
+
+        @Test
+        @DisplayName("admits a body carrying neither section")
+        void admitsABodyCarryingNeitherSection() {
+            assertTrue(AccountRecordMapper.convertibleValues(null, null).valid(),
+                    "an absent section supplies no value to bound");
+        }
+
+        @Test
+        @DisplayName("admits every component of a request the fixture supplies")
+        void admitsEveryComponentOfAFixtureRequest() {
+            Map<String, String> customer = new LinkedHashMap<>();
+            customer.put("customerId", "000000001");
+            customer.put("firstName", "Aaron");
+            customer.put("addressLine1", "500 Market Street");
+            customer.put("addressLine2", "Suite 200");
+            customer.put("phoneNumber1", "(345)563-7159");
+            customer.put("phoneNumber2", "(443)197-1271");
+            customer.put("socialSecurityPart1", "020");
+            customer.put("socialSecurityPart2", "97");
+            customer.put("socialSecurityPart3", "3888");
+            customer.put("governmentIssuedId", "GOVID000000000000001");
+            customer.put("dateOfBirth", "19750304");
+            customer.put("ficoCreditScore", "742");
+
+            AccountDataRequest account = new AccountDataRequest("Y", "492.00", "6169.00",
+                    "4587.00", "20110422", "20991231", "20230309", "0.00", "0.00", "");
+
+            assertTrue(AccountRecordMapper
+                            .convertibleValues(account, customerRequest(customer)).valid(),
+                    "every value of row one of app/data/ASCII/ fits the field it is submitted for");
+        }
+
+        /** Builds an account request carrying one component, leaving every other absent. */
+        private AccountDataRequest accountRequestWith(String component, String value) {
+            Map<String, String> values = new LinkedHashMap<>();
+            values.put(component, value);
+            return new AccountDataRequest(values.get("activeStatus"), values.get("currentBalance"),
+                    values.get("creditLimit"), values.get("cashCreditLimit"),
+                    values.get("openDate"), values.get("expirationDate"),
+                    values.get("reissueDate"), values.get("currentCycleCredit"),
+                    values.get("currentCycleDebit"), values.get("groupId"));
         }
     }
 }

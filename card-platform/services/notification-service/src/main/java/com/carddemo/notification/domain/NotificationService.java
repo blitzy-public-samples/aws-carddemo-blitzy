@@ -84,6 +84,15 @@ import static com.carddemo.notification.domain.NotificationRenderer.pic;
  * output format needs one more implementation of {@link NotificationRenderer} and one more
  * {@link RenderedFormat} constant, and no edit here.
  *
+ * <p>One alert is rendered per format, and each listener of {@code messaging} asks for every format
+ * {@link RenderedFormat} declares. {@code app/cbl/CBSTM03A.CBL} declares one output file per format
+ * at {@code app/cbl/CBSTM03A.CBL:L44-L47} and writes both in one run, so a listener naming one
+ * format would leave the other renderer registered and unreachable and its counter at zero. Each
+ * format therefore increments {@code carddemo.notification.notifications.rendered} under its own tag
+ * and, for the two alerts that reach the table, leaves its own {@code notification_log} row with the
+ * format in {@code channel}. {@code NotificationApplicationTest} holds that the scan discovers one
+ * renderer per format, so no format a listener asks for is missing.
+ *
  * <p>ADDITIVE: the fraud alert, since {@code app/cbl/CBSTM03A.CBL} carries no fraud concept.
  * ADDITIVE: the rendered-alert row, since no COBOL program records one. This service reaches no
  * mail, message, webhook or push gateway. It renders a document, records that it rendered one, and
@@ -430,7 +439,7 @@ public class NotificationService {
     }
 
     /**
-     * Totals one card's whole history from its aggregate, without reading the rows.
+     * Totals one card's whole history from its maintained totals, without reading the rows.
      *
      * <p>Answers the same value {@link #totalOf(List)} would over every row of the card, which is
      * what {@code app/cbl/CBSTM03A.CBL:L429} accumulates between two key breaks. The history route
@@ -447,7 +456,8 @@ public class NotificationService {
      * <p>What makes the substitution safe is a bound rather than an assumption. A running total never
      * exceeds the sum of the magnitudes of the amounts, so an {@code absoluteTotal} that fits the
      * field proves that no addition overflowed and that the sum is exactly what the source would have
-     * accumulated. That is the ordinary case and it costs one aggregate.
+     * accumulated. That is the ordinary case and it costs the one index lookup the route has
+     * already made.
      *
      * <p>Where the magnitudes do not fit, the field's overflow is genuinely reachable and this falls
      * back to accumulating row by row, in bounded pages, so the reproduced behaviour stays exact.
@@ -455,8 +465,8 @@ public class NotificationService {
      * {@code card-platform/docs/business-rule-flags.md} records the source defect it reproduces.
      * Correctness is preferred to speed in the case that is already wrong in the source.
      *
-     * @param cardToken the stored card token, the key of the aggregate supplied
-     * @param totals    that card's aggregate, from
+     * @param cardToken the stored card token, the key of the totals supplied
+     * @param totals    that card's whole-history totals, from
      *                  {@link StatementTransactionRepository#totalsOfCard(String)}
      * @return the total, at the scale {@link PicClause#TRAN_AMT_SCALE} declares
      * @throws NullPointerException when an argument is {@code null}

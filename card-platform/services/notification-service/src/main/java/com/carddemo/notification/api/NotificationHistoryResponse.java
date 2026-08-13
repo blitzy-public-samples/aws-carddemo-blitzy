@@ -33,9 +33,9 @@ import java.util.regex.Pattern;
  * it. That split is deliberate and it is what keeps the source's own claim true.
  * {@code app/cbl/CBSTM03A.CBL} reads every row of one card between two key breaks and
  * {@code app/cbl/CBSTM03A.CBL:L429} totals all of them, so a count or a total over part of a history
- * would describe a statement the source never produced. Both are therefore read as one aggregate over
- * the key rather than by counting the items present, which is also why they are the two components a
- * caller cannot derive from this body.
+ * would describe a statement the source never produced. Both are therefore read from one row of
+ * {@code statement_card_total} rather than by counting the items present, which is also why they are
+ * the two components a caller cannot derive from this body.
  *
  * <p>The array was once unbounded, and one request then materialised every retained row of a card,
  * totalled them in memory and copied the list. Work and response size both grew with one card's

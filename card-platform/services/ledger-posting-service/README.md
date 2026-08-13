@@ -61,7 +61,7 @@ The 430-byte reject width is corroborated outside the program: `app/jcl/POSTTRAN
 
 The response carries the account identifier, the current balance, the cycle credit accumulator and the cycle debit accumulator. `app/cbl/COACTVWC.cbl:L468`–`L490` fills ten account fields on the view screen, but this service owns only the balance and the two accumulators, so the answer exposes that subset and nothing else. Each amount is a decimal string with two places.
 
-Every other answer is a problem document, the same four members `config/SecurityConfig` writes for a security refusal, under `application/problem+json`. `api/LedgerApiExceptionHandler` shapes three of them and the security configuration the other two.
+Every other answer is a problem document, the same four members `config/SecurityConfig` writes for a security refusal, under `application/problem+json`. `api/LedgerApiExceptionHandler` shapes three of them and the security configuration the other two. A request target refused before any route ran carries the same four members from `config/ContainerErrorDocument`.
 
 | Status | When | Detail |
 | :--- | :--- | :--- |
@@ -378,7 +378,7 @@ Use these versions. They are the tested set, not a floor.
 | Consumer groups | `ledger-posting`, `ledger-account-state` |
 | Listener retries | 3 attempts, 1000 ms backoff |
 | Listener concurrency | 3 threads for each of the three topics, one per partition |
-| Outbox relay | every 500 ms, up to 100 rows, claim timeout `PT2M` |
+| Outbox relay | every 500 ms, up to 100 rows a pass across as many claim cycles as it takes, claim timeout `PT2M` |
 | Scheduler threads | 2, one for the relay and one for the retention sweep |
 | Datasource pool | at most 16 connections, 4 kept idle |
 | Migrations | Eleven, listed below |

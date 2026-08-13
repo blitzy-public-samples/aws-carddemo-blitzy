@@ -6,6 +6,7 @@ import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
 import com.carddemo.notification.domain.CardholderContextReader;
 import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
 import com.carddemo.notification.domain.NotificationService;
+import com.carddemo.notification.domain.NotificationService.CardholderDetails;
 import com.carddemo.notification.entity.ProcessedEventEntity;
 import com.carddemo.notification.repository.ProcessedEventRepository;
 import java.time.Duration;
@@ -147,11 +148,18 @@ public class TransactionAuthorizedConsumer {
 
                 transactionTemplate.executeWithoutResult(status -> {
                     if (claimed(event.eventId(), consumedTopic)) {
-                        notificationService.renderAuthorizationAlert(cardToken,
-                                event.maskedCardNumber(), event.transactionId(), event.accountId(),
-                                event.description(), event.amount(),
-                                cardholderContextReader.require(event.accountId()),
-                                RenderedFormat.PLAIN_TEXT);
+                        CardholderDetails cardholder =
+                                cardholderContextReader.require(event.accountId());
+                        // One alert per format, as app/cbl/CBSTM03A.CBL writes one statement per
+                        // output file: FD-STMTFILE-REC PIC X(80) at :L45 and FD-HTMLFILE-REC
+                        // PIC X(100) at :L47, both written in the same run. Rendering one format
+                        // here left the other renderer registered and unreachable.
+                        for (RenderedFormat format : RenderedFormat.values()) {
+                            notificationService.renderAuthorizationAlert(cardToken,
+                                    event.maskedCardNumber(), event.transactionId(),
+                                    event.accountId(), event.description(), event.amount(),
+                                    cardholder, format);
+                        }
                     }
                 });
             }

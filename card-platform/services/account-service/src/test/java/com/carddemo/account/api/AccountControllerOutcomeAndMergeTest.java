@@ -540,7 +540,10 @@ class AccountControllerOutcomeAndMergeTest {
          * <p>{@code ACUP-NEW-OPEN-DATE PIC X(08)} at {@code app/cbl/COACTUPC.cbl:L772} is the shape a
          * caller submits, and {@code ACCT-UPDATE-RECORD} declares the column {@code PIC X(10)} at
          * {@code app/cbl/COACTUPC.cbl:L427}. A separated ten-character value is the stored shape and
-         * not the submitted one, so it reaches the column as a value the date edit refuses.
+         * not the submitted one, so it is a value the request field cannot hold: it is refused by
+         * width before anything is mapped, and the service is not reached. That is a narrower answer
+         * than the one this case first asserted, which was that the ten characters were sliced to
+         * eight and refused later by the date edit.
          */
         @Test
         void aSubmittedDateOfEightCharactersReachesTheColumnAsTen() {
@@ -561,13 +564,17 @@ class AccountControllerOutcomeAndMergeTest {
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
                     .thenReturn(outcomeCarrying(EditResult.ok()));
 
-            controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(
-                    new AccountDataRequest(null, null, null, null, "2015-03-02", null, null, null,
-                            null, null),
-                    customerData()));
+            ResponseEntity<?> refused = controller.updateAccount(ACCOUNT_ID,
+                    new AccountUpdateRequest(new AccountDataRequest(null, null, null, null,
+                            "2015-03-02", null, null, null, null, null), customerData()));
 
-            assertNotEquals("2015-03-02", proposedAccount().getOpenDate(),
-                    "a value already carrying separators is not the shape the request declares");
+            assertAll(
+                    () -> assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, refused.getStatusCode(),
+                            "a value the field cannot hold is a refused field"),
+                    () -> assertEquals("Open Date must be no longer than 8 characters.",
+                            assertInstanceOf(ApiProblem.class, refused.getBody()).detail(),
+                            "the message names the field and the eight characters it holds"),
+                    () -> verify(accountUpdates, never()).updateAccount(any(), any(), any(), any()));
         }
 
         /**

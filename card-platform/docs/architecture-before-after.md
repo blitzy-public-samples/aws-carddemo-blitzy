@@ -12,7 +12,7 @@ Figure 1 shows the coupling this migration removes: every Virtual Storage Access
 graph TB
     TERM["3270 terminal<br/>17 BMS mapsets"]
 
-    subgraph CICS["CICS region: 18 program definitions, 18 transaction definitions"]
+    subgraph CICS["CICS region"]
         SGN["COSGN00C<br/>signon"]
         MENU["COMEN01C and COADM01C<br/>menu dispatch"]
         ACT["COACTVWC and COACTUPC<br/>account view and update"]
@@ -168,7 +168,7 @@ graph LR
     CLIENT["REST client"]
     ADMIN["Management API client"]
 
-    subgraph AUTH["authorization-service: sole writer of the decision"]
+    subgraph AUTH["authorization-service"]
         AAPI["POST /authorizations"]
         RULES["Four decline rules<br/>from CBTRN02C validation"]
         ADB[("carddemo_authorization<br/>authorization_service schema")]
@@ -184,7 +184,7 @@ graph LR
     AS{{"account.state-changed"}}
     CC{{"customer.context-changed"}}
     CU{{"card.updated"}}
-    DLQ{{"dead-letter topics<br/>source name plus .DLT, else carddemo.dead-letter"}}
+    DLQ{{"dead-letter topics<br/>source name plus .DLT,<br/>else carddemo.dead-letter"}}
 
     subgraph LEDGER["ledger-posting-service"]
         LCON["ledger-posting"]
@@ -208,21 +208,21 @@ graph LR
     end
 
     subgraph ACCOUNT["account-service"]
-        AACCT["Account, customer and cycle APIs"]
+        AACCT["Account, customer<br/>and cycle APIs"]
         APCON["account-posted"]
         ACDB[("carddemo_account<br/>account_service schema")]
         ACRELAY["Outbox relay"]
     end
 
     subgraph CARD["card-service"]
-        CAPI["Card list, detail and update APIs"]
+        CAPI["Card list, detail<br/>and update APIs"]
         CDB[("carddemo_card<br/>card_service schema")]
         CRELAY["Outbox relay"]
     end
 
     CLIENT -->|"one synchronous call"| AAPI
     AAPI --> RULES
-    RULES -->|"decision row and event row in ONE local transaction"| ADB
+    RULES -->|"decision row and event row<br/>in ONE local transaction"| ADB
     ADB --> ARELAY
     ARELAY ==> TA
     ARELAY ==> TD
@@ -282,6 +282,7 @@ graph LR
 **Legend**
 
 - A subgraph boundary encloses one deployable service together with the database only that service reaches.
+- `authorization-service` is the sole writer of the authorization decision. No other subgraph writes a decision row, and no consumer calls back into it.
 - A plain arrow is a synchronous step. Only the two client edges enter from outside; every other plain arrow is in-process.
 - A thick arrow is an asynchronous Kafka publish or consume, and every thick arrow is a decoupling point.
 - A dotted arrow is dead-letter routing, taken by a spent consumer record or by an outbox row a relay abandoned. All five relays take it: each publishes a governed `DeadLetterEnvelope` naming the row it gave up on.
@@ -323,7 +324,7 @@ Each service owns one database, one schema, and the tables below. Column types, 
 | authorization | `carddemo_authorization`, `authorization_service` | `card_xref`, `account_credit_snapshot`, `authorization_decision`, `replica_gap`, `outbox_event`, `processed_event` |
 | ledger posting | `carddemo_ledger`, `ledger_service` | `transaction`, `transaction_category_balance`, `account_balance_projection`, `transaction_type`, `transaction_category`, `rejected_transaction`, `outbox_event`, `processed_event` |
 | fraud detection | `carddemo_fraud`, `fraud_service` | `fraud_assessment`, `velocity_window`, `outbox_event`, `processed_event` |
-| notification | `carddemo_notification`, `notification_service` | `statement_transaction`, `cardholder_context`, `notification_log`, `processed_event` |
+| notification | `carddemo_notification`, `notification_service` | `statement_transaction`, `statement_card_total`, `cardholder_context`, `notification_log`, `processed_event` |
 | account | `carddemo_account`, `account_service` | `account`, `customer`, `disclosure_group`, `account_customer_link`, `us_phone_area_code`, `us_state_code`, `us_state_zip_prefix`, `outbox_event`, `processed_event` |
 | card | `carddemo_card`, `card_service` | `card`, `card_xref`, `card_token_rotation`, `card_token_rotation_mapping`, `outbox_event`, `processed_event` |
 

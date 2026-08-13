@@ -17,6 +17,22 @@ server:
   # value the way any environment variable overrides a bound property, and the profile exists
   # because the strategy alone is not enough: it has to be the strategy that checks who forwarded.
   forward-headers-strategy: none
+  # Response compression for the Representational State Transfer surface. A performance review
+  # measured a 69,959-byte history page and a 37,299-byte assessment page leaving this connector
+  # byte for byte with no Content-Encoding header, and JSON of that shape carries a great deal of
+  # repeated key text: the same page now leaves as 1,993 bytes and the assessment page as 2,339.
+  # A body is compressed only when the caller offered an encoding and the media type is one of the
+  # two below, so a caller that offered none still receives the bytes it asked for. The two are the
+  # only media types this surface answers with: JSON for a representation and problem+JSON for a
+  # refusal.
+  #
+  # min-response-size is the container's own floor and it reads the declared length of a body. Every
+  # route here answers chunked, so no length is declared and a short body is compressed as well; the
+  # floor is what a deployment that puts a content length on a response would then hold to.
+  compression:
+    enabled: ${SERVER_COMPRESSION_ENABLED:true}
+    mime-types: ${SERVER_COMPRESSION_MIME_TYPES:application/json,application/problem+json}
+    min-response-size: ${SERVER_COMPRESSION_MIN_RESPONSE_SIZE:2KB}
 
   # Transport security is off in the shipped file and on in the cluster, where
   # deploy/k8s/30-configmap.yaml sets SERVER_SSL_ENABLED and names the keystore
@@ -27,6 +43,21 @@ server:
     key-store: "${SERVER_SSL_KEYSTORE:}"
     key-store-type: "${SERVER_SSL_KEYSTORE_TYPE:PKCS12}"
     key-store-password: "${SERVER_SSL_KEYSTORE_PASSWORD:}"
+
+  # Error responses of the two paths that reach a caller before any handler of this service runs.
+  # Every key is set rather than left at its default, because include-path defaults to ALWAYS: the
+  # framework body then copies the resolved request path into the response, and a path on this
+  # service carries an identifier. config/ContainerErrorDocument answers both paths with the problem
+  # document src/main/resources/openapi.yaml publishes, and these keys mean the attributes behind any
+  # framework body carry nothing a caller sent either.
+  error:
+    include-path: never
+    include-message: never
+    include-binding-errors: never
+    include-stacktrace: never
+    include-exception: false
+    whitelabel:
+      enabled: false
 
 spring:
   application:
@@ -48,6 +79,29 @@ spring:
     hikari:
       connection-timeout: ${SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT:3000}
       validation-timeout: ${SPRING_DATASOURCE_HIKARI_VALIDATION_TIMEOUT:2000}
+      # Bounds on what a borrowed connection may then do. connection-timeout above bounds the wait
+      # for a connection and validation-timeout the check that it still answers, and a performance
+      # review found nothing bounding the work that follows: statement_timeout, lock_timeout and
+      # idle_in_transaction_session_timeout all read 0 on the server, so one pathological statement
+      # or one transaction left open could hold a pooled connection for as long as it liked while
+      # every other caller queued on connection-timeout.
+      #
+      # The three below are session settings the server applies to every connection this pool
+      # opens, Flyway's included. They are set here rather than in the URL because
+      # docker-compose.yml and deploy/k8s/30-configmap.yaml replace SPRING_DATASOURCE_URL whole,
+      # and anything this file had put in the URL would go with it. The values sit far above
+      # measured behaviour rather than tight against it: a business statement answers in
+      # single-digit milliseconds, and a forty-way concurrent update of one account cleared its
+      # lock waiters in about two seconds.
+      connection-init-sql: "${SPRING_DATASOURCE_HIKARI_CONNECTION_INIT_SQL:SET statement_timeout = '30s'; SET lock_timeout = '10s'; SET idle_in_transaction_session_timeout = '60s'}"
+      # A connection is retired at max-lifetime, and an idle one above the minimum-idle floor below
+      # at idle-timeout, so no connection of this pool lives for ever. leak-detection-threshold only
+      # reports a connection held longer than it names and never refuses a request; the longest
+      # legitimate hold is Flyway's, which owns one connection for the length of the migration run
+      # at start-up.
+      max-lifetime: ${SPRING_DATASOURCE_HIKARI_MAX_LIFETIME:1800000}
+      idle-timeout: ${SPRING_DATASOURCE_HIKARI_IDLE_TIMEOUT:600000}
+      leak-detection-threshold: ${SPRING_DATASOURCE_HIKARI_LEAK_DETECTION_THRESHOLD:120000}
       # Sized for the work that holds a connection at once, rather than left at the pool
       # default of ten: six listener threads, from two listeners at the concurrency below;
       # the relay pass; the retention sweep; and eight for request handling. A request that

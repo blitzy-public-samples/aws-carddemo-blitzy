@@ -1640,16 +1640,30 @@ final class AuthorizationControllerTest {
          * <p>{@code app/cbl/CBTRN02C.cbl:L385} assigns its reject code when the keyed read misses. A
          * fifteen-character value would miss a sixteen-character key and report that code, naming a
          * card the caller never sent. The width test at ingress answers first.
+         *
+         * <p>The reject code is looked for in the served texts and in the absence of a decision
+         * property, rather than anywhere in the body. An error body carries {@code timestamp}, and
+         * {@link GlobalExceptionHandler.ApiErrorResponse#of} stamps it with the current moment: about
+         * one rendered instant in sixteen hundred holds the four characters of this code among its
+         * nanoseconds. A bare search over the body therefore answered the clock as well as the
+         * endpoint, and failed for a reason this test is not about. The instant asserted below is one
+         * of those renderings.
          */
         @Test
         void aCardOfAnotherWidthIsRefusedAheadOfTheLookup() throws Exception {
-            String body = postBody(bodyWith(CARD_NUMBER_FIELD, SHORTENED_CARD)).getResponse()
-                    .getContentAsString();
+            mockMvc.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
+                            .content(bodyWith(CARD_NUMBER_FIELD, SHORTENED_CARD)))
+                    .andExpect(jsonPath("$.messages", Matchers.hasItem(
+                            AuthorizationRequest.CARD_NUMBER_NOT_NUMERIC_MESSAGE)))
+                    .andExpect(jsonPath("$.messages", Matchers.not(Matchers.hasItem(
+                            Matchers.containsString(DeclineReason.INVALID_CARD_NUMBER.code())))))
+                    .andExpect(jsonPath("$.declineReasonCode").doesNotExist());
 
-            assertTrue(body.contains(AuthorizationRequest.CARD_NUMBER_NOT_NUMERIC_MESSAGE),
-                    "app/cbl/COTRN02C.cbl:L213 answers a card number of the wrong shape");
-            assertFalse(body.contains(DeclineReason.INVALID_CARD_NUMBER.code()),
-                    "a width problem never reads as the reject code of app/cbl/CBTRN02C.cbl:L385");
+            assertTrue(Instant.parse("2026-08-12T11:28:06.824510100Z").toString()
+                            .contains(DeclineReason.INVALID_CARD_NUMBER.code()),
+                    "a rendered instant carries these four characters often enough to fail a build,"
+                            + " which is why the two expectations above read the served texts and the"
+                            + " decision property rather than the whole body");
             assertEquals(PicClause.XREF_CARD_NUM_WIDTH - 1, SHORTENED_CARD.length(),
                     "the refused value is one character short of the key width");
             verify(authorizations, never()).authorize(any(), any());

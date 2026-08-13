@@ -42,4 +42,19 @@
 
   <!-- OFF, not a level: see the header. -->
   <logger name="org.hibernate.orm.jdbc.error" level="OFF"/>
+
+  <!--
+    The container library renders every Docker command and every HTTP body it exchanges with the
+    daemon at DEBUG, and the root level above is DEBUG. Creating the test PostgreSQL container sends
+    its environment, so POSTGRES_PASSWORD and its value were written into two reports of this module,
+    and .github/workflows/ci.yml uploads every report for a fortnight. The value belongs to one
+    ephemeral container and is not a platform credential, but a password echoed into a published
+    artifact is a password nobody should have to reason about.
+
+    INFO, not OFF. The two lines a reader of a failure needs - the image being pulled and the
+    container reaching ready - are written at INFO by the tc.<image> loggers and are unaffected.
+    What is dropped is the command and wire rendering below them, which no test here reads.
+  -->
+  <logger name="org.testcontainers" level="INFO"/>
+  <logger name="com.github.dockerjava" level="INFO"/>
 </configuration>

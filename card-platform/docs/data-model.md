@@ -191,7 +191,9 @@ A diagnostic for a row whose `aggregate_id` holds the 16-character transaction k
 
 **Figure 2 — Ledger posting state, reference lookups, rejects, and messaging infrastructure**
 
-Figure 2 shows the posting tables and the composite category-balance key. `account_balance_projection` has two writers: the posting path adds a delta the ledger owns, and `messaging/AccountStateChangedConsumer` replaces the three value columns from the account service's own snapshot.
+Figure 2 shows the posting tables and the composite category-balance key. The posting path derives all three value columns of `account_balance_projection`, and an arriving `AccountStateChanged` replaces none of them. `messaging/AccountStateChangedConsumer` has exactly two effects: `insertMissingProjection` opens a row for an account this schema holds none for, and `closeBillingCycle` moves zero into the two accumulators. An ordinary field update writes nothing at all. `V4__account_state_ownership.sql` records that ownership in the column comments.
+
+That migration also retracts the `V3` comment which had the consumer replacing the three columns. Replacing them discarded every movement the posting path had derived, and it did so with no log line, no metric and no dead letter.
 
 ```mermaid
 erDiagram
@@ -299,6 +301,7 @@ The target stores a masked card value rather than the full source card field.
 | `app/cpy/CVTRA01Y.cpy:L5-L9` | Account 11, type 2, category 4, balance `S9(09)V99` | `transaction_category_balance`; composite key `(account_id, type_code, category_code)` |
 | `app/cpy/CVACT01Y.cpy:L5`, `L7`, `L13-L14` | Account, current balance, cycle credit, cycle debit | `account_balance_projection`; account primary key |
 | No source field | Provenance of the last replicated account change | `account_balance_projection.source_event_id` and `source_occurred_at`, added by `V3__account_state_replica.sql`; both `NULL` on a seeded row, and a `CHECK` holds the pair together |
+| No source field | Writer ownership of the three value columns | Column comments set by `V4__account_state_ownership.sql`: the posting arithmetic of `app/cbl/CBTRN02C.cbl:L545-L560` derives `current_balance`, `cycle_credit` and `cycle_debit`, and no account change writes them |
 | `app/cpy/CVTRA03Y.cpy:L5-L6` | Type and 50-character description | `transaction_type`; 7 seeded rows |
 | `app/cpy/CVTRA04Y.cpy:L6-L8` | Type, category, and description | `transaction_category`; 18 seeded rows |
 
@@ -409,7 +412,7 @@ Three of the four growing tables of this schema are swept on one hourly schedule
 
 **Figure 4 — Notification read model, cardholder context, rendered alerts, and duplicate guard**
 
-Figure 4 shows two private read models and a rendered-alert log serving four listeners.
+Figure 4 shows two private read models, the per-card summary one of them is read through, and a rendered-alert log serving four listeners.
 
 ```mermaid
 erDiagram
@@ -421,6 +424,13 @@ erDiagram
         char4 category_code
         numeric_11_2 amount
         char26 processing_timestamp
+    }
+    STATEMENT_CARD_TOTAL {
+        char64 card_token PK
+        bigint transaction_count
+        numeric_31_2 total_amount
+        numeric_31_2 absolute_total
+        char16 masked_card_number
     }
     CARDHOLDER_CONTEXT {
         char11 account_id PK
@@ -454,12 +464,14 @@ erDiagram
 
     CARDHOLDER_CONTEXT ||--o{ NOTIFICATION_LOG : informs_rendering
     STATEMENT_TRANSACTION ||--o{ NOTIFICATION_LOG : produces_attempt
+    STATEMENT_CARD_TOTAL ||--o{ STATEMENT_TRANSACTION : summarises
 ```
 
 **Legend**
 
 - Entity boxes are tables in `carddemo_notification.notification_service`.
 - `STATEMENT_TRANSACTION` derives from the re-keyed statement layout, replacing the source Primary Account Number (PAN) key with a keyed card token. The token is a stable pseudonym, linking every row of one card without holding the number. It stays sensitive, because a holder of the key can recompute it for any candidate number.
+- `STATEMENT_CARD_TOTAL` holds one row per card the read model has ever held. That row carries the card's row count, the sum of its amounts, the sum of their magnitudes, and the masked number it displays. `V10__statement_card_totals.sql` adds it, and the two statements that write `STATEMENT_TRANSACTION` maintain it by delta, so the two commit together. `GET /notifications/{cardToken}` reads it once by key instead of aggregating the card's retained rows.
 - `CARDHOLDER_CONTEXT` is private, is seeded with fifty rows from `app/data/ASCII/custdata.txt` by `V2__seed.sql`, and is refreshed by `CustomerContextChanged`.
 - Relationship lines are domain associations rather than declared foreign keys.
 
@@ -481,6 +493,20 @@ erDiagram
 
 The source composite key is 32 bytes. `app/jcl/CREASTMT.JCL:L30` defines `KEYS(32 0)`, and line 53 sorts by card number then transaction identifier. The target key is 80 characters: a 64-character card token plus the 16-character transaction identifier. The token is a keyed `HMAC-SHA-256` over the full card number under `CARD_TOKEN_SECRET`, so it cannot be recomputed from a card number alone. The masked card number is display data and never a key.
 
+#### `statement_card_total`
+
+| Source | Target columns | Note |
+| --- | --- | --- |
+| No source field | `card_token` | The key, and the same value `statement_transaction` keys on |
+| Derived from `TRNX-AMT` | `transaction_count`, `total_amount`, `absolute_total` | The card's row count and the two sums, as `BIGINT` and two `NUMERIC(31,2)` |
+| No source field | `masked_card_number` | Display data, nullable because a card can be known and hold no row |
+
+`V10__statement_card_totals.sql` adds this table and backfills it from the rows already held. It carries no copybook field of its own. Every value summarises the rows next door, which is why the two sums are wider than the `NUMERIC(11,2)` of one row's amount. `absolute_total` is what proves the running total at `app/cbl/CBSTM03A.CBL:L429` could not have overflowed `WS-TOTAL-AMT PIC S9(9)V99` at `app/cbl/CBSTM03A.CBL:L65`, and the proof reads it through `CobolDecimal`, which truncates it to the source field.
+
+The four values were an aggregate over `card_token` until a performance review measured what a page of history cost. On a card holding 21,299 rows it scanned 1,228 buffers in 7.775 ms per request, against 4 buffers and 0.048 ms on a card holding one.
+
+Both statements that write the read model now carry the delta, so the summary commits with the rows it describes. `transaction_count >= 0` and `absolute_total >= 0` are the drift detector: a delta that stopped matching its rows would fail a write rather than answer a wrong figure. The statement-retention sweep decrements a row as it removes the rows behind it, leaving a count of zero rather than an orphan. The route answers a zero row and an absent row alike.
+
 #### `cardholder_context`
 
 | Source | Target columns | Note |
@@ -496,7 +522,7 @@ The source composite key is 32 bytes. `app/jcl/CREASTMT.JCL:L30` defines `KEYS(3
 
 | Table | Shape | Rule |
 | --- | --- | --- |
-| `notification_log` | UUID, card token, masked card, transaction, channel, render time, outcome | Stores metadata only, never a rendered body. `outcome` carries `RENDERED_NOT_SENT` and `ck_notification_log_outcome` permits no other value: nothing on this platform sends a cardholder alert, so a row records what was rendered and never a delivery. Two of the three rendered alerts reach this table. A fraud alert reaches none, because `FraudFlagged` carries neither the card token nor the masked card number the two `CHECK` constraints below require. Neither can be derived from an event that names only a transaction, an account, a score and the rules that fired |
+| `notification_log` | UUID, card token, masked card, transaction, channel, render time, outcome | Stores metadata only, never a rendered body. `outcome` carries `RENDERED_NOT_SENT` and `ck_notification_log_outcome` permits no other value: nothing on this platform sends a cardholder alert, so a row records what was rendered and never a delivery. Two of the three rendered alerts reach this table, and each leaves one row per rendered format: `channel` names the format, and every listener renders both, as `app/cbl/CBSTM03A.CBL` writes one statement per output file at lines 45 and 47. A fraud alert reaches none, because `FraudFlagged` carries neither the card token nor the masked card number the two `CHECK` constraints below require. Neither can be derived from an event that names only a transaction, an account, a score and the rules that fired |
 | `processed_event` | Event identifier, process time, consumed topic | Guards all four notification listener groups; `consumed_topic` keeps one event identifier claimable once per group |
 
 ### Account database
@@ -827,11 +853,11 @@ The figures above name tables and columns, which is what a reader needs to follo
 
 **How these tables were produced, so a reader can reproduce them**. Every migration under `services/*/src/main/resources/db/migration/` was applied to an empty `postgres:18.4` database in version order, one schema per service. The tables below were then read out of `pg_indexes` and `pg_constraint`.
 
-That is the whole method, and it is why the appendix reflects `ALTER`, `DROP` and `RENAME`. An index on a table a later migration drops is absent here, and a constraint a later migration redefines appears once, in its final form. The totals are **42 indexes and 146 named constraints**.
+That is the whole method, and it is why the appendix reflects `ALTER`, `DROP` and `RENAME`. An index on a table a later migration drops is absent here, and a constraint a later migration redefines appears once, in its final form. The totals are **42 indexes and 151 named constraints**.
 
-Three consequences of reading the catalog rather than the statements are worth naming, because each is a place a hand-kept appendix drifts. The migrations carry 56 `CREATE INDEX` statements naming 55 indexes, and the database holds 41. Fifteen of those names are gone and one arrived under another name.
+Three consequences of reading the catalog rather than the statements are worth naming, because each is a place a hand-kept appendix drifts. The migrations contain 57 `CREATE INDEX` statements and the database holds 42 indexes. `DROP` sits between the two figures: 13 `DROP INDEX` statements withdraw twelve names, and two migrations drop a table and take its indexes with them. Fourteen names are gone in all, and one arrived under another name.
 
-`V7__account_customer_link.sql` drops the account service's `card_xref` replica, and the two indexes on it go with the table. Authorization `V18` prunes two decision indexes and `V20` withdraws two more with the table they served, and two fraud indexes were superseded. Six more names go together, one per schema: every service drops `ix_processed_event_processed_at`, because a duplicate-delivery claim is now permanent and nothing scans that column for a horizon to delete by. Notification's `V5__rendered_not_delivered.sql` renames `ix_notification_log_attempted_at` to `ix_notification_log_rendered_at`, so the appendix lists the new name once rather than both. And a plain `grep -c 'CONSTRAINT '` over the same files reports more than 132, because it also counts the `DROP CONSTRAINT` and `COMMENT ON CONSTRAINT` lines that reference a constraint rather than declaring one.
+`V7__account_customer_link.sql` drops the account service's `card_xref` replica, and the two indexes on it go with the table. Authorization `V18` prunes two decision indexes and `V20` withdraws two more with the table they served, and two fraud indexes were superseded. Six more names go together, one per schema: every service drops `ix_processed_event_processed_at`, because a duplicate-delivery claim is now permanent and nothing scans that column for a horizon to delete by. Notification's `V5__rendered_not_delivered.sql` renames `ix_notification_log_attempted_at` to `ix_notification_log_rendered_at`, so the appendix lists the new name once rather than both. And a plain `grep -c 'CONSTRAINT '` over the same files reports more than 151, because it also counts the `DROP CONSTRAINT` and `COMMENT ON CONSTRAINT` lines that reference a constraint rather than declaring one.
 
 Seven primary keys are declared inline without a `CONSTRAINT` clause, so PostgreSQL generates the name. They are listed under their own schema below rather than left out, because an operator reading a constraint violation needs to recognise a generated name too. Three services replaced the generated `processed_event_pkey` with the named `pk_processed_event` on `(event_id, consumed_topic)`: `V6` in the authorization service, and the matching migrations in the ledger and notification services. That is why the generated name appears in a migration and not in this appendix.
 
@@ -967,7 +993,7 @@ Generated primary-key names in this schema, declared inline without a `CONSTRAIN
 | `ck_velocity_window_total_nonnegative` | `velocity_window` | Check | `V1__schema.sql` |
 | `pk_velocity_window` | `velocity_window` | Primary Key | `V1__schema.sql` |
 
-### Notification schema — 4 indexes, 14 named constraints
+### Notification schema — 4 indexes, 19 named constraints
 
 | Index | Table | Columns | Unique | Partial predicate | Migration |
 | --- | --- | --- | --- | --- | --- |
@@ -987,6 +1013,11 @@ Generated primary-key names in this schema, declared inline without a `CONSTRAIN
 | `pk_notification_log` | `notification_log` | Primary Key | `V1__schema.sql` |
 | `ck_processed_event_consumed_topic` | `processed_event` | Check | `V3__processed_event_topic_key.sql` |
 | `pk_processed_event` | `processed_event` | Primary Key | `V3__processed_event_topic_key.sql` |
+| `ck_statement_card_total_absolute_total` | `statement_card_total` | Check | `V10__statement_card_totals.sql` |
+| `ck_statement_card_total_card_token` | `statement_card_total` | Check | `V10__statement_card_totals.sql` |
+| `ck_statement_card_total_masked_card_number` | `statement_card_total` | Check | `V10__statement_card_totals.sql` |
+| `ck_statement_card_total_transaction_count` | `statement_card_total` | Check | `V10__statement_card_totals.sql` |
+| `pk_statement_card_total` | `statement_card_total` | Primary Key | `V10__statement_card_totals.sql` |
 | `ck_statement_transaction_card_token` | `statement_transaction` | Check | `V1__schema.sql` |
 | `ck_statement_transaction_category_digits` | `statement_transaction` | Check | `V1__schema.sql` |
 | `ck_statement_transaction_masked_card_number` | `statement_transaction` | Check | `V1__schema.sql` |
@@ -1090,10 +1121,10 @@ Read from the catalog after every migration was applied, so this table is the me
 | Authorization | 9 | 37 | 2 |
 | Ledger posting | 7 | 18 | 0 |
 | Fraud detection | 8 | 21 | 0 |
-| Notification | 4 | 14 | 0 |
+| Notification | 4 | 19 | 0 |
 | Account | 6 | 23 | 5 |
 | Card | 8 | 33 | 0 |
-| **Total** | **42** | **146** | **7** |
+| **Total** | **42** | **151** | **7** |
 
 ## Subject data: purpose, retention, export and erasure
 
@@ -1133,7 +1164,7 @@ under a formal exception until it is answered.
 
 ### Every store that holds subject data
 
-Twenty-three of the platform's thirty-seven tables hold something about a subject. The other fourteen
+Twenty-four of the platform's thirty-eight tables hold something about a subject. The other fourteen
 are reference data, duplicate-delivery claims and rotation audit rows, and they are listed nowhere
 below because a request does not reach them.
 
@@ -1161,6 +1192,7 @@ below because a request does not reach them.
 | `fraud_service` | `outbox_event` | pseudonymous | Published assessment events, payload included | `aggregate_id` |
 | `notification_service` | `cardholder_context` | yes | Name, postal address, credit score, the ten fields one alert reports | `account_id` |
 | `notification_service` | `statement_transaction` | pseudonymous | Card-token-keyed history: masked card, amounts, merchant | `card_token` |
+| `notification_service` | `statement_card_total` | pseudonymous | One card's totals: row count, summed amounts, masked card | `card_token` |
 | `notification_service` | `notification_log` | pseudonymous | One render attempt: card token, masked card | `card_token` |
 
 ### Finding one subject
@@ -1216,8 +1248,9 @@ projections, because a `CustomerContextChanged` published afterwards would resto
 Erase the projections before the pairing that finds them, because the pairing is how the next store is
 reached.
 
-1. **Notification.** Delete the `statement_transaction` and `notification_log` rows of every card
-   token, current and previous, then the `cardholder_context` row of every account.
+1. **Notification.** Delete the `statement_transaction`, `statement_card_total` and
+   `notification_log` rows of every card token, current and previous, then the
+   `cardholder_context` row of every account.
 2. **Fraud.** Delete the `fraud_assessment` and `velocity_window` rows of every account.
 3. **Ledger.** Decide first: a posted transaction is a financial record, and a jurisdiction that
    requires its retention outranks an erasure request for it. Where erasure applies, delete the

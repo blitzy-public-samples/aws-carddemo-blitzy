@@ -32,6 +32,12 @@
   <properties>
     <java.version>25</java.version>
     <maven.compiler.release>25</maven.compiler.release>
+
+    <!-- Shape of ${maven.build.timestamp}, which the unit-test plugin below hands to
+         DocumentationContractTest as carddemo.build.started. This is Maven's own default format;
+         it is stated here so the one test that parses the value reads a shape this build fixes
+         rather than one a Maven release could change. Instant.parse accepts it as written. -->
+    <maven.build.timestamp.format>yyyy-MM-dd'T'HH:mm:ss'Z'</maven.build.timestamp.format>
   </properties>
 
   <dependencies>
@@ -163,7 +169,16 @@
         </executions>
       </plugin>
 
-      <!-- Surefire leaves the *EquivalenceTest name pattern to Failsafe. -->
+      <!-- Surefire leaves the *EquivalenceTest name pattern to Failsafe.
+
+           The system property carries the moment this invocation started, which is one value for
+           the whole session and therefore the same in every module. DocumentationContractTest
+           compares each module's published test count against that module's own reports, and it
+           needs to know which reports this invocation wrote: a report directory left by an earlier
+           command is not evidence about this one. Without the property that test read directory
+           presence, so a module cleaned on its own and a phase this invocation never ran both
+           looked like a missing report and failed the build with no defect in any source. The
+           format is stated rather than inherited so the test parses one shape. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
@@ -171,6 +186,9 @@
           <excludes>
             <exclude>**/*EquivalenceTest.java</exclude>
           </excludes>
+          <systemPropertyVariables>
+            <carddemo.build.started>${maven.build.timestamp}</carddemo.build.started>
+          </systemPropertyVariables>
         </configuration>
       </plugin>
 

@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -50,6 +51,15 @@ class RuleThreeDocumentationContractTest {
     /** A run of exactly sixty-four hexadecimal characters, which is the shape of a card token. */
     private static final Pattern SIXTY_FOUR_HEX_RUN =
             Pattern.compile("(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])");
+
+    /** The environment file every guide prints and no checkout carries. */
+    private static final String ENVIRONMENT_FILE = ".env";
+
+    /** The tracked template {@link #ENVIRONMENT_FILE} is copied from. */
+    private static final String ENVIRONMENT_TEMPLATE = ".env.example";
+
+    /** The command a guide printing {@link #ENVIRONMENT_FILE} has to carry. */
+    private static final String ENVIRONMENT_COPY_COMMAND = "install -m 600 .env.example .env";
 
     /** The six independently deployable service module directories. */
     private static final List<String> SERVICES = List.of(
@@ -459,6 +469,32 @@ class RuleThreeDocumentationContractTest {
     }
 
     /**
+     * Holds the follow-up figures the onboarding guide publishes to the register it points at.
+     *
+     * <p>The guide told a reader that {@code docs/suggested-next-tasks.md} carries fifty-two tasks in
+     * sixteen groups while it carried sixty in nineteen, which is the drift a count restated by hand
+     * produces. Both figures are measured from the register's own headings here, so the two documents
+     * cannot come apart again: a task added without restating the guide fails this test rather than
+     * misleading the contributor the guide exists for.
+     */
+    @Test
+    @DisplayName("onboarding publishes the task and group counts the register itself carries")
+    void onboardingPublishesTheRegistersOwnTaskAndGroupCounts() {
+        String register = read(platformDirectory().resolve("docs/suggested-next-tasks.md"));
+        long tasks = register.lines().filter(line -> line.startsWith("### ")).count();
+        long groups = register.lines().filter(line -> line.startsWith("## ")).count();
+        assertTrue(tasks > 0 && groups > 0, "the register must carry tasks under groups");
+
+        String onboarding = read(platformDirectory().resolve("docs/onboarding.md"));
+        assertTrue(onboarding.contains("It carries " + tasks + " tasks in " + groups + " groups"),
+                "onboarding must publish the " + tasks + " tasks in " + groups + " groups the"
+                        + " register carries, measured from its own headings");
+        assertTrue(onboarding.contains("the " + tasks + " follow-up tasks"),
+                "the document index must state the same figure as the sentence above it, or a reader"
+                        + " sees two counts for one register");
+    }
+
+    /**
      * Holds the account round-trip guidance the onboarding guide owes a new developer.
      *
      * <p>{@code GET /accounts/{accountId}} and {@code GET /customers/{customerId}} answer a shape
@@ -663,12 +699,25 @@ class RuleThreeDocumentationContractTest {
      * and {@code .env} — so this resolves each token under the base its own prefix implies. A review
      * found three tokens in the {@code ../../} form, which is correct from a service directory that
      * no section names, so they resolved from nowhere a reader would be standing.
+     *
+     * <p>{@code .env} is the one printed path no checkout carries. {@code card-platform/.gitignore}
+     * ignores it and {@code docs/onboarding.md} says it does not exist until it is copied, so what a
+     * reader can act on is the tracked template beside it and the command that makes the copy. Those
+     * two are held for a {@code .env} token, and the file itself is held for every other token.
+     * Holding {@code .env} against the file system instead is what failed a clean checkout, and it
+     * failed inside the module whose Failsafe phase runs the equivalence suite.
+     *
+     * <p>{@code .env.example} is a tracked file and not a second mention of the generated one. The
+     * word-boundary form matched the {@code .env} head of it, so {@code install -m 600 .env.example
+     * .env} produced two tokens where the reader sees one path and one template. The lookahead below
+     * reads the template as itself.
      */
     @Test
     void everyPathAGuidePrintsResolvesOnDisk() {
-        Pattern token = Pattern.compile(
-                "(?:\\.\\./)*(?:card-platform/)?(?:app/data/[A-Za-z]+/[a-z]+\\.txt|\\.env)\\b");
+        Pattern token = Pattern.compile("(?:\\.\\./)*(?:card-platform/)?"
+                + "(?:app/data/[A-Za-z]+/[a-z]+\\.txt|\\.env(?!\\.example))\\b");
         int checked = 0;
+        int generated = 0;
         for (Path guide : allGuides()) {
             boolean inBlock = false;
             for (String line : read(guide).lines().toList()) {
@@ -691,15 +740,31 @@ class RuleThreeDocumentationContractTest {
                     Path base = path.equals(".env") || path.startsWith("../")
                             ? platformDirectory()
                             : repositoryRoot();
-                    assertTrue(Files.exists(base.resolve(path).normalize()),
-                            guide.getFileName() + " prints " + path + ", which resolves to "
-                                    + base.resolve(path).normalize() + " and does not exist");
+                    Path resolved = base.resolve(path).normalize();
+                    if (ENVIRONMENT_FILE.equals(resolved.getFileName().toString())) {
+                        Path template = resolved.resolveSibling(ENVIRONMENT_TEMPLATE);
+                        assertTrue(Files.isRegularFile(template),
+                                guide.getFileName() + " prints " + path + ", which is generated from "
+                                        + template + ", and that template does not exist");
+                        assertTrue(read(guide).contains(ENVIRONMENT_COPY_COMMAND),
+                                guide.getFileName() + " prints " + path + ", which no checkout"
+                                        + " carries, and does not carry `" + ENVIRONMENT_COPY_COMMAND
+                                        + "`, so a reader has a path and no way to produce it");
+                        generated++;
+                    } else {
+                        assertTrue(Files.exists(resolved),
+                                guide.getFileName() + " prints " + path + ", which resolves to "
+                                        + resolved + " and does not exist");
+                    }
                     checked++;
                 }
             }
         }
         assertTrue(checked >= 40, "the guides print many such paths; only " + checked + " were found,"
                 + " so this test is no longer reading them");
+        assertTrue(generated >= 30, "the guides print " + ENVIRONMENT_FILE + " throughout the setup"
+                + " sequence; only " + generated + " such tokens were found, so the branch holding"
+                + " the template and the copy command is no longer reached");
     }
 
     /**

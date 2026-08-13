@@ -739,7 +739,8 @@ class PresentationAndProseContractTest {
 
         assertTrue(declarationOf(".kpi-label").contains("color: var(--blitzy-text)"));
         assertTrue(declarationOf(".diagram-legend").contains("color: var(--blitzy-text)"));
-        assertTrue(declarationOf(".reveal .slide-number").contains("color: var(--blitzy-text)"));
+        assertTrue(
+                declarationOf(".reveal .deck-slide-number").contains("color: var(--blitzy-text)"));
 
         String eyebrow = declarationOf(".slide-title .eyebrow");
         assertTrue(eyebrow.contains("color: var(--blitzy-accent-teal)"));
@@ -749,8 +750,13 @@ class PresentationAndProseContractTest {
 
         assertEquals(
                 slides.size(),
-                occurrences(deckMarkup, "<span class=\"slide-number\" aria-hidden=\"true\">"),
+                occurrences(deckMarkup, "<span class=\"deck-slide-number\" aria-hidden=\"true\">"),
                 "Every decorative slide number must be hidden from assistive technology");
+        assertEquals(
+                0,
+                occurrences(deck, "class=\"slide-number\""),
+                "slide-number is reveal's own class: its stylesheet styles it and two of its view"
+                        + " modes hide it outright, so the authored numbers must not borrow the name");
     }
 
     @Test
@@ -1710,7 +1716,7 @@ class PresentationAndProseContractTest {
     private static int bodyWordCount(String slideBody) {
         String text = slideBody;
         text = text.replaceAll("(?s)<pre class=\"mermaid\">.*?</pre>", " ");
-        text = text.replaceAll("(?s)<span class=\"slide-number\"[^>]*>.*?</span>", " ");
+        text = text.replaceAll("(?s)<span class=\"deck-slide-number\"[^>]*>.*?</span>", " ");
         text = TAG.matcher(text).replaceAll(" ").replace('\u00b7', ' ');
         int words = 0;
         for (String token : text.split("\\s+")) {
@@ -1861,9 +1867,41 @@ class PresentationAndProseContractTest {
                 "the deck's findings metric must be the number of rows the register carries");
 
         assertTrue(
-                deck.contains("All " + digits + " flagged source rules carry file and line citations."),
+                deck.contains("All " + digits + " flagged source rules carry a file citation, and a"
+                        + " line wherever a line exists."),
                 "the deck's business-value table must state all " + digits
-                        + " flagged source rules, which is what the register carries");
+                        + " flagged source rules, which is what the register carries, and it must"
+                        + " claim a line only where one exists: three findings are absences, and an"
+                        + " absence has a file to name and no line to open");
+
+        // The claim above is held to the register rather than taken on trust. Every row must cite a
+        // file, and a row without a line locator must be one of the absences the register declares.
+        int withFileCitation = 0;
+        int withLineLocator = 0;
+        int registerRows = 0;
+        Matcher row = Pattern.compile("(?m)^\\|\\s*(\\d+)\\s+\\|.*$").matcher(coverage);
+        while (row.find()) {
+            registerRows++;
+            String cells = row.group();
+            if (Pattern.compile("app/[A-Za-z0-9_./-]+").matcher(cells).find()) {
+                withFileCitation++;
+            }
+            if (Pattern.compile(":L\\d+").matcher(cells).find()) {
+                withLineLocator++;
+            }
+        }
+        assertEquals(findings, registerRows, "the coverage section must hold one row per finding");
+        assertEquals(registerRows, withFileCitation,
+                "every register row must cite a source file, which is the half of the claim that"
+                        + " admits no exception");
+        assertTrue(withLineLocator < registerRows,
+                "a register in which every row carried a line would make the absence wording wrong");
+        assertTrue(register.contains("Three of the " + registerRows + " findings are absences"),
+                "the register must publish how many of its rows document an absence, and "
+                        + (registerRows - withLineLocator) + " carry no line locator");
+        assertEquals(3, registerRows - withLineLocator,
+                "three rows document an absence and therefore carry no line; a fourth means either a"
+                        + " new absence to declare or a locator someone left out");
 
         String guide = Files.readString(platformRoot.resolve("README.md"));
         assertTrue(guide.contains(capitalised

@@ -12,6 +12,7 @@ import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.FraudFlagged;
 import com.carddemo.events.TransactionPosted;
 import com.carddemo.notification.NotificationApplication;
+import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Duration;
@@ -170,6 +171,18 @@ class ConcurrentDuplicateDeliveryIT {
     private static final long TWO_ROWS = 2L;
 
     /**
+     * Delivery attempts one committed alert leaves behind: one per rendered format.
+     *
+     * <p>{@code app/cbl/CBSTM03A.CBL:L44-L47} declares one output file per format,
+     * {@code FD-STMTFILE-REC PIC X(80)} at L45 and {@code FD-HTMLFILE-REC PIC X(100)} at L47, and one
+     * run writes both. One delivery therefore renders its alert once per
+     * {@link RenderedFormat} and records an attempt for each. What proves the guard is that the count
+     * stays at one alert's worth of rows however many times the event is delivered, not that it stays
+     * at one row.
+     */
+    private static final long ONE_ALERT_ROWS = RenderedFormat.values().length;
+
+    /**
      * The one container the module fork runs, which this class reads a login from.
      *
      * <p>{@link NotificationServiceDatabase} owns it and hands this class a database of its own inside it.
@@ -236,8 +249,9 @@ class ConcurrentDuplicateDeliveryIT {
                         "one read-model row under the key the two deliveries share"),
                 () -> assertEquals(ONE_ROW, markerRows(event.eventId()),
                         "one marker for the event on the topic it arrived on"),
-                () -> assertEquals(ONE_ROW, attemptRows(),
-                        "one rendered alert, so one alert was rendered and not two"),
+                () -> assertEquals(ONE_ALERT_ROWS, attemptRows(),
+                        "one alert's worth of delivery attempts, one per rendered format, so one"
+                                + " alert was rendered and not two"),
                 () -> assertEquals(AMOUNT, storedAmount(),
                         "the row carries the amount the event carried"),
                 () -> assertEquals(CONCURRENT_DELIVERIES,
@@ -259,7 +273,8 @@ class ConcurrentDuplicateDeliveryIT {
                     "a delivery that returned committed its offset: " + outcome);
         }
         assertEquals(ONE_ROW, markerRows(event.eventId()), "one marker survived the race");
-        assertEquals(ONE_ROW, attemptRows(), "one alert was rendered");
+        assertEquals(ONE_ALERT_ROWS, attemptRows(),
+                "one alert was rendered, once per format");
     }
 
     @Test
@@ -278,7 +293,7 @@ class ConcurrentDuplicateDeliveryIT {
                 () -> assertEquals(ONE_ROW, readModelRows(), "the row count stays fixed"),
                 () -> assertEquals(ONE_ROW, markerRows(event.eventId()),
                         "the marker count stays fixed"),
-                () -> assertEquals(ONE_ROW, attemptRows(), "no second alert follows"));
+                () -> assertEquals(ONE_ALERT_ROWS, attemptRows(), "no second alert follows"));
     }
 
     @Test
@@ -326,14 +341,14 @@ class ConcurrentDuplicateDeliveryIT {
                         "one marker names the assessed topic"),
                 () -> assertEquals(ONE_ROW, readModelRows(),
                         "the posted delivery wrote its read-model row"),
-                () -> assertEquals(ONE_ROW, attemptRows(),
-                        "one attempt row, written by the posted delivery."
+                () -> assertEquals(ONE_ALERT_ROWS, attemptRows(),
+                        "one alert's worth of attempt rows, written by the posted delivery."
                                 + " NotificationService.renderFraudAlert writes none, because"
                                 + " notification_log.masked_card_number requires a masked card"
                                 + " number and FraudFlagged carries none"),
-                () -> assertEquals(ONE_ROW, attemptRowsOfThePostedCard(),
-                        "the one attempt row names the card and transaction the posted delivery"
-                                + " carried, so it is that delivery's attempt"),
+                () -> assertEquals(ONE_ALERT_ROWS, attemptRowsOfThePostedCard(),
+                        "every attempt row names the card and transaction the posted delivery"
+                                + " carried, so they are all that delivery's attempts"),
                 () -> assertTrue(postedOffset.acknowledged(), "the posted offset was committed"),
                 () -> assertTrue(fraudOffset.acknowledged(), "the fraud offset was committed"),
                 () -> assertEquals(CONCURRENT_DELIVERIES,

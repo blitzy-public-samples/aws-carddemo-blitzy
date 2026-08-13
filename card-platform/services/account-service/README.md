@@ -412,7 +412,7 @@ is no lowest card number left to choose between.
 
 ```mermaid
 graph TB
-    subgraph BEFORE["BEFORE - COACTVWC under CICS over shared VSAM"]
+    subgraph BEFORE["BEFORE - COACTVWC"]
         B0["9000-READ-ACCT at L687 orchestrates"]
         B1["9200-GETCARDXREF-BYACCT at L723"]
         B2["9300-GETACCTDATA-BYACCT at L774"]
@@ -433,7 +433,7 @@ graph TB
         B3 ==>|"lookup failed at L714"| BE
     end
 
-    subgraph AFTER["AFTER - account-service over its private account_service schema"]
+    subgraph AFTER["AFTER - account-service"]
         A0["GET /accounts/{accountId} handler"]
         A1["AccountRepository.findByAccountId"]
         AT[("account table")]
@@ -467,6 +467,8 @@ graph TB
 
 Legend for Figure 1:
 
+- The before subgraph is one CICS transaction over datasets other programs also open. The after
+subgraph is this service alone, over its private `account_service` schema.
 - A plain rectangle is a unit of code: a COBOL paragraph on the before side, a handler, repository or
   response type on the after side.
 - A cylinder is stored data. On the before side each cylinder is a shared VSAM dataset that other

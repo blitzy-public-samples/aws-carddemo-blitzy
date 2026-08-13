@@ -60,7 +60,10 @@
 # transport posture and binds it to one machine".
 #
 ---
-# CLONE_INDEX suffixes the project name. A second checkout runs its own stack.
+# CLONE_INDEX suffixes the project name, the container names and the volume names, so a
+# second checkout runs its own stack. It moves no published port: each of the fourteen host
+# ports below comes from its own variable, and Compose cannot derive one from another. The
+# parallel-stacks block of .env.example carries the whole command.
 name: card-platform${CLONE_INDEX:-}
 
 # Shared blocks. Each service below points at these with a YAML alias.

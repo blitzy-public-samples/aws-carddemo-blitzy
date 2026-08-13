@@ -27,6 +27,12 @@ info:
     account. It is assigned where the cross-reference read missed, so no stored row named an
     account. Its decision row leaves account_id empty.
 
+
+    A request target refused before any route ran is answered by config/ContainerErrorDocument
+    rather than by an operation below, because the request reached none. That answer carries the
+    Problem shape under application/problem+json, the same shape this document declares for 401 and
+    403. It names no method, no path and no value the caller sent.
+
     Its event travels under schemas/transaction-declined-v2.json, keyed on the transaction identifier
     this service allocated. An account named in the request body never becomes a subject, an
     aggregate or a partition key.

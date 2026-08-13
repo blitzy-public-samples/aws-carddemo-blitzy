@@ -9,6 +9,8 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -315,6 +317,13 @@ class DocumentationContractTest {
     /** Report directory the integration-test plugin writes, relative to a module directory. */
     private static final String INTEGRATION_TEST_REPORTS = "target/failsafe-reports";
 
+    /** System property the unit-test plugin of this module fills with the session start moment. */
+    private static final String BUILD_START_PROPERTY = "carddemo.build.started";
+
+    /** Prefix of the one line this test writes when a comparison could not be made. */
+    private static final String NOT_COMPARED = "[published-count check] not compared: ";
+
+    /** Prefix every report file carries. */
     private static final String REPORT_PREFIX = "TEST-";
 
     private static final String REPORT_SUFFIX = ".xml";
@@ -731,14 +740,28 @@ class DocumentationContractTest {
         // DROP TABLE, so an index a later migration withdraws, and one whose table it drops, is not
         // counted.
         int migratedIndexes = migratedIndexCount();
-        assertTrue(model.contains("**" + migratedIndexes + " indexes and 146 named constraints**"),
+        assertTrue(model.contains("**" + migratedIndexes + " indexes and 151 named constraints**"),
                 "the appendix must publish the " + migratedIndexes + " indexes the migrations leave"
                         + " behind, so a schema change restates it");
+        // The statement counts are measured too, and for the same reason the total is. A review found
+        // the appendix stating 48 CREATE INDEX statements against 46 indexes while the migrations held
+        // 55 statements and the catalogue 48 indexes, so the sentence disagreed both with the schema
+        // and with the appendix below it. Statements and surviving indexes are different figures, and
+        // publishing them apart is what lets a reader see the difference DROP accounts for.
+        assertTrue(model.contains("The migrations contain " + migratedStatementCount(MIGRATED_CREATE_INDEX)
+                        + " `CREATE INDEX` statements and the database holds " + migratedIndexes
+                        + " indexes"),
+                "the appendix must publish the CREATE INDEX statement count the migrations carry"
+                        + " beside the index count the catalogue holds, both measured");
+        int droppedIndexStatements = migratedStatementCount(MIGRATED_DROP_INDEX);
+        assertTrue(model.contains(droppedIndexStatements + " `DROP INDEX` statements"),
+                "the appendix must name the DROP INDEX statements that account for the difference,"
+                        + " and there are " + droppedIndexStatements);
         // Each service row is asserted as well as the total, because a total that agrees with itself
         // while a row is wrong is the drift a review already found. The index column of each row is
         // measured from that service's own migrations; the constraint column and the generated
         // primary-key column are read from the catalogue and restated here.
-        int[] namedConstraints = {37, 18, 21, 14, 23, 33};
+        int[] namedConstraints = {37, 18, 21, 19, 23, 33};
         int[] generatedKeys = {2, 0, 0, 0, 5, 0};
         String[] schemaNames = {"Authorization", "Ledger posting", "Fraud detection", "Notification",
                 "Account", "Card"};
@@ -755,7 +778,7 @@ class DocumentationContractTest {
         }
         assertEquals(migratedIndexes, rowIndexTotal,
                 "the per-service index counts must sum to the total the appendix publishes");
-        assertTrue(model.contains("| **Total** | **" + migratedIndexes + "** | **146** | **7** |"),
+        assertTrue(model.contains("| **Total** | **" + migratedIndexes + "** | **151** | **7** |"),
                 "the closure total must be the sum of its rows");
         // V7 drops the account card_xref replica, so no figure and no section may present it as live.
         assertFalse(model.contains("The ninth table of this schema"));
@@ -1027,13 +1050,17 @@ class DocumentationContractTest {
      * including this module's. This test requires that script to exist, to be executable and to be
      * named in the results document, because a guard nobody runs is not a guard.</p>
      *
-     * <p><strong>Why an absent report directory is not a failure here.</strong> The
-     * continuous-integration workflow runs {@code mvn -pl equivalence-tests -am test} in one stage,
-     * which executes every module's unit tests and no integration test anywhere. A comparison that
-     * demanded integration reports would fail that stage for a reason unrelated to the documents. A
-     * report kind is therefore compared whenever any module wrote one, a kind written by some modules
-     * and not others fails naming the gap, and a kind nobody wrote is left to the post-verify script,
-     * which runs only where a full {@code verify} has happened.</p>
+     * <p><strong>Why an absent report is not a failure here.</strong> The continuous-integration
+     * workflow runs {@code mvn -pl equivalence-tests -am test} in one stage, which executes every
+     * module's unit tests and no integration test anywhere. A comparison that demanded integration
+     * reports would fail that stage for a reason unrelated to the documents. A report kind is
+     * therefore compared whenever any module wrote one <em>during this invocation</em>, a kind
+     * written by some modules and not others fails naming the gap, and a kind nobody wrote is
+     * reported as not compared and left to the post-verify script, which runs only where a full
+     * {@code verify} has happened. {@link #writtenByThisInvocation} is what draws that line: a
+     * directory an earlier command left behind is not evidence about this run, and reading presence
+     * alone failed a single-module build and let a stale directory stand in for a phase that never
+     * ran.</p>
      */
     @Test
     @DisplayName("every published test count is measured against the reports its own module wrote")
@@ -1157,6 +1184,17 @@ class DocumentationContractTest {
      * <p>No published figure takes part on the measured side, which is the property the previous
      * form of this helper lacked.</p>
      *
+     * <p>Only the reports this invocation wrote are evidence about this invocation. A directory
+     * left by an earlier command says nothing about the run comparing it, and treating presence as
+     * evidence had two consequences: a module built on its own with {@code clean} looked like a
+     * module whose plugin had stopped selecting anything, and a stale directory could satisfy the
+     * comparison while the phase never ran. {@link #writtenByThisInvocation} settles it from the
+     * moment the session started. When no module wrote this kind of report, the invocation never
+     * reached the phase that writes it: the comparison is reported as not made rather than failed,
+     * and {@code scripts/check-published-test-counts.sh} measures those figures after a full
+     * {@code verify}. When some modules wrote one and others did not, the ones that did not are
+     * named, which is the fail-open a silently empty selection would otherwise leave green.</p>
+     *
      * @param modules         module paths to measure, this module already excluded
      * @param reportDirectory report directory to read, relative to a module directory
      * @param plugin          plugin name, for the failure message
@@ -1168,27 +1206,100 @@ class DocumentationContractTest {
         List<String> silent = new ArrayList<>();
         Map<String, Long> measured = new LinkedHashMap<>();
         for (String module : modules) {
-            long cases = reportedCases(module, reportDirectory);
-            if (cases < 0L) {
+            if (!writtenByThisInvocation(module, reportDirectory)) {
                 silent.add(module);
-            } else {
-                measured.put(module, cases);
+                continue;
             }
+            measured.put(module, reportedCases(module, reportDirectory));
         }
-        if (silent.size() == modules.size()) {
-            // No module reached this phase in this invocation. scripts/check-published-test-counts.sh
-            // measures it after a full verify, and the closure checks above still hold here.
+        if (measured.isEmpty()) {
+            // Standard output rather than a thrown result: the rest of this test still holds, and a
+            // reader of a green run needs to know which comparison was not made and why.
+            System.out.println(NOT_COMPARED + plugin + " rows for " + modules.size() + " module(s):"
+                    + " no module wrote a " + plugin + " report during this invocation, which is what"
+                    + " a run that never reached that phase looks like. Those figures are measured"
+                    + " after a full verify by " + COUNT_ORACLE_SCRIPT + ".");
             return;
         }
         assertTrue(silent.isEmpty(),
-                plugin + " reports are present for some modules and absent for " + silent
-                        + ". Run the reactor rather than one module, so every published row is"
-                        + " compared against a complete run");
+                plugin + " reports were written during this invocation for " + measured.keySet()
+                        + " and not for " + silent + ", so a phase that ran for some modules ran for"
+                        + " none of those. Run the reactor rather than one module, or read whether"
+                        + " that plugin still selects anything there");
         measured.forEach((module, cases) -> assertEquals(cases, published.get(module)[column],
                 "the " + plugin + " row for " + module + " must publish the " + cases + " cases"
                         + " that module's own reports carry. Count the testcase elements under "
                         + module + "/" + reportDirectory + " and restate the figure rather than"
                         + " editing this test"));
+    }
+
+    /**
+     * Reports whether one module wrote a report of one kind during the invocation running this test.
+     *
+     * <p>The moment the session started arrives as {@value #BUILD_START_PROPERTY} from the unit-test
+     * plugin configuration of this module, so it is one value for every module of the reactor. A
+     * report newer than that moment was written by this invocation; every other report was left by
+     * an earlier command.</p>
+     *
+     * @param module          module path as the aggregator declares it
+     * @param reportDirectory report directory relative to the module directory
+     * @return {@code true} when at least one report in that directory is newer than the session start
+     */
+    private static boolean writtenByThisInvocation(String module, String reportDirectory) {
+        Path directory = platformDirectory().resolve(module).resolve(reportDirectory);
+        if (!Files.isDirectory(directory)) {
+            return false;
+        }
+        Instant started = sessionStart();
+        try (Stream<Path> reports = Files.list(directory)) {
+            return reports.filter(Files::isRegularFile).anyMatch(report -> {
+                String name = report.getFileName().toString();
+                return name.startsWith(REPORT_PREFIX) && name.endsWith(REPORT_SUFFIX)
+                        && !modifiedAt(report).isBefore(started);
+            });
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot list " + directory, unreadable);
+        }
+    }
+
+    /**
+     * Returns the moment this Maven session started, as the build hands it to this test.
+     *
+     * <p>The property is required rather than defaulted. A build that stopped supplying it would
+     * otherwise leave every comparison above unmade, which is the fail-open this test exists to
+     * close.</p>
+     *
+     * @return the session start
+     */
+    private static Instant sessionStart() {
+        String declared = System.getProperty(BUILD_START_PROPERTY);
+        assertTrue(declared != null && !declared.isBlank(),
+                "the unit-test plugin configuration of this module has to pass "
+                        + BUILD_START_PROPERTY + " as ${maven.build.timestamp}. Without it this test"
+                        + " cannot tell a report this build wrote from one an earlier command left,"
+                        + " and every published count would go uncompared");
+        try {
+            return Instant.parse(declared);
+        } catch (DateTimeParseException unparseable) {
+            throw new IllegalStateException(BUILD_START_PROPERTY + " reads " + declared
+                    + ", which is not the shape maven.build.timestamp.format declares in"
+                    + " equivalence-tests/pom.xml", unparseable);
+        }
+    }
+
+    /**
+     * Returns one file's modification time.
+     *
+     * @param file the file to read
+     * @return the modification time
+     */
+    private static Instant modifiedAt(Path file) {
+        try {
+            return Files.getLastModifiedTime(file).toInstant();
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot read the modification time of " + file,
+                    unreadable);
+        }
     }
 
     /** Returns one figure the results document publishes, or fails naming the sentence it needs. */
@@ -1786,6 +1897,37 @@ class DocumentationContractTest {
         int total = 0;
         for (String service : SERVICES) {
             total += migratedIndexCount(service);
+        }
+        return total;
+    }
+
+    /**
+     * Counts the statements one pattern matches across every delivered migration.
+     *
+     * <p>Statements, not surviving objects. {@link #migratedIndexCount()} answers what the catalogue
+     * holds after {@code DROP} is applied; this answers how many statements a reader of the
+     * migrations would count. The appendix of {@code data-model.md} publishes both figures, and it
+     * published neither correctly until each was measured here.
+     *
+     * @param statement the pattern to count, one of the migration statement patterns above
+     * @return the number of matches across every service's migration directory, in version order
+     */
+    private static int migratedStatementCount(Pattern statement) {
+        int total = 0;
+        for (String service : SERVICES) {
+            Path migrations = platformDirectory().resolve("services").resolve(service)
+                    .resolve("src/main/resources/db/migration");
+            try (Stream<Path> files = Files.list(migrations)) {
+                for (Path migration : files.filter(Files::isRegularFile)
+                        .filter(file -> file.getFileName().toString().endsWith(".sql")).toList()) {
+                    Matcher matches = statement.matcher(read(migration));
+                    while (matches.find()) {
+                        total++;
+                    }
+                }
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException("cannot list " + migrations, unreadable);
+            }
         }
         return total;
     }

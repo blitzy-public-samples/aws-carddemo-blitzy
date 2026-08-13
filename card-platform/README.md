@@ -560,7 +560,7 @@ The delivered suite includes:
 - truncation toward zero;
 - fixture census, identifier fidelity, and card seed checks.
 
-The published run reports 229 Failsafe equivalence tests and 574 unit or contract tests, with zero failures. Both figures are measured rather than asserted: run `scripts/check-published-test-counts.sh` after `mvn verify` and it compares every published count against the reports that run wrote. See [Equivalence Results](docs/equivalence-results.md).
+The published run reports 229 Failsafe equivalence tests and 579 unit or contract tests, with zero failures. Both figures are measured rather than asserted: run `scripts/check-published-test-counts.sh` after `mvn verify` and it compares every published count against the reports that run wrote. See [Equivalence Results](docs/equivalence-results.md).
 
 Interest is verified but not migrated. `BillingCycleService` reproduces only the two accumulator resets at `app/cbl/CBACT04C.cbl:L353-L354`.
 

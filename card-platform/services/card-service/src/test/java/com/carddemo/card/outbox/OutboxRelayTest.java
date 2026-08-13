@@ -266,10 +266,11 @@ class OutboxRelayTest {
          * <p>One boundary around the whole sweep is what this asserted before, and a performance
          * review rejected it: a batch of rows waiting on a broker inside one transaction holds a
          * database connection and every row lock it took for the sum of those waits, and every later
-         * event of every account waits behind it. Three boundaries here are the stranded-claim read,
-         * the claim, and the mark of the one row this sweep holds, and the send sits between them
-         * rather than inside any of them. The first two take row locks and so need a transaction at
-         * all; the third writes the publication.
+         * event of every account waits behind it. Four boundaries here are the stranded-claim read,
+         * the claim, the mark of the one row this sweep holds, and the claim of the cycle that looks
+         * for whatever followed that row and finds nothing. The send sits between them rather than
+         * inside any of them. Every one but the mark takes row locks and so needs a transaction at
+         * all; the mark writes the publication.
          */
         @Test
         @DisplayName("one sweep opens a boundary per step, and sends inside none of them")
@@ -282,7 +283,7 @@ class OutboxRelayTest {
 
             relay.publishPendingEvents();
 
-            assertThat(boundary.openings()).isEqualTo(3);
+            assertThat(boundary.openings()).isEqualTo(4);
             assertThat(publisher.sends()).hasSize(1);
             assertThat(publisher.sends().getFirst().insideBoundary())
                     .withFailMessage("no send may wait on a broker inside a transaction")
@@ -483,11 +484,14 @@ class OutboxRelayTest {
             relay.publishPendingEvents();
             relay.publishPendingEvents();
 
-            assertThat(store.claimedCounts()).containsExactly(1, 0);
+            // Three claims across the two sweeps: the first sweep takes the row, then claims again
+            // to see whether anything followed it, and the second sweep claims once and finds the
+            // working set empty.
+            assertThat(store.claimedCounts()).containsExactly(1, 0, 0);
             assertThat(publisher.sends()).hasSize(1);
-            // Five boundaries across the two sweeps: each sweep reads stranded claims and claims due
-            // rows, and only the first sweep finds a row to mark.
-            assertThat(boundary.openings()).isEqualTo(5);
+            // Six boundaries across the two sweeps: each sweep reads stranded claims, the first
+            // sweep claims twice and marks once, and the second sweep claims once.
+            assertThat(boundary.openings()).isEqualTo(6);
         }
 
         /**
@@ -544,6 +548,11 @@ class OutboxRelayTest {
          *
          * <p>The value read here is {@code carddemo.outbox.relay.batch-size} of
          * {@code src/main/resources/application.yml}, bound through {@link CardProperties}.
+         *
+         * <p>That size bounds the whole sweep rather than one claim, and the two limits below are how
+         * it does so: the first cycle asks for all of it, and the cycle after it asks for what the
+         * row the first cycle took left. A sweep therefore claims the configured number of rows at
+         * most, however many cycles it spends reaching them.
          */
         @Test
         @DisplayName("the claim asks for the configured batch size")
@@ -553,7 +562,8 @@ class OutboxRelayTest {
 
             relay.publishPendingEvents();
 
-            assertThat(store.claimLimits()).containsExactly(Limit.of(configured));
+            assertThat(store.claimLimits())
+                    .containsExactly(Limit.of(configured), Limit.of(configured - 1));
         }
 
         /**

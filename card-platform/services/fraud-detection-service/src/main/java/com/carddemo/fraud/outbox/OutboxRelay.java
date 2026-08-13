@@ -12,10 +12,12 @@ import com.carddemo.events.correlation.CorrelationScope;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -295,40 +297,82 @@ public class OutboxRelay {
      * <p>A row whose payload or schema is refused is permanently unpublishable, so it is dead-lettered
      * and closed: nothing about the rows behind it is affected by a row that will never be sent.
      *
+     * <p>One claim is one assessment per account, so a tick that claimed once published one row per
+     * account however many that account was owed, and the scheduled delay then set the rate: a burst
+     * on one account drained at two rows a second whatever {@code batch-size} allowed. A tick
+     * therefore repeats the claim-and-publish cycle. Each cycle takes the head each account now has,
+     * which is the row behind the one the previous cycle published, so the ordering guarantee above
+     * is the same guarantee it always was.
+     *
+     * <p>{@code batch-size} still bounds one tick, and that is the bound the cycles share: a tick
+     * claims at most that many rows in total, however many cycles it takes to reach them. What
+     * changed is that those rows no longer have to name distinct accounts. A tick also stops when the
+     * claim answers nothing, when a cycle publishes nothing, or when the deadline arrives, and it
+     * claims any one row at most once: a broker refusing everything costs one batch of attempts per
+     * tick rather than the whole tick. The claim itself carries that last guard, so a row a later
+     * cycle is offered again is left {@code PENDING} and untouched rather than claimed and handed
+     * back.
+     *
+     * <p>A row this tick claimed and did not attempt is released rather than left holding its claim.
+     * The claim query passes over a claimed row, so a row left that way waited for the claim timeout
+     * and its whole account waited with it; released, it is due again immediately and the next tick
+     * takes it.
+     *
      * @return what this tick published and how many rows it failed on
      */
     private TickResult runOnePass() {
         long deadline = System.nanoTime() + maxDurationNanos;
-        Instant now = Instant.now();
         Owed owed = dischargeOwedDiagnostics(deadline);
-        ClaimedBatch batch = claimBatch(now);
-        List<OutboxEventEntity> rows = batch.rows();
 
         int published = 0;
-        int failed = batch.recovered();
+        int failed = 0;
         int abandoned = 0;
         int deadLettersPublished = owed.published();
         int deadLettersFailed = owed.failed();
+        Set<UUID> attempted = new HashSet<>();
+        boolean recoverStranded = true;
 
-        for (int from = 0; from < rows.size(); from += sendsInFlight) {
-            if (remainingNanos(deadline) <= 0L) {
-                log.debug("The outbox tick reached its deadline with {} claimed rows unattempted;"
-                        + " the next tick recovers them", rows.size() - from);
+        while (attempted.size() < batchSize && remainingNanos(deadline) > 0L) {
+            ClaimedBatch batch = claimBatch(Instant.now(), recoverStranded, attempted, batchSize - attempted.size());
+            recoverStranded = false;
+            failed = failed + batch.recovered();
+            List<OutboxEventEntity> rows = batch.rows();
+            if (rows.isEmpty()) {
                 break;
             }
-            List<OutboxEventEntity> window =
-                    rows.subList(from, Math.min(from + sendsInFlight, rows.size()));
-            List<Dispatch> dispatched = new ArrayList<>(window.size());
-            for (OutboxEventEntity row : window) {
-                dispatched.add(dispatch(row));
+
+            int publishedThisCycle = 0;
+            int at = 0;
+            for (; at < rows.size(); at += sendsInFlight) {
+                if (remainingNanos(deadline) <= 0L) {
+                    break;
+                }
+                List<OutboxEventEntity> window =
+                        rows.subList(at, Math.min(at + sendsInFlight, rows.size()));
+                List<Dispatch> dispatched = new ArrayList<>(window.size());
+                for (OutboxEventEntity row : window) {
+                    dispatched.add(dispatch(row));
+                }
+                for (Dispatch attempt : dispatched) {
+                    Attempt outcome = settle(attempt, deadline);
+                    publishedThisCycle = publishedThisCycle + outcome.published();
+                    failed = failed + outcome.failed();
+                    abandoned = abandoned + outcome.abandoned();
+                    deadLettersPublished = deadLettersPublished + outcome.deadLettersPublished();
+                    deadLettersFailed = deadLettersFailed + outcome.deadLettersFailed();
+                }
             }
-            for (Dispatch attempt : dispatched) {
-                Attempt outcome = settle(attempt, deadline);
-                published = published + outcome.published();
-                failed = failed + outcome.failed();
-                abandoned = abandoned + outcome.abandoned();
-                deadLettersPublished = deadLettersPublished + outcome.deadLettersPublished();
-                deadLettersFailed = deadLettersFailed + outcome.deadLettersFailed();
+            published = published + publishedThisCycle;
+
+            if (at < rows.size()) {
+                List<OutboxEventEntity> unattempted = rows.subList(at, rows.size());
+                log.debug("The outbox tick reached its deadline with {} claimed rows unattempted;"
+                        + " they are released for the next tick", unattempted.size());
+                releaseUnattemptedClaims(unattempted);
+                break;
+            }
+            if (publishedThisCycle == 0) {
+                break;
             }
         }
         if (published > 0 || failed > 0) {
@@ -336,6 +380,35 @@ public class OutboxRelay {
         }
         return new TickResult(published, failed, deadLettersPublished, deadLettersFailed,
                 abandoned);
+    }
+
+    /**
+     * Returns rows this tick claimed and did not attempt to {@code PENDING}, in one transaction.
+     *
+     * <p>Each row is re-read inside that transaction rather than saved from the copy the claim
+     * loaded, for the reason {@link #markPublished(UUID)} re-reads it, and only a row this instance
+     * still holds is released: a claim another instance has since recovered and re-taken belongs to
+     * that instance.
+     *
+     * @param claimed rows this tick holds and issued no send for, possibly empty
+     */
+    private void releaseUnattemptedClaims(List<OutboxEventEntity> claimed) {
+        if (claimed.isEmpty()) {
+            return;
+        }
+        transactionTemplate.execute(status -> {
+            for (OutboxEventEntity row : claimed) {
+                outboxEvents.findById(row.getEventId())
+                        .filter(stored -> stored.getRelayState()
+                                        == OutboxEventEntity.RelayState.CLAIMED
+                                && instanceId.equals(stored.getClaimedBy()))
+                        .ifPresent(stored -> {
+                            stored.releaseUnattemptedClaim();
+                            outboxEvents.save(stored);
+                        });
+            }
+            return null;
+        });
     }
 
     /**
@@ -347,18 +420,29 @@ public class OutboxRelay {
      * survive, and the row would meet every later tick in
      * {@link OutboxEventEntity.RelayState#PENDING} with an unchanged attempt count.
      *
-     * @param now the moment this tick started
+     * <p>{@code recoverStranded} is true for the first cycle of a tick and false for every cycle
+     * after it. Recovery reads the claims older than the claim timeout, and a tick that repeated
+     * that read on every cycle would spend the read to find the same nothing each time.
+     *
+     * @param now             the moment this tick started
+     * @param recoverStranded whether this cycle also recovers claims a stopped instance left
      * @return the rows this tick holds and the number of claims it recovered
      */
-    private ClaimedBatch claimBatch(Instant now) {
+    private ClaimedBatch claimBatch(Instant now, boolean recoverStranded, Set<UUID> alreadyTaken,
+            int allowance) {
         ClaimedBatch claimed = transactionTemplate.execute(status -> {
-            int recovered = recoverStrandedClaims(now);
-            List<OutboxEventEntity> due = outboxEvents.claimDueRows(now, Limit.of(batchSize));
+            int recovered = recoverStranded ? recoverStrandedClaims(now) : 0;
+            List<OutboxEventEntity> due = outboxEvents.claimDueRows(now, Limit.of(allowance));
+            List<OutboxEventEntity> taken = new ArrayList<>(due.size());
             for (OutboxEventEntity row : due) {
+                if (!alreadyTaken.add(row.getEventId())) {
+                    continue;
+                }
                 row.claim(instanceId, now);
                 outboxEvents.save(row);
+                taken.add(row);
             }
-            return new ClaimedBatch(List.copyOf(due), recovered);
+            return new ClaimedBatch(List.copyOf(taken), recovered);
         });
         return claimed == null ? ClaimedBatch.EMPTY : claimed;
     }

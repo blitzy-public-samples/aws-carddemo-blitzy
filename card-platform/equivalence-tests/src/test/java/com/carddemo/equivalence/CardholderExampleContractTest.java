@@ -4,10 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -408,6 +412,9 @@ class CardholderExampleContractTest {
      * migrations, the manifests, the workflow and the presentation are all inside it, and
      * {@link #PERMITTED_FILES} is the only exemption within it.
      *
+     * <p>The walk prunes rather than filters: it never enters a {@code target} directory or a
+     * {@code src/test} tree, so neither contributes a file and neither is read.
+     *
      * <p>The walk starts at both delivered roots. {@code card-platform} holds the platform, and
      * {@code .github} holds the workflow and the build action, which a reader reads and copies from as
      * readily as a guide. A sweep of the platform alone left the business smoke of
@@ -421,19 +428,72 @@ class CardholderExampleContractTest {
             if (!Files.isDirectory(root)) {
                 continue;
             }
-            try (Stream<Path> walk = Files.walk(root)) {
-                walk.filter(Files::isRegularFile)
-                        .filter(path -> READABLE_SUFFIXES.stream()
-                                .anyMatch(suffix -> path.getFileName().toString().endsWith(suffix)))
-                        .filter(path -> !path.toString().contains("/target/"))
-                        .filter(path -> !path.toString().contains("/src/test/"))
-                        .sorted()
-                        .forEach(reviewed::add);
+            try {
+                Files.walkFileTree(root, new SimpleFileVisitor<Path>() {
+                    @Override
+                    public FileVisitResult preVisitDirectory(Path directory,
+                            BasicFileAttributes attributes) {
+                        return isPruned(directory)
+                                ? FileVisitResult.SKIP_SUBTREE
+                                : FileVisitResult.CONTINUE;
+                    }
+
+                    @Override
+                    public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) {
+                        if (attributes.isRegularFile() && isReadable(file)) {
+                            reviewed.add(file);
+                        }
+                        return FileVisitResult.CONTINUE;
+                    }
+
+                    @Override
+                    public FileVisitResult visitFileFailed(Path file, IOException unreadable) {
+                        return FileVisitResult.CONTINUE;
+                    }
+                });
             } catch (IOException problem) {
                 throw new UncheckedIOException(problem);
             }
         }
+        reviewed.sort(Comparator.naturalOrder());
         return reviewed;
+    }
+
+    /**
+     * Reports whether the sweep descends into one directory.
+     *
+     * <p>Build output and test source are outside the reviewed set, and both are left unentered
+     * rather than read and discarded. {@code target} of any module is written while this test runs:
+     * the report of a class that has just finished appears there, so a walk that enters it reads a
+     * directory listing that is already out of date and fails on the entry that moved.
+     *
+     * @param directory a directory the walk reached
+     * @return true where the sweep stops rather than descending
+     */
+    private static boolean isPruned(Path directory) {
+        Path name = directory.getFileName();
+        if (name == null) {
+            return false;
+        }
+        if ("target".equals(name.toString())) {
+            return true;
+        }
+        Path parent = directory.getParent();
+        return "test".equals(name.toString())
+                && parent != null
+                && parent.getFileName() != null
+                && "src".equals(parent.getFileName().toString());
+    }
+
+    /**
+     * Reports whether one file carries text a reader reads and copies from.
+     *
+     * @param file a file the walk reached
+     * @return true where its name ends with one of {@link #READABLE_SUFFIXES}
+     */
+    private static boolean isReadable(Path file) {
+        String name = file.getFileName().toString();
+        return READABLE_SUFFIXES.stream().anyMatch(name::endsWith);
     }
 
     /**
