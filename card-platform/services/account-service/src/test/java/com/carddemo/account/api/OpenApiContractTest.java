@@ -187,19 +187,25 @@ final class OpenApiContractTest {
         }
 
         /**
-         * Asserts the cycle close answers ten codes, carrying no body to malform.
+         * Asserts the cycle close answers eleven codes, including a refusal of a body it declares
+         * empty.
          *
-         * <p>{@code 400} is absent because no body is read, and {@code 415} is present for the
-         * opposite reason: the route requires {@code application/json} as its cross-site request
-         * forgery control, so a call naming no media type is refused before the accumulators are
-         * touched. {@code 405} and {@code 406} are the protocol answers every route of this service
-         * carries.
+         * <p>{@code 400} is present because the body is read: the route publishes an object with
+         * {@code additionalProperties: false} and {@code api/dto/CycleCloseRequest} declares no
+         * member, so any property is refused before either accumulator is touched. It used to be
+         * absent, and so was the refusal — a call carrying an undeclared property zeroed both
+         * accumulators and answered 200. {@code 415} is present for a related reason: the route
+         * requires {@code application/json} as its cross-site request forgery control, so a call
+         * naming no media type is refused just as early. {@code 405} and {@code 406} are the
+         * protocol answers every route of this service carries.
          */
         @Test
-        void theCycleCloseAnswersTenCodes() {
-            assertEquals(Set.of("200", "401", "403", "404", "405", "406", "415", "422", "429", "500"),
+        void theCycleCloseAnswersElevenCodes() {
+            assertEquals(
+                    Set.of("200", "400", "401", "403", "404", "405", "406", "415", "422", "429",
+                            "500"),
                     responsesOf(CYCLE_CLOSE_PATH, "post").keySet(),
-                    "the call carries no body to malform and still names a media type it requires");
+                    "the call carries an empty body it enforces and names a media type it requires");
         }
 
         /** Asserts the customer read answers the same nine codes the account read does. */

@@ -19,7 +19,7 @@
        every build, so the drift fails there and not in front of an audience.
        Design decisions: card-platform/docs/decision-log.md. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none';
-    script-src https://cdn.jsdelivr.net 'sha384-FjIVnnFZ1f+BwGPCnpvDQPYuUTmT5hkfhy67ZGuaSa+EDDCirGggZyKJ0oRErRCT';
+    script-src https://cdn.jsdelivr.net 'sha384-wqAcMdQ/4brsJAo/GKZOhr1cr7gxwSqhF6s4CXAMsYjcI4QtBFcueNgpjT2i0pYL';
     style-src https://cdn.jsdelivr.net https://fonts.googleapis.com 'unsafe-inline';
     font-src https://fonts.gstatic.com;
     img-src data:;
@@ -140,6 +140,17 @@
       --hairline: 1px;
       --focus-ring: 3px;
       --focus-halo: 6px;
+      /* Floor for anything a reader points at or presses. */
+      --target-floor: 44px;
+
+      /* Diagram ink the deck owns, not the library. --diagram-label-size is the size the
+         library lays a label out at, restated so a drawing whose own stylesheet is missing still
+         renders at it. --diagram-line reads 5.74:1 on the white diagram frame, where the library's
+         own line colour reads 2.85:1, and the weight keeps a dotted edge visible once the stage
+         scales it. */
+      --diagram-label-size: 16px;
+      --diagram-line: #666666;
+      --diagram-line-weight: 2px;
 
       --diagram-frame-max-width: 1680px;
       --diagram-frame-max-height: 690px;
@@ -556,6 +567,25 @@
       text-align: center;
     }
 
+    /* A drawing's own two sentences, published as text beside it and read but never seen.
+
+       A complex picture is described to a reader who cannot see it by a short name and a longer
+       description in the text next to it, and that is what this element is. The module fills it from
+       the accessible name and description the library writes into each drawing, and the drawing block
+       itself stays out of the accessibility tree, so what a reader is told about a figure is the two
+       sentences its author wrote and not a list of the shapes in it. Placing the description in the
+       document also puts it where reveal's own reading of the slide finds it, which is what removes
+       any question of which reading arrives first. */
+    .diagram-alternative {
+      clip-path: inset(50%);
+      height: 1px;
+      margin: 0;
+      overflow: hidden;
+      position: absolute;
+      white-space: nowrap;
+      width: 1px;
+    }
+
     .reveal table {
       border-collapse: separate;
       border-spacing: 0;
@@ -798,13 +828,309 @@
       }
     }
 
-    /* Touch and tablet widths. The pinned reveal stylesheet sizes its navigation controls in ems
-       from the control region's own font size, so one value moves the whole hit area. This one puts
-       each chevron above the forty-four pixel floor a finger needs. */
-    @media (max-width: 1024px) {
-      .reveal .controls {
-        font-size: 13.5px;
-      }
+    /* Interactive target sizes. The pinned reveal stylesheet sizes its navigation controls in ems
+       from the control region's own font size, so one value moves the whole hit area: at its own
+       10px each chevron is a 36px box, and at 13.5px each is 48.6px. That value used to apply below
+       1024px alone, which left a mouse and a stylus a smaller target than a finger for no reason a
+       reader could act on. It is the size at every width now.
+
+       The two controls reveal injects on demand are sized here for the same reason. Its shortcut
+       panel closes through a 40px anchor and its paused deck resumes through a 34px-tall button,
+       and both are the only affordance on the surface they sit on. */
+    .reveal .controls {
+      font-size: 13.5px;
+    }
+
+    .reveal .overlay .close {
+      align-items: center;
+      display: flex;
+      height: var(--target-floor);
+      justify-content: center;
+      padding: 0;
+      width: var(--target-floor);
+    }
+
+    .reveal .resume-button {
+      align-items: center;
+      display: inline-flex;
+      justify-content: center;
+      min-height: var(--target-floor);
+      padding-block: var(--space-1);
+      padding-inline: var(--space-3);
+    }
+
+    /* Announcements this deck makes for a state reveal changes without saying so: the deck being
+       paused, and the deck resuming. The region is read and never seen, so it is taken out of the
+       painted layout instead of hidden, which would take it out of the accessibility tree with it. */
+    .deck-status {
+      clip-path: inset(50%);
+      height: 1px;
+      overflow: hidden;
+      position: absolute;
+      white-space: nowrap;
+      width: 1px;
+    }
+
+    /* Diagram typography, pinned by the deck and not left to the library.
+
+       Mermaid writes a stylesheet into every drawing it produces and scopes every rule in it to
+       that drawing's own identifier, so its rules outrank any selector here and these declarations
+       have to be forced to reach the one case that matters: the drawing whose stylesheet is not in
+       effect. A label with no size of its own inherits the stage size, which is 32px, over node
+       boxes the library measured at 16px, and the result is a drawing whose text overflows its own
+       shapes, collides with the shape beside it and is clipped by the frame. The size below is the
+       one the library lays out with, so pinning it changes nothing about a drawing that arrived
+       whole and repairs the one that did not. The font stack is deliberately left to the library:
+       it measured every box with its own faces, and substituting the deck's would move the glyph
+       widths those boxes were cut for. */
+    .reveal pre.mermaid svg text,
+    .reveal pre.mermaid svg .nodeLabel,
+    .reveal pre.mermaid svg .edgeLabel,
+    .reveal pre.mermaid svg .cluster-label,
+    .reveal pre.mermaid svg .label {
+      font-size: var(--diagram-label-size) !important;
+    }
+
+    /* Diagram connectors carry meaning, and each legend names the line styles that carry it, so a
+       connector is a graphical object a reader has to be able to see. The library draws every edge
+       and every arrowhead in its own grey, which measures 2.85:1 against the white frame under it
+       and less than that where a scaled stage renders a one-pixel stroke across a fraction of a
+       pixel. --diagram-line reads 5.74:1 on the same frame, and the stroke below is two pixels so a
+       dotted edge survives the scaling. The theme variable the presentation rules enumerate stays
+       declared where the library reads it; this is what the reader sees, and the two are held apart
+       deliberately. */
+    .reveal pre.mermaid svg .flowchart-link,
+    .reveal pre.mermaid svg .edgePath .path,
+    .reveal pre.mermaid svg path[class*="flowchart-link"] {
+      stroke: var(--diagram-line) !important;
+    }
+
+    .reveal pre.mermaid svg .edge-thickness-normal {
+      stroke-width: var(--diagram-line-weight) !important;
+    }
+
+    .reveal pre.mermaid svg .marker,
+    .reveal pre.mermaid svg .marker path,
+    .reveal pre.mermaid svg .arrowMarkerPath {
+      fill: var(--diagram-line) !important;
+      stroke: var(--diagram-line) !important;
+    }
+
+    /* The invisible layout link the before-and-after figure uses to separate its two clusters has to
+       stay invisible, so it is exempted after the rules above, not before them. */
+    .reveal pre.mermaid svg .edge-thickness-invisible {
+      stroke: none !important;
+      stroke-width: 0 !important;
+    }
+
+    /* Reading mode: the same sixteen slides, laid out for a viewport the stage does not fit.
+
+       The stage is a fixed 1920 by 1080 box that reveal scales to the viewport, which is what the
+       presentation rules require and what makes the deck one shape on every projector. Below a
+       certain scale that shape stops being readable: at 375px the scale is 0.1875, which renders
+       body copy at 6 effective pixels and a diagram label at 2. Browser zoom lands in the same
+       place from the other direction, because zoom shrinks the CSS viewport and reveal then shrinks
+       the stage by the same factor, so the two cancel and 200% zoom magnified nothing at all.
+
+       So below the floor the module names, the deck stops scaling and starts reflowing: the stage is
+       unpinned here in CSS instead of by writing reveal's own transform, one slide still shows at a
+       time, navigation and deep links work as they do on the stage, and every size below is an
+       absolute rem value. Absolute is the point. A rem grows with the reader's own font-size
+       setting and with page zoom, one to one, so enlarging text now enlarges text.
+
+       The type floor: body copy, list items, table cells and inline code all land at or above 16px,
+       and the smallest decorative token lands at 13. */
+    html.deck-reading,
+    html.deck-reading body,
+    html.deck-reading .reveal-viewport {
+      height: auto !important;
+      min-height: 100%;
+      overflow: visible !important;
+    }
+
+    html.deck-reading .reveal {
+      font-size: var(--type-base);
+      height: auto !important;
+      overflow: visible !important;
+      position: static !important;
+    }
+
+    /* Reveal writes width, height, inset and the stage transform onto this element as it lays out,
+       so every one of them is answered here. Writing the transform back from the module instead
+       would strand the deck at whatever scale the last layout produced. */
+    html.deck-reading .reveal .slides {
+      height: auto !important;
+      inset: auto !important;
+      left: auto !important;
+      position: static !important;
+      top: auto !important;
+      transform: none !important;
+      width: auto !important;
+      zoom: 1 !important;
+    }
+
+    /* One slide, in the document's own flow.
+
+       Which slide is on screen has to be stated here, not left to reveal. Reveal hides a slide
+       it is not showing by displaying none, and three of this deck's own slide kinds declare a grid
+       display of their own that outranks it — which is harmless on a stage where every slide is
+       absolutely positioned at the same place and only the present one is opaque, and is a deck of
+       stacked slides once the stage is unpinned. So the slide reveal marks present is displayed and
+       every other slide is not, and the three grid kinds keep their grid when they are the present
+       one. */
+    html.deck-reading .reveal .slides section {
+      display: none !important;
+      height: auto !important;
+      inset: auto !important;
+      left: auto !important;
+      padding-block: var(--space-5);
+      padding-inline: var(--space-4);
+      position: relative !important;
+      top: auto !important;
+      transform: none !important;
+      width: auto !important;
+    }
+
+    /* A slide shorter than the viewport still fills it, so a dark slide's gradient reaches the bottom
+       edge instead of stopping short and leaving a band of the page behind it. The reveal stylesheet
+       zeroes this same property on a centred deck and marks it important, so this has to say so too:
+       measured without it, the title slide stopped 46 pixels short of an 812-pixel viewport. */
+    html.deck-reading .reveal .slides section.present {
+      display: block !important;
+      min-height: 100vh !important;
+      opacity: 1 !important;
+    }
+
+    html.deck-reading .reveal .slides section.present.slide-title,
+    html.deck-reading .reveal .slides section.present.slide-divider,
+    html.deck-reading .reveal .slides section.present.slide-closing {
+      display: grid !important;
+    }
+
+    /* The slide being measured for a drawing is laid out and not painted, on the stage and here
+       alike, so it has to be displayed while that measurement is taken. It is taken out of the flow
+       for the length of that measurement: a slide that appeared in the flow above the one being read
+       would push it down the page and out from under the reader mid-sentence. */
+    html.deck-reading .reveal .slides section.diagram-measuring {
+      display: block !important;
+      left: 0 !important;
+      position: absolute !important;
+      top: 0 !important;
+      width: 100% !important;
+    }
+
+    /* Reveal paints a dark slide's gradient onto a viewport-sized element it generates behind the
+       stage. With no stage there is nothing for that element to line up with, so the three dark
+       slide kinds paint their own section, exactly as the no-script reading order does. */
+    html.deck-reading .reveal .backgrounds {
+      display: none !important;
+    }
+
+    html.deck-reading .slide-title {
+      background-color: var(--blitzy-primary);
+      background-image: var(--gradient-hero);
+    }
+
+    html.deck-reading .slide-divider {
+      background-color: var(--blitzy-primary-dark);
+      background-image: var(--gradient-divider);
+    }
+
+    /* Navigation follows the reader down a slide that is taller than the viewport. */
+    html.deck-reading .reveal .controls {
+      bottom: var(--space-2);
+      position: fixed;
+      right: var(--space-2);
+    }
+
+    html.deck-reading {
+      --type-base: 1.375rem;
+      --type-h1: 1.72em;
+      --type-h2: 1.34em;
+      --type-h2-divider: 1.5em;
+      --type-kpi-value: 1.62em;
+      --type-code: 0.95em;
+      --type-table: 0.8em;
+      --type-icon-caption: 0.95em;
+      --type-closing-links: 0.95em;
+      --type-kpi-label: 0.86em;
+      --type-brand: 1em;
+      --type-eyebrow: 0.8em;
+      --type-legend: 0.8em;
+      --type-slide-number: 0.62em;
+
+      --stage-pad-block: var(--space-4);
+      --stage-pad-inline: var(--space-3);
+      --slide-number-inset-inline: var(--space-3);
+      --slide-number-inset-block: var(--space-2);
+      --table-pad-block: var(--space-1);
+      --table-pad-inline: var(--space-2);
+
+      --icon-hero: 128px;
+      --icon-divider: 72px;
+      --icon-closing: 56px;
+      --icon-row: 40px;
+      --kpi-card-min-height: auto;
+      --kpi-card-min-height-wide: auto;
+      --icon-tile-min-height: auto;
+    }
+
+    /* Every multi-column grid the deck lays out is sized for a 1920px stage. Each one becomes as
+       many columns as the viewport holds, down to one. */
+    html.deck-reading .slide-title,
+    html.deck-reading .split-correctness {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    html.deck-reading .kpi-grid,
+    html.deck-reading .icon-row {
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+      margin-top: var(--space-4);
+    }
+
+    html.deck-reading .reveal table {
+      margin-top: var(--space-4);
+    }
+
+    html.deck-reading .reveal h2 {
+      margin-bottom: var(--space-3);
+    }
+
+    /* A drawing is 2,155 units wide with 16px labels, so fitting it to a phone is what renders those
+       labels at two pixels. Reading mode gives it its own width instead and lets the frame scroll,
+       which is the only arrangement in which the labels are the size the library drew them. The
+       module writes that width from the drawing's own view box. */
+    html.deck-reading .mermaid-frame {
+      justify-content: flex-start;
+      max-height: none;
+      min-height: auto;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: var(--space-2);
+    }
+
+    /* Both boxes between the frame and the drawing are flex items, and a flex item shrinks to the
+       space its container has by default. That default is what took the width the module writes onto
+       the drawing back off it again: the drawing was handed 2,136 pixels and laid out at 305, which
+       is the fit reading mode exists to avoid, and the frame never overflowed so no scrollbar ever
+       appeared. Neither box shrinks now, so the drawing keeps the width it was given and the frame
+       scrolls. */
+    html.deck-reading .mermaid {
+      flex: 0 0 auto;
+      justify-content: flex-start;
+      max-height: none;
+      max-width: none;
+      width: auto;
+    }
+
+    html.deck-reading .mermaid svg {
+      flex: 0 0 auto;
+      max-height: none;
+      max-width: none;
+    }
+
+    html.deck-reading .diagram-legend {
+      text-align: left;
     }
 
     /* Forced colours. A forced palette replaces every colour the deck sets, and on the three dark
@@ -941,7 +1267,7 @@
         <h2>Figure 1 — From shared files to owned schemas</h2>
         <p>Figure 1 pairs the source state with the delivered one. Detail: <code>docs/architecture-before-after.md</code>.</p>
         <div class="mermaid-frame">
-          <pre class="mermaid">
+          <pre class="mermaid" aria-hidden="true">
 graph LR
   accTitle: Figure 1, from shared files to owned schemas
   accDescr: Before, a 3270 terminal drives a CICS region and a nightly JCL batch chain, and both reach into eight shared VSAM datasets. After, a REST client calls authorization-service, which publishes transaction.authorized to ledger-posting-service, fraud-detection-service and notification-service. A management client calls account-service and card-service, whose account.state-changed and card.updated events refresh authorization. Each of the six services reaches one private schema of its own and no other, and no consumer connects to another consumer.
@@ -990,7 +1316,7 @@ graph LR
         <h2>Figure 2 — One outcome event starts the work</h2>
         <p>Figure 2 shows one event starting three independent reactions. No arrow joins the three consumers. Detail in <code>docs/event-flow.md</code>.</p>
         <div class="mermaid-frame">
-          <pre class="mermaid">
+          <pre class="mermaid" aria-hidden="true">
 graph LR
   accTitle: Figure 2, one outcome event starts the work
   accDescr: A REST client calls authorization-service, which publishes transaction.authorized and transaction.declined. Three consumers read transaction.authorized independently: ledger-posting-service, fraud-detection-service and notification-service. The ledger also reads transaction.declined and records one reject row for each of the three reasons a decline carries, 0101, 0102 and 0103. Reason 0100 is refused before any decision is taken, so no event carries it. Each decline is keyed on the account it applies to. The ledger publishes transaction.posted, which notification-service and account-service both read, and fraud-detection-service publishes fraud.assessed, which notification-service reads. A record the ledger, fraud or notification listener cannot complete travels to its own source topic plus the .DLT suffix, and account-service routes one to the shared carddemo.dead-letter fallback. No consumer calls another consumer.
@@ -1165,7 +1491,7 @@ graph LR
         <h2>Figure 3 — Each capability starts from a proven contract</h2>
         <p>Figure 3 orders delivery by dependency. Equivalence checks run alongside every stage.</p>
         <div class="mermaid-frame">
-          <pre class="mermaid">
+          <pre class="mermaid" aria-hidden="true">
 graph LR
   accTitle: Figure 3, each capability starts from a proven contract
   accDescr: The event-contracts library compiles first, and the continuous equivalence suite with its sample data and compatibility library stands beside it. Both feed the first stage, the authorization service and event bus. That stage feeds the second, ledger posting, and the third, fraud detection. Both of those feed the fourth, notification. The equivalence suite also feeds every later stage, so verification runs alongside delivery instead of after it.
@@ -1224,6 +1550,13 @@ graph LR
     </div>
   </div>
 
+  <!-- What reveal changes about the deck without saying so, said. Reveal announces a slide change
+       through a live region of its own and announces nothing when the deck is paused or resumed,
+       which are the two states that blank the screen and bring it back. This region carries those,
+       and it sits outside the deck so it is neither part of a slide's announcement nor covered by
+       the panel that puts the deck out of reach. -->
+  <div class="deck-status" role="status" aria-live="polite"></div>
+
   <!-- Both libraries are deferred. Every slide is already in the markup above, so neither has to
        run before the parser reaches the end of the document, and the larger of the two is the
        heaviest asset the deck fetches. Deferred classic scripts still execute in document order,
@@ -1275,7 +1608,9 @@ graph LR
           return;
         }
         mermaidSources.set(node, source);
-        if (node.getAttribute("data-processed") === "true" && hasMeasuredDrawing(node)) {
+        if (node.getAttribute("data-processed") === "true"
+            && hasMeasuredDrawing(node)
+            && hasPinnedLabels(node)) {
           mermaidRendered.set(node, source);
         }
       });
@@ -1291,6 +1626,55 @@ graph LR
       }
       const box = drawing.getBoundingClientRect();
       return box.width > 1 && box.height > 1;
+    }
+
+    /* The size the library lays a diagram label out at, and the ceiling a drawn label is measured
+       against. The stylesheet above pins the same value. */
+    const DIAGRAM_LABEL_SIZE = 16;
+
+    /* Whether a drawing's labels are the size its boxes were measured for.
+
+       The library writes its stylesheet into the drawing itself, and a drawing whose stylesheet is
+       not in effect renders every label at the stage's own 32px over boxes cut for 16, which
+       overflows the shapes, collides with the neighbouring shape and is clipped by the frame. The
+       measurement is taken from the drawing instead of from the presence of the stylesheet, because
+       what matters is the size a reader sees. A drawing that fails this is not recorded as drawn, so
+       it is produced again instead of kept. */
+    function hasPinnedLabels(node) {
+      const label = node.querySelector("svg text");
+      if (!label) {
+        return true;
+      }
+      const size = parseFloat(window.getComputedStyle(label).fontSize);
+      return !Number.isFinite(size) || size <= DIAGRAM_LABEL_SIZE + 1;
+    }
+
+    /* Renders in reading mode at the width the drawing was laid out for.
+
+       A drawing is over two thousand units wide and carries 16px labels, so fitting it to a narrow
+       viewport is what renders those labels at two pixels. Reading mode gives the drawing its own
+       width and lets the frame scroll instead, which is the only arrangement where the labels are
+       the size the library drew them. On the stage the width is removed again and the stylesheet's
+       fit applies. */
+    function fitDiagramToViewport(node) {
+      const drawing = node.querySelector("svg");
+      if (!drawing) {
+        return;
+      }
+      if (!document.documentElement.classList.contains("deck-reading")) {
+        drawing.style.removeProperty("width");
+        return;
+      }
+      const box = drawing.viewBox ? drawing.viewBox.baseVal : null;
+      if (!box || !box.width) {
+        return;
+      }
+      drawing.style.width = Math.round(box.width) + "px";
+    }
+
+    /* Applies the fit above to every drawing the page holds. */
+    function fitEveryDiagram() {
+      document.querySelectorAll("pre.mermaid").forEach(fitDiagramToViewport);
     }
 
     /* Replaces a diagram frame with a readable line when the library or a diagram fails. */
@@ -1356,6 +1740,19 @@ graph LR
         return null;
       });
 
+    /* How many times one slide's diagrams can be produced again after a malformed render, and the
+       count so far. Three is enough for a transient stylesheet failure and bounded enough that a
+       drawing which is malformed every time stops instead of looping. */
+    const MAX_DIAGRAM_ATTEMPTS = 3;
+    const diagramAttempts = new WeakMap();
+
+    /* Records one more attempt for a slide and answers how many have been made before it. */
+    function countDiagramAttempt(slide) {
+      const made = diagramAttempts.get(slide) || 0;
+      diagramAttempts.set(slide, made + 1);
+      return made;
+    }
+
     /* Renders the diagrams of one slide. The source restore and the data-processed reset run
        inside the queued task, so a second navigation cannot mutate a block mid-render, and a
        slide already queued is not queued twice. */
@@ -1383,6 +1780,7 @@ graph LR
         });
         try {
           await mermaid.run({ nodes });
+          const malformed = [];
           nodes.forEach((node) => {
             const drawing = node.querySelector("svg");
             if (drawing) {
@@ -1396,12 +1794,29 @@ graph LR
               });
               drawing.removeAttribute("aria-roledescription");
             }
-            if (hasMeasuredDrawing(node)) {
-              mermaidRendered.set(node, mermaidSources.get(node));
+            fitDiagramToViewport(node);
+            if (!hasMeasuredDrawing(node)) {
+              return;
             }
+            if (!hasPinnedLabels(node)) {
+              malformed.push(node);
+              return;
+            }
+            mermaidRendered.set(node, mermaidSources.get(node));
+            /* The block keeps the attribute that takes it out of the accessibility tree, and the two
+               sentences describing the drawing are published beside it as text instead. */
+            publishDiagramAlternative(node);
           });
           if (window.Reveal && typeof window.Reveal.layout === "function") {
             window.Reveal.layout();
+          }
+          announceSlide(slide);
+          /* A drawing whose labels are not the size its boxes were cut for is produced again
+             instead of kept, up to a bounded number of attempts, so one bad render is not what
+             the audience reads for the rest of the talk. */
+          if (malformed.length > 0 && countDiagramAttempt(slide) < MAX_DIAGRAM_ATTEMPTS) {
+            malformed.forEach((node) => mermaidRendered.delete(node));
+            window.requestAnimationFrame(() => renderMermaidFor(slide));
           }
         } catch (error) {
           reportDiagramFailure(nodes, error);
@@ -1480,6 +1895,192 @@ graph LR
        place. */
     const printExport = /print-pdf/i.test(window.location.search);
 
+    /* A drawing's own description, and nothing else from inside it.
+
+       A drawing carries two authored sentences of its own — a name and a description, which the
+       library writes into the picture as its title and description and points at from the picture's
+       own labelling attributes. It also carries every shape's label as painted text. Read straight
+       through, a slide announced both: the description said "a 3270 terminal drives a CICS region
+       and a nightly JCL batch chain", and then the same entities followed as a bare list of words,
+       "3270 terminal CICS region Nightly JCL batch chain". Measured, that list was 296 to 453
+       characters of nothing the sentence had not already said.
+
+       So a drawing is read the way a picture with alternative text is read: its two sentences, and
+       no descent into the shapes. Painted labels are what a reader looking at the slide uses; the
+       sentences are what a reader listening to it uses. */
+    function diagramAlternativeOf(drawing) {
+      const parts = [];
+      ["title", "desc"].forEach((name) => {
+        const authored = drawing.querySelector(name);
+        const text = authored ? authored.textContent.trim() : "";
+        if (text !== "") {
+          parts.push(text);
+        }
+      });
+      return parts.join(" ");
+    }
+
+    /* Where each diagram block's published description lives, so a re-render updates the one element
+       instead of adding a second. */
+    const diagramAlternatives = new WeakMap();
+
+    /* Publishes a drawing's description as text in the document, beside the frame that holds it.
+
+       This is what makes the announcement independent of who reads the slide and when. Reveal reads a
+       slide's text on arrival and its reading descends into a drawn diagram, harvesting every painted
+       shape label: measured at 1,318 characters on a revisit to the first figure against 910 for the
+       description itself, with 444 of the difference being labels the description had already named in
+       sentences. Rewriting reveal's line afterwards was tried and is a race that cannot be won on
+       purpose — reveal registers its own write in an animation frame after the slide-changed handlers
+       return, so a microtask is early and so is a frame requested from inside the handler.
+
+       So the description is put where every reader finds it instead. The block holding the drawing
+       keeps the attribute that takes it out of the accessibility tree for the whole of its life, and
+       not only until a drawing lands, and the two sentences the diagram's author wrote are
+       published next to it as ordinary text. Reveal's reading and the deck's own now produce the same
+       words, and the order of the two stops mattering. */
+    function publishDiagramAlternative(node) {
+      const drawing = node.querySelector("svg");
+      if (!drawing) {
+        return;
+      }
+      const text = diagramAlternativeOf(drawing);
+      if (text === "") {
+        return;
+      }
+      let published = diagramAlternatives.get(node);
+      if (!published || !published.isConnected) {
+        published = document.createElement("p");
+        published.className = "diagram-alternative";
+        const frame = node.closest(".mermaid-frame");
+        if (frame) {
+          frame.insertAdjacentElement("afterend", published);
+        } else {
+          node.insertAdjacentElement("afterend", published);
+        }
+        diagramAlternatives.set(node, published);
+      }
+      published.textContent = text;
+    }
+
+    /* Reads a slide the way reveal reads one to build the line it announces: text in document
+       order, with anything hidden from the accessibility tree left out. It is reproduced here
+       instead of reached, because reveal takes that reading once, when the slide arrives, and a
+       diagram is not drawn yet at that moment. */
+    function announcementTextOf(node) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        return node.textContent;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) {
+        return "";
+      }
+      if (node.getAttribute("aria-hidden") === "true"
+          || window.getComputedStyle(node).display === "none") {
+        return "";
+      }
+      let text = "";
+      node.childNodes.forEach((child) => {
+        text += announcementTextOf(child);
+      });
+      text = text.trim();
+      return text === "" ? "" : text + " ";
+    }
+
+    /* Rebuilds the line reveal announces for the slide on screen.
+
+       Reveal reads a slide's text when the slide arrives and does not read it again. On a slide
+       carrying a diagram that reading was taken before the drawing existed, so what it held was the
+       diagram's definition: over a thousand characters of graph source, read out in place of the
+       slide, and opening the deck at a link to such a slide left that reading for the whole visit.
+       This runs once a drawing is in place and its description is published, which is the one moment
+       reveal's own reading cannot have covered: the drawing did not exist when that reading was
+       taken. Every other arrival is covered by it, because the description is in the document by
+       then, which is why this has one caller. */
+    function announceSlide(slide) {
+      const region = document.querySelector(".reveal .aria-status");
+      if (!region || !slide) {
+        return;
+      }
+      /* A live region says what is on screen. Every diagram in the deck is drawn once the load goes
+         idle, so this runs for slides the reader is not on, and without this line the region ended up
+         describing the last figure drawn instead of the slide being read. */
+      if (!slide.classList.contains("present")) {
+        return;
+      }
+      const text = announcementTextOf(slide).trim();
+      if (text !== "" && region.textContent.trim() !== text) {
+        region.textContent = text;
+      }
+    }
+
+    /* The region this deck announces its own state changes through, declared in the markup. */
+    const deckStatus = document.querySelector(".deck-status");
+
+    /* Says one thing once. An identical value written twice is not announced again, and the two
+       states this reports never repeat themselves. */
+    function announceDeckState(text) {
+      if (deckStatus) {
+        deckStatus.textContent = text;
+      }
+    }
+
+    /* The stage the presentation rules fix, and the scale below which it stops being readable.
+
+       Reveal scales a fixed 1920 by 1080 stage to the viewport, less a margin of a twenty-fifth.
+       At 0.6 the deck's body copy renders at 19 pixels and its table cells at 12; below it the
+       numbers fall away fast, and at a phone's width they reach 6 and 3. So 0.6 is where the deck
+       stops scaling and starts reflowing. Browser zoom arrives at the same place from the other
+       direction: zoom shrinks the CSS viewport, reveal shrinks the stage by the same factor, and the
+       two cancelled exactly until this floor existed. */
+    const STAGE_WIDTH = 1920;
+    const STAGE_HEIGHT = 1080;
+    const STAGE_MARGIN = 0.04;
+    const READING_SCALE_FLOOR = 0.6;
+
+    /* The scale reveal would fit the stage to this viewport at. */
+    function stageScale() {
+      const usable = 1 - STAGE_MARGIN;
+      return Math.min(window.innerWidth * usable / STAGE_WIDTH,
+              window.innerHeight * usable / STAGE_HEIGHT);
+    }
+
+    /* Turns reading mode on or off for the viewport as it stands, and answers whether that changed.
+       The mode is a class alone: the stylesheet unpins the stage, so nothing here writes reveal's
+       own transform, which would strand the deck at a stale scale. */
+    function applyReadingMode() {
+      const reading = stageScale() < READING_SCALE_FLOOR;
+      const root = document.documentElement;
+      if (root.classList.contains("deck-reading") === reading) {
+        return false;
+      }
+      root.classList.toggle("deck-reading", reading);
+      return true;
+    }
+
+    /* Puts the slide reveal has moved to at the top of the viewport, in reading mode only.
+
+       On the stage every slide is drawn in the same place, so a slide change needs no scrolling at
+       all. In reading mode the slide sits in the document's own flow, and the scroll offset the
+       reader left behind is where the next slide opened: a slide reached from halfway down a long
+       one opened halfway down, and a link naming a slide opened a page scrolled past it. Each slide
+       now starts at its own beginning, which is what turning a page does. */
+    function scrollPresentSlideIntoView() {
+      if (!document.documentElement.classList.contains("deck-reading")) {
+        return;
+      }
+      const slide = document.querySelector(".reveal .slides section.present");
+      if (!slide) {
+        return;
+      }
+      const top = slide.getBoundingClientRect().top + window.scrollY;
+      window.scrollTo({ top: Math.max(0, Math.round(top)), behavior: "auto" });
+    }
+
+    /* The element focus should return to when reveal's shortcut panel closes, and whether the panel
+       was open when the deck was last read. */
+    let helpOpener = null;
+    let helpPanelOpen = false;
+
     /* Names the parts reveal injects into the page. The slide-jump field ships with placeholder
        text and nothing else, and a field loses its placeholder the moment something is typed into
        it, so it is given a name that stays. */
@@ -1496,6 +2097,7 @@ graph LR
         controls.setAttribute("aria-label", "Slide navigation");
       }
       describeHelpPanel();
+      describePauseOverlay();
     }
 
     /* Reveal's keyboard-shortcut panel arrives as a plain container with an unnamed close control,
@@ -1514,7 +2116,22 @@ graph LR
           part.removeAttribute("inert");
           part.removeAttribute("data-deck-reachable");
         });
+        /* The panel has closed. Focus goes back to the control it was opened from, which is what a
+           presenter is holding: closing it used to drop focus onto the body and start the tab order
+           again from the top of the document. The deck is put back within reach first, because focus
+           does not move onto an inert element. */
+        if (helpPanelOpen) {
+          helpPanelOpen = false;
+          restoreHelpOpener();
+        }
         return;
+      }
+      if (!helpPanelOpen) {
+        helpPanelOpen = true;
+        const opener = document.activeElement;
+        helpOpener = opener && opener !== document.body && !panel.contains(opener)
+          ? opener
+          : null;
       }
       const close = panel.querySelector(".close");
       if (!panel.hasAttribute("role")) {
@@ -1534,6 +2151,63 @@ graph LR
       });
       if (close && !panel.contains(document.activeElement)) {
         close.focus({ preventScroll: true });
+      }
+    }
+
+    /* Gives focus back to the control the shortcut panel was opened from, or to a control that is
+       usable if that one has gone. */
+    function restoreHelpOpener() {
+      const opener = helpOpener;
+      helpOpener = null;
+      if (opener && opener.isConnected && !opener.hasAttribute("inert")) {
+        opener.focus({ preventScroll: true });
+        return;
+      }
+      const control = document.querySelector(".reveal .controls button.enabled");
+      if (control) {
+        control.focus({ preventScroll: true });
+      }
+    }
+
+    /* Closes the shortcut panel on Escape, ahead of reveal's own keyboard handling.
+
+       Reveal answers Escape itself, but not while the deck is paused: a paused deck admits the keys
+       that resume it and discards every other one, and the panel can be opened while paused. So the
+       key that closes a dialog did nothing at all in that state. This runs in the capture phase, so
+       it reaches the key first, and it acts only while a panel is open. Nothing else about Escape
+       changes: with no panel open it is reveal's key for leaving the overview. */
+    function dismissHelpPanelOnEscape(event) {
+      if (event.key !== "Escape") {
+        return;
+      }
+      const panel = document.querySelector(".reveal .overlay");
+      if (!panel) {
+        return;
+      }
+      if (window.Reveal && typeof window.Reveal.toggleHelp === "function") {
+        window.Reveal.toggleHelp(false);
+      } else {
+        panel.remove();
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+
+    /* Names the panel reveal covers a paused deck with.
+
+       A paused deck is a black rectangle carrying one button, and the panel that paints it arrives
+       with no role and no name, so what a reader is told about it is nothing. The button carries its
+       own text; this gives the surface around it a name and says what state it reports. */
+    function describePauseOverlay() {
+      const overlay = document.querySelector(".reveal .pause-overlay");
+      if (!overlay || overlay.hasAttribute("aria-label")) {
+        return;
+      }
+      overlay.setAttribute("role", "group");
+      overlay.setAttribute("aria-label", "Presentation paused");
+      const resume = overlay.querySelector(".resume-button");
+      if (resume && !resume.hasAttribute("aria-label")) {
+        resume.setAttribute("aria-label", "Resume presentation");
       }
     }
 
@@ -1603,13 +2277,19 @@ graph LR
       new MutationObserver(describeRevealControls).observe(deck, { childList: true });
     }
 
+    /* Read before reveal starts, so the first paint is the layout the viewport can carry
+       instead of a stage that is replaced a frame later. */
+    applyReadingMode();
+
     if (window.Reveal) {
       Reveal.on("ready", (event) => {
+        applyReadingMode();
         renderMermaidFor(event.currentSlide);
         renderLucideIcons();
         describeRevealControls();
         watchRevealInjections();
         watchControlFocus();
+        window.requestAnimationFrame(scrollPresentSlideIntoView);
         /* Every diagram is drawn once the load is idle, before anything asks for one. A print is
            the reason it cannot wait: the browser hands out no time inside its print event, so a
            diagram that is not already in the page is missing from the paper. Measured, on a deck
@@ -1624,6 +2304,19 @@ graph LR
         renderMermaidFor(event.currentSlide);
         renderLucideIcons();
         queueMicrotask(restoreControlFocus);
+        window.requestAnimationFrame(scrollPresentSlideIntoView);
+      });
+
+      /* Pausing blanks the screen and resuming brings it back, and reveal announces neither. Both
+         are reported here, through the deck's own status region instead of the line reveal
+         reserves for slide changes. */
+      Reveal.on("paused", () => {
+        describePauseOverlay();
+        announceDeckState("Presentation paused. The slide is hidden.");
+      });
+
+      Reveal.on("resumed", () => {
+        announceDeckState("Presentation resumed. The slide is showing again.");
       });
 
       /* The overview lays out the whole deck at once, and the export layout builds one page
@@ -1641,6 +2334,22 @@ graph LR
       });
 
       document.addEventListener("keydown", keepFocusInHelpPanel, true);
+      document.addEventListener("keydown", dismissHelpPanelOnEscape, true);
+
+      /* A viewport change can cross the reading-mode floor in either direction, and browser zoom is
+         a viewport change. A crossing re-fits every drawing, because a drawing is fitted to the frame
+         on the stage and given its own width in reading mode, and asks reveal to lay out so its own
+         measurements agree with what is on screen. */
+      window.addEventListener("resize", () => {
+        if (!applyReadingMode()) {
+          return;
+        }
+        fitEveryDiagram();
+        if (typeof Reveal.layout === "function") {
+          Reveal.layout();
+        }
+        scrollPresentSlideIntoView();
+      });
 
       /* Reveal's scroll view writes the slide container's contents back when it hands the deck
          over, which replaces every diagram block and every drawn icon in it, and it hands the deck

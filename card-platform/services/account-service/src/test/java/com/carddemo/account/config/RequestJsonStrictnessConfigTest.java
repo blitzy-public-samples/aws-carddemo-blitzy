@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.carddemo.account.api.dto.AccountUpdateRequest;
+import com.carddemo.account.api.dto.CycleCloseRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -17,9 +18,9 @@ import tools.jackson.databind.ObjectMapper;
  * Asserts the request reader of the web layer holds a caller to the published request schemas.
  *
  * <p>Two promises of {@code src/main/resources/openapi.yaml} are under test.
- * {@code AccountUpdateRequest}, {@code AccountDataRequest} and {@code CustomerDataRequest} each
- * declare {@code additionalProperties: false}, and every property of all three declares
- * {@code type: string}. A reader left at its defaults keeps neither: it drops an undeclared property
+ * {@code AccountUpdateRequest}, {@code AccountDataRequest}, {@code CustomerDataRequest} and the
+ * empty cycle-close body each declare {@code additionalProperties: false}, and every property of
+ * the first three declares {@code type: string}. A reader left at its defaults keeps neither: it drops an undeclared property
  * in silence and it turns a JSON number into the text of that number.
  *
  * <p>The mapper is built the way the running service builds it, by
@@ -167,6 +168,34 @@ final class RequestJsonStrictnessConfigTest {
                     () -> mapper.readValue(UNDECLARED_CUSTOMER_PROPERTY_BODY,
                             AccountUpdateRequest.class),
                     "the customer block closes its property set too, and holds no recombined column");
+        });
+    }
+
+    /**
+     * Asserts the cycle-close body admits nothing, which is what its schema declares.
+     *
+     * <p>{@code CycleCloseRequest} declares no member, and the document publishes the body as an
+     * object with {@code additionalProperties: false}. The route read no body at all until this
+     * record was bound, so any property was accepted and both billing-cycle accumulators were
+     * zeroed for a request that had described something else. An empty object still binds, because
+     * an empty object and an absent body describe the same request.
+     */
+    @Test
+    @DisplayName("The cycle-close body admits an empty object and refuses every property")
+    void theCycleCloseBodyAdmitsNothingButAnEmptyObject() {
+        reader.run(context -> {
+            ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+            assertNotNull(mapper.readValue("{}", CycleCloseRequest.class),
+                    "an empty object is the body the document publishes as its example");
+            assertThrows(JacksonException.class,
+                    () -> mapper.readValue("{\"unexpected\":true}", CycleCloseRequest.class),
+                    "the operation reads no submitted value, so a property describes a request it "
+                            + "does not perform");
+            assertThrows(JacksonException.class,
+                    () -> mapper.readValue("{\"accountId\":\"00000000050\"}",
+                            CycleCloseRequest.class),
+                    "the path is the one place the account is named, here as everywhere else");
         });
     }
 }

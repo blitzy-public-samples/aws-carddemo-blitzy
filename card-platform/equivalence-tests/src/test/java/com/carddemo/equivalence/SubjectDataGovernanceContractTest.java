@@ -101,6 +101,20 @@ class SubjectDataGovernanceContractTest {
             "services/card-service/src/main/resources/db/migration/"
                     + "V11__card_verification_value_exception.sql";
 
+    /**
+     * The correction that is part of the exception record.
+     *
+     * <p>An applied migration is not edited, because Flyway compares its checksum at every start, so
+     * a locator that moves after the record was applied is corrected by a later file. This one
+     * restates the column comment with the current location of the encryption overlay, which moved
+     * out of {@code deploy/k8s} because Kustomize refuses an overlay contained by a base it names.
+     * The record a reader follows is therefore both files, which is how {@code V4} and {@code V6} of
+     * the ledger schema, and {@code V5} and {@code V8} of this one, already read.
+     */
+    private static final String EXCEPTION_CORRECTION =
+            "services/card-service/src/main/resources/db/migration/"
+                    + "V12__encryption_overlay_locator.sql";
+
     /** The four migrations that point the catalogue at the procedure. */
     private static final List<String> PROCEDURE_MIGRATIONS = List.of(
             EXCEPTION_MIGRATION,
@@ -131,8 +145,8 @@ class SubjectDataGovernanceContractTest {
     private static final List<Evidence> EXCEPTION_EVIDENCE = List.of(
             new Evidence("card-platform/deploy/k8s", "deploy/k8s/10-kafka.yaml"),
             new Evidence("card-platform/deploy/k8s", "deploy/k8s/20-postgres.yaml"),
-            new Evidence("deploy/k8s/overlays/encrypted-storage",
-                    "deploy/k8s/overlays/encrypted-storage/kustomization.yaml"),
+            new Evidence("deploy/overlays/encrypted-storage",
+                    "deploy/overlays/encrypted-storage/kustomization.yaml"),
             new Evidence("card-platform/deploy/k8s/README.md", "deploy/k8s/README.md"),
             new Evidence("entity/CardEntity",
                     "services/card-service/src/main/java/com/carddemo/card/entity/CardEntity.java"),
@@ -202,7 +216,8 @@ class SubjectDataGovernanceContractTest {
         @Test
         @DisplayName("every artifact the exception offers as evidence is in the tree")
         void everyArtifactTheExceptionNamesExists() {
-            String migration = normalize(read(platformRoot().resolve(EXCEPTION_MIGRATION)));
+            String migration = normalize(read(platformRoot().resolve(EXCEPTION_MIGRATION))
+                    + " " + read(platformRoot().resolve(EXCEPTION_CORRECTION)));
             List<String> missing = new ArrayList<>();
             for (Evidence evidence : EXCEPTION_EVIDENCE) {
                 String basename = evidence.path()
@@ -268,6 +283,8 @@ class SubjectDataGovernanceContractTest {
                 "states that dropping the column is a schema change rather than a request",
                 EXCEPTION_MIGRATION,
                 "records the exception",
+                EXCEPTION_CORRECTION,
+                "restates the column comment with the current encryption-overlay locator",
                 "services/card-service/src/main/java/com/carddemo/card/entity/CardEntity.java",
                 "maps the column, with no accessor and no rendering",
                 "services/card-service/src/main/java/com/carddemo/card/config/SecurityConfig.java",
@@ -358,8 +375,10 @@ class SubjectDataGovernanceContractTest {
             assertTrue(!section.isBlank(),
                     "the exception names \"" + DESTRUCTION_HEADING + "\" in the card guide, so the"
                             + " section has to exist");
-            assertTrue(section.contains("V12__card_verification_value_dropped.sql"),
-                    "the procedure has to name the migration a deployment writes");
+            assertTrue(section.contains("V13__card_verification_value_dropped.sql"),
+                    "the procedure has to name the migration a deployment writes, at the next"
+                            + " unused version: a version below the highest applied one is refused"
+                            + " as out of order, and V12 is the locator correction");
             assertTrue(section.contains("ALTER TABLE card DROP COLUMN " + EXCEPTION_COLUMN),
                     "the procedure has to carry the statement, not a description of it");
             assertTrue(section.contains("checksum"),
@@ -591,7 +610,7 @@ class SubjectDataGovernanceContractTest {
             }
 
             Path overlay = platformRoot()
-                    .resolve("deploy/k8s/overlays/encrypted-storage/kustomization.yaml");
+                    .resolve("deploy/overlays/encrypted-storage/kustomization.yaml");
             String text = read(overlay);
             assertTrue(text.contains("kind: PersistentVolumeClaim"),
                     "the overlay patches by kind, so a third claim is covered without an edit");

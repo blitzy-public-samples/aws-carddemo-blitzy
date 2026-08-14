@@ -28,6 +28,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.authorization.AuthorizationDecision;
 import org.springframework.security.authorization.AuthorizationManager;
 import org.springframework.security.config.Customizer;
@@ -655,8 +656,25 @@ public class SecurityConfig {
      * Grants a request only when the caller owns the identifier a query parameter carries.
      *
      * <p>A card list is requested by account, and the account arrives as a query parameter rather
-     * than as a path segment. The check is otherwise the one
-     * {@link #ownsPathVariable(String, String)} performs. An absent parameter denies.
+     * than as a path segment. When the parameter carries a value the check is the one
+     * {@link #ownsPathVariable(String, String)} performs, so a caller reaches its own account and
+     * reads 403 for another one.
+     *
+     * <p>A request that carries no value names no subject, and no ownership question can be asked
+     * of a subject that was never named. That case is the shape of the request rather than the
+     * entitlement of its sender, so it is left to the route:
+     * {@link com.carddemo.card.api.CardController#listCards} declares the parameter required and
+     * answers 400 with {@code Account number not provided}, which is what
+     * {@code src/main/resources/openapi.yaml} publishes and what
+     * {@code app/cbl/COCRDLIC.cbl:L1129-L1131} prompts for. Refusing here instead answered 403 to
+     * an administrator, whose entitlement covers every account, and told a caller its identity was
+     * wrong when its request was.
+     *
+     * <p>The deferral is granted to an authenticated identity alone. An anonymous request is still
+     * denied, so {@link #unauthorized(HttpServletRequest, HttpServletResponse,
+     * AuthenticationException)} answers it 401 and a required parameter is never a way to reach a
+     * route without a credential. A blank value is read as no value for the same reason: the route
+     * already answers it 400 with the same wording.
      *
      * @param kind      the ownership kind
      * @param parameter name of the query parameter carrying the identifier
@@ -666,10 +684,27 @@ public class SecurityConfig {
             String parameter) {
         return (authentication, context) -> {
             String value = context.getRequest().getParameter(parameter);
-            boolean granted = value != null
-                    && holds(authentication.get(), SCOPE_PREFIX + kind + "_" + value);
+            if (value == null || value.isBlank()) {
+                return new AuthorizationDecision(named(authentication.get()));
+            }
+            boolean granted = holds(authentication.get(), SCOPE_PREFIX + kind + "_" + value);
             return new AuthorizationDecision(granted);
         };
+    }
+
+    /**
+     * Answers whether a request arrived with an identity of its own.
+     *
+     * <p>An anonymous authentication reports itself authenticated, so the type is what separates a
+     * caller that presented a credential from one the framework named on its behalf.
+     *
+     * @param caller the authentication under test, possibly {@code null}
+     * @return {@code true} when the request carries an authenticated, non-anonymous identity
+     */
+    private static boolean named(Authentication caller) {
+        return caller != null
+                && caller.isAuthenticated()
+                && !(caller instanceof AnonymousAuthenticationToken);
     }
 
     /**

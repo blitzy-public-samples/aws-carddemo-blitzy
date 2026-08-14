@@ -22,7 +22,8 @@
 # the kubelet asks for the tag kustomization.yaml sets and refuses anything else under
 # imagePullPolicy: Never, so the cluster reports ErrImageNeverPull exactly as it would have
 # with no images at all. This script therefore refuses an IMAGE_TAG the manifests do not
-# name, and prints the `kustomize edit set image` command that changes what they ask for.
+# name, and prints the edit to kustomization.yaml that changes what they ask for, plus the
+# `kustomize edit set image` one-liner for an operator who has that standalone binary.
 # Left unset, the tag is the version in card-platform/pom.xml, the one value the manifests,
 # Compose and the pipeline all name; the script checks that the manifests still agree with
 # it rather than assuming they do.
@@ -81,7 +82,15 @@ manifest_tag="${requested_tags}"
 if [ "${manifest_tag}" != "${project_version}" ]; then
     fail "${kustomization} requests '${manifest_tag}' but pom.xml declares '${project_version}'.
 Compose and the pipeline both build '${project_version}', so the cluster would ask for a tag
-nothing produces. Bring them back into step:
+nothing produces. Bring them back into step by setting all six newTag values in
+${kustomization} to '${project_version}', which needs a text editor and nothing else:
+
+  cd ${platform_root}
+  sed -i 's/newTag: ${manifest_tag}/newTag: ${project_version}/' ${kustomization}
+  kubectl kustomize deploy/k8s | grep 'image: carddemo/'
+
+An operator holding the standalone kustomize binary can do the same thing with its edit
+subcommand, which kubectl does not carry:
 
   cd ${platform_root}/deploy/k8s
   for service in ${services[*]}; do
@@ -95,6 +104,12 @@ if [ "${image_tag}" != "${manifest_tag}" ]; then
 Loading '${image_tag}' would leave every Pod reporting ErrImageNeverPull, because
 imagePullPolicy: Never makes the kubelet run the requested tag or refuse the Pod. Change what
 the manifests ask for first, then run this again with the same value:
+
+  cd ${platform_root}
+  sed -i 's/newTag: ${manifest_tag}/newTag: ${image_tag}/' ${kustomization}
+  kubectl kustomize deploy/k8s | grep 'image: carddemo/'
+
+Or, with the standalone kustomize binary that kubectl does not carry:
 
   cd ${platform_root}/deploy/k8s
   for service in ${services[*]}; do

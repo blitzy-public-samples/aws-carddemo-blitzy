@@ -50,7 +50,7 @@
 # SASL_SSL, sslmode=verify-full against a mounted authority, and Transport Layer Security on
 # both ports of every service. KAFKA_SECURITY_PROTOCOL, SPRING_DATASOURCE_OPTIONS and the
 # two SSL switches are the values that differ between the two paths. Storage there is not
-# encrypted by default: deploy/k8s/overlays/encrypted-storage binds an encrypted class the
+# encrypted by default: deploy/overlays/encrypted-storage binds an encrypted class the
 # operator supplies, and deploy/k8s/README.md states what the operator owns.
 #
 # An authenticated Transport Layer Security profile for this file is designed and not

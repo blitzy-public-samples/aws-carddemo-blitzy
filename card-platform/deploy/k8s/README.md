@@ -44,9 +44,12 @@ the `newTag` values in [`kustomization.yaml`](kustomization.yaml), and the run s
 differ. `imagePullPolicy: Never` makes the kubelet run the requested tag or refuse the Pod,
 so loading some other tag produces the same `ErrImageNeverPull` as loading nothing.
 The same check catches `kustomization.yaml` drifting from the project version in
-`pom.xml`, which is the tag Compose and the pipeline build. Changing the tag therefore means
-changing what the manifests ask for, and the script prints the `kustomize edit set image`
-command that does it.
+`pom.xml`, which is the tag Compose and the pipeline build.
+
+Changing the tag therefore means
+changing what the manifests ask for, and the script prints both ways to do it. One is the six
+`newTag` values to edit in [`kustomization.yaml`](kustomization.yaml). The other is the
+`kustomize edit set image` one-liner, for an operator who has the standalone binary.
 
 <br/>
 
@@ -94,17 +97,46 @@ one place, and it is why the next section exists.
 
 ## Pinning the six by digest
 
+Publish the six to a registry the deployment owns, then pin what the push reported. The edit is
+to [`kustomization.yaml`](kustomization.yaml) and needs a text editor and nothing else. `newTag`
+and `digest` are mutually exclusive in a Kustomize `images` entry, so replacing one with the
+other is the whole edit, one entry at a time or all six:
+
+```yaml
+# deploy/k8s/kustomization.yaml, before. The tag a local build produces.
+  - name: carddemo/authorization-service
+    newName: carddemo/authorization-service
+    newTag: 1.0.0-SNAPSHOT
+
+# after. newName is the registry that holds it; digest is the sha256 the push printed.
+  - name: carddemo/authorization-service
+    newName: registry.example.internal/carddemo/authorization-service
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+```
+
+Then remove `imagePullPolicy: Never` from that Deployment, because a digest that is never
+pulled is never verified. Check the edit before applying it, which needs `kubectl` and no
+cluster:
+
 ```bash
-# Publish to a registry the deployment owns, then pin what the push reported. DIGEST is the
-# sha256 value the push printed, quoted so the shell reads it as one word.
+# From card-platform/. Prints what each of the six Deployments will run. An entry still on
+# newTag prints its tag, so a half-finished pin is visible rather than silent.
+kubectl kustomize deploy/k8s | grep 'image: carddemo/\|image: registry'
+```
+
+An operator who has [standalone Kustomize](https://kubectl.docs.kubernetes.io/installation/kustomize/)
+5.8 or later can make the same edit as one command. It is a convenience and not a prerequisite.
+`kubectl` embeds the Kustomize renderer and not its `edit` subcommand, so this line reports
+`command not found` on a machine carrying only the tools [onboarding](../../docs/onboarding.md)
+lists.
+
+```bash
+# Optional. Needs the standalone kustomize binary, which nothing else here requires.
+cd deploy/k8s
 DIGEST='sha256:0000000000000000000000000000000000000000000000000000000000000000'
 kustomize edit set image \
   "carddemo/authorization-service=registry.example.internal/carddemo/authorization-service@${DIGEST}"
 ```
-
-`newTag` and `digest` are mutually exclusive in a Kustomize `images` entry, so replacing one
-with the other is the whole edit. Then remove `imagePullPolicy: Never` from that Deployment,
-because a digest that is never pulled is never verified.
 
 Signing and admission-time verification are the step after that, and this platform ships
 neither: they need a registry, a signing key and an admission controller. Section 0.2.2 of
@@ -133,13 +165,23 @@ one a policy engine can read.
 Bind an encrypted class by applying the overlay instead of this folder. It patches both claims in one
 place and applies the whole base, so nothing else changes.
 
+The overlay lives at `deploy/overlays/encrypted-storage`, beside this folder rather than under it.
+Kustomize refuses a resource path resolving to a directory that contains the root being built. An
+overlay stored inside this folder therefore could not name it as a base at all. Standing the overlay beside the
+base is what keeps its resource list to the single entry that cannot go stale.
+
 ```bash
 # From card-platform/, as the apply steps above are. Provide a StorageClass named
 # carddemo-encrypted whose provisioner encrypts at rest, or edit the one class name in the
 # overlay to a class the cluster already has.
+
+# Read what will be applied first. This needs kubectl and no cluster, and it prints the same
+# 29 objects `kubectl kustomize deploy/k8s` prints, plus storageClassName on both claims.
+kubectl kustomize deploy/overlays/encrypted-storage
+
 kubectl apply -f deploy/k8s/00-namespace.yaml
 kubectl apply -f /path/to/your-filled-in-secrets.yaml
-kubectl apply -k deploy/k8s/overlays/encrypted-storage
+kubectl apply -k deploy/overlays/encrypted-storage
 ```
 
 A claim's storage class is immutable once bound, so on a cluster that already applied this folder the

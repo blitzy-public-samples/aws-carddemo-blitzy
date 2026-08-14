@@ -84,7 +84,7 @@ The counts below describe the delivered tree rather than one moment, and the mec
 |---|---:|
 | Failsafe equivalence tests | 229 passed across the nine `*EquivalenceTest` classes |
 | Failsafe end-to-end flow test in the same module | 6 passed in `ThreeConsumerAuthorizationFlowIT`, giving 235 for this module's whole Failsafe run |
-| Surefire unit and contract tests in the same module | 581 passed |
+| Surefire unit and contract tests in the same module | 587 passed |
 | `*EquivalenceTest` classes executed | 9 |
 | Required named equivalence classes | 6 present and passing |
 | Checked-in expected-output files | 14, every one read by its declared consumer |
@@ -131,7 +131,7 @@ The reject record itself is compared as bytes. `renderRejectRecord` copies the f
 | `CardSeedEquivalenceTest` | 7 |
 | `ThreeConsumerAuthorizationFlowIT` | 6 |
 
-The whole reactor ran 6,802 Surefire and 599 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven.
+The whole reactor ran 6,810 Surefire and 603 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven.
 
 Here is where they came from, module by module. `scripts/check-published-test-counts.sh` compares every cell below against the reports of a completed build, so a figure in this table is measured rather than asserted.
 
@@ -143,10 +143,10 @@ Here is where they came from, module by module. `scripts/check-published-test-co
 | `services/ledger-posting-service` | 539 | 23 |
 | `services/fraud-detection-service` | 762 | 74 |
 | `services/notification-service` | 910 | 39 |
-| `services/account-service` | 1,849 | 51 |
-| `services/card-service` | 814 | 124 |
-| `equivalence-tests` | 581 | 235 |
-| **Reactor total** | **6,802** | **599** |
+| `services/account-service` | 1,850 | 53 |
+| `services/card-service` | 815 | 126 |
+| `equivalence-tests` | 587 | 235 |
+| **Reactor total** | **6,810** | **603** |
 
 The two library modules carry no Failsafe figure because neither holds a class the integration patterns select: `**/*IT.java` and `**/*EquivalenceTest.java` match nothing under either. Every other module holds at least one, and the script fails when one of them writes no Failsafe report. That is the fail-open case a silently empty selection would otherwise leave green.
 

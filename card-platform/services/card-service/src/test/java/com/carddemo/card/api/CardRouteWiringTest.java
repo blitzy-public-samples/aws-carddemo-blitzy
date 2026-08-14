@@ -236,13 +236,26 @@ class CardRouteWiringTest {
     @DisplayName("malformed requests through the real error path")
     class MalformedRequestsThroughTheRealErrorPath {
 
-        /** Asserts a missing account parameter answers 400 rather than reaching the read side. */
+        /**
+         * Asserts a missing account parameter answers 400 with the text the contract publishes.
+         *
+         * <p>The text matters as much as the status. {@code src/main/resources/openapi.yaml} states
+         * that an absent account reads {@code Account number not provided}, which is the wording
+         * {@code app/cbl/COCRDLIC.cbl:L1129-L1131} prompts with. That text comes from the
+         * {@code @NotBlank} constraint on the parameter, and a parameter declared required at its
+         * binding never reached the constraint at all.
+         */
         @Test
         void aMissingAccountParameterAnswersBadRequest() throws Exception {
             MvcResult result = mockMvc.perform(get("/cards")).andReturn();
 
             assertEquals(400, result.getResponse().getStatus(),
                     "the account the ownership rule reads is required");
+            assertTrue(
+                    result.getResponse().getContentAsString()
+                            .contains(CardController.ACCOUNT_ID_ABSENT_MESSAGE),
+                    "the published text reaches the caller, and the body read: "
+                            + result.getResponse().getContentAsString());
             verify(cardQueries, never()).listForward(any(), any(), any(), any());
         }
 

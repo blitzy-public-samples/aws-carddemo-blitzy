@@ -1,5 +1,6 @@
 package com.carddemo.account.api;
 
+import com.carddemo.account.api.dto.CycleCloseRequest;
 import com.carddemo.account.api.dto.CycleCloseResponse;
 import com.carddemo.account.domain.BillingCycleService;
 import com.carddemo.account.entity.AccountEntity;
@@ -8,6 +9,7 @@ import java.util.Objects;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -43,13 +45,15 @@ import org.springframework.web.bind.annotation.RestController;
  * {@code app/cpy/CVACT01Y.cpy:L6} for nothing. {@code domain/BillingCycleService} holds the lock,
  * the transaction boundary and the write.
  *
- * <p>This route takes no request body, which once made it the one operation on this platform
- * an HTML form could submit on its own. A browser attaches a cached HTTP Basic credential to
- * a request a foreign page caused, so a page anywhere could have zeroed both accumulators of
- * any account whose identifier it guessed. {@code config/CrossSiteRequestFilter} closes that:
- * this method answers only a request declaring a first-party {@code Sec-Fetch-Site}, naming
- * this origin if it names one, and carrying a request header no form can set. The body stays
- * absent, because what made the route reachable was the credential rather than the shape.
+ * <p>This route reads no value from a request body, which once made it the one operation on
+ * this platform an HTML form could submit on its own. A browser attaches a cached HTTP Basic
+ * credential to a request a foreign page caused, so a page anywhere could have zeroed both
+ * accumulators of any account whose identifier it guessed.
+ * {@code config/CrossSiteRequestFilter} closes that: this method answers only a request
+ * declaring a first-party {@code Sec-Fetch-Site}, naming this origin if it names one, and
+ * carrying a request header no form can set. The body stays empty, because what made the
+ * route reachable was the credential rather than the shape, and
+ * {@code api/dto/CycleCloseRequest} is what holds it empty.
  *
  * <p>{@code src/main/resources/openapi.yaml} describes this route, and no generator reconciles that
  * description against this class.
@@ -90,7 +94,7 @@ public class BillingCycleController {
     /**
      * Closes the billing cycle of one account.
      *
-     * <p>The path identifier is the whole input, and this route reads no request body.
+     * <p>The path identifier is the whole input, and this route reads no value from a body.
      *
      * <p>The response carries the account identifier and both accumulators as they stand after the
      * close, each at the two fractional digits {@code PIC S9(10)V99} holds.
@@ -115,10 +119,36 @@ public class BillingCycleController {
      * <p>{@code config/SecurityConfig} refuses the three browser-simple content types on every
      * state-changing request as well, so the protection does not rest on this one annotation.
      *
+     * <h2>The body is empty, and that is now enforced rather than assumed</h2>
+     *
+     * <p>{@code src/main/resources/openapi.yaml} publishes the body as an object with
+     * {@code additionalProperties: false}, and this method read no body at all, so the refusal that
+     * schema declares was never applied: a call carrying any property was accepted and both
+     * accumulators were zeroed for it. {@link CycleCloseRequest} declares no member, so
+     * {@code config/RequestJsonStrictnessConfig} refuses an undeclared property and
+     * {@code api/AccountApiExceptionHandler} answers 400. An empty object and an absent body are
+     * both accepted, because both describe the same request, which is why the body is optional.
+     *
+     * <p>Nothing is read from the argument. It exists so the framework applies the published schema
+     * to what a caller sent.
+     *
+     * <p>The argument is an {@link HttpEntity} rather than a parameter carrying
+     * {@code @RequestBody(required = false)}, and the difference is the media-type gate above.
+     * Spring reads {@code required} off that annotation and stops applying {@code consumes} to a
+     * request that carries no body, so declaring the body optional that way answered 200 to a
+     * bodyless call naming no media type — which is the one control this route has of its own.
+     * {@link HttpEntity} carries no such annotation, so the gate stands and the body stays
+     * optional: a caller may send an empty object or nothing at all, and either way the media type
+     * is still required.
+     *
      * @param accountId the account whose cycle to close, eleven decimal digits
-     * @return {@code 200} carrying both accumulators at zero, {@code 404} when this service holds
-     *         no row for that identifier, or {@code 415} when the request names no media type this
-     *         route accepts
+     * @param body      the request as it arrived. Its body is the empty object this route accepts,
+     *                  or {@code null} when the caller sent none. No member is declared and none is
+     *                  read
+     * @return {@code 200} carrying both accumulators at zero, {@code 400} when the body carries a
+     *         property this route does not declare, {@code 404} when this service holds no row for
+     *         that identifier, or {@code 415} when the request names no media type this route
+     *         accepts
      */
     @PostMapping(path = "/{accountId}/cycle-close",
             consumes = MediaType.APPLICATION_JSON_VALUE,
@@ -126,7 +156,8 @@ public class BillingCycleController {
     public ResponseEntity<?> closeBillingCycle(
             @PathVariable
             @Pattern(regexp = ACCOUNT_ID_PATTERN, message = AccountController.ACCOUNT_ID_MESSAGE)
-            String accountId) {
+            String accountId,
+            HttpEntity<CycleCloseRequest> body) {
 
         Optional<AccountEntity> closed = billingCycles.closeBillingCycle(accountId);
         if (closed.isEmpty()) {

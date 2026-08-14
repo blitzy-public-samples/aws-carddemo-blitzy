@@ -30,6 +30,7 @@ import org.springframework.http.MediaType;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.authorization.AuthorizationManager;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -130,6 +131,17 @@ class SecurityConfigTest {
     private static Authentication administrator() {
         return UsernamePasswordAuthenticationToken.authenticated("admin001", null,
                 List.of(new SimpleGrantedAuthority("ROLE_ADMIN")));
+    }
+
+    /**
+     * Builds the authentication the framework names for a request carrying no credential.
+     *
+     * <p>It reports itself authenticated, which is why a rule that separates a caller with an
+     * identity from one without has to read the type rather than the flag.
+     */
+    private static Authentication anonymous() {
+        return new AnonymousAuthenticationToken("key", "anonymousUser",
+                List.of(new SimpleGrantedAuthority("ROLE_ANONYMOUS")));
     }
 
     /** Wraps one path variable in the context an authorization rule receives. */
@@ -344,10 +356,48 @@ class SecurityConfigTest {
                     () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
                                     new RequestAuthorizationContext(other)).isGranted(),
                             "the caller does not own the other account"),
-                    () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
-                                    new RequestAuthorizationContext(
-                                            new MockHttpServletRequest())).isGranted(),
-                            "an absent parameter denies"));
+                    () -> assertTrue(rule.authorize(SecurityConfigTest::administrator,
+                                    new RequestAuthorizationContext(other)).isGranted(),
+                            "an administrator owns every account, which is COSGN00C L232-L236 "
+                                    + "expressed as an entitlement"));
+        }
+
+        /**
+         * Asserts a request naming no account reaches the route's own validation, and only with an
+         * identity.
+         *
+         * <p>An absent parameter names no subject, so the request is malformed rather than
+         * unentitled and {@code api/CardController#listCards} answers it 400 with
+         * {@code Account number not provided}. Denying it here answered 403 to an administrator
+         * whose entitlement covers every account. The deferral is granted to a named identity
+         * alone, so an anonymous caller still reaches the entry point and reads 401. A blank value
+         * is the same case: the route answers it with the same wording.
+         */
+        @Test
+        @DisplayName("a request naming no account defers to the route, and anonymously is refused")
+        void requestParameterAbsenceDefersToTheRoute() {
+            AuthorizationManager<RequestAuthorizationContext> rule =
+                    SecurityConfig.ownsRequestParameter(SecurityConfig.ACCOUNT_SCOPE, "accountId");
+            MockHttpServletRequest absent = new MockHttpServletRequest();
+            MockHttpServletRequest blank = new MockHttpServletRequest();
+            blank.setParameter("accountId", "   ");
+            assertAll(
+                    () -> assertTrue(rule.authorize(SecurityConfigTest::cardholder,
+                                    new RequestAuthorizationContext(absent)).isGranted(),
+                            "no account is named, so the route's required parameter answers 400"),
+                    () -> assertTrue(rule.authorize(SecurityConfigTest::cardholder,
+                                    new RequestAuthorizationContext(blank)).isGranted(),
+                            "a blank value names no account either"),
+                    () -> assertTrue(rule.authorize(SecurityConfigTest::administrator,
+                                    new RequestAuthorizationContext(absent)).isGranted(),
+                            "an administrator reads the same 400 as every other identity"),
+                    () -> assertFalse(rule.authorize(SecurityConfigTest::anonymous,
+                                    new RequestAuthorizationContext(absent)).isGranted(),
+                            "a request with no credential is refused before the route, so a "
+                                    + "required parameter is no way past authentication"),
+                    () -> assertFalse(rule.authorize(() -> null,
+                                    new RequestAuthorizationContext(absent)).isGranted(),
+                            "an unauthenticated request carries no identity to defer for"));
         }
     }
 

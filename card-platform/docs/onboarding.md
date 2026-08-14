@@ -27,8 +27,15 @@ stack on one machine; add the cluster set only to apply the Kubernetes manifests
 
 | Tool | Exact version | Use |
 | :--- | :--- | :--- |
-| kubectl | 1.31 or later | Applies the eleven manifests and reads Pod status |
+| kubectl | 1.31 or later | Applies the eleven manifests, renders `deploy/k8s` and the encryption overlay, and reads Pod status |
 | kind, minikube or Docker Desktop | kind 0.24 or later; minikube 1.34 or later | Supplies the cluster and the image store `deploy/k8s/load-images.sh` loads into |
+
+That table is the whole Kubernetes set: **standalone Kustomize is not a prerequisite.** `kubectl` embeds
+the Kustomize renderer, which is every `apply -k` and `kubectl kustomize` command in this guide and in
+`deploy/k8s/README.md`. What it does not embed is the `edit` subcommand. One procedure would use it: pinning
+the six image references by digest. That is written as an edit to `deploy/k8s/kustomization.yaml`
+that any text editor makes, and the `kustomize edit set image` one-liner is named beside it as an
+optional convenience.
 
 Two rows of the Compose set are exact and the rest are floors, and the difference is not editorial.
 The enforcer plugin refuses a build outside `[25,26)` for the language level and `[3.9.16,3.10.0)` for
@@ -254,7 +261,7 @@ Figure 1 shows which address to dial from where, because the answer differs betw
 
 ```mermaid
 graph LR
-    DEV["Developer machine<br/>curl, psql, kubectl"]
+    DEV["Developer machine<br/>curl, docker, kubectl"]
 
     subgraph HOST["Published on 127.0.0.1"]
         BUS["8081 to 8086<br/>business routes"]
@@ -665,7 +672,7 @@ The six service images are never pulled. Each is built locally as `carddemo/<ser
 
 **Symptom:** an update answers 409 rather than blocking, while ordinary concurrent writes settle and answer `Record changed by some one else. Please review`.
 
-**Cause:** the account and card updates read the row they rewrite under a lock, and PostgreSQL waits for a held row indefinitely. `carddemo.write.lock-wait-ms` bounds that wait, reading `WRITE_LOCK_WAIT_MS` and defaulting to three seconds. Hold a row in `psql` with `BEGIN; SELECT ... FOR UPDATE;` and the next update of that row meets the bound. The refusal is the outcome the source composes for a read that does not come back held, and it was unreachable while the wait had no end.
+**Cause:** the account and card updates read the row they rewrite under a lock, and PostgreSQL waits for a held row indefinitely. `carddemo.write.lock-wait-ms` bounds that wait, reading `WRITE_LOCK_WAIT_MS` and defaulting to three seconds. Hold a row with `BEGIN; SELECT ... FOR UPDATE;` inside the database container, which is where the `psql` client lives, and the next update of that row meets the bound. `docs/data-model.md` carries the one-line form that runs a statement there. The refusal is the outcome the source composes for a read that does not come back held, and it was unreachable while the wait had no end.
 
 **Fix:** treat a 409 lock refusal as a genuine holder rather than a defect. The bound is applied per update transaction with `set_config('lock_timeout', ?, true)`, so it never bounds a schema migration or the outbox relay sweep. If you meet one in a demonstration, something is holding the row.
 
@@ -737,7 +744,7 @@ Neither derives from the other, because each service's connection pool is sized 
 
 **Cause:** a `PersistentVolumeClaim` names its storage class once. The field is immutable after the claim is bound, which is a Kubernetes rule rather than a platform one. The base names no class deliberately, so the documented demonstration binds on kind, minikube and Docker Desktop with no edit. Both claims carry `carddemo.io/requires-encryption-at-rest` to say that a real deployment has to do better.
 
-**Fix:** decide before the first apply. Provide a `StorageClass` whose provisioner encrypts, name it in `deploy/k8s/overlays/encrypted-storage/kustomization.yaml`, and run `kubectl apply -k card-platform/deploy/k8s/overlays/encrypted-storage` instead of applying the base. On a cluster that already bound the claims, the claims have to be deleted, which deletes the data. `deploy/k8s/README.md`, under *Encryption at rest*, carries that sequence, the key-ownership question and the backup obligation a volume does not cover.
+**Fix:** decide before the first apply. Provide a `StorageClass` whose provisioner encrypts, name it in `deploy/overlays/encrypted-storage/kustomization.yaml`, and run `kubectl apply -k card-platform/deploy/overlays/encrypted-storage` instead of applying the base. On a cluster that already bound the claims, the claims have to be deleted, which deletes the data. `deploy/k8s/README.md`, under *Encryption at rest*, carries that sequence, the key-ownership question and the backup obligation a volume does not cover.
 
 ### 18. Putting a proxy in front of a service silently changes two controls
 

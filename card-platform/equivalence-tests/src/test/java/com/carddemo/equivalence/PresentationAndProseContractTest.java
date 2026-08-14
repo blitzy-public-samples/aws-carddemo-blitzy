@@ -73,8 +73,20 @@ class PresentationAndProseContractTest {
     private static final Pattern SCRIPT_BLOCK = Pattern.compile("(?s)<script\\b[^>]*>(.*?)</script>");
     private static final Pattern MODULE_SCRIPT =
             Pattern.compile("(?s)<script type=\"module\">(.*?)</script>");
+    /**
+     * A diagram block, however it is attributed.
+     *
+     * <p>The opening tag carries more than its class: the authored block is hidden from the
+     * accessibility tree until a drawing is in place, because reveal reads a slide's text when the
+     * slide arrives and that reading would otherwise be the diagram's own source. So the tag is
+     * matched by its class and whatever else it declares, rather than by one exact spelling of the
+     * whole tag. Matching the exact spelling is what made every diagram assertion here silently
+     * measure zero diagrams the first time an attribute was added.
+     */
     private static final Pattern MERMAID_BLOCK =
-            Pattern.compile("(?s)<pre class=\"mermaid\">(.*?)</pre>");
+            Pattern.compile("(?s)<pre class=\"mermaid\"[^>]*>(.*?)</pre>");
+    private static final Pattern MERMAID_OPENING_TAG =
+            Pattern.compile("<pre class=\"mermaid\"[^>]*>");
     private static final Pattern MERMAID_NODE =
             Pattern.compile(
                     "([A-Za-z][A-Za-z0-9_]*)(?:\\[\\(\"|\\[\"|\\{\\{\")([^\"]*)\"(?:\\)\\]|\\]|\\}\\})");
@@ -906,7 +918,7 @@ class PresentationAndProseContractTest {
     @Test
     @DisplayName("the three named diagrams cover both states, event flow and dependency order")
     void theThreeNamedDiagramsCoverBothStatesEventFlowAndDependencyOrder() {
-        assertEquals(3, occurrences(deckMarkup, "<pre class=\"mermaid\">"),
+        assertEquals(3, matchCount(MERMAID_OPENING_TAG, deckMarkup),
                 "Rule 2 requires all three views, and each travels as one Mermaid block");
         assertTrue(deckMarkup.contains("Figure 1 — From shared files to owned schemas"));
         assertTrue(deckMarkup.contains("Figure 2 — One outcome event starts the work"));
@@ -927,12 +939,16 @@ class PresentationAndProseContractTest {
         assertTrue(deckMarkup.contains("carddemo.dead-letter"));
 
         assertFalse(FORBIDDEN_SEQUENCE_WORD.matcher(deck).find());
-        String deckWithoutRequiredStageDimensions =
-                deck.replace("width: 1920", "").replace("height: 1080", "");
+
+        // A four-digit year in the deck reads as a date, and the delivery view is a dependency order
+        // with no dates in it. The stage width the presentation rules fix is exempt: it is a pixel
+        // size, and it is now named in the reveal configuration, in the reading-mode floor that
+        // decides when the stage stops being readable, and in the prose explaining both. Every other
+        // year-shaped number still fails this.
+        String deckWithoutStageDimensions =
+                deck.replaceAll("\\b1920\\b", "").replaceAll("\\b1080\\b", "");
         assertFalse(
-                Pattern.compile("\\b(?:19|20)\\d{2}\\b")
-                        .matcher(deckWithoutRequiredStageDimensions)
-                        .find());
+                Pattern.compile("\\b(?:19|20)\\d{2}\\b").matcher(deckWithoutStageDimensions).find());
     }
 
     @Test
@@ -1186,6 +1202,223 @@ class PresentationAndProseContractTest {
         assertTrue(deckScript.contains("classList.add(\"diagram-fallback\")"));
         assertTrue(deckStyle.contains("body.deck-static"));
         assertTrue(deckScript.contains("classList.add(\"deck-static\")"));
+    }
+
+    @Test
+    @DisplayName("a viewport the stage does not fit reflows the deck instead of shrinking it")
+    void aViewportTheStageDoesNotFitReflowsTheDeckInsteadOfShrinkingIt() {
+        // The stage stays the size the presentation rules fix. What changes below the floor is
+        // whether the deck is scaled to the viewport or laid out in it.
+        assertTrue(deckScript.contains("width: 1920"));
+        assertTrue(deckScript.contains("height: 1080"));
+        assertTrue(deckScript.contains("READING_SCALE_FLOOR = 0.6"));
+        assertTrue(
+                deckScript.contains("classList.toggle(\"deck-reading\", reading)"),
+                "Reading mode has to be a class the stylesheet answers");
+        assertTrue(
+                deckScript.contains("applyReadingMode()"),
+                "The mode has to be decided before the first paint and again on every resize");
+        assertTrue(deckScript.contains("window.addEventListener(\"resize\""));
+
+        // Browser zoom shrinks the CSS viewport, and reveal shrinks the stage by the same factor, so
+        // the two cancelled: 200% and 500% zoom magnified nothing at all. Measured effective device
+        // sizes for body copy were 20.48px at every rung. Reading mode is what breaks the
+        // cancellation, and it can only do that if it stops the transform in CSS rather than by
+        // writing reveal's own transform, which would strand the deck at a stale scale.
+        assertTrue(
+                declarationOf("html.deck-reading .reveal .slides")
+                        .contains("transform: none !important"));
+        assertFalse(
+                deckScript.contains("slides.style.transform"),
+                "Writing Reveal's own stage transform strands the deck at a stale scale");
+
+        // One slide at a time, in the document's own flow. Reveal hides a slide it is not showing by
+        // displaying none, and three of this deck's slide kinds declare a grid display that outranks
+        // it, which is harmless on a stage where every slide is drawn in the same place and is a
+        // column of stacked slides once the stage is unpinned.
+        assertTrue(
+                declarationOf("html.deck-reading .reveal .slides section")
+                        .contains("display: none !important"));
+        String present = declarationOf("html.deck-reading .reveal .slides section.present");
+        assertTrue(present.contains("display: block !important"));
+        assertTrue(
+                present.contains("min-height: 100vh !important"),
+                "The reveal stylesheet zeroes this on a centred deck and marks it important, so a"
+                        + " slide shorter than the viewport stopped short of the bottom edge");
+        assertTrue(
+                deckStyle.contains("html.deck-reading .reveal .slides section.present.slide-title"),
+                "The three grid slide kinds have to keep their grid when they are the present one");
+
+        // A slide being measured for a drawing is laid out and not painted. In the flow it would push
+        // the slide being read down the page, so it is measured out of the flow.
+        assertTrue(
+                declarationOf("html.deck-reading .reveal .slides section.diagram-measuring")
+                        .contains("position: absolute !important"));
+
+        // A drawing is over two thousand units wide with 16px labels. Fitting it to a phone is what
+        // rendered those labels at two pixels, so it keeps its own width and the frame scrolls.
+        // Both boxes between the frame and the drawing are flex items, and the default shrink of one
+        // was undoing the width the module writes: 2136 pixels laid out at 305.
+        assertTrue(declarationOf("html.deck-reading .mermaid-frame").contains("overflow-x: auto"));
+        assertTrue(declarationOf("html.deck-reading .mermaid").contains("flex: 0 0 auto"));
+        assertTrue(declarationOf("html.deck-reading .mermaid svg").contains("flex: 0 0 auto"));
+        assertTrue(deckScript.contains("drawing.style.width = Math.round(box.width)"));
+        assertTrue(
+                deckScript.contains("drawing.style.removeProperty(\"width\")"),
+                "On the stage the width has to come off again so the stylesheet's fit applies");
+
+        // Reading-mode type is absolute, not a factor of the stage, because a rem grows with the
+        // reader's own font-size setting and with page zoom one to one. Both values below are unique
+        // to the reading block; the stage declares 32px and 0.64em for the same two tokens.
+        assertTrue(deckStyle.contains("--type-base: 1.375rem;"));
+        assertTrue(
+                deckStyle.contains("--type-table: 0.8em;"),
+                "Table cells at the stage factor of 0.64em render below the 16px floor");
+
+        // A slide reached in the flow has to be brought to the top of the viewport. Without this a
+        // slide changed from halfway down a long one opened halfway down, and a link naming a slide
+        // opened a page scrolled past it.
+        assertTrue(deckScript.contains("function scrollPresentSlideIntoView()"));
+        assertTrue(deckScript.contains("window.scrollTo({ top:"));
+    }
+
+    @Test
+    @DisplayName("every interactive target declares the forty-four pixel floor at every width")
+    void everyInteractiveTargetDeclaresTheFortyFourPixelFloor() {
+        assertTrue(deckStyle.contains("--target-floor: 44px;"));
+
+        // Reveal ships a 36px chevron, a 40px anchor on its shortcut panel and a 34px-tall resume
+        // button. Each is the only affordance on the surface it sits on. The chevron is sized through
+        // the control font size, which reveal scales its arrow from.
+        assertTrue(
+                deckStyle.contains("font-size: 13.5px"),
+                "Reveal draws its chevron from the control font size, so that is where 36px becomes"
+                        + " 48.6px");
+        String close = declarationOf(".reveal .overlay .close");
+        assertTrue(close.contains("width: var(--target-floor)"));
+        assertTrue(close.contains("height: var(--target-floor)"));
+        assertTrue(
+                declarationOf(".reveal .resume-button").contains("min-height: var(--target-floor)"));
+
+        assertFalse(
+                deckStyle.contains("@media (max-width"),
+                "The target floor was scoped to narrow viewports once, which left a mouse and a"
+                        + " stylus a smaller target than a finger for no reason a reader could act on");
+    }
+
+    @Test
+    @DisplayName("the deck paints diagram type and connectors without removing the enumerated theme")
+    void theDeckPaintsDiagramTypeAndConnectorsWithoutRemovingTheEnumeratedTheme() {
+        assertTrue(deckStyle.contains("--diagram-label-size: 16px;"));
+        assertTrue(deckStyle.contains("--diagram-line: #666666;"));
+        assertTrue(deckStyle.contains("--diagram-line-weight: 2px;"));
+
+        // A label with no size of its own inherits the stage's 32px over boxes the library measured
+        // at 16, and the drawing then overflows its own shapes and is clipped by the frame.
+        assertTrue(
+                declarationOf(".reveal pre.mermaid svg text")
+                        .contains("font-size: var(--diagram-label-size) !important"));
+
+        // The library's own grey measures 2.85:1 against the white frame. The painted stroke reads
+        // 5.74:1. The theme variable the presentation rules enumerate stays declared where the
+        // library reads it, exactly as --blitzy-text-muted stays declared and colours no text.
+        assertTrue(
+                deckScript.contains("lineColor: \"#999999\""),
+                "The enumerated theme variable stays declared where the library reads it");
+        assertTrue(
+                declarationOf(".reveal pre.mermaid svg .flowchart-link")
+                        .contains("stroke: var(--diagram-line) !important"));
+        assertTrue(
+                declarationOf(".reveal pre.mermaid svg .edge-thickness-normal")
+                        .contains("stroke-width: var(--diagram-line-weight) !important"));
+        assertTrue(
+                declarationOf(".reveal pre.mermaid svg .marker")
+                        .contains("fill: var(--diagram-line) !important"));
+        assertTrue(
+                declarationOf(".reveal pre.mermaid svg .edge-thickness-invisible")
+                        .contains("stroke: none !important"),
+                "The invisible layout link the before-and-after figure separates its clusters with"
+                        + " has to stay invisible");
+
+        // A drawing whose stylesheet is not in effect is not recorded as drawn, so it is produced
+        // again rather than kept.
+        assertTrue(deckScript.contains("function hasPinnedLabels(node)"));
+        assertTrue(deckScript.contains("DIAGRAM_LABEL_SIZE = 16"));
+    }
+
+    @Test
+    @DisplayName("the deck announces its own state and reads a diagram by its alternative text")
+    void theDeckAnnouncesItsOwnStateAndReadsADiagramByItsAlternativeText() {
+        // Reveal reads a slide's text when the slide arrives, and on a diagram slide that reading was
+        // taken before the drawing existed: over a thousand characters of graph source, announced in
+        // place of the slide. The authored block is out of the accessibility tree until a drawing is
+        // in place, and the attribute comes off once one is.
+        assertEquals(
+                3,
+                occurrences(deckMarkup, "<pre class=\"mermaid\" aria-hidden=\"true\">"),
+                "Each diagram block holds either its own definition or a drawing, and neither belongs"
+                        + " in the reading of the slide, so the attribute stays for the block's whole"
+                        + " life");
+        assertFalse(
+                deckScript.contains("removeAttribute(\"aria-hidden\")"),
+                "Un-hiding the block puts the drawing back in the reading, and the reading then"
+                        + " harvests every painted shape label");
+
+        // A complex picture is described to a reader who cannot see it by a short name and a longer
+        // description in the text beside it. The library writes both into each drawing from the
+        // diagram's authored accessible name and description, and the module publishes them as text
+        // next to the frame.
+        assertTrue(deckScript.contains("function diagramAlternativeOf(drawing)"));
+        assertTrue(deckScript.contains("[\"title\", \"desc\"]"));
+        assertTrue(deckScript.contains("function publishDiagramAlternative(node)"));
+        assertTrue(deckScript.contains("published.className = \"diagram-alternative\""));
+        assertTrue(
+                declarationOf(".diagram-alternative").contains("clip-path: inset(50%)"),
+                "The description is read and never seen, so it is taken out of the painted layout"
+                        + " and not hidden, which would take it out of the accessibility tree too");
+
+        // Publishing the description in the document is what makes the announcement independent of
+        // who reads the slide and when. Rewriting reveal's line afterwards was tried and is a race
+        // that cannot be won on purpose: reveal registers its own write in an animation frame after
+        // the slide-changed handlers return, so a microtask is early and so is a frame requested from
+        // inside the handler. Measured on the first figure: 1,318 characters against 910.
+        assertTrue(deckScript.contains("function announceSlide(slide)"));
+        assertTrue(deckScript.contains("region.textContent = text"));
+        assertFalse(
+                deckScript.contains("announceSlide(event.currentSlide)"),
+                "Announcing from a reveal event is a race against reveal's own write; the published"
+                        + " description is what removes the race");
+        assertEquals(
+                1,
+                occurrences(deckScript, "announceSlide(slide);"),
+                "One caller, and it is the one moment reveal's own reading cannot have covered: the"
+                        + " drawing did not exist when that reading was taken");
+        assertTrue(
+                deckScript.contains("slide.classList.contains(\"present\")"),
+                "A live region says what is on screen, and every diagram is drawn once the load goes"
+                        + " idle, which runs this for slides the reader is not on");
+
+        // Pausing blanks the screen and resuming restores it, and reveal announces neither. The deck
+        // reports both through a region of its own rather than through the line reveal reserves for
+        // slide changes.
+        assertTrue(deckMarkup.contains("class=\"deck-status\" role=\"status\" aria-live=\"polite\""));
+        assertTrue(declarationOf(".deck-status").contains("clip-path: inset(50%)"));
+        assertTrue(deckScript.contains("Reveal.on(\"paused\""));
+        assertTrue(deckScript.contains("Reveal.on(\"resumed\""));
+        assertTrue(deckScript.contains("Presentation paused. The slide is hidden."));
+        assertTrue(deckScript.contains("Presentation resumed. The slide is showing again."));
+        assertTrue(deckScript.contains("aria-label\", \"Presentation paused\""));
+
+        // Reveal's shortcut panel dropped focus onto the body when it closed, and reveal ignores
+        // Escape entirely while the deck is paused, so the key that closes a dialog did nothing in
+        // that state. The handler runs in the capture phase to reach the key ahead of that gate.
+        assertTrue(deckScript.contains("function restoreHelpOpener()"));
+        assertTrue(deckScript.contains("opener.focus({ preventScroll: true })"));
+        assertTrue(
+                deckScript.contains(
+                        "document.addEventListener(\"keydown\", dismissHelpPanelOnEscape, true)"),
+                "Escape has to be answered ahead of reveal's paused-key gate");
+        assertTrue(deckScript.contains("Reveal.toggleHelp(false)"));
     }
 
     @Test
@@ -1780,7 +2013,7 @@ class PresentationAndProseContractTest {
      */
     private static int bodyWordCount(String slideBody) {
         String text = slideBody;
-        text = text.replaceAll("(?s)<pre class=\"mermaid\">.*?</pre>", " ");
+        text = MERMAID_BLOCK.matcher(text).replaceAll(" ");
         text = text.replaceAll("(?s)<span class=\"deck-slide-number\"[^>]*>.*?</span>", " ");
         text = TAG.matcher(text).replaceAll(" ").replace('\u00b7', ' ');
         int words = 0;
@@ -2343,6 +2576,16 @@ class PresentationAndProseContractTest {
 
     private static int occurrencesMatching(String source, String regex) {
         Matcher matcher = Pattern.compile(regex).matcher(source);
+        int count = 0;
+        while (matcher.find()) {
+            count++;
+        }
+        return count;
+    }
+
+    /** How many times an already-compiled pattern matches. */
+    private static int matchCount(Pattern pattern, String source) {
+        Matcher matcher = pattern.matcher(source);
         int count = 0;
         while (matcher.find()) {
             count++;

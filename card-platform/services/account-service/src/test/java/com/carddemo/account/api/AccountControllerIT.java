@@ -2,6 +2,7 @@ package com.carddemo.account.api;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -650,6 +651,70 @@ class AccountControllerIT {
                     () -> assertTrue(String.valueOf(events.get(0).get("payload"))
                                     .contains("BILLING_CYCLE_CLOSED"),
                             "the payload names the change a consumer routes on"));
+        }
+
+        /**
+         * Asserts an empty object closes the cycle exactly as an absent body does.
+         *
+         * <p>{@code src/main/resources/openapi.yaml} publishes the body as an empty object and the
+         * route declares it optional, so both forms describe the same request and both have to be
+         * accepted. The example in that document is {@code {}}, which is what this sends.
+         */
+        @Test
+        @DisplayName("an empty object closes the cycle, exactly as an absent body does")
+        void anEmptyObjectClosesTheCycle() {
+            givenCycleAccumulators(CYCLE_CREDIT_BEFORE_CLOSE, CYCLE_DEBIT_BEFORE_CLOSE);
+
+            HttpResponse<String> response = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
+                    "/accounts/" + SEEDED_ACCOUNT_ID + "/cycle-close")
+                    .header(CONTENT_TYPE_HEADER, JSON_MEDIA_TYPE)
+                    .POST(HttpRequest.BodyPublishers.ofString("{}"))
+                    .build());
+
+            assertEquals(200, response.statusCode(), response.body());
+            assertAll(
+                    () -> assertEquals(new BigDecimal(ZERO_AT_SCALE_TWO), storedCycleCredit(),
+                            "MOVE 0 TO ACCT-CURR-CYC-CREDIT at app/cbl/CBACT04C.cbl:L353"),
+                    () -> assertEquals(new BigDecimal(ZERO_AT_SCALE_TWO), storedCycleDebit(),
+                            "MOVE 0 TO ACCT-CURR-CYC-DEBIT at app/cbl/CBACT04C.cbl:L354"),
+                    () -> assertEquals(1, storedEvents().size(),
+                            "one mutation stores exactly one event row"));
+        }
+
+        /**
+         * Asserts a body carrying a property this route does not declare is refused, and nothing
+         * moves.
+         *
+         * <p>This is the finding. The published schema declares
+         * {@code additionalProperties: false}, the route read no body at all, and a call carrying
+         * any property was answered 200 with both accumulators zeroed — a request describing an
+         * operation this service does not perform, applied anyway. Those accumulators are what the
+         * credit-limit rule at {@code app/cbl/CBTRN02C.cbl:L403-L413} tests, so the refusal has to
+         * come before the write rather than after it.
+         */
+        @Test
+        @DisplayName("a body carrying an undeclared property is refused, and no accumulator moves")
+        void anUndeclaredPropertyIsRefusedAndNothingMoves() {
+            givenCycleAccumulators(CYCLE_CREDIT_BEFORE_CLOSE, CYCLE_DEBIT_BEFORE_CLOSE);
+
+            HttpResponse<String> response = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
+                    "/accounts/" + SEEDED_ACCOUNT_ID + "/cycle-close")
+                    .header(CONTENT_TYPE_HEADER, JSON_MEDIA_TYPE)
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"unexpected\":true}"))
+                    .build());
+
+            assertEquals(400, response.statusCode(),
+                    "the published schema declares additionalProperties: false: "
+                            + response.body());
+            assertAll(
+                    () -> assertEquals(new BigDecimal(CYCLE_CREDIT_BEFORE_CLOSE),
+                            storedCycleCredit(),
+                            "a refused body reaches no domain service"),
+                    () -> assertEquals(new BigDecimal(CYCLE_DEBIT_BEFORE_CLOSE), storedCycleDebit(),
+                            "and the debit accumulator stands as it was"),
+                    () -> assertEquals(0, storedEvents().size(), "and stores no event"),
+                    () -> assertFalse(response.body().contains("unexpected"),
+                            "no submitted value reaches the refusal body"));
         }
 
         @Test

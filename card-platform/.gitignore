@@ -24,10 +24,13 @@
 /.demo-credentials.*
 
 # A rendered Kubernetes Secret. 31-secret.example.yaml is the template and stays
-# tracked; a copy edited with a real value must not follow it into history.
+# tracked; a copy edited with a real value must not follow it into history. The overlay tree
+# carries no template, and the same guard covers it because the encryption overlay is applied
+# by the same two-step sequence that applies a filled-in Secret.
 /deploy/k8s/31-secret.yaml
 /deploy/k8s/*-secret.yaml
 !/deploy/k8s/31-secret.example.yaml
+/deploy/overlays/**/*-secret.yaml
 
 # Maven build output. Every module writes one of these.
 target/

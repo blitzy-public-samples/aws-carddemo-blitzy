@@ -52,6 +52,9 @@ class KubernetesDeploymentContractTest {
             "44-account-service.yaml",
             "45-card-service.yaml");
 
+    /** The class the encryption overlay binds, which is the whole of what that overlay does. */
+    private static final String ENCRYPTED_STORAGE_CLASS = "carddemo-encrypted";
+
     private static final Pattern PLATFORM_VERSION = Pattern.compile(
             "<artifactId>card-platform</artifactId>\\s*<version>([^<]+)</version>");
 
@@ -472,8 +475,7 @@ class KubernetesDeploymentContractTest {
     @Test
     @DisplayName("the encrypted-storage overlay patches by kind and lists the base, not the manifests")
     void theEncryptedStorageOverlayPatchesByKind() {
-        Path overlay = kubernetesDirectory()
-                .resolve("overlays/encrypted-storage/kustomization.yaml");
+        Path overlay = overlayDirectory().resolve("kustomization.yaml");
         assertThat(Files.isRegularFile(overlay))
                 .as("the annotation on both claims names this file, so it has to exist")
                 .isTrue();
@@ -483,7 +485,7 @@ class KubernetesDeploymentContractTest {
                 new SafeConstructor(new LoaderOptions())).load(text));
         assertThat(at(kustomization, "resources"))
                 .as("the overlay applies the base folder, so it cannot fall behind a new manifest")
-                .isEqualTo(List.of("../.."));
+                .isEqualTo(List.of("../../k8s"));
         assertThat(text)
                 .as("patching by kind covers a third claim without an edit here")
                 .contains("kind: PersistentVolumeClaim")
@@ -503,6 +505,105 @@ class KubernetesDeploymentContractTest {
                 .as("the base must not include its own overlay, or there is no unencrypted path for"
                         + " the documented local run")
                 .doesNotContain("overlays");
+    }
+
+    /**
+     * Every resource path the overlay names resolves outside the overlay's own tree.
+     *
+     * <p>This is the one structural rule Kustomize enforces that a reader cannot see by reading the
+     * file. A root may not name a resource path resolving to a directory that contains that root:
+     * Kustomize calls it a cycle and refuses to build anything, so {@code kubectl kustomize} and
+     * {@code kubectl apply -k} both exit 1 before a single manifest is read. An overlay stored at
+     * {@code deploy/k8s/overlays/encrypted-storage} naming {@code ../..} is exactly that shape, and
+     * it is unbuildable however correct the patch below it is. Naming the base manifests one file at
+     * a time instead is refused by the load restrictor, because each path leaves the overlay root.
+     *
+     * <p>The overlay therefore stands beside the base rather than under it, and this test is what
+     * keeps it there. It asserts the invariant rather than the path, so a future move to a third
+     * location passes as long as the new location is still not inside a directory it names. The
+     * failure it prevents is silent in review and total at apply time.
+     */
+    @Test
+    @DisplayName("no resource path the overlay names contains the overlay, which Kustomize calls a cycle")
+    void theOverlayIsNotInsideAnyBaseItNames() {
+        Path overlay = overlayDirectory().toAbsolutePath().normalize();
+        Map<String, Object> kustomization = map(new Yaml(new SafeConstructor(new LoaderOptions()))
+                .load(read(overlay.resolve("kustomization.yaml"))));
+
+        List<Object> declared = list(at(kustomization, "resources"));
+        assertThat(declared)
+                .as("an overlay declaring no resources patches nothing, so the sweep below would"
+                        + " pass by being empty")
+                .isNotEmpty();
+
+        for (Object entry : declared) {
+            Path base = overlay.resolve(String.valueOf(entry)).normalize();
+            assertThat(Files.isDirectory(base) || Files.isRegularFile(base))
+                    .as("the overlay names %s, which has to exist for the overlay to build", base)
+                    .isTrue();
+            assertThat(overlay.startsWith(base))
+                    .as("Kustomize refuses a root inside a base it names: %s contains %s, so"
+                            + " `kubectl kustomize` would exit 1 with a cycle rather than render",
+                            base, overlay)
+                    .isFalse();
+            if (Files.isDirectory(base)) {
+                assertThat(Files.isRegularFile(base.resolve("kustomization.yaml")))
+                        .as("a directory named as a resource has to carry its own kustomization,"
+                                + " or Kustomize refuses it: %s", base)
+                        .isTrue();
+            } else {
+                assertThat(base.startsWith(overlay))
+                        .as("the load restrictor refuses a plain file above the overlay root, which"
+                                + " is why the base is named as a directory: %s", base)
+                        .isTrue();
+            }
+        }
+
+        assertThat(overlay.startsWith(kubernetesDirectory().toAbsolutePath().normalize()))
+                .as("and the overlay must stay outside the base folder, which is the concrete form"
+                        + " of the same rule")
+                .isFalse();
+    }
+
+    /**
+     * The overlay's patch reaches something the base declares, so the render is not a silent no-op.
+     *
+     * <p>A patch is matched against what the base produced. One naming a {@code kind} no base
+     * manifest declares renders cleanly and changes nothing, which is the failure mode a reader
+     * cannot see: the apply succeeds, the claims bind on the cluster default, and the volume holding
+     * fifty card numbers is unencrypted with nothing reporting it. This asserts the target kind is
+     * one the base really carries, and that the patch names the field it means to add.
+     */
+    @Test
+    @DisplayName("the overlay's patch target is a kind the base declares, so it is not a no-op")
+    void theOverlayPatchReachesAKindTheBaseDeclares() {
+        Map<String, Object> kustomization = map(new Yaml(new SafeConstructor(new LoaderOptions()))
+                .load(read(overlayDirectory().resolve("kustomization.yaml"))));
+
+        Set<String> baseKinds = new LinkedHashSet<>();
+        for (String manifest : manifestFiles()) {
+            for (Map<String, Object> resource : resources(manifest)) {
+                baseKinds.add(String.valueOf(resource.get("kind")));
+            }
+        }
+
+        List<Object> patches = list(at(kustomization, "patches"));
+        assertThat(patches)
+                .as("the overlay exists to patch, so an empty list would make it a copy of the base")
+                .isNotEmpty();
+
+        for (Object entry : patches) {
+            Map<String, Object> patch = map(entry);
+            String kind = String.valueOf(at(patch, "target", "kind"));
+            assertThat(baseKinds)
+                    .as("the overlay patches %s, which no manifest of the base declares, so the"
+                            + " render would succeed and change nothing", kind)
+                    .contains(kind);
+            assertThat(String.valueOf(patch.get("patch")))
+                    .as("and the patch has to name the field it adds")
+                    .contains("/spec/storageClassName")
+                    .contains(ENCRYPTED_STORAGE_CLASS);
+        }
     }
 
     /** Every manifest of the base folder, which excludes the overlay directory below it. */
@@ -639,6 +740,15 @@ class KubernetesDeploymentContractTest {
 
     private static Path kubernetesDirectory() {
         return repositoryRoot().resolve("card-platform/deploy/k8s");
+    }
+
+    /**
+     * The encryption overlay, which stands beside the base folder rather than under it. Kustomize
+     * refuses a root contained by a base it names, so this location is a requirement and not a
+     * layout preference. {@link #theOverlayIsNotInsideAnyBaseItNames()} holds it.
+     */
+    private static Path overlayDirectory() {
+        return repositoryRoot().resolve("card-platform/deploy/overlays/encrypted-storage");
     }
 
     private static Path repositoryRoot() {

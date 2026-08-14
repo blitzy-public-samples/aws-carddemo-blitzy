@@ -1203,25 +1203,41 @@ identifier at all, so `account_customer_link` is the hop from `customer_id` to `
 service is the only store holding a card number, so it is the hop from `account_id` to a card token.
 `notification_service` is keyed by that token and holds no card number.
 
+**How every statement below is run.** Docker is the only prerequisite, and each statement runs from
+`card-platform/`. The `psql` client lives in the `postgres` container and not on the host, so each
+statement runs there through `docker compose exec`, which the
+[onboarding prerequisites](onboarding.md) already cover. The container carries `POSTGRES_USER` and
+`POSTGRES_PASSWORD`, so the credentials are read where they already are rather than typed on a
+command line or waited for at a prompt. The statement arrives on standard input as a here-document:
+the operator's own variables expand on the host, and a quoted SQL literal needs no escaping.
+
 ```bash
 # 1. The customer, by name, in the account database. This is the only lookup by name on the platform.
-psql -d carddemo_account -c \
-  "SELECT customer_id FROM account_service.customer
-     WHERE upper(btrim(last_name)) = upper('$LAST_NAME')"
+docker compose exec -T postgres sh -lc \
+  'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d carddemo_account -At' <<SQL
+SELECT customer_id FROM account_service.customer
+  WHERE upper(btrim(last_name)) = upper('$LAST_NAME');
+SQL
 
 # 2. Every account of that customer.
-psql -d carddemo_account -c \
-  "SELECT account_id FROM account_service.account_customer_link WHERE customer_id = '$CUSTOMER_ID'"
+docker compose exec -T postgres sh -lc \
+  'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d carddemo_account -At' <<SQL
+SELECT account_id FROM account_service.account_customer_link WHERE customer_id = '$CUSTOMER_ID';
+SQL
 
 # 3. Every card and card token of those accounts, in the card database.
-psql -d carddemo_card -c \
-  "SELECT card_number, card_token FROM card_service.card WHERE account_id = ANY('{$ACCOUNT_IDS}')"
+docker compose exec -T postgres sh -lc \
+  'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d carddemo_card -At' <<SQL
+SELECT card_number, card_token FROM card_service.card WHERE account_id = ANY('{$ACCOUNT_IDS}');
+SQL
 
 # 4. A rotated card token names the same card under an earlier key, and another store may still hold
 #    it. Include both, or a history row survives an erasure keyed on the current token.
-psql -d carddemo_card -c \
-  "SELECT previous_card_token FROM card_service.card_token_rotation_mapping
-     WHERE card_token = ANY('{$CARD_TOKENS}')"
+docker compose exec -T postgres sh -lc \
+  'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d carddemo_card -At' <<SQL
+SELECT previous_card_token FROM card_service.card_token_rotation_mapping
+  WHERE card_token = ANY('{$CARD_TOKENS}');
+SQL
 ```
 
 ### Export
@@ -1230,8 +1246,12 @@ An export answers with every row the inventory names, keyed by the identifiers s
 produced. Four databases means four connections, and the exports are independent of each other.
 
 ```bash
-# The account database: the person, the accounts, the pairing.
-psql -d carddemo_account -c "\copy (SELECT * FROM account_service.customer WHERE customer_id = '$CUSTOMER_ID') TO 'customer.csv' CSV HEADER"
+# The account database: the person, the accounts, the pairing. TO STDOUT with a redirect on the host
+# writes the file on the operator's machine; \copy to a filename would write it inside the container.
+docker compose exec -T postgres sh -lc \
+  'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d carddemo_account' <<SQL > customer.csv
+\copy (SELECT * FROM account_service.customer WHERE customer_id = '$CUSTOMER_ID') TO STDOUT CSV HEADER
+SQL
 # The card database, the authorization database, the ledger database, the fraud database and the
 # notification database follow the same shape, each filtered by account_id or by card token.
 ```

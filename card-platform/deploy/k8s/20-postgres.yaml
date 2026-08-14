@@ -422,7 +422,7 @@ spec:
 # cluster already has and works with no edit. A deployment holding anything other than the synthetic
 # fixtures binds an encrypted class instead, by applying the overlay rather than this file:
 #
-#   kubectl apply -k card-platform/deploy/k8s/overlays/encrypted-storage
+#   kubectl apply -k card-platform/deploy/overlays/encrypted-storage
 #
 # The overlay sets storageClassName on this claim and on kafka-data in one place. A claim's class
 # cannot change once it is bound, so the overlay has to be applied before the first apply of this
@@ -436,7 +436,7 @@ metadata:
   annotations:
     carddemo.io/requires-encryption-at-rest: "true"
     carddemo.io/data-classification: "cardholder-and-customer"
-    carddemo.io/encryption-overlay: "card-platform/deploy/k8s/overlays/encrypted-storage"
+    carddemo.io/encryption-overlay: "card-platform/deploy/overlays/encrypted-storage"
   labels:
     app.kubernetes.io/name: postgres
     app.kubernetes.io/component: database

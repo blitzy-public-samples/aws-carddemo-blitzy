@@ -277,6 +277,16 @@ public class CardController {
      * filter of the source screen is absent here. A card filter in a query string would carry a
      * Primary Account Number.
      *
+     * <p>The account is required by its constraint rather than by its binding. Declared required at
+     * the binding, an absent parameter failed before any constraint ran, so the one text the
+     * published contract names for that case, {@link #ACCOUNT_ID_ABSENT_MESSAGE}, could never
+     * reach a caller: the framework answered a fixed sentence of its own instead. Read as optional
+     * and refused by {@code @NotBlank}, an absent account now reads
+     * {@value #ACCOUNT_ID_ABSENT_MESSAGE}, which is what
+     * {@code src/main/resources/openapi.yaml} publishes and what
+     * {@code app/cbl/COCRDLIC.cbl:L1129-L1131} prompts for. No page is read either way: method
+     * validation runs before this body does.
+     *
      * <p>All four request values are constrained here, so a value that misses its constraint is
      * refused by the framework and answered {@code 400} by {@code api/CardApiExceptionHandler}. The
      * row count carries {@value #MIN_PAGE_SIZE} through {@value #MAX_PAGE_SIZE}, the same range
@@ -300,7 +310,7 @@ public class CardController {
      */
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     public CardListResponse listCards(
-            @RequestParam(name = ACCOUNT_ID_PARAMETER)
+            @RequestParam(name = ACCOUNT_ID_PARAMETER, required = false)
             @NotBlank(message = ACCOUNT_ID_ABSENT_MESSAGE)
             @Pattern(regexp = ACCOUNT_ID_PATTERN, message = ACCOUNT_ID_MALFORMED_MESSAGE)
             @Pattern(regexp = ACCOUNT_ID_PRESENT_PATTERN, message = ACCOUNT_ID_ABSENT_MESSAGE)

@@ -21,15 +21,23 @@
 # How a real deployment pins these. Publish the six images to a registry the deployment
 # owns, then set each entry below to that registry and to the digest the push reported.
 # `newTag` and `digest` are mutually exclusive; replacing one with the other is the whole
-# edit:
+# edit, and it is an edit to this file:
+#
+#   - name: carddemo/authorization-service
+#     newName: registry.example.internal/carddemo/authorization-service
+#     digest: sha256:<digest>
+#
+# Repeat per service, drop the imagePullPolicy: Never patch below so the digest is pulled
+# and verified, then read the result back with `kubectl kustomize card-platform/deploy/k8s`
+# before applying with `kubectl apply -k card-platform/deploy/k8s`. A digest reference is
+# content-addressed: a node that resolves it either gets those exact bytes or fails.
+#
+# An operator holding the standalone kustomize binary can make the same edit in one command,
+# which `kubectl` cannot: it embeds the renderer but not the `edit` subcommand, so the line
+# below needs a tool nothing else here does.
 #
 #   kustomize edit set image \
 #     carddemo/authorization-service=registry.example.internal/carddemo/authorization-service@sha256:<digest>
-#
-# Repeat per service, drop the imagePullPolicy: Never patch below so the digest is pulled
-# and verified, and apply with `kubectl apply -k card-platform/deploy/k8s`. A digest
-# reference is content-addressed: a node that resolves it either gets those exact bytes or
-# fails.
 #
 # What this file does not do. It does not publish an image, sign one, or verify a
 # signature. card-platform/deploy/k8s/README.md states what is verified and what is not,

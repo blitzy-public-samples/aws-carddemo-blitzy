@@ -220,9 +220,17 @@ class CardRepositoryIT {
      * {@code card} and {@code card_xref} comments, one of them pointing at the subject-request
      * procedure. It declares no table, no column, no index and no constraint, so every assertion in
      * this class reads exactly what it read at version 10.
+     *
+     * <p>Version 12 is {@code V12__encryption_overlay_locator.sql}. It restates the
+     * {@code card_verification_value} comment with the current location of the encryption overlay
+     * that delivers the first of version 11's four controls, which moved out of {@code deploy/k8s}
+     * because Kustomize refuses an overlay contained by a base it names. Version 11 is not edited to
+     * follow it, because Flyway compares the checksum of an applied file at every start. It declares
+     * no table, no column, no index and no constraint, so every assertion in this class reads exactly
+     * what it read at version 11.
      */
     private static final List<String> MIGRATION_VERSIONS =
-            List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11");
+            List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12");
 
     /**
      * Card number of the row a test inserts to place a second card on one account.

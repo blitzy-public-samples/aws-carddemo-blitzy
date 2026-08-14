@@ -18,6 +18,7 @@ import com.carddemo.account.api.dto.AccountView;
 import com.carddemo.account.api.dto.CustomerDataRequest;
 import com.carddemo.account.api.dto.CustomerReadResponse;
 import com.carddemo.account.api.dto.CustomerView;
+import com.carddemo.account.api.dto.CycleCloseRequest;
 import com.carddemo.account.api.dto.CycleCloseResponse;
 import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.authorization.api.AuthorizationRequest;
@@ -164,12 +165,12 @@ class ApiSurfaceSecurityContractTest {
 
     /**
      * Source files making up the Application Programming Interface surface of the three modules
-     * this class classifies: the account, authorization and card services. Eighteen of the
-     * twenty-eight declare a record carrying the name of their file; the other ten are the five
+     * this class classifies: the account, authorization and card services. Nineteen of the
+     * twenty-nine declare a record carrying the name of their file; the other ten are the five
      * endpoint files those modules answer requests on, the three handlers that answer a rejected
      * request, the account record mapper and the card message inventory.
      */
-    private static final int API_SOURCE_FILE_COUNT = 28;
+    private static final int API_SOURCE_FILE_COUNT = 29;
 
     /** Components the twelve response types declare between them. */
     private static final int RESPONSE_COMPONENT_COUNT = 68;
@@ -280,11 +281,21 @@ class ApiSurfaceSecurityContractTest {
             CardUpdateResponse.class,
             CardUpdateResponse.RefreshedCard.class);
 
-    /** The five types a service accepts as a request body. */
+    /**
+     * The six types a service accepts as a request body.
+     *
+     * <p>{@code CycleCloseRequest} declares no component, and that is the point of it. The cycle
+     * close takes no input, and its published schema says so with {@code additionalProperties:
+     * false}; binding an empty record is what applies that schema, so a request naming a property is
+     * refused instead of read and discarded. It therefore carries no cardholder field because it
+     * carries no field at all, and it is listed here so that the surface count and the record
+     * classification stay closed over it.</p>
+     */
     private static final List<Class<?>> REQUEST_TYPES = List.of(
             AccountDataRequest.class,
             AccountUpdateRequest.class,
             CustomerDataRequest.class,
+            CycleCloseRequest.class,
             AuthorizationRequest.class,
             CardUpdateRequest.class);
 
@@ -1357,8 +1368,8 @@ class ApiSurfaceSecurityContractTest {
          * which the plan requires for the card list, the card view and the card update; and the card
          * message inventory.
          *
-         * <p>Eighteen files declare a record and eighteen record names come out of them, one name per
-         * file. {@code ApiErrorResponse} is declared once across the three modules, in the card
+         * <p>Nineteen files declare a record and nineteen record names come out of them, one name
+         * per file. {@code ApiErrorResponse} is declared once across the three modules, in the card
          * service, and that declaration is the shape {@code ErrorBodyExposure} measures. The
          * authorization service declares its error body as a record nested inside
          * {@code GlobalExceptionHandler}, so it carries no file of its own and is classified with
@@ -1371,8 +1382,8 @@ class ApiSurfaceSecurityContractTest {
          * substitutes for the other.</p>
          */
         @Test
-        @DisplayName("the surface is twenty-eight files and every record on it is classified")
-        void theApiSurfaceIsTwentyEightFilesAndEveryRecordIsClassified() {
+        @DisplayName("the surface is twenty-nine files and every record on it is classified")
+        void theApiSurfaceIsTwentyNineFilesAndEveryRecordIsClassified() {
             Map<String, String> apiSources = new LinkedHashMap<>();
             readSourcesBelow(REPOSITORY_ROOT.get().resolve(SERVICES_DIRECTORY)
                     .resolve("account-service").resolve(MAIN_SOURCE_PATH)
@@ -1422,7 +1433,7 @@ class ApiSurfaceSecurityContractTest {
                             + "endpoint, the three handlers that answer a rejected request, and "
                             + "the message inventory");
             assertEquals(14, RESPONSE_TYPES.size(), "fourteen types leave as a response body");
-            assertEquals(5, REQUEST_TYPES.size(), "five types enter as a request body");
+            assertEquals(6, REQUEST_TYPES.size(), "six types enter as a request body");
         }
 
         /** Every declared component is classified, and every classified component is declared. */

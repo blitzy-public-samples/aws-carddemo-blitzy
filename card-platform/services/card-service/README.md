@@ -292,11 +292,16 @@ docker compose logs card-service | grep 'Rotated'
 **The three re-key statements.** Export the mapping of that run, then apply it to each store that holds a token. Each statement is idempotent: it matches only rows still carrying a previous token, so running it twice changes nothing the second time.
 
 ```bash
-# Export one run's mapping. ROTATION is the identifier the WARN line reported.
-docker compose exec -T postgres psql -U postgres -d carddemo_card -c \
-  "\\copy (SELECT previous_card_token, card_token FROM card_service.card_token_rotation_mapping \
-            WHERE rotation_id = '$ROTATION' ORDER BY previous_card_token) \
-   TO STDOUT WITH CSV HEADER" > /tmp/card-token-rotation.csv
+# Export one run's mapping, from card-platform/. ROTATION is the identifier the WARN line reported.
+# The credentials are the container's own POSTGRES_USER and POSTGRES_PASSWORD, so nothing is typed on
+# the command line and no password prompt is waited for. The statement arrives on standard input, so
+# ROTATION expands on the host and the SQL literal around it needs no escaping. \copy is a psql
+# meta-command and has to stay on one line, which is why this one is not wrapped.
+docker compose exec -T postgres sh -lc \
+  'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d carddemo_card' \
+  <<SQL > /tmp/card-token-rotation.csv
+\copy (SELECT previous_card_token, card_token FROM card_service.card_token_rotation_mapping WHERE rotation_id = '$ROTATION' ORDER BY previous_card_token) TO STDOUT WITH CSV HEADER
+SQL
 ```
 
 ```sql
@@ -337,7 +342,7 @@ The review's second route is the one taken: the column stays under a formal exce
 
 | Control | What it is | What holds it |
 | :--- | :--- | :--- |
-| Encryption at rest | The volume holding this schema is encrypted, so a copied disk or an unprotected snapshot discloses nothing | Both claims in `card-platform/deploy/k8s` declare the requirement, `deploy/k8s/overlays/encrypted-storage` binds an encrypted class in one command, and `deploy/k8s/README.md` carries key ownership and the restore obligation |
+| Encryption at rest | The volume holding this schema is encrypted, so a copied disk or an unprotected snapshot discloses nothing | Both claims in `card-platform/deploy/k8s` declare the requirement, `deploy/overlays/encrypted-storage` binds an encrypted class in one command, and `deploy/k8s/README.md` carries key ownership and the restore obligation |
 | Minimal access | Nothing reads the value. `entity/CardEntity` declares no accessor, carries `@JsonIgnore` on the field, and prints a withheld marker in `toString`. No query, request body, response body, event schema or configuration file names the column | `CardholderDataExposureTest` reads every exit reflectively, so an accessor added later fails the build |
 | Audit | Both statements above are asserted rather than described, on each side of the service boundary | `CardholderDataExposureTest` inside this service, `SubjectDataGovernanceContractTest` in `equivalence-tests` for the published exception, the reader inventory and the procedure below |
 | Destruction | A published procedure a deployment runs when it answers the open question yes | The procedure below, held to the delivered tree by `SubjectDataGovernanceContractTest` |
@@ -348,12 +353,14 @@ The review's second route is the one taken: the column stays under a formal exce
 
 ```sql
 -- 1. The migration. services/card-service/src/main/resources/db/migration/
---    V12__card_verification_value_dropped.sql
+--    V13__card_verification_value_dropped.sql
 ALTER TABLE card DROP CONSTRAINT ck_card_verification_value_digits;
 ALTER TABLE card DROP COLUMN card_verification_value;
 -- Then restate COMMENT ON TABLE card without the exception paragraph, and state that the value
--- was dropped on a named date by a named decision. Do not edit V1, V2 or V11: Flyway compares a
+-- was dropped on a named date by a named decision. Do not edit V1, V2, V11 or V12: Flyway compares a
 -- checksum on every start, so an edit to an applied file refuses to start against an existing volume.
+-- V13 is the next unused version because V12 is the locator correction described in the table below,
+-- and a version below the highest applied one is refused as out of order.
 ```
 
 1. **`entity/CardEntity`.** Remove the field, its `@JsonIgnore`, its `@Column`, the constructor parameter, the width and digit guards over it, and its `toString` component. `applyUpdate` never touched it, so no update path changes.
@@ -517,7 +524,7 @@ the card file at all.
 
 The Compose file sets these properties, and each one is overridable: `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`, `SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA`, `SPRING_FLYWAY_SCHEMAS`, and `SPRING_KAFKA_BOOTSTRAP_SERVERS`.
 
-Flyway owns schema creation and runs eleven migrations on every start, in this order:
+Flyway owns schema creation and runs twelve migrations on every start, in this order:
 
 | Migration | What it does |
 | :--- | :--- |
@@ -532,6 +539,7 @@ Flyway owns schema creation and runs eleven migrations on every start, in this o
 | `V9__processed_event_claims_are_permanent.sql` | Withdraws the retention horizon of `processed_event` and drops `ix_processed_event_processed_at` with it. The 720-hour horizon bounded how long the broker could redeliver a record and said nothing about how long the cross-reference replica row a claim guards stand, so a record archived, restored or deliberately replayed after it was new to the guard and applied twice. Nothing removes a claim now, and nothing bounds the table's growth either — the partitioning work a deployment measuring real volumes would want is in `card-platform/docs/suggested-next-tasks.md` |
 | `V10__card_token_version_and_rotation.sql` | Records the card-token version and the provenance of every stored token, and adds the audit and mapping tables a rotation writes. `card_token_version` names the version the token was taken under, and `card_token_provenance` separates a seeded literal from a token this deployment derived, which is what lets `CardTokenReconciler` re-derive the first without being asked and refuse the second. `card_token_rotation` records one run and `card_token_rotation_mapping` records one previous-to-current token pair per card, which is what the notification read model, the authorization decision diagnostics and every granted `SCOPE_CARD` authority are re-keyed from. Neither table holds a card number or key material. |
 | `V11__card_verification_value_exception.sql` | Records the formal exception under which this schema keeps `card.card_verification_value`, and points the `card` and `card_xref` comments at the procedure that now exists. A security review asked for the column, its mapping and its fifty seeded values to be dropped; Agent Action Plan sections 0.4.1 and 0.6.4 require this service to store the value and never emit it, and 0.2.2 excludes the controls that would remove it, so the review's second route is taken. The four compensating controls are encryption at rest, no reader anywhere, build-enforced audit of both, and the destruction procedure in this README under "Stored card verification value". Declares no table, column, index or row |
+| `V12__encryption_overlay_locator.sql` | Restates the `card_verification_value` comment with the current locator of the encryption overlay that delivers the first of `V11`'s four controls. `V11` cited it under `deploy/k8s/overlays/encrypted-storage`, where it stood when `V11` was applied; it now stands at `deploy/overlays/encrypted-storage`, beside the base rather than under it, because Kustomize refuses a root contained by a base it names and an overlay inside `deploy/k8s` therefore could not render at all. Every other sentence `V11` wrote about the column is carried across word for word. Declares no table, column, index or row |
 
 This module ships no `db/demo` overlay. The demo expiry extension exists only for the account and authorization schemas, because reason 0103 reads an account expiry and nothing reads a card expiry.
 

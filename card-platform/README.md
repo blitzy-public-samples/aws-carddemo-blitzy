@@ -320,7 +320,7 @@ What bounds them is the binding rather than a promise. Every published port name
 
 The demonstration uses synthetic repository fixtures. Do not expose the Compose ports or load real cardholder data. A host shared with an untrusted account is outside what the posture covers, and so is a second person on the same bridge. Either case wants the Kubernetes path, whose three transports are all encrypted: `SASL_SSL` to the broker, `sslmode=verify-full` to the database, and Transport Layer Security on both ports of every service.
 
-Storage there is not. Neither `PersistentVolumeClaim` names a storage class, so encryption at rest needs the `deploy/k8s/overlays/encrypted-storage` overlay and a class whose provisioner encrypts. The key policy behind that class is the operator's to choose and rotate.
+Storage there is not. Neither `PersistentVolumeClaim` names a storage class, so encryption at rest needs the `deploy/overlays/encrypted-storage` overlay and a class whose provisioner encrypts. The key policy behind that class is the operator's to choose and rotate.
 
 A `pg_dump` backup is plaintext wherever it lands, and nothing here encrypts or verifies one. [deploy/k8s/README.md](deploy/k8s/README.md) states what the operator owns. An authenticated Transport Layer Security profile for Compose is designed and not delivered, and [Suggested Next Tasks](docs/suggested-next-tasks.md) carries both procedures.
 
@@ -560,7 +560,7 @@ The delivered suite includes:
 - truncation toward zero;
 - fixture census, identifier fidelity, and card seed checks.
 
-The published run reports 229 Failsafe equivalence tests and 581 unit or contract tests, with zero failures. Both figures are measured rather than asserted: run `scripts/check-published-test-counts.sh` after `mvn verify` and it compares every published count against the reports that run wrote. See [Equivalence Results](docs/equivalence-results.md).
+The published run reports 229 Failsafe equivalence tests and 587 unit or contract tests, with zero failures. Both figures are measured rather than asserted: run `scripts/check-published-test-counts.sh` after `mvn verify` and it compares every published count against the reports that run wrote. See [Equivalence Results](docs/equivalence-results.md).
 
 Interest is verified but not migrated. `BillingCycleService` reproduces only the two accumulator resets at `app/cbl/CBACT04C.cbl:L353-L354`.
 

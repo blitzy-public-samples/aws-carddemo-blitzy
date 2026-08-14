@@ -13,6 +13,16 @@
 # resource list is the base folder rather than a second copy of the eleven manifests, so this file
 # cannot go stale when a manifest is added or renamed.
 #
+# What Kustomize requires of this folder's location. It refuses a resource path resolving to a
+# directory that contains the root being built, and it calls that a cycle. An overlay stored at
+# deploy/k8s/overlays/encrypted-storage naming `../..` is that shape, so `kubectl kustomize` exits 1
+# before reading a single manifest. Listing the base manifests one file at a time is refused as well,
+# by the load restrictor, because each path leaves the overlay's own tree. This folder therefore sits
+# beside deploy/k8s and names it as one entry.
+# equivalence-tests/KubernetesDeploymentContractTest fails the build if it moves back under the base.
+# Design decisions: card-platform/docs/decision-log.md, under
+# "Where the encryption overlay stands, and what Kustomize allows".
+#
 # What an operator does with it. Two steps, in this order, and the first is not optional.
 #
 #   1. Provide a StorageClass named below whose provisioner encrypts at rest, or change the name
@@ -25,7 +35,11 @@
 #
 #        kubectl apply -f card-platform/deploy/k8s/00-namespace.yaml
 #        kubectl apply -f <your filled-in copy of 31-secret.example.yaml>
-#        kubectl apply -k card-platform/deploy/k8s/overlays/encrypted-storage
+#        kubectl apply -k card-platform/deploy/overlays/encrypted-storage
+#
+#      Read what it produces before applying it, which needs no cluster:
+#
+#        kubectl kustomize card-platform/deploy/overlays/encrypted-storage
 #
 # A claim's storage class cannot change after it is bound, so this has to happen before the first
 # apply of the base. A cluster that already bound the claims has to have them deleted, which deletes
@@ -45,9 +59,10 @@ kind: Kustomization
 namespace: carddemo
 
 # The base folder, which carries its own kustomization: the eleven manifests minus the Secret
-# template, and the six platform image references.
+# template, and the six platform image references. It is a sibling of this folder rather than an
+# ancestor, which is what makes one entry legal here.
 resources:
-  - ../..
+  - ../../k8s
 
 # Both claims, patched by kind rather than by name, so a third claim added to the base is encrypted
 # by this overlay without an edit here.

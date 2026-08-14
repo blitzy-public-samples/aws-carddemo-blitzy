@@ -81,10 +81,17 @@ public record ApiProblem(String type, String title, int status, String detail,
     /** Detail of a request naming a row this service does not hold. */
     public static final String NOT_FOUND_DETAIL = "This service holds no record for that request.";
 
-    /** Detail of a request whose body could not be read at all. */
+    /**
+     * Detail of a request whose body could not be read at all.
+     *
+     * <p>The text names no route, because two routes reach it: the account update, whose body is
+     * one update document, and the cycle close, whose body is an empty object. It named the update
+     * alone while the cycle close read no body at all, and a caller that sent an undeclared
+     * property to the cycle close would have read a sentence about an operation it had not called.
+     */
     public static final String MALFORMED_REQUEST_DETAIL =
-            "The request body holds one account update in JavaScript Object Notation (JSON) and"
-                    + " could not be read as one.";
+            "The request body could not be read as the document this route declares in JavaScript"
+                    + " Object Notation (JSON).";
 
     /** Detail of a fault inside this service. */
     public static final String INTERNAL_FAILURE_DETAIL =

@@ -494,14 +494,21 @@ paths:
       requestBody:
         required: false
         description: >-
-          No body is read. The media type is the requirement; the body is empty. A caller sends
-          Content-Type: application/json and nothing after it.
+          No value is read from the body. The media type is the requirement; the body is empty. A
+          caller sends Content-Type: application/json and either nothing after it or an empty
+          object.
+
+
+          The refusal below is applied rather than described. api/dto/CycleCloseRequest declares no
+          member, so a body carrying any property is refused with 400 before either accumulator is
+          touched. This route previously read no body at all, which accepted an object describing a
+          request this operation does not perform.
         content:
           application/json:
             schema:
               type: object
               additionalProperties: false
-              description: Always empty. No property is read.
+              description: Always empty. No property is declared and none is read.
             example: {}
       responses:
         '200':
@@ -516,6 +523,8 @@ paths:
                 accountId: '00000000050'
                 currentCycleCredit: '0.00'
                 currentCycleDebit: '0.00'
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -697,14 +706,14 @@ components:
               response names.
     MalformedRequest:
       description: >-
-        The request body could not be read. Three conditions reach this status: the body is not
-        JavaScript Object Notation (JSON) at all, it carries a property one of the three request
-        schemas does not declare. The third sends a property declared as text with a JSON number or
-        a boolean in its place.
+        The request body could not be read. Three conditions reach this status. The body is not
+        JavaScript Object Notation (JSON) at all. It carries a property the route does not declare,
+        which on the cycle close means any property at all. Or it sends a property declared as text
+        with a JSON number or a boolean in its place.
 
 
         The reader config/RequestJsonStrictnessConfig is what makes the second and third conditions
-        refusals rather than silent repairs. Both additionalProperties: false and type: string are
+        refusals instead of silent repairs. Both additionalProperties: false and type: string are
         therefore enforced and not merely documented. The money rule rests on the third: every
         amount is a decimal string and never a JSON number.
 
@@ -726,8 +735,8 @@ components:
             title: Malformed request
             status: 400
             detail: >-
-              The request body holds one account update in JavaScript Object Notation (JSON) and
-              could not be read as one.
+              The request body could not be read as the document this route declares in JavaScript
+              Object Notation (JSON).
 
     Unauthorized:
       description: >-

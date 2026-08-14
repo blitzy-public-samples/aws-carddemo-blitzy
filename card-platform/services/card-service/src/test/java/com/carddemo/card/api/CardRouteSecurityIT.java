@@ -279,19 +279,66 @@ class CardRouteSecurityIT {
         }
 
         /**
-         * Asserts an absent account parameter is refused rather than answered.
+         * Asserts an absent account parameter is answered as the malformed request it is.
          *
-         * <p>The ownership rule reads the parameter, so a request that carries none cannot be shown to
-         * belong to anybody. It denies rather than falling through, which is what keeps a missing
-         * parameter from becoming a way to list every account.
+         * <p>A request that names no account names no subject, so the ownership rule has nothing to
+         * compare and the route's own required parameter answers it 400 with the text
+         * {@code src/main/resources/openapi.yaml} publishes. Refusing it in the chain answered 403,
+         * which told an administrator its entitlement was wrong when its request was, and it did so
+         * without listing anything: the reply carries one text and no page either way.
          */
         @Test
-        @DisplayName("an absent account parameter denies rather than falling through")
-        void anAbsentAccountParameterDenies() {
+        @DisplayName("an absent account parameter reads the route's own refusal, not a 403")
+        void anAbsentAccountParameterIsABadRequest() {
             HttpResponse<String> response =
                     send(authorized(USER_USERNAME, USER_PASSWORD, "/cards").GET().build());
 
-            assertProblem(response, 403, "Forbidden", FORBIDDEN_DETAIL);
+            assertAll(
+                    () -> assertEquals(400, response.statusCode(),
+                            "the request is malformed rather than unentitled: " + response.body()),
+                    () -> assertTrue(
+                            response.body().contains(CardController.ACCOUNT_ID_ABSENT_MESSAGE),
+                            "the published text reaches the caller, and the body read: "
+                                    + response.body()),
+                    () -> assertFalse(response.body().contains("cardNumber"),
+                            "no page is listed for a request that named no account"));
+        }
+
+        /**
+         * Asserts the same request with no credential is still challenged rather than answered.
+         *
+         * <p>This is the boundary the deferral above must not cross. A required parameter is not a
+         * way to reach a route without authenticating, so an anonymous caller reads 401 whether it
+         * names an account or not.
+         */
+        @Test
+        @DisplayName("an absent account parameter with no credential is still challenged")
+        void anAbsentAccountParameterWithNoCredentialIsChallenged() {
+            HttpResponse<String> response = send(anonymous("/cards").GET().build());
+
+            assertProblem(response, 401, "Unauthorized", UNAUTHORIZED_DETAIL);
+        }
+
+        /**
+         * Asserts an administrator, whose entitlement covers every account, reads the same 400.
+         *
+         * <p>This is the case the finding reported: an identity that may list any account was told
+         * it may not use the operation, because the rule read a parameter that was never sent.
+         */
+        @Test
+        @DisplayName("the administrator reads the route's refusal rather than a 403")
+        void theAdministratorReadsTheRoutesRefusal() {
+            HttpResponse<String> response =
+                    send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD, "/cards").GET().build());
+
+            assertAll(
+                    () -> assertEquals(400, response.statusCode(),
+                            "an entitlement that covers every account cannot be the reason: "
+                                    + response.body()),
+                    () -> assertTrue(
+                            response.body().contains(CardController.ACCOUNT_ID_ABSENT_MESSAGE),
+                            "the published text reaches the caller, and the body read: "
+                                    + response.body()));
         }
 
         @Test
