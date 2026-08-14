@@ -1,0 +1,66 @@
+# The other manifests in this folder declare their objects in this namespace.
+# Short-name Domain Name System (DNS) lookups for kafka and postgres resolve
+# within it.
+#
+# APPLY ORDER. Three steps.
+#
+#   1. This file:
+#        kubectl apply -f card-platform/deploy/k8s/00-namespace.yaml
+#
+#   2. The ten credential Secrets. Take a filled-in copy of 31-secret.example.yaml
+#      kept OUTSIDE this folder, or use kubectl create secret.
+#
+#        kubectl apply -f ~/carddemo-secrets.yaml
+#
+#      10-kafka.yaml and 20-postgres.yaml read Secrets on start-up. A Pod that
+#      starts before its Secret exists reports CreateContainerConfigError until
+#      the kubelet retry succeeds.
+#
+#   3. Everything else, through the kustomization in this folder.
+#
+#        kubectl apply -k card-platform/deploy/k8s
+#
+#      kustomization.yaml lists the ten manifests to apply and deliberately omits
+#      31-secret.example.yaml, so this command cannot overwrite the Secrets from
+#      step 2 with the placeholders that template publishes. It also cannot try to
+#      apply kustomization.yaml itself: Kustomization is not a Kubernetes API
+#      object, and a plain `kubectl apply -f` over this folder fails on it with
+#      "no matches for kind Kustomization".
+#
+# Design decisions for this folder: card-platform/docs/decision-log.md
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: carddemo
+  labels:
+    app.kubernetes.io/name: card-platform
+    app.kubernetes.io/part-of: card-platform
+    app.kubernetes.io/managed-by: kubectl
+    # Pod Security admission, restricted profile. The control plane refuses a Pod
+    # that asks to run as root, to escalate privilege, to share a host namespace
+    # or to mount a host path. enforce refuses, audit records and warn reports to
+    # whoever applied the manifest.
+    #
+    # The version is pinned. `latest` means whatever the running control plane
+    # currently defines restricted to be, so a cluster upgrade can tighten the
+    # policy under a manifest nobody edited, and the six Deployments then fail
+    # admission. v1.25 is where the restricted profile began keying its
+    # Linux-only controls on .spec.os.name and where Pod Security admission
+    # became generally available, so it is the oldest version that expresses the
+    # policy these manifests declare. The six Deployments satisfy it explicitly:
+    # runAsNonRoot, allowPrivilegeEscalation false, all capabilities dropped,
+    # seccompProfile RuntimeDefault and a read-only root filesystem.
+    #
+    # Design decisions: card-platform/docs/decision-log.md
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.25
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.25
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.25
+  annotations:
+    card-platform/contents: >-
+      Authorization, ledger posting, fraud detection, notification, account
+      and card services, with the Kafka broker and PostgreSQL instance
+      they use.

@@ -1,0 +1,140 @@
+package com.carddemo.authorization.config;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.carddemo.authorization.api.GlobalExceptionHandler.ApiErrorResponse;
+import jakarta.servlet.FilterChain;
+import java.io.IOException;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.mock.web.MockFilterChain;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
+
+/**
+ * Measures the request body ceiling: what passes, what is refused, and what the refusal says.
+ *
+ * <p>ADDITIVE. A 3270 request cannot be oversized: every field of every mapset under
+ * {@code app/bms/} has a fixed width and {@code app/csd/CARDDEMO.CSD} sizes the Communication Area a
+ * transaction receives. A JavaScript Object Notation (JSON) body has no such bound, so these tests
+ * measure a target-side addition.
+ */
+@DisplayName("RequestBodyCeilingFilter, the bound on a request body")
+class RequestBodyCeilingFilterTest {
+
+    /** A small ceiling, so a test body can exceed it without being large. */
+    private static final long CEILING = 512;
+
+    /**
+     * A credential of the form HTTP Basic sends. Its content is never inspected here.
+     *
+     * <p>The filter runs ahead of the security chain and stands aside for a request carrying
+     * no {@code Authorization} header, so a test measuring a refusal has to present one.
+     */
+    private static final String BASIC_CREDENTIAL = "Basic dXNlcjA6cGFzc3dvcmQ=";
+
+    /** The class under test, holding the small ceiling. */
+    private final RequestBodyCeilingFilter filter = new RequestBodyCeilingFilter(CEILING);
+
+    @Test
+    @DisplayName("a body inside the ceiling reaches the rest of the chain")
+    void aBodyInsideTheCeilingReachesTheChain() throws Exception {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = new MockFilterChain();
+
+        filter.doFilter(requestOfLength((int) CEILING), response, chain);
+
+        assertEquals(HttpStatus.OK.value(), response.getStatus(),
+                "a body exactly at the ceiling was refused, and the bound is inclusive");
+        assertEquals("", response.getContentAsString(), "the filter wrote a body of its own");
+    }
+
+    @Test
+    @DisplayName("a body past the ceiling is refused with 413 and never reaches the chain")
+    void aBodyPastTheCeilingIsRefused() throws IOException, jakarta.servlet.ServletException {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+
+        filter.doFilter(requestOfLength((int) CEILING + 1), response, chain);
+
+        assertEquals(HttpStatus.CONTENT_TOO_LARGE.value(), response.getStatus(),
+                "an oversized body reached the parser");
+        String body = response.getContentAsString();
+
+        assertTrue(body.contains("\"status\":" + HttpStatus.CONTENT_TOO_LARGE.value()),
+                "the body repeats the status of the response");
+        assertTrue(body.contains("\"error\":\"" + ApiErrorResponse.UNPROCESSABLE + "\""),
+                "the body carries one of the three phrases api/GlobalExceptionHandler declares, so "
+                        + "one schema describes every refusal this service writes");
+        assertTrue(body.contains(RequestBodyCeilingFilter.REFUSAL_MESSAGE),
+                "the refusal carries the one fixed text");
+        assertTrue(body.matches(
+                        ".*\"timestamp\":\"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z\".*"),
+                "the body carries the fourth member at the shape the published schema declares");
+        assertFalse(body.contains("/authorizations"), "the refusal names no route");
+    }
+
+    @Test
+    @DisplayName("a request declaring no length is passed on, because the parser bounds it")
+    void aRequestDeclaringNoLengthIsPassedOn() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/authorizations");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertEquals(HttpStatus.OK.value(), response.getStatus(),
+                "a chunked request was refused here rather than bounded by "
+                        + "config/JsonReadCeilingConfig, which is where it belongs");
+    }
+
+    @Test
+    @DisplayName("a ceiling below one byte stops start-up and names its property")
+    void aCeilingBelowOneByteStopsStartUp() {
+        assertTrue(assertThrows(IllegalStateException.class,
+                        () -> new RequestBodyCeilingFilter(0)).getMessage()
+                        .contains("carddemo.api.max-request-body-bytes"),
+                "the refusal does not name the property a deployment has to correct");
+    }
+
+    /**
+     * Asserts an oversized body carrying no credential reaches the chain rather than being refused.
+     *
+     * <p>This is the property that makes the rung safe. Such a request is refused by the security
+     * chain with 401 and no password to verify, so nothing is spent and the answer a caller sees is
+     * the one this route gave while the filter ran after the chain. Answering 413 here would tell an
+     * unauthenticated caller the size this route accepts.
+     */
+    @Test
+    @DisplayName("an oversized body with no credential reaches the chain, which answers 401")
+    void anOversizedBodyWithNoCredentialReachesTheChain() throws Exception {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/authorizations");
+        request.setContent(new byte[(int) CEILING + 1]);
+
+        filter.doFilter(request, response, chain);
+
+        assertEquals(HttpStatus.OK.value(), response.getStatus(),
+                "the chain answers an unauthenticated request, not this filter");
+        assertEquals(request, chain.getRequest(),
+                "the request has to reach the chain so the chain can answer 401");
+    }
+
+    /**
+     * Builds one request declaring a body of the length given.
+     *
+     * @param length the value of {@code Content-Length}
+     * @return the request
+     */
+    private static MockHttpServletRequest requestOfLength(int length) {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/authorizations");
+        request.setContent(new byte[length]);
+        request.addHeader(HttpHeaders.AUTHORIZATION, BASIC_CREDENTIAL);
+        return request;
+    }
+}

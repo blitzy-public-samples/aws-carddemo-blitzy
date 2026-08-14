@@ -1,0 +1,672 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Build root for the CardDemo card platform.
+
+  Declares the nine modules, imports the Spring Boot dependency bill of
+  materials, pins the language level, fixes plugin versions, and enforces the
+  module dependency direction.
+
+  Dependency direction:
+    libs/*             no dependency on another module of this build
+    services/*         the two libraries only, never another service
+    equivalence-tests  every module, at test scope
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.carddemo</groupId>
+  <artifactId>card-platform</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+
+  <name>CardDemo Card Platform</name>
+  <description>
+    Event-driven card platform for CardDemo. Contains two shared libraries, six
+    services, and one equivalence test suite that compares service behaviour
+    against the documented COBOL business rules.
+  </description>
+
+  <!-- Modules build in dependency order. The equivalence test suite builds last. -->
+  <modules>
+    <module>libs/event-contracts</module>
+    <module>libs/cobol-compat</module>
+    <module>services/authorization-service</module>
+    <module>services/ledger-posting-service</module>
+    <module>services/fraud-detection-service</module>
+    <module>services/notification-service</module>
+    <module>services/account-service</module>
+    <module>services/card-service</module>
+    <module>equivalence-tests</module>
+  </modules>
+
+  <properties>
+    <!-- Language level. Every module compiles at release 25: maven.compiler.release is the
+         property the compiler plugin reads, the enforcer rule below requires 25 in every module,
+         and every module descriptor repeats it. java.version carries the framework's conventional
+         name for the same level and no plugin resolves it. Why release 25 and a bill-of-materials
+         import rather than the Spring Boot parent: card-platform/docs/decision-log.md. -->
+    <java.version>25</java.version>
+    <maven.compiler.release>25</maven.compiler.release>
+    <maven.compiler.source>25</maven.compiler.source>
+    <maven.compiler.target>25</maven.compiler.target>
+
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+    <!--
+      The modification time every archive entry carries. The Jar plugin and the Spring Boot
+      repackage both read this property; without it each entry is stamped with the moment the
+      build ran, and two builds of one commit produce two different archives. The value is a
+      fixed date, so raise it when a release is cut. A second `mvn clean package` producing a
+      byte-identical archive is what shows it working.
+      Design decisions: card-platform/docs/decision-log.md.
+    -->
+    <project.build.outputTimestamp>2026-08-10T00:00:00Z</project.build.outputTimestamp>
+
+    <!-- Dependency versions. Every other version comes from the imported bill of materials. -->
+    <spring-boot.version>4.1.0</spring-boot.version>
+    <json-schema-validator.version>3.0.6</json-schema-validator.version>
+
+    <!--
+      Version floors. Each version below is higher than the version
+      spring-boot-dependencies:4.1.0 manages, and the dependencyManagement block
+      re-declares every affected artifact. A property alone changes nothing here,
+      because a bill of materials imported with scope import ignores the importing
+      project's properties.
+        tomcat.version    4.1.0 resolves 11.0.22
+        postgresql        4.1.0 resolves 42.7.11
+        jackson.version   4.1.0 resolves 3.1.4        (tools.jackson.core, Jackson 3)
+        jackson2.version  spring-kafka-test:4.1.0 resolves 2.21.4
+                                                      (com.fasterxml.jackson.core, Jackson 2)
+        lz4-java          kafka-clients:4.2.1 resolves 1.10.1
+      Every floor except tomcat.version answers a published advisory, and the
+      dependencyManagement entry for each names the advisory it answers.
+      tomcat.version is 11.0.24, the newest release Maven Central publishes on
+      the 11.0.x line, and it is not a fix for CVE-2026-66299. That advisory,
+      published 28 July 2026 and rated Low by Apache, covers 11.0.0-M20 through
+      11.0.24 and names 11.0.25 as the fixed release; 11.0.25 is unpublished, so
+      no reachable version answers it. Its subject is the WebSocket chat sample of
+      the examples web application, which an embedded Tomcat does not ship and
+      which no service here declares, so nothing in this platform is within its
+      affected surface. card-platform/docs/suggested-next-tasks.md carries the
+      watch item for 11.0.25.
+      enforce-transitive-security-floors in the build section below checks every
+      floor against the resolved graph of each module, so a floor that stops
+      taking effect fails the build instead of going quiet. Remove an entry, and
+      its rule, once the bill of materials manages that version or higher.
+      Design decisions: card-platform/docs/decision-log.md.
+    -->
+    <tomcat.version>11.0.24</tomcat.version>
+    <postgresql.version>42.7.13</postgresql.version>
+    <jackson.version>3.1.5</jackson.version>
+    <jackson2.version>2.21.5</jackson2.version>
+    <lz4-java.version>1.11.1</lz4-java.version>
+
+    <!-- Plugin versions. -->
+    <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
+    <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
+    <maven-failsafe-plugin.version>3.5.6</maven-failsafe-plugin.version>
+    <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
+
+    <!--
+      The card-token key and version every test in this build derives tokens
+      under. com.carddemo.cobol.PanMasker takes a keyed message authentication
+      code and supplies no default key, so a build that named none would fail
+      every test that tokenizes a card number.
+
+      The key below is BUILD SCOPE. It is not the demo key and it is not a
+      deployment key: card-platform/.env.example and
+      deploy/k8s/31-secret.example.yaml both carry a placeholder, and a
+      deployment supplies a key generated for itself. This value travels one way
+      only, as a JVM system property to Surefire and Failsafe below, and
+      com.carddemo.equivalence.CardTokenKeyContractTest fails the build if it
+      reaches any deployment artifact. The authorization and card services also
+      refuse to start when this value arrives through CARD_TOKEN_SECRET, which is
+      the variable a deployment sets.
+
+      The fifty card_token literals in
+      services/card-service/src/main/resources/db/migration/V2__seed.sql are
+      derived under this key and this version, which is what lets a checked-in
+      literal be compared against the derivation. They are a bootstrap:
+      com.carddemo.card.domain.CardTokenReconciler re-derives every one of them
+      under the deployment's own key on first start-up.
+    -->
+    <carddemo.card-token.secret>carddemo-build-scope-card-token-key-tests-only</carddemo.card-token.secret>
+    <carddemo.card-token.version>1</carddemo.card-token.version>
+
+    <!--
+      The three identity password hashes every Spring context in this build
+      starts with. config/SecurityConfig refuses an identity password that is
+      not the output of an adaptive one-way encoder, so a test cannot supply a
+      {noop} value and no test needs to carry a hash of its own.
+
+      Each value below is bcrypt at cost 10 over the plaintext named beside it,
+      and the plaintext is what a test sends in an Authorization header:
+        admin001   not-a-real-admin-password
+        user0001   not-a-real-user-password
+        monitor01  not-a-real-monitoring-password
+      None is a credential. They authenticate nothing outside this build, where
+      the three identities exist only in a test context, and
+      card-platform/.env.example carries the command that generates real ones.
+    -->
+    <carddemo.test.admin-password-hash>{bcrypt}$2a$10$BV1JAZjiDakIHpoH2jCwDOrbbkXjlNjMECO8X4aADL69.SbRaCK1m</carddemo.test.admin-password-hash>
+    <carddemo.test.user-password-hash>{bcrypt}$2a$10$KB41bIzjQInPoMa5jeUQL.ZqftG4g53HCPcSPz0FjMh9.1QWL9M/q</carddemo.test.user-password-hash>
+    <carddemo.test.monitoring-password-hash>{bcrypt}$2a$10$TrlV8d05JTGXymVO1n65JuYdCnQl94BlIVXKovwSleI/UcothAZjC</carddemo.test.monitoring-password-hash>
+
+    <!--
+      States, for any context that starts under the published demo key, that it
+      means to. PanMasker.requireCardTokenSecretFitForUse refuses that key without
+      the statement. This build configures the build-scope key above instead, so
+      the statement is inert here and is carried only so a context refreshed with
+      a deployment .env still starts.
+    -->
+    <carddemo.card-token.allow-published-key>true</carddemo.card-token.allow-published-key>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <!-- Spring Boot bill of materials. Modules declare managed artifacts with no version element. -->
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring-boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
+      <!--
+        The one artifact the bill of materials does not manage. It carries a version
+        here and no module repeats it. json-schema-validator reads JSON Schema
+        Draft 2020-12 in event-contracts.
+
+        net.logstash.logback:logstash-logback-encoder was pinned here and no module
+        ever declared it, so the pin governed nothing and named a library that never
+        reached a classpath. Structured JSON log output comes from the framework
+        instead: every service sets logging.structured.format.console to logstash in
+        its application.yml, which selects the Logstash format Spring Boot itself
+        implements, and no module ships a Logback configuration file. The pin is
+        withdrawn rather than kept as a claim about a dependency that is absent.
+        card-platform/docs/decision-log.md records the removal.
+      -->
+      <dependency>
+        <groupId>com.networknt</groupId>
+        <artifactId>json-schema-validator</artifactId>
+        <version>${json-schema-validator.version}</version>
+      </dependency>
+
+      <!--
+        Embedded servlet container. spring-boot-starter-web pulls these three
+        artifacts, and every service module declares that starter. The three
+        entries below raise all three from the version the bill of materials
+        manages to ${tomcat.version}.
+
+        This raise is not the answer to an advisory. CVE-2026-66299 covers
+        11.0.0-M20 through 11.0.24, so the pinned version is inside its range and
+        does not fix it, and 11.0.25 is named as the fix but is unpublished. What
+        the advisory reaches is the WebSocket chat sample of the
+        examples web application, which an embedded Tomcat does not ship, and no
+        service here declares a WebSocket endpoint. Read the three entries as
+        compatibility hardening: they hold all three artifacts at one version,
+        which keeps the container's own compatibility contract intact.
+      -->
+      <dependency>
+        <groupId>org.apache.tomcat.embed</groupId>
+        <artifactId>tomcat-embed-core</artifactId>
+        <version>${tomcat.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.tomcat.embed</groupId>
+        <artifactId>tomcat-embed-el</artifactId>
+        <version>${tomcat.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.tomcat.embed</groupId>
+        <artifactId>tomcat-embed-websocket</artifactId>
+        <version>${tomcat.version}</version>
+      </dependency>
+
+      <!-- Database driver. Every service module declares it at runtime scope. -->
+      <dependency>
+        <groupId>org.postgresql</groupId>
+        <artifactId>postgresql</artifactId>
+        <version>${postgresql.version}</version>
+      </dependency>
+
+      <!--
+        JSON binding. GHSA-5gvw-p9qm-jgwh, recorded as CVE-2026-59889, affects
+        jackson-databind 3.1.4, the version the bill of materials manages, and is
+        fixed in 3.1.5. This platform serializes every event through
+        libs/event-contracts, whose records use @JsonUnwrapped, one half of the
+        affected combination, so the floor is raised rather than argued away.
+        All three entries move together, because Jackson ships one release train
+        and a mixed set is unsupported. The third is the YAML backend, reached from
+        spring-boot-starter-web through the configuration reader rather than from
+        the event path, and it resolved 3.1.4 while the pair above resolved 3.1.5.
+        No advisory names it. It is raised so the train carries one version, which
+        is the same reason the Jackson 2 siblings below are raised.
+      -->
+      <dependency>
+        <groupId>tools.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>tools.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>tools.jackson.dataformat</groupId>
+        <artifactId>jackson-dataformat-yaml</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+
+      <!--
+        The OTHER Jackson. This build serializes through Jackson 3, whose
+        coordinates are tools.jackson.core above, and it also carries Jackson 2 on
+        the test classpath of every module that declares spring-kafka-test. The
+        resolved path is:
+
+          org.springframework.kafka:spring-kafka-test:4.1.0
+            -> org.apache.kafka:kafka-server:4.2.1
+              -> com.fasterxml.jackson.core:jackson-databind:2.21.4 (test)
+                -> com.fasterxml.jackson.core:jackson-core:2.21.4 (test)
+
+        Seven modules resolve it: the six services and equivalence-tests. Nothing
+        managed 2.x before these two entries, so the version arrived from
+        kafka-server and stayed there. 2.21.4 carries three advisories, all fixed
+        in 2.21.5: GHSA-5gvw-p9qm-jgwh / CVE-2026-59889,
+        GHSA-5jmj-h7xm-6q6v / CVE-2026-54515, and GHSA-mhm7-754m-9p8w.
+
+        Test scope is not a reason to leave it. An embedded broker deserializes
+        whatever a test hands it, the same jar is on the classpath of every
+        contract test in this build, and a floor that only covers the classpath a
+        deployment ships is a floor with a hole in it.
+
+        Every entry below moves together, because Jackson ships one release train
+        and a mixed set is unsupported. The five are the whole of Jackson 2 in the
+        resolved graph apart from one artifact:
+        com.fasterxml.jackson.core:jackson-annotations is deliberately absent. Its
+        2.x line stops at 2.21, there is no 2.21.5 to raise it to, and no advisory
+        above names it.
+
+        The three siblings after the core pair reach the graph the same way, and
+        raising only the pair left them at 2.21.4:
+
+          org.springframework.kafka:spring-kafka-test:4.1.0
+            -> org.apache.kafka:kafka-server:4.2.1
+              -> com.fasterxml.jackson.dataformat:jackson-dataformat-csv (test)
+              -> com.fasterxml.jackson.dataformat:jackson-dataformat-yaml (test)
+              -> com.fasterxml.jackson.datatype:jackson-datatype-jdk8 (test)
+
+        Each is a format or type adapter over the core pair rather than a
+        deserialization surface of its own, so no advisory above names one
+        directly. All of them are raised to one train version regardless, so the
+        graph holds no 2.21.4 artifact beside a 2.21.5 one. Why that, with the
+        alternatives and the risk: card-platform/docs/decision-log.md
+      -->
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>${jackson2.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>${jackson2.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.dataformat</groupId>
+        <artifactId>jackson-dataformat-csv</artifactId>
+        <version>${jackson2.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.dataformat</groupId>
+        <artifactId>jackson-dataformat-yaml</artifactId>
+        <version>${jackson2.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.datatype</groupId>
+        <artifactId>jackson-datatype-jdk8</artifactId>
+        <version>${jackson2.version}</version>
+      </dependency>
+
+      <!--
+        Native LZ4 codec, reached only through org.apache.kafka:kafka-clients.
+        GHSA-xx22-p4ch-683r, recorded as CVE-2026-59949, is an out-of-bounds read
+        in the native XXHash routine of lz4-java 1.10.1, fixed in 1.11.1. Kafka
+        calls XXHashFactory.fastestInstance() on every compressed frame it reads,
+        so the library sits on a broker input path and the floor is raised even
+        though Kafka supplies bounded offsets. The declaration below is the only
+        place the version appears; kafka-clients keeps the version it resolves for
+        every other transitive artifact.
+      -->
+      <dependency>
+        <groupId>at.yawk.lz4</groupId>
+        <artifactId>lz4-java</artifactId>
+        <version>${lz4-java.version}</version>
+      </dependency>
+
+      <!-- Shared libraries of this build, available to modules with no version element. -->
+      <dependency>
+        <groupId>com.carddemo</groupId>
+        <artifactId>event-contracts</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.carddemo</groupId>
+        <artifactId>cobol-compat</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <!-- Executable jar packaging. The six service modules declare this plugin
+             in their own build section.
+
+             attach false leaves the executable archive at target/<artifactId>-<version>.jar,
+             which the Dockerfiles read, and points each module's Maven artifact at the plain
+             archive this plugin writes as target/<artifactId>-<version>.jar.original, which
+             equivalence-tests reads. -->
+        <plugin>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-maven-plugin</artifactId>
+          <version>${spring-boot.version}</version>
+          <executions>
+            <execution>
+              <id>repackage</id>
+              <goals>
+                <goal>repackage</goal>
+              </goals>
+              <configuration>
+                <attach>false</attach>
+              </configuration>
+            </execution>
+          </executions>
+        </plugin>
+
+        <!-- Compilation at the pinned language level, with method parameter
+             names kept in the class files. -->
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>${maven-compiler-plugin.version}</version>
+          <configuration>
+            <release>${maven.compiler.release}</release>
+            <parameters>true</parameters>
+          </configuration>
+        </plugin>
+
+        <!-- Unit tests. The default patterns cover the Test suffix. The system
+             properties supply the card-token key every module derives tokens
+             under, its acknowledgement, and the three identity hashes every
+             Spring context starts with; none of the five has a default. -->
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>${maven-surefire-plugin.version}</version>
+          <configuration>
+            <systemPropertyVariables>
+              <carddemo.card-token.secret>${carddemo.card-token.secret}</carddemo.card-token.secret>
+              <carddemo.card-token.version>${carddemo.card-token.version}</carddemo.card-token.version>
+              <carddemo.card-token.allow-published-key>${carddemo.card-token.allow-published-key}</carddemo.card-token.allow-published-key>
+              <ADMIN_PASSWORD_HASH>${carddemo.test.admin-password-hash}</ADMIN_PASSWORD_HASH>
+              <USER_PASSWORD_HASH>${carddemo.test.user-password-hash}</USER_PASSWORD_HASH>
+              <MONITORING_PASSWORD_HASH>${carddemo.test.monitoring-password-hash}</MONITORING_PASSWORD_HASH>
+            </systemPropertyVariables>
+          </configuration>
+        </plugin>
+
+        <!-- Integration and equivalence tests. This block sits in pluginManagement, so it binds
+             nothing here: it supplies the version, the configuration and one execution to any
+             module that declares the plugin, and only there do integration-test and verify run.
+             equivalence-tests/pom.xml and each service pom.xml declare it. Tests run against the
+             classes directory. -->
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-failsafe-plugin</artifactId>
+          <version>${maven-failsafe-plugin.version}</version>
+          <configuration>
+            <classesDirectory>${project.build.outputDirectory}</classesDirectory>
+            <!-- Fail the module when the plugin selected nothing. Without this the plugin's own
+                 default is to pass silently, so a change to an include pattern, a class rename away
+                 from *IT or *EquivalenceTest, or a directory move turns the integration phase into a
+                 no-op that still reports success. Every module that declares this plugin owns at
+                 least one class the patterns select, so an empty selection is always a defect. The
+                 companion guard scripts/check-published-test-counts.sh reads the written reports
+                 after verify, which catches the case a module stops declaring the plugin at all. -->
+            <failIfNoTests>true</failIfNoTests>
+            <systemPropertyVariables>
+              <carddemo.card-token.secret>${carddemo.card-token.secret}</carddemo.card-token.secret>
+              <carddemo.card-token.version>${carddemo.card-token.version}</carddemo.card-token.version>
+              <carddemo.card-token.allow-published-key>${carddemo.card-token.allow-published-key}</carddemo.card-token.allow-published-key>
+              <ADMIN_PASSWORD_HASH>${carddemo.test.admin-password-hash}</ADMIN_PASSWORD_HASH>
+              <USER_PASSWORD_HASH>${carddemo.test.user-password-hash}</USER_PASSWORD_HASH>
+              <MONITORING_PASSWORD_HASH>${carddemo.test.monitoring-password-hash}</MONITORING_PASSWORD_HASH>
+            </systemPropertyVariables>
+          </configuration>
+          <executions>
+            <execution>
+              <id>integration-test</id>
+              <goals>
+                <goal>integration-test</goal>
+                <goal>verify</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+
+        <!-- Toolchain and dependency direction checks. -->
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-enforcer-plugin</artifactId>
+          <version>${maven-enforcer-plugin.version}</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+
+    <plugins>
+      <!--
+        Checks that run in every module at the validate phase and break the build on failure. The
+        two executions carry different scopes. enforce-toolchain-and-prohibited applies to every
+        module with no exception. enforce-service-independence applies to every module except
+        equivalence-tests, which unbinds that one execution and keeps the other.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>enforce-toolchain-and-prohibited</id>
+            <phase>validate</phase>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <fail>true</fail>
+              <rules>
+                <!--
+                  Both ranges end where the tested toolchain ends. They used to be
+                  [3.9.16,4.0.0) and [25,), which admitted every future Maven 3.9 patch and
+                  every future major JDK: the build then ran on a toolchain nothing here had
+                  been exercised against, while .github/workflows/ci.yml installed one exact
+                  Temurin build and card-platform/docs/onboarding.md named the same one. Three
+                  places now agree, and raising the toolchain is a deliberate edit to all three.
+                -->
+                <requireMavenVersion>
+                  <version>[3.9.16,3.10.0)</version>
+                  <message>This build is exercised on Apache Maven 3.9.16. The range admits the 3.9.16 patch line and nothing else: Maven 4 removes behaviour this build relies on, and a later 3.x minor has not been tested here. Raise this range, .github/workflows/ci.yml and card-platform/docs/onboarding.md together.</message>
+                </requireMavenVersion>
+                <requireJavaVersion>
+                  <version>[25,26)</version>
+                  <message>This build is exercised on Eclipse Temurin OpenJDK 25.0.4+7, and every module compiles at release 25. The range admits release 25 and nothing later, because a newer major would compile release-25 bytecode on a runtime no test here has run on. Raise this range, .github/workflows/ci.yml and card-platform/docs/onboarding.md together.</message>
+                </requireJavaVersion>
+                <!--
+                  The compile release of the module being built. requireJavaVersion above
+                  checks the running JDK, which says nothing about the release a module
+                  compiles at: a module that lowers maven.compiler.release compiles
+                  silently on JDK 25 and writes class files at the lower version. This
+                  rule reads the effective property, so a module that overrides or clears
+                  it fails at validate rather than shipping mixed bytecode.
+                -->
+                <requireProperty>
+                  <property>maven.compiler.release</property>
+                  <regex>^25$</regex>
+                  <message>Every module of this build compiles at release 25, and this module resolves maven.compiler.release to nothing. Declare it in the module descriptor, or inherit it from card-platform/pom.xml.</message>
+                  <regexMessage>Every module of this build compiles at release 25. This module resolves maven.compiler.release to another release, which would leave class files at a version the rest of the build does not carry.</regexMessage>
+                </requireProperty>
+                <bannedDependencies>
+                  <!-- Checked against the dependencies a module declares, not
+                       against the transitive graph. -->
+                  <searchTransitive>false</searchTransitive>
+                  <message>This artifact is excluded from every module of this build. Services use Java records with explicit mapper classes, a hand written openapi.yaml, and PostgreSQL tables for state.</message>
+                  <excludes>
+                    <exclude>org.projectlombok:lombok</exclude>
+                    <exclude>org.mapstruct:*</exclude>
+                    <exclude>org.immutables:*</exclude>
+                    <exclude>org.springdoc:*</exclude>
+                    <exclude>io.springfox:*</exclude>
+                    <exclude>io.swagger:*</exclude>
+                    <exclude>io.swagger.core.v3:*</exclude>
+                    <exclude>org.springframework.boot:spring-boot-starter-data-redis</exclude>
+                    <exclude>org.springframework.boot:spring-boot-starter-data-redis-reactive</exclude>
+                    <exclude>redis.clients:*</exclude>
+                    <exclude>io.lettuce:*</exclude>
+                    <exclude>com.github.ben-manes.caffeine:*</exclude>
+                    <exclude>org.ehcache:*</exclude>
+                    <exclude>net.sf.ehcache:*</exclude>
+                  </excludes>
+                </bannedDependencies>
+              </rules>
+            </configuration>
+          </execution>
+          <execution>
+            <!--
+              The version floors of the properties block, checked against the graph each
+              module really resolves rather than against what this file declares.
+
+              dependencyManagement and this rule answer different questions.
+              dependencyManagement sets the version a coordinate resolves to; this rule
+              asks whether anything still resolves below the floor. The two come apart in
+              the case this build already met: nothing managed
+              com.fasterxml.jackson.core, so spring-kafka-test brought
+              jackson-databind 2.21.4 onto seven test classpaths and no file said so. A
+              floor with a hole in it reads exactly like a floor without one, which is why
+              the check is a build failure and not a comment.
+
+              searchTransitive is true because none of these artifacts is declared by any
+              module: every one arrives through a starter, a driver declaration or a test
+              dependency. This execution stays bound in equivalence-tests, which unbinds
+              enforce-service-independence below and is one of the seven modules the
+              Jackson 2 path reaches.
+            -->
+            <id>enforce-transitive-security-floors</id>
+            <phase>validate</phase>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <fail>true</fail>
+              <rules>
+                <bannedDependencies>
+                  <searchTransitive>true</searchTransitive>
+                  <message>A dependency resolved below a version floor this build declares. Each range below ends at the floor in the properties block of card-platform/pom.xml, and the dependencyManagement entry beside it names the advisory the floor answers. Raise the floor, or add the missing dependencyManagement entry for the coordinate that now resolves under it.</message>
+                  <excludes>
+                    <exclude>com.fasterxml.jackson.core:jackson-databind:[,${jackson2.version})</exclude>
+                    <exclude>com.fasterxml.jackson.core:jackson-core:[,${jackson2.version})</exclude>
+                    <exclude>com.fasterxml.jackson.dataformat:jackson-dataformat-csv:[,${jackson2.version})</exclude>
+                    <exclude>com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:[,${jackson2.version})</exclude>
+                    <exclude>com.fasterxml.jackson.datatype:jackson-datatype-jdk8:[,${jackson2.version})</exclude>
+                    <exclude>tools.jackson.core:jackson-databind:[,${jackson.version})</exclude>
+                    <exclude>tools.jackson.core:jackson-core:[,${jackson.version})</exclude>
+                    <exclude>tools.jackson.dataformat:jackson-dataformat-yaml:[,${jackson.version})</exclude>
+                    <exclude>org.postgresql:postgresql:[,${postgresql.version})</exclude>
+                    <exclude>at.yawk.lz4:lz4-java:[,${lz4-java.version})</exclude>
+                    <exclude>org.apache.tomcat.embed:tomcat-embed-core:[,${tomcat.version})</exclude>
+                    <exclude>org.apache.tomcat.embed:tomcat-embed-el:[,${tomcat.version})</exclude>
+                    <exclude>org.apache.tomcat.embed:tomcat-embed-websocket:[,${tomcat.version})</exclude>
+                  </excludes>
+                </bannedDependencies>
+              </rules>
+            </configuration>
+          </execution>
+          <execution>
+            <id>enforce-service-independence</id>
+            <phase>validate</phase>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <fail>true</fail>
+              <rules>
+                <bannedDependencies>
+                  <searchTransitive>true</searchTransitive>
+                  <message>A service module must not depend on another service module. A service depends on libs/event-contracts and libs/cobol-compat only, and reaches other services through Kafka events. The equivalence-tests module is the single exception, and it unbinds this execution in its own module descriptor.</message>
+                  <excludes>
+                    <exclude>com.carddemo:authorization-service</exclude>
+                    <exclude>com.carddemo:ledger-posting-service</exclude>
+                    <exclude>com.carddemo:fraud-detection-service</exclude>
+                    <exclude>com.carddemo:notification-service</exclude>
+                    <exclude>com.carddemo:account-service</exclude>
+                    <exclude>com.carddemo:card-service</exclude>
+                  </excludes>
+                </bannedDependencies>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <!--
+      Lets a stage run the integration suites without repeating the unit suites another
+      stage already ran.
+
+      It is keyed on a property of its own, skipUnitTests, and not on Surefire's skipTests
+      parameter, so it is inert until that property is named and the default build and every
+      documented command behave exactly as before.
+
+      Nothing in this repository passes it except .github/workflows/ci.yml, where the
+      service integration stage and the equivalence stage both name it because the unit
+      stage has already run every Surefire test in the reactor and kept its reports.
+
+      Design decisions:
+      card-platform/docs/decision-log.md.
+
+      THE ACTIVATION READS THE VALUE, NOT THE PRESENCE. Without the value below, Maven
+      activates the profile whenever the property is named at all, so
+      -DskipUnitTests=false skipped the suite an operator had just asked for and reported
+      a green build over nothing. -DskipUnitTests alone still activates it, because Maven
+      assigns "true" to a flag given no value.
+    -->
+    <profile>
+      <id>skip-unit-tests</id>
+      <activation>
+        <property>
+          <name>skipUnitTests</name>
+          <value>true</value>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <skipTests>true</skipTests>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+
+</project>

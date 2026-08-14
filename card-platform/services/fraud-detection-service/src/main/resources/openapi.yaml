@@ -1,0 +1,647 @@
+openapi: 3.1.0
+
+# Hand-written. No documentation-generation library joins the classpath of this module: the
+# aggregator's maven-enforcer-plugin bans them.
+# src/test/java/com/carddemo/fraud/api/OpenApiContractTest.java reads this file and holds it in step
+# with api/FraudAssessmentController.
+#
+# Each width and each identifier shape below is read from the CardDemo source, and the locator beside
+# it names the file and the line. Risk scoring has no source ancestor, and each property that has
+# none says so.
+#
+# Design decisions for this document: card-platform/docs/decision-log.md
+
+info:
+  title: CardDemo Fraud Detection Service API
+  version: 1.0.0
+  description: >-
+    The read-only surface of the fraud detection service, a Representational State Transfer (REST)
+    resource over the risk assessments this service has recorded.
+
+
+    A consumer reads one authorized-transaction event, scores the transaction against three risk
+    rules, records one assessment, and publishes a flagged or a cleared event. The two routes below
+    read those records. Neither route writes a record, publishes an event, or calls another service.
+
+
+    A request target refused before any route ran is answered by config/ContainerErrorDocument
+    rather than by an operation below, because the request reached none. That answer carries the
+    Problem shape under application/problem+json, the same shape this document declares for 401 and
+    403. It names no method, no path and no value the caller sent.
+
+
+    No program under app/cbl/ scores risk, so this service is net new; no COBOL ancestor exists.
+
+servers:
+  - url: http://localhost:8083
+    description: >-
+      Demonstration environment. A caller reaches this service on host port 8083. The container
+      itself listens on port 8080, which card-platform/docker-compose.yml republishes under the host
+      number, and FRAUD_PORT in card-platform/.env.example holds that number.
+
+tags:
+  - name: FraudAssessments
+    description: Reading the risk assessments this service has recorded.
+
+# One rule, inherited by both operations. Neither operation overrides it.
+security:
+  - basicIdentity: []
+
+paths:
+
+  /fraud-assessments:
+    get:
+      tags: [FraudAssessments]
+      operationId: assessmentsOfAccount
+      summary: List one page of one account's risk assessments.
+      description: >-
+        Returns one page of the assessments recorded for one account, newest first. The order is
+        fixed to assessment time descending and then transaction identifier descending, and no
+        parameter changes it. The second column is what makes a page boundary exact: assessment time
+        is not unique, because one consumer batch assesses several transactions and the rows can
+        share a microsecond.
+
+
+        A page is reached by position, not by number. Omitting X-Fraud-Cursor returns the newest
+        page, and returning the nextCursor the previous answer named returns the page after it. A
+        caller walks the whole history by repeating the call while nextPageExists is true, and every
+        call costs one page. Index ix_fraud_assessment_account_cursor is read as a range, so the
+        ten-thousandth page costs what the first one does. A page parameter answers 400 rather than
+        being served, because reaching a page by number means reading and discarding every row before
+        it.
+
+
+        Every read is bound to the accountId of the request, so a cursor issued for one account reads
+        no other account's rows.
+
+
+        One handler serves this route, and the parameters below are the whole of what it reads. A
+        sort or page parameter answers 400 from that same handler, so no request reaches a mapping
+        this document does not describe.
+
+
+        This route answers a demonstration and a support query. It sits on no authorization path and
+        on no posting path, and it performs no scoring.
+      parameters:
+        - name: accountId
+          in: query
+          required: true
+          description: >-
+            The account whose assessments to read, eleven digits. Width and digits from
+            XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. A leading zero is part of the value,
+            so a caller left-pads it to eleven characters and sends it as text. Column account_id in
+            db/migration/V1__schema.sql holds it.
+          schema:
+            type: string
+            pattern: '^[0-9]{11}$'
+            examples: ['00000000007']
+        - name: X-Fraud-Cursor
+          in: header
+          required: false
+          description: >-
+            The position the page starts after, as the nextCursor of the previous answer named it. It
+            is an assessment time and a transaction identifier joined by a vertical bar, which
+            appears in neither part. Omitting the header returns the newest page, and a cursor naming
+            the account's oldest row returns 200 with an empty array.
+
+
+            A caller never composes this value: it returns the one it was given. A value this route
+            cannot read answers 400 naming the shape and never the value. The cursor holds a
+            transaction identifier, and a refusal that echoed it would copy that identifier into the
+            body. It travels as a header rather than a query parameter, matching X-Card-Cursor of the
+            card service and X-Notification-Cursor of the notification service. That keeps it out of
+            the access logs that record a query string.
+          schema:
+            type: string
+            examples: ['2022-06-10T19:27:53.418Z|0000000380632461']
+        - name: size
+          in: query
+          required: false
+          description: >-
+            The rows one page carries. Omitting the parameter returns 20 rows. The value travels as
+            text, so a parameter that arrives carrying no characters answers 400 rather than taking
+            the default. A caller sending size= asked for something, and a 200 would state nothing
+            about what it received. It is read as a number from 1 through 200, and a value outside
+            those bounds answers 400, so the page a caller receives is the page it asked for.
+          schema:
+            type: string
+            pattern: '^0*(?:[1-9][0-9]?|1[0-9]{2}|200)$'
+            examples: ['20']
+        - name: sort
+          in: query
+          required: false
+          description: >-
+            An order to apply, which this route does not accept. Present at any value, the parameter
+            answers 400 naming itself and the order this route does apply. The order is fixed at
+            assessment time descending and then transaction identifier descending, which
+            FraudAssessmentRepository.findByAccountIdOrderByAssessedAtDescTransactionIdDesc states in
+            its own name. An order a caller supplied could only be ignored while the response claimed
+            success. The one handler of this route reads the parameter and refuses it.
+          schema:
+            type: string
+            examples: ['assessedAt,asc']
+        - name: page
+          in: query
+          required: false
+          description: >-
+            A page number, which this route does not accept. Present at any value, the parameter
+            answers 400 naming itself and the header that continues a page instead. It carries no
+            numeric shape here because no number is acceptable. Reaching a page by number means
+            reading and discarding every row before it, so the work would grow with the page asked
+            for rather than with the page returned. Serving page one to a request for page five
+            thousand would report success for something this route did not do, so it refuses instead.
+          schema:
+            type: string
+            examples: ['5000']
+      responses:
+        '200':
+          description: >-
+            One page of the account's assessments, newest first, with the position of the page after
+            it. An account holding no assessment answers this status with an empty array, and so does
+            a cursor naming the account's oldest row. An empty array is a 200 and never a 404.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssessmentPage'
+              examples:
+                onePageWithMoreToCome:
+                  summary: >-
+                    Two assessments of account 00000000007, with older rows still to come. Both
+                    transaction identifiers are records of app/data/ASCII/dailytran.txt whose card
+                    resolves to that account through app/data/ASCII/cardxref.txt. The first reached
+                    the flag threshold and the second stayed below it while keeping the rule that
+                    contributed. The member nextCursor names the second row, which is the last one
+                    served, so returning it in X-Fraud-Cursor asks for the rows after it.
+                  value:
+                    assessments:
+                      - transactionId: '0000000000683580'
+                        accountId: '00000000007'
+                        riskScore: 60
+                        triggeredRules: [VELOCITY, AMOUNT_ANOMALY]
+                        flagged: true
+                        assessedAt: '2022-06-10T19:27:53.512Z'
+                      - transactionId: '0000000380632461'
+                        accountId: '00000000007'
+                        riskScore: 25
+                        triggeredRules: [MERCHANT_CATEGORY]
+                        flagged: false
+                        assessedAt: '2022-06-10T19:27:53.418Z'
+                    nextPageExists: true
+                    nextCursor: '2022-06-10T19:27:53.418Z|0000000380632461'
+                theLastPage:
+                  summary: >-
+                    The oldest assessment of account 00000000007. No row follows it, so
+                    nextPageExists is false and the answer carries no nextCursor at all rather than a
+                    null one. This is where a caller walking the history stops.
+                  value:
+                    assessments:
+                      - transactionId: '0000000725950464'
+                        accountId: '00000000007'
+                        riskScore: 0
+                        triggeredRules: []
+                        flagged: false
+                        assessedAt: '2022-06-10T19:27:52.004Z'
+                    nextPageExists: false
+                accountHoldsNoAssessment:
+                  summary: >-
+                    Account 00000000030 has no assessment recorded. The array is empty, no page
+                    follows, and the status stays 200.
+                  value:
+                    assessments: []
+                    nextPageExists: false
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '406':
+          $ref: '#/components/responses/NotAcceptable'
+        '500':
+          $ref: '#/components/responses/InternalFailure'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /fraud-assessments/{transactionId}:
+    get:
+      tags: [FraudAssessments]
+      operationId: assessmentOfTransaction
+      summary: Read one transaction's risk assessment.
+      description: >-
+        Returns the assessment recorded for one transaction.
+
+
+        This route answers a demonstration and a support query. It sits on no authorization path and
+        on no posting path, and it performs no scoring.
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          description: >-
+            The assessed transaction, sixteen characters. Width from DALYTRAN-ID PIC X(16) at
+            app/cpy/CVTRA06Y.cpy:L5 and TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5. Both source
+            fields hold text, so the value carries no numeric pattern and a caller left-pads it to
+            sixteen characters. Column transaction_id in db/migration/V1__schema.sql holds it.
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 16
+            pattern: '^[\s\S]*\S[\s\S]*$'
+            examples: ['0000000000683580']
+      responses:
+        '200':
+          description: The assessment recorded for that transaction.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FraudAssessment'
+              examples:
+                flaggedAssessment:
+                  summary: >-
+                    Transaction 0000000000683580, record 1 of app/data/ASCII/dailytran.txt, on
+                    account 00000000007. Two rules contributed and the score reached the flag
+                    threshold.
+                  value:
+                    transactionId: '0000000000683580'
+                    accountId: '00000000007'
+                    riskScore: 60
+                    triggeredRules: [VELOCITY, AMOUNT_ANOMALY]
+                    flagged: true
+                    assessedAt: '2022-06-10T19:27:53.512Z'
+                clearedAssessmentKeepingItsRule:
+                  summary: >-
+                    Transaction 0000000380632461 on the same account. One rule contributed and the
+                    score stayed below the flag threshold, so the verdict is false and the rule
+                    stays on the record.
+                  value:
+                    transactionId: '0000000380632461'
+                    accountId: '00000000007'
+                    riskScore: 25
+                    triggeredRules: [MERCHANT_CATEGORY]
+                    flagged: false
+                    assessedAt: '2022-06-10T19:27:53.418Z'
+                clearedAssessmentNamingNoRule:
+                  summary: >-
+                    Transaction 0000000500885895 on the same account. No rule contributed, so the
+                    score is zero and the rule list is empty.
+                  value:
+                    transactionId: '0000000500885895'
+                    accountId: '00000000007'
+                    riskScore: 0
+                    triggeredRules: []
+                    flagged: false
+                    assessedAt: '2022-06-10T19:27:53.204Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '406':
+          $ref: '#/components/responses/NotAcceptable'
+        '404':
+          description: >-
+            No assessment exists for that transaction. The status travels alone and carries no body.
+        '500':
+          $ref: '#/components/responses/InternalFailure'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+components:
+
+  securitySchemes:
+    basicIdentity:
+      type: http
+      scheme: basic
+      description: >-
+        HTTP Basic authentication over the realm carddemo. The chain in config/SecurityConfig admits
+        only an identity holding the ADMIN role to the two routes above. It answers an authenticated
+        identity holding a business role with 403. The block carddemo.security.users in
+        application.yml configures the identities, and card-platform/.env.example documents the
+        variables each entry reads.
+  responses:
+
+    TooManyRequests:
+      description: >-
+        A rate ceiling refused this request. The filter config/RequestRateCeilingFilter runs ahead of
+        the security chain. It bounds requests from one source, requests presenting one identity,
+        state-changing requests from one source, failed authentications from one source, and requests
+        in flight. Retry-After names whole seconds until the window rolls.
+
+
+        ADDITIVE: a CICS transaction arrived from a terminal an operator was sitting at, and the
+        nightly feed of app/jcl/POSTTRAN.jcl arrived once a day as a dataset. The source therefore
+        had no request rate to bound and holds no matching condition. The detail is fixed and names
+        no address, no identity and no route.
+      headers:
+        Retry-After:
+          description: Whole seconds until the window rolls, one or more.
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: 'about:blank'
+            title: 'Too many requests'
+            status: 429
+            detail: >-
+              This request exceeded a rate this service accepts. Retry after the interval the
+              response names.
+
+    BadRequest:
+      description: >-
+        A path or query value missed the constraint declared for it. One of these: an identifier of
+        the wrong width or shape, or a page outside zero through 1000000. Or a page size outside one
+        through 200, or a page or page size that is not a whole number. Or one of these: a page or
+        page size that arrived carrying no characters, or the required account parameter not arriving
+        at all. A sort parameter on the collection route answers this status too, and that route
+        applies assessment-time descending order only.
+
+
+        Every one of those is a client error and none of them is a fault of this service, so none
+        answers 5xx. The handler api/FraudApiExceptionHandler writes the document below for all of
+        them, and the detail names no value read from the request.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            accountIdentifierTooShort:
+              summary: The collection route was called with accountId=7, which is not eleven digits.
+              value:
+                type: 'about:blank'
+                title: Bad Request
+                status: 400
+                detail: Invalid request content.
+            unsupportedSortOrder:
+              summary: The collection route was called with a sort parameter, which it does not take.
+              value:
+                type: 'about:blank'
+                title: Bad Request
+                status: 400
+                detail: >-
+                  The sort parameter is not supported. Assessments answer in assessment-time
+                  descending order only.
+            pagingValueArrivedEmpty:
+              summary: >-
+                The collection route was called with page= carrying no characters. The parameter
+                arrived, so it is read as a value the caller sent and refused, and not as an omitted
+                parameter taking its default.
+              value:
+                type: 'about:blank'
+                title: Bad Request
+                status: 400
+                detail: >-
+                  The page parameter arrived carrying no value. Omit it to take the default, or send
+                  a number from 0 through 1000000.
+
+    Unauthorized:
+      description: The request carried no usable credential.
+      headers:
+        WWW-Authenticate:
+          description: The challenge, naming the basic scheme and the realm.
+          schema:
+            type: string
+            examples: ['Basic realm="carddemo", charset="UTF-8"']
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            noCredential:
+              summary: The request arrived with no Authorization header.
+              value:
+                type: 'about:blank'
+                title: Unauthorized
+                status: 401
+                detail: This request carried no usable credential.
+
+    Forbidden:
+      description: >-
+        The authenticated identity does not hold the ADMIN role the two routes above require. The
+        text names neither the route nor the identifier that was asked for.
+        A method this route does not serve is refused here too, since config/SecurityConfig declares
+        one rule per method and path and admits no request a rule does not name.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            businessRoleRefused:
+              summary: An identity holding the USER role called an administrator-only route.
+              value:
+                type: 'about:blank'
+                title: Forbidden
+                status: 403
+                detail: This identity may not use this operation.
+
+    MethodNotAllowed:
+      description: >-
+        The route was called with a method it does not serve. Both routes serve GET alone, and the
+        Allow header names it. The handler api/FraudApiExceptionHandler keeps the status and the
+        headers the framework named, so a caller's mistake is not recorded as a fault of this
+        service. The chain in config/SecurityConfig declares one rule per method and path, so a
+        request whose method carries no rule is refused with 403 before the dispatcher runs. This
+        answer is therefore the one a request the chain admits receives.
+      headers:
+        Allow:
+          description: The methods this route serves.
+          required: true
+          schema:
+            type: string
+            examples: ['GET']
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            methodRefused:
+              summary: A write method was sent to a read-only route.
+              value:
+                type: 'about:blank'
+                title: Method Not Allowed
+                status: 405
+                detail: >-
+                  This route does not serve the method, path or media type the request named.
+
+    NotAcceptable:
+      description: >-
+        The Accept header of the request names no media type this route writes. The response carries
+        no body, because a caller that accepts nothing this route writes cannot be sent a problem
+        document either.
+
+    InternalFailure:
+      description: >-
+        The assessment could not be read. The body names no table, no column, no statement and no
+        exception class.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            readFailed:
+              summary: The store could not answer the read.
+              value:
+                type: 'about:blank'
+                title: Internal Server Error
+                status: 500
+                detail: The assessment could not be read.
+
+  schemas:
+
+    AssessmentPage:
+      type: object
+      description: >-
+        One page of one account's assessments, and how to reach the page after it.
+
+
+        No count of the whole history appears here. Counting an account's rows reads them all, which
+        is the work a page exists to avoid. A caller learns the history is exhausted from
+        nextPageExists instead of from a total.
+      additionalProperties: false
+      required:
+        - assessments
+        - nextPageExists
+      properties:
+        assessments:
+          type: array
+          description: >-
+            The rows of this page, newest first. Never longer than the size the request asked for, or
+            than the 20 rows a request that named no size receives.
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/FraudAssessment'
+        nextPageExists:
+          type: boolean
+          description: >-
+            Whether the account holds rows older than this page. Answered from one row read past the
+            page rather than from a count of the remainder.
+        nextCursor:
+          type: string
+          description: >-
+            The position the next page starts after, to be returned in X-Fraud-Cursor. Present
+            exactly when nextPageExists is true, and absent from the body altogether on the last page
+            rather than present and null, so a caller has one thing to test.
+          examples: ['2022-06-10T19:27:53.418Z|0000000380632461']
+
+    FraudAssessment:
+      type: object
+      description: >-
+        One recorded risk assessment, the six values row fraud_assessment holds. Each property below
+        has a column in db/migration/V1__schema.sql, and no other column of that row reaches a
+        caller. No property here carries a Primary Account Number (PAN), a cardholder name, a
+        monetary amount, a card status or an account status.
+      additionalProperties: false
+      required:
+        - transactionId
+        - accountId
+        - riskScore
+        - triggeredRules
+        - flagged
+        - assessedAt
+      properties:
+        transactionId:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: '^[\s\S]*\S[\s\S]*$'
+          description: >-
+            The assessed transaction, sixteen characters of text. Width from DALYTRAN-ID PIC X(16) at
+            app/cpy/CVTRA06Y.cpy:L5 and TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5. Both source
+            fields hold text, so the value carries no numeric pattern beyond the one character that
+            has to be something other than whitespace. That is the constraint the read route applies
+            to the same value. Column transaction_id holds it.
+          examples: ['0000000000683580']
+        accountId:
+          type: string
+          pattern: '^[0-9]{11}$'
+          description: >-
+            The account the transaction belongs to, eleven digits of text. Width and digits from
+            XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. A leading zero is part of the value.
+            The same value is the message key of each event this service publishes. Column account_id
+            holds it.
+          examples: ['00000000007']
+        riskScore:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: >-
+            The score the risk rules produced, a whole number from 0 through 100, where a higher
+            number means more risk. The value is not money and carries no decimal place. The bounds
+            match riskScore in
+            libs/event-contracts/src/main/resources/schemas/fraud-flagged-v1.json. This property is
+            net new; no COBOL ancestor exists. Column risk_score holds it.
+          examples: [60, 25, 0]
+        triggeredRules:
+          type: array
+          uniqueItems: true
+          description: >-
+            The rules that contributed points, in the order the rules ran. Each rule appears at most
+            once, and the three identifiers name the rule classes VelocityRule, AmountAnomalyRule and
+            MerchantCategoryRule. The list carries no upper bound on its length. This property is net
+            new; no COBOL ancestor exists. Column triggered_rules holds it as a JavaScript Object
+            Notation (JSON) array.
+          items:
+            type: string
+            enum: [VELOCITY, AMOUNT_ANOMALY, MERCHANT_CATEGORY]
+          examples: [[VELOCITY, AMOUNT_ANOMALY], [MERCHANT_CATEGORY], []]
+        flagged:
+          type: boolean
+          description: >-
+            The stored verdict, read from column flagged. True when riskScore reached the configured
+            flag threshold, and false below it. carddemo.fraud.risk.flag-threshold in
+            application.yml declares that threshold, and its shipped value is a demonstration value.
+            A false verdict may still name the rules that contributed, so false does not imply an
+            empty triggeredRules. This property is net new; no COBOL ancestor exists.
+          examples: [true, false]
+        assessedAt:
+          type: string
+          format: date-time
+          minLength: 20
+          maxLength: 30
+          pattern: '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]{1,9})?Z$'
+          description: >-
+            The time the risk rules finished, in Coordinated Universal Time. The shape matches
+            assessedAt in libs/event-contracts/src/main/resources/schemas/fraud-flagged-v1.json.
+            This property is net new; no COBOL ancestor exists. Column assessed_at holds it.
+          examples: ['2022-06-10T19:27:53.512Z']
+
+    Problem:
+      type: object
+      description: >-
+        One problem document, as RFC 9457 describes it. The four members below are the whole of the
+        body. None of them carries a stack frame, an exception class name, a table name, a schema
+        name, a column name, a constraint name or a fragment of a statement.
+      additionalProperties: false
+      required: [type, title, status, detail]
+      properties:
+        type:
+          type: string
+          description: >-
+            The problem type. This service writes about:blank for each status it answers, so a
+            caller reads the status and the title.
+          examples: ['about:blank']
+        title:
+          type: string
+          description: A short summary of the status, fixed per status.
+          examples: [Bad Request, Unauthorized, Forbidden, Internal Server Error]
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+          description: The response status code, repeated inside the body.
+          examples: [400, 401, 403, 500]
+        detail:
+          type: string
+          description: >-
+            What went wrong on this occurrence. The text names no account identifier, no transaction
+            identifier and no route.
+          examples: ['This identity may not use this operation.']

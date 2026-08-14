@@ -1,0 +1,222 @@
+# Secret-scanning configuration for the CardDemo repository.
+#
+# The secret-scan stage of .github/workflows/ci.yml runs gitleaks over the working tree and
+# over the history, and a finding fails the run. That only works if the known-safe values
+# this repository ships on purpose are named here: a scanner that fires on every run gets
+# switched off, and a scanner nobody reads is worse than none.
+#
+# Every entry below is a decision with a reason, and every entry is scoped two ways at once.
+# NO ENTRY NAMES A PATH, and there is no `paths` key in this file at all.
+#
+# First, by rule. Each entry sits under the one default rule that reports the value, as
+# [[rules.allowlists]] rather than as a top-level [[allowlists]]. The difference is not
+# cosmetic. A top-level allowlist that names a path makes gitleaks skip that file before it
+# scans it, for every rule at once — so a GitHub token, a cloud key or a private key in the
+# same file is never reported. That was measured against gitleaks 8.30.1 with a file holding
+# a real-shaped GitHub personal access token: under a top-level path allowlist the token was
+# invisible, and under a rule-scoped allowlist it was reported while the intended value stayed
+# exempt. A whole-file skip is the sharpest edge of that failure, and CWE-693 names the class
+# it belongs to.
+# Pairing that path with `condition = "AND"` does not narrow it either, measured the same way:
+# the path still excuses the whole file, so a shape is the only thing worth writing down.
+#
+# Second, by the text of the value rather than by where it sits. No entry below names a path
+# at all. Each one matches the value together with the context that makes it safe: the
+# constant it is assigned to, the JSON field it appears under, the placeholder wording of a
+# template. That is why the same secret pasted into the same file still fails the scan.
+# Excluding 64 lowercase hexadecimal characters everywhere would exempt the shape of a card
+# token and equally the shape of a 256-bit key written as hex; no entry below exempts that
+# shape on its own, and
+# card-platform/equivalence-tests CardholderDataInArtifactsContractTest fails the build if one
+# ever does.
+#
+# The rule pack is gitleaks' own default set, extended by nothing. Each [[rules]] block below
+# carries an id and allowlists only, which patches the default rule of that id rather than
+# replacing it — verified by confirming the rule still reports elsewhere. Adding a rule is a
+# change to what this repository considers a secret and belongs in
+# card-platform/docs/decision-log.md alongside this file.
+#
+# Scanned with no allowlist at all, the working tree yields 38 findings under two default rules
+# and the history yields 151 under four. Thirteen of the working-tree findings sit in
+# card-platform/.env, which git ignores and no scan of a checkout ever reaches. The remaining 25
+# are the ones the entries below account for, which is why the two rules patched here are the two
+# the working tree reports.
+#
+# The history is a different problem with a different answer. Once these entries apply it still
+# holds 113 findings, on 39 commits none of which this branch can reach, and they belong to
+# unrelated branches of a shared sample repository. Those are recorded by fingerprint in
+# card-platform/.gitleaks-baseline.json, which the scheduled scan of .github/workflows/ci.yml
+# reads and no other scan does. An allowlist entry would have excused every future value of the
+# same shape; a fingerprint excuses one reviewed finding and nothing that resembles it.
+#
+# This file sits under card-platform/ rather than at the repository root because card-platform/
+# and .github/ are the only directories this engagement adds to, so `git diff --name-only`
+# stays a complete audit of its scope. The scan itself still reads the whole repository: the
+# workflow passes `dir .` and `git .` and scopes only --config to this path.
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------------------------
+# generic-api-key. Reports a high-entropy value next to a key-like name, and accounts for 18 of
+# the 23 working-tree findings and 23 of the 31 history findings.
+# ---------------------------------------------------------------------------------------------
+
+[[rules]]
+id = "generic-api-key"
+
+  [[rules.allowlists]]
+  description = """
+  Card tokens named as such. A card token is the keyed digest com.carddemo.cobol.PanMasker
+  derives from a card number, and it is the value every external surface of this platform names
+  a card by: events, API responses, log lines and two read models. Publishing one is the design,
+  not an accident.
+
+  The three shapes below are the three ways a test writes one down: a Java constant whose name
+  ends in CARD_TOKEN, a cardToken field of a JSON payload or a path variable, and a short
+  literal repeated to a full 64 characters so the source needs no 64-character line. Each
+  carries the name as well as the value, so the value alone is exempt nowhere. A 64-hex secret
+  assigned to anything else — an api key, a signing key, a session token — still fails the scan.
+
+  The first pattern ends at CARD_TOKEN rather than allowing more of the name after it. An
+  earlier form read [A-Z_]*CARD_TOKEN[A-Z_]* and therefore also exempted CARD_TOKEN_SECRET,
+  which is the HMAC key every one of these tokens is derived with — the one value in this
+  scheme that must never be committed. CardholderDataInArtifactsContractTest asserts that case
+  by name.
+  """
+  regexTarget = "match"
+  regexes = [
+    '''[A-Z_]*CARD_TOKEN\s*=\s*"[0-9a-f]{16,64}"''',
+    '''"?cardToken"?\s*[:,]\s*"[0-9a-f]{64}"''',
+    '''"[0-9a-f]{16}"\.repeat\(4\)''',
+  ]
+
+  [[rules.allowlists]]
+  description = """
+  Two card tokens the history carries. The demo walkthroughs of card-platform/README.md and of
+  the notification service README used to paste a literal card token into a shell variable; both
+  now derive it with openssl from the value in .env, so the working tree holds neither. The
+  history is immutable, so the history scan reports them for as long as the branch exists, and a
+  scan that always fails is a scan nobody reads.
+
+  The pattern admits the assignment and nothing else: CARD_TOKEN, an equals sign, then a token.
+  CARD_TOKEN_SECRET cannot match it, because the character after CARD_TOKEN there is an
+  underscore rather than an equals sign — and that secret is the HMAC key every one of these
+  tokens is derived with. A card token is publishable by design; its key is not.
+
+  The pattern carries no ^ or $ anchor on purpose. In history mode gitleaks matches an allowlist
+  against the diff fragment rather than against one line of it, so an anchored form matches in
+  the working tree and silently fails to match in the history — which is the half of the scan
+  this entry exists for. Both modes were run against this file to confirm it.
+  """
+  regexTarget = "line"
+  regexes = ['''CARD_TOKEN=[0-9a-f]{64}''']
+
+  [[rules.allowlists]]
+  description = """
+  The two test keys of libs/cobol-compat PanMaskerTest. PanMasker refuses a key under 32
+  characters, so a test that configures a key of its own has to name one that long. Both are
+  literals in a test source file, neither reaches a deployment artifact, and
+  card-platform/equivalence-tests CardTokenKeyContractTest fails the build if either does.
+  """
+  regexTarget = "match"
+  regexes = [
+    '''panmasker-test-key-one-0123456789''',
+    '''panmasker-test-key-two-9876543210''',
+  ]
+
+  [[rules.allowlists]]
+  description = """
+  The build-scope card-token key of card-platform/pom.xml. It exists because PanMasker supplies
+  no default key and every test that tokenizes a card number would otherwise fail. It travels
+  one way only, as a system property to Surefire and Failsafe, the authorization and card
+  services refuse to start on it, and CardTokenKeyContractTest fails the build if it reaches a
+  deployment artifact.
+  """
+  regexTarget = "match"
+  regexes = ['''carddemo-build-scope-card-token-key-tests-only''']
+
+  [[rules.allowlists]]
+  description = """
+  Version 4 identifiers. Every event on this platform carries one as its eventId, every
+  processed-event marker is keyed by one, and tests name them as literals so an assertion can
+  compare a specific delivery. An identifier is published in every event envelope by design, and
+  the shape is unmistakable: five hyphenated groups of fixed width.
+  """
+  regexTarget = "match"
+  regexes = ['''\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b''']
+
+  [[rules.allowlists]]
+  description = """
+  The refused template values of card-platform/deploy/k8s/31-secret.example.yaml. Every one is
+  the word REPLACE followed by what to replace it with: the services check each value at start-up
+  and refuse to run on any of them, and card-platform/docs/onboarding.md documents generating the
+  real ones. The entry matches that wording rather than the file, so a real credential committed
+  to the same file still fails the scan.
+
+  The fourth pattern is the same wording base64-encoded, which is what the keystore entries of a
+  Kubernetes Secret hold: UkVQTEFDRS1XSVRILVRIRS1 decodes to "REPLACE-WITH-THE-". A real keystore
+  encoded into the same field does not begin with those bytes and is still reported.
+  """
+  regexTarget = "match"
+  regexes = [
+    '''REPLACE-WITH-A-GENERATED-''',
+    '''REPLACE-WITH-THE-''',
+    '''REPLACE-THIS-PLACEHOLDER-WITH-''',
+    '''UkVQTEFDRS1XSVRILVRIRS1''',
+  ]
+
+  [[rules.allowlists]]
+  description = """
+  One sentence of card-platform/equivalence-tests ContinuousIntegrationWorkflowContractTest. The
+  default generic rule reads "secret scanning, dependency/advisory review" as a key and a value,
+  and reports the two words after the comma as a credential. They are English: the sentence
+  quotes a review listing the controls the workflow was missing, and every clause of it is an
+  assertion in the test below it. The entry names the phrase, so any other finding in that file
+  still fails the scan.
+  """
+  regexTarget = "match"
+  regexes = ['''secret scanning, dependency/advisory''']
+
+# ---------------------------------------------------------------------------------------------
+# curl-auth-user. Reports a password on a curl command line, and accounts for the remaining 5
+# working-tree findings and 8 history findings.
+# ---------------------------------------------------------------------------------------------
+
+[[rules]]
+id = "curl-auth-user"
+
+  [[rules.allowlists]]
+  description = """
+  The documented curl examples of the service READMEs. Each passes --user with the literal phrase
+  that tells a reader to substitute the password they generated, which gitleaks reads as a
+  credential in a command line. No README carries a password: every one is generated per
+  deployment by the recipe in card-platform/docs/onboarding.md.
+  """
+  regexTarget = "match"
+  regexes = ['''the password you chose''']
+
+  [[rules.allowlists]]
+  description = """
+  The rule identifier inside card-platform/.gitleaks-baseline.json. That file is the reviewed
+  baseline of the 113 findings this repository's history carried before this engagement, and every
+  Secret and Match in it reads REDACTED: it records which finding was reviewed and never what the
+  finding held. One of its own fingerprints ends in the text curl-auth-user:441, which this rule
+  reads as a user name in a command line.
+
+  The pattern admits that one shape and nothing else: the rule identifier, a colon, a line number
+  and a closing quote, which is the tail of a gitleaks fingerprint. A credential pasted into the
+  baseline still fails the scan under generic-api-key or under whichever rule matches it, and
+  ContinuousIntegrationWorkflowContractTest refuses a baseline entry whose Secret is not REDACTED.
+  """
+  regexTarget = "match"
+  regexes = ['''curl-auth-user:[0-9]+"''']
+
+  [[rules.allowlists]]
+  description = """
+  The two examples that name a demo user with no password at all. Both read `-u admin001` and
+  stop there, so curl prompts for the password rather than carrying one. The rule reports the
+  user name as the credential; the credential is absent by construction.
+  """
+  regexTarget = "match"
+  regexes = ['''-u (admin001|user0001|monitor01)\s*\\?\s*$''']

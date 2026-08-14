@@ -1,0 +1,383 @@
+# Deployment and Service for the ledger posting service, the second reader of
+# transaction.authorized. Three listeners run, each under a group of its own:
+# TransactionAuthorizedConsumer on transaction.authorized under ledger-posting,
+# TransactionDeclinedConsumer on transaction.declined under ledger-reject, which
+# writes the 430-byte reject row of app/cbl/CBTRN02C.cbl:L446-L465, and
+# AccountStateChangedConsumer on account.state-changed under ledger-account-state,
+# which keeps account_balance_projection current. It calls no other service.
+#
+# The posting arithmetic of app/cbl/CBTRN02C.cbl, the balance query and the outbox
+# relay that publishes transaction.posted are all present, so the container starts,
+# migrates its schema, posts a delivered event, serves its balance query and answers
+# /actuator.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger-posting-service
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: ledger-posting-service
+    app.kubernetes.io/component: ledger-posting
+    app.kubernetes.io/part-of: card-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ledger-posting-service
+      app.kubernetes.io/part-of: card-platform
+  template:
+    metadata:
+      labels:
+        # The name below is what the network policies in 10-kafka.yaml and
+        # 20-postgres.yaml admit. Both name the six services individually rather
+        # than matching the part-of label, so a Pod that merely belongs to this
+        # platform reaches neither the broker nor the database.
+        app.kubernetes.io/name: ledger-posting-service
+        app.kubernetes.io/component: ledger-posting
+        app.kubernetes.io/part-of: card-platform
+    spec:
+      automountServiceAccountToken: false
+      # Account 10001 owns /app in the image. 00-namespace.yaml refuses root.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # The mounted keystore, truststore and certificate authority arrive owned
+        # by root. fsGroup gives group 10001 read access to those three files.
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ledger-posting-service
+          # Built from card-platform/services/ledger-posting-service/Dockerfile and
+          # named by an explicit tag, as all six platform images here are. The two
+          # upstream images, apache/kafka and postgres, are digest-pinned instead.
+          # 40-authorization-service.yaml states the whole policy once.
+          #
+          # Build and load the image before applying this file. The build context is the
+          # module directory, the one the Dockerfile header names:
+          #
+          #   version=$(mvn -f card-platform/pom.xml help:evaluate \
+          #     -Dexpression=project.version -q -DforceStdout)
+          #   mvn -f card-platform/pom.xml -pl services/ledger-posting-service -am package
+          #   docker build -f card-platform/services/ledger-posting-service/Dockerfile \
+          #     -t "carddemo/ledger-posting-service:${version}" \
+          #     card-platform/services/ledger-posting-service
+          # THE TAG IS MUTABLE, AND THAT IS THE RESIDUAL RISK. Bytes tagged
+          # carddemo/ledger-posting-service:1.0.0-SNAPSHOT on one node are whatever an operator
+          # loaded there, and no manifest in this folder would notice a different build under the
+          # same name. The six references therefore live in one place, deploy/k8s/kustomization.yaml,
+          # so pinning them by digest is one edit rather than six. deploy/k8s/README.md gives the
+          # procedure and states plainly what a node verifies about each kind of image.
+          image: carddemo/ledger-posting-service:1.0.0-SNAPSHOT
+          imagePullPolicy: Never
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            # The image writes nothing under / after start, and the Dockerfile pins
+            # TMPDIR and java.io.tmpdir to /tmp. The tmp volume below is the one
+            # writable path.
+            readOnlyRootFilesystem: true
+          ports:
+            # 8080 carries the Representational State Transfer (REST) surface, and
+            # the Service below targets it. 9080 carries /actuator and matches
+            # MANAGEMENT_PORT in 30-configmap.yaml. No Service exposes 9080.
+            # 30-configmap.yaml encrypts both ports through SERVER_SSL_ENABLED and
+            # MANAGEMENT_SSL_ENABLED.
+            # Named https, not http: 30-configmap.yaml sets SERVER_SSL_ENABLED, so
+            # what answers on 8080 is Transport Layer Security. A port name is
+            # metadata other tooling reads, and `http` told it the wrong protocol.
+            - name: https
+              containerPort: 8080
+            - name: management
+              containerPort: 9080
+          envFrom:
+            # Broker address, topic names, consumer groups, log levels, the four
+            # request-identity usernames (the acquirer one is read by the authorization
+            # service alone), and the transport settings. No credential
+            # appears in that ConfigMap.
+            - configMapRef:
+                name: carddemo-config
+            # This service's own two credentials: the password of its database login
+            # and the password of its broker identity. Two keys, and no other service
+            # reads that Secret.
+            - secretRef:
+                name: carddemo-ledger-secret
+            # The three request-identity password hashes, shared by all six services.
+            - secretRef:
+                name: carddemo-identity-secret
+          env:
+            # The schema and the login this service owns. envFrom above pulls the
+            # whole ConfigMap, so the six services hold distinct key names and each
+            # Deployment binds the five keys it owns.
+            - name: SPRING_FLYWAY_SCHEMAS
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: LEDGER_DB_SCHEMA
+            - name: SPRING_FLYWAY_DEFAULT_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: LEDGER_DB_SCHEMA
+            - name: SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: LEDGER_DB_SCHEMA
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: LEDGER_DB_USER
+            # The datasource address this service owns, assembled here rather than
+            # shared. $(VAR) expansion reads this env list alone, so the five values
+            # below are declared here as well as pulled by envFrom. 30-configmap.yaml
+            # carries a SPRING_DATASOURCE_OPTIONS suffix and no database name, so each
+            # Deployment names the one database it owns.
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: POSTGRES_HOST
+            - name: POSTGRES_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: POSTGRES_PORT
+            - name: LEDGER_DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: LEDGER_DB_NAME
+            - name: LEDGER_DB_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: LEDGER_DB_SCHEMA
+            - name: SPRING_DATASOURCE_OPTIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: SPRING_DATASOURCE_OPTIONS
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:postgresql://$(POSTGRES_HOST):$(POSTGRES_PORT)/$(LEDGER_DB_NAME)?currentSchema=$(LEDGER_DB_SCHEMA)&$(SPRING_DATASOURCE_OPTIONS)"
+            - name: KAFKA_SASL_USERNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: LEDGER_KAFKA_USER
+            # Consumes transaction.authorized in consumer group ledger-posting. Each
+            # consumer group holds its own read position, so the eleven groups
+            # 30-configmap.yaml declares advance independently. 10-kafka.yaml grants this
+            # broker identity that group, GROUP_LEDGER_REJECT and GROUP_LEDGER_ACCOUNT, and no
+            # other.
+            #
+            # This service runs two further listeners. One reads transaction.declined under
+            # GROUP_LEDGER_REJECT and writes the 430-byte reject row of
+            # app/cbl/CBTRN02C.cbl:L446-L465, which is the production ingress of the reject
+            # path. The other reads account.state-changed under GROUP_LEDGER_ACCOUNT to keep
+            # account_balance_projection current. Both groups and both topic names arrive
+            # through the envFrom above rather than as a binding here, because only the group
+            # the framework property below names needs one.
+            - name: SPRING_KAFKA_CONSUMER_GROUP_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: GROUP_LEDGER_POSTING
+            # The server keystore is private to this service; trust material is shared.
+            - name: SERVER_SSL_KEYSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-ledger-tls-secret
+                  key: SERVER_SSL_KEYSTORE_PASSWORD
+            - name: SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-trust-secret
+                  key: KAFKA_SSL_TRUSTSTORE_PASSWORD
+          # Both probes read /actuator/health on the management port over HTTPS, which
+          # 30-configmap.yaml encrypts. Port 8080 answers no management request.
+          # Readiness allows time for the Flyway migration this service runs at startup,
+          # and that migration creates eight tables. The kubelet does not verify the
+          # certificate a probe is presented.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: management
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # The liveness group reports process state and excludes every external
+          # dependency. A database or broker outage withdraws this Pod from its
+          # Service and restarts no healthy process.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: management
+              scheme: HTTPS
+            initialDelaySeconds: 90
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          # The image caps the heap at 75 percent of the limit below.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            # The one writable path, an in-memory volume capped at 64 mebibytes.
+            # card-platform/docker-compose.yml mounts a tmpfs of the same size at the
+            # same place.
+            - name: tmp
+              mountPath: /tmp
+            # Keystore, truststore and certificate authority, read-only. The keystore
+            # is what this service presents on both ports. The truststore verifies the
+            # broker, and the authority verifies the database server under
+            # sslmode=verify-full.
+            - name: transport-security
+              mountPath: /etc/carddemo/tls
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        - name: transport-security
+          projected:
+            defaultMode: 0640
+            sources:
+              - secret:
+                  name: carddemo-ledger-tls-secret
+                  items:
+                    - key: keystore.p12
+                      path: keystore.p12
+              - secret:
+                  name: carddemo-trust-secret
+                  items:
+                    - key: truststore.p12
+                      path: truststore.p12
+                    - key: ca.crt
+                      path: ca.crt
+---
+# Pods reach the service at ledger-posting-service:8080, a short name the Domain
+# Name System (DNS) resolves. Nothing outside the cluster reaches it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger-posting-service
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: ledger-posting-service
+    app.kubernetes.io/component: ledger-posting
+    app.kubernetes.io/part-of: card-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ledger-posting-service
+    app.kubernetes.io/part-of: card-platform
+  ports:
+    # 8080 alone. A monitoring collector reaches 9080 by Pod address.
+    - name: https
+      port: 8080
+      # By name rather than by number, so the Service follows the container port
+      # this Deployment declares instead of repeating its value. 10-kafka.yaml
+      # already targets `internal` the same way.
+      targetPort: https
+      protocol: TCP
+      # The protocol the port speaks, declared where protocol-aware tooling reads
+      # it. protocol: TCP is the transport; appProtocol is the application layer.
+      appProtocol: https
+---
+# Network policy for the ledger posting pod. Ingress admits its query and
+# management surfaces. Egress admits only Domain Name System (DNS), PostgreSQL
+# and Kafka.
+#
+# This service is a consumer. Nothing on the platform calls it to post a
+# transaction. It reads transaction.authorized and publishes transaction.posted. The
+# only inbound traffic it expects is the read-only balance query on 8080 and a
+# metrics scrape on 9080.
+#
+# config/SecurityConfig authenticates every call to the query surface. It leaves
+# /actuator/health open for probes and requires ROLE_MONITORING for metrics and the
+# Prometheus scrape. An anonymous caller receives 401; an identity holding a business
+# role receives 403. This policy closes the same two gaps at the network layer.
+# 40-authorization-service.yaml carries the same shape and the note on kubelet
+# probes, which originate from the node and match neither selector below.
+#
+# A cluster whose Container Network Interface plug-in does not implement
+# NetworkPolicy ignores this object. Confirm support before treating the service as
+# isolated.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ledger-posting-service-ingress
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: ledger-posting-service
+    app.kubernetes.io/component: ledger-posting
+    app.kubernetes.io/part-of: card-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ledger-posting-service
+      app.kubernetes.io/part-of: card-platform
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # The balance query surface. Any pod of this platform may call it, and Spring
+    # Security authenticates every request that arrives.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 8080
+          protocol: TCP
+    # The management surface. A monitoring collector carries the label below and
+    # nothing else in this namespace does, so no business pod reaches this port.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: monitoring
+      ports:
+        - port: 9080
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kafka
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 9092
+          protocol: TCP

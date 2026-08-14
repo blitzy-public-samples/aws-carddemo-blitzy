@@ -1,0 +1,234 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Module descriptor for card-service, whose behaviour comes from COCRDLIC,
+     COCRDSLC and COCRDUPC. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- Design decisions for this file: card-platform/docs/decision-log.md -->
+
+  <!-- The parent sits two levels up. The services directory holds no POM of its own. -->
+  <parent>
+    <groupId>com.carddemo</groupId>
+    <artifactId>card-platform</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <!-- groupId and version come from the parent. -->
+  <artifactId>card-service</artifactId>
+  <packaging>jar</packaging>
+
+  <name>CardDemo Card Platform :: Card Service</name>
+  <description>
+    Card list, card detail and card update over Representational State Transfer
+    (REST). Publishes one CardUpdated event on mutation, against the shared
+    versioned contract card-updated-v1.json that com.carddemo:event-contracts
+    ships. Three checks run before the event reaches the broker: the event type
+    against its topic, the account identity against the message key, and the
+    payload against that contract. Consumes no event.
+  </description>
+
+  <!-- Language level. The compiler plugin reads maven.compiler.release and the aggregator's
+       enforcer rule requires 25 in every module. -->
+  <properties>
+    <java.version>25</java.version>
+    <maven.compiler.release>25</maven.compiler.release>
+  </properties>
+
+  <dependencies>
+
+    <!-- Platform libraries. This module depends on these two and on no other
+         module under services. Versions come from the aggregator. -->
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>event-contracts</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>cobol-compat</artifactId>
+    </dependency>
+
+    <!-- Web surface, plus the bean constraints translated from the validation
+         paragraphs of COCRDUPC. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!-- Persistence. Flyway owns every schema object and JPA validates
+         against it. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <!-- Registers the Flyway auto-configuration, which runs the migrations at startup.
+         flyway-core below registers none of its own. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-flyway</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <!-- Dialect module. The current Flyway line ships PostgreSQL support separately. -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- Messaging. The starter registers the Kafka auto-configuration and binds every
+         spring.kafka property; the spring-kafka artifact below registers none of its own. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-kafka</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka</artifactId>
+    </dependency>
+
+    <!-- The broker client. This module imports org.apache.kafka.clients or
+         org.apache.kafka.common directly. Version from the imported bill of materials.
+         Decisions: card-platform/docs/decision-log.md, under "Which artifacts a module
+         declares for itself, and which it reaches through a starter". -->
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka-clients</artifactId>
+    </dependency>
+    <!-- JSON binding. This module imports tools.jackson.databind directly. jackson-core and
+         the Jackson 2 annotations arrive with it and are not declared.
+         Decisions: card-platform/docs/decision-log.md, under "Which artifacts a module
+         declares for itself, and which it reaches through a starter". -->
+    <dependency>
+      <groupId>tools.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+
+    <!-- Observability. Health and metrics endpoints, counters and timers. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- Request authentication and authorization. config/SecurityConfig declares the two
+         filter chains, the default-deny posture and the encoded-password requirement. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- Test scope. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Testcontainers 2.x artifact identifiers carry a testcontainers- prefix,
+         and the three declarations below use it. At 2.0.5 the un-prefixed
+         postgresql, kafka and junit-jupiter identifiers do not exist. -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-kafka</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Waits for an asynchronous publish to land in a consumer test. -->
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Executable-archive packaging. The aggregator pins the version. -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+
+      <!-- Runs the container-backed checks named *IT, which Surefire leaves alone. The parent
+           supplies the version and the execution in pluginManagement, and naming the plugin here is
+           what activates that inherited execution for this module. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <!--
+      Lets the equivalence stage build this module without re-running its integration
+      suite, which the service integration stage ran and whose reports it kept.
+
+      The equivalence stage asks Maven for equivalence-tests and everything it needs, and
+      this module is one of those needs. Without this profile that stage runs every
+      Failsafe class here a second time, which is the whole of the service integration
+      stage repeated for no new information. The profile is inert until
+      -DskipServiceIntegrationTests is named, so the default build, `mvn verify` and the
+      service integration stage all behave exactly as before. It sits in this module
+      rather than in the parent because the parent is also the parent of
+      equivalence-tests, whose Failsafe classes are the very ones that stage runs.
+
+      The activation reads the value and not the presence. Without it Maven activates the
+      profile whenever the property is named at all, so -DskipServiceIntegrationTests=false
+      skipped the suite an operator had just asked for and reported a green build over
+      nothing. The flag given no value still activates it, because Maven assigns "true".
+    -->
+    <profile>
+      <id>skip-service-integration-tests</id>
+      <activation>
+        <property>
+          <name>skipServiceIntegrationTests</name>
+          <value>true</value>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <configuration>
+              <skipTests>true</skipTests>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+
+</project>

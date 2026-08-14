@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://carddemo.example.com/schemas/transaction-declined-v3.json",
+  "title": "TransactionDeclined",
+  "description": "A declined authorization call whose card the cross-reference resolved to an account, carrying the whole refused transaction record. Fifteen payload fields name the attempt, the reason it failed and every descriptive field of the daily transaction record at app/cpy/CVTRA06Y.cpy, so a consumer can reproduce REJECT-TRAN-DATA PIC X(350) at app/cbl/CBTRN02C.cbl:L177 byte for byte. Five envelope fields precede them, and no source record carries an envelope. This document is version 3. It adds the nine descriptive fields to the version 1 set and changes nothing in it, so a consumer reading version 1 is unaffected. A decline whose card resolved no account is governed by transaction-declined-v2.json and carries none of the nine, because no account was resolved to attribute the record to.",
+  "$comment": "app/cbl/CBTRN02C.cbl:L370-L378 runs the card cross-reference check first and the account check only while the reason code is still zero, so one event carries one code. The oneOf block below pins each reason code to the one description the source writes beside it, so a code paired with another code's text fails validation. aggregateId and accountId carry one account identifier, and the Kafka message key is that value, so the key and the payload cannot disagree. app/cbl/CBTRN02C.cbl:L447 copies the arriving 350-byte record into the reject record before it appends the 80-byte validation trailer, which is why the nine descriptive fields are required here: a consumer that owns the reject row cannot render that record without them. The nine widths match transaction-posted-v2.json exactly, so one reader parses both. No card token appears: the reject row displays a masked number and keys on nothing, so a token here would be a value with no reader.",
+  "type": "object",
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The idempotency key, a lower-case canonical Universally Unique Identifier (UUID) of thirty-six characters. A consumer checks this identifier against its own processed_event table before it acts. It then commits its side effects and the marker row in one local transaction, marker after effects, and acknowledges the message only after that transaction commits. The pattern is asserted directly, so validation does not depend on the validator enabling the optional format-assertion vocabulary. Additive. No source field exists.",
+      "examples": [
+        "3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"
+      ]
+    },
+    "eventType": {
+      "type": "string",
+      "const": "TransactionDeclined",
+      "description": "The routing discriminator. A consumer reads this field to learn which payload arrived. Additive. No source field exists.",
+      "examples": [
+        "TransactionDeclined"
+      ]
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 3,
+      "description": "The contract version. This file is version 3, matching the -v3 suffix in its name. Additive. No source field exists.",
+      "examples": [
+        3
+      ]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
+      "description": "The publish timestamp, in Coordinated Universal Time. The authorization service stamps it when it writes the event. This document declares no separate authorization timestamp, so occurredAt is the only time it carries. Additive. No source field exists.",
+      "examples": [
+        "2022-06-10T19:27:53.412Z"
+      ]
+    },
+    "aggregateId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, eleven digits, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. The Kafka message key, this field and the payload field accountId all carry one value, so account identity has a single source. A publisher compares the key against both fields and rejects the message on any difference.",
+      "examples": [
+        "00000000007"
+      ]
+    },
+    "transactionId": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "description": "The transaction identifier, sixteen characters. From TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5 and DALYTRAN-ID at app/cpy/CVTRA06Y.cpy:L5.",
+      "examples": [
+        "0000000000683580"
+      ]
+    },
+    "accountId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, eleven digits, and the same value aggregateId carries. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. A text field keeps a leading zero, and a consumer maps this field onto its own account column.",
+      "examples": [
+        "00000000007"
+      ]
+    },
+    "declineReasonCode": {
+      "type": "string",
+      "enum": [
+        "0100",
+        "0101",
+        "0102",
+        "0103"
+      ],
+      "description": "The reject reason code, four digits zero-padded to the width the source writes. From WS-VALIDATION-FAIL-REASON PIC 9(04) at app/cbl/CBTRN02C.cbl:L181. These four values are the whole set: 0100 at app/cbl/CBTRN02C.cbl:L385, 0101 at L397, 0102 at L410, and 0103 at L417. Any other code fails validation. The oneOf block at the root of this document binds each code to the one text the source writes beside it.",
+      "examples": [
+        "0102"
+      ]
+    },
+    "declineReasonDescription": {
+      "type": "string",
+      "maxLength": 76,
+      "enum": [
+        "INVALID CARD NUMBER FOUND",
+        "ACCOUNT RECORD NOT FOUND",
+        "OVERLIMIT TRANSACTION",
+        "TRANSACTION RECEIVED AFTER ACCT EXPIRATION"
+      ],
+      "description": "The reject reason text that pairs with the code, reproduced character for character from the source. From WS-VALIDATION-FAIL-REASON-DESC PIC X(76) at app/cbl/CBTRN02C.cbl:L182. The four texts sit at app/cbl/CBTRN02C.cbl:L386, L398, L411 and L418. The declineReason keyword at the root of this schema binds each text to one code.",
+      "examples": [
+        "OVERLIMIT TRANSACTION"
+      ]
+    },
+    "amount": {
+      "type": "string",
+      "pattern": "^-?\\d{1,9}\\.\\d{2}$",
+      "description": "The attempted amount as a decimal string with two fractional digits. From DALYTRAN-AMT PIC S9(09)V99 at app/cpy/CVTRA06Y.cpy:L10, so nine digits sit before the point. A leading minus is valid. 50 of the 300 records in app/data/ASCII/dailytran.txt hold a negative amount.",
+      "$comment": "app/cbl/CBTRN02C.cbl:L548-L551 adds a non-negative amount to the cycle credit accumulator and a negative amount to the cycle debit accumulator.",
+      "examples": [
+        "50.47",
+        "-125.00"
+      ]
+    },
+    "maskedCardNumber": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "pattern": "^\\*{12}[0-9]{4}$",
+      "description": "The card number with twelve asterisks in place of the leading digits and the last four digits left visible. Position and width from DALYTRAN-CARD-NUM PIC X(16) at app/cpy/CVTRA06Y.cpy:L15. The masking is additive: no source program masks a Primary Account Number (PAN), and app/bms/COCRDSL.bms:L96-L99 defines the card detail field at the full sixteen characters. The authorization decision runs on the full PAN, and masking happens where the event is serialized. The cross-reference read at app/cbl/CBTRN02C.cbl:L382-L383 keys on all sixteen characters.",
+      "examples": [
+        "************7065"
+      ]
+    },
+    "transactionTypeCode": {
+      "type": "string",
+      "maxLength": 2,
+      "description": "The transaction type code. From TRAN-TYPE-CD PIC X(02) at app/cpy/CVTRA05Y.cpy:L6. app/data/ASCII/trantype.txt carries seven two-character codes.",
+      "examples": [
+        "01"
+      ]
+    },
+    "merchantCategoryCode": {
+      "type": "string",
+      "pattern": "^[0-9]{4}$",
+      "description": "The merchant category code, four digits. From TRAN-CAT-CD PIC 9(04) at app/cpy/CVTRA05Y.cpy:L7. The value keeps its leading zeros: the eighteen codes of app/data/ASCII/trancatg.txt read 0001 through 0016.",
+      "examples": [
+        "0001"
+      ]
+    },
+    "source": {
+      "type": "string",
+      "maxLength": 10,
+      "description": "The channel that captured the transaction. From TRAN-SOURCE PIC X(10) at app/cpy/CVTRA05Y.cpy:L8.",
+      "examples": [
+        "POS TERM"
+      ]
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 100,
+      "description": "The transaction description, free text. From TRAN-DESC PIC X(100) at app/cpy/CVTRA05Y.cpy:L9. A cardholder alert prints this text, so a blank value would render an alert that describes nothing.",
+      "examples": [
+        "Purchase at Abshire-Lowe"
+      ]
+    },
+    "merchantId": {
+      "type": "string",
+      "pattern": "^[0-9]{9}$",
+      "description": "The merchant identifier, nine digits. From TRAN-MERCHANT-ID PIC 9(09) at app/cpy/CVTRA05Y.cpy:L11.",
+      "examples": [
+        "800000000"
+      ]
+    },
+    "merchantName": {
+      "type": "string",
+      "maxLength": 50,
+      "description": "The merchant name. From TRAN-MERCHANT-NAME PIC X(50) at app/cpy/CVTRA05Y.cpy:L12.",
+      "examples": [
+        "Abshire-Lowe"
+      ]
+    },
+    "merchantCity": {
+      "type": "string",
+      "maxLength": 50,
+      "description": "The merchant city. From TRAN-MERCHANT-CITY PIC X(50) at app/cpy/CVTRA05Y.cpy:L13.",
+      "examples": [
+        "North Enoshaven"
+      ]
+    },
+    "merchantZip": {
+      "type": "string",
+      "maxLength": 10,
+      "description": "The merchant postal code. From TRAN-MERCHANT-ZIP PIC X(10) at app/cpy/CVTRA05Y.cpy:L14. Records in app/data/ASCII/dailytran.txt hold both five-digit and hyphenated nine-digit forms.",
+      "examples": [
+        "72112",
+        "78487-7965"
+      ]
+    },
+    "originTimestamp": {
+      "type": "string",
+      "minLength": 26,
+      "maxLength": 26,
+      "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{6}$",
+      "description": "The moment the transaction originated, twenty-six characters shaped YYYY-MM-DD HH:MM:SS.ffffff with a space between the date and the time. From TRAN-ORIG-TS PIC X(26) at app/cpy/CVTRA05Y.cpy:L16. All 300 records in app/data/ASCII/dailytran.txt carry that one layout, which is not the layout postedAt carries.",
+      "$comment": "A consumer that derived this value from postedAt by swapping separators would report the posting time as the origin time, which is a different fact.",
+      "examples": [
+        "2022-06-10 19:27:53.000000"
+      ]
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction. It holds at most 16 members. Each name is a short identifier and each value a string of at most 256 characters. No nested object or array is allowed. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "maxProperties": 16,
+      "examples": [
+        {
+          "replayOf": "3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"
+        }
+      ]
+    }
+  },
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "occurredAt",
+    "aggregateId",
+    "transactionId",
+    "accountId",
+    "declineReasonCode",
+    "declineReasonDescription",
+    "amount",
+    "maskedCardNumber",
+    "transactionTypeCode",
+    "merchantCategoryCode",
+    "source",
+    "description",
+    "merchantId",
+    "merchantName",
+    "merchantCity",
+    "merchantZip",
+    "originTimestamp"
+  ],
+  "maxProperties": 21,
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "title": "Reason 0100",
+      "description": "app/cbl/CBTRN02C.cbl:L385-L387 moves 100 and INVALID CARD NUMBER FOUND together.",
+      "properties": {
+        "declineReasonCode": {
+          "const": "0100"
+        },
+        "declineReasonDescription": {
+          "const": "INVALID CARD NUMBER FOUND"
+        }
+      },
+      "required": [
+        "declineReasonCode",
+        "declineReasonDescription"
+      ]
+    },
+    {
+      "title": "Reason 0101",
+      "description": "app/cbl/CBTRN02C.cbl:L397-L399 moves 101 and ACCOUNT RECORD NOT FOUND together.",
+      "properties": {
+        "declineReasonCode": {
+          "const": "0101"
+        },
+        "declineReasonDescription": {
+          "const": "ACCOUNT RECORD NOT FOUND"
+        }
+      },
+      "required": [
+        "declineReasonCode",
+        "declineReasonDescription"
+      ]
+    },
+    {
+      "title": "Reason 0102",
+      "description": "app/cbl/CBTRN02C.cbl:L410-L412 moves 102 and OVERLIMIT TRANSACTION together.",
+      "properties": {
+        "declineReasonCode": {
+          "const": "0102"
+        },
+        "declineReasonDescription": {
+          "const": "OVERLIMIT TRANSACTION"
+        }
+      },
+      "required": [
+        "declineReasonCode",
+        "declineReasonDescription"
+      ]
+    },
+    {
+      "title": "Reason 0103",
+      "description": "app/cbl/CBTRN02C.cbl:L417-L419 moves 103 and TRANSACTION RECEIVED AFTER ACCT EXPIRATION together.",
+      "properties": {
+        "declineReasonCode": {
+          "const": "0103"
+        },
+        "declineReasonDescription": {
+          "const": "TRANSACTION RECEIVED AFTER ACCT EXPIRATION"
+        }
+      },
+      "required": [
+        "declineReasonCode",
+        "declineReasonDescription"
+      ]
+    }
+  ]
+}

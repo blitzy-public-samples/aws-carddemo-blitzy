@@ -1,0 +1,271 @@
+package com.carddemo.authorization.config;
+
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
+
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.convert.DurationUnit;
+import org.springframework.validation.annotation.Validated;
+
+/**
+ * The {@code carddemo} block of {@code application.yml}, bound and checked at start-up.
+ *
+ * <p>ADDITIVE IN FULL. No COBOL program and no copybook in this repository defines this type. The
+ * source reads its operational values from Job Control Language parameters and from hard-coded
+ * literals, so no configuration record has an ancestor here.
+ *
+ * <p>Every value the authorization service takes from configuration arrives through this record.
+ * A key with no component here is not configuration, and a component with no key fails start-up.
+ *
+ * <p>{@link Validated} runs the constraints below while the context builds. A blank topic name, a
+ * non-positive relay delay or a non-positive replica window therefore stops start-up with the
+ * offending property named, rather than surfacing later as a message published to the empty-string
+ * topic.
+ *
+ * <p>{@code AuthorizationApplication} carries {@code @ConfigurationPropertiesScan}, which registers
+ * this record as a bean. An injected instance is immutable, so no component can change a value the
+ * constraints already accepted.
+ *
+ * <p>Decisions: {@code card-platform/docs/decision-log.md}.
+ *
+ * @param kafka          the topic and consumer-group names this service publishes to and reads from
+ * @param outbox         the relay and published-row retention settings
+ * @param retention      the cleanup schedule
+ * @param replica        the freshness policy applied to the two replica tables
+ * @param decision       the locking and reservation settings of one decision
+ */
+@ConfigurationProperties(prefix = "carddemo")
+@Validated
+public record AuthorizationProperties(
+
+        @NotNull @Valid Kafka kafka,
+
+        @NotNull @Valid Outbox outbox,
+
+        @NotNull @Valid Retention retention,
+
+        @NotNull @Valid Replica replica,
+
+        @NotNull @Valid Decision decision) {
+
+    /**
+     * The broker-facing names this service uses.
+     *
+     * @param topics the two topics this service publishes to, the two it consumes and the
+     *               dead-letter topic
+     * @param groups one consumer group per replica listener
+     */
+    public record Kafka(@NotNull @Valid Topics topics, @NotNull @Valid Groups groups) {
+
+        /**
+         * One name per event this service publishes or consumes, and the dead-letter topic.
+         *
+         * <p>The two consumed topics are what keep {@code card_xref} and
+         * {@code account_credit_snapshot} current. Both tables are replicas of data another service
+         * owns, and the decline rules read them on every call, so a name here that reaches no topic
+         * leaves those rules answering from whatever the replica last knew.
+         *
+         * @param transactionAuthorized the topic an approved authorization travels on, keyed by the
+         *                              account identifier
+         * @param transactionDeclined   the topic a declined authorization travels on, carrying one
+         *                              of the four reject reasons of
+         *                              {@code app/cbl/CBTRN02C.cbl:L385-L420}
+         * @param accountStateChanged   the topic carrying the account state this service replicates
+         *                              into {@code account_credit_snapshot}
+         * @param cardUpdated           the topic carrying the card state this service reads to keep
+         *                              {@code card_xref} observably current
+         * @param deadLetter            the topic a record that cannot be applied is routed to
+         */
+        public record Topics(
+
+                @NotBlank String transactionAuthorized,
+
+                @NotBlank String transactionDeclined,
+
+                @NotBlank String accountStateChanged,
+
+                @NotBlank String cardUpdated,
+
+                @NotBlank String deadLetter) {
+        }
+
+        /**
+         * One consumer group per replica listener.
+         *
+         * <p>Two groups rather than one, because the two listeners read different topics and must be
+         * able to lag, rebalance and be reset independently. One group across both would tie the
+         * offsets of unrelated streams together.
+         *
+         * @param accountStateChanged group of the listener that applies account state
+         * @param cardUpdated         group of the listener that applies card state
+         */
+        public record Groups(
+
+                @NotBlank String accountStateChanged,
+
+                @NotBlank String cardUpdated) {
+        }
+    }
+
+    /**
+     * Ceiling on {@link Outbox.Relay#maxDurationMs()}, five minutes in milliseconds.
+     *
+     * <p>The bound exists so a misconfiguration cannot turn the pass deadline off. A pass that spends
+     * five minutes waiting for broker acknowledgements is a stalled relay, and the scheduled thread it
+     * holds is the one thread every later event of every account waits behind.
+     */
+    static final long MAX_PASS_DURATION_MS = 300_000L;
+
+    /**
+     * The transactional outbox settings.
+     *
+     * @param relay                   the sweep the relay performs
+     * @param publishedRetentionHours hours a published row remains for diagnosis
+     */
+    public record Outbox(
+            @NotNull @Valid Relay relay,
+            @Positive long publishedRetentionHours) {
+
+        /**
+         * How often the relay sweeps due rows, how many it claims, its instance name, and the claim
+         * recovery window.
+         *
+         * @param fixedDelayMs   milliseconds between the end of one sweep and the start of the next
+         * @param batchSize      due rows one sweep claims
+         * @param instanceId     value written into {@code outbox_event.claimed_by}
+         * @param claimTimeout   how long a claim may stand before another sweep recovers the row
+         * @param maxDurationMs  wall time one pass may spend waiting for broker acknowledgements,
+         *                       measured on the monotonic clock. A pass that reaches it stops, and
+         *                       the rows it did not reach are claimed by the next pass. The ceiling
+         *                       is five minutes, because a pass longer than that is a stalled relay
+         *                       rather than a busy one
+         * @param publishTimeout longest one send waits for the broker before
+         *                       {@code messaging/KafkaEventPublisher} reports the attempt failed.
+         *                       The row then stays unpublished and a later sweep claims it again
+         */
+        public record Relay(
+
+                @Positive long fixedDelayMs,
+
+                @Positive int batchSize,
+
+                @NotBlank String instanceId,
+
+                @NotNull @DurationUnit(ChronoUnit.SECONDS) Duration claimTimeout,
+
+                @Positive @Max(MAX_PASS_DURATION_MS) long maxDurationMs,
+
+                @NotNull @DurationUnit(ChronoUnit.SECONDS) Duration publishTimeout) {
+
+            /**
+             * Refuses a claim timeout that cannot protect an active claim, and a publish timeout
+             * that gives a send no time at all.
+             *
+             * <p>{@code publishTimeout} reached the publisher through a second binding of the same
+             * property, a constructor {@code @Value}, which meets no constraint declared here.
+             * Only {@code null} was refused, so zero or a negative duration started the service and
+             * then failed every send the instant it was issued: each event stayed unpublished, each
+             * sweep claimed the same rows again, and the only evidence was a timeout per attempt.
+             * The value is a component of this record now, so the binding that validates it is the
+             * binding the publisher reads.
+             *
+             * @throws IllegalArgumentException when either duration is zero or negative
+             */
+            public Relay {
+                if (claimTimeout != null
+                        && (claimTimeout.isZero() || claimTimeout.isNegative())) {
+                    throw new IllegalArgumentException(
+                            "outbox.relay.claimTimeout must be positive, found " + claimTimeout);
+                }
+                if (publishTimeout != null
+                        && (publishTimeout.isZero() || publishTimeout.isNegative())) {
+                    throw new IllegalArgumentException(
+                            "outbox.relay.publishTimeout must be positive, found " + publishTimeout);
+                }
+            }
+        }
+    }
+
+    /**
+     * The retention policy of the sweep.
+     *
+     * @param sweepIntervalMs      milliseconds between retention sweeps
+     * @param decisionRetentionDays days a decision row remains. The row is the attribution record of
+     *                             a financial decision, so it outlives the outbox row the decision
+     *                             published
+     */
+    public record Retention(@Positive long sweepIntervalMs, @Positive long decisionRetentionDays) {
+    }
+
+    /**
+     * The synchronization policy applied to the two replica tables.
+     *
+     * <p>ADDITIVE. The source has no equivalent because it has no replica:
+     * {@code app/cbl/CBTRN02C.cbl:L382} and {@code app/cbl/CBTRN02C.cbl:L395} read the
+     * cross-reference and account datasets themselves, so nothing they read can be out of date.
+     *
+     * <p>The policy is a property of the <strong>stream</strong> and deliberately not of a row. An
+     * earlier form of this block bounded how old a row's last observation could be, and it was wrong
+     * in the ordinary case rather than the failing one: both producers publish on a state change and
+     * on nothing else, so a card nobody edits is a correct copy whose last observation recedes for
+     * ever, and every call for it was refused once the bound elapsed. Consumer lag is the measurement
+     * that separates the two situations, because a caught-up consumer of a quiet topic reports zero.
+     *
+     * @param lagCeiling how many records a replica stream may have waiting before this service stops
+     *                   authorizing against the tables that stream maintains. Zero requires a
+     *                   consumer that is fully caught up
+     */
+    public record Replica(
+
+            @Min(0)
+            long lagCeiling) {
+    }
+
+    /**
+     * The locking and reservation settings of one decision.
+     *
+     * <p>ADDITIVE. {@code app/cbl/CBTRN02C.cbl} is one batch program reading one sequential feed, so
+     * it needs no lock and no reservation: paragraph {@code 2700-UPDATE-ACCOUNT} at
+     * {@code app/cbl/CBTRN02C.cbl:L545-L560} rewrites the account record in the same loop that
+     * validates the next one, and {@code app/cbl/CBTRN02C.cbl:L403-L405} therefore reads figures that
+     * already carry every earlier approval. This service answers concurrent calls and does not own the
+     * account record, so it needs both.
+     *
+     * @param lockWaitMs     how long the locked read of one decision waits for a row another decision
+     *                       holds, applied as a transaction-local {@code lock_timeout} by
+     *                       {@code AccountCreditSnapshotRepository#applyLockWaitBound}
+     * @param reservationTtl how long an approval's reserved exposure counts before it is treated as
+     *                       never having been posted. Long enough that an ordinary posting round trip
+     *                       reports back first, short enough that an approval whose event was
+     *                       dead-lettered does not hold its exposure for ever and shrink available
+     *                       credit until every call declines
+     */
+    public record Decision(
+            @Positive long lockWaitMs,
+            @NotNull @DurationUnit(ChronoUnit.SECONDS) Duration reservationTtl) {
+
+        /**
+         * Holds the reservation lifetime above zero.
+         *
+         * <p>A zero or negative lifetime would release every reservation the moment it was written,
+         * which is exactly the behaviour these columns exist to replace.
+         *
+         * @throws IllegalArgumentException when the lifetime is not positive
+         */
+        public Decision {
+            if (reservationTtl != null
+                    && (reservationTtl.isZero() || reservationTtl.isNegative())) {
+                throw new IllegalArgumentException(
+                        "carddemo.decision.reservation-ttl must be positive, found "
+                                + reservationTtl);
+            }
+        }
+    }
+}

@@ -1,0 +1,20 @@
+# Configuration for the static-analysis stage of .github/workflows/ci.yml.
+#
+# The default java-code-scanning suite runs in full apart from the one query named
+# below, so 79 of its 80 queries are evaluated. The stage still fails on any result
+# at security severity 7.0 or higher, and it keeps the whole result file as an
+# artifact whether it fails or not.
+name: "CardDemo card platform"
+
+query-filters:
+  # java/spring-disabled-csrf-protection reports the two SecurityFilterChain beans
+  # in each of the six services, twelve results in all. Both chains are stateless:
+  # they create no session, authenticate with HTTP Basic and read no cookie, so a
+  # forgery token has nowhere to live and there is no ambient credential a foreign
+  # site could spend. Each service carries config/CrossSiteRequestFilter in place of
+  # the framework's token, and it refuses a state-changing request that declares a
+  # foreign site or origin, or that carries no non-simple request header.
+  #
+  # Design decisions: card-platform/docs/decision-log.md.
+  - exclude:
+      id: java/spring-disabled-csrf-protection

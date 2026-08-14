@@ -1,0 +1,429 @@
+# card-platform ledger-posting-service. The Representational State Transfer (REST) interface this
+# module serves. One read-only endpoint, hand-written and checked in. api/BalanceQueryController
+# serves the path below, and no documentation generator joins the classpath. Field provenance.
+# Paragraph 1200-SETUP-SCREEN-VARS at app/cbl/COACTVWC.cbl:L460-L491 moves ten account fields to the
+# account view screen. Three of them belong to this service: ACCT-CURR-BAL at :L475,
+# ACCT-CURR-CYC-CREDIT at :L482 and ACCT-CURR-CYC-DEBIT at :L485. The account service owns the other
+# seven, together with the whole 300-byte record they sit in. The account identifier this response
+# echoes is the value moved at :L468.
+---
+openapi: 3.1.0
+
+info:
+  title: CardDemo Ledger Posting Service
+  description: >-
+    Returns the balance of one account with the two billing-cycle accumulators.
+    One read-only operation answers, and it writes no row. Every field width
+    follows ACCOUNT-RECORD at app/cpy/CVACT01Y.cpy. Each amount travels as a
+    decimal string in JavaScript Object Notation (JSON) and never as a JSON
+    number.
+
+
+    A request target refused before any route ran is answered by
+    config/ContainerErrorDocument rather than by an operation below,
+    because the request reached none. That answer carries the ApiProblem
+    shape under application/problem+json, the same shape this document
+    declares for 401 and 403. It names no method, no path and no value the
+    caller sent.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8082
+    description: >-
+      Local demo stack. The container listens on port 8080, and
+      card-platform/docker-compose.yml publishes LEDGER_PORT on the loopback
+      address, defaulting to 8082.
+
+tags:
+  - name: balance-query
+    description: Read access to the account balance projection.
+
+# Every operation below inherits this rule, so none of them restates it. config/SecurityConfig
+# refuses a request carrying no usable credential with 401 and an identity that does not hold the
+# account with 403, and both answer the same ApiProblem shape the failures below answer.
+security:
+  - basicIdentity: []
+
+paths:
+
+  /balances/{accountId}:
+
+    get:
+      tags:
+        - balance-query
+      operationId: getAccountBalance
+      summary: Return one account's balance and cycle accumulators.
+      description: >-
+        Returns four values for the account the path names: the identifier, the
+        balance and the two billing-cycle accumulators. The operation reads one
+        row of account_balance_projection and writes nothing. An account the
+        table holds answers 200, and an account it does not hold answers 404.
+      parameters:
+
+        - name: accountId
+          in: path
+          required: true
+          description: >-
+            The eleven-digit account identifier, padded on the left with zeros.
+            Width from ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5 and from
+            KEYS(11 0) at app/jcl/ACCTFILE.jcl:L40. Column account_id
+            VARCHAR(11) in src/main/resources/db/migration/V1__schema.sql holds
+            the same value. Record one of app/data/ASCII/acctdata.txt holds
+            00000000001.
+          schema:
+            type: string
+            pattern: '^[0-9]{11}$'
+          examples:
+            seededAccount:
+              value: '00000000001'
+
+      responses:
+
+        '200':
+          description: >-
+            The row the projection table holds for this account. Each amount is
+            a decimal string carrying two fractional digits.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountBalance'
+              examples:
+
+                seeded:
+                  summary: >-
+                    Account 00000000001 as
+                    src/main/resources/db/migration/V2__seed.sql loads it. The
+                    same values sit in record one of
+                    app/data/ASCII/acctdata.txt.
+                  value:
+                    accountId: '00000000001'
+                    currentBalance: '194.00'
+                    cycleCredit: '0.00'
+                    cycleDebit: '0.00'
+
+                afterRefundPosted:
+                  summary: >-
+                    The same account once a refund of 25.00 has posted. The
+                    cycle debit accumulator carries a minus sign.
+                  value:
+                    accountId: '00000000001'
+                    currentBalance: '169.00'
+                    cycleCredit: '0.00'
+                    cycleDebit: '-25.00'
+
+        '400':
+          description: >-
+            The path value missed the eleven-digit pattern
+            ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5 declares. The detail
+            reads "Account identifier must be eleven digits." and names no value
+            the caller submitted.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: 'about:blank'
+                title: 'Bad Request'
+                status: 400
+                detail: 'Account identifier must be eleven digits.'
+
+        '401':
+          description: >-
+            The request carried no usable credential. config/SecurityConfig
+            answers this, and the response also carries
+            WWW-Authenticate: Basic realm="carddemo" because a 401 has to name
+            the scheme a caller should retry with.
+          headers:
+            WWW-Authenticate:
+              description: >-
+                The challenge, naming the basic scheme and the realm.
+                config/SecurityConfig writes this exact value.
+              required: true
+              schema:
+                type: string
+                const: 'Basic realm="carddemo", charset="UTF-8"'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: 'about:blank'
+                title: 'Unauthorized'
+                status: 401
+                detail: 'This request carried no usable credential.'
+
+        '403':
+          description: >-
+            The caller authenticated but does not hold this account. An identity
+            carrying the USER role reaches only the accounts its
+            SCOPE_ACCOUNT_ authorities name, and the detail names neither the
+            operation nor the identifier. A 404 would reveal that the row
+            exists, and a detailed 403 would copy the identifier back into the
+            caller's own log.
+            A method this route does not serve is refused here too, since config/SecurityConfig
+            declares one rule per method and path and admits no request a rule does not name.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: 'about:blank'
+                title: 'Forbidden'
+                status: 403
+                detail: 'This identity may not use this operation.'
+
+        '404':
+          description: >-
+            The projection table holds no row for this account identifier. The
+            response carries no body. The identifier passed the pattern and the
+            caller holds the account, so the row simply is not there: no
+            transaction has posted to it yet.
+
+        '405':
+          description: >-
+            The route was called with a method it does not serve. This route
+            serves GET alone, and the Allow header names it. The handler
+            api/LedgerApiExceptionHandler keeps the status and the headers the
+            framework named rather than reporting a caller's mistake as a fault
+            of this service. The chain in config/SecurityConfig declares one
+            rule per method and path, so a request whose method carries no rule
+            is refused with 403 before the dispatcher runs. This answer is
+            therefore the one a request the chain admits receives.
+          headers:
+            Allow:
+              description: The methods this route serves.
+              required: true
+              schema:
+                type: string
+                examples: ['GET']
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: 'about:blank'
+                title: 'Method Not Allowed'
+                status: 405
+                detail: >-
+                  This route does not serve the method, path or media type the
+                  request named.
+
+        '406':
+          description: >-
+            The Accept header of the request names no media type this route
+            writes. The response carries no body, because a caller that accepts
+            nothing this route writes cannot be sent a problem document either.
+
+        '503':
+          description: >-
+            The projection table could not be reached, so the read was never
+            attempted. The request was well formed and this service holds no
+            defect, so the detail invites a retry rather than reporting a fault.
+            The handler api/LedgerApiExceptionHandler answers this for a
+            connection that cannot be opened, a transaction that cannot be begun
+            and a statement that ran out of time. It answers it for nothing
+            else. A broken query is a fault of this service and answers 500,
+            where a retry would only repeat it.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: 'about:blank'
+                title: 'Service Unavailable'
+                status: 503
+                detail: 'The balance store is unavailable. Retry shortly.'
+
+        '500':
+          description: >-
+            A fault inside this service. The detail is fixed and names no
+            identifier, no route, no table, no column and no exception class.
+            The log line api/LedgerApiExceptionHandler writes is the only record
+            of what failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: 'about:blank'
+                title: 'Internal Server Error'
+                status: 500
+                detail: 'The balance could not be read.'
+        '429':
+          description: >-
+            A rate ceiling refused this request. The filter
+            config/RequestRateCeilingFilter runs ahead of the security chain. It
+            bounds requests from one source, requests presenting one identity,
+            state-changing requests from one source, failed authentications from
+            one source, and requests in flight. Retry-After names whole seconds
+            until the window rolls.
+
+
+            ADDITIVE: a CICS transaction arrived from a terminal an operator was
+            sitting at, and the nightly feed of app/jcl/POSTTRAN.jcl arrived
+            once a day as a dataset. The source therefore had no request rate to
+            bound and holds no matching condition. The detail is fixed and names
+            no address, no identity and no route.
+          headers:
+            Retry-After:
+              description: Whole seconds until the window rolls, one or more.
+              required: true
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: 'about:blank'
+                title: 'Too many requests'
+                status: 429
+                detail: >-
+                  This request exceeded a rate this service accepts. Retry after the interval the
+                  response names.
+
+components:
+
+  securitySchemes:
+
+    basicIdentity:
+      type: http
+      scheme: basic
+      description: >-
+        HTTP Basic authentication over the realm carddemo. An identity
+        configured under carddemo.security.users, carrying one of the roles
+        ADMIN or USER and, for USER, one SCOPE_ACCOUNT_ authority per account it
+        holds; config/SecurityConfig admits ADMIN to every account. The password
+        is stored already encoded, so no plaintext password is compared:
+        config/SecurityConfig declines to reproduce the plaintext comparison at
+        app/cbl/COSGN00C.cbl:L223. Basic sends a credential as base-64 text,
+        which is encoding and not encryption, so this scheme requires an
+        encrypted transport. card-platform/.env.example documents the variables
+        each entry reads.
+
+  schemas:
+
+    ApiProblem:
+      type: object
+      description: >-
+        Error body of every failed call to this service, as the problem document
+        RFC 9457 defines. Four members and no others, spelled as
+        config/SecurityConfig spells them when it answers 401 and 403, so one
+        client parses one shape of error for every failing path.
+
+        No member echoes a request value. Nothing carries the rejected value, the
+        resolved path, the query string or a header, which is the difference
+        between this body and the framework default one this service answered before. That body carries the resolved path, so a caller naming an account
+        identifier read it back and copied it into its own access log.
+      additionalProperties: false
+      required:
+        - type
+        - title
+        - status
+        - detail
+      properties:
+        type:
+          type: string
+          description: >-
+            Always about:blank. The status code and the title carry the whole
+            meaning, and a dereferenceable type would be a promise to serve a
+            document at it.
+          enum: ['about:blank']
+        title:
+          type: string
+          description: >-
+            A short, fixed phrase naming the class of failure. Never
+            caller-supplied text. Four sources produce the seven values below,
+            one value per status carrying a body.
+
+
+            The record api/ApiProblem holds the constants for 400, 500 and 503.
+            The chain in config/SecurityConfig writes 'Unauthorized' for 401,
+            and config/CrossSiteRequestFilter writes 'Forbidden' for 403. The
+            filter config/RequestRateCeilingFilter writes 'Too many requests'
+            for 429 in a fixed body.
+
+
+            The handler api/LedgerApiExceptionHandler writes the reason phrase
+            of the status the framework named for a protocol refusal. That
+            phrase is 'Method Not Allowed' for the 405 this document publishes.
+          enum: ['Bad Request', 'Unauthorized', 'Forbidden', 'Method Not Allowed',
+                 'Too many requests', 'Service Unavailable', 'Internal Server Error']
+        status:
+          type: integer
+          description: >-
+            The status code of the response, repeated in the body. The seven
+            values are the statuses this route answers with a body: 404 and 406
+            carry none, and 200 carries the balance instead.
+          enum: [400, 401, 403, 405, 429, 500, 503]
+        detail:
+          type: string
+          description: >-
+            The explanation. Fixed text, naming no identifier, no route, no table,
+            no column and no exception class.
+          examples:
+            - 'Account identifier must be eleven digits.'
+            - 'The balance store is unavailable. Retry shortly.'
+            - 'The balance could not be read.'
+
+    AccountBalance:
+      type: object
+      description: >-
+        The balance of one account with the two billing-cycle accumulators.
+        Four properties and no others. Each amount is a decimal string at the
+        two fractional digits PIC S9(10)V99 declares, rendered through
+        BigDecimal.toPlainString(). Column NUMERIC(12,2) in
+        src/main/resources/db/migration/V1__schema.sql holds each one.
+      additionalProperties: false
+      required:
+        - accountId
+        - currentBalance
+        - cycleCredit
+        - cycleDebit
+      properties:
+
+        accountId:
+          type: string
+          pattern: '^[0-9]{11}$'
+          description: >-
+            The account identifier the path named, echoed back. Eleven digits,
+            padded on the left with zeros. From ACCT-ID PIC 9(11) at
+            app/cpy/CVACT01Y.cpy:L5, moved at app/cbl/COACTVWC.cbl:L468.
+          examples:
+            - '00000000001'
+
+        currentBalance:
+          type: string
+          pattern: '^-?\d{1,10}\.\d{2}$'
+          description: >-
+            The account balance after the last posted transaction. From
+            ACCT-CURR-BAL PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L7, moved at
+            app/cbl/COACTVWC.cbl:L475. app/cbl/CBTRN02C.cbl:L547 adds each
+            posted amount to it. The value may carry a minus sign.
+          examples:
+            - '194.00'
+
+        cycleCredit:
+          type: string
+          pattern: '^-?\d{1,10}\.\d{2}$'
+          description: >-
+            Posted amounts of zero and above, accumulated across the current
+            billing cycle. From ACCT-CURR-CYC-CREDIT PIC S9(10)V99 at
+            app/cpy/CVACT01Y.cpy:L13, moved at app/cbl/COACTVWC.cbl:L482.
+            app/cbl/CBTRN02C.cbl:L548-L549 routes an amount of zero and above
+            here. PIC S9(10)V99 is signed, and the pattern admits a minus sign.
+          examples:
+            - '0.00'
+
+        cycleDebit:
+          type: string
+          pattern: '^-?\d{1,10}\.\d{2}$'
+          description: >-
+            Posted amounts below zero, accumulated across the current billing
+            cycle. From ACCT-CURR-CYC-DEBIT PIC S9(10)V99 at
+            app/cpy/CVACT01Y.cpy:L14, moved at app/cbl/COACTVWC.cbl:L485.
+            app/cbl/CBTRN02C.cbl:L551 adds an amount below zero here. The value
+            grows more negative as such amounts post.
+          examples:
+            - '-25.00'

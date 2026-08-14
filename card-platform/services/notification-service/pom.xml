@@ -1,0 +1,256 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Module descriptor for the CardDemo notification service. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- Design decisions for this file: card-platform/docs/decision-log.md -->
+
+  <!-- The aggregator sits two levels up. The services directory holds no build file of its own. -->
+  <parent>
+    <groupId>com.carddemo</groupId>
+    <artifactId>card-platform</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <!-- The parent supplies the group and the version. -->
+  <artifactId>notification-service</artifactId>
+  <packaging>jar</packaging>
+
+  <name>CardDemo Card Platform :: Notification Service</name>
+  <description>The notification service consumes four topics, each under a consumer
+    group of its own. transaction.posted carries the new balance a posting produced,
+    and the service maintains a card-keyed read model and renders a cardholder alert
+    from it. transaction.authorized makes this the third independent reader of the
+    authorization event, beside ledger posting and fraud detection. fraud.assessed
+    carries a risk outcome to the cardholder, and customer.context-changed keeps the
+    cardholder details an alert needs current. This service publishes no event and
+    calls no other service.</description>
+
+  <!-- Language level. The build reads maven.compiler.release: the compiler plugin in
+       card-platform/pom.xml configures its release from that property, and the aggregator's
+       enforcer rule requires 25 in every module. java.version carries the framework's
+       conventional name for the same level and no plugin resolves it, because the aggregator
+       imports the Spring Boot bill of materials rather than inheriting the Spring Boot parent. -->
+  <properties>
+    <java.version>25</java.version>
+    <maven.compiler.release>25</maven.compiler.release>
+  </properties>
+
+  <!-- Every version below comes from the aggregator's dependency management. -->
+  <dependencies>
+
+    <!-- Shared libraries. No other service module appears in this list. -->
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>event-contracts</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>cobol-compat</artifactId>
+    </dependency>
+
+    <!-- Web surface, persistence and bean constraints. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!-- Health and metrics endpoints for the container health check. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- Request authentication and authorization. config/SecurityConfig declares two
+         filter chains. Over the actuator surface, health stays open for a probe and
+         metrics and the Prometheus scrape require ROLE_MONITORING. Over the API, the
+         default is deny, and each route is scoped to the identity that owns the
+         identifier it names. The starter also installs the response headers that keep
+         a financial or personal-data answer out of every cache. It installs the
+         delegating password encoder too, which reads the algorithm prefix of a
+         configured password, so no plaintext password is stored or compared. The
+         version comes from the Spring Boot bill of materials imported by the parent. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+
+    <!-- Messaging. Spring Boot 4 ships Kafka auto-configuration in its own
+         starter; spring-kafka alone ships none. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-kafka</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka</artifactId>
+    </dependency>
+
+    <!-- The broker client. This module imports org.apache.kafka.clients or
+         org.apache.kafka.common directly. Version from the imported bill of materials.
+         Decisions: card-platform/docs/decision-log.md, under "Which artifacts a module
+         declares for itself, and which it reaches through a starter". -->
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka-clients</artifactId>
+    </dependency>
+
+    <!-- JSON binding. This module imports tools.jackson.databind directly. jackson-core and
+         the Jackson 2 annotations arrive with it and are not declared.
+         Decisions: card-platform/docs/decision-log.md, under "Which artifacts a module
+         declares for itself, and which it reaches through a starter". -->
+    <dependency>
+      <groupId>tools.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+
+    <!-- Database driver and schema migration. Flyway ships its PostgreSQL dialect
+         as a separate artifact, and Spring Boot 4 ships Flyway auto-configuration
+         in its own starter. -->
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-flyway</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+
+    <!-- Exposes metrics for scraping. Structured log output comes from the Spring
+         Boot logging starter through the logging.structured.format.console property
+         in application.yml. -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- Test scope: slice tests, an embedded broker, containers, and
+         asynchronous assertions. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- The Jakarta Persistence slice annotation @DataJpaTest, which Spring Boot 4 ships in
+         its own artifact: spring-boot-test-autoconfigure carries the json slice alone. It
+         pulls spring-boot-jpa-test and spring-boot-jdbc-test, so it also supplies
+         @AutoConfigureTestDatabase. The repository tests boot on it. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-data-jpa-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-kafka</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Repackages the module as an executable Java archive. -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+      <!-- Runs the container-backed suites in src/test/java named *IT. Surefire selects *Test and
+           leaves those alone, so without this declaration BrokerUnreachableStartupIT and
+           DuplicateDeliveryIT are compiled and never executed. The parent supplies the version, the
+           execution and the classesDirectory in pluginManagement; a module activates the plugin by
+           naming it here, which is how the other five services and equivalence-tests activate the
+           same plugin. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <!--
+      Lets the equivalence stage build this module without re-running its integration
+      suite, which the service integration stage ran and whose reports it kept.
+
+      The equivalence stage asks Maven for equivalence-tests and everything it needs, and
+      this module is one of those needs. Without this profile that stage runs every
+      Failsafe class here a second time, which is the whole of the service integration
+      stage repeated for no new information. The profile is inert until
+      -DskipServiceIntegrationTests is named, so the default build, `mvn verify` and the
+      service integration stage all behave exactly as before. It sits in this module
+      rather than in the parent because the parent is also the parent of
+      equivalence-tests, whose Failsafe classes are the very ones that stage runs.
+
+      The activation reads the value and not the presence. Without it Maven activates the
+      profile whenever the property is named at all, so -DskipServiceIntegrationTests=false
+      skipped the suite an operator had just asked for and reported a green build over
+      nothing. The flag given no value still activates it, because Maven assigns "true".
+    -->
+    <profile>
+      <id>skip-service-integration-tests</id>
+      <activation>
+        <property>
+          <name>skipServiceIntegrationTests</name>
+          <value>true</value>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <configuration>
+              <skipTests>true</skipTests>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+
+</project>

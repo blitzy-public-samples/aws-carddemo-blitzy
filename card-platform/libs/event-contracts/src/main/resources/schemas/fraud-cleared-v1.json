@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://carddemo.example.com/schemas/fraud-cleared-v1.json",
+  "title": "FraudCleared",
+  "description": "The fraud detection service publishes FraudCleared when its risk assessment clears an authorized transaction, and the notification service reads it under the notification-fraud consumer group. No source program assesses risk, so this event is additive in full and has no COBOL ancestor: its three payload fields and five envelope fields translate no source record. card-platform/docs/event-flow.md shows where this event travels, and card-platform/docs/decision-log.md holds the rationale for every choice in this document. Evolution is additive only, and it is bounded. additionalProperties is false and maxProperties is declared. An unknown top-level property is therefore refused. A producer cannot hide a Primary Account Number, a card verification value or any other undeclared field inside a known event type. Additive evolution inside this version travels in the optional extensions object. Its property names, property count and value lengths are all bounded. A consumer validating against this version still accepts an event a later version enriched. Inside one version no field is removed, renamed, retyped or narrowed; a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
+  "$comment": "The wire form is flat: the five envelope fields and the three payload fields sit in one object. A payload nesting the envelope under an envelope key fails this document.",
+  "type": "object",
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The idempotency key, a lower-case canonical Universally Unique Identifier (UUID) of thirty-six characters. A consumer checks this identifier against its own processed_event table before it acts. It then writes its side effects and the marker row in one local transaction, and acknowledges the message only after that transaction commits. The pattern is asserted directly, so validation does not depend on the validator enabling the optional format-assertion vocabulary. Additive. No source field exists.",
+      "examples": [
+        "3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"
+      ]
+    },
+    "eventType": {
+      "type": "string",
+      "const": "FraudCleared",
+      "description": "The routing discriminator. A consumer on the fraud.assessed topic reads this field to learn which payload arrived. Additive. No source field exists.",
+      "examples": [
+        "FraudCleared"
+      ]
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "The contract version. This file is version 1, matching the -v1 suffix in its name. Additive. No source field exists.",
+      "examples": [
+        1
+      ]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
+      "description": "The publish timestamp, in Coordinated Universal Time. The fraud detection service stamps it when it writes the event, and assessedAt carries the time the assessment finished. Additive. No source field exists.",
+      "examples": [
+        "2022-06-10T19:27:53.412Z"
+      ]
+    },
+    "aggregateId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, eleven digits, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. The Kafka message key, this field and the payload field accountId all carry one value, so account identity has a single source. A publisher compares the key against both fields and rejects the message on any difference.",
+      "examples": [
+        "00000000007"
+      ]
+    },
+    "transactionId": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "description": "The identifier of the transaction the assessment cleared, sixteen characters. Width borrowed from TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5, so the value matches the transactionId on TransactionAuthorized.",
+      "examples": [
+        "0000000000683580"
+      ]
+    },
+    "accountId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, eleven digits. Width borrowed from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. A text field keeps a leading zero, and a consumer maps this field onto its own account column.",
+      "examples": [
+        "00000000007"
+      ]
+    },
+    "assessedAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
+      "description": "The time the assessment finished, in Coordinated Universal Time. Additive. No source field exists.",
+      "examples": [
+        "2022-06-10T19:27:53.512Z"
+      ]
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction. It holds at most 16 members. Each name is a short identifier and each value a string of at most 256 characters. No nested object or array is allowed. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "maxProperties": 16,
+      "examples": [
+        {
+          "replayOf": "3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"
+        }
+      ]
+    }
+  },
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "occurredAt",
+    "aggregateId",
+    "transactionId",
+    "accountId",
+    "assessedAt"
+  ],
+  "maxProperties": 9,
+  "additionalProperties": false
+}

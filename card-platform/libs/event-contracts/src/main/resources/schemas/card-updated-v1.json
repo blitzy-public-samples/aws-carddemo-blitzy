@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://carddemo.example.com/schemas/card-updated-v1.json",
+  "title": "CardUpdated",
+  "description": "CardUpdated version 1 is retained so an older event remains readable under the contract it was published with. It carries the embossed cardholder name. Current producers publish version 2, which removes that unnecessary field. Five envelope fields precede five payload fields. additionalProperties is false and maxProperties is declared.",
+  "$comment": "CARD-CVV-CD PIC 9(03) at app/cpy/CVACT02Y.cpy:L7 is stored by the card service and appears in no property of this document, no log line and no response body. The 59-byte trailing FILLER at app/cpy/CVACT02Y.cpy:L11 carries no data and no field here maps to it.",
+  "type": "object",
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The idempotency key. A consumer checks this identifier against its own processed_event table before it acts. It then writes its side effects and the marker row in one local transaction, and acknowledges the message only after that transaction commits. Additive. No source field exists.",
+      "examples": ["b21f7a45-6c93-4de8-8f02-1a7d94e6c530"]
+    },
+    "eventType": {
+      "type": "string",
+      "const": "CardUpdated",
+      "description": "The routing discriminator. A consumer reads this field to learn which payload arrived. Additive. No source field exists.",
+      "examples": ["CardUpdated"]
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "The contract version. The number matches the -v1 suffix in this file name, and a later version only adds fields. Additive. No source field exists.",
+      "examples": [1]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
+      "description": "The publish timestamp, in Coordinated Universal Time. The card service stamps it when it writes the event to its outbox. Additive. No source field exists.",
+      "examples": ["2022-06-10T19:27:53.412Z"]
+    },
+    "aggregateId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier the card belongs to, and always the Kafka message key. Width from CARD-ACCT-ID PIC 9(11) at app/cpy/CVACT02Y.cpy:L6. Keying on the account, and not on the card, keeps every event of one account on one partition and in order. The Kafka message key, this field and the payload field accountId all carry one value, so account identity has a single source. A publisher compares the key against this field and against accountId, and rejects the message on any difference.",
+      "examples": ["00000000007"]
+    },
+    "accountId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier the card belongs to, eleven digits. From CARD-ACCT-ID PIC 9(11) at app/cpy/CVACT02Y.cpy:L6, which is also the alternate index the cross-reference dataset carries at app/jcl/XREFFILE.jcl:L72-L77. A text field keeps a leading zero.",
+      "examples": ["00000000007"]
+    },
+    "maskedCardNumber": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "pattern": "^\\*{12}[0-9]{4}$",
+      "description": "The card number with twelve asterisks in place of the leading digits and the last four digits left visible. Position and width from CARD-NUM PIC X(16) at app/cpy/CVACT02Y.cpy:L5. The masking is additive: no source program masks a Primary Account Number, and app/bms/COCRDSL.bms:L96-L99 defines the card detail field at the full sixteen characters. A lookup runs on the full number and masking happens where the event is written.",
+      "examples": ["************7065"]
+    },
+    "embossedName": {
+      "type": "string",
+      "maxLength": 50,
+      "description": "The name embossed on the card. Retained only for compatibility with CardUpdated version 1.",
+      "examples": ["JOHN Q PUBLIC"]
+    },
+    "expirationDate": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 10,
+      "description": "The card expiry date, ten characters. From CARD-EXPIRAION-DATE PIC X(10) at app/cpy/CVACT02Y.cpy:L9, which the source spells with the transposed word. app/cbl/COCRDUPC.cbl:L1505-L1507 slices the field into a four-character year, a two-character month and a two-character day, which fixes the layout.",
+      "examples": ["2024-12-31"]
+    },
+    "activeStatus": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1,
+      "enum": ["Y", "N"],
+      "description": "The one-character active status, carried through with no interpretation. From CARD-ACTIVE-STATUS PIC X(01) at app/cpy/CVACT02Y.cpy:L10, whose domain app/cbl/COCRDUPC.cbl:L91 fixes to those two literals. The batch posting program never opens the card dataset, so no consumer may decline on this field.",
+      "examples": ["Y", "N"]
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction: at most 16 members, each name a short identifier, each value a string of at most 256 characters, and no nested object or array. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "maxProperties": 16,
+      "examples": [{"replayOf": "3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"}]
+    }
+  },
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "occurredAt",
+    "aggregateId",
+    "accountId",
+    "maskedCardNumber",
+    "embossedName",
+    "expirationDate",
+    "activeStatus"
+  ],
+  "maxProperties": 11,
+  "additionalProperties": false
+}

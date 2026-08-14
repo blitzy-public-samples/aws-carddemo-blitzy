@@ -1,0 +1,188 @@
+package com.carddemo.ledger.domain;
+
+import com.carddemo.cobol.CobolDecimal;
+import com.carddemo.events.TransactionAuthorized;
+import com.carddemo.events.TransactionPosted;
+import com.carddemo.ledger.entity.TransactionEntity;
+import com.carddemo.ledger.outbox.OutboxWriter;
+import com.carddemo.ledger.repository.TransactionRepository;
+import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.Objects;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+/**
+ * Posts one authorized transaction. The service copies twelve fields onto the transaction row and
+ * stamps the processing timestamp. The category-balance update, the account-balance update and the
+ * transaction insert then run in the order {@code app/cbl/CBTRN02C.cbl:L440-L442} fixes.
+ *
+ * <p>Reproduces {@code 2000-POST-TRANSACTION} at {@code app/cbl/CBTRN02C.cbl:L424-L444}, with
+ * {@code 2900-WRITE-TRANSACTION-FILE} at {@code :L562-L579} as its third step. The twelve copies at
+ * {@code :L425-L436} carry {@code app/cpy/CVTRA06Y.cpy:L5-L16} onto
+ * {@code app/cpy/CVTRA05Y.cpy:L5-L16}.
+ *
+ * <p>{@code TRAN-PROC-TS} at {@code app/cpy/CVTRA05Y.cpy:L17} is not one of the twelve. One call to
+ * {@link CobolDecimal#formatProcessingTimestamp} per posting replaces {@code :L437-L438}, and that
+ * one value reaches the transaction row and {@link TransactionPosted#postedAt()} alike. The instant
+ * behind it is read from an injected {@link Clock} at {@link ZoneOffset#UTC}, so the stamp does not
+ * move with the container's zone and a test can fix it.
+ *
+ * <p>The published event carries the same nine descriptive values the row does, under
+ * {@link TransactionPosted#DETAIL_SCHEMA_VERSION}.
+ * {@link TransactionPosted#forAuthorized} reads them from the authorized event this
+ * method received, so a downstream read model needs no second source and receives no substituted
+ * value in place of a transaction field.
+ *
+ * <p>Deviations for this class are recorded in {@code card-platform/docs/decision-log.md} and
+ * {@code card-platform/docs/traceability-matrix.md}.
+ */
+@Service
+public class PostingService {
+
+    /** Adds the amount to the balance one account holds for one transaction type and category. */
+    private final CategoryBalanceUpdater categoryBalanceUpdater;
+
+    /** Adds the amount to the account balance and to one billing-cycle accumulator. */
+    private final AccountBalanceUpdater accountBalanceUpdater;
+
+    /** Inserts the posted-transaction row. */
+    private final TransactionRepository transactionRepository;
+
+    /** Enqueues the posted event as an unpublished outbox row. */
+    private final OutboxWriter outboxWriter;
+
+    /** Reads the instant the processing timestamp of one posting is taken from. */
+    private final Clock clock;
+
+    /**
+     * Takes the two updaters, the transaction store and the outbox writer.
+     *
+     * <p>The processing timestamp comes from {@link Clock#systemUTC()}. The constructor below takes
+     * another clock, and a test supplies a fixed one through it.
+     *
+     * @param categoryBalanceUpdater the first update, {@code app/cbl/CBTRN02C.cbl:L440}
+     * @param accountBalanceUpdater  the second update, {@code app/cbl/CBTRN02C.cbl:L441}
+     * @param transactionRepository  the store the third update inserts through,
+     *                               {@code app/cbl/CBTRN02C.cbl:L442}
+     * @param outboxWriter           the writer one posted event is enqueued through
+     * @throws NullPointerException if any argument is {@code null}
+     */
+    @Autowired
+    public PostingService(CategoryBalanceUpdater categoryBalanceUpdater,
+            AccountBalanceUpdater accountBalanceUpdater,
+            TransactionRepository transactionRepository,
+            OutboxWriter outboxWriter) {
+        this(categoryBalanceUpdater, accountBalanceUpdater, transactionRepository, outboxWriter,
+                Clock.systemUTC());
+    }
+
+    /**
+     * Takes the collaborators and the clock the processing timestamp is read from.
+     *
+     * @param categoryBalanceUpdater the first update, {@code app/cbl/CBTRN02C.cbl:L440}
+     * @param accountBalanceUpdater  the second update, {@code app/cbl/CBTRN02C.cbl:L441}
+     * @param transactionRepository  the store the third update inserts through,
+     *                               {@code app/cbl/CBTRN02C.cbl:L442}
+     * @param outboxWriter           the writer one posted event is enqueued through
+     * @param clock                  the clock the processing timestamp of each posting is taken from
+     * @throws NullPointerException if any argument is {@code null}
+     */
+    PostingService(CategoryBalanceUpdater categoryBalanceUpdater,
+            AccountBalanceUpdater accountBalanceUpdater,
+            TransactionRepository transactionRepository,
+            OutboxWriter outboxWriter,
+            Clock clock) {
+        this.categoryBalanceUpdater = Objects.requireNonNull(categoryBalanceUpdater,
+                "categoryBalanceUpdater is required");
+        this.accountBalanceUpdater = Objects.requireNonNull(accountBalanceUpdater,
+                "accountBalanceUpdater is required");
+        this.transactionRepository = Objects.requireNonNull(transactionRepository,
+                "transactionRepository is required");
+        this.outboxWriter = Objects.requireNonNull(outboxWriter, "outboxWriter is required");
+        this.clock = Objects.requireNonNull(clock, "clock is required");
+    }
+
+    /**
+     * Posts one authorized transaction and enqueues one {@link TransactionPosted} event.
+     *
+     * <p>The three updates and the outbox row share one required transaction, so they commit
+     * together or roll back together. A store failure reaches the caller unchanged.
+     *
+     * <p>The enqueued event carries the whole posted transaction record, not the balance alone.
+     * {@link TransactionPosted#forAuthorized(TransactionAuthorized, BigDecimal, String)} copies the
+     * ten values the authorized event already holds, so the notification service builds its
+     * card-keyed read model from facts rather than from blanks.
+     * {@code app/jcl/CREASTMT.JCL} sorts and copies the same whole record, and this event is what
+     * replaces that job.
+     *
+     * @param event the authorized transaction to post
+     * @param messageKey the Kafka message key the delivery carried, which must equal the aggregate
+     *                   identifier of {@code event}
+     * @return {@code true} when the category-balance store wrapped past nine integer digits, which
+     *         the caller reports once this transaction has committed
+     * @throws NullPointerException when {@code event} is {@code null}
+     * @throws IllegalArgumentException when {@code messageKey} is absent or names another aggregate
+     * @throws AccountBalanceUpdater.AccountBalanceRowMissingException when no balance row carries
+     *                                  the account identifier the event names
+     * @throws IllegalArgumentException when a value the event carries does not fit the column or
+     *                                  the contract that holds it
+     */
+    @Transactional
+    public boolean postTransaction(TransactionAuthorized event, String messageKey) {
+        Objects.requireNonNull(event, "event is required");
+        if (messageKey == null || !messageKey.equals(event.aggregateId())) {
+            throw new IllegalArgumentException(
+                    "the message key must equal the payload aggregate identifier");
+        }
+
+        String accountId = event.accountId();
+        BigDecimal amount = event.amount();
+        String processedTimestamp = CobolDecimal.formatProcessingTimestamp(
+                LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC));
+        TransactionEntity postedRow = buildTransactionRow(event, processedTimestamp);
+
+        boolean categoryBalanceWrapped = categoryBalanceUpdater.updateCategoryBalance(accountId,
+                event.transactionTypeCode(), event.merchantCategoryCode(), amount);
+        BigDecimal newBalance = accountBalanceUpdater.updateBalances(accountId, amount);
+        transactionRepository.save(postedRow);
+
+        outboxWriter.write(TransactionPosted.forAuthorized(event, newBalance, processedTimestamp));
+        return categoryBalanceWrapped;
+    }
+
+    /**
+     * Builds the row from the twelve values {@code app/cbl/CBTRN02C.cbl:L425-L436} moves, plus the
+     * stamp {@code :L438} stores.
+     *
+     * <p>Each value keeps the width its event component carries, and the card number arrives
+     * masked. The trailing {@code FILLER PIC X(20)} at {@code app/cpy/CVTRA05Y.cpy:L18} holds no
+     * column.
+     *
+     * @param event              the authorized transaction the twelve values come from
+     * @param processedTimestamp the rendered stamp for {@code TRAN-PROC-TS} at
+     *                           {@code app/cpy/CVTRA05Y.cpy:L17}
+     * @return the row the third update inserts
+     * @throws IllegalArgumentException when a value does not fit the column that holds it
+     */
+    private static TransactionEntity buildTransactionRow(TransactionAuthorized event,
+            String processedTimestamp) {
+        return new TransactionEntity(
+                event.transactionId(),
+                event.transactionTypeCode(),
+                event.merchantCategoryCode(),
+                event.source(),
+                event.description(),
+                event.amount(),
+                event.merchantId(),
+                event.merchantName(),
+                event.merchantCity(),
+                event.merchantZip(),
+                event.maskedCardNumber(),
+                event.authorizedAt(),
+                processedTimestamp);
+    }
+}

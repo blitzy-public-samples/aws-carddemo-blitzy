@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://carddemo.example.com/schemas/dead-letter-v1.json",
+  "title": "DeadLetterEnvelope",
+  "description": "The governed shape of the shared fallback dead-letter topic, carddemo.dead-letter. A producer relay that exhausts its publish attempts, and a consumer whose refused record names no source topic, publishes this envelope there as JavaScript Object Notation text. It is not the shape of every dead-letter topic on this platform: a consumer that exhausts its delivery attempts on a named topic publishes a fixed-width diagnostic to <source>.DLT instead, which card-platform/docs/event-flow.md defines field by field. Four fields are the four fields of the source abend record ABEND-CODE, ABEND-CULPRIT, ABEND-REASON and ABEND-MSG at app/cpy/CSMSG02Y.cpy:L21-L29, which app/cbl/CBTRN02C.cbl:L707-L711 fills before it calls the language environment abend service. The remaining fields carry the delivery state the source has no equivalent for, because the source has no redelivery at all. The envelope never carries the record that failed: a failed payload can hold a full Primary Account Number and any other cardholder value, and a dead-letter topic is read by hand. Only redacted, bounded diagnostics travel here. Evolution is additive only, and it is bounded. additionalProperties is false and maxProperties is declared, so an unknown top-level property is refused. Additive evolution inside this version travels in the optional extensions object, whose property names, property count and value lengths are all bounded, so a consumer validating against this version still accepts an envelope a later version enriched. Inside one version no field is removed, renamed, retyped or narrowed; a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
+  "$comment": "One shared document replaces the five service-local dead-letter records that carried the same four fields as five unrelated types, so one handler reads the shared fallback topic whichever service filled it. The source-specific <source>.DLT topics are the other contract and are not this document: they carry the 134-character fixed-width rendering of the same four fields, which is the layout of ABEND-CODE, ABEND-CULPRIT, ABEND-REASON and ABEND-MSG at app/cpy/CSMSG02Y.cpy:L21-L29 at their declared widths. Which topic carries which form is fixed by KafkaDeliveryGuaranteeContractTest and stated in card-platform/docs/event-flow.md.",
+  "type": "object",
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The identifier of this dead-letter envelope, not of the record that failed. Additive. No source field exists.",
+      "examples": [
+        "3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"
+      ]
+    },
+    "eventType": {
+      "type": "string",
+      "const": "DeadLetterEnvelope",
+      "description": "The routing discriminator. A handler reading several dead-letter topics routes on it. Additive. No source field exists.",
+      "examples": [
+        "DeadLetterEnvelope"
+      ]
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "The contract version. This file is version 1, matching the -v1 suffix in its name. Additive. No source field exists.",
+      "examples": [
+        1
+      ]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
+      "description": "The moment the failing consumer gave up, in Coordinated Universal Time. Additive. No source field exists.",
+      "examples": [
+        "2022-06-10T19:27:53.412Z"
+      ]
+    },
+    "aggregateId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier the failing record belonged to, eleven digits, and the Kafka message key of this envelope, so a dead letter lands on the partition of the account it concerns. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. An account identifier is not a cardholder secret and it is the only way to find the affected account by hand.",
+      "examples": [
+        "00000000007"
+      ]
+    },
+    "abendCode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4,
+      "pattern": "^[0-9A-Z]{1,4}$",
+      "description": "The failure code, at most four characters. From ABEND-CODE PIC X(4) at app/cpy/CSMSG02Y.cpy:L22, which app/cbl/CBTRN02C.cbl:L710 fills with 999 before it calls the abend service. Producers write printable ASCII only.",
+      "examples": [
+        "0999"
+      ]
+    },
+    "culprit": {
+      "type": "string",
+      "maxLength": 8,
+      "description": "What failed, at most eight characters. From ABEND-CULPRIT PIC X(8) at app/cpy/CSMSG02Y.cpy:L24, which receives a program-name literal such as LIT-THISPGM PIC X(8) at app/cbl/COACTVWC.cbl:L143. A class name is shortened to this width, so no package path and no exception message reaches the topic.",
+      "examples": [
+        "POSTTRAN"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 50,
+      "description": "Why it failed, at most fifty characters. From ABEND-REASON PIC X(50) at app/cpy/CSMSG02Y.cpy:L26. Producers write printable ASCII only, so no control character and no line break reaches the topic.",
+      "examples": [
+        "FILE"
+      ]
+    },
+    "message": {
+      "type": "string",
+      "maxLength": 72,
+      "description": "The operator-facing text, at most seventy-two characters. From ABEND-MSG PIC X(72) at app/cpy/CSMSG02Y.cpy:L28. Producers shorten this text and replace every character outside printable ASCII, so it names a component and a condition and carries no value from the failed record.",
+      "examples": [
+        "schema validation refused the record on 2 properties"
+      ]
+    },
+    "sourceTopic": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 249,
+      "pattern": "^[a-zA-Z0-9._-]{1,249}$",
+      "description": "The topic the failing record arrived on. Width and character set are the ones Apache Kafka admits in a topic name. Additive. No source field exists, because the source reads a sequential dataset named by the job.",
+      "examples": [
+        "transaction.authorized"
+      ]
+    },
+    "sourcePartition": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The partition the failing record arrived on. Additive. No source field exists.",
+      "examples": [
+        2
+      ]
+    },
+    "sourceOffset": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The offset of the failing record, which is how an operator finds the record itself under the access controls the topic already carries, without a copy of it travelling here. Additive. No source field exists.",
+      "examples": [
+        4711
+      ]
+    },
+    "failedEventId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 36,
+      "description": "The eventId of the failing record when it could be read, and null when the record could not be parsed at all. This is the key a replay is authorized against, and it is not a cardholder value. Additive. No source field exists.",
+      "examples": [
+        "9c1b7d54-2a3e-4f18-8b0d-6e7a4c93d215",
+        null
+      ]
+    },
+    "failedEventType": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 64,
+      "pattern": "^[A-Za-z][A-Za-z0-9]{0,63}$",
+      "description": "The eventType of the failing record when it could be read, and null when it could not. Additive. No source field exists.",
+      "examples": [
+        "TransactionAuthorized",
+        null
+      ]
+    },
+    "attemptCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000,
+      "description": "How many delivery attempts the consumer made before it gave up, so an operator can tell a transient failure that exhausted its retries from a record refused on first sight. Additive: the source retries nothing, it abends at app/cbl/CBTRN02C.cbl:L707-L711.",
+      "examples": [
+        3
+      ]
+    },
+    "terminal": {
+      "type": "boolean",
+      "description": "True when no further automatic attempt will be made, which is the state that makes this envelope a dead letter rather than a warning. Additive. No source field exists.",
+      "examples": [
+        true
+      ]
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the envelope. The object is closed in every other direction: at most 16 members, each name a short identifier, each value a string of at most 256 characters, and no nested object or array. This object never carries a Primary Account Number, a card verification value, a stack trace or any part of the failed payload. Additive. No source field exists.",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "maxProperties": 16,
+      "examples": [
+        {
+          "consumerGroup": "ledger-posting"
+        }
+      ]
+    }
+  },
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "occurredAt",
+    "aggregateId",
+    "abendCode",
+    "culprit",
+    "reason",
+    "message",
+    "sourceTopic",
+    "sourcePartition",
+    "sourceOffset",
+    "attemptCount",
+    "terminal"
+  ],
+  "maxProperties": 17,
+  "additionalProperties": false
+}

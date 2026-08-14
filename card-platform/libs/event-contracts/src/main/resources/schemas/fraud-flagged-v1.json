@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://carddemo.example.com/schemas/fraud-flagged-v1.json",
+  "title": "FraudFlagged",
+  "description": "The fraud detection service publishes FraudFlagged when its risk rules flag an authorized transaction. The notification service consumes fraud.assessed under the notification-fraud consumer group, in com.carddemo.notification.messaging.FraudFlaggedConsumer, which routes on eventType: this payload renders a cardholder alert and FraudCleared records the outcome without one. The platform integrates no delivery channel, so a rendered alert is stored rather than sent. No source program scores risk, so this event has no COBOL ancestor. Evolution is additive only: inside one version no field is removed, renamed, retyped or narrowed, and a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
+  "$comment": "aggregateId and accountId carry one account identifier, and the Kafka message key is that value, so the key and the payload cannot disagree.",
+  "type": "object",
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The idempotency key, a lower-case canonical Universally Unique Identifier (UUID) of thirty-six characters. A consumer checks this identifier against its own processed_event table before it acts. It then writes its side effects and the marker row in one local transaction, and acknowledges the message only after that transaction commits. The pattern is asserted directly, so validation does not depend on the validator enabling the optional format-assertion vocabulary. Additive. No source field exists.",
+      "examples": ["3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"]
+    },
+    "eventType": {
+      "type": "string",
+      "const": "FraudFlagged",
+      "description": "The routing discriminator. A consumer on the fraud.assessed topic reads this field to learn which payload arrived. Additive. No source field exists.",
+      "examples": ["FraudFlagged"]
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "The contract version. This file is version 1, matching the -v1 suffix in its name. Additive. No source field exists.",
+      "examples": [1]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
+      "description": "The publish timestamp, in Coordinated Universal Time. The fraud detection service stamps it when it writes the event, and assessedAt carries the time the rules finished. Additive. No source field exists.",
+      "examples": ["2022-06-10T19:27:53.412Z"]
+    },
+    "aggregateId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, eleven digits, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. This is the routing and partitioning key. The accountId property carries the same value. A consumer that maps the payload onto its own account column therefore reaches the account the message was keyed on.",
+      "examples": ["00000000007"]
+    },
+    "transactionId": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "description": "The identifier of the transaction the rules assessed, sixteen characters. Width borrowed from TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5, so the value matches the transactionId on TransactionAuthorized.",
+      "examples": ["0000000000683580"]
+    },
+    "accountId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier the assessed transaction belongs to, eleven digits. Width borrowed from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. The value equals aggregateId, and a consumer maps this field onto its own account column.",
+      "examples": ["00000000007"]
+    },
+    "riskScore": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "The score the risk rules produced, from 0 through 100, where a higher number means more risk. Additive. No source field exists.",
+      "examples": [82]
+    },
+    "triggeredRules": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["VELOCITY", "AMOUNT_ANOMALY", "MERCHANT_CATEGORY"]
+      },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "The rules that flagged the transaction. Each entry is upper case with underscores, and a flagged event names at least one rule with no duplicates. Additive. No source field exists.",
+      "examples": [["VELOCITY", "AMOUNT_ANOMALY"]]
+    },
+    "assessedAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
+      "description": "The time the risk rules finished, in Coordinated Universal Time. Additive. No source field exists.",
+      "examples": ["2022-06-10T19:27:53.512Z"]
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction. It holds at most 16 members. Each name is a short identifier and each value a string of at most 256 characters. No nested object or array is allowed. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "maxProperties": 16,
+      "examples": [{"replayOf": "3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"}]
+    }
+  },
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "occurredAt",
+    "aggregateId",
+    "transactionId",
+    "accountId",
+    "riskScore",
+    "triggeredRules",
+    "assessedAt"
+  ],
+  "maxProperties": 11,
+  "additionalProperties": false
+}

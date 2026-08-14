@@ -1,0 +1,2424 @@
+package com.carddemo.card.repository;
+
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.carddemo.card.CardServiceDatabase;
+import com.carddemo.card.TestIdentityPasswords;
+import com.carddemo.card.api.dto.CardValidationMessages;
+import com.carddemo.card.domain.CardQueryService.CardListRow;
+import com.carddemo.card.domain.CardQueryService;
+import com.carddemo.card.domain.CardTokenReconciler;
+import com.carddemo.card.entity.CardEntity;
+import com.carddemo.card.entity.OutboxEventEntity;
+import com.carddemo.card.entity.ProcessedEventEntity;
+import com.carddemo.cobol.PanMasker;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.SQLException;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+import javax.sql.DataSource;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.Limit;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+
+/**
+ * Container-backed integration test for {@link CardRepository} over the migrated {@code card}
+ * schema.
+ *
+ * <p>Three properties reach this class and no other. The migration produces the columns, the
+ * primary key and the index the entity mapping validates against. Index
+ * {@code idx_card_account_id} carries no unique constraint. Keyset paging over
+ * {@code card_number} returns every row exactly once.
+ *
+ * <p>Provenance. {@code KEYS(16 0)} at {@code app/jcl/CARDFILE.jcl:L54} declares the sixteen-byte
+ * primary key of the Virtual Storage Access Method (VSAM) dataset, and
+ * {@code RECORDSIZE(150 150)} at {@code app/jcl/CARDFILE.jcl:L55} fixes the record width that
+ * {@code app/cpy/CVACT02Y.cpy} describes. {@code KEYS(11 16)} at {@code app/jcl/CARDFILE.jcl:L85}
+ * places an eleven-byte alternate-index key at offset 16, where {@code CARD-ACCT-ID} starts.
+ * {@code REPRO INFILE(CARDDATA) OUTFILE(CARDVSAM)} at {@code app/jcl/CARDFILE.jcl:L75} loads that
+ * dataset in the Job Control Language (JCL) member, and {@code V2__seed.sql} carries the load.
+ *
+ * <p>Paging provenance. The source pages a Customer Information Control System (CICS) browse, and
+ * {@code 9000-READ-FORWARD} fills a page of {@code WS-MAX-SCREEN-LINES} rows, declared
+ * {@code VALUE 7} at {@code app/cbl/COCRDLIC.cbl:L177-L178}. The same paragraph then reads one row
+ * more at {@code app/cbl/COCRDLIC.cbl:L1197-L1205} and derives the next-page flag at
+ * {@code app/cbl/COCRDLIC.cbl:L1191-L1216}. {@code 9500-FILTER-RECORDS} at
+ * {@code app/cbl/COCRDLIC.cbl:L1382-L1409} runs ahead of the row counter at
+ * {@code app/cbl/COCRDLIC.cbl:L1162-L1163}, so a filtered page holds matching rows.
+ *
+ * <p>DEVIATION, list return type: {@link CardRepository#findByAccountId(String, Limit)} returns a
+ * {@link List}. Both alternate indexes are non-unique, at {@code app/jcl/CARDFILE.jcl:L85-L87} and
+ * at {@code app/jcl/XREFFILE.jcl:L74-L76}.
+ *
+ * <p>DEVIATION, exclusive cursor: both page finders exclude the cursor row, and the source browses
+ * inclusively. The source also overwrites its saved forward cursor with the keys of the lookahead
+ * row at {@code app/cbl/COCRDLIC.cbl:L1212-L1214}.
+ *
+ * <p>DEVIATION, locator corrections: the forward next-page flag comes from
+ * {@code app/cbl/COCRDLIC.cbl:L1191-L1216}, and {@code app/cbl/COCRDLIC.cbl:L1284-L1287} presets
+ * the backward counter and the backward flag instead. The exit label of
+ * {@code 9100-GETCARD-BYACCTCARD} sits at {@code app/cbl/COCRDSLC.cbl:L775}, and the exit label of
+ * {@code 9150-GETCARD-BYACCT} sits at {@code app/cbl/COCRDSLC.cbl:L810}.
+ *
+ * <p>DEVIATION, dead configuration: {@code CARDAIX} at {@code app/csd/CARDDEMO.CSD:L13-L14} names
+ * the path defined at {@code app/jcl/CARDFILE.jcl:L100-L102}. Its only reader,
+ * {@code 9150-GETCARD-BYACCT} at {@code app/cbl/COCRDSLC.cbl:L779}, carries no {@code PERFORM}
+ * site.
+ *
+ * <p>How this class runs. One PostgreSQL 18.4 container serves the whole class, on the image tag
+ * {@code card-platform/docker-compose.yml} also names. {@code src/main/resources/application.yml}
+ * sets {@code spring.flyway.create-schemas: true}, so Flyway creates the schema, applies
+ * {@code V1__schema.sql} and loads the fifty rows of {@code V2__seed.sql}. The same file sets
+ * {@code spring.jpa.hibernate.ddl-auto: validate}. A mapping that drifts from the migration stops
+ * the context, so every test here carries that check by starting.
+ *
+ * <p>{@link DynamicPropertySource} points three datasource properties at the container.
+ * {@code DataJpaTest} and {@code AutoConfigureTestDatabase} appear nowhere here: Spring Boot 4.1.0
+ * ships them in {@code spring-boot-data-jpa-test} and {@code spring-boot-jdbc-test}, and
+ * {@code card-platform/services/card-service/pom.xml} declares neither artifact.
+ * {@code ServiceConnection} is absent for the same reason. Each nested class carries
+ * {@link Transactional}, so a row a test writes rolls back and the fifty seeded rows stand for the
+ * next test.
+ *
+ * <p>Run this class from {@code card-platform/} with
+ * {@code mvn -o -B -pl services/card-service -am verify}. The module activates Failsafe, and its
+ * report under {@code target/failsafe-reports} names this class.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
+ */
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.NONE,
+        properties = {
+                "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
+                "carddemo.outbox.relay.fixed-delay-ms=3600000",
+                "carddemo.retention.sweep-interval-ms=3600000",
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH
+        })
+@DisplayName("CardRepository over the migrated card schema: keys, the account index, and paging")
+class CardRepositoryIT {
+
+    /** The image tag {@code card-platform/docker-compose.yml} also names. */
+    private static final String POSTGRES_IMAGE = "postgres:18.4";
+
+    /**
+     * The schema Flyway creates, from {@code spring.jpa.properties.hibernate.default_schema} and
+     * {@code spring.flyway.schemas} in {@code src/main/resources/application.yml}.
+     */
+    private static final String MIGRATED_SCHEMA = "card_service";
+
+    /**
+     * Rows one screen of the card list holds, from
+     * {@code WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7} at
+     * {@code app/cbl/COCRDLIC.cbl:L177-L178}.
+     */
+    private static final int SCREEN_PAGE_SIZE = 7;
+
+    /**
+     * Rows one account read returns at most, the ceiling
+     * {@code domain/CardQueryService} applies to the same read.
+     */
+    private static final Limit ACCOUNT_READ_LIMIT = Limit.of(100);
+
+    /** Account identifier of seeded row one, eleven characters wide. */
+    private static final String ROW_1_ACCOUNT_ID = "00000000050";
+
+    /** Row count {@code V2__seed.sql} loads into {@code card}. */
+    private static final int SEEDED_ROW_COUNT = 50;
+
+    /**
+     * The migration versions Flyway applies, in the order it applies them.
+     *
+     * <p>Version 3 is {@code V3__processed_event_topic_key.sql}, which re-keys
+     * {@code processed_event} on the event and the topic together. Version 4 is
+     * {@code V4__subject_request_posture.sql} and carries no data-definition statement: it re-issues
+     * the {@code card_xref} table comment so the catalogue does not promise that an erasure request
+     * reaches the row, since no export or erasure workflow exists anywhere on this platform to send
+     * one. The correction is a migration rather than an edit to {@code V1} because {@code V1} has run, and a
+     * comment-only migration adds a history row and changes no table, so every other assertion in
+     * this class reads exactly as it did at version 3.
+     *
+     * <p>Version 5 is {@code V5__xref_reconciliation_and_status_domain.sql}. It adds one constraint,
+     * {@code ck_card_active_status}, which {@link ActiveStatusDomain} asserts, and re-issues the
+     * {@code card_xref} comment now that {@code domain/CardCrossReferenceReconciler} reconciles the
+     * replica on the update path. Both values the seed loads satisfy the constraint, so every other
+     * assertion in this class reads exactly as it did at version 4.
+
+     * <p>Version 6 is {@code V6__outbox_correlation.sql}, which adds the two nullable correlation
+     * columns {@code outbox_event} records so a published record can name the unit of work behind
+     * it. It touches no table this class reads.
+     * <p>Version 7 is {@code V7__outbox_aggregate_head_index.sql}, which adds one index to
+     * {@code outbox_event} and no table. The relay claims the due head row of each account rather
+     * than the oldest due rows outright, which is what keeps two events of one account from being in
+     * flight at once, and that claim reads the table by aggregate and arrival order.
+     *
+     * <p>Version 8 is {@code V8__card_status_locator.sql}, one {@code COMMENT ON CONSTRAINT} that
+     * restates the {@code ck_card_active_status} comment with the lines the status test occupies,
+     * {@code app/cbl/COCRDUPC.cbl:L861-L871}. Version 5 named a range past the end of that file. The
+     * file carries the corrected range too, and this migration is what corrects a database that
+     * applied the earlier bytes and had its checksums repaired rather than its volume discarded. It
+     * declares no table, column, index or constraint, so {@link ActiveStatusDomain} reads the same
+     * constraint it read at version 7.
+     *
+     * <p>Version 9 is {@code V9__processed_event_claims_are_permanent.sql}. It withdraws the
+     * retention horizon of {@code processed_event} and drops {@code ix_processed_event_processed_at}
+     * with the purge that index served, so a duplicate-delivery claim is kept for good. It declares
+     * no table, no column and no constraint, and the claim assertions in this class read the same
+     * rows they read at version 8.
+     *
+     * <p>Version 10 is {@code V10__card_token_version_and_rotation.sql}. It adds
+     * {@code card_token_version} and {@code card_token_provenance} to {@code card}, both with a
+     * default that describes the fifty seeded rows exactly, and creates the two tables a rotation
+     * writes: {@code card_token_rotation} and {@code card_token_rotation_mapping}. A security review
+     * found that a key change re-derived {@code card.card_token} alone and left three other stores
+     * naming a card nobody could reach. Every row this class reads still carries the seeded token, so
+     * each existing assertion reads the value it read at version 9, and the two new columns are
+     * asserted by {@link CardTokenProvenance}.
+     *
+     * <p>Version 11 is {@code V11__card_verification_value_exception.sql}. It records the formal
+     * exception under which this schema keeps {@code card.card_verification_value} and re-issues the
+     * {@code card} and {@code card_xref} comments, one of them pointing at the subject-request
+     * procedure. It declares no table, no column, no index and no constraint, so every assertion in
+     * this class reads exactly what it read at version 10.
+     *
+     * <p>Version 12 is {@code V12__encryption_overlay_locator.sql}. It restates the
+     * {@code card_verification_value} comment with the current location of the encryption overlay
+     * that delivers the first of version 11's four controls, which moved out of {@code deploy/k8s}
+     * because Kustomize refuses an overlay contained by a base it names. Version 11 is not edited to
+     * follow it, because Flyway compares the checksum of an applied file at every start. It declares
+     * no table, no column, no index and no constraint, so every assertion in this class reads exactly
+     * what it read at version 11.
+     */
+    private static final List<String> MIGRATION_VERSIONS =
+            List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12");
+
+    /**
+     * Card number of the row a test inserts to place a second card on one account.
+     */
+    private static final String INSERTED_DUPLICATE_CARD_NUMBER =
+            syntheticCardNumber(900_001L);
+
+    /** Card numbers of the six rows a test inserts to fill one account to seven cards. */
+    private static final List<String> INSERTED_FILLER_CARD_NUMBERS = List.of(
+            syntheticCardNumber(900_011L),
+            syntheticCardNumber(900_012L),
+            syntheticCardNumber(900_013L),
+            syntheticCardNumber(900_014L),
+            syntheticCardNumber(900_015L),
+            syntheticCardNumber(900_016L));
+
+    /**
+     * Card verification value every inserted row carries. The value is three digits, which
+     * {@code ck_card_verification_value_digits} requires, and plainly synthetic.
+     */
+    private static final String SYNTHETIC_CARD_VERIFICATION_VALUE = "000";
+
+    private static final String SYNTHETIC_EMBOSSED_NAME = "Integration Test Row";
+
+    private static final LocalDate SYNTHETIC_EXPIRATION_DATE = LocalDate.of(2027, 12, 31);
+
+    /**
+     * Active status every inserted row carries, from {@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.}
+     * at {@code app/cbl/COCRDUPC.cbl:L91}.
+     */
+    private static final String ACTIVE_STATUS_YES = "Y";
+
+    /** The other value the same condition name declares, from {@code app/cbl/COCRDUPC.cbl:L91}. */
+    private static final String ACTIVE_STATUS_NO = "N";
+
+    /**
+     * A one-character status outside that condition name, used to prove the constraint refuses one.
+     *
+     * <p>The column is {@code CHAR(1)}, so a wider value would be refused on width alone and would
+     * prove nothing about the domain.
+     */
+    private static final String ACTIVE_STATUS_OUTSIDE_DOMAIN = "X";
+
+    /**
+     * Reads whether one named index of one named table is unique, from the system catalog.
+     *
+     * <p>The schema arrives as a bind value against {@code pg_namespace}, so no identifier reaches
+     * the statement text.
+     */
+    private static final String INDEX_IS_UNIQUE_SQL = """
+            SELECT i.indisunique
+              FROM pg_index i
+              JOIN pg_class ic ON ic.oid = i.indexrelid
+              JOIN pg_class tc ON tc.oid = i.indrelid
+              JOIN pg_namespace n ON n.oid = tc.relnamespace
+             WHERE n.nspname = ? AND tc.relname = ? AND ic.relname = ?
+            """;
+
+    /**
+     * Reads the key columns of one named index, in key order.
+     *
+     * <p>{@code unnest(i.indkey) WITH ORDINALITY} is what makes the returned order the key order.
+     * A join on {@code attnum = ANY(i.indkey)} returns the same column names in table order, which
+     * says nothing about which column leads, and a composite index only serves a leading-column
+     * lookup when the leading column is the one this platform intends.
+     */
+    private static final String INDEX_COLUMNS_SQL = """
+            SELECT a.attname
+              FROM pg_index i
+              JOIN pg_class ic ON ic.oid = i.indexrelid
+              JOIN pg_class tc ON tc.oid = i.indrelid
+              JOIN pg_namespace n ON n.oid = tc.relnamespace
+              JOIN unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) ON TRUE
+              JOIN pg_attribute a ON a.attrelid = tc.oid AND a.attnum = k.attnum
+             WHERE n.nspname = ? AND tc.relname = ? AND ic.relname = ?
+             ORDER BY k.ord
+            """;
+
+    /** Reads the primary-key columns of one named table, in key order. */
+    private static final String PRIMARY_KEY_COLUMNS_SQL = """
+            SELECT a.attname
+              FROM pg_index i
+              JOIN pg_class tc ON tc.oid = i.indrelid
+              JOIN pg_namespace n ON n.oid = tc.relnamespace
+              JOIN pg_attribute a ON a.attrelid = tc.oid AND a.attnum = ANY(i.indkey)
+             WHERE n.nspname = ? AND tc.relname = ? AND i.indisprimary
+             ORDER BY a.attnum
+            """;
+
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link CardServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    static final PostgreSQLContainer POSTGRES = CardServiceDatabase.container();
+
+    /**
+     * Points the Spring datasource at the running container.
+     *
+     * <p>Three properties leave here, each as a supplier the context resolves at refresh.
+     * {@code src/main/resources/application.yml} sits on the test classpath and carries every
+     * other datasource, Flyway and persistence setting, and no line below repeats one. No line
+     * below creates the schema either: {@code spring.flyway.create-schemas} does that.
+     *
+     * <p>The uniform resource locator carries {@code currentSchema}, which
+     * {@link #migratedSchemaUrl()} appends. {@code hibernate.default_schema} qualifies a mapped
+     * query alone, so a native statement such as
+     * {@link OutboxEventRepository#deletePublishedBefore(java.time.Instant, int)} resolves its
+     * unqualified table name against the connection search path instead.
+     *
+     * @param registry the registry the Spring test context supplies
+     */
+    @DynamicPropertySource
+    static void datasourceProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", CardRepositoryIT::migratedSchemaUrl);
+        registry.add("spring.datasource.username", POSTGRES::getUsername);
+        registry.add("spring.datasource.password", POSTGRES::getPassword);
+    }
+
+    /**
+     * Returns the container uniform resource locator with {@code currentSchema} appended.
+     *
+     * <p>The facility builds the locator, so no separator is decided here.
+     *
+     * @return the connection uniform resource locator whose search path holds
+     *         {@value #MIGRATED_SCHEMA}
+     */
+    private static String migratedSchemaUrl() {
+        return CardServiceDatabase.urlFor(CardRepositoryIT.class);
+    }
+
+    /** The repository under test. */
+    @Autowired
+    private CardRepository cardRepository;
+
+    /** Runs the production paging policy over the real repository. */
+    @Autowired
+    private CardQueryService cardQueryService;
+
+    /** Reads the system catalog and the Flyway history straight from the migrated database. */
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    /** Answers which database the running context reached. */
+    @Autowired
+    private DataSource dataSource;
+
+    /** The outbox table the relay claims from, read directly by the claim assertions. */
+    @Autowired
+    private OutboxEventRepository outboxEventRepository;
+
+    /** The duplicate-delivery marker table, read directly by the retention assertions. */
+    @Autowired
+    private ProcessedEventRepository processedEventRepository;
+
+    /** Forces a pending insert to the database, so a constraint answers where a test asserts. */
+    @PersistenceContext
+    private EntityManager entityManager;
+
+    /** Opens the two independent transactions the bounded-wait test contends between. */
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+
+    /** The start-up runner that brings a stored card token onto the configured key. */
+    @Autowired
+    private CardTokenReconciler cardTokenReconciler;
+
+    /**
+     * The schema Flyway created and Hibernate qualifies with, from
+     * {@code spring.jpa.properties.hibernate.default_schema} in
+     * {@code src/main/resources/application.yml}.
+     */
+    @Value("${spring.jpa.properties.hibernate.default_schema}")
+    private String schema;
+
+    // ---------------------------------------------------------------------------------------
+    // Helpers. Each one answers a single question or performs a single write, and none asserts.
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * One page as a caller assembles it from a repository result.
+     *
+     * @param displayed      the rows the caller shows, in ascending card-number order
+     * @param nextPageExists whether the repository returned a row beyond that page
+     */
+    private record CardPage(List<CardEntity> displayed, boolean nextPageExists) {
+    }
+
+    /**
+     * Resolves a card-number filter through the primary key and applies the other two tests.
+     *
+     * <p>{@code card_number} is the primary key, from {@code KEYS(16 0)} at
+     * {@code app/jcl/CARDFILE.jcl:L54}, so this filter selects at most one row.
+     * {@code domain/CardQueryService} intersects that row with the account test at
+     * {@code app/cbl/COCRDLIC.cbl:L1386} and the browse bound, and this helper does the same.
+     *
+     * @param cardNumber    the sixteen-character filter
+     * @param accountId     the account filter, or {@code null} to apply none
+     * @param cursor        the exclusive browse bound, or {@code null} for the first or last page
+     * @param cursorIsUpper {@code true} when the bound is an upper one, as a backward page carries
+     * @return the matching row, or an empty list
+     */
+    private List<CardEntity> oneCard(String cardNumber, String accountId, String cursor,
+            boolean cursorIsUpper) {
+        return cardRepository.findByCardNumber(cardNumber)
+                .filter(card -> accountId == null || accountId.equals(card.getAccountId()))
+                .filter(card -> cursor == null || (cursorIsUpper
+                        ? card.getCardNumber().compareTo(cursor) < 0
+                        : card.getCardNumber().compareTo(cursor) > 0))
+                .map(List::of)
+                .orElseGet(List::of);
+    }
+
+    /**
+     * Fetches one page forward and derives the next-page flag by lookahead.
+     *
+     * <p>The caller asks for one row more than it displays, which is the extra
+     * {@code EXEC CICS READNEXT} at {@code app/cbl/COCRDLIC.cbl:L1197-L1205}. A row beyond the
+     * page sets the flag, matching {@code app/cbl/COCRDLIC.cbl:L1207-L1211}, and its absence
+     * clears the flag, matching {@code app/cbl/COCRDLIC.cbl:L1215-L1216}. No count query runs.
+     *
+     * @param afterCardNumber the exclusive cursor, or {@code null} for the first page
+     * @param accountId       the account filter, or {@code null} to apply none
+     * @param cardNumber      the card-number filter, or {@code null} to apply none
+     * @param pageSize        the row count the caller displays, at least one
+     * @return the page and its flag
+     * @throws IllegalArgumentException if the page size is below one
+     */
+    private CardPage forwardPage(String afterCardNumber, String accountId, String cardNumber,
+            int pageSize) {
+        requirePositivePageSize(pageSize);
+        Limit limit = Limit.of(pageSize + 1);
+        List<CardEntity> fetched;
+
+        if (cardNumber != null) {
+            fetched = oneCard(cardNumber, accountId, afterCardNumber, false);
+        } else if (accountId == null) {
+            fetched = afterCardNumber == null
+                    ? cardRepository.findFirstPage(limit)
+                    : cardRepository.findPageAfter(afterCardNumber, limit);
+        } else {
+            fetched = afterCardNumber == null
+                    ? cardRepository.findFirstPageForAccount(accountId, limit)
+                    : cardRepository.findPageAfterForAccount(accountId, afterCardNumber, limit);
+        }
+        boolean nextPageExists = fetched.size() > pageSize;
+        List<CardEntity> displayed = nextPageExists ? fetched.subList(0, pageSize) : fetched;
+        return new CardPage(List.copyOf(displayed), nextPageExists);
+    }
+
+    /**
+     * Fetches one page backward and returns it in ascending card-number order.
+     *
+     * <p>{@link CardRepository#findLastPage(Limit)} and its cursor form order rows
+     * descending, and this helper reverses them. The source reaches the same order by filling its
+     * screen array from the high index down at {@code app/cbl/COCRDLIC.cbl:L1338-L1346}.
+     *
+     * @param beforeCardNumber the exclusive cursor, or {@code null} for the last page
+     * @param accountId        the account filter, or {@code null} to apply none
+     * @param cardNumber       the card-number filter, or {@code null} to apply none
+     * @param pageSize         the row count the caller displays, at least one
+     * @return the page in ascending order, with a flag reporting a further row before it
+     * @throws IllegalArgumentException if the page size is below one
+     */
+    private CardPage backwardPage(String beforeCardNumber, String accountId, String cardNumber,
+            int pageSize) {
+        requirePositivePageSize(pageSize);
+        Limit limit = Limit.of(pageSize + 1);
+        List<CardEntity> fetched;
+
+        if (cardNumber != null) {
+            fetched = oneCard(cardNumber, accountId, beforeCardNumber, true);
+        } else if (accountId == null) {
+            fetched = beforeCardNumber == null
+                    ? cardRepository.findLastPage(limit)
+                    : cardRepository.findPageBefore(beforeCardNumber, limit);
+        } else {
+            fetched = beforeCardNumber == null
+                    ? cardRepository.findLastPageForAccount(accountId, limit)
+                    : cardRepository.findPageBeforeForAccount(accountId, beforeCardNumber, limit);
+        }
+        boolean previousPageExists = fetched.size() > pageSize;
+        List<CardEntity> descending = previousPageExists ? fetched.subList(0, pageSize) : fetched;
+        List<CardEntity> ascending = new ArrayList<>(descending);
+        Collections.reverse(ascending);
+        return new CardPage(List.copyOf(ascending), previousPageExists);
+    }
+
+    /**
+     * Walks every page forward from the first, carrying the last displayed row as the cursor.
+     *
+     * <p>The cursor is the last row the previous page displayed and never the lookahead row. The
+     * source moves the lookahead row's keys over its saved cursor at
+     * {@code app/cbl/COCRDLIC.cbl:L1212-L1214}, and an exclusive cursor holding that value would
+     * skip one row per page.
+     *
+     * @param accountId  the account filter, or {@code null} to apply none
+     * @param cardNumber the card-number filter, or {@code null} to apply none
+     * @param pageSize   the row count each page displays, at least one
+     * @return every page in order, the last one carrying a cleared flag
+     * @throws IllegalStateException if the cursor fails to advance, which would loop forever
+     */
+    private List<CardPage> walkForward(String accountId, String cardNumber, int pageSize) {
+        List<CardPage> pages = new ArrayList<>();
+        String cursor = null;
+        while (true) {
+            CardPage page = forwardPage(cursor, accountId, cardNumber, pageSize);
+            pages.add(page);
+            if (!page.nextPageExists()) {
+                return pages;
+            }
+            String nextCursor = page.displayed().getLast().getCardNumber();
+            if (cursor != null && nextCursor.compareTo(cursor) <= 0) {
+                throw new IllegalStateException("the forward cursor failed to advance past "
+                        + "page " + pages.size() + ", so the walk would not terminate");
+            }
+            cursor = nextCursor;
+        }
+    }
+
+    /**
+     * Rejects a page size below one, which would make the walk above loop forever.
+     *
+     * @param pageSize the page size to check
+     * @throws IllegalArgumentException if the page size is below one
+     */
+    private static void requirePositivePageSize(int pageSize) {
+        if (pageSize < 1) {
+            throw new IllegalArgumentException("pageSize must be at least 1, found " + pageSize);
+        }
+    }
+
+    /**
+     * Returns the card numbers of a row list, in the order the list holds them.
+     *
+     * @param rows the rows to read
+     * @return the card numbers, in list order
+     */
+    private static List<String> cardNumbersOf(List<CardEntity> rows) {
+        return rows.stream().map(CardEntity::getCardNumber).toList();
+    }
+
+    /** Returns the card numbers of service list rows, preserving their order. */
+    private static List<String> serviceCardNumbers(List<CardListRow> rows) {
+        return rows.stream().map(CardListRow::cardNumber).toList();
+    }
+
+    /**
+     * Returns the card numbers every page of a walk displayed, pages in walk order.
+     *
+     * @param pages the pages to read
+     * @return the card numbers of every page, concatenated
+     */
+    private static List<String> cardNumbersOfPages(List<CardPage> pages) {
+        return pages.stream().flatMap(page -> page.displayed().stream())
+                .map(CardEntity::getCardNumber).toList();
+    }
+
+    /**
+     * Writes one card row through the inherited save operation and flushes it.
+     *
+     * <p>The flush drives the insert to the database inside the test transaction, so a unique
+     * constraint on {@code account_id} would fail here rather than later.
+     *
+     * @param cardNumber the card number of the new row, sixteen characters wide
+     * @param accountId  the account identifier of the new row, eleven digits
+     * @return the managed row the save returned
+     */
+    private CardEntity insertCard(String cardNumber, String accountId) {
+        CardEntity saved = cardRepository.save(new CardEntity(
+                cardNumber,
+                accountId,
+                SYNTHETIC_CARD_VERIFICATION_VALUE,
+                SYNTHETIC_EMBOSSED_NAME,
+                SYNTHETIC_EXPIRATION_DATE,
+                ACTIVE_STATUS_YES));
+        entityManager.flush();
+        return saved;
+    }
+
+    /**
+     * Returns the card numbers of every row in the table, read through the inherited find-all.
+     *
+     * <p>The result is the reference set every union assertion compares against. Find-all and the
+     * page finders are separate query paths, so a page finder that drops a row shows up as a
+     * difference between the two.
+     *
+     * @return every card number in the table
+     */
+    private Set<String> everyCardNumber() {
+        return new LinkedHashSet<>(cardNumbersOf(cardRepository.findAll()));
+    }
+
+    /**
+     * Returns the fifty seeded card numbers in key order without committing them in test source.
+     */
+    private List<String> orderedSeededCardNumbers() {
+        return jdbcTemplate.queryForList(
+                "SELECT card_number FROM " + schema + ".card ORDER BY card_number",
+                String.class);
+    }
+
+    /** Returns the account identifier stored on one card. */
+    private String accountIdOf(String cardNumber) {
+        return cardRepository.findByCardNumber(cardNumber).orElseThrow().getAccountId();
+    }
+
+    /** Builds a clearly synthetic sixteen-digit test value. */
+    private static String syntheticCardNumber(long serial) {
+        return "9999" + String.format(Locale.ROOT, "%012d", serial);
+    }
+
+    /** Compares card-number text without adding either value to a failed assertion. */
+    private static void assertSameCardNumber(String expected, String actual, String message) {
+        assertTrue(expected.equals(actual), message);
+    }
+
+    /** Compares ordered card-number collections without adding their values to a failure. */
+    private static void assertSameCardNumbers(
+            Iterable<String> expected, Iterable<String> actual, String message) {
+        assertTrue(expected.equals(actual), message);
+    }
+
+    /**
+     * Proves the context reached the container and that Flyway ran both migrations over it.
+     *
+     * <p>Every other group in this class rests on the three assertions here. A substituted
+     * in-memory database, a skipped migration or a partial seed would each leave a paging
+     * assertion failing for a reason unrelated to paging.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("The container serves the context, and Flyway applied all migrations")
+    class ContainerAndMigration {
+
+        /**
+         * Asserts the running context reached the PostgreSQL 18.4 container and no other database.
+         *
+         * <p>The product name rules out a substituted in-memory database. The mapped port rules
+         * out the compose instance, which {@code card-platform/docker-compose.yml} publishes on the
+         * fixed host port instead. Without both checks a substituted database would satisfy every
+         * remaining assertion in this class.
+         *
+         * @throws SQLException if the connection or its metadata cannot be read
+         */
+        @Test
+        @DisplayName("the datasource reaches the container, on the port the container mapped")
+        void theDatasourceReachesTheContainer() throws SQLException {
+            try (Connection connection = dataSource.getConnection()) {
+                DatabaseMetaData metaData = connection.getMetaData();
+                String productName = metaData.getDatabaseProductName();
+                String productVersion = metaData.getDatabaseProductVersion();
+                boolean urlCarriesMappedPort =
+                        metaData.getURL().contains(":" + POSTGRES.getFirstMappedPort() + "/");
+                assertAll(
+                        () -> assertTrue(POSTGRES.isRunning(),
+                                "the shared container is not running"),
+                        () -> assertEquals("PostgreSQL", productName,
+                                "the context reached " + productName
+                                        + " rather than the PostgreSQL container"),
+                        () -> assertTrue(productVersion.startsWith("18."),
+                                "expected a PostgreSQL 18 server from image " + POSTGRES_IMAGE
+                                        + ", found version " + productVersion),
+                        () -> assertTrue(urlCarriesMappedPort,
+                                "the connection carries a port other than the container mapped "
+                                        + "port " + POSTGRES.getFirstMappedPort()));
+            }
+        }
+
+        /**
+         * Asserts the Flyway history carries every shipped version, all successful.
+         *
+         * <p>A schema name is an identifier, so it joins the statement text rather than arriving
+         * as a bind value. The value comes from
+         * {@code src/main/resources/application.yml} and never from a caller.
+         */
+        @Test
+        @DisplayName("the Flyway history carries every shipped version, all successful")
+        void flywayAppliedAllMigrations() {
+            List<String> versions = jdbcTemplate.queryForList(
+                    "SELECT version FROM " + schema + ".flyway_schema_history"
+                            + " WHERE success = TRUE AND version IS NOT NULL"
+                            + " ORDER BY installed_rank",
+                    String.class);
+            assertEquals(MIGRATION_VERSIONS, versions,
+                    "Flyway applied a different set of migrations than the shipped scripts");
+        }
+
+        /**
+         * Asserts the seed loaded exactly fifty card rows.
+         *
+         * <p>The count is exact rather than merely positive. A seed that loaded one row would pass
+         * a positive check and then fail every paging assertion below.
+         * {@code REPRO INFILE(CARDDATA) OUTFILE(CARDVSAM)} at {@code app/jcl/CARDFILE.jcl:L75}
+         * loads the same fifty records into the Virtual Storage Access Method dataset.
+         */
+        @Test
+        @DisplayName("V2__seed.sql loaded exactly fifty card rows")
+        void theSeedLoadedFiftyRows() {
+            assertEquals(SEEDED_ROW_COUNT, cardRepository.count(),
+                    "fifty rows is what makes a page of seven observable");
+        }
+    }
+
+    /**
+     * Proves the migration produced the primary key the Job Control Language member declares.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("Keys, against the dataset definitions in app/jcl/CARDFILE.jcl")
+    class Keys {
+
+        /**
+         * Asserts {@code card_number} alone carries the primary key.
+         *
+         * <p>{@code KEYS(16 0)} at {@code app/jcl/CARDFILE.jcl:L54} declares sixteen bytes at
+         * offset zero, which is {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}.
+         */
+        @Test
+        @DisplayName("card_number is the primary key, from KEYS(16 0)")
+        void cardNumberIsThePrimaryKey() {
+            List<String> columns = jdbcTemplate.queryForList(
+                    PRIMARY_KEY_COLUMNS_SQL, String.class, schema, "card");
+            assertEquals(List.of("card_number"), columns,
+                    "constraint pk_card must key on card_number alone");
+        }
+    }
+
+    /**
+     * Proves the card token is one value, derived the same way in SQL and in Java, and unique.
+     *
+     * <p>{@code card_token} is an addition with no field in {@code app/cpy/CVACT02Y.cpy} behind it.
+     * One piece of code derives it, {@link PanMasker#cardToken(String)}, and it reaches a row by two
+     * routes: {@link com.carddemo.card.entity.CardEntity} applies it in its constructor to every row
+     * this service writes, and {@code V2__seed.sql} carries the result as a checked-in literal on
+     * each of its fifty rows. A literal and a derivation can drift, and a drift would split the
+     * identity: a cursor issued for a seeded row would resolve, one issued for an inserted row would
+     * not, or the reverse.
+     *
+     * <p>This group is the only place the literal and the derivation meet, so it is the only place
+     * the agreement can be proven. It runs against a real PostgreSQL because the literal is loaded by
+     * a migration.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("The card token agrees between SQL and Java, and reaches one row")
+    class CardTokenIdentity {
+
+        /**
+         * Asserts every seeded row carries the token the Java helper derives from its card number.
+         *
+         * <p>All fifty rows are compared rather than one. The expression in {@code V2__seed.sql}
+         * applies {@code btrim} to a {@code CHAR(16)} column, and a row whose card number differed
+         * in padding from the rest would diverge on that row alone.
+         */
+        @Test
+        @DisplayName("every seeded card_token equals PanMasker.cardToken of its card number")
+        void everySeededTokenMatchesTheJavaDerivation() {
+            List<CardEntity> rows = cardRepository.findAll();
+            List<String> diverged = new ArrayList<>();
+            for (CardEntity row : rows) {
+                String expected = PanMasker.cardToken(row.getCardNumber());
+                if (!expected.equals(row.getCardToken())) {
+                    diverged.add(PanMasker.maskCardNumber(row.getCardNumber()));
+                }
+            }
+            assertAll(
+                    () -> assertEquals(SEEDED_ROW_COUNT, rows.size(),
+                            "the seed loaded fifty rows for this comparison"),
+                    () -> assertEquals(List.of(), diverged,
+                            "the SQL expression in V2__seed.sql and PanMasker.cardToken must "
+                                    + "derive one value. These masked card numbers diverged: "
+                                    + diverged));
+        }
+
+        /**
+         * Asserts the reconciler rewrites a stored token that belongs to another key, and only that
+         * row.
+         *
+         * <p>The condition is the one a deployment starts in. A seeded literal is derived under the
+         * build-scope key {@code card-platform/pom.xml} supplies, and a deployment generates a key of
+         * its own, so every seeded row arrives carrying a token the running service would not derive.
+         * This test creates that condition by writing a token-shaped value no key produces, then runs
+         * the reconciliation the start-up runner runs.
+         *
+         * <p>The second run is the point of the second assertion. A reconciliation that rewrote rows
+         * it had already corrected would rewrite fifty rows on every start-up of every instance.
+         */
+        @Test
+        @DisplayName("the reconciler rewrites a token from another key, and rewrites nothing twice")
+        void theReconcilerRewritesATokenFromAnotherKey() {
+            String cardNumber = seededCardNumbers().get(0);
+            String derived = PanMasker.cardToken(cardNumber);
+            String foreign = "0".repeat(PanMasker.CARD_TOKEN_LENGTH);
+            jdbcTemplate.update("UPDATE card SET card_token = ? WHERE card_number = ?",
+                    foreign, cardNumber);
+            entityManager.clear();
+
+            int firstRun = cardTokenReconciler.reconcile();
+            entityManager.clear();
+            int secondRun = cardTokenReconciler.reconcile();
+            entityManager.clear();
+
+            assertAll(
+                    () -> assertEquals(1, firstRun,
+                            "one row carried a token from another key, so one row is rewritten"),
+                    () -> assertEquals(0, secondRun,
+                            "a second run finds every token already derived and writes nothing"),
+                    () -> assertEquals(derived, jdbcTemplate.queryForObject(
+                                    "SELECT card_token FROM card WHERE card_number = ?",
+                                    String.class, cardNumber),
+                            "the rewritten row carries the token the configured key derives"),
+                    () -> assertEquals(SEEDED_ROW_COUNT, cardRepository.count(),
+                            "the reconciliation rewrites rows and inserts or deletes none"));
+        }
+
+        /**
+         * Asserts the reconciliation is wired to run at start-up rather than on demand.
+         *
+         * <p>Spring Boot invokes every {@link ApplicationRunner} after the context has refreshed,
+         * which is after Flyway has loaded the seed, and before it publishes the ready event that
+         * turns the readiness probe to accepting traffic. That ordering is what stops a request
+         * reading a token the reconciliation is about to change, and the bean's type is what puts it
+         * in that position.
+         */
+        @Test
+        @DisplayName("the reconciliation runs as a start-up runner and not on request")
+        void theReconciliationRunsAsAStartUpRunner() {
+            assertInstanceOf(ApplicationRunner.class, cardTokenReconciler,
+                    "the reconciliation has to run before the service accepts traffic, and an"
+                            + " application runner is what Spring Boot invokes in that window");
+        }
+
+        /** The card numbers the seed loaded, in primary-key order. */
+        private List<String> seededCardNumbers() {
+            return cardRepository.findAll().stream().map(CardEntity::getCardNumber).sorted().toList();
+        }
+
+        /**
+         * Asserts a row this service inserts carries the same derivation, and reads back by token.
+         *
+         * <p>The insert goes through the entity constructor, which is the Java side of the
+         * derivation, and the flush drives it to the database before the lookup runs. The lookup is
+         * the translation a paging cursor depends on.
+         */
+        @Test
+        @DisplayName("an inserted row carries the derived token and findByCardToken reaches it")
+        void anInsertedRowIsReachableByItsToken() {
+            CardEntity saved = insertCard(INSERTED_DUPLICATE_CARD_NUMBER, ROW_1_ACCOUNT_ID);
+            String token = PanMasker.cardToken(INSERTED_DUPLICATE_CARD_NUMBER);
+
+            assertAll(
+                    () -> assertEquals(token, saved.getCardToken(),
+                            "the constructor derived the token the helper produces"),
+                    () -> assertEquals(INSERTED_DUPLICATE_CARD_NUMBER,
+                            cardRepository.findByCardToken(token)
+                                    .map(CardEntity::getCardNumber)
+                                    .orElse(null),
+                            "findByCardToken must reach the row the token names, which is how a "
+                                    + "paging cursor becomes a browse position"),
+                    () -> assertTrue(cardRepository.findByCardToken(
+                                    PanMasker.cardToken("0000000000000001")).isEmpty(),
+                            "a token naming no row yields an empty Optional and throws nothing"));
+        }
+
+        /**
+         * Asserts {@code uq_card_card_token} exists, keys on {@code card_token} and is unique.
+         *
+         * <p>Uniqueness is what makes one cursor reach one browse position. Without it a token
+         * could name two rows and the browse would have no defined place to resume from.
+         */
+        @Test
+        @DisplayName("uq_card_card_token keys on card_token and is unique")
+        void theCardTokenIndexIsUnique() {
+            List<Boolean> uniqueFlags = jdbcTemplate.queryForList(
+                    INDEX_IS_UNIQUE_SQL, Boolean.class, schema, "card", "uq_card_card_token");
+            List<String> columns = jdbcTemplate.queryForList(
+                    INDEX_COLUMNS_SQL, String.class, schema, "card", "uq_card_card_token");
+            assertAll(
+                    () -> assertEquals(List.of(Boolean.TRUE), uniqueFlags,
+                            "one card reaches one token, so the constraint must be unique"),
+                    () -> assertEquals(List.of("card_token"), columns,
+                            "the constraint keys on the card token alone"));
+        }
+
+        /**
+         * Asserts the check constraint refuses a token that is not lower-case hexadecimal.
+         *
+         * <p>The column is the storage end of the same shape
+         * {@link PanMasker#CARD_TOKEN_PATTERN} declares for the cursor. A card number written here
+         * would fail on width and again on character class, which is the property that keeps a
+         * Primary Account Number out of the column that a cursor is read from.
+         */
+        @Test
+        @DisplayName("ck_card_card_token_hex refuses a card number in the token column")
+        void theCheckConstraintRefusesACardNumber() {
+            String insert = "INSERT INTO " + schema + ".card (card_number, account_id, "
+                    + "card_verification_value, embossed_name, expiration_date, active_status, "
+                    + "card_token) VALUES (?, ?, ?, ?, ?, ?, ?)";
+
+            assertThrows(DataIntegrityViolationException.class,
+                    () -> jdbcTemplate.update(insert,
+                            "8888888888888888", ROW_1_ACCOUNT_ID,
+                            SYNTHETIC_CARD_VERIFICATION_VALUE, SYNTHETIC_EMBOSSED_NAME,
+                            SYNTHETIC_EXPIRATION_DATE, ACTIVE_STATUS_YES,
+                            "8888888888888888"),
+                    "ck_card_card_token_hex must refuse a value that is not sixty-four lower-case "
+                            + "hexadecimal characters");
+        }
+    }
+
+    /**
+     * Proves a stored token records which key it belongs to, and that moving one is an audited act.
+     *
+     * <p>Re-deriving {@code card.card_token} at start-up whenever the derivation changes, with
+     * nothing recording which key a stored token belonged to, would leave four other holders stranded.
+     * Three stores hold a token derived from the same key and hold no card number, so none can
+     * re-derive its own rows: {@code statement_transaction.card_token} and
+     * {@code notification_log.card_token} in the notification service, and
+     * {@code authorization_decision.card_token} in the authorization service. A granted
+     * {@code SCOPE_CARD} authority is the fourth. A silent rewrite would leave all four naming a card
+     * nobody could reach, with no mapping back and no way to undo it.
+     *
+     * <p>{@code V10__card_token_version_and_rotation.sql} separates the two reasons a stored token can
+     * differ from the derivation. A seeded row is a bootstrap and is corrected without being asked. A
+     * row this deployment derived is a rotation, and it is refused unless an operator states it, which
+     * is what these four tests assert against a real database.
+     *
+     * <p>This group carries {@link Transactional} like every other, so each row it drifts and each
+     * audit row a rotation writes roll back and the fifty seeded rows stand for the next test.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("The card-token version, its provenance, and an audited rotation")
+    class CardTokenProvenance {
+
+        /** A key of the minimum width, standing for the key a rotation is leaving behind. */
+        private static final String PREVIOUS_KEY = "card-repository-it-previous-key-01";
+
+        private String cardColumn(String column, String cardNumber) {
+            return jdbcTemplate.queryForObject("SELECT " + column + " FROM " + schema
+                    + ".card WHERE card_number = ?", String.class, cardNumber);
+        }
+
+        /** Drifts one row onto a supplied token and provenance, as a key change would leave it. */
+        private void drift(String cardNumber, String cardToken, String provenance) {
+            jdbcTemplate.update("UPDATE " + schema + ".card SET card_token = ?,"
+                            + " card_token_provenance = ? WHERE card_number = ?",
+                    cardToken, provenance, cardNumber);
+            entityManager.clear();
+        }
+
+        /** Derives the token one card number carries under a named key, as a stored row would hold. */
+        private String tokenUnder(String key, String cardNumber) {
+            String held = System.getProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY);
+            try {
+                System.setProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY, key);
+                return PanMasker.cardToken(cardNumber);
+            } finally {
+                if (held == null) {
+                    System.clearProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY);
+                } else {
+                    System.setProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY, held);
+                }
+            }
+        }
+
+        /** Runs one body with a previous key configured and a rotation stated or unstated. */
+        private <T> T asRotation(boolean stated, java.util.function.Supplier<T> body) {
+            System.setProperty(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_PROPERTY, PREVIOUS_KEY);
+            if (stated) {
+                System.setProperty(PanMasker.CARD_TOKEN_ROTATION_PROPERTY, "true");
+            }
+            try {
+                return body.get();
+            } finally {
+                System.clearProperty(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_PROPERTY);
+                System.clearProperty(PanMasker.CARD_TOKEN_ROTATION_PROPERTY);
+            }
+        }
+
+        /** The card numbers the seed loaded, in primary-key order. */
+        private List<String> seededCardNumbers() {
+            return cardRepository.findAll().stream()
+                    .map(CardEntity::getCardNumber).sorted().toList();
+        }
+
+        /**
+         * Asserts every seeded row states the version and the provenance the migration defaults.
+         *
+         * <p>The defaults have to describe the fifty checked-in literals exactly, because a seeded row
+         * that read as one this deployment derived would be refused at the next start-up rather than
+         * corrected.
+         */
+        @Test
+        @DisplayName("every seeded row carries version one and SEED provenance")
+        void theSeededRowsCarryTheDefaultVersionAndSeedProvenance() {
+            List<String> versions = jdbcTemplate.queryForList(
+                    "SELECT DISTINCT card_token_version FROM " + schema + ".card", String.class);
+            List<String> provenances = jdbcTemplate.queryForList(
+                    "SELECT DISTINCT card_token_provenance FROM " + schema + ".card", String.class);
+
+            assertAll(
+                    () -> assertEquals(SEEDED_ROW_COUNT, cardRepository.count(),
+                            "the seed loaded fifty rows for this comparison"),
+                    () -> assertEquals(List.of(PanMasker.DEFAULT_CARD_TOKEN_VERSION), versions,
+                            "the seeded literals were taken under the default version, so every row"
+                                    + " has to say so"),
+                    () -> assertEquals(List.of(CardEntity.TOKEN_PROVENANCE_SEED), provenances,
+                            "a seeded literal is a bootstrap rather than a value this deployment"
+                                    + " derived, and a row that claimed otherwise would refuse to"
+                                    + " start rather than being corrected"));
+        }
+
+        /**
+         * Asserts a bootstrap stamps the version, flips the provenance, and audits nothing.
+         *
+         * <p>A bootstrap moves a value no other store holds, because the reconciliation finishes
+         * before the readiness probe accepts traffic and before any event carries a token derived
+         * here. An audit row for it would report a rotation that never happened.
+         */
+        @Test
+        @DisplayName("a bootstrap stamps the version, flips provenance, and writes no audit row")
+        void aBootstrapStampsTheVersionAndWritesNoAuditRow() {
+            String cardNumber = seededCardNumbers().get(0);
+            drift(cardNumber, "0".repeat(PanMasker.CARD_TOKEN_LENGTH),
+                    CardEntity.TOKEN_PROVENANCE_SEED);
+
+            int rewritten = cardTokenReconciler.reconcile();
+            // The flush is what makes the reconciliation's own writes visible to the queries below.
+            // Each write runs inside this test's transaction, which never commits, and a clear
+            // without a flush would discard the pending inserts rather than reveal them.
+            entityManager.flush();
+            entityManager.clear();
+
+            assertAll(
+                    () -> assertEquals(1, rewritten, "one row carried a foreign token"),
+                    () -> assertEquals(PanMasker.cardToken(cardNumber),
+                            cardColumn("card_token", cardNumber),
+                            "the corrected row carries the token the configured key derives"),
+                    () -> assertEquals(PanMasker.cardTokenVersion(),
+                            cardColumn("card_token_version", cardNumber),
+                            "a corrected row states the version it was taken under, or the next"
+                                    + " rotation cannot tell a reached row from an unreached one"),
+                    () -> assertEquals(CardEntity.TOKEN_PROVENANCE_DERIVED,
+                            cardColumn("card_token_provenance", cardNumber),
+                            "a row this deployment derived says so, which is what makes the next"
+                                    + " drift a rotation rather than a second bootstrap"),
+                    () -> assertEquals(0, rotationRowCount(),
+                            "a bootstrap moves no value another store holds, so it opens no audit"
+                                    + " record"),
+                    () -> assertEquals(0, mappingRowCount(),
+                            "and it leaves no mapping to re-key anything from"));
+        }
+
+        /**
+         * Asserts a drifted derived row stops start-up rather than being rewritten silently.
+         *
+         * <p>This is the finding. The row is intact afterwards, which is the property that matters: a
+         * refusal leaves the identity the other stores name where they can still find it.
+         */
+        @Test
+        @DisplayName("a drifted derived row refuses to start unless a rotation is stated")
+        void aDriftedDerivedRowRefusesWithoutAStatedRotation() {
+            String cardNumber = seededCardNumbers().get(0);
+            String stored = tokenUnder(PREVIOUS_KEY, cardNumber);
+            drift(cardNumber, stored, CardEntity.TOKEN_PROVENANCE_DERIVED);
+
+            IllegalStateException refused = assertThrows(IllegalStateException.class,
+                    () -> cardTokenReconciler.reconcile(),
+                    "a row this deployment derived under another key was rewritten without being"
+                            + " asked, which is what the review found");
+            entityManager.clear();
+
+            assertAll(
+                    () -> assertTrue(refused.getMessage()
+                                    .contains(PanMasker.CARD_TOKEN_ROTATION_VARIABLE),
+                            "the refusal must name the statement that authorises the rotation: "
+                                    + refused.getMessage()),
+                    () -> assertTrue(refused.getMessage()
+                                    .contains("card-platform/services/card-service/README.md"),
+                            "and the procedure that performs it: " + refused.getMessage()),
+                    () -> assertFalse(refused.getMessage().contains(cardNumber),
+                            "no refusal may quote a card number"),
+                    () -> assertEquals(stored, cardColumn("card_token", cardNumber),
+                            "the refused row keeps the identity the other stores name"),
+                    () -> assertEquals(0, rotationRowCount(),
+                            "a refused rotation opens no audit record"));
+        }
+
+        /**
+         * Asserts a stated rotation rewrites the row and leaves the mapping the platform needs.
+         *
+         * <p>The mapping is the deliverable. Without it the three stores holding a token and no card
+         * number cannot be re-keyed, and the rollback has nothing to read in reverse.
+         */
+        @Test
+        @DisplayName("a stated rotation rewrites the row, audits the run, and maps the old token")
+        void aStatedRotationRewritesTheRowAndMapsTheOldToken() {
+            String cardNumber = seededCardNumbers().get(0);
+            String stored = tokenUnder(PREVIOUS_KEY, cardNumber);
+            String expected = PanMasker.cardToken(cardNumber);
+            drift(cardNumber, stored, CardEntity.TOKEN_PROVENANCE_DERIVED);
+
+            int rewritten = asRotation(true, () -> cardTokenReconciler.reconcile());
+            entityManager.flush();
+            entityManager.clear();
+
+            List<java.util.Map<String, Object>> rotations = jdbcTemplate.queryForList(
+                    "SELECT rotation_id, from_version, to_version, rows_read, rows_rewritten,"
+                            + " actor, started_at, finished_at FROM " + schema
+                            + ".card_token_rotation");
+            List<java.util.Map<String, Object>> mapped = jdbcTemplate.queryForList(
+                    "SELECT rotation_id, previous_card_token, card_token, previous_version, version"
+                            + " FROM " + schema + ".card_token_rotation_mapping");
+
+            assertAll(
+                    () -> assertEquals(1, rewritten, "one row belonged to the previous key"),
+                    () -> assertEquals(expected, cardColumn("card_token", cardNumber),
+                            "the rotated row carries the token the configured key derives"),
+                    () -> assertEquals(CardEntity.TOKEN_PROVENANCE_DERIVED,
+                            cardColumn("card_token_provenance", cardNumber),
+                            "a rotated row is still one this deployment derived"),
+                    () -> assertEquals(1, rotations.size(),
+                            "one run that moved an identity writes one audit row"),
+                    () -> assertEquals(SEEDED_ROW_COUNT,
+                            ((Number) rotations.get(0).get("rows_read")).intValue(),
+                            "the audit row records every row the run read"),
+                    () -> assertEquals(1,
+                            ((Number) rotations.get(0).get("rows_rewritten")).intValue(),
+                            "and how many of them it moved"),
+                    () -> assertEquals(PanMasker.cardTokenVersion(),
+                            rotations.get(0).get("to_version"),
+                            "the audit row names the version the tokens moved to"),
+                    () -> assertFalse(String.valueOf(rotations.get(0).get("actor")).isBlank(),
+                            "and the identity the process ran under"),
+                    () -> assertEquals(1, mapped.size(),
+                            "one moved row yields one mapping row, which is what the notification"
+                                    + " read model and the decision diagnostics are re-keyed from"),
+                    () -> assertEquals(stored,
+                            String.valueOf(mapped.get(0).get("previous_card_token")).strip(),
+                            "the mapping names the value the other stores are holding now"),
+                    () -> assertEquals(expected,
+                            String.valueOf(mapped.get(0).get("card_token")).strip(),
+                            "and the value they have to hold afterwards"),
+                    () -> assertEquals(rotations.get(0).get("rotation_id"),
+                            mapped.get(0).get("rotation_id"),
+                            "a mapping row belongs to the run that wrote it, so an operator can"
+                                    + " export one run's mapping and no other"));
+        }
+
+        /**
+         * Asserts a token belonging to neither key stops the run rather than being mapped from.
+         *
+         * <p>A mapping row for such a value would name a token no store ever held, and applying it
+         * would move nothing while reporting that it had.
+         */
+        @Test
+        @DisplayName("a token belonging to neither key stops a stated rotation")
+        void aTokenBelongingToNeitherKeyStopsTheRotation() {
+            String cardNumber = seededCardNumbers().get(0);
+            drift(cardNumber, "1".repeat(PanMasker.CARD_TOKEN_LENGTH),
+                    CardEntity.TOKEN_PROVENANCE_DERIVED);
+
+            IllegalStateException refused = assertThrows(IllegalStateException.class,
+                    () -> asRotation(true, () -> cardTokenReconciler.reconcile()),
+                    "a value belonging to neither key was rotated, so the mapping it wrote names a"
+                            + " token no store held");
+            entityManager.clear();
+
+            assertAll(
+                    () -> assertTrue(refused.getMessage()
+                                    .contains(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_VARIABLE),
+                            "the refusal must name the setting that supplies the key those tokens"
+                                    + " were taken under: " + refused.getMessage()),
+                    () -> assertEquals(0, mappingRowCount(),
+                            "a refused rotation writes no mapping row"));
+        }
+
+        private int rotationRowCount() {
+            Integer count = jdbcTemplate.queryForObject(
+                    "SELECT count(*) FROM " + schema + ".card_token_rotation", Integer.class);
+            return count == null ? 0 : count;
+        }
+
+        private int mappingRowCount() {
+            Integer count = jdbcTemplate.queryForObject(
+                    "SELECT count(*) FROM " + schema + ".card_token_rotation_mapping",
+                    Integer.class);
+            return count == null ? 0 : count;
+        }
+    }
+
+    /**
+     * Proves {@code active_status} carries the domain the API states, in the catalog and against
+     * real writes.
+     *
+     * <p>The domain is {@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at
+     * {@code app/cbl/COCRDUPC.cbl:L91}, tested at {@code app/cbl/COCRDUPC.cbl:L861-L871}.
+     * {@code V1__schema.sql} declared the column {@code CHAR(1) NOT NULL} and constrained nothing,
+     * so the width was the only rule a direct load had to satisfy and a row could hold a third
+     * value the read contracts said it never would. {@code V5} adds
+     * {@code ck_card_active_status}.
+     *
+     * <p>A catalog check alone would prove little, so both values the source admits are written and
+     * a third is attempted.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("The active-status domain, from 88 FLG-YES-NO-VALID")
+    class ActiveStatusDomain {
+
+        /** Inserts one card row carrying the supplied status, through the migrated columns. */
+        private void insertWithStatus(String cardNumber, String activeStatus) {
+            jdbcTemplate.update("INSERT INTO " + schema + ".card (card_number, account_id, "
+                            + "card_verification_value, embossed_name, expiration_date, "
+                            + "active_status, card_token) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    cardNumber, ROW_1_ACCOUNT_ID, SYNTHETIC_CARD_VERIFICATION_VALUE,
+                    SYNTHETIC_EMBOSSED_NAME, SYNTHETIC_EXPIRATION_DATE, activeStatus,
+                    PanMasker.cardToken(cardNumber));
+        }
+
+        /**
+         * Asserts the constraint is present on the table and names the two values.
+         *
+         * <p>The definition is read from the catalog rather than from the migration text, so a
+         * constraint dropped or replaced by a later migration fails here.
+         */
+        @Test
+        @DisplayName("ck_card_active_status is present and admits Y and N only")
+        void theConstraintIsPresentAndNamesBothValues() {
+            List<String> definitions = jdbcTemplate.queryForList("""
+                    SELECT pg_get_constraintdef(c.oid)
+                      FROM pg_constraint c
+                      JOIN pg_class t ON t.oid = c.conrelid
+                      JOIN pg_namespace n ON n.oid = t.relnamespace
+                     WHERE n.nspname = ? AND t.relname = 'card'
+                       AND c.conname = 'ck_card_active_status'
+                    """, String.class, schema);
+
+            assertEquals(1, definitions.size(),
+                    "V5 declares exactly one ck_card_active_status on card");
+            String definition = definitions.get(0);
+            assertAll(
+                    () -> assertTrue(definition.contains("'Y'"),
+                            "the constraint must admit Y: " + definition),
+                    () -> assertTrue(definition.contains("'N'"),
+                            "the constraint must admit N: " + definition),
+                    () -> assertTrue(definition.startsWith("CHECK"),
+                            "the domain belongs to a CHECK rather than to a trigger: "
+                                    + definition));
+        }
+
+        /**
+         * Asserts both values the source condition name declares insert.
+         *
+         * <p>A constraint that refused either one would refuse the fixture: the fifty seeded rows
+         * carry both.
+         */
+        @Test
+        @DisplayName("both Y and N insert, because both are in the source domain")
+        void bothValuesOfTheDomainInsert() {
+            insertWithStatus(syntheticCardNumber(900_101L), ACTIVE_STATUS_YES);
+            insertWithStatus(syntheticCardNumber(900_102L), ACTIVE_STATUS_NO);
+
+            assertEquals(SEEDED_ROW_COUNT + 2, cardRepository.count(),
+                    "both rows were accepted, so the constraint admits the whole domain");
+        }
+
+        /**
+         * Asserts a third value is refused by the database rather than by the update path alone.
+         *
+         * <p>This insert bypasses every Java validation, which is exactly the writer the API could
+         * not see. Before {@code V5} it succeeded, and {@code GET /cards/&#123;cardToken&#125;} then
+         * returned the row inside a contract that enumerates two values.
+         */
+        @Test
+        @DisplayName("a status outside the domain is refused by the database")
+        void aStatusOutsideTheDomainIsRefused() {
+            assertThrows(DataIntegrityViolationException.class,
+                    () -> insertWithStatus(syntheticCardNumber(900_103L),
+                            ACTIVE_STATUS_OUTSIDE_DOMAIN),
+                    "ck_card_active_status must refuse a status the source condition name does not"
+                            + " declare");
+        }
+
+        /**
+         * Asserts every seeded row satisfies the domain.
+         *
+         * <p>{@code app/data/ASCII/carddata.txt} carries {@code Y} and {@code N} only, so the
+         * constraint validated against the loaded table rather than requiring it to be rewritten.
+         */
+        @Test
+        @DisplayName("all fifty seeded rows hold Y or N")
+        void everySeededRowHoldsAValueOfTheDomain() {
+            Long outside = jdbcTemplate.queryForObject("SELECT count(*) FROM " + schema
+                    + ".card WHERE active_status NOT IN ('Y', 'N')", Long.class);
+
+            assertEquals(0L, outside,
+                    "a seeded row outside the domain would mean the fixture and the contract"
+                            + " disagree");
+        }
+    }
+
+    /**
+     * Proves the account index admits a repeated value, in the catalog and against a real insert.
+     *
+     * <p>A catalog check alone would prove little here. The fixture places one card on each of its
+     * fifty accounts, so {@link CardRepository#findByAccountId(String, Limit)} returns a single element on
+     * seeded data whether the index is unique or not.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("The account index admits a repeated account identifier")
+    class AccountIndex {
+
+        /**
+         * Asserts {@code idx_card_account_id} exists, keys on {@code account_id}, and is not
+         * unique.
+         *
+         * <p>{@code KEYS(11 16)} at {@code app/jcl/CARDFILE.jcl:L85} places an eleven-byte key at
+         * offset 16, and {@code NONUNIQUEKEY} at {@code app/jcl/CARDFILE.jcl:L86} admits a
+         * repeated value. An assertion of uniqueness here would contradict the source.
+         */
+        @Test
+        @DisplayName("idx_card_account_id keys on account_id and carries no unique constraint")
+        void theAccountIndexIsNotUnique() {
+            List<Boolean> uniqueFlags = jdbcTemplate.queryForList(
+                    INDEX_IS_UNIQUE_SQL, Boolean.class, schema, "card", "idx_card_account_id");
+            List<String> columns = jdbcTemplate.queryForList(
+                    INDEX_COLUMNS_SQL, String.class, schema, "card", "idx_card_account_id");
+            assertAll(
+                    () -> assertEquals(1, uniqueFlags.size(),
+                            "V1__schema.sql must declare idx_card_account_id exactly once on card"),
+                    () -> assertEquals(List.of(Boolean.FALSE), uniqueFlags,
+                            "NONUNIQUEKEY at app/jcl/CARDFILE.jcl:L86 admits a repeated account "
+                                    + "identifier, so indisunique must be false"),
+                    () -> assertEquals(List.of("account_id", "card_number"), columns,
+                            "KEYS(11 16) at app/jcl/CARDFILE.jcl:L85 keys the index on the "
+                                    + "account identifier, and card_number follows it so one "
+                                    + "index serves the scoped read and the keyset walk"));
+        }
+
+        /**
+         * Asserts a second card inserts onto one account, and that both rows come back in a list.
+         *
+         * <p>A unique index would refuse the insert, and the flush drives it to the database
+         * before the assertion runs. The pair of counts is what gives the list return type of
+         * {@link CardRepository#findByAccountId(String, Limit)} its meaning, and what makes the CICS
+         * response {@code DUPREC} an ordinary success. The two read paths accept that response at
+         * {@code app/cbl/COCRDLIC.cbl:L1156-L1158} going forward and at
+         * {@code app/cbl/COCRDLIC.cbl:L1332-L1334} going backward.
+         */
+        @Test
+        @DisplayName("a second card on one account inserts, and findByAccountId returns both")
+        void oneAccountCarriesTwoCards() {
+            String seededCardNumber = orderedSeededCardNumbers().getFirst();
+            String accountId = accountIdOf(seededCardNumber);
+            List<String> before = cardNumbersOf(cardRepository.findByAccountId(accountId, ACCOUNT_READ_LIMIT));
+            insertCard(INSERTED_DUPLICATE_CARD_NUMBER, accountId);
+            List<String> after = cardNumbersOf(cardRepository.findByAccountId(accountId, ACCOUNT_READ_LIMIT));
+            assertAll(
+                    () -> assertSameCardNumbers(List.of(seededCardNumber), before,
+                            "the fixture places exactly one card on each of its fifty accounts"),
+                    () -> assertEquals(2, after.size(),
+                            "a unique index on account_id would have refused the second card"),
+                    () -> assertSameCardNumbers(
+                            Set.of(seededCardNumber, INSERTED_DUPLICATE_CARD_NUMBER),
+                            new LinkedHashSet<>(after),
+                            "findByAccountId returned rows other than the two on that account"));
+        }
+    }
+
+    /**
+     * Proves keyset paging forward returns every row exactly once and honours the row limit.
+     *
+     * <p>The caller fetches one row beyond the page and reads the next-page flag from that row,
+     * which is the lookahead at {@code app/cbl/COCRDLIC.cbl:L1197-L1216}. No count query takes
+     * part.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("Keyset paging forward over card_number")
+    class ForwardPaging {
+
+        /**
+         * Asserts the cursor excludes its own row, and shows what an overwritten cursor costs.
+         *
+         * <p>The page after the last displayed row of the first page opens on row eight. A cursor
+         * carrying the key of the lookahead row opens on row nine instead and drops row eight. The
+         * source moves the lookahead row's keys over its saved cursor at
+         * {@code app/cbl/COCRDLIC.cbl:L1212-L1214}, and it browses inclusively.
+         */
+        @Test
+        @DisplayName("the cursor is exclusive, so the last displayed row opens the next page")
+        void theCursorExcludesItsOwnRow() {
+            List<String> seeded = orderedSeededCardNumbers();
+            String lastDisplayed = seeded.get(6);
+            String lookahead = seeded.get(7);
+            String afterLookahead = seeded.get(8);
+            CardPage fromLastDisplayed = forwardPage(lastDisplayed, null, null, 7);
+            CardPage fromLookahead = forwardPage(lookahead, null, null, 7);
+            assertAll(
+                    () -> assertSameCardNumber(lookahead,
+                            fromLastDisplayed.displayed().getFirst().getCardNumber(),
+                            "the page after the last displayed row must open on the next row"),
+                    () -> assertSameCardNumber(afterLookahead,
+                            fromLookahead.displayed().getFirst().getCardNumber(),
+                            "a cursor holding the lookahead row's key skips one row per page"));
+        }
+
+        /**
+         * Asserts a page with exactly seven rows left returns seven rows and clears the flag.
+         *
+         * <p>Seven rows follow seeded row 43. The caller asks for eight, receives seven, and reads
+         * the missing eighth row as the end of the browse, which
+         * {@code app/cbl/COCRDLIC.cbl:L1215-L1216} answers with {@code DFHRESP(ENDFILE)}.
+         */
+        @Test
+        @DisplayName("seven rows remain: seven come back and the flag clears")
+        void aFinalPageOfSevenClearsTheFlag() {
+            List<String> seeded = orderedSeededCardNumbers();
+            CardPage page = forwardPage(seeded.get(42), null, null, 7);
+            assertAll(
+                    () -> assertEquals(7, page.displayed().size(),
+                            "seven rows follow seeded row 43"),
+                    () -> assertFalse(page.nextPageExists(),
+                            "no eighth row follows, so the lookahead must clear the flag"),
+                    () -> assertSameCardNumber(seeded.getLast(),
+                            page.displayed().getLast().getCardNumber(),
+                            "the page must end on the highest card number the fixture carries"));
+        }
+
+        /**
+         * Asserts a page with eight rows left shows seven and sets the flag.
+         *
+         * <p>Eight rows follow seeded row 42. The eighth row is the lookahead, and
+         * {@code app/cbl/COCRDLIC.cbl:L1207-L1211} sets the flag on it.
+         */
+        @Test
+        @DisplayName("eight rows remain: seven show and the flag sets")
+        void aFullPageWithOneRowBeyondSetsTheFlag() {
+            List<String> seeded = orderedSeededCardNumbers();
+            CardPage page = forwardPage(seeded.get(41), null, null, 7);
+            assertAll(
+                    () -> assertEquals(7, page.displayed().size(),
+                            "the caller displays seven of the eight rows it fetched"),
+                    () -> assertTrue(page.nextPageExists(),
+                            "an eighth row followed, so the lookahead must set the flag"),
+                    () -> assertSameCardNumber(seeded.get(42),
+                            page.displayed().getFirst().getCardNumber(),
+                            "the page must open on the row after the cursor"));
+        }
+
+        /**
+         * Walks every page and asserts the union holds all fifty rows, none twice and none missing.
+         *
+         * <p>Fifty rows at seven a page fill eight pages: seven pages of seven, then one page of
+         * one. The flag clears on the final page alone. Per-page size and per-page flag would both
+         * still look correct if the walk dropped one row per page, so the union assertion is the
+         * one that catches it.
+         */
+        @Test
+        @DisplayName("a walk of every page returns all fifty rows once, over eight pages")
+        void theWalkCoversEveryRowExactlyOnce() {
+            List<String> seeded = orderedSeededCardNumbers();
+            List<CardPage> pages = walkForward(null, null, 7);
+            List<String> walked = cardNumbersOfPages(pages);
+            List<Integer> sizes = pages.stream().map(page -> page.displayed().size()).toList();
+            List<Boolean> flags = pages.stream().map(CardPage::nextPageExists).toList();
+            assertAll(
+                    () -> assertEquals(8, pages.size(),
+                            "fifty rows at seven a page fill eight pages"),
+                    () -> assertEquals(List.of(7, 7, 7, 7, 7, 7, 7, 1), sizes,
+                            "seven pages of seven must precede a final page of one"),
+                    () -> assertEquals(
+                            List.of(true, true, true, true, true, true, true, false), flags,
+                            "the flag must clear on the final page alone"),
+                    () -> assertEquals(SEEDED_ROW_COUNT, walked.size(),
+                            "the walk returned a different row count than the table holds"),
+                    () -> assertEquals(SEEDED_ROW_COUNT, new LinkedHashSet<>(walked).size(),
+                            "the walk returned a row twice"),
+                    () -> assertSameCardNumbers(everyCardNumber(), new LinkedHashSet<>(walked),
+                            "the union of every page must equal every row in the table"),
+                    () -> assertSameCardNumbers(seeded.subList(0, 7),
+                            cardNumbersOf(pages.getFirst().displayed()),
+                            "the first page must hold the seven lowest card numbers in key order"),
+                    () -> assertSameCardNumbers(List.of(seeded.getLast()),
+                            cardNumbersOf(pages.getLast().displayed()),
+                            "the final page must hold the fiftieth row alone"));
+        }
+
+        /**
+         * Asserts a row limit of eight returns eight rows, from which the caller displays seven.
+         *
+         * <p>The assertion reads the limit the caller hands over and the row count that comes
+         * back. A next-page flag derived from a count query would return seven rows here and fail.
+         */
+        @Test
+        @DisplayName("a Limit of eight returns eight rows, and the caller displays seven")
+        void aFetchOfEightServesAPageOfSeven() {
+            List<String> seeded = orderedSeededCardNumbers();
+            Limit limit = Limit.of(8);
+            List<CardEntity> fetched = cardRepository.findFirstPage(limit);
+            assertAll(
+                    () -> assertEquals(8, limit.max(),
+                            "the caller hands the repository a row limit of eight"),
+                    () -> assertTrue(limit.isLimited(),
+                            "an unlimited row limit would fetch the whole table"),
+                    () -> assertEquals(8, fetched.size(),
+                            "the repository must return the eighth row itself, not a count of it"),
+                    () -> assertSameCardNumbers(seeded.subList(0, 7),
+                            cardNumbersOf(fetched.subList(0, 7)),
+                            "the first seven rows are the page the caller displays"),
+                    () -> assertSameCardNumber(seeded.get(7), fetched.get(7).getCardNumber(),
+                            "the eighth row is the lookahead row and never reaches the display"));
+        }
+
+        /**
+         * Asserts the repository honours every row limit a caller supplies, exactly.
+         *
+         * <p>The page size belongs to {@code domain/CardQueryService}, which reads
+         * {@code WS-MAX-SCREEN-LINES} at {@code app/cbl/COCRDLIC.cbl:L177-L178}. The repository
+         * holds no default and returns the row count its limit names, capped by the table.
+         */
+        @Test
+        @DisplayName("every caller-supplied Limit comes back honoured exactly")
+        void everyLimitIsHonouredExactly() {
+            List<Integer> requested = List.of(1, 2, 3, 7, 8, 49, 50, 51);
+            List<Integer> returned = requested.stream()
+                    .map(max -> cardRepository.findFirstPage(Limit.of(max))
+                            .size())
+                    .toList();
+            List<Integer> expected = requested.stream()
+                    .map(max -> Math.min(max, SEEDED_ROW_COUNT))
+                    .toList();
+            assertEquals(expected, returned,
+                    "the repository must return exactly the row count its Limit names, capped by "
+                            + "the fifty rows the table holds");
+        }
+
+        /**
+         * Asserts the walk still returns every row once after one account carries two cards.
+         *
+         * <p>The seeded relation is one card per account, so the duplicate condition never arises
+         * on its own. Fifty-one rows at seven a page fill eight pages, the last holding two rows.
+         * Accepting a repeated key is what {@code app/cbl/COCRDLIC.cbl:L1156-L1158} does with
+         * {@code DFHRESP(DUPREC)}.
+         */
+        @Test
+        @DisplayName("a walk after a repeated account identifier still returns every row once")
+        void theWalkSurvivesARepeatedAccountIdentifier() {
+            String accountId = accountIdOf(orderedSeededCardNumbers().getFirst());
+            insertCard(INSERTED_DUPLICATE_CARD_NUMBER, accountId);
+            int expectedRows = SEEDED_ROW_COUNT + 1;
+            List<CardPage> pages = walkForward(null, null, 7);
+            List<String> walked = cardNumbersOfPages(pages);
+            assertAll(
+                    () -> assertEquals(8, pages.size(),
+                            "fifty-one rows at seven a page fill eight pages"),
+                    () -> assertEquals(2, pages.getLast().displayed().size(),
+                            "two rows follow seven full pages"),
+                    () -> assertFalse(pages.getLast().nextPageExists(),
+                            "the flag must clear on the final page"),
+                    () -> assertEquals(expectedRows, walked.size(),
+                            "the walk returned a different row count than the table holds"),
+                    () -> assertEquals(expectedRows, new LinkedHashSet<>(walked).size(),
+                            "the walk returned a row twice"),
+                    () -> assertSameCardNumbers(everyCardNumber(), new LinkedHashSet<>(walked),
+                            "the union of every page must equal every row in the table"),
+                    () -> assertTrue(walked.contains(INSERTED_DUPLICATE_CARD_NUMBER),
+                            "the walk must reach the second card of that account"));
+        }
+    }
+
+    /**
+     * Runs the production query service over the migrated PostgreSQL repository.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("CardQueryService over the real card repository")
+    class QueryServicePaging {
+
+        @Test
+        @DisplayName("page sizes 0, 1, 7, 100 and 101 enforce the service bounds")
+        void pageSizeBoundsRunThroughTheProductionService() {
+            CardQueryService.CardPage one =
+                    cardQueryService.listForward(null, 1, null, null);
+            CardQueryService.CardPage seven =
+                    cardQueryService.listForward(null, 7, null, null);
+            CardQueryService.CardPage hundred =
+                    cardQueryService.listForward(null, 100, null, null);
+
+            assertAll(
+                    () -> assertThrows(IllegalArgumentException.class,
+                            () -> cardQueryService.listForward(null, 0, null, null)),
+                    () -> assertEquals(1, one.rows().size(), "page size one"),
+                    () -> assertTrue(one.nextPageExists(), "one row has a lookahead row"),
+                    () -> assertEquals(7, seven.rows().size(), "page size seven"),
+                    () -> assertTrue(seven.nextPageExists(), "seven rows have a lookahead row"),
+                    () -> assertEquals(SEEDED_ROW_COUNT, hundred.rows().size(),
+                            "page size one hundred returns the fifty rows present"),
+                    () -> assertFalse(hundred.nextPageExists(),
+                            "no row follows the fifty rows present"),
+                    () -> assertThrows(IllegalArgumentException.class,
+                            () -> cardQueryService.listForward(null, 101, null, null)));
+        }
+
+        @Test
+        @DisplayName("lookahead, cursors and backward paging preserve every displayed row")
+        void cursorsAndLookaheadRunThroughTheProductionService() {
+            List<String> seeded = orderedSeededCardNumbers();
+            CardQueryService.CardPage first =
+                    cardQueryService.listForward(null, 7, null, null);
+            CardQueryService.CardPage second =
+                    cardQueryService.listForward(first.lastCardToken(), 7, null, null);
+            CardQueryService.CardPage back =
+                    cardQueryService.listBackward(second.firstCardToken(), 7, null, null);
+
+            assertAll(
+                    () -> assertSameCardNumbers(
+                            seeded.subList(0, 7), serviceCardNumbers(first.rows()),
+                            "the first service page maps the first seven repository rows"),
+                    () -> assertTrue(first.nextPageExists(),
+                            "the eighth repository row sets the service lookahead flag"),
+                    () -> assertSameCardNumber(
+                            PanMasker.cardToken(seeded.getFirst()), first.firstCardToken(),
+                            "the first cursor names the first displayed row, as a card token"),
+                    () -> assertSameCardNumber(
+                            PanMasker.cardToken(seeded.get(6)), first.lastCardToken(),
+                            "the forward cursor names the last displayed row, as a card token"),
+                    () -> assertSameCardNumber(
+                            PanMasker.cardToken(seeded.get(7)), second.firstCardToken(),
+                            "the next page starts on the row after the cursor"),
+                    () -> assertSameCardNumbers(
+                            serviceCardNumbers(first.rows()), serviceCardNumbers(back.rows()),
+                            "a forward and backward round trip returns the same page"));
+        }
+
+        @Test
+        @DisplayName("the service maps card number, account identifier and active status")
+        void responseRowsMapTheThreeSourceFields() {
+            String cardNumber = orderedSeededCardNumbers().getFirst();
+            CardEntity stored = cardRepository.findByCardNumber(cardNumber).orElseThrow();
+            CardListRow row = cardQueryService.listForward(null, 1, null, null).rows().getFirst();
+
+            assertAll(
+                    () -> assertSameCardNumber(
+                            stored.getCardNumber(), row.cardNumber(),
+                            "the list row maps CARD-NUM"),
+                    () -> assertTrue(stored.getAccountId().equals(row.accountId()),
+                            "the list row maps CARD-ACCT-ID"),
+                    () -> assertTrue(stored.getActiveStatus().equals(row.activeStatus()),
+                            "the list row maps CARD-ACTIVE-STATUS"));
+        }
+    }
+
+    /**
+     * Proves keyset paging backward returns the preceding rows, in descending key order.
+     *
+     * <p>{@code app/cbl/COCRDLIC.cbl:L1284-L1287} presets the backward counter one above the page
+     * size and sets the backward flag before reading a row. The backward flag is therefore a preset
+     * and not a derived value. The forward flag comes from
+     * {@code app/cbl/COCRDLIC.cbl:L1191-L1216} instead.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("Keyset paging backward over card_number")
+    class BackwardPaging {
+
+        /**
+         * Asserts the last page comes back descending and opens on the highest card number.
+         *
+         * <p>{@link CardRepository#findLastPage(Limit)} declares
+         * {@code ORDER BY c.cardNumber DESC}. The source reverses that order for display by filling
+         * its screen array from the high index down at
+         * {@code app/cbl/COCRDLIC.cbl:L1338-L1346}.
+         */
+        @Test
+        @DisplayName("the last page comes back descending, opening on the highest card number")
+        void theLastPageOrdersDescending() {
+            List<String> seeded = orderedSeededCardNumbers();
+            List<String> numbers = cardNumbersOf(
+                    cardRepository.findLastPage(Limit.of(SCREEN_PAGE_SIZE)));
+            List<String> sortedDescending = new ArrayList<>(numbers);
+            sortedDescending.sort(Comparator.reverseOrder());
+            assertAll(
+                    () -> assertEquals(7, numbers.size(),
+                            "a row limit of seven must return seven of the fifty rows"),
+                    () -> assertSameCardNumber(seeded.getLast(), numbers.getFirst(),
+                            "a null cursor asks for the last page, which opens on the highest key"),
+                    () -> assertSameCardNumbers(sortedDescending, numbers,
+                            "findPageBackward must order rows by descending card number"));
+        }
+
+        /**
+         * Asserts a forward step then a backward step lands on the rows the first page showed.
+         *
+         * <p>The forward cursor is the last row of page one, so page two opens on row eight. Paging
+         * backward from row eight returns the seven rows before it, and reversing them gives page
+         * one. Exactly seven rows precede row eight, so no further page lies before them.
+         */
+        @Test
+        @DisplayName("a forward then backward round trip lands on the same first page")
+        void aRoundTripReturnsToTheFirstPage() {
+            List<String> seeded = orderedSeededCardNumbers();
+            CardPage first = forwardPage(null, null, null, 7);
+            CardPage second =
+                    forwardPage(first.displayed().getLast().getCardNumber(), null, null, 7);
+            CardPage backToFirst = backwardPage(
+                    second.displayed().getFirst().getCardNumber(), null, null, 7);
+            assertAll(
+                    () -> assertSameCardNumbers(seeded.subList(0, 7),
+                            cardNumbersOf(first.displayed()),
+                            "the first page must hold the seven lowest card numbers"),
+                    () -> assertSameCardNumber(seeded.get(7),
+                            second.displayed().getFirst().getCardNumber(),
+                            "the second page must open on row eight"),
+                    () -> assertSameCardNumbers(seeded.subList(0, 7),
+                            cardNumbersOf(backToFirst.displayed()),
+                            "the round trip must land on the rows the first page showed"),
+                    () -> assertFalse(backToFirst.nextPageExists(),
+                            "exactly seven rows precede row eight, so no page lies before them"));
+        }
+    }
+
+    /**
+     * Proves the database applies both optional filters inside the query predicate.
+     *
+     * <p>{@code 9500-FILTER-RECORDS} at {@code app/cbl/COCRDLIC.cbl:L1382-L1409} tests the account
+     * identifier at {@code app/cbl/COCRDLIC.cbl:L1386} and the card number at
+     * {@code app/cbl/COCRDLIC.cbl:L1397}. Either test may be absent, so all four combinations reach
+     * the database.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("Both optional filters, applied inside the query predicate")
+    class PredicateFilters {
+
+        /**
+         * Asserts an absent filter pair returns the first seven rows in key order.
+         */
+        @Test
+        @DisplayName("no filter returns the first seven rows in key order")
+        void noFilterReturnsTheFirstPage() {
+            List<String> seeded = orderedSeededCardNumbers();
+            CardPage page = forwardPage(null, null, null, 7);
+            assertAll(
+                    () -> assertSameCardNumbers(
+                            seeded.subList(0, 7), cardNumbersOf(page.displayed()),
+                            "the first page must hold the seven lowest card numbers in key order"),
+                    () -> assertTrue(page.nextPageExists(),
+                            "forty-three rows follow the first page"));
+        }
+
+        /**
+         * Asserts an account filter returns that account's cards and no other row.
+         *
+         * <p>The filter reproduces {@code CARD-ACCT-ID = CC-ACCT-ID} at
+         * {@code app/cbl/COCRDLIC.cbl:L1386}.
+         */
+        @Test
+        @DisplayName("an account filter returns that account's cards and no other")
+        void anAccountFilterSelectsOneAccount() {
+            String cardNumber = orderedSeededCardNumbers().getFirst();
+            String accountId = accountIdOf(cardNumber);
+            CardPage page = forwardPage(null, accountId, null, 7);
+            List<String> accountIds = page.displayed().stream()
+                    .map(CardEntity::getAccountId).distinct().toList();
+            assertAll(
+                    () -> assertSameCardNumbers(List.of(cardNumber),
+                            cardNumbersOf(page.displayed()),
+                            "the fixture places one card on that account"),
+                    () -> assertTrue(List.of(accountId).equals(accountIds),
+                            "every returned row must carry the account identifier asked for"),
+                    () -> assertFalse(page.nextPageExists(),
+                            "one row matches, so no further page follows"));
+        }
+
+        /**
+         * Asserts a card-number filter returns at most one row.
+         *
+         * <p>The filter reproduces {@code CARD-NUM = CC-CARD-NUM-N} at
+         * {@code app/cbl/COCRDLIC.cbl:L1397}. The primary key admits one row per value, and a
+         * value the table does not hold returns none.
+         */
+        @Test
+        @DisplayName("a card-number filter returns at most one row")
+        void aCardNumberFilterReturnsAtMostOneRow() {
+            String cardNumber = orderedSeededCardNumbers().get(1);
+            CardPage present = forwardPage(null, null, cardNumber, 7);
+            CardPage absent = forwardPage(null, null, INSERTED_DUPLICATE_CARD_NUMBER, 7);
+            assertAll(
+                    () -> assertSameCardNumbers(List.of(cardNumber),
+                            cardNumbersOf(present.displayed()),
+                            "a seeded card number must return its own row alone"),
+                    () -> assertTrue(absent.displayed().isEmpty(),
+                            "a card number the table does not hold must return no row"),
+                    () -> assertFalse(present.nextPageExists(),
+                            "one row matches, so no further page follows"),
+                    () -> assertFalse(absent.nextPageExists(),
+                            "no row matches, so no further page follows"));
+        }
+
+        /**
+         * Asserts both filters narrow the result together rather than widen it.
+         *
+         * <p>A card of one account paired with the account of another intersects in no row, because
+         * {@code app/cbl/COCRDLIC.cbl:L1385-L1405} excludes a record that fails either test.
+         */
+        @Test
+        @DisplayName("both filters together intersect rather than widen")
+        void bothFiltersIntersect() {
+            List<String> seeded = orderedSeededCardNumbers();
+            String firstCardNumber = seeded.getFirst();
+            String secondCardNumber = seeded.get(1);
+            String accountId = accountIdOf(firstCardNumber);
+            CardPage matching = forwardPage(null, accountId, firstCardNumber, 7);
+            CardPage crossed = forwardPage(null, accountId, secondCardNumber, 7);
+            assertAll(
+                    () -> assertSameCardNumbers(List.of(firstCardNumber),
+                            cardNumbersOf(matching.displayed()),
+                            "a matching pair must return the one row both tests admit"),
+                    () -> assertTrue(crossed.displayed().isEmpty(),
+                            "a card of one account and the account of another share no row"));
+        }
+
+        /**
+         * Asserts a filtered page fills with seven matching rows rather than seven scanned rows.
+         *
+         * <p>The test places seven cards on one account, then reads one page of seven with the
+         * account filter applied. The first seven rows in key order hold one of those cards, so a
+         * filter applied in Java after the fetch would return one row instead of seven. The source
+         * reaches the same outcome by filtering ahead of its row counter at
+         * {@code app/cbl/COCRDLIC.cbl:L1159-L1163}, where an excluded record consumes no slot.
+         */
+        @Test
+        @DisplayName("a filtered page carries seven matching rows, not seven scanned rows")
+        void aFilteredPageFillsWithMatchingRows() {
+            String accountId = accountIdOf(orderedSeededCardNumbers().getFirst());
+            INSERTED_FILLER_CARD_NUMBERS.forEach(number -> insertCard(number, accountId));
+            CardPage filteredPage = forwardPage(null, accountId, null, 7);
+            List<String> filtered = cardNumbersOf(filteredPage.displayed());
+            List<String> unfiltered = cardNumbersOf(forwardPage(null, null, null, 7).displayed());
+            long matchesInsideTheUnfilteredPage =
+                    unfiltered.stream().filter(filtered::contains).count();
+            List<String> accountIds = filteredPage.displayed().stream()
+                    .map(CardEntity::getAccountId).distinct().toList();
+            assertAll(
+                    () -> assertEquals(7, filtered.size(),
+                            "seven rows match the filter, so the page fills with matching rows"),
+                    () -> assertTrue(List.of(accountId).equals(accountIds),
+                            "every row on the filtered page must carry that account identifier"),
+                    () -> assertFalse(filteredPage.nextPageExists(),
+                            "seven rows match and no eighth follows, so the flag must clear"),
+                    () -> assertEquals(1L, matchesInsideTheUnfilteredPage,
+                            "the first seven rows in key order hold one matching row, so a filter "
+                                    + "applied after the fetch would return one row"));
+        }
+    }
+
+    /**
+     * The claim statement of {@link OutboxEventRepository}, run against the migrated schema.
+     *
+     * <p>ADDITIVE. No CardDemo program relays an event, so no source paragraph corresponds.
+     *
+     * <p>{@code claimDueRows} carries a pessimistic write lock and a lock timeout of {@code -2},
+     * which Hibernate renders as {@code FOR NO KEY UPDATE ... SKIP LOCKED}. Neither the lock, the
+     * skip, nor the correlated absence check that admits one row per account is exercised by
+     * {@code ddl-auto: validate} or by the derived-query check Spring Data runs at start-up, so the
+     * assertions below are what run them. The retention delete of the same interface is native
+     * Structured Query Language (SQL) and names {@code outbox_event} unqualified, so it fails with
+     * {@code relation "outbox_event" does not exist} unless {@code currentSchema} reached the
+     * connection.
+     *
+     * <p>Each test opens its own transaction and rolls it back, which is also what the row lock
+     * needs.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("The outbox claim statement, over the migrated schema")
+    class OutboxClaim {
+
+        /** Event type every row below carries, from {@code messaging/CardUpdated}. */
+        private static final String EVENT_TYPE = "CardUpdated";
+
+        /** Account identifier a row carries as its message key unless a test names another. */
+        private static final String AGGREGATE_ID = "00000000011";
+
+        /** A second account, so a test can prove two accounts are claimed independently. */
+        private static final String OTHER_AGGREGATE_ID = "00000000012";
+
+        /** A third account, so the due-time ordering can be read across three heads. */
+        private static final String THIRD_AGGREGATE_ID = "00000000013";
+
+        /** One short payload. The column holds 8192 octets and no assertion reads this text. */
+        private static final String PAYLOAD = "{\"eventType\":\"CardUpdated\"}";
+
+        /** The instance name a claim records, from {@code carddemo.outbox.relay.instance-id}. */
+        private static final String INSTANCE = "card-relay-under-test";
+
+        /** The reason a failed attempt records. It names a refusal and quotes no event value. */
+        private static final String REFUSED = "refused";
+
+        /**
+         * The lower of the two identifiers the same-instant test writes, and the head it expects.
+         *
+         * <p>Both identifiers are fixed rather than drawn at random, and the two orderings that
+         * could apply agree on which is lower. PostgreSQL orders the {@code uuid} type as an
+         * unsigned sequence of octets, while {@link UUID#compareTo(UUID)} compares each half as a
+         * signed long, so a test that drew two random identifiers and predicted the head with
+         * {@code compareTo} would agree with the database on roughly half of its runs. The head the
+         * statement admits is the database's choice, and these two values name it unambiguously.
+         */
+        private static final UUID LOWER_EVENT_ID =
+                UUID.fromString("00000000-0000-4000-8000-000000000001");
+
+        /** The higher of the two identifiers the same-instant test writes, under either ordering. */
+        private static final UUID HIGHER_EVENT_ID =
+                UUID.fromString("00000000-0000-4000-8000-000000000002");
+
+        /**
+         * Writes one row of {@link #AGGREGATE_ID} due at {@code dueAt} and forces it to the database.
+         *
+         * @param dueAt when the row becomes claimable, which the constructor also uses as
+         *              {@code created_at}
+         * @return the managed row
+         */
+        private OutboxEventEntity storeRowDueAt(Instant dueAt) {
+            return storeRowDueAt(dueAt, AGGREGATE_ID);
+        }
+
+        /**
+         * Writes one row of the named account due at {@code dueAt}, under a fresh identifier.
+         *
+         * @param dueAt       when the row becomes claimable, which the constructor also uses as
+         *                    {@code created_at}
+         * @param aggregateId the eleven-digit account identifier the row keys on
+         * @return the managed row
+         */
+        private OutboxEventEntity storeRowDueAt(Instant dueAt, String aggregateId) {
+            return storeRowDueAt(dueAt, aggregateId, UUID.randomUUID());
+        }
+
+        /**
+         * Writes one row of the named account due at {@code dueAt} and forces it to the database.
+         *
+         * <p>The returned instance is the one {@code save} answers with, which is the managed copy.
+         * An entity carrying an assigned identifier is not new, so the store merges it and the
+         * argument stays detached; a mutation applied to the argument would reach no column.
+         *
+         * @param dueAt       when the row becomes claimable, which the constructor also uses as
+         *                    {@code created_at}
+         * @param aggregateId the eleven-digit account identifier the row keys on
+         * @param eventId     the primary key the row takes
+         * @return the managed row
+         */
+        private OutboxEventEntity storeRowDueAt(Instant dueAt, String aggregateId, UUID eventId) {
+            OutboxEventEntity stored = outboxEventRepository.save(new OutboxEventEntity(
+                    eventId, EVENT_TYPE, aggregateId, PAYLOAD, dueAt));
+            entityManager.flush();
+            return stored;
+        }
+
+        /**
+         * Three accounts rather than three rows of one, because the statement answers with the due
+         * head row of each account. Ordering by due time is across accounts, and the case below
+         * covers what happens within one.
+         */
+        @Test
+        @DisplayName("the statement resolves outbox_event and returns the longest-waiting rows")
+        void theStatementResolvesTheTableAndOrdersByDueTime() {
+            Instant now = Instant.parse("2024-03-01T12:00:00Z");
+            OutboxEventEntity oldest = storeRowDueAt(now.minusSeconds(300), AGGREGATE_ID);
+            OutboxEventEntity middle = storeRowDueAt(now.minusSeconds(200), OTHER_AGGREGATE_ID);
+            storeRowDueAt(now.minusSeconds(100), THIRD_AGGREGATE_ID);
+
+            List<UUID> claimed = outboxEventRepository.claimDueRows(now, Limit.of(2)).stream()
+                    .map(OutboxEventEntity::getEventId).toList();
+
+            assertEquals(List.of(oldest.getEventId(), middle.getEventId()), claimed,
+                    "the statement returns the two longest-waiting rows, in that order, which is "
+                            + "also proof that the unqualified table name resolved");
+        }
+
+        /**
+         * A newer row of one account never overtakes an older row of that account.
+         *
+         * <p>The relay publishes each claimed row and records each outcome on its own, so a batch
+         * holding two rows of one account can publish the newer one and leave the older one to a
+         * retry. A row in backoff produces the same reordering on its own: its
+         * {@code next_attempt_at} lies in the future while the newer row of that account is due
+         * now. The account identifier is the message key, and Kafka orders within a partition, so
+         * either outcome reaches every consumer of that account in the wrong order and stays that
+         * way.
+         *
+         * <p>The third row proves the guard is per account rather than per table: it is the head of
+         * a different account, so the paused account does not hold it back.
+         */
+        @Test
+        @DisplayName("a newer row of one account waits behind its older row during backoff")
+        void aNewerRowWaitsBehindAnOlderRowOfTheSameAccount() {
+            Instant now = Instant.parse("2024-03-01T12:00:00Z");
+            OutboxEventEntity older = storeRowDueAt(now.minusSeconds(300), AGGREGATE_ID);
+            older.claim(INSTANCE, now.minusSeconds(290));
+            older.recordFailure(REFUSED, now.minusSeconds(280), now.plusSeconds(30));
+            OutboxEventEntity newer = storeRowDueAt(now.minusSeconds(100), AGGREGATE_ID);
+            OutboxEventEntity otherAccount =
+                    storeRowDueAt(now.minusSeconds(50), OTHER_AGGREGATE_ID);
+            entityManager.flush();
+
+            List<UUID> claimed = outboxEventRepository.claimDueRows(now, Limit.of(10)).stream()
+                    .map(OutboxEventEntity::getEventId).toList();
+
+            assertAll("the claim admits one head per account",
+                    () -> assertEquals(List.of(otherAccount.getEventId()), claimed,
+                            "the newer row of the paused account stays behind it, and the head of "
+                                    + "the other account is unaffected"),
+                    () -> assertFalse(claimed.contains(newer.getEventId()),
+                            "publishing the newer row first would reverse the order on the "
+                                    + "partition that account keys on"),
+                    () -> assertEquals(OutboxEventEntity.RelayState.PENDING, older.getRelayState(),
+                            "the older row is pending and waiting on its backoff, not terminal"));
+        }
+
+        /**
+         * A row the relay gave up on releases the account it was holding.
+         *
+         * <p>The absence check names {@code PENDING} and {@code CLAIMED} alone. Were it to name
+         * every state, one abandoned row would stop every later row of that account for as long as
+         * retention kept it, which is a worse failure than the reordering the check prevents.
+         */
+        @Test
+        @DisplayName("an abandoned head no longer blocks the next row of that account")
+        void anAbandonedHeadReleasesTheAccount() {
+            Instant now = Instant.parse("2024-03-01T12:00:00Z");
+            OutboxEventEntity abandoned = storeRowDueAt(now.minusSeconds(600), AGGREGATE_ID);
+            for (int attempt = 0; attempt < OutboxEventEntity.MAX_DELIVERY_ATTEMPTS; attempt++) {
+                Instant attemptedAt = now.minusSeconds(590L - attempt);
+                abandoned.claim(INSTANCE, attemptedAt);
+                abandoned.recordFailure(REFUSED, attemptedAt, attemptedAt);
+            }
+            OutboxEventEntity next = storeRowDueAt(now.minusSeconds(100), AGGREGATE_ID);
+            entityManager.flush();
+
+            List<UUID> claimed = outboxEventRepository.claimDueRows(now, Limit.of(10)).stream()
+                    .map(OutboxEventEntity::getEventId).toList();
+
+            assertAll("a terminal head holds nothing back",
+                    () -> assertEquals(OutboxEventEntity.RelayState.ABANDONED,
+                            abandoned.getRelayState(),
+                            "ten refusals reach the ceiling and abandon the row"),
+                    () -> assertEquals(List.of(next.getEventId()), claimed,
+                            "the next row of that account becomes the head"));
+        }
+
+        /**
+         * Two rows written in the same instant still have one head, and it is the same one every
+         * time.
+         *
+         * <p>{@code created_at} alone cannot order them, so the absence check falls through to
+         * {@code event_id}. Without that fall-through neither row would precede the other, both
+         * would be heads, and a batch could hold both.
+         *
+         * <p>The higher identifier is written first, so passing cannot come from insert order.
+         */
+        @Test
+        @DisplayName("two rows of one account written in the same instant order on the event key")
+        void rowsWrittenInTheSameInstantOrderOnTheEventKey() {
+            Instant now = Instant.parse("2024-03-01T12:00:00Z");
+            Instant sameInstant = now.minusSeconds(120);
+            storeRowDueAt(sameInstant, AGGREGATE_ID, HIGHER_EVENT_ID);
+            storeRowDueAt(sameInstant, AGGREGATE_ID, LOWER_EVENT_ID);
+            entityManager.flush();
+
+            List<UUID> claimed = outboxEventRepository.claimDueRows(now, Limit.of(10)).stream()
+                    .map(OutboxEventEntity::getEventId).toList();
+
+            assertEquals(List.of(LOWER_EVENT_ID), claimed,
+                    "the lower event identifier is the head, so the pair has one deterministic "
+                            + "order rather than none");
+        }
+
+        /**
+         * Publishing an account's earlier row makes its later row the head of that account.
+         *
+         * <p>The guard is a restriction on the claim rather than on the sweep, so the proof has to
+         * show the claim advancing: the later row is absent while the earlier one is unpublished and
+         * present once it is published. The other account's row is claimed in both passes, which is
+         * what makes the restriction per account rather than per table.
+         */
+        @Test
+        @DisplayName("publishing an account's earlier row promotes its later row to the head")
+        void publishingTheEarlierRowPromotesTheLaterRowOfThatAccount() {
+            Instant now = Instant.parse("2024-03-01T12:00:00Z");
+            OutboxEventEntity first = storeRowDueAt(now.minusSeconds(300), AGGREGATE_ID);
+            OutboxEventEntity second = storeRowDueAt(now.minusSeconds(200), AGGREGATE_ID);
+            OutboxEventEntity otherAccount =
+                    storeRowDueAt(now.minusSeconds(100), OTHER_AGGREGATE_ID);
+            entityManager.flush();
+
+            List<UUID> firstClaim = outboxEventRepository.claimDueRows(now, Limit.of(10)).stream()
+                    .map(OutboxEventEntity::getEventId).toList();
+
+            first.markPublished(now);
+            entityManager.flush();
+            List<UUID> secondClaim = outboxEventRepository.claimDueRows(now, Limit.of(10)).stream()
+                    .map(OutboxEventEntity::getEventId).toList();
+
+            assertAll(
+                    () -> assertEquals(List.of(first.getEventId(), otherAccount.getEventId()),
+                            firstClaim,
+                            "one head row per account: this account's earlier row and the other "
+                                    + "account's row, and not this account's later row"),
+                    () -> assertEquals(List.of(second.getEventId(), otherAccount.getEventId()),
+                            secondClaim,
+                            "publishing the earlier row makes the later row of that account the "
+                                    + "head, so the next claim reaches it"));
+        }
+
+        @Test
+        @DisplayName("a row not yet due and a claimed row are both left alone")
+        void aRowNotYetDueAndAClaimedRowAreBothLeftAlone() {
+            Instant now = Instant.parse("2024-03-01T12:00:00Z");
+            OutboxEventEntity due = storeRowDueAt(now.minusSeconds(60));
+            storeRowDueAt(now.plusSeconds(60));
+
+            due.claim(INSTANCE, now);
+            entityManager.flush();
+
+            assertTrue(outboxEventRepository.claimDueRows(now, Limit.of(10)).isEmpty(),
+                    "the filter reads PENDING and next_attempt_at <= now, so a claimed row and a "
+                            + "row awaiting its backoff are both excluded");
+        }
+
+        @Test
+        @DisplayName("a claim held past its timeout is found, and recovery makes the row due")
+        void aStrandedClaimIsFoundAndRecovered() {
+            Instant now = Instant.parse("2024-03-01T12:00:00Z");
+            OutboxEventEntity stranded = storeRowDueAt(now.minusSeconds(600));
+            stranded.claim(INSTANCE, now.minusSeconds(300));
+            entityManager.flush();
+
+            List<OutboxEventEntity> found =
+                    outboxEventRepository.findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
+                            OutboxEventEntity.RelayState.CLAIMED, now.minusSeconds(120),
+                            Limit.of(10));
+            found.forEach(row -> row.recordFailure("claim expired", now, now));
+            entityManager.flush();
+
+            assertAll(
+                    () -> assertEquals(List.of(stranded.getEventId()),
+                            found.stream().map(OutboxEventEntity::getEventId).toList(),
+                            "the finder returns the claim held past the cutoff"),
+                    () -> assertEquals(OutboxEventEntity.RelayState.PENDING,
+                            stranded.getRelayState(), "a recovered row returns to PENDING"),
+                    () -> assertEquals(1, stranded.getAttemptCount(),
+                            "recovering a stranded claim counts one failed attempt"),
+                    () -> assertEquals(List.of(stranded.getEventId()),
+                            outboxEventRepository.claimDueRows(now, Limit.of(10)).stream()
+                                    .map(OutboxEventEntity::getEventId).toList(),
+                            "the recovered row is claimable again"));
+        }
+
+        /**
+         * Runs the bounded retention delete and reads the result back.
+         *
+         * <p>{@code ddl-auto: validate} reads no {@code @Query} text, so a native statement is
+         * unchecked until it runs. {@code domain/RetentionSweep} owns this call.
+         */
+        @Test
+        @DisplayName("the retention delete takes a published row past the horizon and never an "
+                + "unpublished one")
+        void theRetentionDeleteTakesOnlyPublishedRowsPastTheHorizon() {
+            Instant horizon = Instant.parse("2024-03-01T12:00:00Z");
+            OutboxEventEntity expired = storeRowDueAt(horizon.minusSeconds(3600));
+            expired.markPublished(horizon.minusSeconds(3600));
+            OutboxEventEntity recent = storeRowDueAt(horizon.plusSeconds(3600));
+            recent.markPublished(horizon.plusSeconds(3600));
+            OutboxEventEntity unpublished = storeRowDueAt(horizon.minusSeconds(3600));
+            entityManager.flush();
+
+            int removed = outboxEventRepository.deletePublishedBefore(horizon, 1000);
+            entityManager.flush();
+            entityManager.clear();
+
+            assertAll("the bounded retention delete",
+                    () -> assertEquals(1, removed, "one published row precedes the horizon"),
+                    () -> assertTrue(outboxEventRepository.findById(expired.getEventId()).isEmpty(),
+                            "the expired row is gone"),
+                    () -> assertTrue(outboxEventRepository.findById(recent.getEventId()).isPresent(),
+                            "a published row inside the horizon stays"),
+                    () -> assertTrue(
+                            outboxEventRepository.findById(unpublished.getEventId()).isPresent(),
+                            "the relay has not published this row, so retention must not take it"));
+        }
+
+        @Test
+        @DisplayName("the retention delete honours its row limit and reports zero when none is due")
+        void theRetentionDeleteHonoursItsLimit() {
+            Instant horizon = Instant.parse("2024-03-01T12:00:00Z");
+            for (int row = 0; row < 3; row++) {
+                OutboxEventEntity expired = storeRowDueAt(horizon.minusSeconds(3600 + row));
+                expired.markPublished(horizon.minusSeconds(3600 + row));
+            }
+            entityManager.flush();
+
+            int firstStatement = outboxEventRepository.deletePublishedBefore(horizon, 2);
+            entityManager.flush();
+            int secondStatement = outboxEventRepository.deletePublishedBefore(horizon, 2);
+            entityManager.flush();
+            int thirdStatement = outboxEventRepository.deletePublishedBefore(horizon, 2);
+
+            assertAll("the statement allowance of one sweep",
+                    () -> assertEquals(2, firstStatement, "the limit bounds one statement"),
+                    () -> assertEquals(1, secondStatement, "the remainder follows"),
+                    () -> assertEquals(0, thirdStatement,
+                            "the sweeper stops on a count below the batch size"));
+        }
+
+        /**
+         * Reads back two claims written directly, one stamped a decade before the other.
+         *
+         * <p>This service registers no listener, so its marker repository declares no claim and no
+         * save: nothing in the service writes a marker. The table exists because the shape is
+         * uniform across the six schemas, so the rows here are written through the driver.
+         *
+         * <p>A claim is permanent and the store exposes nothing that removes one. A purge over a
+         * 720-hour horizon would remove the older row here while the rows it guards stayed.
+         */
+        @Test
+        @DisplayName("a claim stamped in 2020 is still readable, because nothing expires one")
+        void anAncientClaimIsStillReadable() {
+            UUID ancient = UUID.randomUUID();
+            UUID current = UUID.randomUUID();
+            storeMarker(ancient, Instant.parse("2020-01-01T00:00:00Z"));
+            storeMarker(current, Instant.parse("2030-01-01T00:00:00Z"));
+
+            assertAll("two claims stamped a decade apart",
+                    () -> assertTrue(processedEventRepository.existsByEventIdOnAnyTopic(ancient),
+                            "a purge over a 720-hour horizon used to remove this row"),
+                    () -> assertTrue(processedEventRepository.existsByEventIdOnAnyTopic(current),
+                            "and the current claim is readable alongside it"));
+        }
+
+        /**
+         * Writes one marker through the driver.
+         *
+         * @param eventId     the marker key
+         * @param processedAt when the marker records the delivery as handled
+         */
+        private void storeMarker(UUID eventId, Instant processedAt) {
+            jdbcTemplate.update(
+                    "INSERT INTO processed_event (event_id, processed_at, consumed_topic)"
+                            + " VALUES (?, ?, ?)",
+                    eventId, java.sql.Timestamp.from(processedAt),
+                    ProcessedEventEntity.NO_CONSUMED_TOPIC);
+        }
+    }
+
+    @Nested
+    @DisplayName("The transaction-local lock wait bound, over the migrated schema")
+    class BoundedLockWait {
+
+        /** How long the second reader below is allowed to wait, short so the test is quick. */
+        private static final String TEST_BOUND = "250ms";
+
+        /** Ceiling the measured wait must stay under for the bound to have been honoured. */
+        private static final long GENEROUS_CEILING_MS = 5_000L;
+
+        /**
+         * A bounded wait gives up on a held card lock instead of waiting for it.
+         *
+         * <p>Without a bound PostgreSQL waits, and it waits for as long as the other writer holds
+         * the row. That is why {@code COULD-NOT-LOCK-FOR-UPDATE} was unreachable through
+         * contention: the source set it whenever its {@code READ UPDATE} came back with anything
+         * other than {@code DFHRESP(NORMAL)}, at {@code app/cbl/COCRDUPC.cbl:L1445-L1446}, and a
+         * wait that never ends comes back with nothing at all.
+         *
+         * <p>{@link CardRepository#applyLockWaitBound(String)} bounds it. The bound is
+         * transaction-local, so the first transaction below is unaffected and only the second gives
+         * up. {@code src/main/resources/application.yml} ships three seconds through
+         * {@code carddemo.write.lock-wait-ms}.
+         *
+         * <p>The give-up arrives as a {@link CannotAcquireLockException}, which is a
+         * {@code PessimisticLockingFailureException}, and that is the type
+         * {@code domain/CardUpdateService} turns into {@code CardUpdateService.LockNotTaken} and
+         * then into {@link CardValidationMessages#COULD_NOT_LOCK_FOR_UPDATE}. The elapsed time is
+         * asserted too, because a bound that is set but not honoured would still raise eventually
+         * and the assertion on the type alone would pass on a wait of any length.
+         *
+         * <p>The give-up leaves its transaction unusable, so it is carried out through the
+         * transaction boundary rather than caught inside it. {@code domain/CardUpdateService} does
+         * the same, and for the same reason: returning normally across a rollback-only transaction
+         * answers with a rollback report instead of the outcome.
+         *
+         * @throws Exception when a worker cannot be run
+         */
+        @Test
+        @DisplayName("a bounded wait gives up on a held card lock instead of waiting for it")
+        void aBoundedWaitGivesUpOnAHeldCardLock() throws Exception {
+            String heldCardNumber = cardRepository.findFirstPage(Limit.of(1)).getFirst()
+                    .getCardNumber();
+            CountDownLatch firstLocked = new CountDownLatch(1);
+            CountDownLatch releaseFirst = new CountDownLatch(1);
+            ExecutorService workers = Executors.newFixedThreadPool(2);
+
+            try {
+                Future<?> first = workers.submit(() -> inNewTransaction(() -> {
+                    cardRepository.findForUpdateByCardNumber(heldCardNumber).orElseThrow();
+                    firstLocked.countDown();
+                    awaitLatch(releaseFirst, "the held card lock was not released");
+                    return null;
+                }));
+                assertTrue(firstLocked.await(5, TimeUnit.SECONDS),
+                        "the first transaction never took the card lock");
+
+                Future<?> second = workers.submit(() -> inNewTransaction(() -> {
+                    cardRepository.applyLockWaitBound(TEST_BOUND);
+                    return cardRepository.findForUpdateByCardNumber(heldCardNumber);
+                }));
+
+                long startedAt = System.nanoTime();
+                ExecutionException thrown = assertThrows(ExecutionException.class,
+                        () -> second.get(10, TimeUnit.SECONDS),
+                        "the bounded read returned a row it could not have locked");
+                long waitedMs = (System.nanoTime() - startedAt) / 1_000_000L;
+
+                assertAll(
+                        () -> assertInstanceOf(CannotAcquireLockException.class,
+                                rootCauseOf(thrown),
+                                "the give-up is the type domain/CardUpdateService maps onto "
+                                        + CardValidationMessages.COULD_NOT_LOCK_FOR_UPDATE),
+                        () -> assertTrue(waitedMs < GENEROUS_CEILING_MS,
+                                "the bound was honoured, so the wait ended near it rather than at "
+                                        + "the release of the other writer, but it took "
+                                        + waitedMs + "ms"));
+
+                releaseFirst.countDown();
+                first.get(5, TimeUnit.SECONDS);
+            } finally {
+                releaseFirst.countDown();
+                workers.shutdownNow();
+            }
+        }
+
+        /**
+         * Runs one callback inside a transaction of its own.
+         *
+         * <p>This nested class carries no {@code @Transactional} annotation, unlike every other
+         * nested class in this file. Two transactions have to exist at once for one to contend with
+         * the other, and a test-managed transaction would hold both callbacks.
+         *
+         * @param callback the work to run
+         * @param <T>      what the work answers
+         * @return whatever the callback answered
+         */
+        private <T> T inNewTransaction(Supplier<T> callback) {
+            TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+            transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+            return transaction.execute(status -> callback.get());
+        }
+
+        /** Waits for one test latch and preserves interruption. */
+        private void awaitLatch(CountDownLatch latch, String failureMessage) {
+            try {
+                if (!latch.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError(failureMessage);
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("the card lock wait was interrupted", interrupted);
+            }
+        }
+
+        /**
+         * Walks a throwable to the first cause the datastore layer produced.
+         *
+         * @param thrown the throwable a worker reported
+         * @return the deepest cause carrying a distinct type from the datastore layer
+         */
+        private Throwable rootCauseOf(Throwable thrown) {
+            Throwable walked = thrown;
+            while (walked.getCause() != null && !(walked instanceof DataAccessException)) {
+                walked = walked.getCause();
+            }
+            return walked;
+        }
+    }
+}

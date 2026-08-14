@@ -1,0 +1,138 @@
+{
+  "$comment": "The released contract baseline of this platform. Every pair of event type and schema version that has ever been released appears here, and this file is what makes their immutability measurable: SchemaBackwardCompatibilityTest asserts that the set below is exactly the set EventSchemas governs, that every resource still exists, and that the wire contract of each one still hashes to its recorded contractDigest. Rationale and the alternatives weighed: card-platform/docs/decision-log.md.",
+  "compatibilityDirection": "Each record declares its own schemaVersion and every gate validates it against the document that version names, so the guarantee is stated in two halves. First, a released document is never deleted and its wire contract is never rewritten, which is what keeps every record already on a topic readable for as long as the topic holds it. Second, a new version only adds required properties to the version it succeeds, so a consumer that upgrades reads every older record too. What this platform does not claim is that an older document accepts a newer record: every document closes its property set and pins its own version with const, so a newer record is refused rather than read under the wrong contract, and the refusal is fail-closed on the dead-letter topic where it is diagnosable and replayable. Rollout is therefore consumer-first, and the mono-repo makes that automatic: every service depends on this one library, so the build that lets a producer publish a new version has already given every consumer that version's document.",
+  "contractDigest": "SHA-256, over the document with the annotation keywords description, $comment, examples and title removed recursively and the remaining members serialized with sorted keys and no whitespace. Prose may therefore be corrected in a released document and its wire contract may not. SchemaBackwardCompatibilityTest.contractDigestOf computes it, and its failure message prints the value a document hashes to now.",
+  "postures": {
+    "PUBLISHED": "A producer on this platform writes records under this version today.",
+    "RETAINED": "No producer writes this version. It stays governed and on the classpath so a record retained on a topic under it remains readable, and the deserializer selects it by the version the record declares."
+  },
+  "nonAdditiveOver": "Present only where a released version forked off an earlier one instead of adding to it, by stopping requiring a property it required or by narrowing one it declared. Each entry is a released fact, not a licence: SchemaBackwardCompatibilityTest asserts that stoppedRequiring and retyped name exactly the differences the two documents carry, that the forked version is left out of the additive chain rather than silently accepted inside it, and that no undeclared fork ships. A new entry is a consumer this platform knowingly breaks, so it needs an owner's decision in card-platform/docs/decision-log.md and a task in card-platform/docs/suggested-next-tasks.md.",
+  "contracts": [
+    {
+      "eventType": "TransactionAuthorized",
+      "schemaVersion": 1,
+      "resource": "schemas/transaction-authorized-v1.json",
+      "posture": "RETAINED",
+      "contractDigest": "sha256:7b90a0f4365cda7d3a539557da37e9ac7c704d77f2aa9085e4e0e6e09a4049c5",
+      "note": "The first authorized contract. Version 2 adds the card token, so a record published under this document stays readable under it."
+    },
+    {
+      "eventType": "TransactionAuthorized",
+      "schemaVersion": 2,
+      "resource": "schemas/transaction-authorized-v2.json",
+      "posture": "PUBLISHED",
+      "contractDigest": "sha256:7dd3479388965098d7fda3fcab9eb6f5c37b20514b60d3f8e50f2627a86eda71",
+      "note": "Adds cardToken, the card identity a masked card number cannot supply. Additive over version 1."
+    },
+    {
+      "eventType": "TransactionDeclined",
+      "schemaVersion": 1,
+      "resource": "schemas/transaction-declined-v1.json",
+      "posture": "RETAINED",
+      "contractDigest": "sha256:7b112a83c62e33721f4464ba81d4ce4b0dab89b87db535e346498bf87a0907df",
+      "note": "The first declined contract: the four reject codes of app/cbl/CBTRN02C.cbl:L385-L420, an eleven-digit accountId and an account message key."
+    },
+    {
+      "eventType": "TransactionDeclined",
+      "schemaVersion": 2,
+      "resource": "schemas/transaction-declined-v2.json",
+      "posture": "PUBLISHED",
+      "contractDigest": "sha256:81a0f7927b67a241fe8aec2cffc273a194c9178f27631ef77b802f8512dac917",
+      "nonAdditiveOver": 1,
+      "stoppedRequiring": [
+        "accountId"
+      ],
+      "note": "The one contract reject code 0100 publishes under, and the only declined document that declares no accountId. It forked off version 1 rather than adding to it: it stopped requiring accountId, pinned declineReasonCode and declineReasonDescription to that one reject code, and retyped aggregateId to the sixteen-character transaction identifier the authorization service allocates. That fork is what the outcome needs. app/cbl/CBTRN02C.cbl:L385-L387 assigns 0100 inside the INVALID KEY limb of the cross-reference read, so no stored row names an account, and the account a caller declared beside the card is a value nothing corroborates. Reasons 0101, 0102 and 0103 publish under version 3, which is the additive successor of version 1. A consumer holding version 1 or 3 requires accountId and refuses a version-2 record on the dead-letter topic; the ledger reads every version and writes no reject row for this one, because the document carries none of the nine values REJECT-TRAN-DATA needs.",
+      "retyped": [
+        "aggregateId",
+        "declineReasonCode",
+        "declineReasonDescription"
+      ]
+    },
+    {
+      "eventType": "TransactionDeclined",
+      "schemaVersion": 3,
+      "resource": "schemas/transaction-declined-v3.json",
+      "posture": "PUBLISHED",
+      "contractDigest": "sha256:e9b5efa08aeefd0349d493157add190739a9439668507b42a45d7ec02745daff",
+      "note": "Adds the nine descriptive values app/cbl/CBTRN02C.cbl:L446-L465 copies into REJECT-TRAN-DATA, so a consumer can persist the reject record. Additive over version 1."
+    },
+    {
+      "eventType": "TransactionPosted",
+      "schemaVersion": 1,
+      "resource": "schemas/transaction-posted-v1.json",
+      "posture": "PUBLISHED",
+      "contractDigest": "sha256:ef69bcfd3d8b633c7866f721af18a463877ef9d1d82b286ee4872a793a8213e9",
+      "note": "The first posted contract, and the one version this platform still writes conditionally. Version 2 adds the card token and the remaining posted-transaction fields, and TransactionPosted.forAuthorized writes version 2 for every authorized record that carries a card token. An authorized record carrying none is a record published under the retained TransactionAuthorized version 1, and version 2 requires cardToken, so the posting it produces is published under this document rather than dropped. A record already on a topic therefore stays postable. Nothing this platform produces today reaches that branch: the authorization service publishes TransactionAuthorized version 2 alone, and version 2 requires cardToken. The one input that reaches it is a TransactionAuthorized record published under version 1 before that version was retained and still on a topic, so the posture is PUBLISHED rather than RETAINED for as long as such a record can be replayed. Retiring it to RETAINED would say this platform can no longer write it, which is false while the branch stands."
+    },
+    {
+      "eventType": "TransactionPosted",
+      "schemaVersion": 2,
+      "resource": "schemas/transaction-posted-v2.json",
+      "posture": "PUBLISHED",
+      "contractDigest": "sha256:e4ff1dcdcbbc1a8d4fe3beea256d03a7fa13ac33a68729c74996d1f2d08dea24",
+      "note": "Adds cardToken and the remaining fields of app/cpy/CVTRA05Y.cpy. Additive over version 1."
+    },
+    {
+      "eventType": "FraudFlagged",
+      "schemaVersion": 1,
+      "resource": "schemas/fraud-flagged-v1.json",
+      "posture": "PUBLISHED",
+      "contractDigest": "sha256:473175bc022166a4835198044f655e1e63623d210e8627bee79b51671f440448",
+      "note": "The only fraud-flagged contract. No COBOL ancestor: the source has no fraud scoring."
+    },
+    {
+      "eventType": "FraudCleared",
+      "schemaVersion": 1,
+      "resource": "schemas/fraud-cleared-v1.json",
+      "posture": "PUBLISHED",
+      "contractDigest": "sha256:60a9993e3a7e8d31437b8e661ba48d75b1eb76221dd25c34512f2593a17137b6",
+      "note": "The only fraud-cleared contract. No COBOL ancestor."
+    },
+    {
+      "eventType": "AccountStateChanged",
+      "schemaVersion": 1,
+      "resource": "schemas/account-state-changed-v1.json",
+      "posture": "PUBLISHED",
+      "contractDigest": "sha256:543e43032163210646513b22d6afd80d6efd49fdda1fb5d66656cc0ac7d0733a",
+      "note": "The only account state-change contract. The record lives in the account service."
+    },
+    {
+      "eventType": "CustomerContextChanged",
+      "schemaVersion": 1,
+      "resource": "schemas/customer-context-changed-v1.json",
+      "posture": "PUBLISHED",
+      "contractDigest": "sha256:b705b27f943634652355e80ffd9ee714dcf80f01748674888f26d318ab64b3a7",
+      "note": "The only customer-context contract. The record lives in the account service."
+    },
+    {
+      "eventType": "CardUpdated",
+      "schemaVersion": 1,
+      "resource": "schemas/card-updated-v1.json",
+      "posture": "RETAINED",
+      "contractDigest": "sha256:363f063e522cb59a30933367f30866fb9b4938004cdeb76841ddf9fe520ff412",
+      "note": "The first card mutation contract. It requires embossedName; a record published under it stays readable under this document."
+    },
+    {
+      "eventType": "CardUpdated",
+      "schemaVersion": 2,
+      "resource": "schemas/card-updated-v2.json",
+      "posture": "PUBLISHED",
+      "contractDigest": "sha256:470bc4d7e47f58f891a7aec8ef587d35ba4f60bd5ce39491b0832ac96a7d5e72",
+      "nonAdditiveOver": 1,
+      "stoppedRequiring": [
+        "embossedName"
+      ],
+      "note": "Released to keep the embossed cardholder name off the wire, so it stopped requiring embossedName and is not additive over version 1. A consumer holding version 1 requires that property and refuses a version-2 record; docs/suggested-next-tasks.md carries the migration that closes it.",
+      "retyped": []
+    },
+    {
+      "eventType": "DeadLetterEnvelope",
+      "schemaVersion": 1,
+      "resource": "schemas/dead-letter-v1.json",
+      "posture": "PUBLISHED",
+      "contractDigest": "sha256:0e7189c32b0ba126be982e252f73f1ac37de8c2f80e6d23eefa7792b43551b1e",
+      "note": "The governed envelope of the shared fallback dead-letter topic. The source-specific <source>.DLT topics carry the fixed-width diagnostic of app/cpy/CSMSG02Y.cpy instead, which docs/event-flow.md defines."
+    }
+  ]
+}

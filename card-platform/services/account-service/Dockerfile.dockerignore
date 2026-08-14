@@ -1,0 +1,52 @@
+# Paths this module's image build excludes from the card-platform context.
+#
+# BuildKit reads this file rather than card-platform/.dockerignore, because it sits beside
+# the Dockerfile it belongs to and is named after it. It fully replaces the root file: the
+# two are not merged, so everything the root file excludes has to be excluded here too.
+#
+# What the build reads is the aggregator descriptor, every module descriptor, the two
+# shared libraries and this module. Everything below is something it does not read, and
+# every byte excluded is a byte not sent to the daemon.
+
+# Host build output. The builder stage compiles from source and writes its own target/
+# directories inside the image, so an archive built on the host has no part in this image
+# and must not reach it: an uncleaned host target/ would otherwise be copied in and the
+# one-archive guard would see two.
+**/target/
+
+# The five other services. Their descriptors stay, because Maven reads every module
+# descriptor to build the project graph, but their sources are not on this module's
+# dependency path and this image cannot be built from them.
+services/authorization-service/src/
+services/ledger-posting-service/src/
+services/fraud-detection-service/src/
+services/notification-service/src/
+services/card-service/src/
+
+# The equivalence suite. It depends on every service, so it is never on the path of one
+# service's build.
+equivalence-tests/src/
+
+# Local environment values, including the .env a developer copies from .env.example. No
+# stage of this build reads either one: every runtime value arrives from the environment.
+.env
+.env.*
+.demo-credentials
+
+# Documentation, the executive presentation, the Kubernetes manifests, the Compose file
+# and the committed scripts. No stage of this build reads any of them.
+docs/
+presentation/
+deploy/
+scripts/
+docker-compose.yml
+**/README.md
+
+# A Maven repository checked into a context belongs in no image. The builder resolves
+# through a BuildKit cache mount instead, which is not part of the context at all.
+.m2/
+
+# Editor and operating-system artefacts.
+**/*.swp
+**/*~
+**/.DS_Store

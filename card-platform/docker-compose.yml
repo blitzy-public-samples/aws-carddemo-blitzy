@@ -1,0 +1,1664 @@
+# card-platform — the local demo environment.
+# Starts one Kafka broker, one PostgreSQL instance and the six services.
+#
+# From a clean clone, one command in this directory starts everything:
+#
+#     scripts/start-demo.sh
+#
+# `docker compose up -d --build` on its own does not start the stack from a clean clone.
+# This file reads nineteen credentials, and .env, where they live, does not exist until it
+# is copied. scripts/generate-env.sh fills them, and it hashes the four identity passwords
+# with spring-security-crypto read out of the local Maven repository, which a packaging run
+# puts there. The script performs those steps in order: package, then create and fill .env,
+# then start.
+#
+# By hand, in this directory:
+#
+#     install -m 600 .env.example .env    # cp would leave it world-readable
+#     mvn -f pom.xml clean package
+#     scripts/generate-env.sh      # or the per-variable commands in .env.example
+#     docker compose up -d --build --wait --wait-timeout 300
+#
+# Each build context below is this directory. The builder stage of every
+# services/*/Dockerfile compiles its own module from source and needs the aggregator
+# descriptor and both shared libraries in reach, so no host archive under target/ is used or
+# required. The runtime stage carries the layered archive alone: no compiler, no build tool
+# and no source tree reach it.
+#
+# TRANSPORT POSTURE OF THIS STACK. One operator, one machine, synthetic fixtures.
+#
+# Three transports here carry a credential without encrypting it or without authenticating
+# the peer:
+#
+#   * The six service ports speak HTTP with HTTP Basic. SERVER_SSL_ENABLED is false.
+#   * The broker speaks SASL_PLAINTEXT, which authenticates a client and encrypts nothing.
+#   * The six database connections ask for sslmode=require, which encrypts the connection
+#     and does not authenticate the server. The server generates its own certificate on
+#     first start, so there is nothing here to verify it against.
+#
+# Three facts bound that posture. Every published port binds 127.0.0.1, and
+# ComposeEnvironmentIsolationContractTest fails the build on a binding that does not.
+# Everything between containers crosses one Docker bridge on the same machine. And the data
+# is the nine synthetic fixture files under app/data/ASCII: fifty accounts, fifty customers
+# and three hundred transactions that describe nobody.
+#
+# What this stack is not for. It carries no real cardholder data, it is not reachable by a
+# second person, and it is not a deployment. A host shared with an untrusted account, or a
+# second user on the same bridge, is outside what the posture covers.
+#
+# The deployed path encrypts all three transports: deploy/k8s/30-configmap.yaml sets
+# SASL_SSL, sslmode=verify-full against a mounted authority, and Transport Layer Security on
+# both ports of every service. KAFKA_SECURITY_PROTOCOL, SPRING_DATASOURCE_OPTIONS and the
+# two SSL switches are the values that differ between the two paths. Storage there is not
+# encrypted by default: deploy/overlays/encrypted-storage binds an encrypted class the
+# operator supplies, and deploy/k8s/README.md states what the operator owns.
+#
+# An authenticated Transport Layer Security profile for this file is designed and not
+# delivered: card-platform/docs/suggested-next-tasks.md carries the procedure and the check.
+#
+# Design decisions: card-platform/docs/decision-log.md, under "A local stack states its
+# transport posture and binds it to one machine".
+#
+---
+# CLONE_INDEX suffixes the project name, the container names and the volume names, so a
+# second checkout runs its own stack. It moves no published port: each of the fourteen host
+# ports below comes from its own variable, and Compose cannot derive one from another. The
+# parallel-stacks block of .env.example carries the whole command.
+name: card-platform${CLONE_INDEX:-}
+
+# Shared blocks. Each service below points at these with a YAML alias.
+
+# Startup order for database-only administration tasks. Runtime services use the
+# broker-aware dependency block below because their readiness group checks Kafka,
+# including services that reach it only through an outbox relay.
+x-database-only: &database-only
+  postgres:
+    condition: service_healthy
+
+# Startup order for a service that registers a listener. A listener joins a
+# consumer group at startup, so the broker answers first.
+x-database-and-broker: &database-and-broker
+  postgres:
+    condition: service_healthy
+  kafka:
+    condition: service_healthy
+
+# Readiness probe. It reads the readiness health group on the management port with
+# curl, and falls back to bash if a runtime image ever ships without curl. That group
+# checks the database, Kafka, listener containers and outbox relay state. /bin/sh cannot
+# open /dev/tcp, so the fallback names bash. Actuator answers on the management port
+# alone, so the probe does not name the service port. A wget form once sat between the
+# two and was removed: bellsoft/liberica-openjre-debian:25.0.4-9, the image every
+# services/*/Dockerfile pins, carries curl and bash and no wget, so that branch could
+# never run.
+#
+# HEALTHCHECK_SCHEME follows MANAGEMENT_SSL_ENABLED, and both default to the unencrypted
+# form this stack runs. Set both together or neither: a probe speaking http to an encrypted
+# port reports a container unhealthy that is answering perfectly. The certificate is not
+# verified, because the probe reaches the process inside its own container and a name to
+# verify against would be 127.0.0.1. Only the curl form speaks https at all; the bash
+# fallback opens a plain socket and cannot.
+#
+# The budget below decides how long a broken service keeps reporting healthy. Failures
+# inside start_period do not count, so a cold start, measured at 45 to 47 seconds, sits
+# inside the 60-second grace. After that the window is retries multiplied by the interval
+# plus however long each failing probe takes: twelve attempts reported unhealthy 176
+# seconds after the database was stopped, where twenty-four attempts took about twice
+# that. restart: unless-stopped does not restart on a health failure, so this budget
+# governs what an operator sees rather than recovery.
+x-actuator-healthcheck: &actuator-healthcheck
+  test:
+    - CMD-SHELL
+    - >-
+      curl -fsS -k ${HEALTHCHECK_SCHEME:-http}://127.0.0.1:${MANAGEMENT_PORT:-9080}/actuator/health/readiness >/dev/null 2>&1
+      || bash -c 'exec 3<>/dev/tcp/127.0.0.1/${MANAGEMENT_PORT:-9080}
+      && printf "GET /actuator/health/readiness HTTP/1.0\r\n\r\n" >&3
+      && head -1 <&3 | grep -q 200'
+  interval: 10s
+  timeout: 10s
+  retries: 12
+  start_period: 60s
+
+# Settings every service reads. Inside this network the database always answers
+# on 5432 and the broker on kafka:29092, whatever the host ports are.
+x-service-environment: &service-environment
+  SERVER_PORT: 8080
+  # /actuator answers here and nowhere else, and the mapping below publishes this
+  # port on 127.0.0.1 alone. A client of the service port reaches no runtime,
+  # database or broker internals.
+  MANAGEMENT_PORT: ${MANAGEMENT_PORT:-9080}
+  # SPRING_DATASOURCE_USERNAME and SPRING_DATASOURCE_PASSWORD are ABSENT from this
+  # shared block. Each service block below names its own login instead. The provisioning
+  # script at the foot of this file revokes CONNECT on every database from PUBLIC. A
+  # service role therefore cannot reach a database it does not own, even with the right
+  # password.
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
+  # The broker requires authentication on both client listeners, so every service
+  # presents a Simple Authentication and Security Layer (SASL) identity. The protocol
+  # and the mechanism are shared because they describe the broker; the identity and its
+  # password are not, and each service block below carries its own pair.
+  #
+  # SASL_PLAINTEXT authenticates without encrypting. The broker publishes on the
+  # loopback address alone, and every service reaches it across one Docker bridge on
+  # this machine. No network path here is readable by a third party.
+  # deploy/k8s/10-kafka.yaml sets SASL_SSL instead, because a cluster pod network is a
+  # shared path. KAFKA_SECURITY_PROTOCOL is the one value that changes between the two.
+  KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-SASL_PLAINTEXT}
+  KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM:-PLAIN}
+  # Consumer recovery appends this suffix to the source topic. Keeping it in the
+  # shared block makes the service route and the broker-created topic agree when
+  # a deployment changes the default.
+  TOPIC_DEAD_LETTER_SUFFIX: ${TOPIC_DEAD_LETTER_SUFFIX:-.DLT}
+  # CARD_TOKEN_SECRET and CARD_TOKEN_VERSION are ABSENT from this shared block. Only two
+  # services derive a card token, and each of the two names the key in its own block below:
+  # the card service derives one for every row it writes, and the authorization service
+  # derives one for the decision it records. The other four read a token that arrives in an
+  # event or in a request and derive none, so handing them the key would widen what a
+  # compromise of any one of them reaches for no gain.
+  # Transport Layer Security for the two ports each service serves, off here and on in
+  # deploy/k8s/30-configmap.yaml. This stack runs every service on one Docker bridge on
+  # one machine and publishes each port on the loopback address alone. A cluster pod
+  # network is a shared path, and this one is not.
+  #
+  # The four values are passed through rather than left out, so that setting them in
+  # .env reaches the service. Switching the first to true without naming a keystore
+  # stops start-up with the empty keystore named. No keystore is bind-mounted here,
+  # because this repository publishes no private key.
+  SERVER_SSL_ENABLED: ${SERVER_SSL_ENABLED:-false}
+  SERVER_SSL_KEYSTORE: ${SERVER_SSL_KEYSTORE:-}
+  SERVER_SSL_KEYSTORE_TYPE: ${SERVER_SSL_KEYSTORE_TYPE:-PKCS12}
+  SERVER_SSL_KEYSTORE_PASSWORD: ${SERVER_SSL_KEYSTORE_PASSWORD:-}
+  MANAGEMENT_SSL_ENABLED: ${MANAGEMENT_SSL_ENABLED:-false}
+  LOGGING_LEVEL_ROOT: ${LOG_LEVEL:-INFO}
+  # INFO by default. A DEBUG default retains identifiers in centralized logs.
+  LOGGING_LEVEL_COM_CARDDEMO: ${LOG_LEVEL_CARDDEMO:-INFO}
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: ${MANAGEMENT_ENDPOINTS:-health,metrics,prometheus}
+  # Keeps the readiness and liveness health groups available on the management port.
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: ${MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED:-true}
+  # Request-surface controls, shared because the policy is the same in all six services.
+  #
+  # API_CROSS_SITE_HEADER names the header a state-changing request has to carry.
+  # config/CrossSiteRequestFilter also refuses a foreign Sec-Fetch-Site or Origin, so a
+  # browser replaying a cached HTTP Basic credential from a page a cardholder was reading
+  # reaches no handler. Every curl example in the README files sets this header.
+  #
+  # The five ceilings below are counted over one fixed window by
+  # config/RequestRateCeilingFilter, which runs ahead of the security chain so a refusal
+  # costs less than the bcrypt verification it refuses. The request ceiling is applied per
+  # source address and per identity, the write ceiling covers POST, PUT, PATCH and DELETE,
+  # and the failure ceiling refuses a source that keeps presenting a credential 401 answers.
+  API_CROSS_SITE_HEADER: ${API_CROSS_SITE_HEADER:-X-CardDemo-Request}
+  API_RATE_WINDOW_SECONDS: ${API_RATE_WINDOW_SECONDS:-60}
+  API_RATE_REQUESTS_PER_WINDOW: ${API_RATE_REQUESTS_PER_WINDOW:-600}
+  API_RATE_WRITE_REQUESTS_PER_WINDOW: ${API_RATE_WRITE_REQUESTS_PER_WINDOW:-120}
+  API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW: ${API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW:-20}
+  API_RATE_CONCURRENT_REQUESTS: ${API_RATE_CONCURRENT_REQUESTS:-64}
+  # Request identities. Every service refuses an unauthenticated request, and each
+  # one maps the entries below onto Spring Security users. A username is not a
+  # credential and carries a fallback; a password hash carries none, so an unset
+  # variable stops the stack rather than admitting a password this repository
+  # publishes. .env.example documents each one and how to generate a hash.
+  #
+  # Three identities are shared, and the acquirer is not among them. ACQUIRER is read by
+  # the authorization service alone, so its username and its verifier are bound in that
+  # service's own environment block rather than here. A hash reaching a service that never
+  # verifies a password against it is a bcrypt digest an attacker who reaches any one
+  # container can take away and grind offline, for the one identity that authorizes every
+  # card the platform holds.
+  ADMIN_USERNAME: ${ADMIN_USERNAME:-admin001}
+  USER_USERNAME: ${USER_USERNAME:-user0001}
+  MONITORING_USERNAME: ${MONITORING_USERNAME:-monitor01}
+  USER_SCOPES: ${USER_SCOPES:-}
+  ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?ADMIN_PASSWORD_HASH must be set; copy .env.example to .env and generate a hash}
+  USER_PASSWORD_HASH: ${USER_PASSWORD_HASH:?USER_PASSWORD_HASH must be set; copy .env.example to .env and generate a hash}
+  MONITORING_PASSWORD_HASH: ${MONITORING_PASSWORD_HASH:?MONITORING_PASSWORD_HASH must be set; copy .env.example to .env and generate a hash}
+
+services:
+
+  # PostgreSQL. One instance, six private databases, one per service.
+  postgres:
+    # Digest-pinned so a rebuilt tag cannot change the image under the stack.
+    image: postgres:18.4@sha256:3a82e1f56c8f0f5616a11103ac3d47e632c3938698946a7ad26da0df1334744a
+    container_name: card-platform${CLONE_INDEX:-}-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-carddemo}
+      POSTGRES_USER: ${POSTGRES_USER:-carddemo}
+      # No fallback: an unset password stops the stack rather than creating the
+      # superuser with a password this repository publishes.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set; copy .env.example to .env}
+      # The image writes `trust` for local and loopback connections by default. Any
+      # process that reaches the inside of this container would then authenticate as any
+      # role without a password, and the six separate logins below would stop being
+      # separate. Asking initdb for scram-sha-256 on both families means a password is
+      # required from every direction. The provisioning script already exports
+      # PGPASSWORD, and the healthcheck runs pg_isready, which authenticates nothing.
+      POSTGRES_INITDB_ARGS: --auth-local=scram-sha-256 --auth-host=scram-sha-256
+      # Names the six databases the provisioning program creates. It checks every
+      # name against a strict identifier pattern before it runs a statement.
+      SERVICE_DATABASE_NAMES: >-
+        ${AUTHORIZATION_DB_NAME:-carddemo_authorization}
+        ${LEDGER_DB_NAME:-carddemo_ledger}
+        ${FRAUD_DB_NAME:-carddemo_fraud}
+        ${NOTIFICATION_DB_NAME:-carddemo_notification}
+        ${ACCOUNT_DB_NAME:-carddemo_account}
+        ${CARD_DB_NAME:-carddemo_card}
+      # One login per database, in the same order. The program pairs the two lists by
+      # position and refuses to run when their lengths differ, so a service can never
+      # end up sharing another service's login by accident.
+      SERVICE_DATABASE_OWNERS: >-
+        ${AUTHORIZATION_DB_USER:-carddemo_authorization_svc}
+        ${LEDGER_DB_USER:-carddemo_ledger_svc}
+        ${FRAUD_DB_USER:-carddemo_fraud_svc}
+        ${NOTIFICATION_DB_USER:-carddemo_notification_svc}
+        ${ACCOUNT_DB_USER:-carddemo_account_svc}
+        ${CARD_DB_USER:-carddemo_card_svc}
+      # Each login's password, again in the same order, and each one mandatory. A shared
+      # password would defeat the separation the roles exist to create, so no fallback is
+      # offered for any of the six.
+      AUTHORIZATION_DB_PASSWORD: ${AUTHORIZATION_DB_PASSWORD:?AUTHORIZATION_DB_PASSWORD must be set; copy .env.example to .env}
+      LEDGER_DB_PASSWORD: ${LEDGER_DB_PASSWORD:?LEDGER_DB_PASSWORD must be set; copy .env.example to .env}
+      FRAUD_DB_PASSWORD: ${FRAUD_DB_PASSWORD:?FRAUD_DB_PASSWORD must be set; copy .env.example to .env}
+      NOTIFICATION_DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD:?NOTIFICATION_DB_PASSWORD must be set; copy .env.example to .env}
+      ACCOUNT_DB_PASSWORD: ${ACCOUNT_DB_PASSWORD:?ACCOUNT_DB_PASSWORD must be set; copy .env.example to .env}
+      CARD_DB_PASSWORD: ${CARD_DB_PASSWORD:?CARD_DB_PASSWORD must be set; copy .env.example to .env}
+      SERVICE_DATABASE_PASSWORD_VARS: >-
+        AUTHORIZATION_DB_PASSWORD
+        LEDGER_DB_PASSWORD
+        FRAUD_DB_PASSWORD
+        NOTIFICATION_DB_PASSWORD
+        ACCOUNT_DB_PASSWORD
+        CARD_DB_PASSWORD
+    ports:
+      # Bound to the loopback address, so only this machine reaches the database.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    # The program that creates the six databases. Flyway then creates and migrates
+    # one schema inside each. No schema object is defined here.
+    configs:
+      - source: service_databases
+        target: /usr/local/bin/provision-databases.sh
+        mode: 0555
+    # The database entry point runs a program in /docker-entrypoint-initdb.d once,
+    # on an empty data directory, and skips it on every later start. A name
+    # refused on the first start would therefore leave databases missing with no
+    # way to add them but discarding the volume. This wrapper runs the program on
+    # every start instead, and the program creates only what is absent.
+    #
+    # The program waits for the server to answer on 127.0.0.1. It never waits for
+    # the container health state, because the healthcheck below waits for the
+    # program: each would then wait for the other.
+    command:
+      - /bin/bash
+      - -c
+      - |
+        # Transport encryption. Every service connects with sslmode=require, so the
+        # server has to present a certificate. No certificate authority exists on a
+        # laptop, so the server generates one for itself on first start and keeps it in
+        # the data volume. That encrypts the connection without authenticating the
+        # server, which is why the services ask for require rather than verify-full
+        # here. deploy/k8s/30-configmap.yaml asks for verify-full, because a cluster
+        # has an authority.
+        ssl_dir=/var/lib/postgresql/tls
+        if [ ! -s "$$ssl_dir/server.key" ]; then
+          mkdir -p "$$ssl_dir"
+          openssl req -new -x509 -days 365 -nodes -text \
+            -subj "/CN=$${POSTGRES_TLS_COMMON_NAME:-postgres}" \
+            -out "$$ssl_dir/server.crt" -keyout "$$ssl_dir/server.key" >/dev/null 2>&1
+        fi
+        chown postgres:postgres "$$ssl_dir/server.crt" "$$ssl_dir/server.key"
+        # The server refuses to start on a key any other account can read.
+        chmod 0600 "$$ssl_dir/server.key"
+        chmod 0644 "$$ssl_dir/server.crt"
+
+        /usr/local/bin/provision-databases.sh &
+        exec docker-entrypoint.sh postgres \
+          -c ssl=on \
+          -c ssl_cert_file="$$ssl_dir/server.crt" \
+          -c ssl_key_file="$$ssl_dir/server.key"
+    # A PostgreSQL 18 image keeps its data under /var/lib/postgresql/18, so the
+    # mount point sits one level above that and covers every version directory.
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    # Healthy means two things: the server answers, and every service database
+    # exists. A refused name leaves the file unwritten, so a partial set cannot
+    # report healthy and depends_on holds every service back until the set is
+    # complete.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready -U ${POSTGRES_USER:-carddemo} -d ${POSTGRES_DB:-carddemo}
+          && test -f /tmp/service-databases-ready
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks:
+      - carddemo
+    restart: unless-stopped
+
+  # Apache Kafka. One node runs as broker and controller in Kafka Raft (KRaft)
+  # mode. Three listeners: services reach kafka:29092, host tooling reaches
+  # localhost:${KAFKA_PORT:-9092}, and KRaft talks to itself on 9093.
+  #
+  # Both client listeners require SASL, and the authorizer refuses every operation no
+  # access control entry allows. Seven identities exist: one administrator, which is the
+  # only super user and the only identity that creates a topic or an entry, and one per
+  # service. A service holds exactly the entries its own configuration needs. A
+  # compromised service therefore reads no stream it does not consume, publishes onto no
+  # topic it does not own, and joins no other service's group. The matrix the script
+  # below installs is the shipped configuration of the six services, read topic by topic
+  # and group by group.
+  kafka:
+    # Digest-pinned so a rebuilt tag cannot change the image under the stack.
+    image: apache/kafka:4.2.1@sha256:9916d60eca5d599550e2c320230808fda342124ba550bb4ac4ea8591803262a0
+    container_name: card-platform${CLONE_INDEX:-}-kafka
+    environment:
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-cardDemoPlatformKRaft1}
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      # All three listeners require SASL. CONTROLLER binds the loopback address alone,
+      # so the Raft quorum answers inside this container and nowhere else. The voter
+      # line above names localhost, which resolves there.
+      #
+      # The controller listener authenticates as the administrator. Left as PLAINTEXT it
+      # identifies its caller as User:ANONYMOUS, and ANONYMOUS holds no CLUSTER_ACTION
+      # once an authorizer is installed. The broker could then not register with its own
+      # controller, and the node would never start.
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:SASL_PLAINTEXT,INTERNAL:SASL_PLAINTEXT,EXTERNAL:SASL_PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://127.0.0.1:9093
+      KAFKA_SASL_MECHANISM_CONTROLLER_PROTOCOL: PLAIN
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:${KAFKA_PORT:-9092}
+      # SASL/PLAIN, the one mechanism this broker offers. PLAIN carries a username and
+      # a password and nothing else. A listener that uses it is therefore either
+      # loopback-bound as here, or wrapped in Transport Layer Security as in the cluster
+      # manifests. The broker authenticates to itself over INTERNAL as the administrator.
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
+      # The authorizer. StandardAuthorizer is the KRaft implementation: it stores its
+      # entries in the metadata log rather than in ZooKeeper, which this deployment does
+      # not run. With no entry matching a request the answer is a refusal, and the two
+      # settings below are what make that true rather than assumed.
+      KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
+      # The one super user. It answers for the broker's own inter-broker traffic, for
+      # the topic and entry program below and for the healthcheck. No service holds it.
+      KAFKA_SUPER_USERS: User:${KAFKA_ADMIN_USER:-carddemo-kafka-admin}
+      # Accepted credentials for both client listeners, one entry per identity. A
+      # username is not a credential and carries a fallback; a password carries none, so
+      # an unset variable stops the stack rather than admitting a password this
+      # repository publishes. The username and password pair at the head of each value is
+      # what the broker presents as a client of itself.
+      KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG: &kafka-jaas-config >-
+        org.apache.kafka.common.security.plain.PlainLoginModule required
+        username="${KAFKA_ADMIN_USER:-carddemo-kafka-admin}"
+        password="${KAFKA_ADMIN_PASSWORD:?KAFKA_ADMIN_PASSWORD must be set; copy .env.example to .env and give the broker administrator its own password}"
+        user_${KAFKA_ADMIN_USER:-carddemo-kafka-admin}="${KAFKA_ADMIN_PASSWORD:?KAFKA_ADMIN_PASSWORD must be set; copy .env.example to .env and give the broker administrator its own password}"
+        user_${AUTHORIZATION_KAFKA_USER:-carddemo-authorization}="${AUTHORIZATION_KAFKA_PASSWORD:?see .env.example}"
+        user_${LEDGER_KAFKA_USER:-carddemo-ledger}="${LEDGER_KAFKA_PASSWORD:?see .env.example}"
+        user_${FRAUD_KAFKA_USER:-carddemo-fraud}="${FRAUD_KAFKA_PASSWORD:?see .env.example}"
+        user_${NOTIFICATION_KAFKA_USER:-carddemo-notification}="${NOTIFICATION_KAFKA_PASSWORD:?see .env.example}"
+        user_${ACCOUNT_KAFKA_USER:-carddemo-account}="${ACCOUNT_KAFKA_PASSWORD:?see .env.example}"
+        user_${CARD_KAFKA_USER:-carddemo-card}="${CARD_KAFKA_PASSWORD:?see .env.example}";
+      # The same seven credentials on the host-facing listener. One value, declared once
+      # above and referenced here, so the two client listeners cannot drift apart.
+      KAFKA_LISTENER_NAME_EXTERNAL_PLAIN_SASL_JAAS_CONFIG: *kafka-jaas-config
+      # The controller listener accepts ONE identity, the administrator, and none of the
+      # six service identities. Nothing but this node reaches the address it binds, and a
+      # separate value here means a service credential is not even accepted there.
+      KAFKA_LISTENER_NAME_CONTROLLER_PLAIN_SASL_JAAS_CONFIG: >-
+        org.apache.kafka.common.security.plain.PlainLoginModule required
+        username="${KAFKA_ADMIN_USER:-carddemo-kafka-admin}"
+        password="${KAFKA_ADMIN_PASSWORD:?KAFKA_ADMIN_PASSWORD must be set; copy .env.example to .env and give the broker administrator its own password}"
+        user_${KAFKA_ADMIN_USER:-carddemo-kafka-admin}="${KAFKA_ADMIN_PASSWORD:?KAFKA_ADMIN_PASSWORD must be set; copy .env.example to .env and give the broker administrator its own password}";
+      # The administrator identity, read by the program below to build its client
+      # properties file. Both values are already required above.
+      KAFKA_ADMIN_USER: ${KAFKA_ADMIN_USER:-carddemo-kafka-admin}
+      KAFKA_ADMIN_PASSWORD: ${KAFKA_ADMIN_PASSWORD:?KAFKA_ADMIN_PASSWORD must be set; copy .env.example to .env and give the broker administrator its own password}
+      # The six service identities the program grants entries to. Usernames only: the
+      # program installs entries for a principal and never authenticates as one.
+      AUTHORIZATION_KAFKA_USER: ${AUTHORIZATION_KAFKA_USER:-carddemo-authorization}
+      LEDGER_KAFKA_USER: ${LEDGER_KAFKA_USER:-carddemo-ledger}
+      FRAUD_KAFKA_USER: ${FRAUD_KAFKA_USER:-carddemo-fraud}
+      NOTIFICATION_KAFKA_USER: ${NOTIFICATION_KAFKA_USER:-carddemo-notification}
+      ACCOUNT_KAFKA_USER: ${ACCOUNT_KAFKA_USER:-carddemo-account}
+      CARD_KAFKA_USER: ${CARD_KAFKA_USER:-carddemo-card}
+      # Consumer groups the entries name, one for each of the eleven listeners. A group is not
+      # a credential.
+      # Every name below appears in a grant_consumer call further down: a name here that no
+      # call uses would install no entry, and a call naming a group that is not here would
+      # install an entry for an empty name. The authorization service's framework-level default
+      # group is absent for exactly that reason — no listener joins it, so no call grants it.
+      GROUP_LEDGER_POSTING: ${GROUP_LEDGER_POSTING:-ledger-posting}
+      GROUP_FRAUD_DETECTION: ${GROUP_FRAUD_DETECTION:-fraud-detection}
+      GROUP_NOTIFICATION_AUTHORIZED: ${GROUP_NOTIFICATION_AUTHORIZED:-notification-authorized}
+      GROUP_NOTIFICATION_POSTED: ${GROUP_NOTIFICATION_POSTED:-notification-posted}
+      GROUP_NOTIFICATION_FRAUD: ${GROUP_NOTIFICATION_FRAUD:-notification-fraud}
+      GROUP_NOTIFICATION_CUSTOMER: ${GROUP_NOTIFICATION_CUSTOMER:-notification-customer}
+      GROUP_AUTHORIZATION_ACCOUNT: ${GROUP_AUTHORIZATION_ACCOUNT:-authorization-account-state}
+      GROUP_AUTHORIZATION_CARD: ${GROUP_AUTHORIZATION_CARD:-authorization-card-updated}
+      GROUP_LEDGER_ACCOUNT: ${GROUP_LEDGER_ACCOUNT:-ledger-account-state}
+      GROUP_LEDGER_REJECT: ${GROUP_LEDGER_REJECT:-ledger-reject}
+      GROUP_ACCOUNT_POSTED: ${GROUP_ACCOUNT_POSTED:-account-posted}
+      # One node holds one copy of every partition.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
+      KAFKA_DEFAULT_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
+      KAFKA_NUM_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-3}
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Finite broker retention keeps event and dead-letter streams bounded in the
+      # demo. A production deployment may choose a different legal and operational
+      # policy through the matching environment variable.
+      KAFKA_LOG_RETENTION_HOURS: ${KAFKA_LOG_RETENTION_HOURS:-168}
+      # The broker creates no topic on demand. The command below creates the fourteen
+      # topics this platform uses. A mistyped name then fails loudly instead of
+      # quietly opening a new stream on an unauthenticated broker.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # The broker's half of the wire ceiling ladder, aligned to the governed event envelope:
+      # 8192 bytes is the value ceiling libs/event-contracts refuses above, 16384 is the
+      # producer's max.request.size, and this is 32768 so a producer request always fits with
+      # room for compression and batch overhead. A record above it is refused at the broker
+      # rather than accepted onto a partition, which is the bound this line exists for.
+      KAFKA_MESSAGE_MAX_BYTES: 32768
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # Every topic name travels as an environment value, so the program below
+      # reads each one as data. None becomes part of the program text.
+      TOPIC_TRANSACTION_AUTHORIZED: ${TOPIC_TRANSACTION_AUTHORIZED:-transaction.authorized}
+      TOPIC_TRANSACTION_DECLINED: ${TOPIC_TRANSACTION_DECLINED:-transaction.declined}
+      TOPIC_TRANSACTION_POSTED: ${TOPIC_TRANSACTION_POSTED:-transaction.posted}
+      TOPIC_FRAUD_ASSESSED: ${TOPIC_FRAUD_ASSESSED:-fraud.assessed}
+      TOPIC_ACCOUNT_STATE_CHANGED: ${TOPIC_ACCOUNT_STATE_CHANGED:-account.state-changed}
+      TOPIC_CUSTOMER_CONTEXT_CHANGED: ${TOPIC_CUSTOMER_CONTEXT_CHANGED:-customer.context-changed}
+      TOPIC_CARD_UPDATED: ${TOPIC_CARD_UPDATED:-card.updated}
+      # Fallback for a recovery record whose source topic is unavailable, plus the
+      # suffix used to create one dead-letter topic per consumed source topic.
+      TOPIC_DEAD_LETTER: ${TOPIC_DEAD_LETTER:-carddemo.dead-letter}
+      TOPIC_DEAD_LETTER_SUFFIX: ${TOPIC_DEAD_LETTER_SUFFIX:-.DLT}
+      TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-3}
+      TOPIC_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
+    # This container also creates topics. It waits for the broker, then creates
+    # the seven event topics, one dead-letter topic per consumed source topic, and
+    # the shared fallback used only when a recovery record has no source topic.
+    # Source-specific topics preserve one wire shape per stream.
+    #
+    # These fourteen names are the platform's topic inventory: seven event topics, one
+    # dead-letter topic for each of the six consumed sources that routes to its own, and
+    # the shared fallback. card.updated needs none, because its only consumer routes a
+    # spent record to the shared fallback as a governed envelope instead. The same
+    # fourteen appear in deploy/k8s/10-kafka.yaml, and .env.example documents every one.
+    #
+    # The last act of the program is to write /tmp/kafka-topics-ready, and the
+    # healthcheck below reads that file. A refused name and a refused create both
+    # leave it unwritten, so this container never reports healthy with topics
+    # missing, and depends_on holds every listener back until they exist.
+    #
+    # Each name passes a gate before it reaches the broker. Apache Kafka admits
+    # only letters, digits, the period, the underscore and the hyphen in a topic
+    # name, up to 249 characters, and admits neither "." nor "..". The case
+    # statement admits exactly that set, so a name can carry no semicolon, no
+    # whitespace, no quote and no command substitution. Every expansion below is
+    # quoted, so a name reaching kafka-topics.sh stays one argument.
+    command:
+      - /bin/bash
+      - -c
+      - |
+        ADMIN_PROPERTIES=/tmp/kafka-admin.properties
+
+        # Client properties for the administrator identity, the only identity that
+        # creates a topic or an access control entry. The broker authenticates its own
+        # tooling now, so every call below names this file. umask 077 first, so the file
+        # carries the password readable by this account alone.
+        write_admin_properties() {
+          case "$${KAFKA_ADMIN_USER}" in
+            ''|*[!a-zA-Z0-9._-]*)
+              echo "KAFKA_ADMIN_USER is empty or carries a character outside a-z A-Z 0-9 . _ and -." >&2
+              return 1
+              ;;
+          esac
+          # A password carrying a quote or a backslash ends the option early, and a
+          # password carrying whitespace splits into two. Either value is refused here.
+          case "$${KAFKA_ADMIN_PASSWORD}" in
+            ''|*[\"\\]*|*[[:space:]]*)
+              echo "KAFKA_ADMIN_PASSWORD is empty, or carries a quote, a backslash or whitespace." >&2
+              return 1
+              ;;
+            *REPLACE*)
+              echo "KAFKA_ADMIN_PASSWORD still holds the placeholder .env.example publishes." >&2
+              return 1
+              ;;
+          esac
+          umask 077
+          {
+            printf 'security.protocol=SASL_PLAINTEXT\n'
+            printf 'sasl.mechanism=PLAIN\n'
+            printf 'sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="%s" password="%s";\n' \
+              "$${KAFKA_ADMIN_USER}" "$${KAFKA_ADMIN_PASSWORD}"
+          } > "$${ADMIN_PROPERTIES}"
+        }
+
+        # One gate for every name that reaches the broker as an argument: a topic, a
+        # consumer group or a principal. Apache Kafka admits letters, digits, the period,
+        # the underscore and the hyphen, up to 249 characters, and admits neither "." nor
+        # "..". A name passing this gate can carry no semicolon, no whitespace, no quote
+        # and no command substitution, and every expansion below is quoted, so a name
+        # stays one argument.
+        check_name() {
+          case "$${2}" in
+            ''|.|..)
+              echo "$${1} '$${2}' is empty or a name Apache Kafka reserves." >&2
+              return 1
+              ;;
+            *[!a-zA-Z0-9._-]*)
+              echo "$${1} '$${2}' carries a character outside a-z A-Z 0-9 . _ and -." >&2
+              return 1
+              ;;
+          esac
+          if [ "$${#2}" -gt 249 ]; then
+            echo "$${1} '$${2}' is longer than the 249 characters Apache Kafka admits." >&2
+            return 1
+          fi
+        }
+
+        create_topics() {
+          local topic
+          for topic in "$${TOPIC_TRANSACTION_AUTHORIZED}" \
+                       "$${TOPIC_TRANSACTION_DECLINED}" \
+                       "$${TOPIC_TRANSACTION_POSTED}" \
+                       "$${TOPIC_FRAUD_ASSESSED}" \
+                       "$${TOPIC_ACCOUNT_STATE_CHANGED}" \
+                       "$${TOPIC_CUSTOMER_CONTEXT_CHANGED}" \
+                       "$${TOPIC_CARD_UPDATED}" \
+                       "$${TOPIC_TRANSACTION_AUTHORIZED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
+                       "$${TOPIC_TRANSACTION_DECLINED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
+                       "$${TOPIC_ACCOUNT_STATE_CHANGED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
+                       "$${TOPIC_TRANSACTION_POSTED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
+                       "$${TOPIC_FRAUD_ASSESSED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
+                       "$${TOPIC_CUSTOMER_CONTEXT_CHANGED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
+                       "$${TOPIC_DEAD_LETTER}"; do
+            check_name "Topic name" "$${topic}" || return 1
+            /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
+              --command-config "$${ADMIN_PROPERTIES}" \
+              --create --if-not-exists --topic "$${topic}" \
+              --partitions "$${TOPIC_PARTITIONS}" \
+              --replication-factor "$${TOPIC_REPLICATION_FACTOR}" || return 1
+          done
+        }
+
+        # WRITE and DESCRIBE on one topic for one principal, and nothing else. An
+        # identity holding this entry can publish onto that topic and cannot read it.
+        grant_producer() {
+          check_name "Principal" "$${1}" || return 1
+          check_name "Topic name" "$${2}" || return 1
+          /opt/kafka/bin/kafka-acls.sh --bootstrap-server kafka:29092 \
+            --command-config "$${ADMIN_PROPERTIES}" \
+            --add --allow-principal "User:$${1}" --producer --topic "$${2}" >/dev/null || return 1
+        }
+
+        # READ and DESCRIBE on one topic, plus READ on one consumer group, for one
+        # principal. The group matters as much as the topic: two services sharing a group
+        # would split the partitions between them and each would see half the events.
+        grant_consumer() {
+          check_name "Principal" "$${1}" || return 1
+          check_name "Topic name" "$${2}" || return 1
+          check_name "Consumer group" "$${3}" || return 1
+          /opt/kafka/bin/kafka-acls.sh --bootstrap-server kafka:29092 \
+            --command-config "$${ADMIN_PROPERTIES}" \
+            --add --allow-principal "User:$${1}" --consumer \
+            --topic "$${2}" --group "$${3}" >/dev/null || return 1
+        }
+
+        # The authorization matrix, read from the shipped configuration of the six
+        # services. One authorization call publishes one event; the three consumers of
+        # that event each read it under their own group, and no service holds an entry
+        # naming another consumer's group or another producer's topic.
+        create_acls() {
+          # Authorization service: publishes both decision events, and consumes the two
+          # state-change streams that keep its replicas current. card_xref and
+          # account_credit_snapshot are copies of data the card and account services own, and
+          # every decline rule reads them, so without these two consumer entries the replicas
+          # stop being fed and the service refuses traffic once its freshness window passes.
+          # It also routes a record it can never apply to the dead-letter topic.
+          grant_producer "$${AUTHORIZATION_KAFKA_USER}" "$${TOPIC_TRANSACTION_AUTHORIZED}" || return 1
+          grant_producer "$${AUTHORIZATION_KAFKA_USER}" "$${TOPIC_TRANSACTION_DECLINED}" || return 1
+          grant_consumer "$${AUTHORIZATION_KAFKA_USER}" "$${TOPIC_ACCOUNT_STATE_CHANGED}" \
+            "$${GROUP_AUTHORIZATION_ACCOUNT}" || return 1
+          grant_consumer "$${AUTHORIZATION_KAFKA_USER}" "$${TOPIC_CARD_UPDATED}" \
+            "$${GROUP_AUTHORIZATION_CARD}" || return 1
+          grant_producer "$${AUTHORIZATION_KAFKA_USER}" "$${TOPIC_DEAD_LETTER}" || return 1
+
+          # Ledger posting: consumes the authorization event, consumes the decline the same
+          # service published so the 430-byte reject row of app/cbl/CBTRN02C.cbl:L446-L465 is
+          # written in production, consumes the account state-change stream that keeps
+          # account_balance_projection current, publishes the posted outcome, and routes a
+          # record it cannot process to that source topic's dead-letter topic. Without the
+          # third consumer entry an account opened after deployment never gets a projection
+          # row and every transaction on it is dead-lettered, and a closed billing cycle never
+          # zeroes the two accumulators here. This service holds NO producer entry on the
+          # declined topic: the authorization service is the sole writer of the decision.
+          grant_consumer "$${LEDGER_KAFKA_USER}" "$${TOPIC_TRANSACTION_AUTHORIZED}" \
+            "$${GROUP_LEDGER_POSTING}" || return 1
+          grant_consumer "$${LEDGER_KAFKA_USER}" "$${TOPIC_TRANSACTION_DECLINED}" \
+            "$${GROUP_LEDGER_REJECT}" || return 1
+          grant_consumer "$${LEDGER_KAFKA_USER}" "$${TOPIC_ACCOUNT_STATE_CHANGED}" \
+            "$${GROUP_LEDGER_ACCOUNT}" || return 1
+          grant_producer "$${LEDGER_KAFKA_USER}" \
+            "$${TOPIC_ACCOUNT_STATE_CHANGED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
+          grant_producer "$${LEDGER_KAFKA_USER}" "$${TOPIC_TRANSACTION_POSTED}" || return 1
+          grant_producer "$${LEDGER_KAFKA_USER}" \
+            "$${TOPIC_TRANSACTION_DECLINED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
+          grant_producer "$${LEDGER_KAFKA_USER}" \
+            "$${TOPIC_TRANSACTION_AUTHORIZED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
+          # The configured fallback remains available for a record whose source is absent.
+          grant_producer "$${LEDGER_KAFKA_USER}" "$${TOPIC_DEAD_LETTER}" || return 1
+
+          # Fraud detection: consumes the same event under its own group, publishes its
+          # assessment. It holds no entry on the posted event, which is the ledger's.
+          grant_consumer "$${FRAUD_KAFKA_USER}" "$${TOPIC_TRANSACTION_AUTHORIZED}" \
+            "$${GROUP_FRAUD_DETECTION}" || return 1
+          grant_producer "$${FRAUD_KAFKA_USER}" "$${TOPIC_FRAUD_ASSESSED}" || return 1
+          grant_producer "$${FRAUD_KAFKA_USER}" \
+            "$${TOPIC_TRANSACTION_AUTHORIZED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
+          grant_producer "$${FRAUD_KAFKA_USER}" "$${TOPIC_DEAD_LETTER}" || return 1
+
+          # Notification: four listeners, four groups of its own, and one dead-letter
+          # topic per consumed source. It publishes no business event of its own. Its
+          # shipped configuration names transaction.authorized, transaction.posted,
+          # fraud.assessed and customer.context-changed, and it holds exactly those four
+          # entries: an entry the configuration does not need is an entry a compromise
+          # can use.
+          #
+          # The entry on transaction.authorized makes this the third service that reads
+          # the authorization event directly, beside the ledger and the fraud detector,
+          # which is the fan-out AAP 0.1.1 and 0.8.3 require. Each of the three reads
+          # under a group of its own, so none consumes on behalf of another.
+          grant_consumer "$${NOTIFICATION_KAFKA_USER}" "$${TOPIC_TRANSACTION_AUTHORIZED}" \
+            "$${GROUP_NOTIFICATION_AUTHORIZED}" || return 1
+          grant_consumer "$${NOTIFICATION_KAFKA_USER}" "$${TOPIC_TRANSACTION_POSTED}" \
+            "$${GROUP_NOTIFICATION_POSTED}" || return 1
+          grant_consumer "$${NOTIFICATION_KAFKA_USER}" "$${TOPIC_FRAUD_ASSESSED}" \
+            "$${GROUP_NOTIFICATION_FRAUD}" || return 1
+          grant_consumer "$${NOTIFICATION_KAFKA_USER}" "$${TOPIC_CUSTOMER_CONTEXT_CHANGED}" \
+            "$${GROUP_NOTIFICATION_CUSTOMER}" || return 1
+          grant_producer "$${NOTIFICATION_KAFKA_USER}" \
+            "$${TOPIC_TRANSACTION_AUTHORIZED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
+          grant_producer "$${NOTIFICATION_KAFKA_USER}" \
+            "$${TOPIC_TRANSACTION_POSTED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
+          grant_producer "$${NOTIFICATION_KAFKA_USER}" \
+            "$${TOPIC_FRAUD_ASSESSED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
+          grant_producer "$${NOTIFICATION_KAFKA_USER}" \
+            "$${TOPIC_CUSTOMER_CONTEXT_CHANGED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
+          grant_producer "$${NOTIFICATION_KAFKA_USER}" "$${TOPIC_DEAD_LETTER}" || return 1
+
+          # Account: publishes its own state-change events when a state change occurs, and
+          # reads one stream. It publishes two topics: the account fields on one and the ten
+          # cardholder fields on the other.
+          #
+          # The consumer entry is what closes the cycle-accumulator chain. The ledger owns
+          # the posting arithmetic and the account service owns the account record, so the
+          # posted amount travels between them as transaction.posted. Without this entry the
+          # account record never moves, the state change that carries the two accumulators to
+          # the authorization replica is never published, and reason code 102 at
+          # app/cbl/CBTRN02C.cbl:L403-L413 tests one amount against the credit limit instead
+          # of the cycle exposure it is meant to test. The group is this service's own, so the
+          # notification service reading the same topic still receives every record.
+          #
+          # No entry on a source-specific dead-letter topic. This service routes both its
+          # terminal diagnostics — a spent outbox row and a delivery no attempt could apply —
+          # to the shared topic below as a governed DeadLetterEnvelope.
+          #
+          # Card: publishes its own state-change event and consumes nothing.
+          #
+          # Each also holds one entry on the shared dead-letter topic, and neither is
+          # optional. An outbox relay that exhausts its attempts on a row names that row
+          # there and nowhere else, so a service without this entry gives up on an event
+          # with no record of it leaving the container. Neither service holds a consumer
+          # entry on that topic: they write a diagnostic and never read one.
+          grant_producer "$${ACCOUNT_KAFKA_USER}" "$${TOPIC_ACCOUNT_STATE_CHANGED}" || return 1
+          grant_producer "$${ACCOUNT_KAFKA_USER}" "$${TOPIC_CUSTOMER_CONTEXT_CHANGED}" || return 1
+          grant_consumer "$${ACCOUNT_KAFKA_USER}" "$${TOPIC_TRANSACTION_POSTED}" \
+            "$${GROUP_ACCOUNT_POSTED}" || return 1
+          grant_producer "$${ACCOUNT_KAFKA_USER}" "$${TOPIC_DEAD_LETTER}" || return 1
+          grant_producer "$${CARD_KAFKA_USER}" "$${TOPIC_CARD_UPDATED}" || return 1
+          grant_producer "$${CARD_KAFKA_USER}" "$${TOPIC_DEAD_LETTER}" || return 1
+        }
+
+        # The marker the healthcheck reads is written last, after every topic exists and
+        # every entry is installed. A service that starts before then would join a
+        # consumer group it is not yet authorized for, so depends_on holds all six back
+        # until this program finishes.
+        provision() {
+          write_admin_properties || return 1
+          until /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
+                  --command-config "$${ADMIN_PROPERTIES}" --list >/dev/null 2>&1; do
+            sleep 2
+          done
+          create_topics || return 1
+          create_acls || return 1
+          : > /tmp/kafka-topics-ready
+        }
+        provision &
+        exec /etc/kafka/docker/run
+    ports:
+      # Bound to the loopback address. The listener behind it requires a SASL identity,
+      # and binding the loopback address means only this machine can present one.
+      - "127.0.0.1:${KAFKA_PORT:-9092}:9092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    # Healthy means two things: the topic program finished, and the broker still
+    # answers. The file test comes first, so no Java virtual machine starts while
+    # the broker is still coming up.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -f /tmp/kafka-topics-ready
+          && /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092
+          --command-config /tmp/kafka-admin.properties --list >/dev/null 2>&1
+      interval: 10s
+      timeout: 15s
+      retries: 30
+      start_period: 45s
+    networks:
+      - carddemo
+    restart: unless-stopped
+
+  # Authorization service container. Built from
+  # services/authorization-service/Dockerfile and configured with its own
+  # database, schema, event topic names and outbox relay settings. The
+  # synchronous endpoint, two replica listeners and relay all read this
+  # configuration.
+  authorization-service:
+    # The tag this image carries once built. One tag serves the three places that name
+    # it: .github/workflows/ci.yml builds it, this file runs it, and deploy/k8s names it
+    # with imagePullPolicy Never. The version is the Maven project version, so an image
+    # built from another version is never mistaken for this one. Compose builds the image
+    # from the context below when the tag is absent locally, and no registry holds it.
+    image: carddemo/authorization-service:1.0.0-SNAPSHOT
+    build:
+      # This directory, because the builder stage of the Dockerfile compiles the module
+      # from source and needs the aggregator descriptor and both shared libraries in
+      # reach. services/authorization-service/Dockerfile.dockerignore reduces what is sent
+      # to exactly that, and no host archive is used or required.
+      context: .
+      dockerfile: services/authorization-service/Dockerfile
+    container_name: card-platform${CLONE_INDEX:-}-authorization-service
+    environment:
+      <<: *service-environment
+      # sslmode=require encrypts this connection. The compose server presents a
+      # certificate it generated for itself, so there is no authority to verify it
+      # against and verify-full would refuse it. deploy/k8s/30-configmap.yaml uses
+      # verify-full, because a cluster has a certificate authority and a network path
+      # worth protecting; here the whole path is one Docker bridge on one machine.
+      # The acquirer identity, delivered to this service and to no other. It is the one
+      # role besides ADMIN that reaches POST /authorizations, no cardholder identity holds
+      # it, and services/authorization-service/src/main/resources/application.yml is the
+      # only file on the platform that reads either value. Keeping the verifier out of the
+      # shared block above is deliberate: a service that never checks a password against
+      # this hash has no use for it and every reason not to hold it.
+      ACQUIRER_USERNAME: ${ACQUIRER_USERNAME:-acquirer1}
+      ACQUIRER_PASSWORD_HASH: ${ACQUIRER_PASSWORD_HASH:?ACQUIRER_PASSWORD_HASH must be set; copy .env.example to .env and generate a hash}
+      # The card-token key, delivered to this service and to card-service alone. A card
+      # token is an HmacSHA256 code over the card number under this key, and the key is
+      # what stops a holder of one token recomputing tokens across the sixteen-digit
+      # card-number space. There is no default and no fallback: com.carddemo.cobol.PanMasker
+      # refuses to derive without a key, and this service refuses to start without one.
+      # Generate a value into .env before the first run; .env.example carries the command.
+      CARD_TOKEN_SECRET: ${CARD_TOKEN_SECRET:?CARD_TOKEN_SECRET must be set; copy .env.example to .env and generate a card-token key of at least 32 characters}
+      # Not key material. The version is part of the message the code covers, so raising it
+      # rolls every token over under the same key.
+      CARD_TOKEN_VERSION: ${CARD_TOKEN_VERSION:-1}
+      AUTHORIZATION_DB_NAME: ${AUTHORIZATION_DB_NAME:-carddemo_authorization}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${AUTHORIZATION_DB_NAME:-carddemo_authorization}?currentSchema=${AUTHORIZATION_DB_SCHEMA:-authorization_service}&sslmode=require
+      # This service's own login. It owns carddemo_authorization and can connect to no other database:
+      # the provisioning program revokes CONNECT from PUBLIC on every one of the six.
+      SPRING_DATASOURCE_USERNAME: ${AUTHORIZATION_DB_USER:-carddemo_authorization_svc}
+      SPRING_DATASOURCE_PASSWORD: ${AUTHORIZATION_DB_PASSWORD:?AUTHORIZATION_DB_PASSWORD must be set; copy .env.example to .env and give this service its own password}
+      SPRING_FLYWAY_SCHEMAS: ${AUTHORIZATION_DB_SCHEMA:-authorization_service}
+      SPRING_FLYWAY_DEFAULT_SCHEMA: ${AUTHORIZATION_DB_SCHEMA:-authorization_service}
+      SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${AUTHORIZATION_DB_SCHEMA:-authorization_service}
+      # Two Flyway locations. db/migration carries the schema and the seed taken from
+      # app/data/ASCII/acctdata.txt, whose 50 expiries run from 2023-01-06 to 2025-12-28.
+      # Reason code 103 at app/cbl/CBTRN02C.cbl:L414-L420 declines an origin timestamp
+      # later than the expiry it is compared against, so any date after 2025-12-28 is
+      # later than all 50. db/demo extends those expiries to 2099-12-31 and
+      # touches nothing else. Drop the second location for a run compared against the
+      # fixture.
+      SPRING_FLYWAY_LOCATIONS: ${AUTHORIZATION_FLYWAY_LOCATIONS:-classpath:db/migration,classpath:db/demo}
+      # This service's own broker identity. The entries the broker installs for it
+      # cover exactly what its configuration needs: it publishes authorization decisions,
+      # consumes the two replica-update streams, and dead-letters a record it cannot apply.
+      # An entry naming another service's topic or group is absent, so a compromise here
+      # reaches neither. A username is not a credential and carries a fallback; the
+      # password carries none.
+      KAFKA_SASL_USERNAME: ${AUTHORIZATION_KAFKA_USER:-carddemo-authorization}
+      KAFKA_SASL_PASSWORD: ${AUTHORIZATION_KAFKA_PASSWORD:?AUTHORIZATION_KAFKA_PASSWORD must be set; copy .env.example to .env and give this service its own broker password}
+      TOPIC_TRANSACTION_AUTHORIZED: ${TOPIC_TRANSACTION_AUTHORIZED:-transaction.authorized}
+      TOPIC_TRANSACTION_DECLINED: ${TOPIC_TRANSACTION_DECLINED:-transaction.declined}
+      TOPIC_ACCOUNT_STATE_CHANGED: ${TOPIC_ACCOUNT_STATE_CHANGED:-account.state-changed}
+      TOPIC_CARD_UPDATED: ${TOPIC_CARD_UPDATED:-card.updated}
+      TOPIC_DEAD_LETTER: ${TOPIC_DEAD_LETTER:-carddemo.dead-letter}
+      CONSUMER_MAX_RETRY_ATTEMPTS: ${CONSUMER_MAX_RETRY_ATTEMPTS:-3}
+      CONSUMER_RETRY_BACKOFF_MS: ${CONSUMER_RETRY_BACKOFF_MS:-1000}
+      OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
+      OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
+      OUTBOX_RELAY_CLAIM_TIMEOUT: ${OUTBOX_RELAY_CLAIM_TIMEOUT:-PT2M}
+      # Longest one send waits for the broker before messaging/KafkaEventPublisher fails the
+      # stage it returned. The row then stays unpublished and the next sweep claims it again, so
+      # a slow broker delays an event and never loses one. Wider than the producer window of one
+      # send and narrower than the sweep deadline below.
+      OUTBOX_RELAY_PUBLISH_TIMEOUT: ${OUTBOX_RELAY_PUBLISH_TIMEOUT:-PT10S}
+      # Milliseconds one relay pass may spend waiting for broker acknowledgements. Read once
+      # per pass as a monotonic deadline, so a slow broker costs one pass and not an unbounded
+      # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
+      OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
+      OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
+      RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
+      # Days a row of authorization_decision remains. It is the attribution record of a
+      # financial decision rather than a message in flight, so it outlives the outbox row that
+      # carried the event. Only this service reads it. It governed unresolved_card_attempt too
+      # until migration V20 withdrew that table.
+      DECISION_RETENTION_DAYS: ${DECISION_RETENTION_DAYS:-365}
+      # Bytes the largest legitimate request body occupies. config/RequestBodyCeilingFilter
+      # refuses a request declaring more, and config/JsonReadCeilingConfig bounds the parser for
+      # one declaring no length at all. Only the three services that accept a request body
+      # install that filter, so this is a per-service key and not part of the shared block.
+      API_MAX_REQUEST_BODY_BYTES: ${API_MAX_REQUEST_BODY_BYTES:-65536}
+      # This service calls no other service. It resolves a card and reads the credit limit,
+      # both cycle counters and the expiry date from card_xref and account_credit_snapshot
+      # in its own schema, and two listeners keep those two tables current from
+      # account.state-changed and card.updated.
+      #
+      # When those two tables may be authorized against, asked of the streams and never of the
+      # age of a row. Both producers publish on a state change and on nothing else, so a card
+      # nobody edits is a correct copy whose last observation recedes for ever; the bound this
+      # setting replaces refused every such card a day after the seed load. Records a replica
+      # stream may have waiting instead, with zero requiring a consumer that is fully caught up.
+      REPLICA_LAG_CEILING: ${REPLICA_LAG_CEILING:-0}
+      # An approval reserves its own amount on its account_credit_snapshot row in the same
+      # transaction as the decision, because the account service reports the authoritative
+      # accumulators back only after the posting path has run. The batch program had no such
+      # gap: app/cbl/CBTRN02C.cbl rewrites the account at :L545-L560 before it reads the next
+      # record. Only this service reads these two values.
+      #
+      # Milliseconds a decision waits for the account row another decision holds before the
+      # lock is refused and the call answers 503.
+      DECISION_LOCK_WAIT_MS: ${DECISION_LOCK_WAIT_MS:-3000}
+      # How long a reservation holds its exposure before the next decision treats it as
+      # drained. The authoritative state-change event releases it sooner; this covers the
+      # approval whose event is dead-lettered and never arrives.
+      DECISION_RESERVATION_TTL: ${DECISION_RESERVATION_TTL:-PT15M}
+      # The consumer groups the two replica listeners run under, one per stream.
+      GROUP_AUTHORIZATION_ACCOUNT: ${GROUP_AUTHORIZATION_ACCOUNT:-authorization-account-state}
+      GROUP_AUTHORIZATION_CARD: ${GROUP_AUTHORIZATION_CARD:-authorization-card-updated}
+    ports:
+      # Both mappings bind the loopback address. The service port carries the
+      # Representational State Transfer (REST) surface; the management port
+      # carries /actuator and reaches no further than this machine.
+      - "127.0.0.1:${AUTHORIZATION_PORT:-8081}:8080"
+      - "127.0.0.1:${AUTHORIZATION_MANAGEMENT_PORT:-9081}:${MANAGEMENT_PORT:-9080}"
+    # Read-only root filesystem. The image writes nothing under / after start. /app holds
+    # the extracted application layers and nothing else. The Java virtual machine and the
+    # embedded servlet container write their work directories to /tmp, which the
+    # Dockerfile pins with TMPDIR and -Djava.io.tmpdir. The one writable path is the
+    # in-memory mount below. It is capped at 64 megabytes of memory, and mounted noexec
+    # and nosuid. deploy/k8s sets readOnlyRootFilesystem with an emptyDir of the same
+    # size.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    # Readiness checks the broker used by this service's relay and replica listeners.
+    depends_on: *database-and-broker
+    healthcheck: *actuator-healthcheck
+    networks:
+      - carddemo
+    restart: unless-stopped
+
+  # Ledger posting service container. Configured to read transaction.authorized
+  # under the ledger-posting group, to read account.state-changed under the
+  # ledger-account-state group, and to write transaction.posted. The posting
+  # arithmetic, the balance query and the outbox relay are active; the listener
+  # invokes the posting arithmetic for every newly claimed authorization event.
+  ledger-posting-service:
+    # The tag this image carries once built. One tag serves the three places that name
+    # it: .github/workflows/ci.yml builds it, this file runs it, and deploy/k8s names it
+    # with imagePullPolicy Never. The version is the Maven project version, so an image
+    # built from another version is never mistaken for this one. Compose builds the image
+    # from the context below when the tag is absent locally, and no registry holds it.
+    image: carddemo/ledger-posting-service:1.0.0-SNAPSHOT
+    build:
+      # This directory, because the builder stage of the Dockerfile compiles the module
+      # from source and needs the aggregator descriptor and both shared libraries in
+      # reach. services/ledger-posting-service/Dockerfile.dockerignore reduces what is sent
+      # to exactly that, and no host archive is used or required.
+      context: .
+      dockerfile: services/ledger-posting-service/Dockerfile
+    container_name: card-platform${CLONE_INDEX:-}-ledger-posting-service
+    environment:
+      <<: *service-environment
+      # sslmode=require encrypts this connection. The compose server presents a
+      # certificate it generated for itself, so there is no authority to verify it
+      # against and verify-full would refuse it. deploy/k8s/30-configmap.yaml uses
+      # verify-full, because a cluster has a certificate authority and a network path
+      # worth protecting; here the whole path is one Docker bridge on one machine.
+      LEDGER_DB_NAME: ${LEDGER_DB_NAME:-carddemo_ledger}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${LEDGER_DB_NAME:-carddemo_ledger}?currentSchema=${LEDGER_DB_SCHEMA:-ledger_service}&sslmode=require
+      # This service's own login. It owns carddemo_ledger and can connect to no other database:
+      # the provisioning program revokes CONNECT from PUBLIC on every one of the six.
+      SPRING_DATASOURCE_USERNAME: ${LEDGER_DB_USER:-carddemo_ledger_svc}
+      SPRING_DATASOURCE_PASSWORD: ${LEDGER_DB_PASSWORD:?LEDGER_DB_PASSWORD must be set; copy .env.example to .env and give this service its own password}
+      SPRING_FLYWAY_SCHEMAS: ${LEDGER_DB_SCHEMA:-ledger_service}
+      SPRING_FLYWAY_DEFAULT_SCHEMA: ${LEDGER_DB_SCHEMA:-ledger_service}
+      SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${LEDGER_DB_SCHEMA:-ledger_service}
+      # This service's own broker identity. The entries the broker installs for it
+      # cover exactly what its configuration needs: it reads transaction.authorized under
+      # the ledger-posting group, reads account.state-changed under the ledger-account-state
+      # group, and publishes transaction.posted. An entry naming another service's topic or
+      # group is absent, so a compromise here reaches neither. A username is not a credential
+      # and carries a fallback; the password carries none.
+      KAFKA_SASL_USERNAME: ${LEDGER_KAFKA_USER:-carddemo-ledger}
+      KAFKA_SASL_PASSWORD: ${LEDGER_KAFKA_PASSWORD:?LEDGER_KAFKA_PASSWORD must be set; copy .env.example to .env and give this service its own broker password}
+      SPRING_KAFKA_CONSUMER_GROUP_ID: ${GROUP_LEDGER_POSTING:-ledger-posting}
+      GROUP_LEDGER_POSTING: ${GROUP_LEDGER_POSTING:-ledger-posting}
+      # Second listener, second group. account_balance_projection is a copy of three fields of
+      # the account record the account service owns, and the posting path adds to it.
+      GROUP_LEDGER_ACCOUNT: ${GROUP_LEDGER_ACCOUNT:-ledger-account-state}
+      # Third listener, third group. It reads the decline the authorization service published
+      # and writes the 430-byte reject row of app/cbl/CBTRN02C.cbl:L446-L465. Without this
+      # group the reject path has no production ingress and the row is never written.
+      GROUP_LEDGER_REJECT: ${GROUP_LEDGER_REJECT:-ledger-reject}
+      TOPIC_ACCOUNT_STATE_CHANGED: ${TOPIC_ACCOUNT_STATE_CHANGED:-account.state-changed}
+      TOPIC_TRANSACTION_AUTHORIZED: ${TOPIC_TRANSACTION_AUTHORIZED:-transaction.authorized}
+      TOPIC_TRANSACTION_POSTED: ${TOPIC_TRANSACTION_POSTED:-transaction.posted}
+      # Consumed, not published. The authorization service is the sole writer of the decision,
+      # and its decline is what drives the reject row of app/cbl/CBTRN02C.cbl:L446-L465 here.
+      TOPIC_TRANSACTION_DECLINED: ${TOPIC_TRANSACTION_DECLINED:-transaction.declined}
+      TOPIC_DEAD_LETTER: ${TOPIC_DEAD_LETTER:-carddemo.dead-letter}
+      CONSUMER_MAX_RETRY_ATTEMPTS: ${CONSUMER_MAX_RETRY_ATTEMPTS:-3}
+      CONSUMER_RETRY_BACKOFF_MS: ${CONSUMER_RETRY_BACKOFF_MS:-1000}
+      OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
+      OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
+      OUTBOX_RELAY_CLAIM_TIMEOUT: ${OUTBOX_RELAY_CLAIM_TIMEOUT:-PT2M}
+      # Milliseconds one relay sweep may spend waiting for broker acknowledgements. Read
+      # once per sweep as a monotonic deadline, so a slow broker costs one sweep rather
+      # than the scheduled thread and the connection its transaction holds. It stays above
+      # the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
+      OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
+      OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
+      RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
+      # rejected_transaction declared ninety days in its COMMENT ON TABLE before any code
+      # applied it. domain/RetentionSweep now reads this value.
+      LEDGER_REJECTED_RETENTION_DAYS: ${LEDGER_REJECTED_RETENTION_DAYS:-90}
+    ports:
+      # Both mappings bind the loopback address. The service port carries the
+      # Representational State Transfer (REST) surface; the management port
+      # carries /actuator and reaches no further than this machine.
+      - "127.0.0.1:${LEDGER_PORT:-8082}:8080"
+      - "127.0.0.1:${LEDGER_MANAGEMENT_PORT:-9082}:${MANAGEMENT_PORT:-9080}"
+    # Read-only root filesystem, with the same size-limited in-memory /tmp the
+    # authorization service above documents.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    # This service runs one listener on transaction.authorized.
+    depends_on: *database-and-broker
+    healthcheck: *actuator-healthcheck
+    networks:
+      - carddemo
+    restart: unless-stopped
+
+  # Fraud detection service container. It reads transaction.authorized under the
+  # fraud-detection group and writes fraud.assessed. It serves a read-only
+  # assessment query and no port another service calls.
+  fraud-detection-service:
+    # The tag this image carries once built. One tag serves the three places that name
+    # it: .github/workflows/ci.yml builds it, this file runs it, and deploy/k8s names it
+    # with imagePullPolicy Never. The version is the Maven project version, so an image
+    # built from another version is never mistaken for this one. Compose builds the image
+    # from the context below when the tag is absent locally, and no registry holds it.
+    image: carddemo/fraud-detection-service:1.0.0-SNAPSHOT
+    build:
+      # This directory, because the builder stage of the Dockerfile compiles the module
+      # from source and needs the aggregator descriptor and both shared libraries in
+      # reach. services/fraud-detection-service/Dockerfile.dockerignore reduces what is sent
+      # to exactly that, and no host archive is used or required.
+      context: .
+      dockerfile: services/fraud-detection-service/Dockerfile
+    container_name: card-platform${CLONE_INDEX:-}-fraud-detection-service
+    environment:
+      <<: *service-environment
+      # sslmode=require encrypts this connection. The compose server presents a
+      # certificate it generated for itself, so there is no authority to verify it
+      # against and verify-full would refuse it. deploy/k8s/30-configmap.yaml uses
+      # verify-full, because a cluster has a certificate authority and a network path
+      # worth protecting; here the whole path is one Docker bridge on one machine.
+      FRAUD_DB_NAME: ${FRAUD_DB_NAME:-carddemo_fraud}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${FRAUD_DB_NAME:-carddemo_fraud}?currentSchema=${FRAUD_DB_SCHEMA:-fraud_service}&sslmode=require
+      # This service's own login. It owns carddemo_fraud and can connect to no other database:
+      # the provisioning program revokes CONNECT from PUBLIC on every one of the six.
+      SPRING_DATASOURCE_USERNAME: ${FRAUD_DB_USER:-carddemo_fraud_svc}
+      SPRING_DATASOURCE_PASSWORD: ${FRAUD_DB_PASSWORD:?FRAUD_DB_PASSWORD must be set; copy .env.example to .env and give this service its own password}
+      SPRING_FLYWAY_SCHEMAS: ${FRAUD_DB_SCHEMA:-fraud_service}
+      SPRING_FLYWAY_DEFAULT_SCHEMA: ${FRAUD_DB_SCHEMA:-fraud_service}
+      SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${FRAUD_DB_SCHEMA:-fraud_service}
+      # This service's own broker identity. The entries the broker installs for it
+      # cover exactly what its configuration needs: it reads transaction.authorized under the fraud-detection group and publishes fraud.assessed. An
+      # entry naming another service's topic or group is absent, so a compromise here
+      # reaches neither. A username is not a credential and carries a fallback; the
+      # password carries none.
+      KAFKA_SASL_USERNAME: ${FRAUD_KAFKA_USER:-carddemo-fraud}
+      KAFKA_SASL_PASSWORD: ${FRAUD_KAFKA_PASSWORD:?FRAUD_KAFKA_PASSWORD must be set; copy .env.example to .env and give this service its own broker password}
+      SPRING_KAFKA_CONSUMER_GROUP_ID: ${GROUP_FRAUD_DETECTION:-fraud-detection}
+      GROUP_FRAUD_DETECTION: ${GROUP_FRAUD_DETECTION:-fraud-detection}
+      TOPIC_TRANSACTION_AUTHORIZED: ${TOPIC_TRANSACTION_AUTHORIZED:-transaction.authorized}
+      TOPIC_FRAUD_ASSESSED: ${TOPIC_FRAUD_ASSESSED:-fraud.assessed}
+      TOPIC_DEAD_LETTER: ${TOPIC_DEAD_LETTER:-carddemo.dead-letter}
+      CONSUMER_MAX_RETRY_ATTEMPTS: ${CONSUMER_MAX_RETRY_ATTEMPTS:-3}
+      CONSUMER_RETRY_BACKOFF_MS: ${CONSUMER_RETRY_BACKOFF_MS:-1000}
+      OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
+      OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
+      OUTBOX_RELAY_CLAIM_TIMEOUT: ${OUTBOX_RELAY_CLAIM_TIMEOUT:-PT2M}
+      # Milliseconds one relay pass may spend waiting for broker acknowledgements. Read once
+      # per pass as a monotonic deadline, so a slow broker costs one pass and not an unbounded
+      # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
+      OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
+      OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
+      RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
+      # Both fraud_assessment and velocity_window declared a horizon in their COMMENT ON
+      # TABLE before any code applied it. domain/RetentionSweep now reads both values, and
+      # refuses to start when the velocity horizon does not outlast the velocity window.
+      FRAUD_ASSESSMENT_RETENTION_DAYS: ${FRAUD_ASSESSMENT_RETENTION_DAYS:-90}
+      FRAUD_VELOCITY_RETENTION_DAYS: ${FRAUD_VELOCITY_RETENTION_DAYS:-7}
+    ports:
+      # Both mappings bind the loopback address. The service port carries the
+      # Representational State Transfer (REST) surface; the management port
+      # carries /actuator and reaches no further than this machine.
+      - "127.0.0.1:${FRAUD_PORT:-8083}:8080"
+      - "127.0.0.1:${FRAUD_MANAGEMENT_PORT:-9083}:${MANAGEMENT_PORT:-9080}"
+    # Read-only root filesystem, with the same size-limited in-memory /tmp the
+    # authorization service above documents.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    # This service runs one listener on transaction.authorized.
+    depends_on: *database-and-broker
+    healthcheck: *actuator-healthcheck
+    networks:
+      - carddemo
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------------- #
+  # Notification service. Four listeners read transaction.authorized, transaction.posted,
+  # fraud.assessed and customer.context-changed, each on a consumer group of its own. It
+  # publishes no domain event, routes exhausted failures to source-specific dead-letter
+  # topics and calls no other service.
+  # ------------------------------------------------------------------------- #
+  notification-service:
+    # The tag this image carries once built. One tag serves the three places that name
+    # it: .github/workflows/ci.yml builds it, this file runs it, and deploy/k8s names it
+    # with imagePullPolicy Never. The version is the Maven project version, so an image
+    # built from another version is never mistaken for this one. Compose builds the image
+    # from the context below when the tag is absent locally, and no registry holds it.
+    image: carddemo/notification-service:1.0.0-SNAPSHOT
+    build:
+      # This directory, because the builder stage of the Dockerfile compiles the module
+      # from source and needs the aggregator descriptor and both shared libraries in
+      # reach. services/notification-service/Dockerfile.dockerignore reduces what is sent
+      # to exactly that, and no host archive is used or required.
+      context: .
+      dockerfile: services/notification-service/Dockerfile
+    container_name: card-platform${CLONE_INDEX:-}-notification-service
+    environment:
+      <<: *service-environment
+      # sslmode=require encrypts this connection. The compose server presents a
+      # certificate it generated for itself, so there is no authority to verify it
+      # against and verify-full would refuse it. deploy/k8s/30-configmap.yaml uses
+      # verify-full, because a cluster has a certificate authority and a network path
+      # worth protecting; here the whole path is one Docker bridge on one machine.
+      NOTIFICATION_DB_NAME: ${NOTIFICATION_DB_NAME:-carddemo_notification}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${NOTIFICATION_DB_NAME:-carddemo_notification}?currentSchema=${NOTIFICATION_DB_SCHEMA:-notification_service}&sslmode=require
+      # This service's own login. It owns carddemo_notification and can connect to no other database:
+      # the provisioning program revokes CONNECT from PUBLIC on every one of the six.
+      SPRING_DATASOURCE_USERNAME: ${NOTIFICATION_DB_USER:-carddemo_notification_svc}
+      SPRING_DATASOURCE_PASSWORD: ${NOTIFICATION_DB_PASSWORD:?NOTIFICATION_DB_PASSWORD must be set; copy .env.example to .env and give this service its own password}
+      SPRING_FLYWAY_SCHEMAS: ${NOTIFICATION_DB_SCHEMA:-notification_service}
+      SPRING_FLYWAY_DEFAULT_SCHEMA: ${NOTIFICATION_DB_SCHEMA:-notification_service}
+      SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${NOTIFICATION_DB_SCHEMA:-notification_service}
+      # This service's own broker identity. The entries the broker installs for it
+      # cover exactly what its configuration names: four topics under four groups of
+      # its own, and no business-event publish. An entry naming another service's group
+      # is absent, so a compromise here cannot take another listener's partitions. A
+      # username is not a credential and carries a fallback; the password carries none.
+      KAFKA_SASL_USERNAME: ${NOTIFICATION_KAFKA_USER:-carddemo-notification}
+      KAFKA_SASL_PASSWORD: ${NOTIFICATION_KAFKA_PASSWORD:?NOTIFICATION_KAFKA_PASSWORD must be set; copy .env.example to .env and give this service its own broker password}
+      # One group per listener. Two listeners sharing one group would split the
+      # messages between them, so each carries its own. The first group below is the
+      # framework default a listener falls back to when it names no group.
+      SPRING_KAFKA_CONSUMER_GROUP_ID: ${GROUP_NOTIFICATION_POSTED:-notification-posted}
+      TOPIC_TRANSACTION_AUTHORIZED: ${TOPIC_TRANSACTION_AUTHORIZED:-transaction.authorized}
+      GROUP_NOTIFICATION_AUTHORIZED: ${GROUP_NOTIFICATION_AUTHORIZED:-notification-authorized}
+      GROUP_NOTIFICATION_POSTED: ${GROUP_NOTIFICATION_POSTED:-notification-posted}
+      GROUP_NOTIFICATION_FRAUD: ${GROUP_NOTIFICATION_FRAUD:-notification-fraud}
+      GROUP_NOTIFICATION_CUSTOMER: ${GROUP_NOTIFICATION_CUSTOMER:-notification-customer}
+      TOPIC_TRANSACTION_POSTED: ${TOPIC_TRANSACTION_POSTED:-transaction.posted}
+      TOPIC_FRAUD_ASSESSED: ${TOPIC_FRAUD_ASSESSED:-fraud.assessed}
+      TOPIC_CUSTOMER_CONTEXT_CHANGED: ${TOPIC_CUSTOMER_CONTEXT_CHANGED:-customer.context-changed}
+      TOPIC_DEAD_LETTER: ${TOPIC_DEAD_LETTER:-carddemo.dead-letter}
+      CONSUMER_MAX_RETRY_ATTEMPTS: ${CONSUMER_MAX_RETRY_ATTEMPTS:-3}
+      CONSUMER_RETRY_BACKOFF_MS: ${CONSUMER_RETRY_BACKOFF_MS:-1000}
+      RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
+      STATEMENT_RETENTION_DAYS: ${STATEMENT_RETENTION_DAYS:-400}
+      NOTIFICATION_LOG_RETENTION_DAYS: ${NOTIFICATION_LOG_RETENTION_DAYS:-90}
+    ports:
+      # Both mappings bind the loopback address. The service port carries the
+      # Representational State Transfer (REST) surface; the management port
+      # carries /actuator and reaches no further than this machine.
+      - "127.0.0.1:${NOTIFICATION_PORT:-8084}:8080"
+      - "127.0.0.1:${NOTIFICATION_MANAGEMENT_PORT:-9084}:${MANAGEMENT_PORT:-9080}"
+    # Read-only root filesystem, with the same size-limited in-memory /tmp the
+    # authorization service above documents.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    depends_on: *database-and-broker
+    healthcheck: *actuator-healthcheck
+    networks:
+      - carddemo
+    restart: unless-stopped
+
+  # Account service container. Configured with the account database, its schema,
+  # the outbox relay settings and the one stream it reads. Its endpoints write
+  # account changes, its listener applies posted amounts to the account record, and
+  # its relay publishes every resulting state change.
+  account-service:
+    # The tag this image carries once built. One tag serves the three places that name
+    # it: .github/workflows/ci.yml builds it, this file runs it, and deploy/k8s names it
+    # with imagePullPolicy Never. The version is the Maven project version, so an image
+    # built from another version is never mistaken for this one. Compose builds the image
+    # from the context below when the tag is absent locally, and no registry holds it.
+    image: carddemo/account-service:1.0.0-SNAPSHOT
+    build:
+      # This directory, because the builder stage of the Dockerfile compiles the module
+      # from source and needs the aggregator descriptor and both shared libraries in
+      # reach. services/account-service/Dockerfile.dockerignore reduces what is sent
+      # to exactly that, and no host archive is used or required.
+      context: .
+      dockerfile: services/account-service/Dockerfile
+    container_name: card-platform${CLONE_INDEX:-}-account-service
+    environment:
+      <<: *service-environment
+      # sslmode=require encrypts this connection. The compose server presents a
+      # certificate it generated for itself, so there is no authority to verify it
+      # against and verify-full would refuse it. deploy/k8s/30-configmap.yaml uses
+      # verify-full, because a cluster has a certificate authority and a network path
+      # worth protecting; here the whole path is one Docker bridge on one machine.
+      ACCOUNT_DB_NAME: ${ACCOUNT_DB_NAME:-carddemo_account}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${ACCOUNT_DB_NAME:-carddemo_account}?currentSchema=${ACCOUNT_DB_SCHEMA:-account_service}&sslmode=require
+      # This service's own login. It owns carddemo_account and can connect to no other database:
+      # the provisioning program revokes CONNECT from PUBLIC on every one of the six.
+      SPRING_DATASOURCE_USERNAME: ${ACCOUNT_DB_USER:-carddemo_account_svc}
+      SPRING_DATASOURCE_PASSWORD: ${ACCOUNT_DB_PASSWORD:?ACCOUNT_DB_PASSWORD must be set; copy .env.example to .env and give this service its own password}
+      SPRING_FLYWAY_SCHEMAS: ${ACCOUNT_DB_SCHEMA:-account_service}
+      SPRING_FLYWAY_DEFAULT_SCHEMA: ${ACCOUNT_DB_SCHEMA:-account_service}
+      SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${ACCOUNT_DB_SCHEMA:-account_service}
+      # Two Flyway locations, for the same reason the authorization service names two.
+      # db/migration reproduces app/data/ASCII/acctdata.txt value for value, and its 50
+      # expiries run from 2023-01-06 to 2025-12-28, eleven in 2023, fourteen in 2024 and
+      # twenty-five in 2025. db/demo extends them to 2099-12-31 and touches nothing
+      # else. The two copies of this record carry one overlay or neither: this service
+      # publishes its expiry on every state change and the authorization replica applies it,
+      # so extending the replica alone would have the first posted transaction write a past
+      # expiry back over the extension. Drop the second location here and in the
+      # authorization service together for a run compared against the fixture.
+      SPRING_FLYWAY_LOCATIONS: ${ACCOUNT_FLYWAY_LOCATIONS:-classpath:db/migration,classpath:db/demo}
+      # This service's own broker identity. The entries the broker installs for it
+      # cover exactly what its configuration needs: it publishes
+      # account.state-changed and customer.context-changed when a state change occurs,
+      # and reads transaction.posted under its own group. An entry naming another
+      # service's topic or group is absent, so a compromise here reaches neither. A
+      # username is not a credential and carries a fallback; the password carries
+      # none.
+      KAFKA_SASL_USERNAME: ${ACCOUNT_KAFKA_USER:-carddemo-account}
+      KAFKA_SASL_PASSWORD: ${ACCOUNT_KAFKA_PASSWORD:?ACCOUNT_KAFKA_PASSWORD must be set; copy .env.example to .env and give this service its own broker password}
+      # The first topic this service publishes, on a mutation only. Its payload
+      # matches schemas/account-state-changed-v1.json in event-contracts.
+      TOPIC_ACCOUNT_STATE_CHANGED: ${TOPIC_ACCOUNT_STATE_CHANGED:-account.state-changed}
+      # The second topic this service publishes, on a cardholder-field change. The
+      # broker grants this identity producer access to it in create_acls above, and
+      # the notification service consumes it under GROUP_NOTIFICATION_CUSTOMER.
+      # Naming it here matches deploy/k8s/30-configmap.yaml, which supplies it to
+      # every service. Without the line the image falls back to the name compiled
+      # into it, so a deployment that renames the topic through the environment
+      # would create and consume the new name while this producer kept writing the
+      # old one.
+      TOPIC_CUSTOMER_CONTEXT_CHANGED: ${TOPIC_CUSTOMER_CONTEXT_CHANGED:-customer.context-changed}
+      # The one topic this service reads. messaging/TransactionPostedConsumer adds each
+      # posted amount to the account record, reproducing app/cbl/CBTRN02C.cbl:L545-L560,
+      # and the state change it queues carries the two billing-cycle accumulators to the
+      # authorization replica the credit-limit rule reads.
+      TOPIC_TRANSACTION_POSTED: ${TOPIC_TRANSACTION_POSTED:-transaction.posted}
+      # The group that listener joins, named twice on purpose: Spring reads the first key
+      # and config/StreamNameReport reports the second, so a deployment that renames the
+      # group is visible in the start-up log rather than only in the broker.
+      SPRING_KAFKA_CONSUMER_GROUP_ID: ${GROUP_ACCOUNT_POSTED:-account-posted}
+      GROUP_ACCOUNT_POSTED: ${GROUP_ACCOUNT_POSTED:-account-posted}
+      CONSUMER_MAX_RETRY_ATTEMPTS: ${CONSUMER_MAX_RETRY_ATTEMPTS:-3}
+      CONSUMER_RETRY_BACKOFF_MS: ${CONSUMER_RETRY_BACKOFF_MS:-1000}
+      # The producer contract also validates the shared source-less fallback envelope, and
+      # the listener's own dead-letter route sends a governed envelope to the same topic.
+      TOPIC_DEAD_LETTER: ${TOPIC_DEAD_LETTER:-carddemo.dead-letter}
+      OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
+      OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
+      OUTBOX_RELAY_CLAIM_TIMEOUT: ${OUTBOX_RELAY_CLAIM_TIMEOUT:-PT2M}
+      # Longest one send waits for the broker before messaging/KafkaEventPublisher fails the
+      # stage it returned. The row then stays unpublished and the next sweep claims it again, so
+      # a slow broker delays an event and never loses one. Wider than the producer window of one
+      # send and narrower than the sweep deadline below.
+      OUTBOX_RELAY_PUBLISH_TIMEOUT: ${OUTBOX_RELAY_PUBLISH_TIMEOUT:-PT10S}
+      # Milliseconds one relay pass may spend waiting for broker acknowledgements. Read once
+      # per pass as a monotonic deadline, so a slow broker costs one pass and not an unbounded
+      # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
+      OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
+      OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
+      RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
+      # Bound on how long a locked read of one update waits for a row another writer holds.
+      WRITE_LOCK_WAIT_MS: ${WRITE_LOCK_WAIT_MS:-3000}
+      # Bytes the largest legitimate request body occupies. config/RequestBodyCeilingFilter
+      # refuses a request declaring more, and config/JsonReadCeilingConfig bounds the parser for
+      # one declaring no length at all. Only the three services that accept a request body
+      # install that filter, so this is a per-service key and not part of the shared block.
+      API_MAX_REQUEST_BODY_BYTES: ${API_MAX_REQUEST_BODY_BYTES:-65536}
+    ports:
+      # Both mappings bind the loopback address. The service port carries the
+      # Representational State Transfer (REST) surface; the management port
+      # carries /actuator and reaches no further than this machine.
+      - "127.0.0.1:${ACCOUNT_PORT:-8085}:8080"
+      - "127.0.0.1:${ACCOUNT_MANAGEMENT_PORT:-9085}:${MANAGEMENT_PORT:-9080}"
+    # Read-only root filesystem, with the same size-limited in-memory /tmp the
+    # authorization service above documents.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    # Readiness checks the broker used by this service's outbox relay.
+    depends_on: *database-and-broker
+    healthcheck: *actuator-healthcheck
+    networks:
+      - carddemo
+    restart: unless-stopped
+
+  # Card service container. Configured with the card database, its schema and
+  # the outbox relay settings. It subscribes to no topic. CardController serves the
+  # card list, the card detail and the card update over CardQueryService and
+  # CardUpdateService, and OutboxWriter and OutboxRelay carry card.updated.
+  card-service:
+    # The tag this image carries once built. One tag serves the three places that name
+    # it: .github/workflows/ci.yml builds it, this file runs it, and deploy/k8s names it
+    # with imagePullPolicy Never. The version is the Maven project version, so an image
+    # built from another version is never mistaken for this one. Compose builds the image
+    # from the context below when the tag is absent locally, and no registry holds it.
+    image: carddemo/card-service:1.0.0-SNAPSHOT
+    build:
+      # This directory, because the builder stage of the Dockerfile compiles the module
+      # from source and needs the aggregator descriptor and both shared libraries in
+      # reach. services/card-service/Dockerfile.dockerignore reduces what is sent
+      # to exactly that, and no host archive is used or required.
+      context: .
+      dockerfile: services/card-service/Dockerfile
+    container_name: card-platform${CLONE_INDEX:-}-card-service
+    environment:
+      <<: *service-environment
+      # sslmode=require encrypts this connection. The compose server presents a
+      # certificate it generated for itself, so there is no authority to verify it
+      # against and verify-full would refuse it. deploy/k8s/30-configmap.yaml uses
+      # verify-full, because a cluster has a certificate authority and a network path
+      # worth protecting; here the whole path is one Docker bridge on one machine.
+      # The card-token key, delivered to this service and to card-service alone. A card
+      # token is an HmacSHA256 code over the card number under this key, and the key is
+      # what stops a holder of one token recomputing tokens across the sixteen-digit
+      # card-number space. There is no default and no fallback: com.carddemo.cobol.PanMasker
+      # refuses to derive without a key, and this service refuses to start without one.
+      # Generate a value into .env before the first run; .env.example carries the command.
+      CARD_TOKEN_SECRET: ${CARD_TOKEN_SECRET:?CARD_TOKEN_SECRET must be set; copy .env.example to .env and generate a card-token key of at least 32 characters}
+      # Not key material. The version is part of the message the code covers, so raising it
+      # rolls every token over under the same key.
+      CARD_TOKEN_VERSION: ${CARD_TOKEN_VERSION:-1}
+      # The three rotation settings, delivered to this service alone because it is the only one
+      # that rewrites a stored token. All three are unset or false in ordinary operation.
+      #
+      # CARD_TOKEN_PREVIOUS_SECRET carries the key the stored tokens were taken under, which is
+      # what makes the previous token of a card derivable beside the current one. Without it a
+      # rotation cannot write the mapping the notification read model, the authorization decision
+      # diagnostics and every granted SCOPE_CARD authority are re-keyed from, so it refuses.
+      CARD_TOKEN_PREVIOUS_SECRET: ${CARD_TOKEN_PREVIOUS_SECRET:-}
+      # The version those stored tokens were taken under. Absent, it falls back to the current
+      # version, so turning the key over without raising the version needs one setting.
+      CARD_TOKEN_PREVIOUS_VERSION: ${CARD_TOKEN_PREVIOUS_VERSION:-}
+      # The operator's statement that a rotation is intended. Left false, domain/CardTokenReconciler
+      # refuses to start rather than silently rewriting an identity three other stores already
+      # name. services/card-service/README.md is the procedure.
+      CARD_TOKEN_ROTATION_ENABLED: ${CARD_TOKEN_ROTATION_ENABLED:-false}
+      CARD_DB_NAME: ${CARD_DB_NAME:-carddemo_card}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${CARD_DB_NAME:-carddemo_card}?currentSchema=${CARD_DB_SCHEMA:-card_service}&sslmode=require
+      # This service's own login. It owns carddemo_card and can connect to no other database:
+      # the provisioning program revokes CONNECT from PUBLIC on every one of the six.
+      SPRING_DATASOURCE_USERNAME: ${CARD_DB_USER:-carddemo_card_svc}
+      SPRING_DATASOURCE_PASSWORD: ${CARD_DB_PASSWORD:?CARD_DB_PASSWORD must be set; copy .env.example to .env and give this service its own password}
+      SPRING_FLYWAY_SCHEMAS: ${CARD_DB_SCHEMA:-card_service}
+      SPRING_FLYWAY_DEFAULT_SCHEMA: ${CARD_DB_SCHEMA:-card_service}
+      SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${CARD_DB_SCHEMA:-card_service}
+      # This service's own broker identity. The entries the broker installs for it
+      # cover exactly what its configuration needs: it publishes card.updated
+      # when a state change occurs, and it names a row its outbox relay gave up on
+      # on the shared dead-letter topic. An entry naming another service's topic or
+      # group is absent, so a compromise here reaches neither. A username is not a
+      # credential and carries a fallback; the password carries none.
+      KAFKA_SASL_USERNAME: ${CARD_KAFKA_USER:-carddemo-card}
+      KAFKA_SASL_PASSWORD: ${CARD_KAFKA_PASSWORD:?CARD_KAFKA_PASSWORD must be set; copy .env.example to .env and give this service its own broker password}
+      # The one business topic this service is to publish, on a mutation only. Its
+      # payload matches schemas/card-updated-v1.json in event-contracts, the one
+      # governed CardUpdated document.
+      TOPIC_CARD_UPDATED: ${TOPIC_CARD_UPDATED:-card.updated}
+      # The shared dead-letter topic. This service registers no listener, so nothing
+      # of its own is dead-lettered on consumption. outbox/OutboxRelay publishes one
+      # governed DeadLetterEnvelope here for a row it abandoned after ten attempts,
+      # which is the one record of a card update no consumer will ever see. The send
+      # is awaited, so a broker that refuses it rolls the sweep back and the row is
+      # offered again rather than left terminal with no diagnostic anywhere.
+      TOPIC_DEAD_LETTER: ${TOPIC_DEAD_LETTER:-carddemo.dead-letter}
+      # Producer reliability, the same set the other two publishers carry.
+      # messaging/KafkaEventPublisher.java reads these back from the producer
+      # factory at construction and refuses to start unless every one holds.
+      # acks all waits for every in-sync replica. Idempotent production plus an
+      # in-flight ceiling of five keeps one account's events in publish order
+      # through a retry.
+      SPRING_KAFKA_PRODUCER_ACKS: all
+      SPRING_KAFKA_PRODUCER_KEY_SERIALIZER: org.apache.kafka.common.serialization.StringSerializer
+      SPRING_KAFKA_PRODUCER_VALUE_SERIALIZER: org.apache.kafka.common.serialization.StringSerializer
+      SPRING_KAFKA_PRODUCER_PROPERTIES_ENABLE_IDEMPOTENCE: "true"
+      SPRING_KAFKA_PRODUCER_PROPERTIES_MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION: "5"
+      # The three send timeouts are not set here, and the arithmetic is why. Carrying
+      # DELIVERY_TIMEOUT_MS 120000, REQUEST_TIMEOUT_MS 30000 and MAX_BLOCK_MS 5000 makes the
+      # window of one send MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS = 125 seconds while
+      # OUTBOX_RELAY_MAX_DURATION_MS below bounds the whole sweep at 5 seconds. Every
+      # send then outlived the deadline that was meant to bound it: the relay gave up
+      # waiting while the producer kept trying, so a row could be published by an
+      # abandoned send and republished by the next sweep. No other service block
+      # overrode them. src/main/resources/application.yml pins 2000 / 2000 / 2000, a
+      # 4-second window that fits inside the 5-second sweep, and leaving these unset is
+      # what lets that hold.
+      OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
+      OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
+      OUTBOX_RELAY_CLAIM_TIMEOUT: ${OUTBOX_RELAY_CLAIM_TIMEOUT:-PT2M}
+      # Longest one send waits for the broker before messaging/KafkaEventPublisher fails the
+      # stage it returned. The row then stays unpublished and the next sweep claims it again, so
+      # a slow broker delays an event and never loses one. Wider than the producer window of one
+      # send and narrower than the sweep deadline below.
+      OUTBOX_RELAY_PUBLISH_TIMEOUT: ${OUTBOX_RELAY_PUBLISH_TIMEOUT:-PT10S}
+      # Milliseconds one relay sweep may spend waiting for broker acknowledgements. Read once
+      # per sweep as a monotonic deadline, so a slow broker costs one sweep and not an unbounded
+      # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
+      OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
+      OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
+      RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
+      # Bound on how long a locked read of one update waits for a row another writer holds.
+      WRITE_LOCK_WAIT_MS: ${WRITE_LOCK_WAIT_MS:-3000}
+      # Bytes the largest legitimate request body occupies. config/RequestBodyCeilingFilter
+      # refuses a request declaring more, and config/JsonReadCeilingConfig bounds the parser for
+      # one declaring no length at all. Only the three services that accept a request body
+      # install that filter, so this is a per-service key and not part of the shared block.
+      API_MAX_REQUEST_BODY_BYTES: ${API_MAX_REQUEST_BODY_BYTES:-65536}
+    ports:
+      # Both mappings bind the loopback address. The service port carries the
+      # Representational State Transfer (REST) surface; the management port
+      # carries /actuator and reaches no further than this machine.
+      - "127.0.0.1:${CARD_PORT:-8086}:8080"
+      - "127.0.0.1:${CARD_MANAGEMENT_PORT:-9086}:${MANAGEMENT_PORT:-9080}"
+    # Read-only root filesystem, with the same size-limited in-memory /tmp the
+    # authorization service above documents.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    # Readiness checks the broker used by this service's outbox relay.
+    depends_on: *database-and-broker
+    healthcheck: *actuator-healthcheck
+    networks:
+      - carddemo
+    restart: unless-stopped
+
+configs:
+
+  # One database per service. The postgres command runs this program on every
+  # start, so a name corrected after a refusal repairs the stack.
+  #
+  # It reads the six names from SERVICE_DATABASE_NAMES at run time rather than
+  # taking them into the file as text, and checks each one against a strict
+  # identifier pattern. It then hands each statement to psql on standard input,
+  # where psql interpolates :"database_name" as one quoted identifier. A name
+  # carrying a semicolon, a quotation mark or a space is refused by the pattern
+  # before any statement runs. Identifier quoting means that even a name that
+  # passed the pattern could not add a statement.
+  #
+  # It creates a database only when that name is absent, so a second start adds
+  # nothing. Its last statement writes the file the postgres healthcheck reads, so
+  # a refused name keeps that container out of healthy.
+  service_databases:
+    content: |
+      #!/bin/sh
+      set -eu
+
+      : "$${SERVICE_DATABASE_NAMES:?SERVICE_DATABASE_NAMES must name the six service databases}"
+
+      # The entry point initialises a new data directory behind a socket the
+      # network cannot reach, so an answer on the loopback address means the
+      # server is serving. Four minutes is far longer than any first start takes.
+      attempt=0
+      until pg_isready --host 127.0.0.1 --username "$$POSTGRES_USER" \
+              --dbname "$$POSTGRES_DB" >/dev/null 2>&1; do
+        attempt=$$((attempt + 1))
+        if [ "$$attempt" -gt 120 ]; then
+          echo "the database did not answer on 127.0.0.1 within four minutes" >&2
+          exit 1
+        fi
+        sleep 2
+      done
+
+      # A value carrying the REPLACE marker is the placeholder .env.example publishes
+      # rather than a password. The entry point has already created the superuser with it
+      # by the time this script runs, so the refusal below stops the stack instead. The
+      # marker file stays unwritten, this container never reports healthy, and depends_on
+      # holds all six services back. .env.example carries the command that generates
+      # every credential this stack needs.
+      case "$${POSTGRES_PASSWORD:-}" in
+        *REPLACE*)
+          echo "refusing to provision: POSTGRES_PASSWORD still holds the placeholder" \
+               ".env.example publishes. Generate a password and recreate the volume." >&2
+          exit 1
+          ;;
+      esac
+
+      PGHOST=127.0.0.1
+      PGUSER="$$POSTGRES_USER"
+      PGPASSWORD="$$POSTGRES_PASSWORD"
+      PGDATABASE="$$POSTGRES_DB"
+      export PGHOST PGUSER PGPASSWORD PGDATABASE
+
+      # The three lists are paired by position, so their lengths have to agree. A
+      # mismatch would hand one service another service's login, which is exactly the
+      # sharing these roles exist to end.
+      name_count=$$(printf %s "$$SERVICE_DATABASE_NAMES" | wc -w)
+      owner_count=$$(printf %s "$$SERVICE_DATABASE_OWNERS" | wc -w)
+      var_count=$$(printf %s "$$SERVICE_DATABASE_PASSWORD_VARS" | wc -w)
+      if [ "$$name_count" -ne "$$owner_count" ] || [ "$$name_count" -ne "$$var_count" ]; then
+        echo "refusing to provision: $$name_count databases, $$owner_count logins and" \
+             "$$var_count password variables. The three lists are paired by position." >&2
+        exit 1
+      fi
+
+      set -- $$SERVICE_DATABASE_OWNERS
+      owners="$$*"
+      set -- $$SERVICE_DATABASE_PASSWORD_VARS
+      password_vars="$$*"
+
+      position=0
+      for database_name in $$SERVICE_DATABASE_NAMES; do
+        position=$$((position + 1))
+        owner_name=$$(printf %s "$$owners" | cut -d' ' -f "$$position")
+        password_var=$$(printf %s "$$password_vars" | cut -d' ' -f "$$position")
+        owner_password=$$(eval printf %s "\"\$$$$password_var\"")
+
+        for identifier in "$$database_name" "$$owner_name"; do
+          case "$$identifier" in
+            *[!abcdefghijklmnopqrstuvwxyz0123456789_]* \
+              | [!abcdefghijklmnopqrstuvwxyz_]* | "")
+              echo "refusing identifier '$$identifier': a name holds lower-case letters," \
+                   "digits and underscores, and does not open with a digit" >&2
+              exit 1
+              ;;
+          esac
+          if [ "$${#identifier}" -gt 63 ]; then
+            echo "refusing identifier: a name holds at most 63 characters" >&2
+            exit 1
+          fi
+        done
+
+        if [ -z "$$owner_password" ]; then
+          echo "refusing to provision '$$database_name': $$password_var is empty" >&2
+          exit 1
+        fi
+
+        # Creating a login with the published placeholder would produce a working stack
+        # holding a credential everyone who can read this repository already knows.
+        case "$$owner_password" in
+          *REPLACE*)
+            echo "refusing to provision '$$database_name': $$password_var still holds the" \
+                 "placeholder .env.example publishes. Generate a password; .env.example" \
+                 "carries the command." >&2
+            exit 1
+            ;;
+        esac
+
+        # One login per service. psql interpolates :"owner_name" as a quoted identifier
+        # and :'owner_password' as a quoted literal, so neither can add a statement. An
+        # existing role has its password reset rather than being left as it was, so a
+        # rotated password in .env takes effect on the next start.
+        role_present=$$(printf %s "SELECT 1 FROM pg_roles WHERE rolname = :'owner_name';" \
+          | psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 \
+              --set owner_name="$$owner_name")
+        if [ "$$role_present" = 1 ]; then
+          printf %s 'ALTER ROLE :"owner_name" WITH LOGIN PASSWORD :'"'"'owner_password'"'"';' \
+            | psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --set owner_name="$$owner_name" --set owner_password="$$owner_password"
+          echo "login '$$owner_name' is already present; its password was set"
+        else
+          printf %s 'CREATE ROLE :"owner_name" WITH LOGIN PASSWORD :'"'"'owner_password'"'"';' \
+            | psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --set owner_name="$$owner_name" --set owner_password="$$owner_password"
+          echo "created login '$$owner_name'"
+        fi
+
+        present=$$(printf %s "SELECT 1 FROM pg_database WHERE datname = :'database_name';" \
+          | psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 \
+              --set database_name="$$database_name")
+
+        if [ "$$present" = 1 ]; then
+          printf %s 'ALTER DATABASE :"database_name" OWNER TO :"owner_name";' \
+            | psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --set database_name="$$database_name" --set owner_name="$$owner_name"
+          echo "database '$$database_name' is already present; its owner was set"
+        else
+          printf %s 'CREATE DATABASE :"database_name" OWNER :"owner_name";' \
+            | psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --set database_name="$$database_name" --set owner_name="$$owner_name"
+          echo "created database '$$database_name' owned by '$$owner_name'"
+        fi
+
+        # This is the part that turns six names into a boundary. A distinct owner alone
+        # is not one. PostgreSQL grants CONNECT on a new database to PUBLIC, so every
+        # login could otherwise reach every database. Revoking CONNECT from PUBLIC and
+        # granting it to the owner alone leaves the password as the only way in.
+        printf %s '
+            REVOKE CONNECT ON DATABASE :"database_name" FROM PUBLIC;
+            GRANT CONNECT ON DATABASE :"database_name" TO :"owner_name";
+          ' | psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --set database_name="$$database_name" --set owner_name="$$owner_name"
+
+        # Inside the database, the schema the service migrates has to belong to it, and
+        # PUBLIC keeps nothing. PostgreSQL 15 and later already withhold CREATE on the
+        # public schema from PUBLIC; stating both here means the posture does not depend
+        # on which server version runs.
+        printf %s '
+            ALTER SCHEMA public OWNER TO :"owner_name";
+            REVOKE ALL ON SCHEMA public FROM PUBLIC;
+            GRANT ALL ON SCHEMA public TO :"owner_name";
+          ' | psql --no-psqlrc --set ON_ERROR_STOP=1 --dbname "$$database_name" \
+                --set owner_name="$$owner_name"
+
+        echo "'$$owner_name' owns '$$database_name'; PUBLIC holds no CONNECT on it"
+      done
+
+      # The superuser's own database is reachable by every login until PUBLIC loses
+      # CONNECT on it too. It holds no service data. A role that can connect there can
+      # still read pg_database and pg_roles, and so enumerate every database and login
+      # on the server.
+      printf %s '
+          REVOKE CONNECT ON DATABASE :"maintenance_database" FROM PUBLIC;
+        ' | psql --no-psqlrc --set ON_ERROR_STOP=1 \
+              --set maintenance_database="$$POSTGRES_DB"
+      echo "PUBLIC holds no CONNECT on '$$POSTGRES_DB' either"
+
+      : > /tmp/service-databases-ready
+
+volumes:
+
+  # Database files and broker log segments survive `docker compose down`.
+  # `docker compose down -v` discards both.
+  #
+  # NEITHER VOLUME IS ENCRYPTED BY ANYTHING IN THIS FILE, AND NEITHER MAY HOLD REAL DATA.
+  # Both are local named volumes under this machine's Docker data root. postgres-data holds all six
+  # schemas and kafka-data holds every published event, so a copy of either is a copy of everything
+  # this stack knows, past every control above it: the request identities, the six database logins,
+  # the seven broker identities and the loopback-only bindings.
+  #
+  # This stack is a single-operator demonstration holding the synthetic fixtures under app/data
+  # ALONE. Fifty card numbers, fifty verification values and fifty customer records, all of them
+  # test data checked into this repository. The control that applies here is whole-disk encryption on
+  # the machine running Docker, which is the operator's to switch on and not something a compose file
+  # can declare. Destruction is one command: `docker compose down -v`.
+  #
+  # A deployment holding anything other than those fixtures uses the Kubernetes path instead, where
+  # the requirement is declared on both claims and one overlay binds an encrypted storage class:
+  # card-platform/deploy/k8s/README.md, under "Encryption at rest".
+  postgres-data:
+  kafka-data:
+
+networks:
+
+  # One bridge network. Inside it a container reaches another by service name.
+  carddemo:
+    driver: bridge

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- The parent supplies the group identifier, the version, dependency management,
+       and plugin management. The path climbs two directory levels: libs/ holds no
+       pom.xml of its own. -->
+  <parent>
+    <groupId>com.carddemo</groupId>
+    <artifactId>card-platform</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>cobol-compat</artifactId>
+  <packaging>jar</packaging>
+
+  <name>CardDemo Card Platform :: COBOL Compatibility Library</name>
+  <description>
+    Shared helpers that reproduce the arithmetic, parsing, and validation rules of the
+    CardDemo COBOL programs. Holds fixed-point decimal helpers, Picture-clause scale
+    constants, a tolerant numeric parser, a date validator, and a Primary Account Number
+    masker. Also holds three United States reference lists read from CSLKPCDY.cpy:
+    telephone area codes, state codes, and state-plus-zip-prefix combinations. Every
+    arithmetic helper truncates toward zero.
+  </description>
+
+  <!-- Language level. The build reads maven.compiler.release: the compiler plugin in
+       card-platform/pom.xml configures its release from that property, and the aggregator's
+       enforcer rule requires 25 in every module. java.version carries the framework's
+       conventional name for the same level and no plugin resolves it, because the aggregator
+       imports the Spring Boot bill of materials rather than inheriting the Spring Boot parent.
+       Character encoding comes from the aggregator. -->
+  <properties>
+    <java.version>25</java.version>
+    <maven.compiler.release>25</maven.compiler.release>
+  </properties>
+
+  <!-- Test framework only. The compile classpath carries nothing beyond the Java
+       Development Kit. -->
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+</project>

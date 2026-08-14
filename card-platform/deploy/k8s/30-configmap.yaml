@@ -1,0 +1,563 @@
+# Configuration the six card-platform services read. Each service Deployment pulls the
+# whole block through envFrom, so one key here reaches all six.
+#
+# envFrom rather than a key list per service. card-platform/docker-compose.yml hands each
+# service only the keys it reads, and this path is broader. No credential appears in this
+# file. Every real credential is a key of a per-service Secret in 31-secret.example.yaml,
+# and a service can read no other service's Secret. What a service receives here that it
+# does not read is a topic name, a consumer group name, a database name or a login name.
+# None of those is a credential. The broker's access control entries and the six separate
+# database logins decide what an identity can do.
+#
+# Every non-secret runtime key below also appears in card-platform/.env.example, apart from
+# four Spring bindings this path alone sets:
+# SPRING_DATASOURCE_OPTIONS, SPRING_KAFKA_BOOTSTRAP_SERVERS,
+# SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION and
+# SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_TYPE. Going the other way, .env.example also
+# carries host-published port and healthcheck settings, the authorization demo Flyway
+# location, the optional per-process relay identity, the PostgreSQL bootstrap username,
+# and credential placeholders. Kubernetes obtains those values from Service wiring,
+# Deployment-specific bindings, Pod hostnames and Secrets rather than this ConfigMap.
+#
+# card-platform/docs/decision-log.md records the non-trivial choices behind these values.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carddemo-config
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: card-platform
+    app.kubernetes.io/component: configuration
+    app.kubernetes.io/part-of: card-platform
+    app.kubernetes.io/managed-by: kubectl
+# A ConfigMap carries strings. Every value is quoted, so a port, a count or an
+# interval reaches a container as the text it parses.
+#
+# One key names one setting. This file declares no Spring-specific key whose
+# value repeats a generic key. The Spring-specific key would win, and editing
+# the generic one would then change nothing. Every service application.yml
+# builds its own datasource address and its own broker address out of the
+# generic keys below. Those keys are the only place a host, a port or a
+# database name is written.
+data:
+  # PostgreSQL connection
+  # Short in-namespace name. The Domain Name System (DNS) resolves it to the
+  # Service in 20-postgres.yaml, which listens on the port below.
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  # The maintenance database the server creates on first start. 20-postgres.yaml
+  # reads the name from this key, and its provisioning program connects to it to
+  # create the six service databases below. No service reads it.
+  POSTGRES_DB: "carddemo"
+
+  # One private database per service
+  # Each service owns the database named here and reaches no other. PostgreSQL
+  # runs no query across two databases, so a service holding one connection
+  # cannot read another service's tables at all. That is the private-datastore
+  # boundary, and it is the same boundary card-platform/docker-compose.yml
+  # draws with the same six names.
+  #
+  # 20-postgres.yaml binds all six keys and creates the databases they name.
+  # Each service Deployment binds the one key it owns, and its application.yml
+  # builds its datasource address from that name plus POSTGRES_HOST and
+  # POSTGRES_PORT above.
+  AUTHORIZATION_DB_NAME: "carddemo_authorization"
+  LEDGER_DB_NAME: "carddemo_ledger"
+  FRAUD_DB_NAME: "carddemo_fraud"
+  NOTIFICATION_DB_NAME: "carddemo_notification"
+  ACCOUNT_DB_NAME: "carddemo_account"
+  CARD_DB_NAME: "carddemo_card"
+
+  # One schema per service, inside that service's own database
+  # Each service migrates its own schema and reads no other. Every name carries
+  # a _service suffix, so none collides with a word PostgreSQL reserves. Each
+  # service Deployment binds the one key it owns.
+  AUTHORIZATION_DB_SCHEMA: "authorization_service"
+  LEDGER_DB_SCHEMA: "ledger_service"
+  FRAUD_DB_SCHEMA: "fraud_service"
+  NOTIFICATION_DB_SCHEMA: "notification_service"
+  ACCOUNT_DB_SCHEMA: "account_service"
+  CARD_DB_SCHEMA: "card_service"
+
+  # One database login per service, each owning the schema above it
+  # A login is a boundary only when it belongs to one service. The provisioning program in
+  # 20-postgres.yaml creates each login, gives it its schema, and leaves PUBLIC nothing.
+  #
+  # A username is not a credential and belongs here. The matching passwords are keys of the
+  # per-service Secrets in 31-secret.example.yaml, and each service Deployment binds the one
+  # name it owns onto SPRING_DATASOURCE_USERNAME.
+  AUTHORIZATION_DB_USER: "carddemo_authorization_svc"
+  LEDGER_DB_USER: "carddemo_ledger_svc"
+  FRAUD_DB_USER: "carddemo_fraud_svc"
+  NOTIFICATION_DB_USER: "carddemo_notification_svc"
+  ACCOUNT_DB_USER: "carddemo_account_svc"
+  CARD_DB_USER: "carddemo_card_svc"
+
+  # Kafka broker
+  # 10-kafka.yaml advertises this address, and its Service targets port 9092.
+  # Every service application.yml reads this key, so it is the only place the
+  # broker address is written for this deployment path.
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  # The broker writes this identifier into its log directory. 10-kafka.yaml binds
+  # this key rather than repeating the value, and a new value is incompatible with
+  # the KRaft metadata already held by the kafka-data PersistentVolumeClaim. Keep it
+  # stable across Pod replacements; deleting the claim is the explicit reset path.
+  KAFKA_CLUSTER_ID: "cardDemoPlatformKRaft1"
+  # Partitions and copies per partition. 10-kafka.yaml binds both keys, for the
+  # broker defaults and for the topics it creates, so raising a number here
+  # reaches the broker and the topics together.
+  KAFKA_TOPIC_PARTITIONS: "3"
+  # One broker holds one copy of a partition.
+  KAFKA_TOPIC_REPLICATION_FACTOR: "1"
+  # Finite retention for event and dead-letter logs. A production deployment
+  # chooses a value that matches its legal and operational policy.
+  KAFKA_LOG_RETENTION_HOURS: "168"
+
+  # Broker authentication and authorization
+  # The broker requires a Simple Authentication and Security Layer (SASL) identity on every
+  # client listener and refuses any operation no access control entry allows. Seven
+  # identities exist: one administrator, which is the only super user and the only identity
+  # that creates a topic or an entry, and one per service. 10-kafka.yaml installs the entry
+  # matrix and states it topic by topic.
+  #
+  # SASL_SSL, not SASL_PLAINTEXT: the mechanism carries a password, and a cluster pod
+  # network is a path shared with every other workload on the cluster.
+  # card-platform/docker-compose.yml uses SASL_PLAINTEXT and says why, in one sentence: it
+  # publishes on the loopback address of one machine.
+  KAFKA_SECURITY_PROTOCOL: "SASL_SSL"
+  KAFKA_SASL_MECHANISM: "PLAIN"
+  # What a service trusts the broker certificate against. The file arrives from
+  # carddemo-trust-secret, and its password is a key of that Secret rather than a value here.
+  SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION: "/etc/carddemo/tls/truststore.p12"
+  SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_TYPE: "PKCS12"
+  # The seven usernames. A username is not a credential and belongs here; each password is
+  # a key of carddemo-kafka-secret and of that service's own Secret. Each service Deployment
+  # binds the one name it owns onto KAFKA_SASL_USERNAME, so no service can present another
+  # service's identity even by accident.
+  KAFKA_ADMIN_USER: "carddemo-kafka-admin"
+  AUTHORIZATION_KAFKA_USER: "carddemo-authorization"
+  LEDGER_KAFKA_USER: "carddemo-ledger"
+  FRAUD_KAFKA_USER: "carddemo-fraud"
+  NOTIFICATION_KAFKA_USER: "carddemo-notification"
+  ACCOUNT_KAFKA_USER: "carddemo-account"
+  CARD_KAFKA_USER: "carddemo-card"
+
+  # Event topics
+  # 10-kafka.yaml creates the whole inventory at start, which is fourteen topics: the
+  # seven event topics named below, one dead-letter topic for each of the six of them a
+  # consumer reads, and the shared fallback. The broker creates none on demand, so a name
+  # this ConfigMap misspells reaches a service as UNKNOWN_TOPIC_OR_PARTITION rather than
+  # as a silently created topic nothing else writes to.
+  #
+  # One authorization call publishes one event: to the first topic on an
+  # approval and to the second on a decline. The ledger posting and fraud
+  # detection services read the approval topic directly, each under its own
+  # consumer group below. The notification service reads what those two
+  # publish, on transaction.posted and fraud.assessed. No consumer calls another.
+  TOPIC_TRANSACTION_AUTHORIZED: "transaction.authorized"
+  TOPIC_TRANSACTION_DECLINED: "transaction.declined"
+  TOPIC_TRANSACTION_POSTED: "transaction.posted"
+  TOPIC_FRAUD_ASSESSED: "fraud.assessed"
+  # The account and card services publish these two on a state change.
+  TOPIC_ACCOUNT_STATE_CHANGED: "account.state-changed"
+  TOPIC_CUSTOMER_CONTEXT_CHANGED: "customer.context-changed"
+  TOPIC_CARD_UPDATED: "card.updated"
+  # Fallback for the exceptional case where a recovery record has no source topic.
+  # Normal consumer failures route to the source topic plus the suffix below.
+  TOPIC_DEAD_LETTER: "carddemo.dead-letter"
+  # This produces one dead-letter topic per consumed source topic, and there are six of
+  # those: transaction.authorized.DLT, transaction.declined.DLT, transaction.posted.DLT,
+  # fraud.assessed.DLT, account.state-changed.DLT and customer.context-changed.DLT. One
+  # dead-letter topic therefore carries one source wire shape. card.updated is the seventh
+  # event topic and has no counterpart, because its only consumer routes a spent record to
+  # the shared topic above as a governed envelope rather than replaying the card shape.
+  TOPIC_DEAD_LETTER_SUFFIX: ".DLT"
+
+  # Consumer groups
+  # Eleven groups, one per active listener. Each group receives its own copy of
+  # every event, and two listeners sharing one group would split the events
+  # between them. Ledger posting, fraud detection and notification are the three
+  # independent readers of transaction.authorized.
+  GROUP_LEDGER_POSTING: "ledger-posting"
+  # Active: the fraud service reads transaction.authorized under this group.
+  GROUP_FRAUD_DETECTION: "fraud-detection"
+  # Active: the notification service reads transaction.authorized under this group, which
+  # makes it the third independent consumer of the authorization event.
+  GROUP_NOTIFICATION_AUTHORIZED: "notification-authorized"
+  # Active: the notification service reads transaction.posted under this group.
+  GROUP_NOTIFICATION_POSTED: "notification-posted"
+  # Active: the notification service reads fraud.assessed under this group.
+  GROUP_NOTIFICATION_FRAUD: "notification-fraud"
+  # Active: the notification service reads customer.context-changed under this group.
+  GROUP_NOTIFICATION_CUSTOMER: "notification-customer"
+  # The authorization service reads the two state-change streams that keep its
+  # replica tables current. One group per stream, so the two lag, rebalance and
+  # reset independently.
+  GROUP_AUTHORIZATION_ACCOUNT: "authorization-account-state"
+  # Consumer group of the ledger's own account-state listener. A second reader of the same
+  # stream under a group of its own, so the two services each see every change rather than
+  # splitting the partitions between them.
+  GROUP_LEDGER_ACCOUNT: "ledger-account-state"
+  # Consumer group of the ledger's reject listener. It reads transaction.declined, which the
+  # authorization service publishes, and writes the 430-byte reject row of
+  # app/cbl/CBTRN02C.cbl:L446-L465. Without this group the reject path has no production
+  # ingress and the row is never written.
+  GROUP_LEDGER_REJECT: "ledger-reject"
+  GROUP_AUTHORIZATION_CARD: "authorization-card-updated"
+  # Consumer group of the account service's posted-transaction listener. It adds each
+  # posted amount to the account record, reproducing app/cbl/CBTRN02C.cbl:L545-L560, and the
+  # state change it publishes is what carries the two billing-cycle accumulators to the
+  # authorization replica reason code 102 reads. A second reader of transaction.posted under
+  # a group of its own, so the notification service still receives every record.
+  GROUP_ACCOUNT_POSTED: "account-posted"
+
+  # Authorization replicas
+  # No key here names one service to another, because no service calls another. The
+  # authorization service applies its decline rules against card_xref and
+  # account_credit_snapshot in its own schema, and its two listeners keep those tables
+  # current from account.state-changed and card.updated. REPLICA_LAG_CEILING below is
+  # what bounds how far behind those replicas may fall.
+
+  # Outbox relay
+  # Milliseconds between two sweeps for unpublished rows, then the rows one
+  # sweep claims. Five producer services run this relay.
+  OUTBOX_RELAY_INTERVAL_MS: "500"
+  OUTBOX_RELAY_BATCH_SIZE: "100"
+  # How long a claim may be held before the row is treated as stranded and returned
+  # to PENDING, as an ISO-8601 duration. A relay that dies holding a claim would
+  # otherwise cost one event permanently: the row stays CLAIMED and the claim query
+  # reads PENDING rows only. card-platform/.env.example carries the same value.
+  OUTBOX_RELAY_CLAIM_TIMEOUT: "PT2M"
+  # Longest one send waits for the broker before messaging/KafkaEventPublisher fails the
+  # stage it returned, as an ISO-8601 duration. The row then stays unpublished and the next
+  # sweep claims it again, so a slow broker delays an event and never loses one. Only the
+  # three services that bind it read it — authorization, account and card — and the
+  # whole-ConfigMap pull carries it to the other three, which ignore it.
+  # card-platform/.env.example carries the same value.
+  OUTBOX_RELAY_PUBLISH_TIMEOUT: "PT10S"
+  # Milliseconds one sweep may spend waiting for broker acknowledgements before it stops
+  # and leaves the rest of its batch to the next sweep. Read once per pass as a monotonic
+  # deadline, so a slow broker costs one pass rather than an unbounded one. It stays above
+  # the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS, which the shipped
+  # settings hold at four seconds; a send therefore resolves inside the pass that issued it
+  # instead of being abandoned while the broker may still complete it.
+  # card-platform/.env.example carries the same value.
+  OUTBOX_RELAY_MAX_DURATION_MS: "5000"
+  OUTBOX_PUBLISHED_RETENTION_HOURS: "168"
+  # No key expires a duplicate-delivery marker. A horizon bounded against broker log retention
+  # says nothing about how long the side effect a marker guards stands, so every service keeps its
+  # claims permanently. Each service's processed_event_claims_are_permanent migration carries the
+  # whole rule.
+  RETENTION_SWEEP_INTERVAL_MS: "3600000"
+  # Business-table horizons. A horizon declared in a COMMENT ON TABLE and applied by no code
+  # leaves the catalogue describing an intention while the table only grows. A
+  # security review found that, and each service's domain/RetentionSweep now reads the
+  # matching value below. Every one of these rows is pseudonymous rather than anonymous:
+  # its account or transaction identifier resolves to a named customer through the owning
+  # service, so these are privacy horizons and not housekeeping.
+  # card-platform/.env.example carries the same values.
+  FRAUD_ASSESSMENT_RETENTION_DAYS: "90"
+  # This one also has a floor. A velocity bucket is counted into for the length of
+  # carddemo.fraud.risk.velocity-window-minutes, so the fraud service refuses to start
+  # when this horizon does not outlast that window.
+  FRAUD_VELOCITY_RETENTION_DAYS: "7"
+  # Bounding the reject set is faithful rather than additive: app/jcl/DALYREJS.jcl:L24-L28
+  # defines the source's reject generation group with LIMIT(5) and SCRATCH, so a sixth
+  # write deletes the oldest generation.
+  LEDGER_REJECTED_RETENTION_DAYS: "90"
+  # Days a row of authorization_decision remains. It is the attribution record of a financial
+  # decision rather than a message in flight, so it outlives the outbox row that carried the
+  # event, and a year is the horizon the authorization service ships. Only that service reads
+  # this, and the whole-ConfigMap pull carries it to the other five, which ignore it. It
+  # governed unresolved_card_attempt as well until migration V20 withdrew that table.
+  DECISION_RETENTION_DAYS: "365"
+  # OUTBOX_RELAY_INSTANCE_ID is deliberately NOT a key here, and this is the one
+  # exception to the parity invariant in the header worth explaining twice. It names
+  # the relay instance that won a row, so its value has to differ per replica. The
+  # application reads ${OUTBOX_RELAY_INSTANCE_ID:${HOSTNAME:...}}, and a Kubernetes
+  # container's HOSTNAME is its Pod name, which is already distinct per replica. A
+  # key here would be one shared value. An EMPTY key here is still a defined variable,
+  # so it would win over the Pod name and leave every replica claiming rows under one
+  # identity. card-platform/docker-compose.yml passes it to nothing.
+
+  # Replica freshness
+  # How old an observation of card_xref or account_credit_snapshot may be and still
+  # count as fresh, as an ISO-8601 duration. AccountStateChangedConsumer and
+  # CardUpdatedConsumer keep those copies current after the seed load. A copy that is
+  # missing a change does not raise an error: it approves a transaction the current limit
+  # would have declined. What is bounded is the number of records a replica stream may have
+  # waiting, and deliberately not the age of a row: both producers publish on a state change
+  # and on nothing else, so an unedited card is a correct copy whose last observation recedes
+  # for ever, and the age bound this replaces refused every one of them a day after the seed
+  # load. Zero requires a consumer that is fully caught up.
+  # card-platform/.env.example carries the same value.
+  REPLICA_LAG_CEILING: "0"
+
+# Decision serialization and reserved exposure
+  # Only the authorization service reads these two, and the whole-ConfigMap pull carries
+  # them to the other five, which ignore them. An approval reserves its own amount on its
+  # account_credit_snapshot row inside the decision transaction, because the account
+  # service reports the authoritative accumulators back only after the posting path has
+  # run. app/cbl/CBTRN02C.cbl had no such gap: it rewrites the account at :L545-L560
+  # before it validates the next record, so :L403-L405 always reads every earlier approval.
+  #
+  # Milliseconds a decision waits for the account row another decision holds before the
+  # lock is refused and the call answers 503. Applied per decision transaction.
+  DECISION_LOCK_WAIT_MS: "3000"
+  # How long a reservation holds its exposure before the next decision treats it as
+  # drained. The authoritative account.state-changed event releases it sooner; this bound
+  # covers the approval whose event is dead-lettered and never arrives.
+  DECISION_RESERVATION_TTL: "PT15M"
+  # card-platform/.env.example carries both values.
+
+  # Update serialization
+  # Only the account and card services read this, and the whole-ConfigMap pull carries it to
+  # the other four, which ignore it. Milliseconds a locked read of the row an update is about
+  # to rewrite waits for a writer already holding it, before the datastore refuses the lock
+  # and the update answers the documented lock-failure outcome. PostgreSQL waits for ever
+  # when this is unset, so a contended write would hold its request open for as long as the
+  # other writer held the row. Applied per update transaction, so it never bounds a Flyway
+  # migration. card-platform/.env.example carries the same value.
+  WRITE_LOCK_WAIT_MS: "3000"
+
+  # Consumer resilience
+  # Delivery attempts a consumer makes, then the milliseconds it waits between
+  # two. A record that exhausts the attempts routes to the dead-letter topic.
+  # Authorization, ledger, fraud and notification listeners use this policy.
+  CONSUMER_MAX_RETRY_ATTEMPTS: "3"
+  CONSUMER_RETRY_BACKOFF_MS: "1000"
+
+  # Notification history
+  # Retention horizons for statement rows and for the metadata-only record of each alert
+  # the notification service rendered. Nothing on this platform sends a cardholder alert,
+  # so NOTIFICATION_LOG_RETENTION_DAYS bounds a table of rendered-not-sent rows.
+  STATEMENT_RETENTION_DAYS: "400"
+  NOTIFICATION_LOG_RETENTION_DAYS: "90"
+
+  # Logging and observability
+  # Root level, then the level for the com.carddemo packages where the event
+  # fan-out shows. Both take TRACE, DEBUG, INFO, WARN, ERROR or OFF.
+  LOG_LEVEL: "INFO"
+  LOG_LEVEL_CARDDEMO: "INFO"
+  # Actuator endpoints each service exposes under /actuator. The Deployment
+  # probes read /actuator/health, so health stays in the list.
+  #
+  # Exposing an endpoint here does not publish it. config/SecurityConfig in each
+  # service secures this surface in front of the endpoints listed below.
+  # /actuator/health answers with no credential, since a Kubernetes probe and a
+  # container health check carry none. Every other endpoint requires
+  # ROLE_MONITORING. An anonymous caller receives 401 and an identity holding a
+  # business role receives 403. The NetworkPolicy in each service manifest closes
+  # the same gap at the network layer.
+  MANAGEMENT_ENDPOINTS: "health,metrics,prometheus"
+  # Port each container serves /actuator on. The probes target it, and port 8080
+  # answers no management request. No Service exposes this port: a pod reaches it
+  # by pod address alone, and only when a NetworkPolicy admits it.
+  MANAGEMENT_PORT: "9080"
+  # Keeps /actuator/health/readiness and /actuator/health/liveness available. Every Deployment
+  # probes one group or the other. Each service application.yml defines readiness as process
+  # state plus database, Kafka, listener-container and outbox checks, while liveness contains
+  # process state alone. A dependency outage therefore withdraws a Pod from its Service
+  # instead of restarting a Java virtual machine that is running correctly.
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
+
+  # Request-surface controls
+  # One policy for all six services, so these keys sit here rather than in a per-service
+  # ConfigMap. card-platform/.env.example carries all seven values. Six of them reach every
+  # container through the shared environment block of card-platform/docker-compose.yml; the
+  # body ceiling below is the exception, because only the three services that accept a
+  # request body install config/RequestBodyCeilingFilter, so Compose passes it to the
+  # authorization, account and card containers only.
+  #
+  # Bytes the largest legitimate request body occupies. A request declaring more is refused
+  # by config/RequestBodyCeilingFilter, and one declaring no length at all is bounded by the
+  # parser through config/JsonReadCeilingConfig. The widest legitimate body holds
+  # DALYTRAN-DESC PIC X(100) at app/cpy/CVTRA06Y.cpy:L9.
+  API_MAX_REQUEST_BODY_BYTES: "65536"
+  #
+  # The header names what a state-changing request has to carry. A browser attaches a cached
+  # HTTP Basic credential to a request a foreign page caused, and an HTML form can set no
+  # header at all, so this is the line between a first-party client and a replayed credential.
+  # config/CrossSiteRequestFilter also refuses a foreign Sec-Fetch-Site or Origin.
+  #
+  # An Ingress terminating Transport Layer Security has to forward the client-facing host and
+  # scheme, and each service has to be told to read them, or the Origin comparison sees the
+  # address the Ingress dialled and every caller shares one rate ceiling. These manifests carry
+  # no Ingress, so every service ships forward-headers-strategy: none and trusts no such header.
+  # A deployment that adds one activates the trusted-proxy profile instead of setting a strategy
+  # by hand: add trusted-proxy to SPRING_PROFILES_ACTIVE and set TRUSTED_PROXY_ADDRESSES to a
+  # regular expression matching the addresses the Ingress sends from. The profile uses Tomcat's
+  # valve rather than the framework filter, so a request that did not come through the proxy keeps
+  # its own address. services/*/src/main/resources/application-trusted-proxy.yml carries it, with
+  # the header-rewriting the proxy itself has to do.
+  API_CROSS_SITE_HEADER: "X-CardDemo-Request"
+  # The five rate ceilings, counted over one fixed window by config/RequestRateCeilingFilter,
+  # which runs ahead of the security chain so a refusal costs less than the bcrypt
+  # verification it refuses. The request ceiling applies per source address and per identity;
+  # the write ceiling covers POST, PUT, PATCH and DELETE; the failure ceiling refuses a source
+  # that keeps presenting a credential 401 answers.
+  #
+  # The counters live in one process, so a Deployment scaled past one replica bounds each
+  # replica rather than the service. card-platform/docs/suggested-next-tasks.md records the
+  # shared-store ceiling a deployment beyond a demo wants.
+  API_RATE_WINDOW_SECONDS: "60"
+  API_RATE_REQUESTS_PER_WINDOW: "600"
+  API_RATE_WRITE_REQUESTS_PER_WINDOW: "120"
+  API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW: "20"
+  API_RATE_CONCURRENT_REQUESTS: "64"
+
+  # Request identities
+  # Each service maps the entries below onto one Spring Security user, and start-up
+  # fails when the list is empty. A username is not a credential and belongs here;
+  # the matching password hashes are keys of a Secret in 31-secret.example.yaml
+  # and appear nowhere in this file. Three of the four sit in
+  # carddemo-identity-secret, which all six Deployments pull. The acquirer hash sits
+  # in carddemo-authorization-identity-secret, which 40-authorization-service.yaml
+  # alone pulls, because that service is the only one that verifies a password
+  # against it.
+  #
+  # ADMIN and USER are the two outcomes of the SEC-USR-TYPE fork at
+  # app/cbl/COSGN00C.cbl:L232-L236. ACQUIRER and MONITORING are additive.
+  # MONITORING reaches the metrics and Prometheus endpoints above and no business
+  # route at all.
+  #
+  # ACQUIRER is the machine identity a point-of-sale network presents, and only the
+  # authorization service reads it: it is the one role besides ADMIN that reaches
+  # POST /authorizations. It is a separate identity rather than another scope on the
+  # cardholder entry because that route names its card in the request body, so no
+  # path variable carries an identifier an ownership scope could be compared against,
+  # and the route therefore reaches every card the platform holds.
+  ADMIN_USERNAME: "admin001"
+  ACQUIRER_USERNAME: "acquirer1"
+  USER_USERNAME: "user0001"
+  MONITORING_USERNAME: "monitor01"
+  # What the ordinary identity owns, comma separated, one authority per
+  # entitlement: SCOPE_ACCOUNT_<eleven digits>, SCOPE_CUSTOMER_<nine digits> or
+  # SCOPE_CARD_<card token>. An account and a customer identifier are written exactly
+  # as the column holds them, leading zeros included. Empty grants nothing, so an
+  # ownership-scoped route answers 403 until a value appears here.
+  #
+  # The two values below are the same two card-platform/.env.example carries, and
+  # they are here so that a demo scripted on one path reproduces on the other: an
+  # empty list on this path alone would answer 403 to every ownership-scoped route
+  # that answered 200 under Docker Compose, and the divergence would look like a
+  # broken cluster rather than a configuration difference. They name record 1 of
+  # app/data/ASCII/acctdata.txt and its customer in custdata.txt, both seeded by the
+  # V2__seed.sql migration of the service that owns them. They are entitlements, not
+  # credentials: the USER identity still has to authenticate with the hash in
+  # carddemo-identity-secret before either applies. Re-point them at the records a real
+  # deployment owns, or empty the value to grant nothing.
+  #
+  # No SCOPE_CARD authority appears, because a card token is derived under the key in
+  # carddemo-card-token-secret and this cluster generates its own. An authority written
+  # here would name a card under a key no deployment uses. The administrator identity
+  # reaches every card route without one; for the ordinary identity, derive a token under
+  # the generated key and append SCOPE_CARD_<that value> here.
+  # card-platform/.env.example carries the command.
+  USER_SCOPES: "SCOPE_ACCOUNT_00000000001,SCOPE_CUSTOMER_000000001"
+
+  # The card-token version the two deriving services derive under. The key itself is
+  # CARD_TOKEN_SECRET in carddemo-card-token-secret, because it is key material and this
+  # file is not a Secret. The version is not key material and belongs here.
+  #
+  # The version is part of the message the keyed code covers, so raising it rolls every
+  # token over under the same key. That is the staged rollover, and the card service
+  # applies it: CardTokenReconciler re-derives card_token for every row on start-up, so
+  # raising the version here and restarting is the whole procedure for the seeded rows.
+  # A token something already stored elsewhere - a statement_transaction row, a
+  # notification_log row, an authorization_decision row, a granted SCOPE_CARD authority -
+  # does not survive it. card-platform/.env.example carries the same value, so a demo
+  # scripted on Compose reproduces here.
+  CARD_TOKEN_VERSION: "1"
+
+  # The two non-secret halves of a card-token rotation. Both are inert in ordinary
+  # operation and only the card service reads either.
+  #
+  # A stored card token is an identity three other places already name and none of those
+  # three holds a card number, so none can derive its own replacement:
+  # statement_transaction and notification_log in the notification service,
+  # authorization_decision in the authorization service, and a granted SCOPE_CARD
+  # authority. Turning the key or the version over moves that identity, so
+  # CardTokenReconciler refuses to start rather than rewriting it silently, and the
+  # refusal names the procedure in card-platform/services/card-service/README.md.
+  #
+  # CARD_TOKEN_PREVIOUS_VERSION is the version the stored tokens were taken under. Empty,
+  # it falls back to CARD_TOKEN_VERSION above, so turning the key over without raising the
+  # version needs no value here. The key itself is CARD_TOKEN_PREVIOUS_SECRET in
+  # carddemo-card-token-secret, because it is key material and this file is not a Secret.
+  CARD_TOKEN_PREVIOUS_VERSION: ""
+  # The operator's statement that a rotation is intended. A seeded token is not a rotation
+  # and is brought onto the deployment key whatever this says.
+  CARD_TOKEN_ROTATION_ENABLED: "false"
+
+  # NO statement about a published key appears here, and that is deliberate.
+  # 31-secret.example.yaml carries a placeholder rather than a key, so a cluster applying
+  # these files runs under a key generated for itself. CARD_TOKEN_ALLOW_PUBLISHED_KEY exists
+  # for the one deployment that means to run under the key this repository publishes for its
+  # demonstration: PanMasker refuses that key unless the value is set to true. Setting it
+  # here while the Secret names no key would be a statement about a key nobody supplied,
+  # which survives a rotation as a lie. card-platform/docs/suggested-next-tasks.md carries
+  # the rotation and the three artifacts it re-derives.
+
+  # Transport Layer Security for the two ports each service serves
+  # On here and off in the compose stack, and the reason is the network rather than the
+  # protocol: a Docker bridge on one machine carries no traffic a third party can read,
+  # while a cluster pod network does. Each keystore arrives from that service's own
+  # carddemo-<service>-tls-secret, and its password comes from the same Secret.
+  #
+  # A service refuses to finish starting if this is true and the keystore is empty. The
+  # check lives in the config/SecurityConfig of each service, beside the credential checks,
+  # because an encrypted port with nothing behind it fails later and further away.
+  SERVER_SSL_ENABLED: "true"
+  SERVER_SSL_KEYSTORE: "file:/etc/carddemo/tls/keystore.p12"
+  SERVER_SSL_KEYSTORE_TYPE: "PKCS12"
+  # The management port carries the same posture as the service port, declared rather
+  # than inherited. A monitoring credential travelling to a collector takes the same
+  # protection as a cardholder identifier travelling to a client. A probe against an
+  # encrypted management port needs scheme HTTPS, which each service manifest sets.
+  MANAGEMENT_SSL_ENABLED: "true"
+
+  # Spring bindings identical in all six services
+  # Each service image ships the Docker Compose broker address as its default,
+  # and that address resolves nowhere in this namespace.
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  # One database, six schemas, six logins. Each service Deployment adds the schema and the
+  # login name it owns, and its Flyway migration creates every table in the schema the
+  # provisioning program already gave it.
+  #
+  # sslmode=verify-full is the strongest mode the driver offers. It encrypts, it checks
+  # the server certificate against the authority below, and it checks that the certificate
+  # names the host it connected to. verify-ca would accept any certificate that authority
+  # ever issued, including one issued for another name.
+  # card-platform/docker-compose.yml asks for require instead, since a laptop stack has no
+  # authority to verify against.
+  # The database name and the schema are NOT part of this value. Each service owns one of the
+  # six databases above and one schema inside it, so each Deployment builds its own URL from
+  # its own <SERVICE>_DB_NAME and <SERVICE>_DB_SCHEMA and appends these options.
+  SPRING_DATASOURCE_OPTIONS: "sslmode=verify-full&sslrootcert=/etc/carddemo/tls/ca.crt"
+
+  # Flyway locations of the two services that ship a demo overlay
+  # Both keys carry the demo overlay, so this deployment path is a demo profile exactly as
+  # card-platform/docker-compose.yml is. The manifests exist so the same demonstration runs on
+  # a standard cluster, and a cluster that declined every authorization would demonstrate
+  # nothing.
+  #
+  # What the overlay changes. db/migration reproduces app/data/ASCII/acctdata.txt value for
+  # value, and its 50 account expiries run from 2023-01-06 to 2025-12-28, so reason code 103 at
+  # app/cbl/CBTRN02C.cbl:L414-L420 declines a request dated after the expiry it is compared
+  # against. db/demo holds one
+  # migration, V900__demo_expiry_extension.sql, that lifts those expiries to 2099-12-31 and
+  # changes nothing else.
+  #
+  # The base-profile opt-out. Set BOTH keys to "classpath:db/migration" for a run whose output
+  # is compared against the fixture. Change them together or not at all: the account service
+  # owns the record the authorization service replicates and publishes its expiry on every
+  # state change, so extending one copy alone has the first posted transaction write a seeded
+  # expiry back over the extended replica and decline every later call on that account.
+  #
+  # Neither service image carries the overlay as its own default. Each application.yml ships
+  # ${SPRING_FLYWAY_LOCATIONS:classpath:db/migration}, so a module started without these keys
+  # gets the fixture, which is what mvn verify measures against.
+  AUTHORIZATION_FLYWAY_LOCATIONS: "classpath:db/migration,classpath:db/demo"
+  ACCOUNT_FLYWAY_LOCATIONS: "classpath:db/migration,classpath:db/demo"

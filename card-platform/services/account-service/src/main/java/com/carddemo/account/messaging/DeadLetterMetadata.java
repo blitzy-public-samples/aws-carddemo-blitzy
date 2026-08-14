@@ -1,0 +1,193 @@
+package com.carddemo.account.messaging;
+
+import com.carddemo.events.DeadLetterEnvelope;
+import com.carddemo.events.EventEnvelope;
+import java.util.List;
+
+/**
+ * Diagnostic detail that travels alongside one message on the dead-letter topic.
+ * {@code config/KafkaConsumerConfig} routes a record it cannot apply there, and
+ * {@code outbox/OutboxRelay} routes the diagnostic of a row it abandoned.
+ *
+ * <p>Transformed field by field from the group {@code 01 ABEND-DATA.} at
+ * app/cpy/CSMSG02Y.cpy:L21, whose four alphanumeric fields occupy 134 bytes.</p>
+ *
+ * {@code app/cbl/COACTUPC.cbl:L4209} fills {@code ABEND-CULPRIT} with the failing program name,
+ * and {@code app/cbl/COACTUPC.cbl:L4205-L4206} sets {@code ABEND-MSG} to
+ * {@code UNEXPECTED ABEND OCCURRED.} when the field holds low values.</p>
+ *
+ * <p>No component of this record throws, nothing is padded, and no component is ever the source of
+ * a second failure. {@link #toEnvelope(String, String, int, long, String, String, int)} does throw,
+ * on an aggregate identifier that is not eleven decimal digits. A {@code null} component becomes the empty string, matching the
+ * {@code VALUE SPACES} clause each source field carries. Each code point outside printable
+ * American Standard Code for Information Interchange (ASCII) becomes one
+ * {@link #SUBSTITUTE_CHARACTER}, so no control character and no line break reaches the
+ * dead-letter topic. A component longer than its maximum keeps its leading characters. Every
+ * retained character is printable ASCII and one code unit wide, so shortening a component cannot
+ * split a surrogate pair.
+ *
+ * <p>A caller names a failing field by its JavaScript Object Notation (JSON) pointer, for example
+ * {@code /maskedCardNumber}, and never the field value. No component carries a card number, a card
+ * verification value, an account identifier, a monetary value, a raw payload or the text of a
+ * {@code Throwable}. {@link #fromFailure(String, Throwable, String, String)} reads the failure type
+ * and nothing else.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
+ *
+ * @param abendCode the four-character failure code
+ * @param culprit   the failing component
+ * @param reason    the failure classification
+ * @param message   the failure detail
+ */
+public record DeadLetterMetadata(String abendCode, String culprit, String reason,
+        String message) {
+
+    /**
+     * Widest {@code abendCode} this record holds, from {@code ABEND-CODE PIC X(4)} at
+     * {@code app/cpy/CSMSG02Y.cpy:L22}.
+     */
+    public static final int ABEND_CODE_MAX_LENGTH = 4;
+
+    /**
+     * Widest {@code culprit} this record holds, from {@code ABEND-CULPRIT PIC X(8)} at
+     * {@code app/cpy/CSMSG02Y.cpy:L24}.
+     */
+    public static final int CULPRIT_MAX_LENGTH = 8;
+
+    /**
+     * Widest {@code reason} this record holds, from {@code ABEND-REASON PIC X(50)} at
+     * {@code app/cpy/CSMSG02Y.cpy:L26}.
+     */
+    public static final int REASON_MAX_LENGTH = 50;
+
+    /**
+     * Widest {@code message} this record holds, from {@code ABEND-MSG PIC X(72)} at
+     * {@code app/cpy/CSMSG02Y.cpy:L28}.
+     */
+    public static final int MESSAGE_MAX_LENGTH = 72;
+
+    /**
+     * Replacement for any character outside printable American Standard Code for Information
+     * Interchange (ASCII). Sanitising to printable ASCII first is what makes the length cap below
+     * safe: every retained character is one code unit, so shortening a component can never split a
+     * surrogate pair.
+     */
+    public static final char SUBSTITUTE_CHARACTER = '.';
+
+    /** Lowest code point kept unchanged, the space. */
+    private static final int FIRST_PRINTABLE_ASCII = 0x20;
+
+    /** Highest code point kept unchanged, the tilde. */
+    private static final int LAST_PRINTABLE_ASCII = 0x7E;
+
+    /**
+     * Sanitises all four text components.
+     *
+     * <p>This constructor throws nothing. A dead-letter record describes a failure that already
+     * happened. A second failure raised while building it would suppress the dead-letter message,
+     * and leave the broker redelivering the same message for ever.</p>
+     */
+    public DeadLetterMetadata {
+        abendCode = sanitise(abendCode, ABEND_CODE_MAX_LENGTH);
+        culprit = sanitise(culprit, CULPRIT_MAX_LENGTH);
+        reason = sanitise(reason, REASON_MAX_LENGTH);
+        message = sanitise(message, MESSAGE_MAX_LENGTH);
+    }
+
+    /**
+     * @param abendCode the failure code; may be {@code null}
+     * @param culprit   the failing component; may be {@code null}
+     * @param reason    the failure classification; may be {@code null}
+     * @param message   the failure detail; may be {@code null}
+     * @return a record whose four components are consistent
+     */
+    public static DeadLetterMetadata of(String abendCode, String culprit, String reason,
+            String message) {
+        return new DeadLetterMetadata(abendCode, culprit, reason, message);
+    }
+
+    /**
+     * @param abendCode the failure code; may be {@code null}
+     * @param failure   the failure whose type names the culprit; may be {@code null}
+     * @param reason    the failure classification, assembled by the caller; may be {@code null}
+     * @param message   the failure detail; may be {@code null}
+     * @return a record whose four components are consistent
+     */
+    public static DeadLetterMetadata fromFailure(String abendCode, Throwable failure, String reason,
+            String message) {
+        String culprit = failure == null ? "" : failure.getClass().getSimpleName();
+        return of(abendCode, culprit, reason, message);
+    }
+
+    /**
+     * Maps one component onto the text it will hold.
+     *
+     * <p>A {@code null} component becomes the empty string, matching the {@code VALUE SPACES}
+     * clause the copybook sets on every field. Each code point outside printable ASCII becomes one
+     * {@link #SUBSTITUTE_CHARACTER}, which removes every control character, every line break and
+     * every character a log reader could misread. The scan stops once {@code maxLength} characters
+     * are in hand, so the work does not grow with the size of an over-long argument.</p>
+     *
+     * @param value     the text the caller supplied; may be {@code null}
+     * @param maxLength the widest text the component holds
+     * @return at most {@code maxLength} printable ASCII characters
+     */
+    private static String sanitise(String value, int maxLength) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+
+        StringBuilder kept = new StringBuilder(maxLength);
+        int index = 0;
+        while (index < value.length() && kept.length() < maxLength) {
+            int codePoint = value.codePointAt(index);
+            index += Character.charCount(codePoint);
+            boolean printable =
+                    codePoint >= FIRST_PRINTABLE_ASCII && codePoint <= LAST_PRINTABLE_ASCII;
+            kept.append(printable ? (char) codePoint : SUBSTITUTE_CHARACTER);
+        }
+        return kept.toString();
+    }
+
+    /**
+     * Renders this metadata as the one dead-letter contract the platform publishes.
+     *
+     * <p>Six service modules declare a record of this name as their in-process carrier for the four
+     * diagnostic values, and every one of them reaches a topic only through this method.
+     *
+     * <p>{@link DeadLetterEnvelope} in {@code libs/event-contracts} is the one wire contract. It
+     * carries a version, it validates against {@code schemas/dead-letter-v1.json} through the same
+     * serializer and deserializer every other event passes, and it holds no field of the failing
+     * payload at all. This record stays as the in-process carrier for the four diagnostic values,
+     * and this method is the only way it reaches a topic.
+     *
+     * <p>What the envelope adds is where the failing record was: topic, partition and offset. An
+     * operator needs those to reach the record itself, and none of the three is derivable from the
+     * diagnostics. The list of shortened components is left empty here, and that is exact rather
+     * than lazy. This record bounds each diagnostic to the same width {@link DeadLetterEnvelope}
+     * bounds it to, so every value handed over already fits and the envelope has nothing left to
+     * shorten. A producer bounding its diagnostics more narrowly than this record does should build
+     * the envelope directly, so its own shortening is named.
+     *
+     * @param aggregateId     the eleven-digit account identifier of the failing record, and the
+     *                        Kafka message key of the envelope
+     * @param sourceTopic     the topic the failing record arrived on
+     * @param sourcePartition the partition it arrived on
+     * @param sourceOffset    its offset
+     * @param failedEventId   the {@code eventId} of the failing record, or null when the record
+     *                        could not be parsed far enough to carry one
+     * @param failedEventType its {@code eventType}, or null for the same reason
+     * @param attemptCount    how many delivery attempts were made before the record was dead
+     *                        lettered
+     * @return one schema-governed envelope carrying these diagnostics and no payload value
+     * @throws IllegalArgumentException if {@code aggregateId} is not eleven decimal digits
+     */
+    public DeadLetterEnvelope toEnvelope(String aggregateId, String sourceTopic,
+            int sourcePartition, long sourceOffset, String failedEventId, String failedEventType,
+            int attemptCount) {
+        return new DeadLetterEnvelope(
+                EventEnvelope.of(DeadLetterEnvelope.EVENT_TYPE, aggregateId),
+                abendCode, culprit, reason, message, sourceTopic, sourcePartition, sourceOffset,
+                failedEventId, failedEventType, attemptCount, true, List.of());
+    }
+}

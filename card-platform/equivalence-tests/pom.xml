@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- The aggregator sits one level up. equivalence-tests is a direct child of card-platform. -->
+  <parent>
+    <groupId>com.carddemo</groupId>
+    <artifactId>card-platform</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>equivalence-tests</artifactId>
+  <packaging>jar</packaging>
+
+  <name>CardDemo Card Platform :: Equivalence Tests</name>
+  <description>
+    Provides fixed-width fixture loading and copybook parsing support for the equivalence
+    suite. Nine *EquivalenceTest classes cover posting, authorization, bill payment,
+    interest, validation, decimal behavior, identifier fidelity, fixture coverage and the
+    card seed. Failsafe runs them at integration-test and fails the build at verify, and
+    Surefire runs the contract tests that hold the shipped configuration and documentation
+    to what the code does.
+  </description>
+
+  <!-- Language level. The compiler plugin in card-platform/pom.xml reads
+       maven.compiler.release, and the aggregator's enforcer rule requires 25 in every module.
+       java.version carries the framework's conventional name for the same level and no plugin
+       resolves it. -->
+  <properties>
+    <java.version>25</java.version>
+    <maven.compiler.release>25</maven.compiler.release>
+
+    <!-- Shape of ${maven.build.timestamp}, which the unit-test plugin below hands to
+         DocumentationContractTest as carddemo.build.started. This is Maven's own default format;
+         it is stated here so the one test that parses the value reads a shape this build fixes
+         rather than one a Maven release could change. Instant.parse accepts it as written. -->
+    <maven.build.timestamp.format>yyyy-MM-dd'T'HH:mm:ss'Z'</maven.build.timestamp.format>
+  </properties>
+
+  <dependencies>
+
+    <!-- Shared libraries. The aggregator's dependency management supplies both versions. -->
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>event-contracts</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>cobol-compat</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- The six services. The aggregator does not manage them, so each names ${project.version}. -->
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>authorization-service</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>ledger-posting-service</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>fraud-detection-service</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>notification-service</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>account-service</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>card-service</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Test infrastructure. Versions come from the Spring Boot bill of materials the aggregator imports. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- The broker client. This module imports org.apache.kafka.clients or
+         org.apache.kafka.common directly. Version from the imported bill of materials.
+         Decisions: card-platform/docs/decision-log.md, under "Which artifacts a module
+         declares for itself, and which it reaches through a starter". -->
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka-clients</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>tools.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Testcontainers 2.x publishes each module under a testcontainers-prefixed artifact identifier. -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-kafka</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Test framework and the wait helper for event-driven assertions. -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+  </dependencies>
+
+  <build>
+    <plugins>
+
+      <!-- This module declares the other eight platform modules at test scope, which the service-artifact
+           ban rejects. Matching the identifier enforce-service-independence unbinds that one
+           execution here. The inherited enforce-toolchain-and-prohibited execution stays bound, so
+           this module still fails on a prohibited direct dependency and on a wrong Maven or Java
+           version. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>enforce-service-independence</id>
+            <phase>none</phase>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Surefire leaves the *EquivalenceTest name pattern to Failsafe.
+
+           The system property carries the moment this invocation started, which is one value for
+           the whole session and therefore the same in every module. DocumentationContractTest
+           compares each module's published test count against that module's own reports, and it
+           needs to know which reports this invocation wrote: a report directory left by an earlier
+           command is not evidence about this one. Without the property that test read directory
+           presence, so a module cleaned on its own and a phase this invocation never ran both
+           looked like a missing report and failed the build with no defect in any source. The
+           format is stated rather than inherited so the test parses one shape. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <excludes>
+            <exclude>**/*EquivalenceTest.java</exclude>
+          </excludes>
+          <systemPropertyVariables>
+            <carddemo.build.started>${maven.build.timestamp}</carddemo.build.started>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+
+      <!-- This module carries test sources only, so its artifact packages the compiled
+           equivalence harness rather than an empty main output directory. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.5.1</version>
+        <configuration>
+          <classesDirectory>${project.build.testOutputDirectory}</classesDirectory>
+        </configuration>
+      </plugin>
+
+      <!-- Failsafe runs the *EquivalenceTest classes at integration-test and fails the build at
+           verify. Declaring the plugin here is what activates the execution the parent supplies in
+           pluginManagement: the identifier below matches it, so Maven merges the two into one
+           execution, and the include sits inside that execution rather than at plugin level.
+           EquivalenceSuiteExecutionConfigurationTest holds both properties. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>integration-test</id>
+            <configuration>
+              <includes>
+                <include>**/*EquivalenceTest.java</include>
+                <!--
+                  This module is the only one the plan lets depend on every service, so a test that
+                  spans more than one service can live nowhere else. Failsafe replaces its default
+                  selection when an include list is given, so before this second pattern a class
+                  named *IT here compiled and silently never ran. The unit-test plugin cannot pick
+                  either pattern up, so nothing runs twice.
+                -->
+                <include>**/*IT.java</include>
+              </includes>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+    </plugins>
+  </build>
+
+</project>

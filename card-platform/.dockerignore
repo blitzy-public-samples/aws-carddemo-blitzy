@@ -1,0 +1,33 @@
+# Paths a build excludes from the card-platform root context.
+#
+# This file governs a build that names no ignore file of its own. Each
+# services/*/Dockerfile has one — services/<service>/Dockerfile.dockerignore — and BuildKit
+# reads that one instead of this one, so the six service images are not governed here. What
+# remains for this file is an ad-hoc build run against this directory, and it excludes the
+# same things for the same reasons.
+
+# Host build output. Every image builds from source in its own builder stage, so an archive
+# built on the host has no part in any image and must not reach one.
+**/target/
+
+# Local environment values. .env.example travels with the repository; the .env a
+# developer copies from it carries their own credentials, as does .demo-credentials.
+.env
+.env.*
+!.env.example
+.demo-credentials
+
+# Documentation, the executive presentation and the Kubernetes manifests. No
+# stage of any image build reads them.
+docs/
+presentation/
+deploy/
+
+# A Maven repository checked into a context belongs in no image. A builder stage resolves
+# through a BuildKit cache mount, which is not part of the context at all.
+.m2/
+
+# Editor and operating-system artifacts.
+**/*.swp
+**/*~
+**/.DS_Store

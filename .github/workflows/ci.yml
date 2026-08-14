@@ -1,0 +1,1266 @@
+# Continuous integration for the CardDemo card platform.
+#
+# Ten stages run, and the `needs:` keys below are what orders them. Compiling the
+# reactor comes first and nothing else depends on anything but it: the seven stages
+# after it - the secret scan, the source analysis, the unit and contract tests, the
+# service integration suites, the equivalence suite, event schema compatibility and
+# the dependency review - each name the compile stage alone, so the runner starts all
+# seven together as soon as it succeeds. Building the six service images names every
+# one of them, so it starts only after all seven have passed. Recording provenance
+# names the image build and runs on a push alone. The stage numbers in the
+# comments below are reading order, not execution order.
+#
+#   compile --+--> secret-scan ----------+--> container-builds --> provenance (push only)
+#             +--> static-analysis ------+
+#             +--> unit-tests -----------+
+#             +--> integration-tests ----+
+#             +--> equivalence-tests ----+
+#             +--> schema-compatibility -+
+#             +--> supply-chain ---------+
+#
+# Provenance is a stage of its own. It runs on a push only and is the one job holding
+# `id-token: write` and `attestations: write`; the image build holds `contents: read`
+# and nothing else on every event.
+# Design decisions: card-platform/docs/decision-log.md.
+#
+# Every stage fails the run. No step is permitted to continue past an error, to
+# discard a status, or to succeed regardless: a finding stops the pipeline, and
+# ContinuousIntegrationWorkflowContractTest asserts that no step here carries either
+# of the two shapes that would let one through. Two stages state a severity threshold
+# rather than failing on every result, and each says so where it runs, because a gate
+# that can never pass is a gate somebody switches off.
+#
+# Every job runs on ubuntu-24.04, and every action is pinned to a full commit SHA with
+# the release that commit carries named beside it, because a tag can be moved over
+# different code. A release archive is pinned to its version and verified against a
+# digest published by the project that built it, which is the shape the toolchain
+# action uses. Both are read back by ContinuousIntegrationWorkflowContractTest.
+#
+# Reactor modules, declared by card-platform/pom.xml and listed in build order:
+#   card-platform/libs/event-contracts
+#   card-platform/libs/cobol-compat
+#   card-platform/services/authorization-service
+#   card-platform/services/ledger-posting-service
+#   card-platform/services/fraud-detection-service
+#   card-platform/services/notification-service
+#   card-platform/services/account-service
+#   card-platform/services/card-service
+#   card-platform/equivalence-tests
+#
+# Every test runs once. Asking Maven for a module asks for the modules it depends
+# on, and building those runs their tests too, so a stage that names a module deep
+# in the reactor will re-run every suite beneath it unless told not to. Each of the
+# three test stages therefore runs exactly the tests it owns: the unit stage every
+# Surefire test in all nine modules, the integration stage the six services'
+# Failsafe suites, and the equivalence stage the *EquivalenceTest classes and
+# equivalence-tests' own integration classes. The two -Dskip flags that draw those
+# lines name profiles declared in card-platform/pom.xml and in the six service
+# descriptors, and they are inert unless a command names them, so -DskipTests keeps
+# meaning what it means everywhere else.
+#
+# The container stage is the only stage that reads card-platform/docker-compose.yml.
+# It copies card-platform/.env.example to the environment file Compose reads its
+# variables from, generates the fourteen credentials the example file does not carry
+# using the command it documents, and starts the delivered stack itself. The two test
+# stages start no Compose stack: every integration class provisions the PostgreSQL and
+# Kafka containers it needs through Testcontainers, against the Docker daemon the
+# runner already has.
+#
+# Setup on a developer machine, and the local form of every command below:
+# card-platform/docs/onboarding.md
+# Design decisions for this file: card-platform/docs/decision-log.md
+
+name: Card platform continuous integration
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+  # Monday 03:17 UTC. The whole-history secret scan of stage 2 runs on this trigger and on
+  # a manual run, and on neither a push nor a pull request: reading 2,580 commits on every
+  # push is what made that gate unpassable. The minute is off the hour because every runner
+  # queue is busiest there.
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: card-platform-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  # The exact Temurin build this platform is exercised against, not the release line. "25"
+  # resolved to whatever patch Adoptium had published that morning, so the toolchain moved
+  # under a build that pins everything else, and card-platform/docs/onboarding.md told a
+  # reader to install 25.0.4+7 while this file installed something else. Raising it is a
+  # deliberate edit here, in the onboarding table and in the aggregator's enforcer range.
+  JAVA_VERSION: "25.0.4+7"
+  MAVEN_VERSION: "3.9.16"
+  MAVEN_OPTS: "-Xmx2g"
+  # Tag every service image is built under. It is the Maven project version, which is
+  # also the tag card-platform/docker-compose.yml runs and card-platform/deploy/k8s names.
+  IMAGE_TAG: "1.0.0-SNAPSHOT"
+  # Days a test report stays downloadable after a run.
+  REPORT_RETENTION_DAYS: "14"
+
+defaults:
+  run:
+    shell: bash
+    working-directory: card-platform
+
+jobs:
+  # Stage 1. Compiles all nine modules at Java release 25 and reads back one
+  # class file to confirm the release. Tests run in the stages that follow.
+  compile:
+    name: Compile all modules
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          maven-version: ${{ env.MAVEN_VERSION }}
+
+      - name: Report the toolchain versions
+        run: |
+          mvn -v
+          java -version
+          # Read the two pins back rather than trusting that the installer honoured them. A
+          # resolver that answered with another Temurin build, or a Maven archive that
+          # unpacked a different release, fails here and names the value it found instead of
+          # surfacing later as a class-file or enforcer failure with no obvious cause.
+          java -version 2>&1 | grep -F -- "${JAVA_VERSION}"
+          mvn -v | grep -F -- "Apache Maven ${MAVEN_VERSION}"
+
+      - name: Parse the committed shell procedures
+        run: |
+          # scripts/start-demo.sh is the advertised path from a clean clone, and
+          # deploy/k8s/load-images.sh is what a cluster needs before its first apply.
+          # Neither is run by a stage here, so bash -n is what stops a syntax error in one
+          # of them reaching a reader who is following the documentation.
+          for script in scripts/start-demo.sh scripts/generate-env.sh \
+                        deploy/k8s/load-images.sh; do
+            test -x "${script}"
+            bash -n "${script}"
+            echo "${script} parses and is executable"
+          done
+
+      - name: Compile at Java release 25
+        run: mvn -B -ntp -DskipTests compile
+
+      - name: Check the class-file release of every compiled class
+        run: |
+          # Every class file the reactor wrote, not a sample of one. javap takes all of
+          # them in a single invocation, so the sweep costs one JVM start. A pipeline is
+          # avoided here: a step declared as shell bash runs under -eo pipefail, where a
+          # reader closing the pipe early fails the step on the shell's exit status
+          # rather than on the class files.
+          mapfile -t class_files < <(find libs services -path '*/target/classes/*.class' | sort)
+          test "${#class_files[@]}" -gt 0
+          javap -verbose "${class_files[@]}" > /tmp/class-file-releases.txt
+          reported="$(grep -c 'major version:' /tmp/class-file-releases.txt)"
+          releases="$(awk '/major version:/ {print $3}' /tmp/class-file-releases.txt | sort -u)"
+          echo "Inspected ${#class_files[@]} class files; javap reported ${reported} of them"
+          echo "Class-file releases present: $(echo "${releases}" | tr '\n' ' ')"
+          test "${reported}" -eq "${#class_files[@]}"
+          # 69 is the class-file version of Java release 25, and the only one this build
+          # may produce. A second value here means a module compiled at another release.
+          test "${releases}" = "69"
+
+  # Stage 2. Reads the working tree and the commit range under review for committed
+  # secrets. A finding fails the run. The rule pack is the scanner's own default set,
+  # and card-platform/.gitleaks.toml names the known-safe values this repository ships
+  # on purpose, each with the reason it is safe. That file is the allowlist: a value
+  # not matching one of its shapes fails this stage wherever it appears. It sits
+  # under card-platform/ because that directory and .github/ are the only paths this
+  # engagement adds to, so the scope of the change stays mechanically auditable. The
+  # scan target is still the whole repository: only the configuration path is scoped.
+  #
+  # What a baseline-free scan costs. Reading the whole history of every ref on every
+  # event reports 113 findings on 39 commits dated from 2025-10-25 to 2026-08-08, none
+  # of them reachable from this branch's HEAD and none inside the range this engagement
+  # authored: they belong to unrelated branches of a shared sample repository. Every
+  # push then fails before an image is built, which is a gate that can never pass and so
+  # a gate nobody reads.
+  #
+  # What this stage does instead. Three scans with three different jobs.
+  #   1. The working tree, unchanged. Every file as it stands has to be clean.
+  #   2. The commit range under review rather than the whole history, so a secret this
+  #      change introduces fails the change that introduced it.
+  #   3. The whole history on a schedule and on a manual run, against the reviewed
+  #      baseline card-platform/.gitleaks-baseline.json. The baseline records the 113
+  #      findings by fingerprint with every value redacted, so a new finding anywhere
+  #      in the history still fails while the reviewed ones stay quiet.
+  # The triage behind that baseline, finding by finding:
+  # card-platform/docs/decision-log.md, under "A secret scan reads the change under
+  # review, and the whole history on a schedule".
+  secret-scan:
+    name: Scan for committed secrets
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The history scan below reads commits, so the default shallow fetch
+          # would leave most of them unread.
+          fetch-depth: 0
+
+      - name: Install the pinned gitleaks release
+        working-directory: .
+        run: |
+          version="8.30.1"
+          archive="gitleaks_${version}_linux_x64.tar.gz"
+          # Published by the gitleaks project in gitleaks_${version}_checksums.txt.
+          digest="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+          curl --fail --location --silent --show-error \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${archive}" \
+            --output "/tmp/${archive}"
+          printf '%s  %s\n' "${digest}" "${archive}" > "/tmp/${archive}.sha256sum"
+          (cd /tmp && sha256sum --check --strict "${archive}.sha256sum")
+          tar --extract --gzip --file "/tmp/${archive}" --directory /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Read the working tree
+        working-directory: .
+        run: |
+          mkdir -p card-platform/target/security-reports
+          gitleaks dir . --config card-platform/.gitleaks.toml --no-banner --redact \
+            --report-format sarif \
+            --report-path card-platform/target/security-reports/gitleaks-working-tree.sarif \
+            --exit-code 1
+
+      - name: Read the commit range under review
+        working-directory: .
+        run: |
+          mkdir -p card-platform/target/security-reports
+
+          # The range is what this event proposes and nothing earlier. A pull request
+          # carries its base; a push carries the commit the branch pointed at before it,
+          # which is all zeroes for the first push of a new branch and empty for an event
+          # that carries none. Where no range can be established the scan reads the whole
+          # history against the baseline, which is stricter than reading nothing.
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          head="${{ github.event.pull_request.head.sha || github.sha }}"
+          if [ -z "${base}" ] || [ "${base}" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "no usable base for this event; reading the whole history against the baseline"
+            gitleaks git . --config card-platform/.gitleaks.toml \
+              --baseline-path card-platform/.gitleaks-baseline.json --no-banner --redact \
+              --report-format sarif \
+              --report-path card-platform/target/security-reports/gitleaks-history.sarif \
+              --exit-code 1
+          else
+            merge_base="$(git merge-base "${base}" "${head}")"
+            echo "reading ${merge_base}..${head}"
+            gitleaks git . --config card-platform/.gitleaks.toml --no-banner --redact \
+              --log-opts "${merge_base}..${head}" \
+              --report-format sarif \
+              --report-path card-platform/target/security-reports/gitleaks-range.sarif \
+              --exit-code 1
+          fi
+
+      - name: Read the whole history against the reviewed baseline
+        # A schedule and a manual run read every commit of every ref. The baseline holds
+        # the 113 findings this repository's history already carried, by fingerprint, so a
+        # finding this baseline does not name fails this step wherever in the history it
+        # sits. A push and a pull request skip it: the range step above is the gate they
+        # answer to, and reading 2,580 commits on every push is what made this stage
+        # unpassable.
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        working-directory: .
+        run: |
+          mkdir -p card-platform/target/security-reports
+          gitleaks git . --config card-platform/.gitleaks.toml \
+            --baseline-path card-platform/.gitleaks-baseline.json --no-banner --redact \
+            --report-format sarif \
+            --report-path card-platform/target/security-reports/gitleaks-history.sarif \
+            --exit-code 1
+
+      - name: Prove the baseline hides nothing it does not name
+        # The step above passes because the baseline names every finding the history holds,
+        # and a clean result there says nothing about whether an unnamed finding would fail.
+        # This step withholds one entry from a copy of the baseline and requires the scan to
+        # report exactly that finding, which proves the comparison is per fingerprint rather
+        # than per file, per rule or per run.
+        working-directory: .
+        run: |
+          jq '.[1:]' card-platform/.gitleaks-baseline.json > /tmp/gitleaks-baseline-short.json
+          withheld="$(jq -r '.[0].Fingerprint' card-platform/.gitleaks-baseline.json)"
+          echo "withholding ${withheld}"
+
+          if gitleaks git . --config card-platform/.gitleaks.toml \
+               --baseline-path /tmp/gitleaks-baseline-short.json --no-banner --redact \
+               --report-format json --report-path /tmp/gitleaks-baseline-canary.json \
+               --exit-code 1; then
+            echo "::error::the history scan reported clean with one baseline entry withheld, so card-platform/.gitleaks-baseline.json suppresses more than the findings it names"
+            exit 1
+          fi
+          reported="$(jq -r 'length' /tmp/gitleaks-baseline-canary.json)"
+          test "${reported}" -eq 1
+          test "$(jq -r '.[0].Fingerprint' /tmp/gitleaks-baseline-canary.json)" = "${withheld}"
+          echo "the withheld entry was the one finding reported"
+
+      - name: Prove every baseline entry is redacted
+        # The baseline is committed, so it is a file a repository reader can read. It records
+        # which finding was reviewed and must never record what the finding held.
+        working-directory: .
+        run: |
+          unredacted="$(jq -r '[.[] | select(.Secret != "REDACTED")] | length' \
+            card-platform/.gitleaks-baseline.json)"
+          echo "${unredacted} entries carry a value"
+          if [ "${unredacted}" -ne 0 ]; then
+            echo "::error::card-platform/.gitleaks-baseline.json carries ${unredacted} unredacted values; regenerate it with gitleaks --redact"
+            exit 1
+          fi
+
+      # The canary. This step plants a secret and requires the scanner to find it, because a
+      # clean scan says the repository holds no secret and does not say the scanner would still
+      # fail on one. Design decisions:
+      # card-platform/docs/decision-log.md.
+      #
+      # Two cases run
+      # separately, so a scanner that catches one and misses the other cannot pass: a private
+      # key inside the Secret template, which is the exception that was too wide, and an
+      # unrelated 64-character hexadecimal key, which is the shape a second exception used to
+      # excuse anywhere it appeared. Both plants are removed and the tree is checked back to
+      # what git holds before the step ends.
+      - name: Prove the secret gate still fires
+        working-directory: .
+        run: |
+          template="card-platform/deploy/k8s/31-secret.example.yaml"
+          unrelated="card-platform/deploy/k8s/canary-unrelated-secret.txt"
+
+          restore() {
+            git checkout -- "${template}"
+            rm -f "${unrelated}"
+          }
+          trap restore EXIT
+
+          for planted in private-key-in-the-secret-template unrelated-hexadecimal-key; do
+            case "${planted}" in
+              private-key-in-the-secret-template)
+                # The armour markers are assembled through printf rather than written out,
+                # because a literal BEGIN marker in this file is itself a finding: the scan
+                # covers .github/ too, and a canary that fails the stage it protects is no
+                # canary. %s carries the key type, which is enough to break the pattern the
+                # detector matches while leaving what reaches the file identical.
+                printf '  canary.key: |\n    -----BEGIN %s PRIVATE KEY-----\n    %s\n    -----END %s PRIVATE KEY-----\n' \
+                  RSA "$(openssl rand -hex 40)" RSA >> "${template}"
+                ;;
+              unrelated-hexadecimal-key)
+                printf 'canary_api_key = "%s"\n' "$(openssl rand -hex 32)" > "${unrelated}"
+                ;;
+            esac
+
+            if gitleaks dir . --config card-platform/.gitleaks.toml --no-banner --redact \
+                 --report-format json --report-path /tmp/gitleaks-canary.json --exit-code 1; then
+              echo "::error::the secret scan reported clean with a planted ${planted}, so an allowlist in card-platform/.gitleaks.toml is wide enough to hide a real credential"
+              exit 1
+            fi
+            echo "the scan caught the planted ${planted}"
+            restore
+          done
+
+          # The plants leave no trace: a diff here would mean the stage handed the rest of the
+          # run a modified Secret template.
+          git diff --quiet -- "${template}"
+          test ! -e "${unrelated}"
+          echo "both canaries were caught and the working tree is unchanged"
+
+      - name: Keep the secret-scan reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: secret-scan-reports
+          path: card-platform/target/security-reports/gitleaks-*.sarif
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+
+  # Stage 3. Static analysis of every Java source in the reactor, through CodeQL.
+  # The database is built from a real compile rather than inferred, which is what
+  # `build-mode: manual` means. Results are not uploaded to the repository's code
+  # scanning view, because that needs a write permission this workflow does not
+  # take; the SARIF is read here instead and kept as an artifact.
+  #
+  # The threshold. The run fails on a result whose security severity is 7.0 or
+  # higher, which is CodeQL's high and critical band, and reports every result
+  # below that without failing. Failing on all of them would make one style alert
+  # indistinguishable from an injection, and the report holds both either way.
+  #
+  # ONE ACCEPTED FINDING. .github/codeql/codeql-config.yml excludes exactly one
+  # query of the suite's eighty: java/spring-disabled-csrf-protection, which reports
+  # the two stateless filter chains in each of the six services. Those chains hold no
+  # session and read no cookie, and config/CrossSiteRequestFilter refuses a
+  # state-changing request that declares a foreign site or origin or carries no
+  # non-simple header. The reasoning, and what the exclusion gives up, are in
+  # card-platform/docs/decision-log.md. The gate below also passes over a result the
+  # analysis itself reports as suppressed, so an alert dismissed at its source cannot
+  # fail a run while still appearing in the artifact this stage keeps.
+  static-analysis:
+    name: Analyse the sources
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          maven-version: ${{ env.MAVEN_VERSION }}
+
+      - name: Initialise the CodeQL database
+        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          languages: java-kotlin
+          build-mode: manual
+          config-file: .github/codeql/codeql-config.yml
+
+      - name: Compile the reactor for the database
+        run: mvn -B -ntp -DskipTests compile
+
+      - name: Analyse and write the result file
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          category: card-platform
+          upload: never
+          output: ${{ github.workspace }}/card-platform/target/security-reports/codeql
+
+      - name: Fail on a high or critical result
+        working-directory: .
+        run: |
+          shopt -s nullglob
+          results=(card-platform/target/security-reports/codeql/*.sarif)
+          test "${#results[@]}" -gt 0
+          reported=0
+          severe=0
+          for file in "${results[@]}"; do
+            counts="$(jq -r '
+              [.runs[]? as $run
+                | ($run.tool.driver.rules // []) as $rules
+                | $run.results[]?
+                | select(((.suppressions // []) | length) == 0)
+                | ($rules[(.ruleIndex // -1)]?.properties["security-severity"] // "0" | tonumber)
+              ] | [length, (map(select(. >= 7.0)) | length)] | @tsv' "${file}")"
+            reported=$((reported + $(echo "${counts}" | cut -f1)))
+            severe=$((severe + $(echo "${counts}" | cut -f2)))
+          done
+          echo "CodeQL reported ${reported} unsuppressed results, ${severe} of them at security severity 7.0 or higher"
+          test "${severe}" -eq 0
+
+      - name: Keep the static-analysis results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: static-analysis-results
+          path: card-platform/target/security-reports/codeql/**
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+
+  # Stage 4. Runs the Surefire tests of every module. The equivalence-tests
+  # module holds its *EquivalenceTest classes back for Failsafe in stage 6.
+  unit-tests:
+    name: Run unit and contract tests
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          maven-version: ${{ env.MAVEN_VERSION }}
+
+      - name: Report the toolchain versions
+        run: |
+          mvn -v
+          java -version
+
+      - name: Run unit and source-contract tests
+        run: mvn -B -ntp -pl equivalence-tests -am test
+
+      # Ahead of every upload below, and on a failed run as well as a passing one, because the
+      # reports of a failed run are the ones carrying output. An uploaded report is readable by
+      # everyone who can read the run for REPORT_RETENTION_DAYS days, so whatever a test wrote to
+      # standard output is published for a fortnight. A PostgreSQL constraint violation whose DETAIL
+      # quotes the whole failing row puts a seeded card number in a report. The services do not log
+      # that line, and this step is the second control: it rewrites
+      # every seeded card number and social security number in the reports to a masked form and then
+      # fails the run when any of them survived. The seeded values come out of app/data/ASCII at scan
+      # time, so no value is written down anywhere.
+      - name: Redact cardholder data out of the reports
+        if: always()
+        run: scripts/redact-report-artifacts.sh
+
+      - name: Keep the unit test reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unit-test-reports
+          path: card-platform/**/target/surefire-reports/**
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+
+  # Stage 5. Runs the Failsafe suites of the six service modules against a
+  # PostgreSQL and Kafka pair started from the Compose file.
+  integration-tests:
+    name: Run service integration tests
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          maven-version: ${{ env.MAVEN_VERSION }}
+
+      - name: Report the toolchain versions
+        run: |
+          mvn -v
+          java -version
+
+      - name: Run every service integration suite
+        # -DskipUnitTests skips Surefire and leaves Failsafe alone. The unit stage ran
+        # every Surefire test in the reactor and kept its reports, so running them again
+        # here would report the same results a second time and add several minutes to the
+        # run. The profile behind the flag is declared in card-platform/pom.xml.
+        #
+        # No Compose stack is started. Every integration class here provisions the
+        # PostgreSQL and Kafka containers it needs through Testcontainers, against the
+        # Docker daemon the runner already has; a database and a broker started from the
+        # Compose file were reached by none of them. The container stage starts the whole
+        # stack from that file and reads every health endpoint, which is what proves the
+        # file runs.
+        run: |
+          modules="services/authorization-service,services/ledger-posting-service,services/fraud-detection-service,services/notification-service,services/account-service,services/card-service"
+          mvn -B -ntp -pl "${modules}" -am -DskipUnitTests=true verify
+
+      # Fail-closed guard on integration-test discovery. maven-failsafe-plugin is configured with
+      # failIfNoTests=true in card-platform/pom.xml, which catches an include pattern that selects
+      # nothing. This step catches the case that setting cannot: a module that stops declaring the
+      # plugin, or an execution that stops being bound, writes no report at all and the plugin never
+      # runs to complain. Without it a run with zero executed integration tests stays green.
+      - name: Require a Failsafe report from every module holding an integration class
+        run: |
+          set -o errexit
+          missing=""
+          for module in services/authorization-service services/ledger-posting-service \
+                        services/fraud-detection-service services/notification-service \
+                        services/account-service services/card-service; do
+            if [ -z "$(find "${module}/src/test/java" -name '*IT.java')" ]; then
+              continue
+            fi
+            cases="$(grep -ho '<testcase ' "${module}"/target/failsafe-reports/TEST-*.xml \
+              2>/dev/null | wc -l)"
+            printf '%-42s %s Failsafe cases\n' "${module}" "${cases}"
+            if [ "${cases}" -lt 1 ]; then
+              missing="${missing} ${module}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            printf 'No Failsafe case was executed for:%s\n' "${missing}" >&2
+            exit 1
+          fi
+
+      # Ahead of every upload below, and on a failed run as well as a passing one, because the
+      # reports of a failed run are the ones carrying output. An uploaded report is readable by
+      # everyone who can read the run for REPORT_RETENTION_DAYS days, so whatever a test wrote to
+      # standard output is published for a fortnight. A PostgreSQL constraint violation whose DETAIL
+      # quotes the whole failing row puts a seeded card number in a report. The services do not log
+      # that line, and this step is the second control: it rewrites
+      # every seeded card number and social security number in the reports to a masked form and then
+      # fails the run when any of them survived. The seeded values come out of app/data/ASCII at scan
+      # time, so no value is written down anywhere.
+      - name: Redact cardholder data out of the reports
+        if: always()
+        run: scripts/redact-report-artifacts.sh
+
+      # The path below names failsafe-reports and nothing else, so if-no-files-found cannot be
+      # satisfied by a Surefire report: an artifact appears here only when an integration test wrote
+      # one. The Surefire reports of the reactor are kept by the unit stage, which is the only stage
+      # that runs them - this one passes -DskipUnitTests=true - and the case-count gate above is the
+      # second, stronger control that an integration test actually executed.
+      - name: Keep the integration test reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: integration-test-reports
+          path: card-platform/**/target/failsafe-reports/**
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+
+  # Stage 6. Runs every *EquivalenceTest class in card-platform/equivalence-tests
+  # under Failsafe, comparing service results with the documented source rules
+  # and the fixtures under app/data/ASCII.
+  equivalence-tests:
+    name: Run equivalence tests
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          maven-version: ${{ env.MAVEN_VERSION }}
+
+      - name: Report the toolchain versions
+        run: |
+          mvn -v
+          java -version
+
+      - name: Run the equivalence suite
+        # Asking for equivalence-tests asks for the eight modules it depends on, and
+        # building those modules used to run their tests too: every Surefire test in the
+        # reactor and every service integration suite, both already run and reported by
+        # the two stages before this one. The whole of this stage's own work is the
+        # *EquivalenceTest classes and equivalence-tests/**/*IT.java, and the two flags
+        # are what leaves it with only that. Both profiles are declared in the module
+        # descriptors they govern: skip-unit-tests in card-platform/pom.xml, and
+        # skip-service-integration-tests in each of the six service descriptors, which is
+        # why this module's own Failsafe classes still run.
+        #
+        # This stage starts no Compose stack either, for the reason the stage above gives.
+        run: |
+          mvn -B -ntp -pl equivalence-tests -am -DskipUnitTests=true -DskipServiceIntegrationTests=true verify
+
+      # The published executed-test figures, measured. No test can do this from inside the build it
+      # would have to read: the report for its own class does not exist while it runs, and its own
+      # module's integration phase has not started, so an in-build check compares one published
+      # figure with another. This step runs after verify, reads every completed report including the
+      # equivalence module's own, and fails when a figure in docs/equivalence-results.md or README.md
+      # disagrees with a measurement.
+      - name: Check the published test counts against this run's reports
+        run: scripts/check-published-test-counts.sh
+
+      # Ahead of every upload below, and on a failed run as well as a passing one, because the
+      # reports of a failed run are the ones carrying output. An uploaded report is readable by
+      # everyone who can read the run for REPORT_RETENTION_DAYS days, so whatever a test wrote to
+      # standard output is published for a fortnight. A PostgreSQL constraint violation whose DETAIL
+      # quotes the whole failing row puts a seeded card number in a report. The services do not log
+      # that line, and this step is the second control: it rewrites
+      # every seeded card number and social security number in the reports to a masked form and then
+      # fails the run when any of them survived. The seeded values come out of app/data/ASCII at scan
+      # time, so no value is written down anywhere.
+      - name: Redact cardholder data out of the reports
+        if: always()
+        run: scripts/redact-report-artifacts.sh
+
+      - name: Keep the equivalence reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: equivalence-test-reports
+          path: card-platform/equivalence-tests/target/failsafe-reports/**
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+
+  # Stage 7. Fails the build when an event schema change would stop a consumer
+  # that reads an earlier version of that schema.
+  schema-compatibility:
+    name: Event schema compatibility
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          maven-version: ${{ env.MAVEN_VERSION }}
+
+      - name: Report the toolchain versions
+        run: |
+          mvn -v
+          java -version
+
+      - name: Check schema compatibility and event round trips
+        run: >
+          mvn -B -ntp
+          -pl libs/event-contracts
+          -Dtest=SchemaBackwardCompatibilityTest,EventRoundTripTest
+          test
+
+      - name: Keep the schema compatibility reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: schema-compatibility-reports
+          path: card-platform/libs/event-contracts/target/surefire-reports/**
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+
+  # Stage 8. Describes what this build resolves, then reads that description for
+  # known advisories. A finding fails the run.
+  #
+  # It reads the aggregate bill of materials, which is the resolved graph with test
+  # scope included, rather than the descriptors.
+  # Design decisions: card-platform/docs/decision-log.md.
+  #
+  # The file has to be named bom.json: the scanner recognises a bill of materials by
+  # the file name its specification defines and refuses any other.
+  #
+  # The stage covers a second kind of dependency as well. card-platform/presentation
+  # loads three libraries from a content-delivery network by URL, and a URL inside one
+  # HTML file appears in no dependency graph the scanner above reads, so those three
+  # were reviewed by nothing in this build. card-platform/.cdn-pins.json records each
+  # pin and the advisories accepted against it with the day each acceptance stops, and
+  # card-platform/scripts/check-cdn-advisories.sh resolves the pins against an advisory
+  # database and fails the stage on an advisory no unexpired entry accepts.
+  supply-chain:
+    name: Review the resolved dependency graph
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          maven-version: ${{ env.MAVEN_VERSION }}
+
+      - name: Write the aggregate bill of materials
+        run: |
+          mvn -B -ntp org.cyclonedx:cyclonedx-maven-plugin:2.9.3:makeAggregateBom \
+            -DoutputFormat=json -DincludeTestScope=true -DoutputName=bom
+          test -s target/bom.json
+          echo "components described: $(jq '.components | length' target/bom.json)"
+
+      - name: Install the pinned advisory scanner
+        working-directory: .
+        run: |
+          version="2.5.0"
+          # Published by the osv-scanner project in osv-scanner_SHA256SUMS.
+          digest="edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c"
+          curl --fail --location --silent --show-error \
+            "https://github.com/google/osv-scanner/releases/download/v${version}/osv-scanner_linux_amd64" \
+            --output /tmp/osv-scanner
+          printf '%s  %s\n' "${digest}" "osv-scanner" > /tmp/osv-scanner.sha256sum
+          (cd /tmp && sha256sum --check --strict osv-scanner.sha256sum)
+          sudo install -m 0755 /tmp/osv-scanner /usr/local/bin/osv-scanner
+          osv-scanner --version
+
+      - name: Read the bill of materials for known advisories
+        run: |
+          osv-scanner scan source -L target/bom.json --format json \
+            --output target/advisories.json
+          osv-scanner scan source -L target/bom.json --format table
+
+      - name: Resolve the presentation's content-delivery pins against the advisory database
+        # The step above reads the resolved Maven graph. The three libraries the deck
+        # fetches by URL are in no graph it reads, so this is the only step of this build
+        # that resolves them. The pins come out of .cdn-pins.json and the check requires
+        # each one to agree with presentation/executive-summary.html in both directions,
+        # so a pin recorded in one file and not the other fails here rather than leaving a
+        # review describing a deck nobody ships. An advisory fails the stage unless an
+        # entry of that file accepts it and the day it names has not passed. The check
+        # also queries a version known to carry advisories on every run, and fails when
+        # the database answers with none, which is the canary the image stage has.
+        run: scripts/check-cdn-advisories.sh
+
+      - name: Review the dependency change of this pull request
+        # A pull request is the only event that has a base to compare against, so
+        # this step names one. It adds a second opinion on a change rather than
+        # replacing the step above, which reads the whole graph on every event.
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: low
+          comment-summary-in-pr: never
+
+      - name: Keep the bill of materials and the advisory report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: supply-chain-reports
+          path: |
+            card-platform/target/bom.json
+            card-platform/target/advisories.json
+            card-platform/target/cdn-advisories.json
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+
+  # Stage 9. Packages each service, builds its image from the Dockerfile in
+  # card-platform/services, then starts all six through card-platform/docker-compose.yml
+  # and reads /actuator/health on each. The images stay on the runner: nothing is pushed,
+  # and the tag they carry is the one Compose runs and deploy/k8s names, so the stage
+  # consumes what it builds. The stack is always removed, whether the check passed or not.
+  container-builds:
+    name: Build six service containers
+    needs:
+      - secret-scan
+      - static-analysis
+      - unit-tests
+      - integration-tests
+      - equivalence-tests
+      - schema-compatibility
+      - supply-chain
+    runs-on: ubuntu-24.04
+    # Sixty rather than thirty-five: each of the six images now compiles its module and
+    # both shared libraries in a builder stage, where before it copied an archive the host
+    # had already built. The BuildKit cache mount means only the first build downloads the
+    # dependency set, but six compilations still cost more than six copies.
+    timeout-minutes: 60
+    permissions:
+      # Read and nothing else, on every event. This job runs on a pull request, and the
+      # steps below execute content that request supplies: the local composite action, the
+      # Maven descriptors, the sources, the Compose file and the six Dockerfiles. A write
+      # scope held here is a write scope held while proposed content runs. The attestation
+      # that needed one now lives in the provenance stage below, which runs on a push.
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          maven-version: ${{ env.MAVEN_VERSION }}
+
+      - name: Report the toolchain versions
+        run: |
+          mvn -v
+          java -version
+
+      # The images no longer consume this archive: each builder stage compiles its own module
+      # from source. The step stays because it is the fast failure. A compilation error found
+      # here is one Maven message, where the same error found inside six image builds is six
+      # of them, arriving several minutes later.
+      - name: Package the six service Java Archive files
+        # This stage packages rather than reading an archive the compile stage built: the
+        # archives are produced in the job that consumes them, which is the six image builds
+        # a few steps below. Design decisions:
+        # card-platform/docs/decision-log.md. The hand-off this leaves open:
+        # card-platform/docs/suggested-next-tasks.md.
+        run: mvn -B -ntp -DskipTests package
+
+      - name: Copy the example environment file
+        run: install -m 600 .env.example .env
+
+      - name: Check the Compose configuration
+        run: docker compose config --quiet
+
+      - name: Build every service image
+        run: |
+          # The context is card-platform rather than the module directory: each Dockerfile
+          # compiles its module in a Java Development Kit 25 builder stage, so it needs the
+          # aggregator descriptor and both shared libraries in reach.
+          # services/<service>/Dockerfile.dockerignore reduces what is sent to that, and
+          # BuildKit reads it in place of the root ignore file.
+          #
+          # DOCKER_BUILDKIT is explicit because each builder stage mounts a cache for the
+          # local Maven repository. The first build populates it and the other five resolve
+          # from it, which is what keeps six in-image builds inside this job's budget.
+          services=(
+            authorization-service
+            ledger-posting-service
+            fraud-detection-service
+            notification-service
+            account-service
+            card-service
+          )
+          for service in "${services[@]}"; do
+            DOCKER_BUILDKIT=1 docker build \
+              --file "services/${service}/Dockerfile" \
+              --tag "carddemo/${service}:${IMAGE_TAG}" \
+              .
+          done
+
+      - name: Install the pinned image scanner
+        working-directory: .
+        run: |
+          version="0.73.0"
+          archive="trivy_${version}_Linux-64bit.tar.gz"
+          # Published by the trivy project in trivy_${version}_checksums.txt.
+          digest="2edd39da482bb4e9831962487b68f68e3928ec3137794757f54d00383d79547b"
+          curl --fail --location --silent --show-error \
+            "https://github.com/aquasecurity/trivy/releases/download/v${version}/${archive}" \
+            --output "/tmp/${archive}"
+          printf '%s  %s\n' "${digest}" "${archive}" > "/tmp/${archive}.sha256sum"
+          (cd /tmp && sha256sum --check --strict "${archive}.sha256sum")
+          tar --extract --gzip --file "/tmp/${archive}" --directory /tmp trivy
+          sudo install -m 0755 /tmp/trivy /usr/local/bin/trivy
+          trivy --version
+
+      - name: Scan the six images that were just built
+        # The threshold. A high or critical vulnerability with a fix available fails
+        # this stage. One without a fix is counted and reported and does not, because
+        # there is nothing a change to this repository could do about it: the runtime
+        # base image these six share carries 41 such findings today and none of them
+        # is fixable at any version. A gate that can never pass is a gate somebody
+        # switches off, and the full report is kept as an artifact either way.
+        run: |
+          services=(
+            authorization-service
+            ledger-posting-service
+            fraud-detection-service
+            notification-service
+            account-service
+            card-service
+          )
+          mkdir -p target/image-scans
+          fixable_total=0
+          unfixed_total=0
+          for service in "${services[@]}"; do
+            report="target/image-scans/${service}.json"
+            trivy image --scanners vuln --severity HIGH,CRITICAL --quiet \
+              --format json --output "${report}" "carddemo/${service}:${IMAGE_TAG}"
+            counts="$(jq -r '[.Results[]?.Vulnerabilities[]?]
+              | [(map(select(.FixedVersion != null and .FixedVersion != "")) | length),
+                 (map(select(.FixedVersion == null or .FixedVersion == "")) | length)]
+              | @tsv' "${report}")"
+            fixable="$(echo "${counts}" | cut -f1)"
+            unfixed="$(echo "${counts}" | cut -f2)"
+            echo "${service}: ${fixable} fixable, ${unfixed} with no fix available"
+            fixable_total=$((fixable_total + fixable))
+            unfixed_total=$((unfixed_total + unfixed))
+          done
+          echo "totals: ${fixable_total} fixable, ${unfixed_total} with no fix available"
+          test "${fixable_total}" -eq 0
+
+      - name: Scan the two infrastructure images this platform deploys
+        # Scanning only the six images this project builds leaves the two it consumes unscanned,
+        # so a green stage would say nothing about the broker or the database. Both are scanned
+        # here at the exact reference each deployment carries.
+        #
+        # The reference is read out of the shipped files rather than written again here. A
+        # digest copied into this workflow would be a third copy of a value that already
+        # appears in docker-compose.yml and in deploy/k8s, and the copy that goes stale is
+        # the one nothing deploys. The step also requires the two deployment paths to name
+        # the same digest, because a scan of one of them proves nothing about the other.
+        #
+        # The threshold is the one the six service images answer to: a high or critical
+        # finding with a fix available fails the stage, and one without a fix is counted and
+        # reported. What differs is card-platform/.trivyignore.yaml, which carries a dated
+        # exception per package for the findings section 0.5.1 of the plan leaves no route to
+        # fix. Every entry names its owner, its justification and the day it stops being
+        # honoured, and trivy stops honouring it on that day: the finding returns and this
+        # step fails. Design decisions:
+        # card-platform/docs/decision-log.md.
+        run: |
+          mkdir -p target/image-scans
+
+          compose_reference() {
+            grep -oE "$1@sha256:[0-9a-f]{64}" docker-compose.yml | head -1
+          }
+          cluster_reference() {
+            grep -oE "$1@sha256:[0-9a-f]{64}" "deploy/k8s/$2" | head -1
+          }
+
+          declare -A manifest=(
+            [kafka]=10-kafka.yaml
+            [postgres]=20-postgres.yaml
+          )
+          declare -A tag=(
+            [kafka]="apache/kafka:4.2.1"
+            [postgres]="postgres:18.4"
+          )
+
+          fixable_total=0
+          unfixed_total=0
+          for image in kafka postgres; do
+            composed="$(compose_reference "${tag[$image]}")"
+            clustered="$(cluster_reference "${tag[$image]}" "${manifest[$image]}")"
+            test -n "${composed}"
+            test -n "${clustered}"
+            if [ "${composed}" != "${clustered}" ]; then
+              echo "::error::docker-compose.yml runs ${composed} while deploy/k8s/${manifest[$image]} runs ${clustered}, so one of the two deploys an image this stage did not scan"
+              exit 1
+            fi
+            echo "scanning ${composed}"
+
+            report="target/image-scans/infrastructure-${image}.json"
+            trivy image --scanners vuln --severity HIGH,CRITICAL --quiet \
+              --ignorefile .trivyignore.yaml \
+              --format json --output "${report}" "${composed}"
+            counts="$(jq -r '[.Results[]?.Vulnerabilities[]?]
+              | [(map(select(.FixedVersion != null and .FixedVersion != "")) | length),
+                 (map(select(.FixedVersion == null or .FixedVersion == "")) | length)]
+              | @tsv' "${report}")"
+            fixable="$(echo "${counts}" | cut -f1)"
+            unfixed="$(echo "${counts}" | cut -f2)"
+            echo "${image}: ${fixable} fixable after exceptions, ${unfixed} with no fix available"
+            fixable_total=$((fixable_total + fixable))
+            unfixed_total=$((unfixed_total + unfixed))
+          done
+          echo "infrastructure totals: ${fixable_total} fixable after exceptions, ${unfixed_total} with no fix available"
+          test "${fixable_total}" -eq 0
+
+      - name: Prove the infrastructure gate still fires
+        # The exception file is the only reason the step above passes, so a clean result there
+        # says the exceptions hold and does not say the gate would still fail without them.
+        # This step runs the same scan of the broker image with no exception file and requires
+        # a fixable finding, which is the canary the secret scan has and this one lacked.
+        run: |
+          report="/tmp/infrastructure-gate-canary.json"
+          reference="$(grep -oE "apache/kafka:4.2.1@sha256:[0-9a-f]{64}" docker-compose.yml | head -1)"
+          trivy image --scanners vuln --severity HIGH,CRITICAL --quiet \
+            --format json --output "${report}" "${reference}"
+          fixable="$(jq -r '[.Results[]?.Vulnerabilities[]?
+            | select(.FixedVersion != null and .FixedVersion != "")] | length' "${report}")"
+          echo "the unexcused scan reports ${fixable} fixable findings"
+          if [ "${fixable}" -eq 0 ]; then
+            echo "::error::the broker image reports no fixable finding without card-platform/.trivyignore.yaml, so the exceptions in that file excuse nothing and the gate above cannot fail"
+            exit 1
+          fi
+          echo "the infrastructure gate fires without its exception file"
+
+      - name: Keep the image-scan reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-scan-reports
+          path: card-platform/target/image-scans/**
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+
+      - name: Generate the stack credentials
+        run: |
+          for variable in POSTGRES_PASSWORD \
+                          AUTHORIZATION_DB_PASSWORD LEDGER_DB_PASSWORD FRAUD_DB_PASSWORD \
+                          NOTIFICATION_DB_PASSWORD ACCOUNT_DB_PASSWORD CARD_DB_PASSWORD \
+                          KAFKA_ADMIN_PASSWORD \
+                          AUTHORIZATION_KAFKA_PASSWORD LEDGER_KAFKA_PASSWORD \
+                          FRAUD_KAFKA_PASSWORD NOTIFICATION_KAFKA_PASSWORD \
+                          ACCOUNT_KAFKA_PASSWORD CARD_KAFKA_PASSWORD; do
+            sed -i "s|^${variable}=.*|${variable}=$(openssl rand -base64 24 | tr -d '/+=')|" .env
+          done
+          # The card-token key, generated on its own because it has a length floor the two
+          # deriving services enforce: PanMasker refuses a key under 32 characters, and both
+          # services refuse to start on one. Forty-eight base64 bytes leave well over 32
+          # characters after the three URL-unsafe ones are stripped. Both services also refuse
+          # the two card-token keys this repository publishes, so nothing here can fall back
+          # to one.
+          sed -i "s|^CARD_TOKEN_SECRET=.*|CARD_TOKEN_SECRET='$(openssl rand -base64 48 | tr -d '/+=')'|" .env
+          # The four identity passwords are stored already encoded, and every service refuses
+          # to start on a value whose encoding it does not approve. The recipe is the one
+          # card-platform/docs/onboarding.md documents, and it encodes with bcrypt, which is
+          # one of the two encodings the allowlist in each config/SecurityConfig accepts. The
+          # jars it reads are in the local repository because the packaging step above
+          # resolved them. No password below is echoed, and each exists only for this run.
+          crypto_classpath="$(find ~/.m2/repository/org/springframework/security/spring-security-crypto -name 'spring-security-crypto-*.jar' | sort | tail -1)"
+          crypto_classpath="${crypto_classpath}:$(find ~/.m2/repository/commons-logging/commons-logging -name 'commons-logging-*.jar' | sort | tail -1)"
+          crypto_classpath="${crypto_classpath}:$(find ~/.m2/repository/org/springframework/spring-core -name 'spring-core-*.jar' | sort | tail -1)"
+          for variable in ADMIN_PASSWORD_HASH ACQUIRER_PASSWORD_HASH USER_PASSWORD_HASH \
+                          MONITORING_PASSWORD_HASH; do
+            export SMOKE_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=')"
+            hash="$(printf 'System.out.println(org.springframework.security.crypto.factory.PasswordEncoderFactories.createDelegatingPasswordEncoder().encode(System.getenv("SMOKE_PASSWORD")));\n/exit\n' | jshell --class-path "${crypto_classpath}" 2>/dev/null | sed -n 's/^jshell> //p' | grep '^{bcrypt}' | head -1)"
+            test -n "${hash}"
+            # The business smoke further down authenticates as the administrator, so that one
+            # plaintext is carried forward rather than discarded. It is masked before it is
+            # written, so a later step cannot print it even by accident, and it exists only
+            # for this run. The other two are discarded as before.
+            if [ "${variable}" = "ADMIN_PASSWORD_HASH" ]; then
+              echo "::add-mask::${SMOKE_PASSWORD}"
+              echo "SMOKE_ADMIN_PASSWORD=${SMOKE_PASSWORD}" >> "${GITHUB_ENV}"
+            fi
+            unset SMOKE_PASSWORD
+            sed -i "s|^${variable}=.*|${variable}='${hash}'|" .env
+          done
+          test "$(grep -c 'REPLACE-WITH\|REPLACE-THIS' .env)" -eq 0
+
+      - name: Start the six images that were just built
+        run: docker compose up --detach --wait
+
+      - name: Check that every service answers on its management port
+        run: |
+          ports=(9081 9082 9083 9084 9085 9086)
+          for port in "${ports[@]}"; do
+            status="$(curl --fail --silent --show-error "http://127.0.0.1:${port}/actuator/health")"
+            echo "${port}: ${status}"
+            case "${status}" in
+              *'"status":"UP"'*) ;;
+              *) echo "::error::the service on port ${port} did not report UP"; exit 1 ;;
+            esac
+          done
+
+      # The health checks above establish that six containers started. They say nothing about
+      # whether the platform still does the one thing it exists to do, so this step reads the
+      # headline acceptance path end to end: one authenticated authorization produces one
+      # event, and all three consumers record that same event identifier. Without it the
+      # authorization path could stop publishing, or a consumer could stop subscribing, while
+      # this job stayed green.
+      - name: Follow one authenticated authorization through all three consumers
+        run: |
+          set -euo pipefail
+          # The generated values are read from the file rather than echoed. The superuser
+          # password is masked as well, because the queries below carry it into the container.
+          set -a
+          . ./.env
+          set +a
+          echo "::add-mask::${POSTGRES_PASSWORD}"
+
+          # Record one of app/data/ASCII/cardxref.txt names the card and the account this smoke
+          # runs on, and every service that needs them seeds that record. The number is read out
+          # of the fixture rather than written here, because a sixteen-digit literal in a
+          # delivered file is a card number whatever it is called, and this one is a value that
+          # works against the demo stack. XREF-CARD-NUM PIC X(16) at app/cpy/CVACT03Y.cpy:L5 is
+          # the first field of the 36-character record, so the value is its first sixteen
+          # characters, and the path climbs one level because every step of this workflow runs in
+          # card-platform. The shape is checked rather than assumed: a moved fixture or a changed
+          # layout fails here, with the run masked out of the log, instead of arriving as an
+          # unexplained decline further down. The request carries no transaction identifier,
+          # because the service assigns one from a sequence, and both timestamps sit inside the
+          # freshness window the request contract fixes.
+          smoke_card_number="$(cut -c1-16 ../app/data/ASCII/cardxref.txt | sed -n '1p')"
+          echo "::add-mask::${smoke_card_number}"
+          printf '%s' "${smoke_card_number}" | grep -Eq '^[0-9]{16}$'
+          origin="$(date -u -d '-2 minutes' '+%Y-%m-%d %H:%M:%S.000000')"
+          processing="$(date -u -d '-2 minutes' '+%Y-%m-%d-%H.%M.%S.000000')"
+          request="$(printf '{"transactionTypeCode":"01","transactionCategoryCode":"0001","source":"POS TERM","description":"Continuous integration business smoke","amount":"12.34","merchantId":"800000000","merchantName":"CardDemo Smoke","merchantCity":"Dallas","merchantZip":"75201","cardNumber":"%s","originTimestamp":"%s","processingTimestamp":"%s"}' "${smoke_card_number}" "${origin}" "${processing}")"
+
+          # config/CrossSiteRequestFilter refuses any unsafe method that carries no
+          # first-party request header, with 403 and before the controller runs, so a POST
+          # without this header proves nothing about the authorization path. The name comes
+          # from the same variable the containers read, so renaming the header in one place
+          # cannot leave this call sending the old one.
+          answer="$(curl --fail --silent --show-error \
+            --user "${ADMIN_USERNAME:-admin001}:${SMOKE_ADMIN_PASSWORD}" \
+            --header 'Content-Type: application/json' \
+            --header "${API_CROSS_SITE_HEADER:-X-CardDemo-Request}: 1" \
+            --data "${request}" \
+            "http://127.0.0.1:${AUTHORIZATION_PORT:-8081}/authorizations")"
+          echo "the authorization service answered: ${answer}"
+          case "${answer}" in
+            *'"approved":true'*) ;;
+            *) echo "::error::the synthetic authorization was not approved"; exit 1 ;;
+          esac
+          transaction_id="$(printf '%s' "${answer}" | sed -n 's/.*"transactionId":"\([^"]*\)".*/\1/p')"
+          test -n "${transaction_id}"
+
+          # Each service owns its own database, so every reading below is that service's own
+          # committed state rather than a shared table.
+          query() {
+            docker compose exec -T --env "PGPASSWORD=${POSTGRES_PASSWORD}" postgres \
+              psql --username "${POSTGRES_USER:-carddemo}" --dbname "$1" --tuples-only \
+                   --no-align --command "$2" < /dev/null
+          }
+
+          # The identifier the authorization service minted for the one event it published.
+          event_id=""
+          for attempt in $(seq 1 30); do
+            event_id="$(query "${AUTHORIZATION_DB_NAME:-carddemo_authorization}" \
+              "SELECT event_id FROM ${AUTHORIZATION_DB_SCHEMA:-authorization_service}.outbox_event \
+               WHERE event_type = 'TransactionAuthorized' AND payload LIKE '%${transaction_id}%'" \
+              | tr -d '[:space:]')"
+            if [ -n "${event_id}" ]; then break; fi
+            sleep 2
+          done
+          if [ -z "${event_id}" ]; then
+            echo "::error::transaction ${transaction_id} produced no TransactionAuthorized event"
+            if ! docker compose logs --tail 50 authorization-service; then
+              echo "the authorization container log could not be read"
+            fi
+            exit 1
+          fi
+          echo "transaction ${transaction_id} produced event ${event_id}"
+
+          for consumer in \
+            "ledger-posting-service:${LEDGER_DB_NAME:-carddemo_ledger}:${LEDGER_DB_SCHEMA:-ledger_service}" \
+            "fraud-detection-service:${FRAUD_DB_NAME:-carddemo_fraud}:${FRAUD_DB_SCHEMA:-fraud_service}" \
+            "notification-service:${NOTIFICATION_DB_NAME:-carddemo_notification}:${NOTIFICATION_DB_SCHEMA:-notification_service}"; do
+            service="${consumer%%:*}"
+            remainder="${consumer#*:}"
+            database="${remainder%%:*}"
+            schema="${remainder##*:}"
+            observed="0"
+            for attempt in $(seq 1 30); do
+              observed="$(query "${database}" \
+                "SELECT count(*) FROM ${schema}.processed_event \
+                 WHERE event_id = '${event_id}' AND consumed_topic = 'transaction.authorized'" \
+                | tr -d '[:space:]')"
+              if [ "${observed}" = "1" ]; then break; fi
+              sleep 2
+            done
+            if [ "${observed}" != "1" ]; then
+              echo "::error::${service} did not record event ${event_id} from transaction.authorized"
+              if ! docker compose logs --tail 50 "${service}"; then
+                echo "the ${service} container log could not be read"
+              fi
+              exit 1
+            fi
+            echo "${service} consumed event ${event_id} independently"
+          done
+          echo "one authorization produced one event, and all three consumers recorded it"
+
+      - name: Report the container states
+        if: always()
+        run: docker compose ps --all
+
+      - name: Stop the smoke containers
+        if: always()
+        run: docker compose down --volumes
+
+  # Stage 10. Records what produced the six service archives, on a push alone.
+  #
+  # This is the only job of the workflow that holds a write permission, and the two it holds
+  # are what an attestation needs: an OpenID Connect token to identify the run, and the scope
+  # that records the statement against the repository. Nothing here pushes an image.
+  #
+  # It is a job rather than a step of the stage above because of the event. The image build
+  # runs on a pull request and executes content that request supplies, so a write scope held
+  # there is held while proposed content runs. A push carries content that was merged, and
+  # this job runs on nothing else. The checkout keeps no credential in the local git
+  # configuration either, so no later step can reach the token through it.
+  #
+  # The archives are rebuilt rather than carried over from the stage above: an artifact
+  # round-trip would attest bytes this job received rather than bytes it produced, and the
+  # subject of a provenance statement has to be the second of those.
+  provenance:
+    name: Record what produced the six archives
+    needs: container-builds
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          maven-version: ${{ env.MAVEN_VERSION }}
+
+      - name: Package the six service Java Archive files
+        run: mvn -B -ntp -DskipTests package
+
+      - name: Record what produced the six archives
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: card-platform/services/*/target/*.jar

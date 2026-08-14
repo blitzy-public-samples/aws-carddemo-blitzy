@@ -1,0 +1,390 @@
+# evaluation_model B_CUMULATIVE_DECLINES_SKIP: accumulators carry forward per account, and a rejected record does not accumulate. Consuming test PostingEquivalenceTest. 2500-WRITE-REJECT-REC writes 38 reject records from the 300 feed records of app/data/ASCII/dailytran.txt. Each is 430 bytes: a 350-byte verbatim copy of the daily transaction plus an 80-byte validation trailer. 388 data rows: the 46 fixture-level rows carry record_seq 0, and every other row carries the 1-based ordinal of its feed record.
+evaluation_model,derived_from,record_seq,entity_key,expected_field,expected_value,pic_clause,source_locator
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,reject_record,reject_record_length,430,NONE,app/cbl/CBTRN02C.cbl:L176-L178
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,reject_record,reject_tran_data_length,350,X(350),app/cbl/CBTRN02C.cbl:L177
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,reject_record,validation_trailer_length,80,X(80),app/cbl/CBTRN02C.cbl:L178
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,reject_record,reject_tran_data_is_verbatim_byte_copy,yes,X(350),app/cbl/CBTRN02C.cbl:L446-L465
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,reject_record,reject_record_write_verb,WRITE,NONE,app/cbl/CBTRN02C.cbl:L446-L465
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,reject_record,reject_write_failure_outcome,abend,NONE,app/cbl/CBTRN02C.cbl:L446-L465
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,reject_record,reject_record_has_no_processing_timestamp,yes,X(26),"app/cbl/CBTRN02C.cbl:L437-L438,app/cbl/CBTRN02C.cbl:L446-L465"
+B_CUMULATIVE_DECLINES_SKIP,app/jcl/POSTTRAN.jcl,0,reject_record,reject_dataset_lrecl,430,NONE,app/jcl/POSTTRAN.jcl
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,reject_record,dalytran_filler_content,"                    ",X(20),app/cpy/CVTRA06Y.cpy:L18
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,validation_trailer,trailer_reason_pic,9(04),9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,validation_trailer,trailer_description_pic,X(76),X(76),app/cbl/CBTRN02C.cbl:L182
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,validation_trailer,trailer_field_widths_sum_to_trailer_length,yes,X(80),app/cbl/CBTRN02C.cbl:L180-L182
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,validation_trailer,trailer_reason_rendered,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,validation_trailer,trailer_reason_has_sign_overpunch,no,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,validation_trailer,description_space_padded_to_76,yes,X(76),app/cbl/CBTRN02C.cbl:L182
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,model_b,model_b_reject_record_count,38,NONE,app/cbl/CBTRN02C.cbl:L446-L465
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,model_b,source_record_count,300,NONE,app/data/ASCII/dailytran.txt
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,model_b,reject_counter_field,WS-REJECT-COUNT,9(09),app/cbl/CBTRN02C.cbl:L186
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,model_b,return_code_when_rejects_present,4,NONE,app/cbl/CBTRN02C.cbl:L230
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,model_b,rejection_is_expected_traffic_not_error,yes,NONE,app/cbl/CBTRN02C.cbl:L230
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,model_b,appl_result_on_reject,8,NONE,app/cbl/CBTRN02C.cbl:L446-L465
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,model_b,all_rejects_type_01,yes,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,model_b,all_rejects_category_0001,yes,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,0,model_b,distinct_rejecting_accounts,17,NONE,app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,model_b,account_with_all_type_01_rejected,00000000037,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,reason_distribution,reject_count_reason_100,0,9(04),app/cbl/CBTRN02C.cbl:L385-L387
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,reason_distribution,reject_count_reason_101,0,9(04),app/cbl/CBTRN02C.cbl:L397-L399
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,reason_distribution,reject_count_reason_102,38,9(04),app/cbl/CBTRN02C.cbl:L403-L413
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,0,reason_distribution,reject_count_reason_103,0,9(04),app/cbl/CBTRN02C.cbl:L414-L420
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000001,model_b_reject_records_for_account,2,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000007,model_b_reject_records_for_account,1,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000014,model_b_reject_records_for_account,2,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000017,model_b_reject_records_for_account,4,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000018,model_b_reject_records_for_account,1,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000021,model_b_reject_records_for_account,1,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000026,model_b_reject_records_for_account,2,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000028,model_b_reject_records_for_account,3,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000030,model_b_reject_records_for_account,4,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000031,model_b_reject_records_for_account,3,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000032,model_b_reject_records_for_account,2,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000035,model_b_reject_records_for_account,1,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000036,model_b_reject_records_for_account,1,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000037,model_b_reject_records_for_account,5,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000045,model_b_reject_records_for_account,2,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000047,model_b_reject_records_for_account,2,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,0,00000000048,model_b_reject_records_for_account,2,9(11),app/cbl/CBTRN02C.cbl:L213-L215
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,16,00000000037,xref_acct_id,00000000037,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,16,00000000037,dalytran_id,0000000040455859,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,16,00000000037,dalytran_card_num,1142167692878931,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,16,00000000037,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,16,00000000037,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,16,00000000037,dalytran_amt,715.44,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,16,00000000037,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,16,00000000037,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,16,00000000037,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,32,00000000017,xref_acct_id,00000000017,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,32,00000000017,dalytran_id,0000000108402349,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,32,00000000017,dalytran_card_num,9349107475869214,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,32,00000000017,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,32,00000000017,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,32,00000000017,dalytran_amt,633.00,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,32,00000000017,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,32,00000000017,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,32,00000000017,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,35,00000000028,xref_acct_id,00000000028,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,35,00000000028,dalytran_id,0000000111054243,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,35,00000000028,dalytran_card_num,6723000463207764,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,35,00000000028,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,35,00000000028,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,35,00000000028,dalytran_amt,948.44,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,35,00000000028,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,35,00000000028,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,35,00000000028,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,43,00000000030,xref_acct_id,00000000030,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,43,00000000030,dalytran_id,0000000148803688,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,43,00000000030,dalytran_card_num,6509230362553816,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,43,00000000030,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,43,00000000030,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,43,00000000030,dalytran_amt,203.44,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,43,00000000030,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,43,00000000030,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,43,00000000030,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,50,00000000026,xref_acct_id,00000000026,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,50,00000000026,dalytran_id,0000000183226769,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,50,00000000026,dalytran_card_num,8040580410348680,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,50,00000000026,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,50,00000000026,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,50,00000000026,dalytran_amt,907.55,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,50,00000000026,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,50,00000000026,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,50,00000000026,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,66,00000000030,xref_acct_id,00000000030,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,66,00000000030,dalytran_id,0000000220001505,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,66,00000000030,dalytran_card_num,6509230362553816,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,66,00000000030,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,66,00000000030,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,66,00000000030,dalytran_amt,929.77,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,66,00000000030,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,66,00000000030,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,66,00000000030,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,79,00000000028,xref_acct_id,00000000028,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,79,00000000028,dalytran_id,0000000252891459,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,79,00000000028,dalytran_card_num,6723000463207764,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,79,00000000028,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,79,00000000028,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,79,00000000028,dalytran_amt,944.99,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,79,00000000028,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,79,00000000028,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,79,00000000028,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,89,00000000032,xref_acct_id,00000000032,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,89,00000000032,dalytran_id,0000000277916619,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,89,00000000032,dalytran_card_num,7094142751055551,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,89,00000000032,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,89,00000000032,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,89,00000000032,dalytran_amt,996.88,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,89,00000000032,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,89,00000000032,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,89,00000000032,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,101,00000000026,xref_acct_id,00000000026,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,101,00000000026,dalytran_id,0000000329446511,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,101,00000000026,dalytran_card_num,8040580410348680,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,101,00000000026,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,101,00000000026,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,101,00000000026,dalytran_amt,667.55,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,101,00000000026,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,101,00000000026,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,101,00000000026,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,129,00000000047,xref_acct_id,00000000047,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,129,00000000047,dalytran_id,0000000424689871,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,129,00000000047,dalytran_card_num,5787351228879339,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,129,00000000047,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,129,00000000047,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,129,00000000047,dalytran_amt,648.11,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,129,00000000047,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,129,00000000047,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,129,00000000047,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,155,00000000007,xref_acct_id,00000000007,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,155,00000000007,dalytran_id,0000000502617711,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,155,00000000007,dalytran_card_num,4859452612877065,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,155,00000000007,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,155,00000000007,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,155,00000000007,dalytran_amt,955.11,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,155,00000000007,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,155,00000000007,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,155,00000000007,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,158,00000000032,xref_acct_id,00000000032,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,158,00000000032,dalytran_id,0000000508429766,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,158,00000000032,dalytran_card_num,7094142751055551,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,158,00000000032,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,158,00000000032,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,158,00000000032,dalytran_amt,534.11,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,158,00000000032,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,158,00000000032,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,158,00000000032,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,159,00000000028,xref_acct_id,00000000028,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,159,00000000028,dalytran_id,0000000519771423,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,159,00000000028,dalytran_card_num,6723000463207764,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,159,00000000028,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,159,00000000028,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,159,00000000028,dalytran_amt,670.00,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,159,00000000028,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,159,00000000028,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,159,00000000028,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,162,00000000045,xref_acct_id,00000000045,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,162,00000000045,dalytran_id,0000000523110055,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,162,00000000045,dalytran_card_num,7379335634661142,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,162,00000000045,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,162,00000000045,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,162,00000000045,dalytran_amt,736.88,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,162,00000000045,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,162,00000000045,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,162,00000000045,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,173,00000000048,xref_acct_id,00000000048,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,173,00000000048,dalytran_id,0000000554096178,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,173,00000000048,dalytran_card_num,6503535181795992,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,173,00000000048,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,173,00000000048,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,173,00000000048,dalytran_amt,722.33,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,173,00000000048,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,173,00000000048,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,173,00000000048,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,176,00000000048,xref_acct_id,00000000048,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,176,00000000048,dalytran_id,0000000564257675,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,176,00000000048,dalytran_card_num,6503535181795992,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,176,00000000048,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,176,00000000048,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,176,00000000048,dalytran_amt,623.11,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,176,00000000048,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,176,00000000048,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,176,00000000048,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,178,00000000017,xref_acct_id,00000000017,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,178,00000000017,dalytran_id,0000000570013846,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,178,00000000017,dalytran_card_num,9349107475869214,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,178,00000000017,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,178,00000000017,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,178,00000000017,dalytran_amt,352.33,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,178,00000000017,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,178,00000000017,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,178,00000000017,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,181,00000000045,xref_acct_id,00000000045,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,181,00000000045,dalytran_id,0000000575834812,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,181,00000000045,dalytran_card_num,7379335634661142,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,181,00000000045,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,181,00000000045,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,181,00000000045,dalytran_amt,689.88,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,181,00000000045,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,181,00000000045,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,181,00000000045,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,190,00000000030,xref_acct_id,00000000030,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,190,00000000030,dalytran_id,0000000601496057,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,190,00000000030,dalytran_card_num,6509230362553816,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,190,00000000030,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,190,00000000030,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,190,00000000030,dalytran_amt,900.22,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,190,00000000030,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,190,00000000030,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,190,00000000030,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,208,00000000018,xref_acct_id,00000000018,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,208,00000000018,dalytran_id,0000000667157384,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,208,00000000018,dalytran_card_num,5671184478505844,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,208,00000000018,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,208,00000000018,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,208,00000000018,dalytran_amt,952.77,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,208,00000000018,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,208,00000000018,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,208,00000000018,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,223,00000000021,xref_acct_id,00000000021,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,223,00000000021,dalytran_id,0000000735823935,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,223,00000000021,dalytran_card_num,5407099850479866,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,223,00000000021,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,223,00000000021,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,223,00000000021,dalytran_amt,910.11,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,223,00000000021,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,223,00000000021,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,223,00000000021,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,224,00000000017,xref_acct_id,00000000017,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,224,00000000017,dalytran_id,0000000741999667,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,224,00000000017,dalytran_card_num,9349107475869214,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,224,00000000017,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,224,00000000017,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,224,00000000017,dalytran_amt,643.44,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,224,00000000017,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,224,00000000017,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,224,00000000017,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,225,00000000014,xref_acct_id,00000000014,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,225,00000000014,dalytran_id,0000000742447110,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,225,00000000014,dalytran_card_num,8517866958206008,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,225,00000000014,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,225,00000000014,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,225,00000000014,dalytran_amt,746.77,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,225,00000000014,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,225,00000000014,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,225,00000000014,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,227,00000000030,xref_acct_id,00000000030,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,227,00000000030,dalytran_id,0000000749066680,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,227,00000000030,dalytran_card_num,6509230362553816,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,227,00000000030,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,227,00000000030,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,227,00000000030,dalytran_amt,805.77,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,227,00000000030,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,227,00000000030,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,227,00000000030,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,231,00000000001,xref_acct_id,00000000001,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,231,00000000001,dalytran_id,0000000755736377,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,231,00000000001,dalytran_card_num,9680294154603697,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,231,00000000001,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,231,00000000001,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,231,00000000001,dalytran_amt,906.44,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,231,00000000001,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,231,00000000001,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,231,00000000001,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,234,00000000037,xref_acct_id,00000000037,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,234,00000000037,dalytran_id,0000000767081090,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,234,00000000037,dalytran_card_num,1142167692878931,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,234,00000000037,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,234,00000000037,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,234,00000000037,dalytran_amt,671.11,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,234,00000000037,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,234,00000000037,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,234,00000000037,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,235,00000000037,xref_acct_id,00000000037,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,235,00000000037,dalytran_id,0000000767308626,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,235,00000000037,dalytran_card_num,1142167692878931,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,235,00000000037,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,235,00000000037,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,235,00000000037,dalytran_amt,856.44,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,235,00000000037,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,235,00000000037,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,235,00000000037,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,240,00000000001,xref_acct_id,00000000001,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,240,00000000001,dalytran_id,0000000776200014,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,240,00000000001,dalytran_card_num,9680294154603697,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,240,00000000001,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,240,00000000001,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,240,00000000001,dalytran_amt,985.22,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,240,00000000001,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,240,00000000001,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,240,00000000001,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,242,00000000047,xref_acct_id,00000000047,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,242,00000000047,dalytran_id,0000000781205695,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,242,00000000047,dalytran_card_num,5787351228879339,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,242,00000000047,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,242,00000000047,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,242,00000000047,dalytran_amt,489.66,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,242,00000000047,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,242,00000000047,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,242,00000000047,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,253,00000000017,xref_acct_id,00000000017,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,253,00000000017,dalytran_id,0000000823157599,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,253,00000000017,dalytran_card_num,9349107475869214,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,253,00000000017,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,253,00000000017,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,253,00000000017,dalytran_amt,111.11,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,253,00000000017,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,253,00000000017,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,253,00000000017,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,267,00000000036,xref_acct_id,00000000036,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,267,00000000036,dalytran_id,0000000873232405,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,267,00000000036,dalytran_card_num,4534784102713951,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,267,00000000036,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,267,00000000036,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,267,00000000036,dalytran_amt,720.99,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,267,00000000036,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,267,00000000036,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,267,00000000036,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,271,00000000031,xref_acct_id,00000000031,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,271,00000000031,dalytran_id,0000000885437581,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,271,00000000031,dalytran_card_num,7026637615032277,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,271,00000000031,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,271,00000000031,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,271,00000000031,dalytran_amt,818.00,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,271,00000000031,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,271,00000000031,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,271,00000000031,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,272,00000000031,xref_acct_id,00000000031,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,272,00000000031,dalytran_id,0000000887771179,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,272,00000000031,dalytran_card_num,7026637615032277,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,272,00000000031,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,272,00000000031,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,272,00000000031,dalytran_amt,242.22,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,272,00000000031,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,272,00000000031,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,272,00000000031,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,273,00000000035,xref_acct_id,00000000035,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,273,00000000035,dalytran_id,0000000889986293,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,273,00000000035,dalytran_card_num,1561409106491600,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,273,00000000035,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,273,00000000035,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,273,00000000035,dalytran_amt,973.11,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,273,00000000035,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,273,00000000035,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,273,00000000035,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,280,00000000031,xref_acct_id,00000000031,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,280,00000000031,dalytran_id,0000000910081354,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,280,00000000031,dalytran_card_num,7026637615032277,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,280,00000000031,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,280,00000000031,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,280,00000000031,dalytran_amt,130.11,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,280,00000000031,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,280,00000000031,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,280,00000000031,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,283,00000000014,xref_acct_id,00000000014,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,283,00000000014,dalytran_id,0000000929059536,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,283,00000000014,dalytran_card_num,8517866958206008,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,283,00000000014,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,283,00000000014,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,283,00000000014,dalytran_amt,920.11,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,283,00000000014,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,283,00000000014,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,283,00000000014,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,292,00000000037,xref_acct_id,00000000037,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,292,00000000037,dalytran_id,0000000961186055,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,292,00000000037,dalytran_card_num,1142167692878931,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,292,00000000037,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,292,00000000037,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,292,00000000037,dalytran_amt,548.33,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,292,00000000037,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,292,00000000037,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,292,00000000037,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/cardxref.txt,299,00000000037,xref_acct_id,00000000037,9(11),app/cpy/CVACT03Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,299,00000000037,dalytran_id,0000000992103545,X(16),app/cpy/CVTRA06Y.cpy:L5
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,299,00000000037,dalytran_card_num,1142167692878931,X(16),app/cpy/CVTRA06Y.cpy:L15
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,299,00000000037,dalytran_type_cd,01,X(02),app/cpy/CVTRA06Y.cpy:L6
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,299,00000000037,dalytran_cat_cd,0001,9(04),app/cpy/CVTRA06Y.cpy:L7
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,299,00000000037,dalytran_amt,635.99,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,299,00000000037,dalytran_merchant_id,800000000,9(09),app/cpy/CVTRA06Y.cpy:L11
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,299,00000000037,trailer_reason_code,0102,9(04),app/cbl/CBTRN02C.cbl:L181
+B_CUMULATIVE_DECLINES_SKIP,app/cbl/CBTRN02C.cbl,299,00000000037,trailer_reason_description,OVERLIMIT TRANSACTION,X(76),app/cbl/CBTRN02C.cbl:L411
