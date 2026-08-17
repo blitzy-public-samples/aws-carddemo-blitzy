@@ -163,7 +163,7 @@ AAP deliverables and governing constraints cross-mapped to quality benchmarks. A
 | Asymmetric error handling (abend vs DEFAULT fallback) | Rule parity | ✅ Pass | `DisclosureGroupRepository`; service abend tests (BR-08, BR-17). |
 | ACCTFILE-only mutation; TCATBAL read-only | Source (not TechSpec narrative) | ✅ Pass | AAP binding resolution followed; accounts rewritten, TCATBAL untouched. |
 | Determinism by injection | Single seam | ✅ Pass | `Db2TimestampSupplier` injectable; stable golden assertions. |
-| Behavior traceability (cite paragraph/line) | Comment coverage | ✅ Pass | Every migrated business rule (BR-01…BR-18) carries CBACT04C paragraph/line provenance. All 16 main + 5 test classes cite an authoritative source: **17** cite CBACT04C paragraphs/lines, and the four copybook-derived units (`FixedWidthCodec`, `model.DisclosureGroup`, `ZonedDecimal`, `ZonedDecimalTest`) cite copybook field layouts instead — correctly, since they port record geometry rather than program logic. Counted reproducibly with `grep -oE '\bL[0-9]+' <file> \| wc -l`: **111** source-line citations in `InterestCalculationService`, **66** in `InterestCalculator`. |
+| Behavior traceability (cite paragraph/line) | Comment coverage | ✅ Pass | **BR-01…BR-17** carry CBACT04C paragraph/line provenance; **BR-18** (overpunch zoned decimal) is copybook/fixture-derived per AAP §0.6.3 and cites the copybook `PIC` layouts plus `app/data/ASCII`. Of the 16 main + 5 test classes, **18** cite CBACT04C paragraphs/lines; the three record-geometry units (`FixedWidthCodec`, `ZonedDecimal`, `ZonedDecimalTest`) cite copybook layouts and fixtures instead. Counted reproducibly with `grep -oE '\bL[0-9]+' <file> \| wc -l`: **111** source-line citations in `InterestCalculationService`, **66** in `InterestCalculator`. |
 | Standalone (JDK + JUnit only) | Zero runtime deps | ✅ Pass | junit-jupiter 5.13.4 test-scope only; bare-JDK jar. |
 | Minimal-change isolation (additive) | Diff discipline | ✅ Pass | 30 module files, purely additive (every path added, none modified or deleted), 100% under `modernized/`; `app/` untouched. Absolute line counts are deliberately not quoted — they drift with each commit (see §1.3). |
 | Fees remain a no-op (`1400-COMPUTE-FEES`) | Faithful stub | ✅ Pass | No fee effects; documented as source-faithful (BR-16). |
@@ -428,7 +428,7 @@ None. The module intentionally uses **no environment variables** (AAP constraint
 | **PARM-DATE** | The 10-char job date passed to the batch program (`2022071800` for the golden run). |
 | **Abend** | Abnormal end — a fatal error; ported as a thrown runtime exception yielding CLI exit 1. |
 | **DEFAULT fallback** | When a disclosure group is not found (status '23'), the rate is re-read under the `DEFAULT` group. |
-| **BR-nn** | Business rule nn (BR-01…BR-18), each tagged to a CBACT04C paragraph/line and a covering test. |
+| **BR-nn** | Business rule nn (BR-01…BR-18), each tagged to its authoritative source and a covering test: BR-01…BR-17 to a CBACT04C paragraph/line, BR-18 to the copybook `PIC` layouts plus the `app/data/ASCII` fixtures (AAP §0.6.3). |
 
 ---
 

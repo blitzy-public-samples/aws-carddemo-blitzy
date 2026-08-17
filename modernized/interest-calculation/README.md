@@ -18,7 +18,9 @@ injected writer (`1300-B-WRITE-TX`). The module depends only on the **JDK** and,
 tests, **JUnit 5** — there is **no** Spring, application server, database, ORM, messaging,
 network, environment variable, or configuration file of any kind. Correctness is a faithful,
 line-traceable port of the source program: each migrated business rule carries a comment
-citing its originating `CBACT04C` paragraph/line.
+citing its originating source — a `CBACT04C` paragraph/line for BR-01…BR-17, and the
+copybook `PIC` layouts plus the `app/data/ASCII` fixtures for BR-18, the overpunch
+zoned-decimal rule the program inherits from its copybooks rather than from a paragraph.
 
 ## Prerequisites
 
