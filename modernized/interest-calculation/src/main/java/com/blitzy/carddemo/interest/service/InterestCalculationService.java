@@ -278,11 +278,13 @@ public final class InterestCalculationService {
         // --- BR-12 final account update at end-of-driver — RATIFIED DECISION (do not "correct") ---
         //
         // Decision: this port performs the final account update AFTER the driver loop, guarded by the
-        // firstTime flag, porting ELSE PERFORM 1050-UPDATE-ACCOUNT at app/cbl/CBACT04C.cbl:L219-220
-        // (AAP §0.6.3 BR-12 and the §0.1.2 pipeline). It posts the LAST-seen account's accumulated
-        // total through 1050-UPDATE-ACCOUNT (L350-356: ADD WS-TOTAL-INT TO ACCT-CURR-BAL L352, then
-        // MOVE 0 TO the two cycle fields L353-354). The firstTime guard makes an EMPTY driver a no-op
-        // (and prevents an NPE on the null currentAccount).
+        // firstTime flag — the port of the WS-FIRST-TIME guard IF WS-FIRST-TIME NOT = 'Y' at
+        // app/cbl/CBACT04C.cbl:L195-199 (cleared by MOVE 'N' TO WS-FIRST-TIME, L198) — porting
+        // ELSE PERFORM 1050-UPDATE-ACCOUNT at app/cbl/CBACT04C.cbl:L219-220 (AAP §0.6.3 BR-12 and the
+        // §0.1.2 pipeline). It posts the LAST-seen account's accumulated total through
+        // 1050-UPDATE-ACCOUNT (L350-356: ADD WS-TOTAL-INT TO ACCT-CURR-BAL L352, then MOVE 0 TO the
+        // two cycle fields L353-354). The firstTime guard (WS-FIRST-TIME, L195-199) makes an EMPTY
+        // driver a no-op (and prevents an NPE on the null currentAccount).
         //
         // Subtlety the decision resolves: the source driver loop (L188-222) is
         // PERFORM UNTIL END-OF-FILE = 'Y', which is TEST-BEFORE. Once 1000-TCATBALF-GET-NEXT
@@ -339,7 +341,8 @@ public final class InterestCalculationService {
      * ratified-decision note at the call site in {@link #process} carries the full rationale.</p>
      *
      * @param account  the account to update in place (the prior/last account on the break); never null
-     *                 when invoked because the {@code firstTime} guard precedes every call
+     *                 when invoked because the {@code firstTime} guard ({@code WS-FIRST-TIME},
+     *                 CBACT04C.cbl L195-199) precedes every call
      * @param totalInt the accumulated per-account monthly interest to post to the balance (scale 2)
      */
     private void updateAccount(final Account account, final BigDecimal totalInt) {

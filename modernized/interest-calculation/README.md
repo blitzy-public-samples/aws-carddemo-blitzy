@@ -145,7 +145,11 @@ consequential porting decisions, each traceable to `CBACT04C`.
   and a strict-execution port would therefore leave the last account's interest unposted. For the
   shipped fixtures the choice is **byte-neutral**: every account accumulates `0.00` and both cycle
   fields are already zero, so the updated-accounts output stays byte-identical to
-  `app/data/ASCII/acctdata.txt`. The decision has been **ratified** in PR review and is the
+  `app/data/ASCII/acctdata.txt` — `cmp`-verified, both 15,050 bytes, and both hashing to the
+  canonical account-output anchor
+  SHA-256 `c2a97b6a32dc4a87a7aafdf7f72e6712e560412d30b00c5526cca80fc9dfd260`
+  (the same anchor asserted by `InterestCalculationGoldenMasterTest` and cited in the Project
+  Guide's risk register). The decision has been **ratified** in PR review and is the
   accepted contract of this port: it must **not** be "corrected" to the unreachable-`ELSE`
   reading. `InterestCalculationServiceTest.br12_finalUpdateAtEof` is the regression lock that holds
   it in place — it drives non-zero interest over non-zero cycle fields, so it fails if the update is

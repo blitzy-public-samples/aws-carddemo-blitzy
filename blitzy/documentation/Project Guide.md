@@ -72,7 +72,9 @@ pie showData title Completion Status — 94.2% Complete
 
 ### 2.1 Completed Work Detail
 
-Each row traces to a specific AAP deliverable, except the final row, which records completed human (manual) work. Autonomous hours are estimated via the PA2 framework using lines-of-code and complexity as proxies (main Java = 3,789 LOC; test Java = 1,849 LOC); the human row carries the 1h that §2.2 previously estimated for it.
+Each row traces to a specific AAP deliverable, except the final row, which records completed human (manual) work. Autonomous hours are estimated via the PA2 framework using lines-of-code and complexity as proxies; the human row carries the 1h that §2.2 previously estimated for it.
+
+> **Reading the LOC descriptors.** Every LOC figure in the table below is a **current-HEAD** count — main Java = **3,833** LOC (`find src/main/java -name '*.java' | xargs wc -l`) and test Java = **2,099** LOC (same command over `src/test/java`), both run in `modernized/interest-calculation/`. The PA2 **hour** estimates, by contrast, were fixed against the pre-refine baseline (commit `32b7fbe8`: main Java 3,789 LOC; test Java 1,849 LOC) and are deliberately **not** re-estimated for the BR-12 ratification delta, which added explanatory comments and test assertions rather than a new deliverable — so the mandated totals in §1.2 (154 total / 145 completed / 9 remaining) stand unchanged.
 
 | Component | Hours | Description |
 |---|---:|---|
@@ -82,9 +84,9 @@ Each row traces to a specific AAP deliverable, except the final row, which recor
 | `ZonedDecimal` overpunch codec | 11 | Highest-risk unit: overpunch zoned-decimal ↔ `BigDecimal` scale-2 codec with sign map and implied-decimal handling (292 LOC). |
 | `CobolArithmetic` + `Db2TimestampSupplier` | 8 | Truncating interest arithmetic (scale 2, DOWN, ÷1200) and injectable 26-char DB2 timestamp seam. |
 | Fixed-width I/O layer (6 classes) | 38 | `FixedWidthCodec`, `TransactionCategoryBalanceReader`, `CardXrefRepository`, `AccountRepository` (read + rewrite + 300B emit), `DisclosureGroupRepository` (rate lookup + DEFAULT fallback), `TransactionWriter` (350B) — 1,823 LOC. |
-| `InterestCalculationService` | 14 | Pure ported account-break business loop, first-time guard, accumulator reset, EOF final-update (327 LOC). |
-| `InterestCalculator` CLI | 8 | `main(String[])` 7-argument contract, orchestration, abend semantics, arg validation (430 LOC). |
-| JUnit 5 test suite (5 classes) | 28 | 49 test methods → 91 executed invocations: golden-master + per-rule + edge cases (1,849 LOC). |
+| `InterestCalculationService` | 14 | Pure ported account-break business loop, first-time guard, accumulator reset, EOF final-update (369 LOC). |
+| `InterestCalculator` CLI | 8 | `main(String[])` 7-argument contract, orchestration, abend semantics, arg validation (432 LOC). |
+| JUnit 5 test suite (5 classes) | 28 | 49 test methods → 91 executed invocations: golden-master + per-rule + edge cases (2,099 LOC). |
 | Golden fixtures + expected-output derivation | 5 | Byte-identical fixture copies + SHA-256-anchored expected interest-transactions and updated-accounts. |
 | Autonomous validation & QA remediation | 10 | Three review-fix rounds (Checkpoint 1, Checkpoint 2 [7 findings], QA findings) + final 5-gate validation. |
 | Human ratification of the BR-12 final-account-update decision (HT-2, sign-off) | 1 | Reviewing engineer ratified the documented end-of-driver final account update (`app/cbl/CBACT04C.cbl:L219-220`) via the PR refine feedback; recorded in §1.4, §5 and §6 T1. Manual (human) hour, not an AI estimate. |
@@ -199,7 +201,7 @@ AAP deliverables and governing constraints cross-mapped to quality benchmarks. A
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieOuterStrokeColor':'#B23AF2','pieOuterStrokeWidth':'2px','pieTitleTextColor':'#B23AF2','pieSectionTextColor':'#111111','pieLegendTextColor':'#111111'}}}%%
 pie showData title Project Hours Breakdown (Total 154h)
-    "Completed Work" : 145
+    "Completed Work (AI + Manual)" : 145
     "Remaining Work" : 9
 ```
 

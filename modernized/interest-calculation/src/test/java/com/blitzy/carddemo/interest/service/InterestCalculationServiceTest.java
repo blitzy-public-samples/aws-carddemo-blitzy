@@ -79,9 +79,35 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code PERFORM UNTIL END-OF-FILE = 'Y'} (<code>L188</code>) is TEST-BEFORE, so that source
  * {@code ELSE} never executes on the mainframe &mdash; the end-of-driver reading is a deliberate
  * porting decision, and it is <strong>RATIFIED</strong> (Project Guide HT-2 / risk T1) rather than
- * open. {@link #br12_finalUpdateAtEof()} is its regression lock and
- * {@link #br03b_emptyDriverNoUpdate()} its first-time-guard boundary; both fail loudly if the port is
- * ever "corrected" to the unreachable-{@code ELSE} reading.</p>
+ * open.</p>
+ *
+ * <p>{@link #br12_finalUpdateAtEof()} is the <strong>dedicated BR-12 regression lock</strong> &mdash; the
+ * test written to detect removal of that update. It drives NON-ZERO accumulated interest over NON-ZERO
+ * cycle fields for the LAST account in driver order &mdash; the one account no in-loop break can post
+ * &mdash; and asserts the posted balance and the zeroed cycle fields both in memory and in the rewritten
+ * 300-byte record, so if the port is ever "corrected" to the unreachable-{@code ELSE} reading and the
+ * post-loop update is dropped it fails loudly: the last account is left at its input balance with its two
+ * cycle fields un-zeroed, in the persisted record as well as in memory. It is not the only test that goes
+ * red on that mutation: several tests that <em>assert</em> posted account state over a non-empty driver
+ * fail too, including {@link #br03a_firstTimeGuardSingleAccount()},
+ * {@link #br09_interestTruncationBoundary()} and {@link #br11_postTotalAndZeroCycleFields()}. Tests that
+ * assert only transaction-level facts &mdash; count, framing, {@code TRAN-ID}, fixed fields, timestamps
+ * &mdash; stay green even though their accounts are posted at end-of-driver
+ * ({@link #br01_sequentialDriveInOrder()}, {@link #br13_tranIdRunWideSuffix()},
+ * {@link #br14_fixedTransactionFields()}, {@link #br15_origTsEqualsProcTs()}), and so does the
+ * empty-driver boundary case below. What makes this one the <em>dedicated</em> lock is that it isolates
+ * the LAST account of a multi-account driver from the in-loop break path, checks the persisted record as
+ * well as memory, and names the ratified decision and <code>app/cbl/CBACT04C.cbl:L219-220</code> in its
+ * failure text.</p>
+ *
+ * <p>{@link #br03b_emptyDriverNoUpdate()} covers the complementary <em>guard</em> boundary only &mdash; it
+ * is the <strong>boundary</strong> of that behavior, not a second detector. It drives an EMPTY driver,
+ * which never clears the first-time flag, so nothing is updated, written or thrown and its expectations
+ * (no transactions, balance unchanged) hold whether or not the post-loop update is present. What it proves
+ * is that the guard makes the end-of-driver update a no-op when there is no account to post
+ * (<code>L195-199</code>). Because it asserts the ABSENCE of an update it passes under either reading and
+ * therefore does NOT detect removal of the post-loop update &mdash; it would NOT go red if the update were
+ * deleted.</p>
  *
  * <p>Every migrated-rule assertion carries a comment citing the originating {@code CBACT04C}
  * paragraph/line (mandatory traceability, AAP &sect;0.7).</p>
@@ -424,6 +450,12 @@ public class InterestCalculationServiceTest {
         // is updated, no transaction is written, and nothing is thrown (the guard also keeps the
         // still-unset "current account" from being dereferenced). The ratified decision therefore posts
         // the LAST account when there IS one and touches nothing when there is none.
+        //
+        // SCOPE OF THIS TEST: it fixes the BOUNDARY, not the presence, of the ratified update. With an
+        // empty driver both expectations below hold whether or not the post-loop update exists, so this
+        // test would NOT go red if that update were deleted — br12_finalUpdateAtEof is the dedicated
+        // lock for that regression (other tests in this class fail on it too, but only that one isolates
+        // the LAST account and names the ratified decision in its failure text).
         assertTrue(r.txns().isEmpty(), "no driver records -> no interest transactions");
         assertEquals(new BigDecimal("100.00"), r.accounts().read(ACCT_A).getCurrBal(),
                 "currBal unchanged — the post-loop final update is guarded by firstTime");
@@ -630,6 +662,13 @@ public class InterestCalculationServiceTest {
         // this test goes red, fix the caller, never this test.
         // =============================================================================================
 
+        // DIAGNOSTICS. Both scenarios are ARRANGED here and ASSERTED together at the end of the method
+        // under ONE outer assertAll, so removing the end-of-driver update reports EVERY consequence in a
+        // single failure report — the single-record balance, the multi-account in-memory state AND the
+        // persisted 300-byte record — instead of aborting at whichever assertion happens to run first.
+        // Every message in that report names RATIFIED BR-12 and cites app/cbl/CBACT04C.cbl:L219-220, so
+        // the failure explains itself without this file at hand.
+
         // --- Scenario 1 (minimal proof) --------------------------------------------------------------
         // ONE record, so there is no later account break: the post-loop end-of-driver update is the ONLY
         // place the update can happen, and a changed balance therefore proves it fired.
@@ -639,10 +678,6 @@ public class InterestCalculationServiceTest {
                         new BigDecimal("0.00"), GROUP_STD)),
                 List.of(xrefLine(CARD_A, CUST_A, ACCT_A)),
                 List.of(discLine(GROUP_STD, TYPE_CD, CAT_CD, new BigDecimal("12.55"))));
-
-        // BR-12 final 1050-UPDATE-ACCOUNT at end-of-file CBACT04C.cbl L219-220
-        assertEquals(new BigDecimal("101.04"), single.accounts().read(ACCT_A).getCurrBal(),
-                "EOF final update posted the 1.04 interest to the last (only) account");
 
         // --- Scenario 2 (the regression lock: N accounts => N updates) -------------------------------
         // THREE records over TWO accounts. ACCT_A is posted by the IN-LOOP account break (L194-196),
@@ -673,53 +708,83 @@ public class InterestCalculationServiceTest {
 
         Account lastAccount = multi.accounts().read(ACCT_B);
         multi.txns().forEach(InterestCalculationServiceTest::assertFramed);
-        assertAll("RATIFIED BR-12: every account is posted, INCLUDING the last one in driver order",
-                // Provenance of the two totals: BR-09 truncation (L464-465) + BR-10 accrual (L467).
-                () -> assertEquals(3, multi.txns().size(), "three rate!=0 records -> three transactions"),
-                () -> assertEquals(new BigDecimal("1.04"), amt(multi.txns().get(0)),
-                        "record 1 (ACCT_A, 100.00 @ 12.55) truncates DOWN to 1.04"),
-                () -> assertEquals(new BigDecimal("1.04"), amt(multi.txns().get(1)),
-                        "record 2 (ACCT_B, 100.00 @ 12.55) truncates DOWN to 1.04"),
-                () -> assertEquals(new BigDecimal("2.09"), amt(multi.txns().get(2)),
-                        "record 3 (ACCT_B, 200.00 @ 12.55) truncates DOWN to 2.09"),
-                // BR-02/BR-11 in-loop break update for the NON-last account CBACT04C.cbl L194-196, L352
-                () -> assertEquals(new BigDecimal("101.04"), multi.accounts().read(ACCT_A).getCurrBal(),
-                        "ACCT_A (not last) posted its 1.04 at the in-loop account break: 100.00 + 1.04"),
-                // BR-12 the RATIFIED end-of-driver update CBACT04C.cbl L219-220. THIS is the assertion
-                // that fails under the unreachable-ELSE reading: ACCT_B would still read its input 500.00.
-                () -> assertEquals(new BigDecimal("503.13"), lastAccount.getCurrBal(),
-                        "RATIFIED BR-12: the LAST account in driver order posts its accumulated "
-                                + "1.04 + 2.09 = 3.13, so currBal = 500.00 + 3.13 (an unposted last "
-                                + "account would still read 500.00)"),
-                // BR-11 MOVE 0 TO ACCT-CURR-CYC-CREDIT CBACT04C.cbl L353, reached via the L219-220 update
-                () -> assertEquals(new BigDecimal("0.00"), lastAccount.getCurrCycCredit(),
-                        "RATIFIED BR-12: the LAST account's ACCT-CURR-CYC-CREDIT is zeroed from 11.00"),
-                // BR-11 MOVE 0 TO ACCT-CURR-CYC-DEBIT CBACT04C.cbl L354, reached via the L219-220 update
-                () -> assertEquals(new BigDecimal("0.00"), lastAccount.getCurrCycDebit(),
-                        "RATIFIED BR-12: the LAST account's ACCT-CURR-CYC-DEBIT is zeroed from 13.00"));
 
         // --- Scenario 2, byte level: the ratified update must survive the REWRITE ---------------------
         // In-memory mutation is not enough — the posted balance and the zeroed cycle fields must reach
         // the 300-byte updated-accounts output (REWRITE FD-ACCTFILE-REC, L356). Same technique as
-        // br11_postTotalAndZeroCycleFields: emit the mutated master, then decode the LAST account's
-        // three mutated slices. Every other byte is AccountRepository's own concern.
+        // br11_postTotalAndZeroCycleFields: emit the mutated master here, then decode the LAST account's
+        // three mutated slices inside the byte-level group below (the record lookup lives inside that
+        // group so a missing record is reported ALONGSIDE the other failures rather than aborting them).
+        // Every other byte is AccountRepository's own concern.
         Path acctOut = tempDir.resolve("acct-out-" + uniq() + ".txt");
         multi.accounts().writeUpdatedAccounts(acctOut);
-        String rewrittenLast = Files.readAllLines(acctOut, US_ASCII).stream()
-                .filter(l -> !l.isEmpty() && FixedWidthCodec.slice(l, 0, 11).equals(ACCT_B))
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("rewritten LAST account (ACCT_B) record not found"));
-        assertEquals(300, rewrittenLast.length(), "rewritten last-account record must be 300 bytes");
-        assertAll("RATIFIED BR-12: the end-of-driver update survives the 300-byte REWRITE (L356)",
-                () -> assertEquals(new BigDecimal("503.13"),
-                        ZonedDecimal.decode(FixedWidthCodec.slice(rewrittenLast, 12, 12), 2),
-                        "currBal @[12,24) carries the posted 3.13 // L352"),
-                () -> assertEquals(new BigDecimal("0.00"),
-                        ZonedDecimal.decode(FixedWidthCodec.slice(rewrittenLast, 78, 12), 2),
-                        "cycCredit @[78,90) written as zero // L353"),
-                () -> assertEquals(new BigDecimal("0.00"),
-                        ZonedDecimal.decode(FixedWidthCodec.slice(rewrittenLast, 90, 12), 2),
-                        "cycDebit @[90,102) written as zero // L354"));
+
+        // ONE outer assertAll over both scenarios: the canonical regression — deleting the post-loop
+        // update — then surfaces the single-record balance, the multi-account state and the persisted
+        // 300-byte record TOGETHER in one report (see the DIAGNOSTICS note above).
+        assertAll("RATIFIED BR-12 — the final 1050-UPDATE-ACCOUNT fires at end-of-driver "
+                        + "(app/cbl/CBACT04C.cbl:L219-220), so the LAST account in driver order is "
+                        + "posted like every other account",
+                // BR-12 final 1050-UPDATE-ACCOUNT at end-of-file CBACT04C.cbl L219-220
+                () -> assertEquals(new BigDecimal("101.04"), single.accounts().read(ACCT_A).getCurrBal(),
+                        "RATIFIED BR-12 (app/cbl/CBACT04C.cbl:L219-220) — scenario 1, single record with "
+                                + "no later account break: the end-of-driver update posted the 1.04 "
+                                + "interest to the last (only) account, so currBal = 100.00 + 1.04 "
+                                + "(without that update it would still read 100.00)"),
+                () -> assertAll("RATIFIED BR-12 (app/cbl/CBACT04C.cbl:L219-220) — scenario 2, in-memory "
+                                + "state: every account is posted, INCLUDING the last one in driver order",
+                        // Provenance of the two totals: BR-09 truncation (L464-465) + BR-10 accrual (L467).
+                        () -> assertEquals(3, multi.txns().size(), "three rate!=0 records -> three transactions"),
+                        () -> assertEquals(new BigDecimal("1.04"), amt(multi.txns().get(0)),
+                                "record 1 (ACCT_A, 100.00 @ 12.55) truncates DOWN to 1.04"),
+                        () -> assertEquals(new BigDecimal("1.04"), amt(multi.txns().get(1)),
+                                "record 2 (ACCT_B, 100.00 @ 12.55) truncates DOWN to 1.04"),
+                        () -> assertEquals(new BigDecimal("2.09"), amt(multi.txns().get(2)),
+                                "record 3 (ACCT_B, 200.00 @ 12.55) truncates DOWN to 2.09"),
+                        // BR-02/BR-11 in-loop break update for the NON-last account CBACT04C.cbl L194-196, L352
+                        () -> assertEquals(new BigDecimal("101.04"), multi.accounts().read(ACCT_A).getCurrBal(),
+                                "ACCT_A (not last) posted its 1.04 at the in-loop account break: 100.00 + 1.04"),
+                        // BR-12 the RATIFIED end-of-driver update CBACT04C.cbl L219-220. THIS is the assertion
+                        // that fails under the unreachable-ELSE reading: ACCT_B would still read its input 500.00.
+                        () -> assertEquals(new BigDecimal("503.13"), lastAccount.getCurrBal(),
+                                "RATIFIED BR-12 (app/cbl/CBACT04C.cbl:L219-220): the LAST account in "
+                                        + "driver order posts its accumulated 1.04 + 2.09 = 3.13, so "
+                                        + "currBal = 500.00 + 3.13 (an unposted last account would still "
+                                        + "read 500.00)"),
+                        // BR-11 MOVE 0 TO ACCT-CURR-CYC-CREDIT CBACT04C.cbl L353, reached via the L219-220 update
+                        () -> assertEquals(new BigDecimal("0.00"), lastAccount.getCurrCycCredit(),
+                                "RATIFIED BR-12 (app/cbl/CBACT04C.cbl:L219-220): the LAST account's "
+                                        + "ACCT-CURR-CYC-CREDIT is zeroed from 11.00 // L353"),
+                        // BR-11 MOVE 0 TO ACCT-CURR-CYC-DEBIT CBACT04C.cbl L354, reached via the L219-220 update
+                        () -> assertEquals(new BigDecimal("0.00"), lastAccount.getCurrCycDebit(),
+                                "RATIFIED BR-12 (app/cbl/CBACT04C.cbl:L219-220): the LAST account's "
+                                        + "ACCT-CURR-CYC-DEBIT is zeroed from 13.00 // L354")),
+                // BR-12 -> BR-11 REWRITE FD-ACCTFILE-REC CBACT04C.cbl L219-220 reaching L350-356
+                () -> {
+                    String rewrittenLast = Files.readAllLines(acctOut, US_ASCII).stream()
+                            .filter(l -> !l.isEmpty() && FixedWidthCodec.slice(l, 0, 11).equals(ACCT_B))
+                            .findFirst()
+                            .orElseThrow(() -> new AssertionError(
+                                    "RATIFIED BR-12 (app/cbl/CBACT04C.cbl:L219-220): the rewritten LAST "
+                                            + "account (ACCT_B) record is missing from the 300-byte "
+                                            + "updated-accounts output"));
+                    assertEquals(300, rewrittenLast.length(),
+                            "rewritten last-account record must be 300 bytes (CVACT01Y ACCOUNT-RECORD)");
+                    assertAll("RATIFIED BR-12 (app/cbl/CBACT04C.cbl:L219-220) — scenario 2, byte level: "
+                                    + "the end-of-driver update survives the 300-byte REWRITE (L356)",
+                            () -> assertEquals(new BigDecimal("503.13"),
+                                    ZonedDecimal.decode(FixedWidthCodec.slice(rewrittenLast, 12, 12), 2),
+                                    "RATIFIED BR-12 (app/cbl/CBACT04C.cbl:L219-220): currBal @[12,24) "
+                                            + "carries the posted 3.13 // L352"),
+                            () -> assertEquals(new BigDecimal("0.00"),
+                                    ZonedDecimal.decode(FixedWidthCodec.slice(rewrittenLast, 78, 12), 2),
+                                    "RATIFIED BR-12 (app/cbl/CBACT04C.cbl:L219-220): cycCredit @[78,90) "
+                                            + "written as zero // L353"),
+                            () -> assertEquals(new BigDecimal("0.00"),
+                                    ZonedDecimal.decode(FixedWidthCodec.slice(rewrittenLast, 90, 12), 2),
+                                    "RATIFIED BR-12 (app/cbl/CBACT04C.cbl:L219-220): cycDebit @[90,102) "
+                                            + "written as zero // L354"));
+                });
     }
 
     @Test

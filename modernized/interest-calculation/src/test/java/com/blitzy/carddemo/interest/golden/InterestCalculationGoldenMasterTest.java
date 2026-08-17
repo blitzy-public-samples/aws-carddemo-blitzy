@@ -48,10 +48,32 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * loop with an account break on every key change, look up the disclosure-group rate (with the
  * DEFAULT-group fallback), compute the truncating monthly interest, emit a 350-byte interest
  * transaction per driven record, and rewrite the 300-byte account master at each account break and at
- * end-of-file. This one assertion pair therefore locks the observable contract of the entire pipeline
- * rather than any single rule in isolation.</p>
+ * end-of-file.</p>
  *
- * <h2>Business rules locked (AAP &sect;0.6.3)</h2>
+ * <p><strong>What the assertion pair actually locks</strong> is the observable <em>output contract of
+ * the shipped fixtures</em>: it fails on any change to the bytes those four fixtures produce, so it is
+ * a broad end-to-end net across the whole pipeline rather than a rule-by-rule check &mdash; but it
+ * locks a rule only to the extent that these fixtures make that rule byte-visible. The account-side
+ * <em>value</em> semantics are the gap: every account accumulates {@code 0.00} over already-zero cycle
+ * fields, so the ratified end-of-file account update (<strong>BR-12</strong>,
+ * <code>app/cbl/CBACT04C.cbl:L219-220</code>) is <strong>byte-neutral</strong> here &mdash;
+ * characterized (documented and executed) by this test, but locked by
+ * {@code InterestCalculationServiceTest.br12_finalUpdateAtEof} instead. See the
+ * fixture-characterization note below for why.</p>
+ *
+ * <h2>Business rules characterized (AAP &sect;0.6.3)</h2>
+ * <p>Every rule below is exercised end-to-end by this run, and the byte comparison locks each one only
+ * to the extent that these fixtures make its effect visible in the produced bytes. The
+ * transaction-side rules write their computed values straight into the 350-byte records (with every
+ * driver balance at {@code 0.00}, BR-09's truncation is executed but not discriminated &mdash; its
+ * boundary vectors live in {@code CobolArithmeticTest} and
+ * {@code InterestCalculationServiceTest.br09_interestTruncationBoundary}). On the account side the
+ * fixtures are deliberately quiet: the 300-byte output locks the {@code REWRITE} geometry and the
+ * preservation of every account field, while the <em>value</em> semantics of <strong>BR-11</strong>
+ * (posting and zeroing) and of the ratified <strong>BR-12</strong> (the end-of-driver update) are
+ * byte-neutral here and are locked with non-zero data by
+ * {@code InterestCalculationServiceTest.br11_postTotalAndZeroCycleFields} and
+ * {@code InterestCalculationServiceTest.br12_finalUpdateAtEof} respectively.</p>
  * <ul>
  *   <li><strong>BR-01</strong> &mdash; TCATBAL read sequentially as the driver; one pass over all
  *       records (<code>app/cbl/CBACT04C.cbl:L188-193,L326</code>).</li>
@@ -67,13 +89,14 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  *       (<code>app/cbl/CBACT04C.cbl:L464-465</code>).</li>
  *   <li><strong>BR-11</strong> &mdash; post total interest to {@code ACCT-CURR-BAL}, zero the two
  *       cycle fields, and {@code REWRITE} (<code>app/cbl/CBACT04C.cbl:L350-356</code>).</li>
- *   <li><strong>BR-12 (RATIFIED)</strong> &mdash; the final account update fires at end-of-file: the
- *       port performs it at end-of-driver (post-loop), guarded by the first-time flag, porting
- *       {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} (<code>app/cbl/CBACT04C.cbl:L219-220</code>) so the
- *       LAST account in driver order is posted too. That end-of-driver reading is a
- *       <strong>ratified</strong> porting decision, not an open question; because it is byte-neutral
- *       for these fixtures (see the fixture-characterization note below), its observable effect is
- *       locked by {@code InterestCalculationServiceTest.br12_finalUpdateAtEof}, not by these bytes.</li>
+ *   <li><strong>BR-12 (RATIFIED) &mdash; documented here, locked elsewhere:</strong> the final account
+ *       update fires at end-of-file: the port performs it at end-of-driver (post-loop), guarded by the
+ *       first-time flag, porting {@code ELSE PERFORM 1050-UPDATE-ACCOUNT}
+ *       (<code>app/cbl/CBACT04C.cbl:L219-220</code>) so the LAST account in driver order is posted too.
+ *       That end-of-driver reading is a <strong>ratified</strong> porting decision, not an open
+ *       question; because it is byte-neutral for these fixtures (see the fixture-characterization note
+ *       below), these bytes cannot detect its removal &mdash; its observable effect is locked by
+ *       {@code InterestCalculationServiceTest.br12_finalUpdateAtEof}, not here.</li>
  *   <li><strong>BR-13</strong> &mdash; {@code TRAN-ID = PARM-DATE + 6-digit suffix}, incremented per
  *       transaction (<code>app/cbl/CBACT04C.cbl:L474-480</code>).</li>
  *   <li><strong>BR-14</strong> &mdash; fixed transaction fields: type {@code '01'}, cat {@code '05'},
@@ -287,19 +310,27 @@ public class InterestCalculationGoldenMasterTest {
                         + "fixed fields (L482-495, BR-14), origTs==procTs (L496-498, BR-15), driver loop (L188-193, BR-01)");
 
         // === PRIMARY ASSERTION 2 — updated-accounts byte-for-byte =======================================
-        // Locks 1050-UPDATE-ACCOUNT: post accumulated interest to ACCT-CURR-BAL, zero the two cycle
-        // fields, then REWRITE (app/cbl/CBACT04C.cbl:L350-356, BR-11); the RATIFIED final end-of-file
-        // account update (L219-220, BR-12) — which this port performs at end-of-driver (post-loop),
-        // guarded by the first-time flag, so the LAST account in driver order is posted too; and the
-        // per-account ACCOUNT + XREF load (L373, L394-395, BR-05).
-        // With the golden fixtures every balance += 0.00 and the cycle fields are already 0, so the
-        // rewritten master is byte-identical to acctdata.txt. These bytes are therefore BYTE-NEUTRAL for
-        // the ratified BR-12 semantics — identical whether or not the end-of-driver update fires — and
-        // the decision's observable effect is locked by
-        // InterestCalculationServiceTest.br12_finalUpdateAtEof, which drives non-zero interest.
+        // WHAT THIS LOCKS: the 1050-UPDATE-ACCOUNT REWRITE output contract — all 50 account records
+        // re-emitted at exactly 300 bytes with every field preserved (app/cbl/CBACT04C.cbl:L350-356,
+        // BR-11) — and the per-account ACCOUNT + XREF load that feeds it (L373, L394-395, BR-05).
+        // WHAT IT DOES NOT LOCK (byte-neutral for these fixtures): the account-side VALUE semantics —
+        // posting the accumulated interest to ACCT-CURR-BAL (L352) and zeroing the two cycle fields
+        // (L353-354) of BR-11, and the RATIFIED final end-of-file account update (L219-220, BR-12),
+        // which this port performs at end-of-driver (post-loop), guarded by the first-time flag, so the
+        // LAST account in driver order is posted too. With the golden fixtures every balance += 0.00
+        // over already-zero cycle fields, so the rewritten master is byte-identical to acctdata.txt —
+        // identical whether or not the end-of-driver update fires. These bytes therefore DOCUMENT
+        // ratified BR-12 (and BR-11's value semantics) as byte-neutral here; both are locked
+        // behaviorally, with non-zero data, by InterestCalculationServiceTest:
+        // br11_postTotalAndZeroCycleFields and br12_finalUpdateAtEof.
         assertArrayEquals(expectedAcct, actualAcct,
-                "updated-accounts.txt not byte-exact: locks 1050-UPDATE-ACCOUNT REWRITE (CBACT04C:L350-356, BR-11), "
-                        + "ratified final EOF account update (L219-220, BR-12), per-account ACCOUNT+XREF load (L373,L394-395, BR-05)");
+                "updated-accounts.txt not byte-exact: locks the per-account 1050-UPDATE-ACCOUNT REWRITE output "
+                        + "contract (CBACT04C:L350-356, BR-11) and the per-account ACCOUNT+XREF load "
+                        + "(L373,L394-395, BR-05). It DOCUMENTS ratified BR-12 (the end-of-driver final account "
+                        + "update, L219-220) as BYTE-NEUTRAL for these fixtures — every account accumulates 0.00 "
+                        + "over already-zero cycle fields, so these bytes are identical whether or not it fires; "
+                        + "the behavioral locks are InterestCalculationServiceTest.br12_finalUpdateAtEof and, for "
+                        + "BR-11's posting (L352) and zeroing (L353-354), br11_postTotalAndZeroCycleFields");
 
         // --- Secondary cross-check: SHA-256 digests match the canonical anchors (JDK-only; defense in
         // depth). The anchors are hardcoded literals independent of the expected resource files, so this
