@@ -1,6 +1,6 @@
 # Blitzy Project Guide — CBACT04C → Java 21 Interest-Calculation Migration
 
-> **Module:** `modernized/interest-calculation/` · **Branch:** `blitzy-5f9ccc6e-cd8f-4126-b8cc-70231ada727c` · **HEAD:** `6e47d5bd`
+> **Module:** `modernized/interest-calculation/` · **Branch:** `blitzy-5f9ccc6e-cd8f-4126-b8cc-70231ada727c` · **State described:** the tip of that branch — no commit hash is pinned here, because this guide is committed *on* the branch it describes, so any pin could only name a commit that precedes the guide's own (resolve the tip with `git rev-parse HEAD`).
 > **Assessment scope:** Agent Action Plan (AAP) deliverables + standard path-to-production activities only.
 
 ---
@@ -40,7 +40,7 @@ pie showData title Completion Status — 94.2% Complete
 - ✅ **91/91 JUnit 5 tests pass**, including a byte-exact end-to-end golden-master test.
 - ✅ **Byte-identical runtime output** — updated-accounts file reproduces the golden expected output exactly; transactions match on all deterministic bytes.
 - ✅ **Zero runtime dependencies** — JUnit is test-scope only; the packaged jar runs on the bare JDK.
-- ✅ **Strictly additive change set** — 30 new files, `+6,237/−0` lines, 100% under `modernized/`; original `app/` sources untouched.
+- ✅ **Strictly additive change set** — 30 new module files, **purely additive** (every path added, none modified or deleted), 100% under `modernized/`; original `app/` sources untouched. No absolute insertion count is quoted, because it changes with every later commit; reproduce the current one with `git diff --shortstat origin/main...HEAD -- modernized/`.
 - ✅ **Independent corroboration** — a from-scratch Python reference reproduced both golden files byte-for-byte (SHA-256 anchored).
 
 ### 1.4 Critical Unresolved Issues
@@ -163,9 +163,9 @@ AAP deliverables and governing constraints cross-mapped to quality benchmarks. A
 | Asymmetric error handling (abend vs DEFAULT fallback) | Rule parity | ✅ Pass | `DisclosureGroupRepository`; service abend tests (BR-08, BR-17). |
 | ACCTFILE-only mutation; TCATBAL read-only | Source (not TechSpec narrative) | ✅ Pass | AAP binding resolution followed; accounts rewritten, TCATBAL untouched. |
 | Determinism by injection | Single seam | ✅ Pass | `Db2TimestampSupplier` injectable; stable golden assertions. |
-| Behavior traceability (cite paragraph/line) | Comment coverage | ✅ Pass | 101 citations in service, 71 in CLI; every file cites CBACT04C. |
+| Behavior traceability (cite paragraph/line) | Comment coverage | ✅ Pass | Every migrated rule and all 16 main + 5 test classes cite their originating CBACT04C paragraph/line. Counted reproducibly with `grep -oE '\bL[0-9]+' <file> \| wc -l`: **111** source-line citations in `InterestCalculationService`, **66** in `InterestCalculator`. |
 | Standalone (JDK + JUnit only) | Zero runtime deps | ✅ Pass | junit-jupiter 5.13.4 test-scope only; bare-JDK jar. |
-| Minimal-change isolation (additive) | Diff discipline | ✅ Pass | 30 files, `+6,237/−0`, 100% under `modernized/`; `app/` untouched. |
+| Minimal-change isolation (additive) | Diff discipline | ✅ Pass | 30 module files, purely additive (every path added, none modified or deleted), 100% under `modernized/`; `app/` untouched. Absolute line counts are deliberately not quoted — they drift with each commit (see §1.3). |
 | Fees remain a no-op (`1400-COMPUTE-FEES`) | Faithful stub | ✅ Pass | No fee effects; documented as source-faithful (BR-16). |
 | Zero placeholders / TODO / stubs | Production-ready | ✅ Pass | Only "stub" strings are documentation of COBOL's own no-op. |
 | Self-contained tests (`mvn test`, in-repo fixtures) | No external resources | ✅ Pass | Fixtures are byte-identical in-repo copies; 91/91 offline. |
@@ -415,7 +415,7 @@ None. The module intentionally uses **no environment variables** (AAP constraint
 |---|---|
 | `cmp` / `awk` / `wc` | Byte-compare outputs and check record geometry (§9.5). |
 | `python3 -c "import zipfile…"` | Inspect the jar manifest without `unzip`. |
-| `git diff --stat origin/main...HEAD` | Confirm additive-only change set (`+6,237/−0`, all under `modernized/`). |
+| `git diff --name-status origin/main...HEAD` | Confirm the change set is additive-only (every path status `A`, none `M`/`D`). All 30 module files sit under `modernized/`; this guide is the only addition outside it. |
 | `git status --porcelain` | Confirm pristine tree after `mvn -o clean`. |
 
 ### G. Glossary
