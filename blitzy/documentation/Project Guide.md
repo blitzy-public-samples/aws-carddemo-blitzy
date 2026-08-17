@@ -15,21 +15,21 @@ This project migrates the single COBOL batch program **CBACT04C** — the monthl
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieOuterStrokeColor':'#B23AF2','pieOuterStrokeWidth':'2px','pieTitleTextColor':'#B23AF2','pieSectionTextColor':'#111111','pieLegendTextColor':'#111111'}}}%%
-pie showData title Completion Status — 93.5% Complete
-    "Completed Work (AI)" : 144
-    "Remaining Work" : 10
+pie showData title Completion Status — 94.2% Complete
+    "Completed Work (AI + Manual)" : 145
+    "Remaining Work" : 9
 ```
 
 | Metric | Hours |
 |---|---:|
 | **Total Hours** | **154** |
-| Completed Hours (AI + Manual) | 144 |
+| Completed Hours (AI + Manual) | 145 |
 | &nbsp;&nbsp;• AI (autonomous) | 144 |
-| &nbsp;&nbsp;• Manual (human, to date) | 0 |
-| **Remaining Hours** | **10** |
-| **Percent Complete** | **93.5%** |
+| &nbsp;&nbsp;• Manual (human, to date) | 1 |
+| **Remaining Hours** | **9** |
+| **Percent Complete** | **94.2%** |
 
-> Completion % is computed per PA1 (AAP-scoped hours only): `144 / (144 + 10) = 144 / 154 = 93.5%`.
+> Completion % is computed per PA1 (AAP-scoped hours only): `145 / (145 + 9) = 145 / 154 = 94.2%`.
 
 ### 1.3 Key Accomplishments
 
@@ -48,7 +48,8 @@ pie showData title Completion Status — 93.5% Complete
 | Issue | Impact | Owner | ETA |
 |---|---|---|---|
 | _None blocking._ No defects were found in autonomous validation; all five production-readiness gates passed. | No release blocker | — | — |
-| BR-12 final-account-update semantic subtlety (see §6, T1) — requires a human **sign-off decision**, not a code fix. | Low; byte-identical no-op for shipped fixtures | Reviewing engineer | With HT-2 (1h) |
+
+> **Previously listed here, now closed:** the BR-12 final-account-update semantic subtlety (HT-2) is no longer an unresolved issue. The reviewing engineer **ratified** the documented decision — as documented — through the PR refine feedback, so it is retired from this table. The ratified behavior, its rationale and the instruction to preserve it are recorded in §6, T1 (status `Closed — ratified`). No decision, sign-off or approval is awaited.
 
 ### 1.5 Access Issues
 
@@ -62,9 +63,8 @@ pie showData title Completion Status — 93.5% Complete
 
 1. **[High]** Perform a human peer code review of the 16 main + 5 test classes, focused on decimal/overpunch/framing fidelity (HT-1, 4h).
 2. **[Medium]** Run a fresh/online-environment build (`mvn test` + `mvn package`) resolving dependencies from Maven Central (HT-3, 2h).
-3. **[Medium]** Ratify the documented BR-12 final-account-update decision (HT-2, 1h).
-4. **[Medium]** Review and merge the additive PR to `main` (HT-4, 1h).
-5. **[Low]** Decide whether to wire the module's tests into a CI/CD pipeline (HT-5, 2h).
+3. **[Medium]** Review and merge the additive PR to `main` (HT-4, 1h).
+4. **[Low]** Decide whether to wire the module's tests into a CI/CD pipeline (HT-5, 2h).
 
 ---
 
@@ -72,7 +72,7 @@ pie showData title Completion Status — 93.5% Complete
 
 ### 2.1 Completed Work Detail
 
-Each row traces to a specific AAP deliverable. Hours are estimated via the PA2 framework using lines-of-code and complexity as proxies (main Java = 3,789 LOC; test Java = 1,849 LOC).
+Each row traces to a specific AAP deliverable, except the final row, which records completed human (manual) work. Autonomous hours are estimated via the PA2 framework using lines-of-code and complexity as proxies (main Java = 3,789 LOC; test Java = 1,849 LOC); the human row carries the 1h that §2.2 previously estimated for it.
 
 | Component | Hours | Description |
 |---|---:|---|
@@ -87,7 +87,8 @@ Each row traces to a specific AAP deliverable. Hours are estimated via the PA2 f
 | JUnit 5 test suite (5 classes) | 28 | 49 test methods → 91 executed invocations: golden-master + per-rule + edge cases (1,849 LOC). |
 | Golden fixtures + expected-output derivation | 5 | Byte-identical fixture copies + SHA-256-anchored expected interest-transactions and updated-accounts. |
 | Autonomous validation & QA remediation | 10 | Three review-fix rounds (Checkpoint 1, Checkpoint 2 [7 findings], QA findings) + final 5-gate validation. |
-| **Total Completed** | **144** | **= Completed Hours in §1.2** |
+| Human ratification of the BR-12 final-account-update decision (HT-2, sign-off) | 1 | Reviewing engineer ratified the documented end-of-driver final account update (`app/cbl/CBACT04C.cbl:L219-220`) via the PR refine feedback; recorded in §1.4, §5 and §6 T1. Manual (human) hour, not an AI estimate. |
+| **Total Completed** | **145** | **= Completed Hours in §1.2** |
 
 ### 2.2 Remaining Work Detail
 
@@ -97,16 +98,15 @@ Each row is a standard path-to-production activity; **no code-implementation wor
 |---|---:|---|
 | Human peer code review of the migration (fidelity-critical financial logic) | 4 | High |
 | Fresh / online-environment build verification (deps from Maven Central) | 2 | Medium |
-| Sign-off decision on the BR-12 final-account-update subtlety | 1 | Medium |
 | PR review & merge to `main` | 1 | Medium |
 | CI/CD integration decision (AAP deliberately excluded config changes) | 2 | Low |
-| **Total Remaining** | **10** | **= Remaining Hours in §1.2 & §7 pie** |
+| **Total Remaining** | **9** | **= Remaining Hours in §1.2 & §7 pie** |
 
 ### 2.3 Hours Reconciliation
 
-- Completed (§2.1) **144** + Remaining (§2.2) **10** = **154** Total (matches §1.2). ✔ (Integrity Rule 2)
-- Remaining **10** is identical in §1.2, the §2.2 total, and the §7 pie chart. ✔ (Integrity Rule 1)
-- Completion = `144 / 154 = 93.5%`, used consistently in §1.2, §7, and §8.
+- Completed (§2.1) **145** + Remaining (§2.2) **9** = **154** Total (matches §1.2). ✔ (Integrity Rule 2)
+- Remaining **9** is identical in §1.2, the §2.2 total, and the §7 pie chart. ✔ (Integrity Rule 1)
+- Completion = `145 / 154 = 94.2%`, used consistently in §1.2, §7, and §8.
 
 ---
 
@@ -161,7 +161,7 @@ AAP deliverables and governing constraints cross-mapped to quality benchmarks. A
 | Asymmetric error handling (abend vs DEFAULT fallback) | Rule parity | ✅ Pass | `DisclosureGroupRepository`; service abend tests (BR-08, BR-17). |
 | ACCTFILE-only mutation; TCATBAL read-only | Source (not TechSpec narrative) | ✅ Pass | AAP binding resolution followed; accounts rewritten, TCATBAL untouched. |
 | Determinism by injection | Single seam | ✅ Pass | `Db2TimestampSupplier` injectable; stable golden assertions. |
-| Behavior traceability (cite paragraph/line) | Comment coverage | ✅ Pass | 91 citations in service, 71 in CLI; every file cites CBACT04C. |
+| Behavior traceability (cite paragraph/line) | Comment coverage | ✅ Pass | 101 citations in service, 71 in CLI; every file cites CBACT04C. |
 | Standalone (JDK + JUnit only) | Zero runtime deps | ✅ Pass | junit-jupiter 5.13.4 test-scope only; bare-JDK jar. |
 | Minimal-change isolation (additive) | Diff discipline | ✅ Pass | 30 files, `+6,237/−0`, 100% under `modernized/`; `app/` untouched. |
 | Fees remain a no-op (`1400-COMPUTE-FEES`) | Faithful stub | ✅ Pass | No fee effects; documented as source-faithful (BR-16). |
@@ -169,7 +169,7 @@ AAP deliverables and governing constraints cross-mapped to quality benchmarks. A
 | Self-contained tests (`mvn test`, in-repo fixtures) | No external resources | ✅ Pass | Fixtures are byte-identical in-repo copies; 91/91 offline. |
 
 **Fixes applied during autonomous validation:** 0 in the final gate (no defects found). Prior agent rounds resolved Checkpoint 1, Checkpoint 2 (7 findings), and QA findings (CLI output-path safety, PARM-DATE `PIC X(10)` coercion, doc accuracy).
-**Outstanding compliance items:** None. One documented semantic subtlety (BR-12) awaits human sign-off (§6, T1).
+**Outstanding compliance items:** None. The one documented semantic subtlety — the BR-12 final account update firing at end-of-driver — is **ratified**: the reviewing engineer approved it as documented through the PR refine feedback, and it is recorded in §6, T1 as `Closed — ratified`. No compliance item remains outstanding and no sign-off is pending.
 
 ---
 
@@ -177,7 +177,7 @@ AAP deliverables and governing constraints cross-mapped to quality benchmarks. A
 
 | Risk | Category | Severity | Probability | Mitigation | Status |
 |---|---|:--:|:--:|---|---|
-| **T1** — BR-12 final-account-update divergence: COBOL TEST-BEFORE leaves the final ELSE (L219-220) unreachable, while Java/AAP update the last account. | Technical | Low | Low | Byte-identical no-op for shipped fixtures (account 50 zero balance/cycle, `cmp`-verified); AAP-directed behavior; documented for human sign-off (HT-2). | Open — decision |
+| **T1** — BR-12 final-account-update divergence: COBOL TEST-BEFORE leaves the final ELSE (L219-220) unreachable, while Java/AAP update the last account. | Technical | Low | Low | **Ratified — deliberate, AAP-directed behavior.** The Java port fires the final account update at end-of-driver (post-loop) under the first-time flag, porting `ELSE PERFORM 1050-UPDATE-ACCOUNT` at `app/cbl/CBACT04C.cbl:L219-220` per AAP §0.6.3 BR-12 and the §0.1.2 pipeline. COBOL's `PERFORM UNTIL END-OF-FILE = 'Y'` is TEST-BEFORE, so once `1000-TCATBALF-GET-NEXT` sets the EOF flag the loop exits and that source `ELSE` never executes on the mainframe; a strict-execution port would therefore leave the LAST account's accumulated interest unposted. The effect is **byte-neutral for the shipped 50-record fixtures** — every account accumulates `0.00` and its cycle fields are already zero, so `updated-accounts` stays byte-identical to `app/data/ASCII/acctdata.txt` (`cmp`-verified; SHA-256 `c2a97b6a32dc4a87a7aafdf7f72e6712e560412d30b00c5526cca80fc9dfd260`). **Ratified via the PR refine feedback (HT-2):** this behavior is the accepted contract — preserve it and do not "correct" the port to the unreachable-`ELSE` reading. | Closed — ratified |
 | **T2** — Golden-master breadth: a single 50-record fixture set is a limited characterization sample. | Technical | Low | Low | Fixtures deliberately exercise all three rate paths (normal / DEFAULT / ZEROAPR); independent Python reference byte-match. | Mitigated |
 | **T3** — Timestamp non-determinism between production and tests. | Technical | Low | N/A | By design and faithful to `FUNCTION CURRENT-DATE`; isolated behind the injectable supplier. | Resolved (by design) |
 | **S1** — Sensitive data (card numbers, balances) written in plaintext output files. | Security | Medium | Low | Faithful to COBOL; file-permission/data-handling is an operational concern for the deployment environment. | Open — operational |
@@ -199,17 +199,17 @@ AAP deliverables and governing constraints cross-mapped to quality benchmarks. A
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieOuterStrokeColor':'#B23AF2','pieOuterStrokeWidth':'2px','pieTitleTextColor':'#B23AF2','pieSectionTextColor':'#111111','pieLegendTextColor':'#111111'}}}%%
 pie showData title Project Hours Breakdown (Total 154h)
-    "Completed Work" : 144
-    "Remaining Work" : 10
+    "Completed Work" : 145
+    "Remaining Work" : 9
 ```
 
-**Remaining work by priority** (High 4h · Medium 4h · Low 2h = 10h):
+**Remaining work by priority** (High 4h · Medium 3h · Low 2h = 9h):
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'pie1':'#5B39F3','pie2':'#A8FDD9','pie3':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieOuterStrokeColor':'#B23AF2','pieOuterStrokeWidth':'2px','pieTitleTextColor':'#B23AF2','pieSectionTextColor':'#111111','pieLegendTextColor':'#111111'}}}%%
 pie showData title Remaining Hours by Priority
     "High" : 4
-    "Medium" : 4
+    "Medium" : 3
     "Low" : 2
 ```
 
@@ -220,11 +220,10 @@ pie showData title Remaining Hours by Priority
 | Peer code review | 4 |
 | Fresh/online build verification | 2 |
 | CI/CD integration decision | 2 |
-| BR-12 sign-off decision | 1 |
 | PR review & merge | 1 |
-| **Total** | **10** |
+| **Total** | **9** |
 
-> **Integrity check:** the "Remaining Work" slice (10) equals §1.2 Remaining Hours and the §2.2 "Hours" total. ✔
+> **Integrity check:** the "Remaining Work" slice (9) equals §1.2 Remaining Hours and the §2.2 "Hours" total. ✔
 
 ---
 
@@ -232,22 +231,22 @@ pie showData title Remaining Hours by Priority
 
 **Achievements.** The CBACT04C interest-calculation job has been faithfully migrated to a standalone Java 21 Maven module. All 16 main + 5 test classes described in the AAP exist and compile cleanly; **91/91 tests pass**; the packaged jar reproduces the golden updated-accounts file **byte-for-byte** and matches interest-transactions on every deterministic byte. All **18 business rules** are ported with source-line citations, and an independent Python reference confirms the golden fixtures are COBOL-faithful rather than merely self-consistent.
 
-**Completion.** Measured strictly against AAP scope + path-to-production, the project is **93.5% complete** (144h delivered of 154h total). This never claims 100% — the residual reflects genuine human-gated work, consistent with RG2.
+**Completion.** Measured strictly against AAP scope + path-to-production, the project is **94.2% complete** (145h delivered of 154h total). This never claims 100% — the residual reflects genuine human-gated work, consistent with RG2.
 
-**Remaining gaps (all human, non-code).** The **10 remaining hours** comprise peer code review (4h), fresh/online-environment build verification (2h), a CI/CD integration decision (2h), a BR-12 sign-off decision (1h), and PR review & merge (1h). No functionality is missing and no defects are outstanding.
+**Remaining gaps (all human, non-code).** The **9 remaining hours** comprise peer code review (4h), fresh/online-environment build verification (2h), a CI/CD integration decision (2h), and PR review & merge (1h). No functionality is missing and no defects are outstanding.
 
-**Critical path to production.** Peer review (HT-1) → BR-12 sign-off (HT-2) → fresh/online build verification (HT-3) → PR merge (HT-4). CI/CD (HT-5) is optional and can follow merge.
+**Critical path to production.** Peer review (HT-1) → fresh/online build verification (HT-3) → PR merge (HT-4). CI/CD (HT-5) is optional and can follow merge.
 
-**Success metrics.** Green `mvn test` (91/91) on a clean online machine; byte-identical accounts output; reviewer acceptance of the BR-12 decision; merged PR with the `app/` tree unchanged.
+**Success metrics.** Green `mvn test` (91/91) on a clean online machine; byte-identical accounts output; the BR-12 final-account-update decision **ratified** (achieved — §6, T1 `Closed — ratified`); merged PR with the `app/` tree unchanged.
 
 **Production readiness.** **Ready for human review and merge.** The module is functionally complete, faithful, and self-contained; the only prerequisites to production are the review, verification, and decision items enumerated above.
 
 | Assessment | Value |
 |---|---|
-| AAP-scoped completion | 93.5% |
+| AAP-scoped completion | 94.2% |
 | Defects outstanding | 0 |
 | Tests passing | 91 / 91 |
-| Remaining effort | 10 h (human, non-code) |
+| Remaining effort | 9 h (human, non-code) |
 | Confidence | High (well-defined scope; byte-exact + independent corroboration) |
 
 ---
@@ -431,4 +430,4 @@ None. The module intentionally uses **no environment variables** (AAP constraint
 
 ---
 
-*Completion percentage (93.5%) reflects AAP-scoped deliverables plus standard path-to-production activities only, per Blitzy PA1 methodology. Colors: Completed = `#5B39F3`, Remaining = `#FFFFFF`.*
+*Completion percentage (94.2%) reflects AAP-scoped deliverables plus standard path-to-production activities only, per Blitzy PA1 methodology. Colors: Completed = `#5B39F3`, Remaining = `#FFFFFF`.*

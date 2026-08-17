@@ -108,7 +108,13 @@ public final class InterestCalculationService {
      * cross-reference, looks up the disclosure-group interest rate, and &mdash; when the rate is
      * non-zero &mdash; computes the truncated monthly interest, accumulates it, and writes one
      * interest transaction. After the driver is exhausted, the final (last-seen) account is updated
-     * (BR-12, L219-220).</p>
+     * (BR-12, L219-220) &mdash; a decision that is <b>Ratified</b>: COBOL's TEST-BEFORE
+     * {@code PERFORM UNTIL} (L188-222) in fact leaves the source
+     * {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} (L219-220) unreachable on the mainframe, yet posting
+     * that last account is the accepted, signed-off contract of this port and must not be
+     * "corrected" away. The full rationale &mdash; including why it is byte-neutral for the shipped
+     * fixtures &mdash; is recorded in the ratified-decision note at that end-of-driver update site in
+     * this method's body, and is summarized on {@link #updateAccount}.</p>
      *
      * <p>The service performs no file I/O of its own: it receives already-loaded repositories, an
      * already-iterable driver, and an already-open {@link TransactionWriter}. It does not call
@@ -269,9 +275,35 @@ public final class InterestCalculationService {
             }
         }
 
-        // BR-12 final account update at end-of-driver, porting ELSE PERFORM 1050-UPDATE-ACCOUNT
-        // (L219-220): post the last account's accumulated total. The firstTime guard makes an EMPTY
-        // driver a no-op (and prevents an NPE on the null currentAccount).
+        // --- BR-12 final account update at end-of-driver — RATIFIED DECISION (do not "correct") ---
+        //
+        // Decision: this port performs the final account update AFTER the driver loop, guarded by the
+        // firstTime flag, porting ELSE PERFORM 1050-UPDATE-ACCOUNT at app/cbl/CBACT04C.cbl:L219-220
+        // (AAP §0.6.3 BR-12 and the §0.1.2 pipeline). It posts the LAST-seen account's accumulated
+        // total through 1050-UPDATE-ACCOUNT (L350-356: ADD WS-TOTAL-INT TO ACCT-CURR-BAL L352, then
+        // MOVE 0 TO the two cycle fields L353-354). The firstTime guard makes an EMPTY driver a no-op
+        // (and prevents an NPE on the null currentAccount).
+        //
+        // Subtlety the decision resolves: the source driver loop (L188-222) is
+        // PERFORM UNTIL END-OF-FILE = 'Y', which is TEST-BEFORE. Once 1000-TCATBALF-GET-NEXT
+        // (L325-348) sets END-OF-FILE = 'Y' (L340), the inner IF END-OF-FILE = 'N' (L191) fails and the
+        // re-tested loop condition ends the loop — so the outer ELSE PERFORM 1050-UPDATE-ACCOUNT
+        // (L219-220) never executes on the mainframe. A strict-execution port would therefore leave the
+        // LAST account's accumulated interest unposted.
+        //
+        // Effect on the shipped fixtures: byte-neutral. With the 50-record golden fixtures every
+        // account accumulates 0.00 interest and both cycle fields are already zero, so the
+        // updated-accounts output stays byte-identical to app/data/ASCII/acctdata.txt (SHA-256
+        // c2a97b6a32dc4a87a7aafdf7f72e6712e560412d30b00c5526cca80fc9dfd260).
+        //
+        // Status: Ratified in PR review — this end-of-driver update is the accepted contract of the
+        // port, not an open question. DO NOT remove it, guard it away, or "correct" it to the
+        // unreachable-ELSE reading of L219-220. The regression lock is
+        // InterestCalculationServiceTest.br12_finalUpdateAtEof, which drives non-zero accumulated
+        // interest over non-zero cycle fields and so fails if this update is removed;
+        // InterestCalculationGoldenMasterTest documents the decision but cannot detect its removal,
+        // because the shipped fixtures make it byte-neutral (see "Effect on the shipped fixtures"
+        // above and that class's fixture-characterization note).
         if (!firstTime) {
             updateAccount(currentAccount, totalInt);
         }
@@ -298,6 +330,13 @@ public final class InterestCalculationService {
      * end-of-driver (BR-12) &mdash; even when {@code totalInt} is {@code 0.00}, in which case only the
      * cycle fields are zeroed. Because {@link #ZERO_AMOUNT} and the loaded balances are scale 2, the
      * result stays scale 2 for the downstream zoned-decimal encoder.</p>
+     *
+     * <p>That end-of-driver invocation is the <b>Ratified</b> BR-12 semantics: posting the last-seen
+     * account's accumulated total after the loop is the accepted contract of this port (ratified in PR
+     * review), even though COBOL's TEST-BEFORE {@code PERFORM UNTIL} (L188-222) leaves the source
+     * {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} (L219-220) unreachable on the mainframe. It is
+     * byte-neutral for the shipped fixtures and must not be removed or "corrected"; the
+     * ratified-decision note at the call site in {@link #process} carries the full rationale.</p>
      *
      * @param account  the account to update in place (the prior/last account on the break); never null
      *                 when invoked because the {@code firstTime} guard precedes every call

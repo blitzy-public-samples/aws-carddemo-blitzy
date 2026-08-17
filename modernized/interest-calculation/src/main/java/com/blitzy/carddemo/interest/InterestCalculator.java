@@ -294,7 +294,9 @@ public final class InterestCalculator {
             // --- Run the business loop (L188-222), delegated to the pure service -------------------
             // The service owns the PERFORM UNTIL END-OF-FILE loop, the account-break logic (L194-206),
             // the DISCGRP key assembly + rate lookup + write-guard (L210-217), and the end-of-file
-            // final 1050-UPDATE-ACCOUNT (L219-220). This adapter contributes NO business arithmetic.
+            // final 1050-UPDATE-ACCOUNT (L219-220) -- the ratified BR-12 decision, whose full rationale
+            // is recorded at that update site in InterestCalculationService. This adapter contributes NO
+            // business arithmetic.
             // PARM-DATE arrives as free-form text but the COBOL LINKAGE field is PARM-DATE PIC X(10)
             // (app/cbl/CBACT04C.cbl:L177-178), a fixed 10-byte field: a MOVE/receive left-justifies and
             // space-pads a shorter value and truncates a longer one to 10 bytes. Coerce here -- the Java

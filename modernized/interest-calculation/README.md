@@ -135,6 +135,22 @@ consequential porting decisions, each traceable to `CBACT04C`.
   (`REWRITE` at `CBACT04C.cbl` L356), posting accumulated interest to the current balance and
   zeroing the two cycle fields — this becomes the updated-accounts output (`args[5]`). `TCATBAL`
   is **read-only**, and `TRANSACT` is write-only (the generated interest transactions).
+- **Final account update at end-of-file (BR-12) — ratified decision.** Once the driver is
+  exhausted, the port posts the **last** account's accumulated interest through the same
+  account-update path as an account break (`ELSE PERFORM 1050-UPDATE-ACCOUNT` at `CBACT04C.cbl`
+  L219-220, performing `1050-UPDATE-ACCOUNT` L350-356), guarded so that an empty driver updates
+  nothing. This is a deliberate reading of the source, not an oversight: the driver loop is
+  `PERFORM UNTIL END-OF-FILE = 'Y'`, which COBOL evaluates **test-before**, so once the read
+  paragraph flags end-of-file the loop simply exits — that `ELSE` **never runs on the mainframe**,
+  and a strict-execution port would therefore leave the last account's interest unposted. For the
+  shipped fixtures the choice is **byte-neutral**: every account accumulates `0.00` and both cycle
+  fields are already zero, so the updated-accounts output stays byte-identical to
+  `app/data/ASCII/acctdata.txt`. The decision has been **ratified** in PR review and is the
+  accepted contract of this port: it must **not** be "corrected" to the unreachable-`ELSE`
+  reading. `InterestCalculationServiceTest.br12_finalUpdateAtEof` is the regression lock that holds
+  it in place — it drives non-zero interest over non-zero cycle fields, so it fails if the update is
+  removed; the golden-master test documents the decision but, being byte-neutral for these fixtures,
+  cannot detect its removal.
 - **Error semantics (asymmetric).** Account-not-found and xref-not-found are **fatal** — the
   COBOL abend is ported to a thrown runtime exception. Disclosure-group-not-found is **not**
   fatal: it falls back to the `DEFAULT` disclosure group.

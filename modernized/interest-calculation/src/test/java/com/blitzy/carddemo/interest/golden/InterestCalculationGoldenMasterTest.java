@@ -67,8 +67,13 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  *       (<code>app/cbl/CBACT04C.cbl:L464-465</code>).</li>
  *   <li><strong>BR-11</strong> &mdash; post total interest to {@code ACCT-CURR-BAL}, zero the two
  *       cycle fields, and {@code REWRITE} (<code>app/cbl/CBACT04C.cbl:L350-356</code>).</li>
- *   <li><strong>BR-12</strong> &mdash; the final account update fires at end-of-file
- *       (<code>app/cbl/CBACT04C.cbl:L219-220</code>).</li>
+ *   <li><strong>BR-12 (RATIFIED)</strong> &mdash; the final account update fires at end-of-file: the
+ *       port performs it at end-of-driver (post-loop), guarded by the first-time flag, porting
+ *       {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} (<code>app/cbl/CBACT04C.cbl:L219-220</code>) so the
+ *       LAST account in driver order is posted too. That end-of-driver reading is a
+ *       <strong>ratified</strong> porting decision, not an open question; because it is byte-neutral
+ *       for these fixtures (see the fixture-characterization note below), its observable effect is
+ *       locked by {@code InterestCalculationServiceTest.br12_finalUpdateAtEof}, not by these bytes.</li>
  *   <li><strong>BR-13</strong> &mdash; {@code TRAN-ID = PARM-DATE + 6-digit suffix}, incremented per
  *       transaction (<code>app/cbl/CBACT04C.cbl:L474-480</code>).</li>
  *   <li><strong>BR-14</strong> &mdash; fixed transaction fields: type {@code '01'}, cat {@code '05'},
@@ -97,6 +102,15 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * (as {@code 0.00 * 15.00 / 1200} truncates to {@code 0.00}). Each account is rewritten with
  * {@code ACCT-CURR-BAL += 0.00} and its two cycle fields (already zero) zeroed, so the updated master
  * is byte-identical to the input {@code acctdata.txt} (BR-11, BR-12).</p>
+ *
+ * <p>That byte-identity is a property of <em>these</em> fixtures rather than of the rules themselves:
+ * it holds <strong>precisely because every account accumulates {@code 0.00}</strong> over already-zero
+ * cycle fields, so these bytes are <strong>byte-neutral</strong> for the ratified BR-12 decision &mdash;
+ * they look identical whether or not the end-of-driver account update
+ * (<code>app/cbl/CBACT04C.cbl:L219-220</code>) fires. The ratified decision's observable effect is
+ * therefore locked by {@code InterestCalculationServiceTest.br12_finalUpdateAtEof}, which drives
+ * non-zero accumulated interest and non-zero cycle fields; what these bytes lock is that the rule is
+ * byte-neutral <em>here</em>.</p>
  *
  * <h2>Self-contained (AAP &sect;0.7 self-contained-tests rule)</h2>
  * <p>All inputs are read from the test classpath ({@code src/test/resources/**}, copied by Maven to
@@ -159,6 +173,11 @@ public class InterestCalculationGoldenMasterTest {
      * Canonical SHA-256 content anchor of the golden updated-accounts output (lowercase hex). Equal to
      * the hash of the input {@code acctdata.txt} because every balance is unchanged (BR-11/BR-12,
      * ACCTFILE REWRITE, <code>app/cbl/CBACT04C.cbl:L356</code>).
+     *
+     * <p>That equality is byte-neutrality of <em>these</em> fixtures (every account accumulates
+     * {@code 0.00} over already-zero cycle fields), so this anchor does not by itself exercise the
+     * ratified end-of-driver BR-12 update (<code>L219-220</code>) &mdash;
+     * {@code InterestCalculationServiceTest.br12_finalUpdateAtEof} does.</p>
      */
     private static final String EXPECTED_ACCT_SHA256 =
             "c2a97b6a32dc4a87a7aafdf7f72e6712e560412d30b00c5526cca80fc9dfd260";
@@ -269,13 +288,18 @@ public class InterestCalculationGoldenMasterTest {
 
         // === PRIMARY ASSERTION 2 — updated-accounts byte-for-byte =======================================
         // Locks 1050-UPDATE-ACCOUNT: post accumulated interest to ACCT-CURR-BAL, zero the two cycle
-        // fields, then REWRITE (app/cbl/CBACT04C.cbl:L350-356, BR-11); the final end-of-file account
-        // update (L219-220, BR-12); and the per-account ACCOUNT + XREF load (L373, L394-395, BR-05).
+        // fields, then REWRITE (app/cbl/CBACT04C.cbl:L350-356, BR-11); the RATIFIED final end-of-file
+        // account update (L219-220, BR-12) — which this port performs at end-of-driver (post-loop),
+        // guarded by the first-time flag, so the LAST account in driver order is posted too; and the
+        // per-account ACCOUNT + XREF load (L373, L394-395, BR-05).
         // With the golden fixtures every balance += 0.00 and the cycle fields are already 0, so the
-        // rewritten master is byte-identical to acctdata.txt.
+        // rewritten master is byte-identical to acctdata.txt. These bytes are therefore BYTE-NEUTRAL for
+        // the ratified BR-12 semantics — identical whether or not the end-of-driver update fires — and
+        // the decision's observable effect is locked by
+        // InterestCalculationServiceTest.br12_finalUpdateAtEof, which drives non-zero interest.
         assertArrayEquals(expectedAcct, actualAcct,
                 "updated-accounts.txt not byte-exact: locks 1050-UPDATE-ACCOUNT REWRITE (CBACT04C:L350-356, BR-11), "
-                        + "final EOF account update (L219-220, BR-12), per-account ACCOUNT+XREF load (L373,L394-395, BR-05)");
+                        + "ratified final EOF account update (L219-220, BR-12), per-account ACCOUNT+XREF load (L373,L394-395, BR-05)");
 
         // --- Secondary cross-check: SHA-256 digests match the canonical anchors (JDK-only; defense in
         // depth). The anchors are hardcoded literals independent of the expected resource files, so this

@@ -71,6 +71,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       {@link TransactionWriter}. No mocking framework is used (none is on the classpath).</li>
  * </ul>
  *
+ * <h2>The RATIFIED BR-12 decision, and where it is locked</h2>
+ * <p>BR-12's final account update fires at <strong>end-of-driver</strong> (post-loop), guarded by the
+ * first-time flag, porting {@code ELSE PERFORM 1050-UPDATE-ACCOUNT}
+ * (<code>app/cbl/CBACT04C.cbl:L219-220</code>) of the driver loop (<code>L188-222</code>), so the LAST
+ * account in driver order has its accumulated interest posted like every other account. COBOL's
+ * {@code PERFORM UNTIL END-OF-FILE = 'Y'} (<code>L188</code>) is TEST-BEFORE, so that source
+ * {@code ELSE} never executes on the mainframe &mdash; the end-of-driver reading is a deliberate
+ * porting decision, and it is <strong>RATIFIED</strong> (Project Guide HT-2 / risk T1) rather than
+ * open. {@link #br12_finalUpdateAtEof()} is its regression lock and
+ * {@link #br03b_emptyDriverNoUpdate()} its first-time-guard boundary; both fail loudly if the port is
+ * ever "corrected" to the unreachable-{@code ELSE} reading.</p>
+ *
  * <p>Every migrated-rule assertion carries a comment citing the originating {@code CBACT04C}
  * paragraph/line (mandatory traceability, AAP &sect;0.7).</p>
  *
@@ -394,7 +406,8 @@ public class InterestCalculationServiceTest {
     }
 
     @Test
-    @DisplayName("BR-03(b)/BR-12: empty driver — firstTime guard prevents any update, no exception")
+    @DisplayName("BR-03(b)/BR-12 (RATIFIED): empty driver — the first-time guard makes the "
+            + "end-of-driver update a no-op, and nothing is thrown")
     void br03b_emptyDriverNoUpdate() throws Exception {
         Result r = execute(
                 List.of(),
@@ -403,7 +416,14 @@ public class InterestCalculationServiceTest {
                 List.of(xrefLine(CARD_A, CUST_A, ACCT_A)),
                 List.of(discLine(GROUP_STD, TYPE_CD, CAT_CD, new BigDecimal("12.55"))));
 
-        // BR-03/BR-12 empty driver: firstTime guard prevents update CBACT04C.cbl L195-199, L219-220
+        // BR-03/BR-12 empty driver CBACT04C.cbl L195-199, L219-220.
+        // This is the GUARD half of the RATIFIED BR-12 decision (see br12_finalUpdateAtEof for the
+        // posting half): the port's end-of-driver update — its reading of ELSE PERFORM
+        // 1050-UPDATE-ACCOUNT (L219-220) — is guarded by the first-time flag (WS-FIRST-TIME, L195-199),
+        // which an empty driver never clears. So 1050-UPDATE-ACCOUNT (L350-356) never runs: no account
+        // is updated, no transaction is written, and nothing is thrown (the guard also keeps the
+        // still-unset "current account" from being dereferenced). The ratified decision therefore posts
+        // the LAST account when there IS one and touches nothing when there is none.
         assertTrue(r.txns().isEmpty(), "no driver records -> no interest transactions");
         assertEquals(new BigDecimal("100.00"), r.accounts().read(ACCT_A).getCurrBal(),
                 "currBal unchanged — the post-loop final update is guarded by firstTime");
@@ -576,11 +596,44 @@ public class InterestCalculationServiceTest {
 
 
     @Test
-    @DisplayName("BR-12: final per-account update fires post-loop at EOF")
+    @DisplayName("BR-12 (RATIFIED): the final account update fires at end-of-driver — the LAST account "
+            + "is posted too")
     void br12_finalUpdateAtEof() throws Exception {
-        // Single record, no subsequent break -> the ONLY place the update can occur is the post-loop
-        // EOF update, so a changed balance proves BR-12.
-        Result r = execute(
+        // =============================================================================================
+        // RATIFIED-DECISION REGRESSION LOCK — BR-12, the final account update at end-of-driver
+        //
+        // R1 THE RATIFIED DECISION. The port performs the final account update at END-OF-DRIVER
+        //    (post-loop), guarded by the first-time flag, per AAP §0.6.3 BR-12 and the AAP §0.1.2
+        //    pipeline. It ports ELSE PERFORM 1050-UPDATE-ACCOUNT (app/cbl/CBACT04C.cbl:L219-220), the
+        //    else-branch of the driver loop (L188-222). The update itself is 1050-UPDATE-ACCOUNT
+        //    (L350-356): post WS-TOTAL-INT to ACCT-CURR-BAL (L352) and zero BOTH cycle fields,
+        //    ACCT-CURR-CYC-CREDIT (L353) and ACCT-CURR-CYC-DEBIT (L354), then REWRITE (L356).
+        //
+        // R2 THE SUBTLETY. COBOL's PERFORM UNTIL END-OF-FILE = 'Y' (L188) is TEST-BEFORE, so once
+        //    1000-TCATBALF-GET-NEXT (L325-348) sets END-OF-FILE = 'Y' the loop exits at its next test
+        //    and the source ELSE at L219-220 NEVER EXECUTES on the mainframe. A strict-execution port
+        //    would therefore leave the LAST account's accumulated interest UNPOSTED — which is exactly
+        //    the regression this test exists to catch.
+        //
+        // R3 IMPACT ON THE SHIPPED FIXTURES: BYTE-NEUTRAL. Every golden account accumulates 0.00 over
+        //    already-zero cycle fields, so updated-accounts stays byte-identical to acctdata.txt
+        //    (SHA-256 c2a97b6a32dc4a87a7aafdf7f72e6712e560412d30b00c5526cca80fc9dfd260) and
+        //    InterestCalculationGoldenMasterTest cannot tell the two readings apart. That is precisely
+        //    why THIS unit test drives NON-ZERO interest and NON-ZERO cycle fields.
+        //
+        // R4 STATUS: RATIFIED by the human's PR refine directive (Project Guide HT-2 / risk T1). The
+        //    end-of-driver update is the ACCEPTED CONTRACT of this port, not an open question.
+        //
+        // IN PLAIN WORDS: this test FAILS if the port is ever "corrected" to the unreachable-ELSE
+        // reading, because dropping the post-loop update leaves the last account's balance at its input
+        // value and its cycle fields un-zeroed. The decision is ratified and MUST NOT BE REVERTED — if
+        // this test goes red, fix the caller, never this test.
+        // =============================================================================================
+
+        // --- Scenario 1 (minimal proof) --------------------------------------------------------------
+        // ONE record, so there is no later account break: the post-loop end-of-driver update is the ONLY
+        // place the update can happen, and a changed balance therefore proves it fired.
+        Result single = execute(
                 List.of(tcb(ACCT_A, TYPE_CD, CAT_CD, "100.00")),
                 List.of(acctLine(ACCT_A, new BigDecimal("100.00"), new BigDecimal("0.00"),
                         new BigDecimal("0.00"), GROUP_STD)),
@@ -588,8 +641,85 @@ public class InterestCalculationServiceTest {
                 List.of(discLine(GROUP_STD, TYPE_CD, CAT_CD, new BigDecimal("12.55"))));
 
         // BR-12 final 1050-UPDATE-ACCOUNT at end-of-file CBACT04C.cbl L219-220
-        assertEquals(new BigDecimal("101.04"), r.accounts().read(ACCT_A).getCurrBal(),
+        assertEquals(new BigDecimal("101.04"), single.accounts().read(ACCT_A).getCurrBal(),
                 "EOF final update posted the 1.04 interest to the last (only) account");
+
+        // --- Scenario 2 (the regression lock: N accounts => N updates) -------------------------------
+        // THREE records over TWO accounts. ACCT_A is posted by the IN-LOOP account break (L194-196),
+        // while ACCT_B — the LAST account in driver order — can ONLY be posted by the end-of-driver
+        // update (L219-220). Its two cycle fields are seeded NON-ZERO so the L353-354 zeroing is
+        // observable rather than vacuous, and its accumulated interest is NON-ZERO so the posting is too.
+        //
+        // Expected amounts computed here by hand with the BR-09 truncating rule — balance x rate / 1200
+        // at scale 2, RoundingMode.DOWN, no ROUNDED clause (L464-465) — and accrued per BR-10 (L467);
+        // every assertion below is an EXACT BigDecimal (scale-sensitive), never a range:
+        //   rec 1  ACCT_A 100.00 x 12.55 / 1200 = 1.045833... -> 1.04   total 1.04  =>  100.00 + 1.04 = 101.04
+        //   rec 2  ACCT_B 100.00 x 12.55 / 1200 = 1.045833... -> 1.04
+        //   rec 3  ACCT_B 200.00 x 12.55 / 1200 = 2.091666... -> 2.09   total 3.13  =>  500.00 + 3.13 = 503.13
+        List<TransactionCategoryBalance> driver = List.of(
+                tcb(ACCT_A, TYPE_CD, CAT_CD, "100.00"),
+                tcb(ACCT_B, TYPE_CD, CAT_CD, "100.00"),
+                tcb(ACCT_B, TYPE_CD, CAT_CD, "200.00"));
+        Result multi = execute(driver,
+                List.of(
+                        acctLine(ACCT_A, new BigDecimal("100.00"), new BigDecimal("5.00"),
+                                new BigDecimal("7.00"), GROUP_STD),
+                        acctLine(ACCT_B, new BigDecimal("500.00"), new BigDecimal("11.00"),
+                                new BigDecimal("13.00"), GROUP_STD)),
+                List.of(
+                        xrefLine(CARD_A, CUST_A, ACCT_A),
+                        xrefLine(CARD_B, CUST_B, ACCT_B)),
+                List.of(discLine(GROUP_STD, TYPE_CD, CAT_CD, new BigDecimal("12.55"))));
+
+        Account lastAccount = multi.accounts().read(ACCT_B);
+        multi.txns().forEach(InterestCalculationServiceTest::assertFramed);
+        assertAll("RATIFIED BR-12: every account is posted, INCLUDING the last one in driver order",
+                // Provenance of the two totals: BR-09 truncation (L464-465) + BR-10 accrual (L467).
+                () -> assertEquals(3, multi.txns().size(), "three rate!=0 records -> three transactions"),
+                () -> assertEquals(new BigDecimal("1.04"), amt(multi.txns().get(0)),
+                        "record 1 (ACCT_A, 100.00 @ 12.55) truncates DOWN to 1.04"),
+                () -> assertEquals(new BigDecimal("1.04"), amt(multi.txns().get(1)),
+                        "record 2 (ACCT_B, 100.00 @ 12.55) truncates DOWN to 1.04"),
+                () -> assertEquals(new BigDecimal("2.09"), amt(multi.txns().get(2)),
+                        "record 3 (ACCT_B, 200.00 @ 12.55) truncates DOWN to 2.09"),
+                // BR-02/BR-11 in-loop break update for the NON-last account CBACT04C.cbl L194-196, L352
+                () -> assertEquals(new BigDecimal("101.04"), multi.accounts().read(ACCT_A).getCurrBal(),
+                        "ACCT_A (not last) posted its 1.04 at the in-loop account break: 100.00 + 1.04"),
+                // BR-12 the RATIFIED end-of-driver update CBACT04C.cbl L219-220. THIS is the assertion
+                // that fails under the unreachable-ELSE reading: ACCT_B would still read its input 500.00.
+                () -> assertEquals(new BigDecimal("503.13"), lastAccount.getCurrBal(),
+                        "RATIFIED BR-12: the LAST account in driver order posts its accumulated "
+                                + "1.04 + 2.09 = 3.13, so currBal = 500.00 + 3.13 (an unposted last "
+                                + "account would still read 500.00)"),
+                // BR-11 MOVE 0 TO ACCT-CURR-CYC-CREDIT CBACT04C.cbl L353, reached via the L219-220 update
+                () -> assertEquals(new BigDecimal("0.00"), lastAccount.getCurrCycCredit(),
+                        "RATIFIED BR-12: the LAST account's ACCT-CURR-CYC-CREDIT is zeroed from 11.00"),
+                // BR-11 MOVE 0 TO ACCT-CURR-CYC-DEBIT CBACT04C.cbl L354, reached via the L219-220 update
+                () -> assertEquals(new BigDecimal("0.00"), lastAccount.getCurrCycDebit(),
+                        "RATIFIED BR-12: the LAST account's ACCT-CURR-CYC-DEBIT is zeroed from 13.00"));
+
+        // --- Scenario 2, byte level: the ratified update must survive the REWRITE ---------------------
+        // In-memory mutation is not enough — the posted balance and the zeroed cycle fields must reach
+        // the 300-byte updated-accounts output (REWRITE FD-ACCTFILE-REC, L356). Same technique as
+        // br11_postTotalAndZeroCycleFields: emit the mutated master, then decode the LAST account's
+        // three mutated slices. Every other byte is AccountRepository's own concern.
+        Path acctOut = tempDir.resolve("acct-out-" + uniq() + ".txt");
+        multi.accounts().writeUpdatedAccounts(acctOut);
+        String rewrittenLast = Files.readAllLines(acctOut, US_ASCII).stream()
+                .filter(l -> !l.isEmpty() && FixedWidthCodec.slice(l, 0, 11).equals(ACCT_B))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("rewritten LAST account (ACCT_B) record not found"));
+        assertEquals(300, rewrittenLast.length(), "rewritten last-account record must be 300 bytes");
+        assertAll("RATIFIED BR-12: the end-of-driver update survives the 300-byte REWRITE (L356)",
+                () -> assertEquals(new BigDecimal("503.13"),
+                        ZonedDecimal.decode(FixedWidthCodec.slice(rewrittenLast, 12, 12), 2),
+                        "currBal @[12,24) carries the posted 3.13 // L352"),
+                () -> assertEquals(new BigDecimal("0.00"),
+                        ZonedDecimal.decode(FixedWidthCodec.slice(rewrittenLast, 78, 12), 2),
+                        "cycCredit @[78,90) written as zero // L353"),
+                () -> assertEquals(new BigDecimal("0.00"),
+                        ZonedDecimal.decode(FixedWidthCodec.slice(rewrittenLast, 90, 12), 2),
+                        "cycDebit @[90,102) written as zero // L354"));
     }
 
     @Test
