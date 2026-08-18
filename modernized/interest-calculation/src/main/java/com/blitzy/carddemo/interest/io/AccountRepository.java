@@ -17,9 +17,15 @@ package com.blitzy.carddemo.interest.io;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -269,21 +275,73 @@ public final class AccountRepository {
      * service's mutations. Each record is followed by a single LF ({@code "\n"}, no CR);
      * output is US-ASCII and truncates any existing file.
      *
+     * <p><b>The opened file is claimed exclusively, and only then truncated.</b> The
+     * {@code INTCALC} job gives ACCTFILE and TRANSACT separate DD statements, so one physical
+     * file can never back both; on the Java side both output writers open a caller-supplied
+     * path, and a path can be made to alias another one <em>after</em> the CLI has validated it
+     * (a symlink retargeted between validation and open). Comparing path names therefore cannot
+     * be the last line of defense. This method takes an exclusive {@link FileLock} on the
+     * <em>handle it just opened</em>, so the identity that is checked is the identity that is
+     * written: the run's {@code TransactionWriter} still holds its own claim while this method
+     * runs, so if both paths resolve to one physical file &mdash; through any spelling, symlink
+     * or hard link &mdash; this lock attempt fails and the run abends instead of interleaving
+     * 300-byte records into the 350-byte transaction stream. Truncation happens only after the
+     * lock is held, so a rejected collision never destroys the bytes of the file it collided
+     * with.
+     *
      * @param out filesystem path for the updated 300-byte account master output
-     * @throws UncheckedIOException  if the file cannot be written (fatal, wrapping {@link IOException})
+     * @throws UncheckedIOException  if the file cannot be written, is already held as another
+     *                               output of this run, or is locked by another process (fatal,
+     *                               wrapping {@link IOException})
      * @throws IllegalStateException if an overlay would change a record's length (framing bug)
      */
     public void writeUpdatedAccounts(Path out) {
         if (out == null) {
             throw new IllegalArgumentException("output path must be non-null");
         }
-        // CREATE + WRITE + TRUNCATE_EXISTING: create-or-overwrite, matching an OUTPUT open.
-        try (BufferedWriter writer = Files.newBufferedWriter(
-                out,
-                StandardCharsets.US_ASCII,
-                StandardOpenOption.CREATE,
-                StandardOpenOption.WRITE,
-                StandardOpenOption.TRUNCATE_EXISTING)) {
+        // CREATE + WRITE: create-or-overwrite, matching an OUTPUT open. TRUNCATE_EXISTING is
+        // deliberately NOT used -- the exclusive claim below must run BEFORE any content is
+        // destroyed, so a refused collision leaves the colliding file's bytes intact.
+        FileChannel opened = null;
+        try {
+            opened = FileChannel.open(out, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+            // Bind this run's updated-ACCTFILE identity to this very handle (see the method javadoc).
+            claimExclusively(opened, out);
+            if (opened.size() > 0L) {
+                // Now that the file is provably ours, realize the replace-contents semantics.
+                opened.truncate(0L);
+            }
+            writeAllRecords(new BufferedWriter(new OutputStreamWriter(
+                    Channels.newOutputStream(opened), StandardCharsets.US_ASCII)));
+        } catch (IOException e) {
+            // Fatal: cannot write the rewritten ACCTFILE. Mirrors the abend on a failed REWRITE.
+            final UncheckedIOException failure =
+                    new UncheckedIOException("Failed to write updated account master file: " + out, e);
+            releaseOnFailure(opened, failure);
+            throw failure;
+        } catch (RuntimeException e) {
+            // A refused claim (collision / foreign lock) or an overlay framing bug is already a fatal
+            // diagnostic; do not mask it, but release the handle this method opened before it propagates.
+            releaseOnFailure(opened, e);
+            throw e;
+        }
+    }
+
+    /**
+     * Writes every loaded account as one 300-byte record to an already-opened, already-claimed sink,
+     * then closes it. Split out of {@link #writeUpdatedAccounts(Path)} only so the open-claim-truncate
+     * sequence and the record-framing loop each read as one unit; the framing behavior is unchanged.
+     *
+     * <p>REWRITE FD-ACCTFILE-REC FROM ACCOUNT-RECORD (L356): the original raw line is emitted with
+     * only the three {@code 1050-UPDATE-ACCOUNT}-mutated field slices re-encoded, and only when their
+     * live values differ from the values originally read (see {@link #overlayMutableField}).
+     *
+     * @param sink the character sink to write to and close; must be positioned at offset 0
+     * @throws IOException           if a record cannot be written or the sink cannot be closed
+     * @throws IllegalStateException if an overlay would change a record's length (framing bug)
+     */
+    private void writeAllRecords(BufferedWriter sink) throws IOException {
+        try (BufferedWriter writer = sink) {
 
             // Iterate in load order (LinkedHashMap) so the output preserves VSAM key order.
             for (final Map.Entry<String, Account> entry : accountsById.entrySet()) {
@@ -310,9 +368,70 @@ public final class AccountRepository {
                 writer.write(record);
                 writer.write("\n"); // LF-only record terminator, matching the fixtures.
             }
-        } catch (IOException e) {
-            // Fatal: cannot write the rewritten ACCTFILE. Mirrors the abend on a failed REWRITE.
-            throw new UncheckedIOException("Failed to write updated account master file: " + out, e);
+        }
+    }
+
+    /**
+     * Takes an exclusive whole-file {@link FileLock} on an <em>already opened</em> output channel, so
+     * the file this method will write is provably not the file the run's other output is writing.
+     * Mirrors the identical claim taken by {@code TransactionWriter}'s constructor for the 350-byte
+     * TRANSACT side, with the diagnostic worded for the updated-ACCTFILE side.
+     *
+     * <p>The lock is held on behalf of the whole JVM and the JVM's lock table is keyed by the
+     * underlying <em>physical file</em>, not by the path spelling. An attempt to lock a file this
+     * process already holds therefore fails with {@link OverlappingFileLockException} no matter how it
+     * was addressed &mdash; a different string, a symlink, a symlink chain, a symlinked parent, or a
+     * hard link &mdash; and, crucially, no matter what happened to those names after the CLI validated
+     * them. That is what makes this check immune to the validate-then-open gap that pure path
+     * comparison leaves open.</p>
+     *
+     * <p>The returned lock is deliberately not retained: {@link FileLock} stays held until the channel
+     * that acquired it is closed, and that channel is closed by the writer layered over it once the
+     * records have been flushed.</p>
+     *
+     * @param channel the freshly opened output channel to claim; must be open and writable
+     * @param out     the path the channel was opened from, for diagnostics only
+     * @throws UncheckedIOException if this run already holds the same physical file as an output, or
+     *                              another process holds a conflicting lock on it
+     * @throws IOException          if the lock cannot be attempted at all
+     */
+    private static void claimExclusively(FileChannel channel, Path out) throws IOException {
+        final FileLock claim;
+        try {
+            claim = channel.tryLock();
+        } catch (OverlappingFileLockException alreadyOursForSomethingElse) {
+            throw new UncheckedIOException(
+                    "Refusing to write the updated ACCTFILE output: " + out + " is the same physical "
+                            + "file as another output of this run; the updated ACCTFILE (300-byte "
+                            + "records) and TRANSACT (350-byte records) must be separate datasets",
+                    new FileSystemException(
+                            out.toString(), null, "already claimed as another output of this run"));
+        }
+        if (claim == null) {
+            throw new UncheckedIOException(
+                    "Refusing to write the updated ACCTFILE output: " + out
+                            + " is locked by another process",
+                    new FileSystemException(out.toString(), null, "locked by another process"));
+        }
+    }
+
+    /**
+     * Closes a channel a failed write had already opened, recording any close failure as a suppressed
+     * exception on the failure being propagated so no diagnostic is lost and no handle leaks. Closing
+     * an already-closed channel is a no-op, so this is safe on the paths where the layered writer has
+     * itself already closed it.
+     *
+     * @param channel the channel to release; may be {@code null} if the open itself failed
+     * @param failure the exception about to be thrown, which collects any close failure
+     */
+    private static void releaseOnFailure(FileChannel channel, RuntimeException failure) {
+        if (channel == null) {
+            return;
+        }
+        try {
+            channel.close();
+        } catch (IOException closeFailure) {
+            failure.addSuppressed(closeFailure);
         }
     }
 

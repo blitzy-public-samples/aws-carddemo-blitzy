@@ -74,7 +74,7 @@ pie showData title Completion Status — 94.2% Complete
 
 Each row traces to a specific AAP deliverable, except the final row, which records completed human (manual) work. Autonomous hours are estimated via the PA2 framework using lines-of-code and complexity as proxies; the human row carries the 1h that §2.2 previously estimated for it.
 
-> **Reading the LOC descriptors.** Every LOC figure in the table below is a **current-HEAD** count — main Java = **3,833** LOC (`find src/main/java -name '*.java' | xargs wc -l`) and test Java = **2,099** LOC (same command over `src/test/java`), both run in `modernized/interest-calculation/`. The PA2 **hour** estimates, by contrast, were fixed against the pre-refine baseline (commit `32b7fbe8`: main Java 3,789 LOC; test Java 1,849 LOC) and are deliberately **not** re-estimated for the BR-12 ratification delta, which added explanatory comments and test assertions rather than a new deliverable — so the mandated totals in §1.2 (154 total / 145 completed / 9 remaining) stand unchanged.
+> **Reading the LOC descriptors.** Every LOC figure in the table below is a **current-HEAD** count — main Java = **4,278** LOC (`find src/main/java -name '*.java' | xargs wc -l`) and test Java = **2,099** LOC (same command over `src/test/java`), both run in `modernized/interest-calculation/`. The PA2 **hour** estimates, by contrast, were fixed against the pre-refine baseline (commit `32b7fbe8`: main Java 3,789 LOC; test Java 1,849 LOC) and are deliberately **not** re-estimated for the BR-12 ratification delta, which added explanatory comments and test assertions rather than a new deliverable — so the mandated totals in §1.2 (154 total / 145 completed / 9 remaining) stand unchanged.
 
 | Component | Hours | Description |
 |---|---:|---|
@@ -83,9 +83,9 @@ Each row traces to a specific AAP deliverable, except the final row, which recor
 | Domain model layer (5 classes) | 9 | Immutable record classes for the 5 copybooks: `Account`, `CardXref`, `DisclosureGroup`, `TransactionCategoryBalance`, `TransactionRecord`. |
 | `ZonedDecimal` overpunch codec | 11 | Highest-risk unit: overpunch zoned-decimal ↔ `BigDecimal` scale-2 codec with sign map and implied-decimal handling (292 LOC). |
 | `CobolArithmetic` + `Db2TimestampSupplier` | 8 | Truncating interest arithmetic (scale 2, DOWN, ÷1200) and injectable 26-char DB2 timestamp seam. |
-| Fixed-width I/O layer (6 classes) | 38 | `FixedWidthCodec`, `TransactionCategoryBalanceReader`, `CardXrefRepository`, `AccountRepository` (read + rewrite + 300B emit), `DisclosureGroupRepository` (rate lookup + DEFAULT fallback), `TransactionWriter` (350B) — 1,823 LOC. |
+| Fixed-width I/O layer (6 classes) | 38 | `FixedWidthCodec`, `TransactionCategoryBalanceReader`, `CardXrefRepository`, `AccountRepository` (read + rewrite + 300B emit), `DisclosureGroupRepository` (rate lookup + DEFAULT fallback), `TransactionWriter` (350B) — 2,116 LOC. |
 | `InterestCalculationService` | 14 | Pure ported account-break business loop, first-time guard, accumulator reset, EOF final-update (369 LOC). |
-| `InterestCalculator` CLI | 8 | `main(String[])` 7-argument contract, orchestration, abend semantics, arg validation (432 LOC). |
+| `InterestCalculator` CLI | 8 | `main(String[])` 7-argument contract, orchestration, abend semantics, arg validation (584 LOC). |
 | JUnit 5 test suite (5 classes) | 28 | 49 test methods → 91 executed invocations: golden-master + per-rule + edge cases (2,099 LOC). |
 | Golden fixtures + expected-output derivation | 5 | Byte-identical fixture copies + SHA-256-anchored expected interest-transactions and updated-accounts. |
 | Autonomous validation & QA remediation | 10 | Three review-fix rounds (Checkpoint 1, Checkpoint 2 [7 findings], QA findings) + final 5-gate validation. |
@@ -134,7 +134,7 @@ All tests below originate from Blitzy's autonomous validation logs and were **in
 Reproduced this session via `mvn -o package` + `java -jar` against the in-repo `app/data/ASCII` fixtures with PARM-DATE `2022071800`.
 
 **Runtime health**
-- ✅ **Build** — `mvn -o package` → BUILD SUCCESS; executable jar `interest-calculation-1.0.0.jar` (35,883 B); manifest `Main-Class=com.blitzy.carddemo.interest.InterestCalculator`, `Build-Jdk-Spec: 21`.
+- ✅ **Build** — `mvn -o package` → BUILD SUCCESS; executable jar `interest-calculation-1.0.0.jar` (39,022 B); manifest `Main-Class=com.blitzy.carddemo.interest.InterestCalculator`, `Build-Jdk-Spec: 21`.
 - ✅ **Execution** — `java -jar … <7 args>` → exit 0; prints `START OF EXECUTION OF PROGRAM CBACT04C` / `END OF EXECUTION OF PROGRAM CBACT04C`.
 - ✅ **Output geometry** — updated-accounts = 50 records × 300 bytes; interest-transactions = 50 records × 350 bytes.
 - ✅ **Updated-accounts** — **byte-identical** to the golden expected file (`cmp` clean).
@@ -163,7 +163,7 @@ AAP deliverables and governing constraints cross-mapped to quality benchmarks. A
 | Asymmetric error handling (abend vs DEFAULT fallback) | Rule parity | ✅ Pass | `DisclosureGroupRepository`; service abend tests (BR-08, BR-17). |
 | ACCTFILE-only mutation; TCATBAL read-only | Source (not TechSpec narrative) | ✅ Pass | AAP binding resolution followed; accounts rewritten, TCATBAL untouched. |
 | Determinism by injection | Single seam | ✅ Pass | `Db2TimestampSupplier` injectable; stable golden assertions. |
-| Behavior traceability (cite paragraph/line) | Comment coverage | ✅ Pass | **BR-01…BR-17** carry CBACT04C paragraph/line provenance; **BR-18** (overpunch zoned decimal) is copybook/fixture-derived per AAP §0.6.3 and cites the copybook `PIC` layouts plus `app/data/ASCII`. Of the 16 main + 5 test classes, **18** cite CBACT04C paragraphs/lines; the three record-geometry units (`FixedWidthCodec`, `ZonedDecimal`, `ZonedDecimalTest`) cite copybook layouts and fixtures instead. Counted reproducibly with `grep -oE '\bL[0-9]+' <file> \| wc -l`: **111** source-line citations in `InterestCalculationService`, **66** in `InterestCalculator`. |
+| Behavior traceability (cite paragraph/line) | Comment coverage | ✅ Pass | **BR-01…BR-17** carry CBACT04C paragraph/line provenance; **BR-18** (overpunch zoned decimal) is copybook/fixture-derived per AAP §0.6.3 and cites the copybook `PIC` layouts plus `app/data/ASCII`. Of the 16 main + 5 test classes, **18** cite CBACT04C paragraphs/lines; the three record-geometry units (`FixedWidthCodec`, `ZonedDecimal`, `ZonedDecimalTest`) cite copybook layouts and fixtures instead. Counted reproducibly with `grep -oE '\bL[0-9]+' <file> \| wc -l`: **111** source-line citations in `InterestCalculationService`, **75** in `InterestCalculator`. |
 | Standalone (JDK + JUnit only) | Zero runtime deps | ✅ Pass | junit-jupiter 5.13.4 test-scope only; bare-JDK jar. |
 | Minimal-change isolation (additive) | Diff discipline | ✅ Pass | 30 module files, purely additive (every path added, none modified or deleted), 100% under `modernized/`; `app/` untouched. Absolute line counts are deliberately not quoted — they drift with each commit (see §1.3). |
 | Fees remain a no-op (`1400-COMPUTE-FEES`) | Faithful stub | ✅ Pass | No fee effects; documented as source-faithful (BR-16). |
@@ -294,7 +294,7 @@ mvn -o clean test
 
 # 2) Package the executable jar
 mvn -o package
-#    -> target/interest-calculation-1.0.0.jar  (35,883 bytes)
+#    -> target/interest-calculation-1.0.0.jar  (39,022 bytes)
 #    -> Manifest Main-Class = com.blitzy.carddemo.interest.InterestCalculator
 
 # 3) Run against the in-repo ASCII fixtures (7-argument contract)
@@ -351,8 +351,9 @@ $ echo $?
 | Symptom | Cause | Resolution |
 |---|---|---|
 | `BUILD FAILURE` on first `mvn -o …` | `-o` offline used before `~/.m2` is populated | Run once online without `-o` to fetch deps, then `-o` works. |
-| Exit code **2** | Wrong argument count / duplicate output paths | Supply exactly 7 args with distinct output paths. |
-| Exit code **1** | Missing/unreadable input file (fatal abend) | Verify all four input paths exist and are readable. |
+| Exit code **2** | Wrong argument count / duplicate output paths | Supply exactly 7 args with output paths that are two **different physical files**. The guard also rejects aliases of one file — a symlinked parent directory, symlinked file names, or two hard links to one inode — because the 350-byte and 300-byte writers would otherwise truncate and interleave each other's bytes. |
+| Exit code **1** | Missing/unreadable input file (fatal abend) | Verify all four input paths exist and are readable. Neither output file is created in this case — the inputs are checked in the source's open order (TCATBAL `CBACT04C.cbl` L182 … TRANSACT L186), so a failed run leaves no empty interest-transactions file behind. |
+| Exit code **1**, `Refusing to write … same physical file as another output of this run` | The two output paths resolved to one file only *after* the pre-flight exit-2 check — e.g. a symbolic link retargeted mid-run | Give each output its own file. Each writer holds an exclusive lock on the handle it opened, so a collision that the name-based check cannot see is caught at open time and abends before any bytes are interleaved, rather than producing a corrupt file with exit 0. |
 | Timestamp bytes differ from golden file | Production uses wall-clock `Db2TimestampSupplier` | Expected/by design; tests inject a fixed timestamp for determinism. |
 | `target/` shows as untracked in `git status` | Build output is not git-ignored (minimal-change) | Run `mvn -o clean` to restore a pristine tree. |
 

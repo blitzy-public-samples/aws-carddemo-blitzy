@@ -3,10 +3,15 @@ package com.blitzy.carddemo.interest.io;
 import java.io.BufferedWriter;
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import java.nio.file.FileSystemException;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 
@@ -104,8 +109,10 @@ public final class TransactionWriter implements Closeable {
     private static final String RECORD_TERMINATOR = "\n";
 
     /**
-     * Underlying character sink for the TRANSACT file. Opened once in the constructor and closed by
-     * {@link #close()}; never reassigned (the COBOL FD is opened once, written many times, closed once).
+     * Underlying character sink for the TRANSACT file, layered over the exclusively claimed channel.
+     * Opened once in the constructor and closed by {@link #close()}; never reassigned (the COBOL FD is
+     * opened once, written many times, closed once). Closing it closes that channel, which releases the
+     * exclusive claim taken in the constructor.
      */
     private final BufferedWriter writer;
 
@@ -113,32 +120,116 @@ public final class TransactionWriter implements Closeable {
      * Opens the interest-transaction output file for writing, truncating any existing content.
      *
      * <p>Ports {@code 0400-TRANFILE-OPEN} &mdash; {@code OPEN OUTPUT TRANSACT-FILE}
-     * ({@code app/cbl/CBACT04C.cbl:L309}). {@code OPEN OUTPUT} creates the dataset (or replaces its
-     * contents), so this uses {@link StandardOpenOption#CREATE}, {@link StandardOpenOption#WRITE},
-     * and {@link StandardOpenOption#TRUNCATE_EXISTING} with the US-ASCII charset. A failure to open
-     * is fatal in COBOL ({@code 9999-ABEND-PROGRAM}, L318-321), so the {@link IOException} is
-     * re-thrown as an {@link UncheckedIOException}.</p>
+     * ({@code app/cbl/CBACT04C.cbl:L309}). {@code OPEN OUTPUT} creates the dataset or replaces its
+     * contents, which is realized here as {@link StandardOpenOption#CREATE} +
+     * {@link StandardOpenOption#WRITE} followed by an explicit truncation, with the US-ASCII charset.
+     * A failure to open is fatal in COBOL ({@code 9999-ABEND-PROGRAM}, L318-321), so the
+     * {@link IOException} is re-thrown as an {@link UncheckedIOException}.</p>
+     *
+     * <p><strong>The opened file is claimed exclusively, and only then truncated.</strong> The
+     * {@code INTCALC} job gives TRANSACT and ACCTFILE separate DD statements, so one physical file can
+     * never back both; on the Java side both output writers open a caller-supplied path, and a path can
+     * be made to alias another one <em>after</em> the CLI has validated it (a symlink retargeted between
+     * validation and open). Comparing path names therefore cannot be the last line of defense. This
+     * constructor takes an exclusive {@link FileLock} on the <em>handle it just opened</em> and keeps it
+     * for the writer's lifetime, so the identity that is checked is the identity that is written: if the
+     * run's other output later opens the same physical file &mdash; through any spelling, symlink or hard
+     * link &mdash; its own lock attempt fails and it abends instead of interleaving 300-byte records into
+     * this 350-byte stream. Truncation happens only after the lock is held, so a rejected collision never
+     * destroys the bytes of the file it collided with.</p>
      *
      * @param path the filesystem path of the TRANSACT output file; must be non-null
      * @throws IllegalArgumentException if {@code path} is null
-     * @throws UncheckedIOException     if the file cannot be opened for output (fatal, mirrors the
-     *                                  COBOL open-error abend at L318-321)
+     * @throws UncheckedIOException     if the file cannot be opened for output, is already held as
+     *                                  another output of this run, or is locked by another process
+     *                                  (fatal, mirrors the COBOL open-error abend at L318-321)
      */
     public TransactionWriter(Path path) {
         if (path == null) {
             throw new IllegalArgumentException("output path must be non-null");
         }
+        FileChannel opened = null;
         try {
-            // OPEN OUTPUT TRANSACT-FILE (L309): create-or-truncate, US-ASCII, byte == char.
-            this.writer = Files.newBufferedWriter(
-                    path,
-                    StandardCharsets.US_ASCII,
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.WRITE,
-                    StandardOpenOption.TRUNCATE_EXISTING);
+            // OPEN OUTPUT TRANSACT-FILE (L309): create-or-replace. The channel is opened WITHOUT
+            // TRUNCATE_EXISTING so the exclusive claim below runs BEFORE any content is destroyed.
+            opened = FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+            // Bind this run's TRANSACT identity to this very handle (see the constructor javadoc).
+            claimExclusively(opened, path);
+            if (opened.size() > 0L) {
+                // Now that the file is provably ours, realize OPEN OUTPUT's replace-contents semantics.
+                opened.truncate(0L);
+            }
+            this.writer = new BufferedWriter(
+                    new OutputStreamWriter(Channels.newOutputStream(opened), StandardCharsets.US_ASCII));
         } catch (IOException e) {
             // Mirrors 'ERROR OPENING TRANSACTION FILE' -> 9999-ABEND-PROGRAM (L318-321): fatal.
-            throw new UncheckedIOException("Failed to open TRANSACT output file: " + path, e);
+            final UncheckedIOException failure =
+                    new UncheckedIOException("Failed to open TRANSACT output file: " + path, e);
+            releaseOnFailure(opened, failure);
+            throw failure;
+        } catch (RuntimeException e) {
+            // A refused claim (collision / foreign lock) is already a fatal diagnostic; do not mask it,
+            // but release the handle this constructor opened before letting it propagate.
+            releaseOnFailure(opened, e);
+            throw e;
+        }
+    }
+
+    /**
+     * Takes an exclusive whole-file {@link FileLock} on an <em>already opened</em> output channel, so the
+     * file this writer will write is provably not the file another output of the same run is writing.
+     *
+     * <p>The lock is held on behalf of the whole JVM and the JVM's lock table is keyed by the underlying
+     * <em>physical file</em>, not by the path spelling. A second attempt from this process to lock the
+     * same file therefore fails with {@link OverlappingFileLockException} no matter how it was addressed
+     * &mdash; a different string, a symlink, a symlink chain, a symlinked parent, or a hard link &mdash;
+     * and, crucially, no matter what happened to those names after the CLI validated them. That is what
+     * makes this check immune to the validate-then-open gap that pure path comparison leaves open.</p>
+     *
+     * <p>The returned lock is deliberately not retained: {@link FileLock} stays held until the channel
+     * that acquired it is closed, and that channel's lifetime is exactly this writer's lifetime, so
+     * {@link #close()} releases it.</p>
+     *
+     * @param channel the freshly opened output channel to claim; must be open and writable
+     * @param path    the path the channel was opened from, for diagnostics only
+     * @throws UncheckedIOException if this run already holds the same physical file as an output, or
+     *                              another process holds a conflicting lock on it
+     * @throws IOException          if the lock cannot be attempted at all
+     */
+    private static void claimExclusively(FileChannel channel, Path path) throws IOException {
+        final FileLock claim;
+        try {
+            claim = channel.tryLock();
+        } catch (OverlappingFileLockException alreadyOursForSomethingElse) {
+            throw new UncheckedIOException(
+                    "Refusing to write the TRANSACT output: " + path + " is the same physical file as "
+                            + "another output of this run; TRANSACT (350-byte records) and the updated "
+                            + "ACCTFILE (300-byte records) must be separate datasets",
+                    new FileSystemException(
+                            path.toString(), null, "already claimed as another output of this run"));
+        }
+        if (claim == null) {
+            throw new UncheckedIOException(
+                    "Refusing to write the TRANSACT output: " + path + " is locked by another process",
+                    new FileSystemException(path.toString(), null, "locked by another process"));
+        }
+    }
+
+    /**
+     * Closes a channel that a failed constructor had already opened, recording any close failure as a
+     * suppressed exception on the failure being propagated so no diagnostic is lost and no handle leaks.
+     *
+     * @param channel the channel to release; may be {@code null} if the open itself failed
+     * @param failure the exception about to be thrown, which collects any close failure
+     */
+    private static void releaseOnFailure(FileChannel channel, RuntimeException failure) {
+        if (channel == null) {
+            return;
+        }
+        try {
+            channel.close();
+        } catch (IOException closeFailure) {
+            failure.addSuppressed(closeFailure);
         }
     }
 

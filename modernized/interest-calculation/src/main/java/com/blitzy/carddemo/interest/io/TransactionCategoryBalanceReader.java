@@ -18,9 +18,11 @@ package com.blitzy.carddemo.interest.io;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -62,6 +64,12 @@ import com.blitzy.carddemo.interest.model.TransactionCategoryBalance;
  *
  * <h2>EOF &amp; error semantics (faithful to {@code 1000-TCATBALF-GET-NEXT})</h2>
  * <ul>
+ *   <li><strong>OPEN</strong> ({@code 0000-TCATBALF-OPEN}, L182 / paragraph L234-250) &rarr; a file
+ *       status other than {@code '00'} is <strong>fatal</strong>: the program displays
+ *       {@code 'ERROR OPENING TRANSACTION CATEGORY BALANCE'} (L245) and performs
+ *       {@code 9999-ABEND-PROGRAM} (L248) &mdash; and it does so <em>before</em> any other file is
+ *       opened, TRANSACT included (L186). {@link #open()} ports that status check so the failure
+ *       ordering is reproduced exactly; see its documentation for why the ordering is observable.</li>
  *   <li>COBOL file status {@code '00'} &rarr; record returned (L327-328).</li>
  *   <li>COBOL file status {@code '10'} &rarr; <strong>clean end-of-file</strong>: the program sets
  *       {@code END-OF-FILE = 'Y'} and the driver loop simply ends &mdash; no abend (L330, L339-340).
@@ -120,13 +128,16 @@ public final class TransactionCategoryBalanceReader
     private static final int RECORD_LENGTH = 50;
 
     /**
-     * The TCATBAL input file path. The Java analogue of {@code OPEN INPUT TCATBAL-FILE}: recording
-     * the path is the "open"; the actual sequential read happens on demand in {@link #readAll()}.
+     * The TCATBAL input file path, recorded by the constructor, checked for availability by
+     * {@link #open()} (the {@code OPEN INPUT TCATBAL-FILE} status check) and read on demand by
+     * {@link #readAll()} ({@code READ NEXT}). No OS file handle is held between those calls.
      */
     private final Path path;
 
     /**
-     * Records the TCATBAL input path (the Java analogue of COBOL {@code OPEN INPUT TCATBAL-FILE}).
+     * Records the TCATBAL input path. The COBOL {@code OPEN INPUT TCATBAL-FILE} status check itself is
+     * {@link #open()}, which the caller performs at the {@code 0000-TCATBALF-OPEN} position
+     * (<code>app/cbl/CBACT04C.cbl:L182</code>).
      *
      * <p>The driver is consumed once, front-to-back, so reading is performed on demand by
      * {@link #readAll()} / {@link #iterator()} rather than eagerly here; there is therefore no
@@ -141,6 +152,77 @@ public final class TransactionCategoryBalanceReader
             throw new IllegalArgumentException("TCATBAL input path must be non-null");
         }
         this.path = path;
+    }
+
+    /**
+     * Ports {@code 0000-TCATBALF-OPEN} (<code>app/cbl/CBACT04C.cbl:L182</code>; paragraph
+     * <code>L234-250</code>): performs the {@code OPEN INPUT TCATBAL-FILE} availability check (L236)
+     * and abends when the resulting file status is not {@code '00'} (L237-248).
+     *
+     * <p><strong>Why this check is explicit &mdash; open-order fidelity.</strong>
+     * CBACT04C opens its five files in a fixed order: TCATBAL <em>first</em> (L182) and TRANSACT
+     * <em>last</em> (L186, {@code 0400-TRANFILE-OPEN} L307-323). An unavailable TCATBAL therefore
+     * abends at L182 &mdash; {@code DISPLAY 'ERROR OPENING TRANSACTION CATEGORY BALANCE'} (L245),
+     * {@code 9910-DISPLAY-IO-STATUS} (L247), {@code 9999-ABEND-PROGRAM} (L248) &mdash; <em>before</em>
+     * the interest-transaction dataset is ever created, so a run that cannot open its driver leaves
+     * <strong>no</strong> output artifact behind. Because this reader reads lazily (records are framed
+     * by {@link #readAll()}, driven from the service loop), the CLI adapter
+     * ({@code com.blitzy.carddemo.interest.InterestCalculator}) calls this method at the L182 position
+     * to reproduce that ordering exactly; without it the writer would already have created an empty
+     * 350-byte output file that a downstream job or operator could mistake for a legitimate "no
+     * interest to post" result.</p>
+     *
+     * <p><strong>Read semantics are unchanged.</strong>
+     * This is an OPEN check only: it opens the file, reads no record, and releases the handle at
+     * once (which is why {@link #close()} remains a documented no-op). Every record is still framed
+     * and decoded on demand by {@link #readAll()}, and a failure discovered while <em>reading</em>
+     * (malformed record, mid-file blank line, I/O error) stays exactly where the source puts it &mdash;
+     * {@code 1000-TCATBALF-GET-NEXT} (L326-345), i.e. after TRANSACT is already open.</p>
+     *
+     * <p><strong>What is checked.</strong>
+     * The check is a real open attempt, because attribute tests alone do not reproduce
+     * {@code OPEN INPUT} semantics ({@link java.nio.file.Files#isReadable(Path)} reports {@code true}
+     * for a directory, and reports {@code true} for any file when the process runs as {@code root}).
+     * The open detects a missing file and a file whose contents cannot be read. It is paired with a
+     * regular-file assertion because the COBOL FD is a <em>sequential dataset</em> and on this platform
+     * {@code open(2)} succeeds for a directory &mdash; {@code EISDIR} would otherwise surface only on
+     * the first {@code READ}, i.e. after TRANSACT is open. Together they reject every input that cannot
+     * back the FD: a missing path, a directory (including the empty path, which resolves to the working
+     * directory), and an unreadable file. A zero-length file is <strong>accepted</strong>: an empty
+     * driver is a legitimate clean end-of-file on the first read (BR-03, L339-340).</p>
+     *
+     * @throws UncheckedIOException if the TCATBAL file cannot be opened for reading (or the probe
+     *                              handle cannot be released) &mdash; fatal, the Java analogue of
+     *                              {@code 9999-ABEND-PROGRAM} (L248). The underlying
+     *                              {@link IOException} is chained as the cause, mirroring
+     *                              {@code 9910-DISPLAY-IO-STATUS} (L247) reporting the file status.
+     */
+    public void open() {
+        try {
+            // OPEN INPUT TCATBAL-FILE (L236): the open attempt IS the file-status check.
+            final InputStream tcatbalFile = Files.newInputStream(path);
+            // Status '00' -> MOVE 0 TO APPL-RESULT -> CONTINUE (L237-243): the file is available. No
+            // record is read here -- that is 1000-TCATBALF-GET-NEXT (L325-348), reached through
+            // readAll() -- so the probe handle is released immediately and nothing outlives this call.
+            tcatbalFile.close();
+            // The FD backs a SEQUENTIAL dataset, and on this platform open(2) also succeeds for a
+            // directory (EISDIR appears only on the first read). Assert the dataset kind here, at the
+            // OPEN position, so a directory (or the empty path, which resolves to the working directory)
+            // fails like a COBOL OPEN INPUT status error instead of surfacing later from readAll() --
+            // by which point TRANSACT (L186) would already have been created. The failure is raised as
+            // an IOException so it converges on the single abend wrap below.
+            if (!Files.isRegularFile(path)) {
+                throw new FileSystemException(
+                        path.toString(), null, "not a regular file (TCATBAL must be a sequential file)");
+            }
+        } catch (IOException e) {
+            // Any other status -> MOVE 12 TO APPL-RESULT -> DISPLAY 'ERROR OPENING TRANSACTION
+            // CATEGORY BALANCE' (L245) + 9910-DISPLAY-IO-STATUS (L247) + 9999-ABEND-PROGRAM (L248):
+            // fatal. The message never echoes file content (no PII); the chained cause carries the
+            // OS-level reason, the analogue of the displayed COBOL file status.
+            throw new UncheckedIOException(
+                    "ERROR OPENING TRANSACTION CATEGORY BALANCE: " + path, e);
+        }
     }
 
     /**
@@ -287,7 +369,8 @@ public final class TransactionCategoryBalanceReader
      *
      * <p>This is intentionally a no-op and never throws: {@link #readAll()} uses
      * {@link Files#readAllLines(Path, java.nio.charset.Charset)}, which opens and closes the
-     * underlying file itself, so this reader holds no long-lived OS handle to release.</p>
+     * underlying file itself, and {@link #open()} releases its probe handle before returning, so this
+     * reader holds no long-lived OS handle to release.</p>
      */
     @Override
     public void close() {
