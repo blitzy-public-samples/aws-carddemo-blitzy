@@ -17,7 +17,10 @@
 package com.blitzy.carddemo.interest;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashSet;
+import java.util.Set;
 
 import com.blitzy.carddemo.interest.io.AccountRepository;
 import com.blitzy.carddemo.interest.io.CardXrefRepository;
@@ -135,6 +138,8 @@ public final class InterestCalculator {
      */
     private static final int EXIT_USAGE_ERROR = 2;
 
+
+
     /**
      * Exit status returned on a fatal processing failure &mdash; the Java analogue of the COBOL
      * {@code 9999-ABEND-PROGRAM} {@code CALL 'CEE3ABD'} (<code>app/cbl/CBACT04C.cbl:L628-632</code>).
@@ -178,12 +183,19 @@ public final class InterestCalculator {
         // Output-path safety guard: the INTCALC job maps TRANSACT (350-byte records) and ACCTFILE
         // (300-byte records) to DISTINCT datasets via separate DD statements, so a single OS file can
         // never back both DDs on the mainframe. The Java CLI, however, accepts free-form path strings,
-        // so args[4] and args[5] could point at the same file -- and because BOTH output writers open
-        // with TRUNCATE_EXISTING (TransactionWriter / AccountRepository.writeUpdatedAccounts), that
-        // alias lets them truncate and interleave each other's bytes, silently producing a corrupt file
-        // while still exiting 0. Detect the collision BEFORE opening any file and reject it as a usage
-        // error (exit 2), preserving the source's separate-DD invariant (AAP §0.7 minimal-change: the
-        // CLI adapter must honor the DD-to-file contract). This is a usage error, NOT an abend.
+        // so args[4] and args[5] could point at the same file -- and because BOTH output writers replace
+        // the contents of the file they open (TransactionWriter / AccountRepository.writeUpdatedAccounts),
+        // that alias lets them truncate and interleave each other's bytes, silently producing a corrupt
+        // file while still exiting 0. The collision must be caught however it is spelled: identical text,
+        // a symlinked parent directory, symlinked file names, or two hard links to one inode all name a
+        // single physical file. Detect it BEFORE opening any file and reject it as a usage error
+        // (exit 2), preserving the source's separate-DD invariant (AAP §0.7 minimal-change: the CLI
+        // adapter must honor the DD-to-file contract). This is a usage error, NOT an abend.
+        // This guard reads path NAMES, which a concurrent caller can still change after it returns, so
+        // it is the fast, message-rich first line of defense rather than the only one: each writer
+        // additionally claims an exclusive lock on the handle it actually opens, so an alias created
+        // after this point is caught at open time and abends instead of corrupting a file (see
+        // TransactionWriter's constructor and AccountRepository.writeUpdatedAccounts).
         final String outputPathError = findDuplicateOutputPaths(args);
         if (outputPathError != null) {
             System.err.println("ERROR: " + outputPathError);
@@ -227,7 +239,13 @@ public final class InterestCalculator {
      *
      * <p><strong>Orchestration parity</strong> with the COBOL, in order:</p>
      * <ol>
-     *   <li>Open/load the five files (<code>L182-186</code>): TCATBAL, XREF, DISCGRP, ACCTFILE, TRANSACT.</li>
+     *   <li>Open/load the five files (<code>L182-186</code>): TCATBAL, XREF, DISCGRP, ACCTFILE,
+     *       TRANSACT. That order is observable on the <em>failure</em> path too, not only on the happy
+     *       path: the TCATBAL {@code OPEN INPUT} status check runs first
+     *       ({@link com.blitzy.carddemo.interest.io.TransactionCategoryBalanceReader#open()} at the
+     *       <code>L182</code> position), so a run whose driver, cross-reference, rate or account input
+     *       cannot be opened abends before the 350-byte TRANSACT output is created
+     *       (<code>L186</code>) and therefore leaves no output artifact behind.</li>
      *   <li>Run the driver loop (<code>L188-222</code>) &mdash; delegated to the service.</li>
      *   <li>Emit the updated 300-byte account master &mdash; realizes {@code REWRITE FD-ACCTFILE-REC}
      *       (<code>1050-UPDATE-ACCOUNT L356</code>) and the {@code 9300-ACCTFILE-CLOSE} (<code>L227</code>).</li>
@@ -263,11 +281,22 @@ public final class InterestCalculator {
 
         // --- Open / load inputs, in the COBOL OPEN order L182-186 -----------------------------------
 
-        // 0000-TCATBALF-OPEN (L182 / L234): OPEN INPUT TCATBAL-FILE. The sequential driver; records
+        // 0000-TCATBALF-OPEN (L182 / L234-250): OPEN INPUT TCATBAL-FILE. The sequential driver; records
         // are read on demand (1000-TCATBALF-GET-NEXT L325) in the exact file order the account-break
         // logic depends on.
         final TransactionCategoryBalanceReader driver =
                 new TransactionCategoryBalanceReader(Path.of(args[ARG_TCATBAL_IN]));
+
+        // Perform the OPEN INPUT status check HERE, at the L182 position, before any other file is
+        // touched. The COBOL open order is fixed -- TCATBAL first (L182), TRANSACT last (L186) -- so an
+        // unavailable TCATBAL abends (L245 DISPLAY + L248 9999-ABEND-PROGRAM) before TRANSACT is ever
+        // opened, and a failed run leaves NO interest-transactions dataset behind. The driver reads
+        // lazily, so without this explicit check the first file access would happen inside the loop
+        // below -- after the TransactionWriter (L186 position) had already created an empty 350-byte
+        // output file that a downstream job could mistake for a legitimate "no interest to post" run.
+        // This validates availability only; a failure discovered later while READING a record stays in
+        // 1000-TCATBALF-GET-NEXT (L326-345), i.e. after TRANSACT is open, exactly as in the source.
+        driver.open();
 
         // 0100-XREFFILE-OPEN (L183 / L252): OPEN INPUT XREF-FILE. Loaded into an in-memory map keyed
         // by the alternate index XREF-ACCT-ID (1110-GET-XREF-DATA L393-413).
@@ -372,32 +401,155 @@ public final class InterestCalculator {
      * single physical file can never back both DDs. The Java CLI instead accepts two free-form path
      * strings, so a caller can accidentally point both at the same file. That is unsafe: the two
      * writers use incompatible layouts (350-byte transaction records vs. 300-byte account records) and
-     * both open with {@code TRUNCATE_EXISTING} ({@link com.blitzy.carddemo.interest.io.TransactionWriter}
-     * and {@link com.blitzy.carddemo.interest.io.AccountRepository#writeUpdatedAccounts(Path)}), so
+     * each replaces the contents of the file it opens
+     * ({@link com.blitzy.carddemo.interest.io.TransactionWriter} and
+     * {@link com.blitzy.carddemo.interest.io.AccountRepository#writeUpdatedAccounts(Path)}), so
      * writing both to one path truncates/interleaves their bytes and yields a corrupt file. Rejecting
      * the collision up front restores the source's separate-DD invariant (AAP &sect;0.7 minimal-change:
      * the CLI adapter must honor the DD-to-file contract) and is a usage error, not a processing abend.</p>
      *
-     * <p>The two paths are compared after {@link Path#toAbsolutePath()} + {@link Path#normalize()} so
-     * distinct spellings of the same location (e.g. {@code out.txt} vs {@code ./out.txt}) are detected
-     * even before the files exist. This is intentionally limited to the two <em>outputs</em>: it does
-     * not forbid an output from equalling an input, because CBACT04C opens {@code ACCTFILE} I-O (read
-     * then rewrite the same dataset) and {@code AccountRepository} likewise reads the whole account
-     * file into memory before any output is written, so an in-place rewrite is a legitimate,
-     * source-faithful usage.</p>
+     * <p><strong>What this guard is, and is not.</strong> It inspects path <em>names</em>, and a name is
+     * mutable: a symbolic link validated here can be retargeted at the other output before the writers
+     * open it, so no amount of name canonicalization can make this check authoritative on its own. It is
+     * therefore the fast, specific, pre-flight rejection &mdash; it reports the problem as a usage error
+     * with an actionable message and creates nothing &mdash; while the authoritative check lives on the
+     * opened handles: each writer takes an exclusive lock on the file it just opened before writing a
+     * byte, so a collision this guard cannot see becomes a fatal abend at open time rather than a
+     * corrupt file with a zero exit status.</p>
+     *
+     * <p><strong>How a collision is detected.</strong> Two argument strings can name one physical file
+     * in several ways, and every one of them corrupts the output, so all are checked &mdash; in order,
+     * cheapest first:</p>
+     * <ol>
+     *   <li><em>Lexical</em> &mdash; {@link Path#toAbsolutePath()} + {@link Path#normalize()} equality,
+     *       which catches identical text and distinct spellings of one location ({@code out.txt} vs
+     *       {@code ./out.txt}). This works even when neither file exists yet and needs no I/O.</li>
+     *   <li><em>Physical identity</em> &mdash; {@link #physicalOutputKey(Path)} canonicalizes each path
+     *       (following a symbolic-link chain on the file name to its end, however long, and resolving the
+     *       parent directory with {@link Path#toRealPath(java.nio.file.LinkOption...)}), so a symlinked
+     *       parent directory or a symlinked file name is recognized as the same target <em>before</em> the
+     *       file is created &mdash; which matters because the outputs normally do not exist when the run
+     *       starts.</li>
+     *   <li><em>Same-file check</em> &mdash; when both resolved paths already exist,
+     *       {@link Files#isSameFile(Path, Path)} compares the underlying file, catching aliases that no
+     *       amount of path canonicalization can reveal: two <strong>hard links</strong> to one inode
+     *       have two equally canonical names.</li>
+     * </ol>
+     * <p>A path-inspection {@link IOException} is not fatal here: the lexical check has already run and
+     * the writers surface any genuine I/O problem as an abend, so the guard fails open rather than
+     * rejecting a legitimate invocation because a directory could not be canonicalized.</p>
+     *
+     * <p>This is intentionally limited to the two <em>outputs</em>: it does not forbid an output from
+     * equalling an input, because CBACT04C opens {@code ACCTFILE} I-O (read then rewrite the same
+     * dataset) and {@code AccountRepository} likewise reads the whole account file into memory before
+     * any output is written, so an in-place rewrite is a legitimate, source-faithful usage. A single
+     * output written through a symbolic link also remains legitimate; only a <em>collision between the
+     * two outputs</em> is rejected.</p>
      *
      * @param args the seven positional arguments (already validated to have length 7)
-     * @return a human-readable diagnostic if the two output paths resolve to the same file, or
-     *         {@code null} if they are distinct
+     * @return a human-readable diagnostic if the two output paths name the same file, or {@code null}
+     *         if they are distinct
      */
     private static String findDuplicateOutputPaths(String[] args) {
-        final Path txnOut = Path.of(args[ARG_TXN_OUT]).toAbsolutePath().normalize();
-        final Path acctOut = Path.of(args[ARG_ACCT_OUT]).toAbsolutePath().normalize();
+        final Path txnArg = Path.of(args[ARG_TXN_OUT]);
+        final Path acctArg = Path.of(args[ARG_ACCT_OUT]);
+
+        // (1) Lexical: identical text or a different spelling of one location (out.txt vs ./out.txt).
+        final Path txnOut = txnArg.toAbsolutePath().normalize();
+        final Path acctOut = acctArg.toAbsolutePath().normalize();
         if (txnOut.equals(acctOut)) {
-            return "the interest-transactions output (arg 5) and the updated-accounts output (arg 6) "
-                    + "must be different files, but both resolve to: " + txnOut;
+            return duplicateOutputMessage("both resolve to: " + txnOut);
+        }
+
+        try {
+            // (2) Physical identity: collapses symlinked parents and symlinked file names, and works
+            // before either file exists (the normal case -- the outputs are created by this run).
+            final Path txnKey = physicalOutputKey(txnArg);
+            final Path acctKey = physicalOutputKey(acctArg);
+            if (txnKey.equals(acctKey)) {
+                return duplicateOutputMessage("both resolve to: " + txnKey);
+            }
+
+            // (3) Same-file check: two hard links to one inode are two equally canonical names, so only
+            // the file system can tell they are one file. Requires both files to exist already.
+            if (Files.exists(txnKey) && Files.exists(acctKey) && Files.isSameFile(txnKey, acctKey)) {
+                return duplicateOutputMessage(
+                        "'" + txnKey + "' and '" + acctKey + "' are the same file "
+                                + "(for example two hard links to one inode)");
+            }
+        } catch (IOException e) {
+            // Canonicalization failed (an unreadable directory, a symlink loop, ...). The lexical check
+            // above has already run; treat the paths as distinct and let the writers report any real
+            // I/O failure as an abend, rather than rejecting a possibly valid invocation here.
         }
         return null;
+    }
+
+    /**
+     * Builds the duplicate-output usage diagnostic, naming both argument positions so the operator can
+     * see which two paths collided regardless of how the collision was detected.
+     *
+     * @param detail the collision-specific tail (which paths, and how they coincide)
+     * @return the complete {@code ERROR: ...} body for {@link #main(String[])} to print
+     */
+    private static String duplicateOutputMessage(String detail) {
+        return "the interest-transactions output (arg 5) and the updated-accounts output (arg 6) "
+                + "must be different files, but " + detail;
+    }
+
+    /**
+     * Reduces an output path to a canonical <em>physical</em> identity that two aliasing spellings share,
+     * without requiring the file itself to exist.
+     *
+     * <p>{@link Path#toRealPath(java.nio.file.LinkOption...)} cannot be used directly on an output path:
+     * it throws when the file does not exist, which is the normal case for both outputs. So the file
+     * name and the directory are handled separately &mdash; a chain of symbolic links on the final
+     * component is followed explicitly to its <em>end</em>, and the remaining parent directory, which
+     * must already exist for the run to write anything, is canonicalized with {@code toRealPath()}. Two
+     * paths reaching one file through different link spellings therefore produce the same key.</p>
+     *
+     * <p><strong>The link walk is not cut off at an arbitrary depth.</strong> Stopping early would return
+     * a half-resolved key while the candidate is still a link, and two spellings of one file would then
+     * be judged distinct &mdash; precisely the collision this guard exists to prevent. Termination is
+     * instead guaranteed by remembering every path visited: a link chain of distinct entries is finite,
+     * and a repeat means the chain is a cycle, which no process can open at all (the operating system
+     * reports {@code ELOOP}), so the walk stops there and the writers surface the loop as an ordinary
+     * I/O failure.</p>
+     *
+     * @param rawPath the output path exactly as supplied on the command line; must be non-null
+     * @return a canonical key for the physical file the path designates
+     * @throws IOException if a symbolic link or the parent directory cannot be resolved
+     */
+    private static Path physicalOutputKey(Path rawPath) throws IOException {
+        Path candidate = rawPath.toAbsolutePath().normalize();
+
+        // Follow symbolic links on the file name ourselves, all the way to the end of the chain: the
+        // target may not exist yet (so toRealPath cannot do it) and two different link spellings of one
+        // target must yield one key. The visited set makes the walk terminate without a hop limit -- a
+        // repeated path is a cycle, i.e. a path that cannot be opened at all.
+        final Set<Path> visited = new HashSet<>();
+        visited.add(candidate);
+        while (Files.isSymbolicLink(candidate)) {
+            final Path linkTarget = Files.readSymbolicLink(candidate);
+            final Path linkParent = candidate.getParent();
+            final Path next = (linkTarget.isAbsolute() || linkParent == null
+                    ? linkTarget
+                    : linkParent.resolve(linkTarget)).toAbsolutePath().normalize();
+            if (!visited.add(next)) {
+                // Cyclic chain: unopenable by definition, so stop walking rather than spin. The writers
+                // report the ELOOP; no output can be produced through such a path.
+                break;
+            }
+            candidate = next;
+        }
+
+        // Canonicalize the directory part so a symlinked parent collapses to the real directory even
+        // though the output file itself does not exist yet.
+        final Path parent = candidate.getParent();
+        if (parent != null && Files.exists(parent)) {
+            return parent.toRealPath().resolve(candidate.getFileName());
+        }
+        return candidate;
     }
 
     /**

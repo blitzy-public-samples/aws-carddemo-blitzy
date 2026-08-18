@@ -160,6 +160,34 @@ consequential porting decisions, each traceable to `CBACT04C`.
 - **Error semantics (asymmetric).** Account-not-found and xref-not-found are **fatal** — the
   COBOL abend is ported to a thrown runtime exception. Disclosure-group-not-found is **not**
   fatal: it falls back to the `DEFAULT` disclosure group.
+- **The two outputs must be two different physical files.** On the mainframe the `INTCALC` job maps
+  `TRANSACT` and `ACCTFILE` to separate datasets through separate DD statements, so one file can
+  never back both. The CLI accepts free-form paths, so it enforces the same invariant itself: if
+  `args[4]` and `args[5]` name the same file it rejects the run with **exit 2** before opening
+  anything, leaving the target untouched. Aliases count as the same file — identical text, a
+  different spelling of one location (`out.txt` vs `./out.txt`), a symlinked parent directory,
+  symlinked file names, and two hard links to one inode are all detected — because the 350-byte and
+  300-byte writers each replace the contents of the file they open and would otherwise interleave
+  their bytes into one corrupt file while still exiting 0. That pre-flight check reads path *names*,
+  which a caller can still change afterwards, so it is not the last line of defense: each writer also
+  takes an **exclusive lock on the handle it just opened**, before writing a single byte, and abends
+  (**exit 1**) if the run's other output already holds that same physical file. Because the lock is
+  keyed by the file itself rather than by its name, a symbolic link retargeted onto the other output
+  *after* validation is caught at open time instead of silently corrupting one file. Each writer
+  truncates only once its claim is held, so a rejected collision never destroys the bytes of the file
+  it collided with. A *single* output written through a symbolic link is perfectly fine, and an output
+  may still equal an *input*: the account master is read fully into memory before anything is written,
+  so the in-place rewrite that `ACCTFILE`'s `OPEN I-O` implies remains supported.
+- **File-open order is preserved on the failure path too.** `CBACT04C` opens its five files in a
+  fixed order — TCATBAL first (`CBACT04C.cbl` L182) and TRANSACT last (L186) — and an input that
+  cannot be opened abends at that point (`DISPLAY 'ERROR OPENING TRANSACTION CATEGORY BALANCE'`
+  L245 → `9999-ABEND-PROGRAM` L248). The port checks each input in the same order, so a run whose
+  driver, cross-reference, rate or account input is missing or unreadable **exits 1 without
+  creating either output file** — it never leaves behind an empty interest-transactions file that a
+  downstream job could mistake for a legitimate "no interest to post" result. A failure discovered
+  later, while *reading* a record (a malformed fixed-width record, for example), still occurs after
+  the transactions file is open, exactly as it does in the source (`1000-TCATBALF-GET-NEXT`
+  L326-345).
 - **Write guard tests the rate, not the balance.** A transaction is written whenever the rate is
   non-zero; a zero balance with a non-zero rate still emits a `0.00` transaction.
 - **Fees are a no-op.** `1400-COMPUTE-FEES` is an empty "to be implemented" stub in the source

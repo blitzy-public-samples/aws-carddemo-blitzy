@@ -47,9 +47,26 @@ pie showData title Completion Status — 94.2% Complete
 
 | Issue | Impact | Owner | ETA |
 |---|---|---|---|
-| _None blocking._ No defects were found in autonomous validation; all five production-readiness gates passed. | No release blocker | — | — |
+| _None blocking._ All five production-readiness gates pass; every defect raised by QA — including the three CLI output-safety findings recorded in §1.4.1 — is fixed and re-verified at runtime. | No release blocker | — | — |
 
 > **Previously listed here, now closed:** the BR-12 final-account-update semantic subtlety (HT-2) is no longer an unresolved issue. The reviewing engineer **ratified** the documented decision — as documented — through the PR refine feedback, so it is retired from this table. The ratified behavior, its rationale and the instruction to preserve it are recorded in §6, T1 (status `Closed — ratified`). No decision, sign-off or approval is awaited.
+
+#### 1.4.1 Change provenance — two separate changes on this branch
+
+The work after the guide's own base commit (`32b7fbe8`) is **two distinct changes**, deliberately kept apart because they carry different authorizations. Anyone auditing the branch should read them separately:
+
+| # | Change | Authorization | Executable production code | Where it lives |
+|---|---|---|---|---|
+| 1 | **BR-12 ratification** — record the ratified final-account-update decision in this guide, the module `README.md`, the `InterestCalculationService` comments and the two BR-12 tests. | The reviewing engineer's PR refine directive "Ratify the documented BR-12 final-account-update decision" (human-gated task HT-2 / risk T1). It authorizes prose, javadoc/comment text and test code **only**. | **None.** Every one of the 16 main classes is byte-identical to `32b7fbe8` once comments are stripped — the ratified behavior is *confirmed*, never re-implemented. | Commits `579193a9` → `c5be570c` |
+| 2 | **CLI output-safety and open-order fixes** — the three runtime defects QA found in the packaged CLI (below). | The QA testing reports for this module, which raise them as defects to be fixed and direct that they land as a change **separate from** the ratification, so the ratification keeps its zero-executable-change property. | Yes — `InterestCalculator`, `io/TransactionCategoryBalanceReader`, `io/TransactionWriter`, `io/AccountRepository`. Interest arithmetic, record framing, rate lookup and account-update behavior are untouched. | The commit immediately after `c5be570c`, titled *"Fix QA F-01/F-02/F-03: source-faithful driver open order and collision-proof CLI outputs"* |
+
+The three QA findings that authorize change 2, each re-verified at runtime after the fix:
+
+| Finding | Severity | Defect as observed | Fix |
+|---|---|---|---|
+| **F-01** | Low | A run whose TCATBAL driver could not be opened (missing path, a directory, an empty or blank path) exited 1 but left a **0-byte interest-transactions file** behind, which a downstream job could mistake for a legitimate "no interest to post" result. | `TransactionCategoryBalanceReader.open()` ports the `0000-TCATBALF-OPEN` status check (`app/cbl/CBACT04C.cbl` L182 / L234-250) and the CLI performs it at the L182 position — before the TRANSACT writer is created (L186). Read-time failures still occur after TRANSACT opens, exactly as in the source. |
+| **F-02** | Medium | The duplicate-output guard compared path **text**, so a symlinked parent directory, symlinked file names, or two hard links to one inode passed as "different" outputs; both writers then truncated the same file and interleaved 300- and 350-byte records into one corrupt 54-line file **while exiting 0**. | The guard now compares physical files: lexical equality, then a canonical key that follows the output name's symlink chain to its end under visited-set cycle detection (no hop limit) and resolves the parent with `toRealPath()`, then `Files.isSameFile`. Aliases are rejected with exit 2 before anything is created. |
+| **F-03** | Medium | Path validation checks mutable **names**: a symbolic link retargeted onto the other output *after* the guard passed produced the same corrupt mixed-width file, again **with exit 0**. | `TransactionWriter` and `AccountRepository.writeUpdatedAccounts` open `CREATE + WRITE`, take an exclusive whole-file lock on the handle they just opened, and truncate only once that claim is held. A collision the name check cannot see now abends (exit 1) with a clear diagnostic, and a refused writer never destroys the other's bytes. |
 
 ### 1.5 Access Issues
 
@@ -74,7 +91,7 @@ pie showData title Completion Status — 94.2% Complete
 
 Each row traces to a specific AAP deliverable, except the final row, which records completed human (manual) work. Autonomous hours are estimated via the PA2 framework using lines-of-code and complexity as proxies; the human row carries the 1h that §2.2 previously estimated for it.
 
-> **Reading the LOC descriptors.** Every LOC figure in the table below is a **current-HEAD** count — main Java = **3,833** LOC (`find src/main/java -name '*.java' | xargs wc -l`) and test Java = **2,099** LOC (same command over `src/test/java`), both run in `modernized/interest-calculation/`. The PA2 **hour** estimates, by contrast, were fixed against the pre-refine baseline (commit `32b7fbe8`: main Java 3,789 LOC; test Java 1,849 LOC) and are deliberately **not** re-estimated for the BR-12 ratification delta, which added explanatory comments and test assertions rather than a new deliverable — so the mandated totals in §1.2 (154 total / 145 completed / 9 remaining) stand unchanged.
+> **Reading the LOC descriptors.** Every LOC figure in the table below is a **current-HEAD** count — main Java = **4,278** LOC (`find src/main/java -name '*.java' | xargs wc -l`) and test Java = **2,099** LOC (same command over `src/test/java`), both run in `modernized/interest-calculation/`. The PA2 **hour** estimates, by contrast, were fixed against the pre-refine baseline (commit `32b7fbe8`: main Java 3,789 LOC; test Java 1,849 LOC) and are deliberately **not** re-estimated for the BR-12 ratification delta, which added explanatory comments and test assertions rather than a new deliverable — so the mandated totals in §1.2 (154 total / 145 completed / 9 remaining) stand unchanged.
 
 | Component | Hours | Description |
 |---|---:|---|
@@ -83,9 +100,9 @@ Each row traces to a specific AAP deliverable, except the final row, which recor
 | Domain model layer (5 classes) | 9 | Immutable record classes for the 5 copybooks: `Account`, `CardXref`, `DisclosureGroup`, `TransactionCategoryBalance`, `TransactionRecord`. |
 | `ZonedDecimal` overpunch codec | 11 | Highest-risk unit: overpunch zoned-decimal ↔ `BigDecimal` scale-2 codec with sign map and implied-decimal handling (292 LOC). |
 | `CobolArithmetic` + `Db2TimestampSupplier` | 8 | Truncating interest arithmetic (scale 2, DOWN, ÷1200) and injectable 26-char DB2 timestamp seam. |
-| Fixed-width I/O layer (6 classes) | 38 | `FixedWidthCodec`, `TransactionCategoryBalanceReader`, `CardXrefRepository`, `AccountRepository` (read + rewrite + 300B emit), `DisclosureGroupRepository` (rate lookup + DEFAULT fallback), `TransactionWriter` (350B) — 1,823 LOC. |
+| Fixed-width I/O layer (6 classes) | 38 | `FixedWidthCodec`, `TransactionCategoryBalanceReader`, `CardXrefRepository`, `AccountRepository` (read + rewrite + 300B emit), `DisclosureGroupRepository` (rate lookup + DEFAULT fallback), `TransactionWriter` (350B) — 2,116 LOC. |
 | `InterestCalculationService` | 14 | Pure ported account-break business loop, first-time guard, accumulator reset, EOF final-update (369 LOC). |
-| `InterestCalculator` CLI | 8 | `main(String[])` 7-argument contract, orchestration, abend semantics, arg validation (432 LOC). |
+| `InterestCalculator` CLI | 8 | `main(String[])` 7-argument contract, orchestration, abend semantics, arg validation (584 LOC). |
 | JUnit 5 test suite (5 classes) | 28 | 49 test methods → 91 executed invocations: golden-master + per-rule + edge cases (2,099 LOC). |
 | Golden fixtures + expected-output derivation | 5 | Byte-identical fixture copies + SHA-256-anchored expected interest-transactions and updated-accounts. |
 | Autonomous validation & QA remediation | 10 | Three review-fix rounds (Checkpoint 1, Checkpoint 2 [7 findings], QA findings) + final 5-gate validation. |
@@ -134,7 +151,7 @@ All tests below originate from Blitzy's autonomous validation logs and were **in
 Reproduced this session via `mvn -o package` + `java -jar` against the in-repo `app/data/ASCII` fixtures with PARM-DATE `2022071800`.
 
 **Runtime health**
-- ✅ **Build** — `mvn -o package` → BUILD SUCCESS; executable jar `interest-calculation-1.0.0.jar` (35,883 B); manifest `Main-Class=com.blitzy.carddemo.interest.InterestCalculator`, `Build-Jdk-Spec: 21`.
+- ✅ **Build** — `mvn -o package` → BUILD SUCCESS; executable jar `interest-calculation-1.0.0.jar` (39,022 B); manifest `Main-Class=com.blitzy.carddemo.interest.InterestCalculator`, `Build-Jdk-Spec: 21`.
 - ✅ **Execution** — `java -jar … <7 args>` → exit 0; prints `START OF EXECUTION OF PROGRAM CBACT04C` / `END OF EXECUTION OF PROGRAM CBACT04C`.
 - ✅ **Output geometry** — updated-accounts = 50 records × 300 bytes; interest-transactions = 50 records × 350 bytes.
 - ✅ **Updated-accounts** — **byte-identical** to the golden expected file (`cmp` clean).
@@ -163,14 +180,14 @@ AAP deliverables and governing constraints cross-mapped to quality benchmarks. A
 | Asymmetric error handling (abend vs DEFAULT fallback) | Rule parity | ✅ Pass | `DisclosureGroupRepository`; service abend tests (BR-08, BR-17). |
 | ACCTFILE-only mutation; TCATBAL read-only | Source (not TechSpec narrative) | ✅ Pass | AAP binding resolution followed; accounts rewritten, TCATBAL untouched. |
 | Determinism by injection | Single seam | ✅ Pass | `Db2TimestampSupplier` injectable; stable golden assertions. |
-| Behavior traceability (cite paragraph/line) | Comment coverage | ✅ Pass | **BR-01…BR-17** carry CBACT04C paragraph/line provenance; **BR-18** (overpunch zoned decimal) is copybook/fixture-derived per AAP §0.6.3 and cites the copybook `PIC` layouts plus `app/data/ASCII`. Of the 16 main + 5 test classes, **18** cite CBACT04C paragraphs/lines; the three record-geometry units (`FixedWidthCodec`, `ZonedDecimal`, `ZonedDecimalTest`) cite copybook layouts and fixtures instead. Counted reproducibly with `grep -oE '\bL[0-9]+' <file> \| wc -l`: **111** source-line citations in `InterestCalculationService`, **66** in `InterestCalculator`. |
+| Behavior traceability (cite paragraph/line) | Comment coverage | ✅ Pass | **BR-01…BR-17** carry CBACT04C paragraph/line provenance; **BR-18** (overpunch zoned decimal) is copybook/fixture-derived per AAP §0.6.3 and cites the copybook `PIC` layouts plus `app/data/ASCII`. Of the 16 main + 5 test classes, **18** cite CBACT04C paragraphs/lines; the three record-geometry units (`FixedWidthCodec`, `ZonedDecimal`, `ZonedDecimalTest`) cite copybook layouts and fixtures instead. Counted reproducibly with `grep -oE '\bL[0-9]+' <file> \| wc -l`: **111** source-line citations in `InterestCalculationService`, **75** in `InterestCalculator`. |
 | Standalone (JDK + JUnit only) | Zero runtime deps | ✅ Pass | junit-jupiter 5.13.4 test-scope only; bare-JDK jar. |
 | Minimal-change isolation (additive) | Diff discipline | ✅ Pass | 30 module files, purely additive (every path added, none modified or deleted), 100% under `modernized/`; `app/` untouched. Absolute line counts are deliberately not quoted — they drift with each commit (see §1.3). |
 | Fees remain a no-op (`1400-COMPUTE-FEES`) | Faithful stub | ✅ Pass | No fee effects; documented as source-faithful (BR-16). |
 | Zero placeholders / TODO / stubs | Production-ready | ✅ Pass | Only "stub" strings are documentation of COBOL's own no-op. |
 | Self-contained tests (`mvn test`, in-repo fixtures) | No external resources | ✅ Pass | Fixtures are byte-identical in-repo copies; 91/91 offline. |
 
-**Fixes applied during autonomous validation:** 0 in the final gate (no defects found). Prior agent rounds resolved Checkpoint 1, Checkpoint 2 (7 findings), and QA findings (CLI output-path safety, PARM-DATE `PIC X(10)` coercion, doc accuracy).
+**Fixes applied during autonomous validation:** 0 in the five-gate final validation (no defects found there). Prior agent rounds resolved Checkpoint 1, Checkpoint 2 (7 findings), and QA findings (CLI output-path safety, PARM-DATE `PIC X(10)` coercion, doc accuracy). Runtime QA of the **packaged CLI** subsequently raised three further defects — F-01 (0-byte transactions artifact on a driver-open failure), F-02 (physical output aliases defeating the duplicate-output guard) and F-03 (an output symlink retargeted after validation) — all three fixed and re-verified at runtime; see §1.4.1 for the defects, the fixes and the authorization under which they were landed.
 **Outstanding compliance items:** None. The one documented semantic subtlety — the BR-12 final account update firing at end-of-driver — is **ratified**: the reviewing engineer approved it as documented through the PR refine feedback, and it is recorded in §6, T1 as `Closed — ratified`. No compliance item remains outstanding and no sign-off is pending.
 
 ---
@@ -294,7 +311,7 @@ mvn -o clean test
 
 # 2) Package the executable jar
 mvn -o package
-#    -> target/interest-calculation-1.0.0.jar  (35,883 bytes)
+#    -> target/interest-calculation-1.0.0.jar  (39,022 bytes)
 #    -> Manifest Main-Class = com.blitzy.carddemo.interest.InterestCalculator
 
 # 3) Run against the in-repo ASCII fixtures (7-argument contract)
@@ -351,8 +368,9 @@ $ echo $?
 | Symptom | Cause | Resolution |
 |---|---|---|
 | `BUILD FAILURE` on first `mvn -o …` | `-o` offline used before `~/.m2` is populated | Run once online without `-o` to fetch deps, then `-o` works. |
-| Exit code **2** | Wrong argument count / duplicate output paths | Supply exactly 7 args with distinct output paths. |
-| Exit code **1** | Missing/unreadable input file (fatal abend) | Verify all four input paths exist and are readable. |
+| Exit code **2** | Wrong argument count / duplicate output paths | Supply exactly 7 args with output paths that are two **different physical files**. The guard also rejects aliases of one file — a symlinked parent directory, symlinked file names, or two hard links to one inode — because the 350-byte and 300-byte writers would otherwise truncate and interleave each other's bytes. |
+| Exit code **1** | Missing/unreadable input file (fatal abend) | Verify all four input paths exist and are readable. Neither output file is created in this case — the inputs are checked in the source's open order (TCATBAL `CBACT04C.cbl` L182 … TRANSACT L186), so a failed run leaves no empty interest-transactions file behind. |
+| Exit code **1**, `Refusing to write … same physical file as another output of this run` | The two output paths resolved to one file only *after* the pre-flight exit-2 check — e.g. a symbolic link retargeted mid-run | Give each output its own file. Each writer holds an exclusive lock on the handle it opened, so a collision that the name-based check cannot see is caught at open time and abends before any bytes are interleaved, rather than producing a corrupt file with exit 0. |
 | Timestamp bytes differ from golden file | Production uses wall-clock `Db2TimestampSupplier` | Expected/by design; tests inject a fixed timestamp for determinism. |
 | `target/` shows as untracked in `git status` | Build output is not git-ignored (minimal-change) | Run `mvn -o clean` to restore a pristine tree. |
 
