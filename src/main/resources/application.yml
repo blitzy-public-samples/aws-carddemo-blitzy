@@ -1,0 +1,220 @@
+# =============================================================================
+# CardDemo Application — Main Spring Boot Configuration
+# =============================================================================
+# Primary configuration for the CardDemo Java 25 + Spring Boot 3.5.x application.
+# Migrated from COBOL/CICS/VSAM/JCL to a modern Java stack with 100% business
+# logic parity.
+#
+# Profile hierarchy:
+#   application.yml          (this file — base/production defaults)
+#   application-local.yml    (local development overrides)
+#   application-test.yml     (test/Testcontainers overrides)
+#
+# Activate a profile via:
+#   --spring.profiles.active=local   (or 'test')
+#
+# CRITICAL: All credentials use ${ENV_VAR:default} placeholders.
+#           No plaintext secrets are stored in this file.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Server Configuration
+# -----------------------------------------------------------------------------
+# The CardDemo application exposes REST endpoints replacing the CICS online
+# transaction processing layer (18 online programs: COSGN00C through COUSR03C).
+# Default port 8080; override via SERVER_PORT environment variable.
+server:
+  port: ${SERVER_PORT:8080}
+  servlet:
+    context-path: /
+
+# -----------------------------------------------------------------------------
+# Spring Core Configuration
+# -----------------------------------------------------------------------------
+spring:
+  application:
+    name: cardemo
+
+  # ---------------------------------------------------------------------------
+  # DataSource Configuration — PostgreSQL 16+
+  # ---------------------------------------------------------------------------
+  # Replaces VSAM KSDS file-based storage with a relational database.
+  # 10 VSAM datasets (ACCTDATA, CARDDATA, CARDXREF, CUSTDATA, TRANSACT,
+  # DALYTRAN, USRSEC, TRANTYPE, TRANCATG, TCATBALF) plus DISCGRP are mapped
+  # to 11 PostgreSQL tables managed by Flyway migrations.
+  #
+  # CRITICAL: All credential values use ${} environment variable references.
+  #   DB_URL       — JDBC connection URL (default: local PostgreSQL on port 5432)
+  #   DB_USERNAME  — Database user (default: cardemo)
+  #   DB_PASSWORD  — Database password (default: empty — must be set in production)
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/cardemo}
+    username: ${DB_USERNAME:cardemo}
+    password: ${DB_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
+    # HikariCP Connection Pool Configuration
+    # Tuned for moderate OLTP workload matching the original CICS transaction
+    # volume (concurrent online users + batch job database access).
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+      minimum-idle: ${DB_POOL_MIN_IDLE:5}
+      connection-timeout: 30000       # 30 seconds — max wait for connection from pool
+      idle-timeout: 600000            # 10 minutes — idle connection eviction
+      max-lifetime: 1800000           # 30 minutes — max connection lifetime before recycling
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate Configuration
+  # ---------------------------------------------------------------------------
+  # Hibernate 6.x ORM replaces all VSAM keyed file I/O operations:
+  #   EXEC CICS READ      → JpaRepository.findById()
+  #   EXEC CICS WRITE     → JpaRepository.save()
+  #   EXEC CICS REWRITE   → JpaRepository.save() with @Version optimistic locking
+  #   EXEC CICS DELETE     → JpaRepository.delete()
+  #   EXEC CICS STARTBR/READNEXT → Spring Data paging/sorting queries
+  #
+  # All monetary fields use BigDecimal (never floating-point) to match
+  # COBOL PIC S9(n)V99 COMP-3 exact decimal arithmetic.
+  jpa:
+    hibernate:
+      ddl-auto: none                  # Flyway exclusively manages schema — never use auto-DDL
+    # database-platform is intentionally omitted — Hibernate 6.x auto-detects the
+    # PostgreSQL dialect from the JDBC URL, and explicitly specifying it triggers
+    # deprecation warning HHH90000025.
+    show-sql: false                   # SQL logging handled by logback-spring.xml
+    open-in-view: false               # Best practice: disable OSIV to prevent lazy loading in views
+    properties:
+      hibernate:
+        format_sql: true              # Format SQL for readability when logging is enabled
+        jdbc:
+          time_zone: UTC              # All timestamps stored and retrieved in UTC
+          batch_size: 25              # JDBC batch size for bulk INSERT/UPDATE operations
+        order_inserts: true           # Reorder inserts for optimal batching
+        order_updates: true           # Reorder updates for optimal batching
+
+  # ---------------------------------------------------------------------------
+  # Flyway Database Migration Configuration
+  # ---------------------------------------------------------------------------
+  # Manages the VSAM-to-PostgreSQL schema evolution:
+  #   V1__create_schema.sql   — CREATE TABLE for all 11 entities (accounts,
+  #                             cards, card_xref, customers, transactions,
+  #                             daily_transactions, user_security,
+  #                             transaction_type_ref, transaction_category_ref,
+  #                             discount_groups, category_balances)
+  #   V2__create_indexes.sql  — Secondary indexes matching VSAM AIX definitions
+  #                             (CARDDATA AIX on CARD-ACCT-ID, CARDXREF AIX on
+  #                             XREF-ACCT-ID, TRANSACT AIX on TRAN-ORIG-TS)
+  #   V100__seed_data.sql     — Test fixture data parsed from app/data/ASCII/*.txt
+  #                             (50 accounts, 50 cards, 50 xrefs, 50 customers,
+  #                             daily transactions, 3 discount groups, 50 category
+  #                             balances, 18 transaction categories, 7 transaction types)
+  flyway:
+    enabled: true
+    locations: classpath:db/migration,classpath:db/seed
+    baseline-on-migrate: false        # No baseline — clean migration from V1
+    clean-disabled: true              # Safety: prevent accidental schema drop in production
+    table: flyway_schema_history      # Migration tracking table name
+    validate-on-migrate: true         # Validate checksums on every startup
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch Configuration
+  # ---------------------------------------------------------------------------
+  # Replaces JCL batch job orchestration for the 6 core batch processes:
+  #   POSTTRAN  — Daily transaction posting (CBTRN02C.cbl → DailyPostingJobConfig)
+  #   INTCALC   — Interest calculation (CBACT04C.cbl → InterestCalcJobConfig)
+  #   COMBTRAN  — Transaction sort/combine (JCL SORT → TransactionSortJobConfig)
+  #   CREASTMT  — Statement generation (CBSTM03A/B.CBL → StatementGenJobConfig)
+  #   ACCTFILE  — Account seed load (CBACT01C.cbl → AccountLoadJobConfig)
+  #   CUSTFILE  — Customer seed load (CBCUS01C.cbl → CustomerLoadJobConfig)
+  #
+  # Jobs are triggered on-demand via REST endpoints or scheduler — NOT on startup.
+  batch:
+    job:
+      enabled: false                  # Do not auto-start batch jobs on application startup
+    jdbc:
+      initialize-schema: always       # Create Spring Batch metadata tables (BATCH_JOB_INSTANCE, etc.)
+
+  # ---------------------------------------------------------------------------
+  # Jackson / JSON Serialization Configuration
+  # ---------------------------------------------------------------------------
+  # Ensures consistent JSON output for REST API responses:
+  #   - ISO-8601 date format (matching COBOL TRAN-ORIG-TS 26-char timestamp)
+  #   - UTC timezone for all date/time fields
+  #   - Null fields excluded from responses for cleaner API contracts
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false  # ISO-8601 format: "2025-01-15T10:30:00Z"
+    generator:
+      write-bigdecimal-as-plain: true   # Preserve trailing zeros on BigDecimal (e.g., 194.00 not 1.94E2)
+                                         # Works with COBOL PIC S9(n)V99 → BigDecimal(scale=2) to ensure
+                                         # monetary values display with 2 decimal places (0.10 not 0.1)
+    time-zone: UTC
+    default-property-inclusion: non_null
+
+# -----------------------------------------------------------------------------
+# Spring Actuator / Observability Configuration
+# -----------------------------------------------------------------------------
+# Observability is shipped with the initial implementation as required.
+# Provides health checks, metrics, and distributed tracing endpoints.
+#
+# Endpoints exposed:
+#   /actuator/health      — Application health (DB, disk, Flyway status)
+#   /actuator/info        — Application info and environment details
+#   /actuator/metrics     — Micrometer metrics (JVM, HTTP, DB pool, batch jobs)
+#   /actuator/prometheus  — Prometheus scrape endpoint for dashboard integration
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized    # Require authentication for detailed health info
+      probes:
+        enabled: true                  # Kubernetes liveness/readiness probe support
+  metrics:
+    tags:
+      application: cardemo             # Tag all metrics with application name
+    export:
+      prometheus:
+        enabled: true                  # Enable Prometheus metrics endpoint
+  tracing:
+    sampling:
+      probability: 1.0                 # 100% trace sampling — reduce in production
+  info:
+    env:
+      enabled: true                    # Include environment info in /actuator/info
+
+# -----------------------------------------------------------------------------
+# Logging Configuration
+# -----------------------------------------------------------------------------
+# Structured JSON logging via logback-spring.xml with correlation ID support.
+# Replaces COBOL CSMSG01Y/CSMSG02Y message area patterns with modern
+# structured logging including traceId/spanId for distributed tracing.
+logging:
+  config: classpath:logback-spring.xml
+  level:
+    root: INFO
+    com.cardemo: INFO
+    org.springframework: WARN
+    org.hibernate.SQL: WARN
+    org.flywaydb: INFO
+
+# -----------------------------------------------------------------------------
+# CardDemo Application-Specific Custom Properties
+# -----------------------------------------------------------------------------
+# These properties map to AppProperties.java (@ConfigurationProperties) in
+# com.cardemo.config and control batch processing and security behavior.
+#
+# Batch chunk sizes control the Spring Batch commit interval, equivalent to
+# the COBOL PERFORM UNTIL EOF loop iteration counts in the original JCL jobs.
+cardemo:
+  batch:
+    daily-posting:
+      chunk-size: 100                  # POSTTRAN job: process 100 daily transactions per chunk
+    interest-calc:
+      chunk-size: 50                   # INTCALC job: process 50 accounts per chunk
+    statement-gen:
+      chunk-size: 25                   # CREASTMT job: generate 25 statements per chunk
+    reject-file-path: ${REJECT_FILE_PATH:./output/dalyrejs.txt}  # DALYREJS output file path
+  security:
+    password-encoder: bcrypt           # BCrypt replaces plaintext COBOL SEC-USR-PWD storage

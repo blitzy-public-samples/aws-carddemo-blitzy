@@ -1,0 +1,264 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    ============================================================================
+    CardDemo Application — Logback Spring Structured Logging Configuration
+    ============================================================================
+    Provides JSON-format structured logging via logstash-logback-encoder 8.0
+    (net.logstash.logback:logstash-logback-encoder:8.0), replacing COBOL
+    CSMSG01Y/CSMSG02Y message area patterns with modern structured logging
+    and correlation IDs for distributed tracing.
+
+    COBOL Message Area Migration:
+      CSMSG01Y.cpy (CCDA-COMMON-MESSAGES):
+        - CCDA-MSG-THANK-YOU, CCDA-MSG-INVALID-KEY → Application log messages
+      CSMSG02Y.cpy (ABEND-DATA):
+        - ABEND-CODE, ABEND-CULPRIT, ABEND-REASON, ABEND-MSG → Exception logging
+          with structured fields (error code, source, reason, message)
+
+    Profiles:
+      - default (production-like): JSON to CONSOLE only, INFO level
+      - local:  JSON to CONSOLE + FILE, DEBUG level, SQL logging enabled
+      - test:   JSON to CONSOLE only, WARN level, minimal test noise
+
+    Correlation IDs:
+      Micrometer Tracing (via micrometer-tracing-bridge-otel 1.4.3) auto-populates
+      traceId and spanId into MDC. LogstashEncoder includes ALL MDC values by
+      default, so these appear as top-level JSON fields in every log entry.
+
+    Dependency: net.logstash.logback:logstash-logback-encoder:8.0 (pom.xml)
+    ============================================================================
+-->
+<configuration>
+
+    <!--
+        Spring property binding: resolves spring.application.name from
+        application.yml for inclusion as a static custom field in all
+        structured log entries. Falls back to "cardemo" if not configured.
+    -->
+    <springProperty scope="context" name="appName"
+                    source="spring.application.name"
+                    defaultValue="cardemo"/>
+
+    <!-- ====================================================================
+         CONSOLE Appender — JSON structured output to stdout
+         ====================================================================
+         Used by ALL profiles. In containerized/cloud environments, stdout is
+         the standard log collection target (Docker, Kubernetes, CloudWatch).
+         Uses LogstashEncoder for JSON-format output with automatic MDC
+         inclusion (traceId, spanId from Micrometer Tracing).
+    -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <!--
+                Static custom field identifying this application in aggregated
+                log environments (ELK, Splunk, CloudWatch Logs Insights).
+            -->
+            <customFields>{"application":"${appName}"}</customFields>
+
+            <!--
+                Shorten logger class names for readability in JSON output.
+                Example: com.cardemo.service.online.SignonService -> c.c.s.o.SignonService
+                Value 36 provides a balance between brevity and identifiability.
+            -->
+            <shortenedLoggerNameLength>36</shortenedLoggerNameLength>
+
+            <!--
+                MDC Correlation ID Support:
+                LogstashEncoder includes ALL MDC entries by default as top-level
+                JSON fields. Micrometer Tracing (via micrometer-tracing-bridge-otel)
+                automatically populates the following MDC keys:
+                  - traceId : Distributed trace identifier (W3C Trace Context)
+                  - spanId  : Current span identifier within the trace
+                These appear in every log entry enabling end-to-end request tracking
+                across service boundaries and Spring Batch job steps.
+                No explicit includeMdcKeyName configuration is needed since the
+                default behavior includes all MDC values.
+            -->
+
+            <!--
+                Exception formatting: show root cause first with shortened class
+                names for faster incident diagnosis. Mirrors the structured error
+                reporting that replaced COBOL ABEND-DATA (CSMSG02Y.cpy) fields:
+                  ABEND-CODE    -> exception class name
+                  ABEND-CULPRIT -> shortened stack trace location
+                  ABEND-REASON  -> exception message
+                  ABEND-MSG     -> full formatted stack trace
+            -->
+            <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                <maxDepthPerThrowable>30</maxDepthPerThrowable>
+                <maxLength>2048</maxLength>
+                <shortenedClassNameLength>20</shortenedClassNameLength>
+                <rootCauseFirst>true</rootCauseFirst>
+            </throwableConverter>
+        </encoder>
+    </appender>
+
+    <!-- ====================================================================
+         FILE Appender — JSON structured rolling file output
+         ====================================================================
+         Used by the local profile for persistent log storage during
+         development and debugging. Provides the same JSON-structured format
+         as CONSOLE for consistency.
+
+         Rolling policy:
+           - Daily rotation with size-based splitting at 50MB
+           - 30-day retention history
+           - 1GB total size cap to prevent disk exhaustion
+    -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/cardemo.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <!-- Daily rotation pattern with size-based index (%i) -->
+            <fileNamePattern>logs/cardemo-%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <customFields>{"application":"${appName}"}</customFields>
+            <shortenedLoggerNameLength>36</shortenedLoggerNameLength>
+            <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                <maxDepthPerThrowable>30</maxDepthPerThrowable>
+                <maxLength>2048</maxLength>
+                <shortenedClassNameLength>20</shortenedClassNameLength>
+                <rootCauseFirst>true</rootCauseFirst>
+            </throwableConverter>
+        </encoder>
+    </appender>
+
+    <!-- ====================================================================
+         Default Profile (production-like): !local & !test
+         ====================================================================
+         Active when neither 'local' nor 'test' Spring profile is enabled.
+         Targets container/cloud environments where stdout is collected by
+         infrastructure logging agents. Conservative logging levels minimize
+         noise and storage costs while maintaining operational visibility.
+
+         Maps COBOL message severity concepts:
+           CSMSG01Y informational messages -> INFO level
+           CSMSG02Y abend/error messages   -> ERROR level (via exception logging)
+    -->
+    <springProfile name="!local &amp; !test">
+
+        <!-- CardDemo application packages — INFO for operational visibility -->
+        <logger name="com.cardemo" level="INFO"/>
+        <logger name="com.cardemo.batch" level="INFO"/>
+        <logger name="com.cardemo.service" level="INFO"/>
+        <logger name="com.cardemo.controller" level="INFO"/>
+        <!-- Repository layer: WARN to suppress verbose JPA query logging -->
+        <logger name="com.cardemo.repository" level="WARN"/>
+
+        <!-- Spring Framework: WARN to suppress framework internals -->
+        <logger name="org.springframework" level="WARN"/>
+        <!-- Spring Batch: INFO for batch job lifecycle tracking
+             (job start, step transitions, job completion) -->
+        <logger name="org.springframework.batch" level="INFO"/>
+        <!-- Spring Security: WARN to suppress verbose auth filter chain logging -->
+        <logger name="org.springframework.security" level="WARN"/>
+
+        <!-- Hibernate/JPA: suppress SQL output in production -->
+        <logger name="org.hibernate.SQL" level="WARN"/>
+
+        <!-- Flyway: INFO for deployment migration tracking -->
+        <logger name="org.flywaydb" level="INFO"/>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="FILE"/>
+        </root>
+    </springProfile>
+
+    <!-- ====================================================================
+         Local Development Profile: local
+         ====================================================================
+         Active when spring.profiles.active=local (set in application-local.yml
+         or via -Dspring.profiles.active=local).
+
+         Developer-friendly configuration:
+           - DEBUG level for all CardDemo packages
+           - SQL query logging with bind parameter visibility
+           - Both CONSOLE and FILE appenders for persistent log review
+           - Matches application-local.yml logging overrides
+    -->
+    <springProfile name="local">
+
+        <!-- CardDemo application packages: DEBUG for full development visibility -->
+        <logger name="com.cardemo" level="DEBUG"/>
+        <logger name="com.cardemo.batch" level="DEBUG"/>
+        <logger name="com.cardemo.service" level="DEBUG"/>
+        <logger name="com.cardemo.controller" level="DEBUG"/>
+        <!-- Repository: INFO in local to see query patterns without excessive detail -->
+        <logger name="com.cardemo.repository" level="INFO"/>
+
+        <!-- Spring Framework: INFO for development visibility -->
+        <logger name="org.springframework" level="INFO"/>
+        <logger name="org.springframework.batch" level="INFO"/>
+        <logger name="org.springframework.security" level="INFO"/>
+
+        <!--
+            Hibernate SQL logging for development debugging:
+              - org.hibernate.SQL at DEBUG shows executed SQL statements
+              - org.hibernate.type.descriptor.sql.BasicBinder at TRACE shows
+                bind parameter values (useful for debugging JPA queries that
+                replace VSAM READ/WRITE/STARTBR/READNEXT operations)
+        -->
+        <logger name="org.hibernate.SQL" level="DEBUG"/>
+        <logger name="org.hibernate.type.descriptor.sql.BasicBinder" level="TRACE"/>
+
+        <!-- Flyway: INFO to track local migration execution -->
+        <logger name="org.flywaydb" level="INFO"/>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="FILE"/>
+        </root>
+    </springProfile>
+
+    <!-- ====================================================================
+         Test Profile: test
+         ====================================================================
+         Active when spring.profiles.active=test (set in application-test.yml
+         or by @ActiveProfiles("test") in integration tests).
+
+         Minimizes test output noise while keeping important lifecycle
+         information visible. CONSOLE appender only — no file output
+         needed in CI/CD or local test execution.
+    -->
+    <springProfile name="test">
+
+        <!-- CardDemo: INFO to see important service and batch lifecycle events -->
+        <logger name="com.cardemo" level="INFO"/>
+        <logger name="com.cardemo.batch" level="INFO"/>
+        <logger name="com.cardemo.service" level="INFO"/>
+        <logger name="com.cardemo.controller" level="INFO"/>
+        <!-- Repository: WARN to suppress verbose JPA logging during tests -->
+        <logger name="com.cardemo.repository" level="WARN"/>
+
+        <!-- Spring Batch: INFO for batch job test execution tracking -->
+        <logger name="org.springframework.batch" level="INFO"/>
+        <!-- Spring Security: WARN to suppress verbose auth chain in tests -->
+        <logger name="org.springframework.security" level="WARN"/>
+
+        <!--
+            Testcontainers noise suppression:
+            Testcontainers (2.0.2) and Docker Java client produce verbose
+            container lifecycle logs that obscure test output. WARN level
+            shows only startup failures and important warnings.
+        -->
+        <logger name="org.testcontainers" level="WARN"/>
+        <logger name="com.github.dockerjava" level="WARN"/>
+        <logger name="tc" level="WARN"/>
+        <logger name="docker" level="WARN"/>
+
+        <!-- Flyway: INFO to track test database schema migrations -->
+        <logger name="org.flywaydb" level="INFO"/>
+
+        <!-- Hibernate: suppress SQL noise during tests -->
+        <logger name="org.hibernate.SQL" level="WARN"/>
+
+        <root level="WARN">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+</configuration>
