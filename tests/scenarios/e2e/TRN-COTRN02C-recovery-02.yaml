@@ -1,0 +1,185 @@
+# COTRN02C cannot read the card cross-reference: with the region file CCXREF
+# unavailable, the READ by card number answers neither NORMAL nor NOTFND, and
+# COTRN02C shows 'Unable to lookup Card # in XREF file...' and adds nothing
+# [app/cbl/COTRN02C.cbl:609-637].
+#
+# Steps 1-2 reach the empty Add Transaction screen as TRN-COTRN02C-normal-01
+# does: USER0001 (type U) is routed to COMEN01C, and option 8 'Transaction
+# Add' transfers control to COTRN02C, which sets the re-enter flag, finds no
+# transaction selected and sends COTRN02 with a blank ERRMSG
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:67-72] [app/cbl/COTRN02C.cbl:115-130,516-571].
+# Step 3 enters the valid field set of the TRN-COTRN02C scenarios, card number
+# only, with CONFIRM Y, and presses ENTER under CT02
+# [app/cbl/COTRN02C.cbl:131-135,164-167]:
+# - VALIDATE-INPUT-KEY-FIELDS takes the card branch: ACTIDIN (FSET, INITIAL
+#   blank) is received as spaces, the card is numeric, and NUMVAL moves it back
+#   through WS-CARD-NUM-N unchanged into XREF-CARD-NUM and CARDNINI
+#   [app/cbl/COTRN02C.cbl:56,193-222] [app/bms/COTRN02.bms:85-108].
+# - READ CCXREF by card fails on the unavailable file, so WHEN OTHER displays
+#   RESP and RESP2 to the region log, sets the error flag, moves the message to
+#   WS-MESSAGE, puts the cursor on CARDNIN and performs SEND-TRNADD-SCREEN
+#   [app/cbl/COTRN02C.cbl:611-636].
+# - SEND-TRNADD-SCREEN rebuilds the header, moves WS-MESSAGE to ERRMSG, sends
+#   COTRN02 with ERASE and CURSOR and issues RETURN TRANSID(CT02), which ends
+#   the task inside the key check [app/cbl/COTRN02C.cbl:516-534]. The move of
+#   the account id into ACTIDINI, VALIDATE-INPUT-DATA-FIELDS (which would blank
+#   the data fields after an error) and the CONFIRM evaluation never run, so
+#   TRANSACT is neither browsed nor written [app/cbl/COTRN02C.cbl:169-188,223,
+#   235-249,442-470].
+# COTRN2AO redefines the COTRN2AI that RECEIVE MAP filled, so every entry field
+# is sent back as received: Acct # blank, the card number, the data fields as
+# entered and CONFIRM Y.
+#
+# Expected values are derived from the source; no TPE region runs in CI. BMS
+# pads each received field with blanks to its length, and expected text values
+# are full field width with their trailing spaces. ERRMSG is the first 78 bytes
+# of the 80-byte WS-MESSAGE: the 39-character message followed by spaces.
+# CURDATE and CURTIME come from the region clock, so they are matchers and the
+# clock is relative. The DISPLAY of RESP and RESP2 reaches the region log, not
+# the terminal, and is not asserted.
+id: TRN-COTRN02C-recovery-02
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and, on
+  COTRN02, enters a valid transaction for repository card 0500024453765740
+  with CONFIRM Y while the region file CCXREF is unavailable. The
+  cross-reference READ by card number fails with a response other than NORMAL
+  or NOTFND, so COTRN02C sends the screen back with the entered values and
+  'Unable to lookup Card # in XREF file...', and writes nothing to TRANSACT.
+# The recovery message is the primary item, then the program, the maps
+# asserted, the transaction under which the failing READ runs, the CSD file it
+# fails on, and the online-only copybooks COTRN02C copies. TRANSACT is only
+# observed here, never touched by COTRN02C, so its CSD file item is not listed.
+# Sign-on and the menu transaction (CC00, CM00, COSGN00, USRSEC) are verified
+# by the SEC and MNU scenarios; the batch record copybooks (CVTRA05Y, CVACT03Y)
+# and the data files are verified at the lowest level that executes them.
+inventory_ids:
+- INV-TRN-058  # COTRN02C message 'Unable to lookup Card # in XREF file...' (recovery)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which the lookup of step 3 runs
+- INV-CFG-004  # CCXREF CSD file, the target of the failing READ by card number
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes step 3 a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to put CCXREF out of service
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001.
+    USRSEC: {base: USRSEC}
+    # The cross-reference holds the card (record 1, account 00000000050), so
+    # only the file's availability fails, never the key.
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT has no repository data of its own (datasets.yaml source
+    # 'built', which a base cannot name), so it is built from the 300
+    # repository daily transactions, which share its 350-byte record shape.
+    # The load gives the file_state assertion a known starting content.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  # No `after`: the unikix adapter applies an online fault after the sign-on
+  # step. Sign-on reads only USRSEC, and COMEN01C's option transfer and
+  # COTRN02C's first send touch no file, so the first CCXREF operation after
+  # the fault is the READ of step 3. An adapter without a confirmed region file
+  # control raises MissingPrerequisite under GAP-MIS-011.
+  faults:
+  - target: CCXREF
+    operation: read
+    condition: unavailable
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left blank, so the card number selects the cross-reference.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: 'Y'
+    ERRMSG: 'Unable to lookup Card # in XREF file...                                       '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Unable to lookup Card # in XREF file...                                       '
+  file_state:
+    # Nothing is written: TRANSACT still holds the 300 fixture records, and the
+    # highest of them, the key an add would follow, is unchanged.
+    TRANSACT:
+      count: 300
+      contains:
+      - TRAN-ID: '0000000996722787'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+        TRAN-AMT: '603.22'
+        TRAN-MERCHANT-ID: '800000000'
+        TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+        TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+        TRAN-MERCHANT-ZIP: '53200-7529'
+        TRAN-CARD-NUM: '3260763612337560'
+        TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+        TRAN-PROC-TS: '                          '
