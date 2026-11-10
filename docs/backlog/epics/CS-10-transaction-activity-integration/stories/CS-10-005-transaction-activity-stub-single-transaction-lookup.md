@@ -95,7 +95,7 @@ Recommended: Design Option A — primary-key lookup through its own lookup sourc
 
 Rationale: the transaction identifier is the table's primary key, so one key read answers every lookup whatever the volume, and a one-question lookup source beside the listing provider leaves the listing query and its tests as they stand.
 
-- Rejected: Design Option B, serving the lookup from the listing query — the listing is keyed by account, which the lookup request does not carry.
+- Rejected: Design Option B, serving the lookup from the listing query — it reaches the same primary-key read only by widening the tested listing query and skipping its account check.
 - Rejected: a lookup question added to the listing provider itself — it reopens the tested listing query for a read the listing never makes.
 
 ### Shared by both options
@@ -123,7 +123,7 @@ How it behaves:
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Lookup by primary key (vs through the listing query) | one key read whatever the volume | a second read path beside the listing |
+| 1 | Lookup by primary key (vs through the listing query) | the read asks only the lookup's question | a second read path beside the listing |
 | 2 | Lookup source beside the listing provider (vs a question added to the listing provider) | the tested listing query stays untouched | relational read logic sits in two places |
 | 3 | No ownership check in the stub (vs checking the card's account) | one owner for the ownership rule | the stub returns any account's transaction |
 | 4 | All record fields returned (vs a summary subset) | the detail view needs every field | a larger message |
@@ -132,30 +132,32 @@ Effort and risk: small effort, low risk.
 
 ### Design Option B — listing query filtered to one identifier
 
-The lookup runs the account listing query with one more equality on the transaction identifier and a row limit of one. The lookup request carries no account, so the query must drop its account condition to answer at all. The identifier check, the field set, the not-found rule and the failure answers stay as in Option A.
+The lookup runs the account listing query with one more equality on the transaction identifier and a page size of one, and drops the account condition because the lookup request carries no account. The identifier equality still reaches the primary key, so each lookup costs the same one key read as Option A. The cost falls on the listing instead, whose relational query, in-memory twin and account check all change for a read the listing never makes. The identifier check, the field set, the not-found rule and the failure answers stay as in Option A.
 
 How it differs:
 
-- The keyset index is reachable only with an account, which the lookup request lacks.
-- Without an account the query falls back to a table scan or the card-number index.
-- One query path serves both operations.
-- The listing provider's contract widens to accept a missing account.
+- One query path serves both operations, and a lookup still costs one primary-key read.
+- The listing provider's contract widens to accept a missing account, in the relational query and in its in-memory twin alike.
+- The listing's account check against the cross-reference record is skipped for a lookup, because the lookup reads only the transaction table.
+- The newest-first order, the lookahead row and the page token do nothing for a one-row read.
+- An empty result answers the not-found status for a lookup, while the same empty result answers an empty page for a listing.
+- The tested listing query and the provider reopen, one file more than this story otherwise touches.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Listing query filtered to one identifier (vs a primary-key read) | one query path to maintain | a lookup with no account has no index range to walk |
-| 2 | Account condition dropped when absent (vs an account-scoped listing only) | lookups still answer without an account | each lookup scans the table or the card index |
+| 1 | Listing query filtered to one identifier (vs a primary-key read of its own) | one relational read path to maintain | the tested listing query and its provider reopen for a one-row read |
+| 2 | Account condition and account check skipped when the account is absent (vs an account-scoped listing only) | the lookup still reads only the transaction table | the listing provider widens to accept a missing account in both the query and its in-memory twin |
 | 3 | No ownership check in the stub (vs checking the card's account) | one owner for the ownership rule | the stub returns any account's transaction |
 
-Effort and risk: small effort, at risk on lookup latency and on requests that carry no account.
+Effort and risk: small effort, medium risk to the tested listing query, its in-memory twin and its account check, which all change for a one-row read.
 
 ### Recommendation
 
 - Option: Design Option A
-- Why: the lookup stays one key read and needs no account, and the listing query keeps its single purpose.
-- Strongest argument against: the stub grows a second read path to maintain beside the listing provider.
-- Shared items that do not decide the choice: failure injection, the request log, the field set, the identifier check and the not-found rule.
-- Flip conditions: the real service contract adding an account to the lookup request, which would let the listing path serve it.
+- Why: both options cost one primary-key read, and Option A gets it without widening the listing query, skipping the listing's account check or reopening the provider.
+- Strongest argument against: the stub grows a second relational read path, with its own row mapping, to maintain beside the listing provider.
+- Shared items that do not decide the choice: the one-key-read cost, failure injection, the request log, the field set, the identifier check and the not-found rule.
+- Flip conditions: a later story making the listing query, its in-memory twin and its account check accept a missing account for its own use, which leaves Option B's single read path as the only difference.
 
 ## Design Validation
 
@@ -186,20 +188,22 @@ Open assumptions:
 
 Settled assumptions:
 
-- The listing query's keyset index leads with the account.
-- The lookup request carries no account.
+- The transaction identifier is the transaction table's primary key, so the identifier equality finds at most one row in one key read with or without the account condition.
+- The lookup request carries no account, so the lookup drops the listing's account condition and skips its account check.
+- The listing's in-memory twin applies the same conditions as its relational query, so both widen together.
 - The stub hosting story places the failure injector and the request log in front of every stub.
 
 Open assumptions:
 
-- Lookup latency on the account-free fallback at one million rows Open → the transaction detail service-level scenario.
+- Whether the listing tests pass unchanged once its query, its in-memory twin and its account check accept a missing account Open → the listing story's tests run over the widened provider.
+- Whether the real service enforces ownership itself Open → the swap to the real Transaction Activity service.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Conditional | it needs a query path that works without an account |
-| AC2 | Conditional | it needs a query path that works without an account |
-| AC3 | At risk | a cross-account lookup has no account to key the listing |
-| AC4 | Holds | an identifier matching no row yields the not-found status |
+| AC1 | Conditional | its relational half needs the test context to answer the widened listing query, not a key read |
+| AC2 | Holds | the listing's row rendering signs the amount at scale two |
+| AC3 | Holds | the dropped account condition reaches another account's row |
+| AC4 | Holds | the identifier check precedes an empty result mapped to the not-found status |
 | AC5 | Holds | the shared failure injector and the read-failure mapping both answer the unavailable status |
 | AC6 | Holds | the shared request log records every call |
 

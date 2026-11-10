@@ -29,6 +29,7 @@ Parent epic: [CS-07 Transaction List Endpoint](../README.md)
 >   - Check order: the syntactic checks run first (account pattern and all-zero rule, type and category patterns, page size integer 1–100, token shape, decode, version and fingerprint), then the snapshot-dependent maximum. The rule set checks every field, then raises one `INVALID_ARGUMENT` typed failure through the standard error object of CS-05-002, with one `details` entry per failing field in the order `accountId`, `typeCode`, `categoryCode`, `pageSize`, `pageToken`, and the `message` of the first failing field.
 >   - Rejection texts: `message` "Transaction category code must be exactly 4 digits" with `details.description` "must be exactly 4 digits" for `categoryCode`. `message` "Page size must be an integer from 1 to N" with `details.description` "must be an integer from 1 to N" for `pageSize`, where N is the capture's `max_page_size`, 100 under the built-in defaults. `message` "Page token is invalid or does not match this request" with `details.description` "must be a token returned for the same account and filters" for every `pageToken` failure alike, the contract's 400 example, so a response never states which token check failed. The `accountId` and `typeCode` rules keep their own texts. The `details.field` strings are `categoryCode`, `pageSize` and `pageToken` on both protocols.
 >   - Result: a request that passes yields the nested record `TransactionListRequestValidator.ValidatedListRequest`, holding the account number, the filters as given, the effective page size and the page token exactly as received. The endpoint adapter of CS-07-003 obtains it from this rule set with the same capture and hands it to the retrieval of CS-07-002.
+>     > SCOPE-QUESTION (Resolved): The Stage 0 hook (CS-05-003, extended by CS-05-006) only starts and attaches the request deadline, applies the rule set and raises its failure, so nothing above keeps the record until the adapter runs, and "obtains it from this rule set" can be read as a second validation. The record is also not an input of the retrieval: CS-07-002 declares plain values, because this story is not its prerequisite. Stage 0 therefore keeps no copy of the record. Its result is carried by the request itself, the REST path variable and query or the gRPC `ListTransactionsRequest` message, which no later stage changes, together with the `UpstreamSettings.Capture` that the request's `RequestDeadline` holds for the life of the request (CS-11-003), the capture Stage 0 used. Beside its Stage 0 check, the rule set publishes one non-checking accessor, `accepted`, in the two forms of its Stage 0 read: `accepted(accountId, typeCode, categoryCode, pageSize, pageToken, capture)` over the REST path variable and query values, an absent parameter passed as absent, and `accepted(ListTransactionsRequest, capture)` over the gRPC message and its field presence. It builds `ValidatedListRequest` from those values with the effective page size rule alone: the account number, each filter as given or absent, the effective page size, and the page token as received, the empty string for a first page. It runs no pattern, bound, shape, decode, version or fingerprint check and makes no `PageTokenCodec` call. It is called only after the Stage 0 hook has passed the request, which the route order of Stage 0 hook, account access guard and adapter guarantees. The rule set takes its `PageTokenCodec` through its constructor, so a test can supply a counting codec. The CS-07-003 adapters call `accepted` once, after the guard allows access, and never apply the rule set's checks a second time. They pass the record's values one by one to the inputs CS-07-002 declares: `accountId`; `typeCode` and `categoryCode`, an absent filter staying absent; the effective page size; and `pageToken` byte for byte, the empty string for a first page. The record itself is not an input of CS-07-002, so no dependency edge and no file count changes. `TransactionListRequestValidatorTest` checks, for each request that passes in AC1, AC2, AC4 and AC5, on its REST and its gRPC form, that the record `accepted` returns equals the Stage 0 record field for field and that `accepted` makes zero calls on a counting codec.
 >   - The Stage 0 hook of CS-05-003 applies the rule set, because that hook applies the validator to every route the validator declares. It therefore runs after the `traceId` is issued and ahead of the account access guard on both protocols, and the hook file is unchanged.
 > - Test: `card-servicing-service/src/test/java/com/example/cardservicing/drill/TransactionListRequestValidatorTest.java`.
 > - That makes 3 files: one edited and two created.
@@ -89,7 +90,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is ≥80% per module. Cases: AC1–AC10 on REST and gRPC; the built-in capture and test captures holding 30 and 100 and 20 and 50, built as `UpstreamSettings.Capture` values; tokens minted and altered through `PageTokenCodec`; the empty stub request logs, zero cache reads and zero refreshes through the loopback stubs that `StubHarness.allRegistered()` starts; and a contract check that reads the `categoryCode` pattern, the `pageSize` bounds and the `pageToken` pattern and maximum length from `openapi/card-servicing-api.yaml` on the classpath and asserts that each equals the validator's rule.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is ≥80% per module. Cases: AC1–AC10 on REST and gRPC; the built-in capture and test captures holding 30 and 100 and 20 and 50, built as `UpstreamSettings.Capture` values; tokens minted and altered through `PageTokenCodec`; the non-checking accessor `accepted`, in its REST and gRPC forms, for each request that passes in AC1, AC2, AC4 and AC5, returning a record equal field for field to the Stage 0 record and making zero calls on a counting `PageTokenCodec` passed to the rule set's constructor; the empty stub request logs, zero cache reads and zero refreshes through the loopback stubs that `StubHarness.allRegistered()` starts; and a contract check that reads the `categoryCode` pattern, the `pageSize` bounds and the `pageToken` pattern and maximum length from `openapi/card-servicing-api.yaml` on the classpath and asserts that each equals the validator's rule.
 - Integration: Not applicable — this story adds no external client and makes no upstream call. Threshold when it applies: `./gradlew :card-servicing-service:integrationTest` passes, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS`, and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Not applicable — validation only, with no retrieval, and rejected requests sit outside the success-path percentiles; the transaction list path is measured by CS-03-003. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -133,7 +134,7 @@ How it behaves:
 - The page token is decoded only after the account number and both filters pass.
 - A malformed category code, type code or account number is rejected with one detail naming that field.
 - A rejected request stops before the guard, so no Auth, Config, cache or data call follows.
-- A request that passes carries its effective page size and its page token, unchanged, to the retrieval.
+- After the guard allows a request that passed, the endpoint adapters read its accepted values once, with no second check, and pass them to the retrieval as separate values: the account number, the filters, the effective page size and the unchanged page token.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
@@ -142,7 +143,7 @@ How it behaves:
 | 3 | Rules added to the shared validator (vs endpoint-local rules) | one change point for each parameter rule | every endpoint edits one shared rule table |
 | 4 | Token decoded only after the account number and filters pass (vs always) | each rejection names the field at fault | a bad token surfaces only once the other fields are fixed |
 
-Effort and risk: three rules and one route entry in the shared validator, one rule set and one test class, with the risk in a request whose configuration capture is missing at receipt.
+Effort and risk: three rules and one route entry in the shared validator, one rule set and one test class, with the risk in a stale snapshot maximum admitting a page size a newer configuration rejects.
 
 ### Design Option B — fixed page bounds from the interface description
 
@@ -182,10 +183,10 @@ Settled assumptions:
 - The page-token codec binds a token to the account and both filters but not to the page size.
 - The receipt stage runs on both the HTTP and the remote procedure interface, ahead of the access guard.
 - The account number rule comes from the shared validator story and the type code rule from the category balance input validation story.
+- The balance summary endpoint story, which precedes this one in wave order, makes the receipt stage start the request deadline, with its one configuration capture, before this rule set runs, on every route the shared validator declares, this one included.
 
 Open assumptions:
 
-- Open → that the request deadline and its configuration capture exist when the receipt stage runs this rule set, settled by the receipt stage of the shared validator story.
 - Open → whether the UI shows the server message text or its own, settled by the deferred UI run.
 
 | AC | Verdict | Why |
@@ -197,7 +198,7 @@ Open assumptions:
 | AC5 | Holds | the codec accepts a token replayed with its own account and filters |
 | AC6 | Holds | the shape rule and the codec reject each altered, foreign or old token |
 | AC7 | Holds | each field rule rejects its malformed value |
-| AC8 | Conditional | the rule set reads only memory, provided the configuration capture exists at receipt |
+| AC8 | Holds | the rule set reads only the in-memory capture the receipt stage takes |
 | AC9 | Holds | every rejection passes through the standard error object with the receipt trace identifier |
 | AC10 | Holds | the rule set checks every field before it raises one failure |
 

@@ -24,12 +24,14 @@ Parent epic: [CS-07 Transaction List Endpoint](../README.md)
 >   - Items: each item carries `transactionId`, `typeCode`, `categoryCode`, `description`, `amount`, `originalTimestamp` and `processedTimestamp` exactly as the upstream page carries them. `description` and `originalTimestamp` come from `Data Layouts · CVTRA05Y · TRAN-DESC` and `TRAN-ORIG-TS`, the Description and Date columns of `Use Cases · COTRN00C`. Items keep the upstream order, `processedTimestamp` descending, then `transactionId` descending; the service does not re-sort, filter or drop an item.
 >   - Status: it resolves `dataStatus` and `asOf` through `card-servicing-service/src/main/java/com/example/cardservicing/integration/support/DataStatusResolver.java` (CS-05-005, earlier in W2) from the one source used. With no stale fallback and no reference data, every 200 is `FRESH`, and `asOf` is the `cachedAt` the client returns: the upstream read time on a miss, the entry's `cachedAt` on a fresh hit. Config outcomes never affect `dataStatus`.
 >   - Cut-off and completion: it marks the cut-off on the deadline when the list read returns or fails. If the budget runs out first, the deadline records the cut-off itself, so `cutoffMs` never exceeds 900. It completes the deadline exactly once, with outcome `full` for a 200 and `error` with the response status for 400, 404, 503 or 504, so the completion line carries `cutoffMs`, the outcome and the receipt `traceId`.
+>     > SCOPE-QUESTION (Resolved): The status list leaves out the 401 the read can raise. The status rules of the Transaction Activity client (CS-10-006) turn an upstream `UNAUTHENTICATED` into `UNAUTHENTICATED` (401) with no retry, and the `ListTransactions` contract declares that status. It arises after the guard has allowed access, so the guard's rejection completion does not run, and neither adapter completes the deadline (CS-07-003). The retrieval therefore completes the deadline exactly once for every typed failure the read raises, keeping that failure's status: 400, 401, 404, 503 or 504, the statuses the client's status rules produce. The 401 from an upstream `UNAUTHENTICATED` after the allow thus also gets exactly one completion line, with outcome `error`, status 401, `cutoffMs` and the receipt `traceId`.
 >   - Data reach: Redis is reached only through `ReadThroughCache` inside the client, and transactions only through the gRPC client. The service holds no Redis client, opens no database connection and makes no Card Data or Reference Data call. Cache keys carry no caller identity.
 > - `card-servicing-service/src/main/java/com/example/cardservicing/drill/TransactionPage.java`: the result record, holding `accountId`, the ordered `transactions` (always present, empty when nothing matches), the optional next-page token, `dataStatus` and `asOf` in RFC 3339 form with microseconds and `Z`, for example `"2022-06-10T19:27:53.000000Z"`.
 > - Test: `card-servicing-service/src/test/java/com/example/cardservicing/drill/TransactionListServiceTest.java`.
 >   - It sends each test request through the account access guard and then the service, as the endpoints will (CS-07-003). Each test request starts its `RequestDeadline` at receipt with a test `traceId`, and the test client measures the response time.
 >   - It uses the Auth, Config, Transaction Activity and Reference Data stubs registered on `card-servicing-service/src/test/java/com/example/cardservicing/support/StubHarness.java` (CS-11-002) under the stub names `auth`, `config`, `transaction-activity` and `reference-data`, with per-test `STUB_LATENCY_MS` and `STUB_FAILURE_RATE` overrides through `StubHarness.inject`, and reads each stub's `StubRequestLog`.
 >   - Scripted answers the stub never gives come from test-local `StubRegistration` instances under stub name `transaction-activity`, which `StubHarness.allRegistered()` never discovers: a fixed non-empty `next_page_token`, and `INVALID_ARGUMENT` with a packed `ErrorObject` holding a `pageToken` detail. A request-capturing server interceptor on such a registration records the `page_size` and `page_token` of each call.
+>     > SCOPE-QUESTION (Resolved): The scripted answers also include `UNAUTHENTICATED` with one packed `ErrorObject`, which the stub never gives because it never re-authorizes the forwarded token (CS-10-004), for the upstream 401 that AC8 also covers.
 >   - The cache runs on the in-memory recording `EntryStore` with the controllable test clock of the CS-11-004 tests, for entry ages and cache-read counts.
 > - That makes 3 files: two created main classes and one test class.
 >
@@ -43,6 +45,9 @@ Parent epic: [CS-07 Transaction List Endpoint](../README.md)
 > - `DEADLINE_EXCEEDED`, or the budget exhausted before or during the call, gives 504 `DEADLINE_EXCEEDED`.
 > - A page is never served stale: a failed read returns no page, even with a page held past its fresh TTL.
 > - Each failure is the client's typed failure, rendered through the standard error mapping (CS-05-002, `card-servicing-service/src/main/java/com/example/cardservicing/config/error/`) with the `traceId` generated at receipt. The service builds no error body.
+>
+> > SCOPE-QUESTION (Resolved): The outcomes above leave out one the read can raise. `UNAUTHENTICATED` from `ListTransactions` after the guard allowed access, which the Transaction Activity contract declares for a forwarded bearer token it refuses, gives 401 `UNAUTHENTICATED` after one attempt. It is the client's typed failure, rendered through the standard error mapping with the `traceId` generated at receipt, and no cache entry is written.
+>
 > - A Config failure or a slow background refresh leaves the request, its `dataStatus` and its timing unchanged.
 >
 > In scope:
@@ -50,6 +55,9 @@ Parent epic: [CS-07 Transaction List Endpoint](../README.md)
 > - The retrieval service and its result record.
 > - Token pass-through in both directions.
 > - Outcome mapping for the not-found, invalid-token, empty and fail-hard cases.
+>
+> > SCOPE-QUESTION (Resolved): The outcome mapping also covers the upstream unauthenticated case: the 401 after the allow and its one completion line.
+>
 > - Deadline outcomes, the cut-off and the completion line.
 > - Unit tests with per-test failure injection.
 >
@@ -71,10 +79,19 @@ Parent epic: [CS-07 Transaction List Endpoint](../README.md)
 > - AC6: In the unit suite, whose in-memory fixture set holds no cross-reference record for the synthetic accounts, token `fixture-token-user0001` with account `10000000002`, inside the caller's entitlements, makes the stub answer `NOT_FOUND`. The request returns 404 with an `ErrorObject` whose `code` is `NOT_FOUND` and whose `traceId` equals the receipt `traceId` on the completion log line, after exactly one stub call, and no cache entry is written.
 > - AC7: For account `00000000001` with `typeCode` `99`, well-formed and absent from the reference data, the request returns 200 with an empty `transactions` array and no next-page token, and the Reference Data stub request log holds zero entries. For token `fixture-token-user0005` and account `10000009002`, which has a cross-reference record and no transactions (the registration's added cross-reference in the unit suite), the request returns 200 with an empty `transactions` array and no next-page token.
 > - AC8: With a test-local registration answering `INVALID_ARGUMENT` with one packed `ErrorObject` holding one `details` entry for `pageToken`, to a token that passed Stage 0, the request returns 400 with `code` `INVALID_ARGUMENT`, exactly one `details` entry whose `field` is `pageToken` and the receipt `traceId`, after exactly one stub call, and no cache entry is written.
+>
+> > SCOPE-QUESTION (Resolved): AC8 also covers an upstream refusal of the forwarded bearer token, an answer the stub never gives. With a test-local registration under stub name `transaction-activity` answering `UNAUTHENTICATED` with one packed `ErrorObject`, and the Auth stub answering both Auth calls `OK` and allowing access for token `fixture-token-user0001` and account `00000000001`, the request returns 401 with an `ErrorObject` whose `code` is `UNAUTHENTICATED` and whose `traceId` equals the receipt `traceId`, the client's typed failure rendered through the standard error mapping (CS-05-002), whose REST and gRPC forms the adapters own (CS-07-003). That holds after exactly one stub call, no cache entry is written, and the request writes exactly one completion log line, with outcome `error`, status 401, the receipt `traceId` and a `cutoffMs` of at most 900 under the 900 ms request deadline (`REQUEST_DEADLINE_MS`).
+>
 > - AC9: Timeout: each `ListTransactions` attempt times out at the lesser of 300 ms (`UPSTREAM_TIMEOUT_MS`) and the budget left before the cut-off of the 900 ms deadline (`REQUEST_DEADLINE_MS`). With a per-test latency of 400 ms (`STUB_LATENCY_MS`) on stub `transaction-activity`, healthy Auth stubs and an empty cache, every attempt ends with `DEADLINE_EXCEEDED` no later than 330 ms after it starts.
 > - AC10: Retry: on `UNAVAILABLE` or `DEADLINE_EXCEEDED` only, the read is retried at most 2 times (`UPSTREAM_MAX_RETRIES`), after 50 ms and then 100 ms of backoff, and a retry starts only when its backoff plus a full 300 ms attempt fits the remaining budget. With a failure rate of 1.0 (`STUB_FAILURE_RATE`) on stub `transaction-activity`, the stub request log shows exactly 3 `ListTransactions` attempts, at least 50 ms and then at least 100 ms apart. With the AC9 latency it shows exactly 2 (300 + 50 + 300 = 650 ms, then 100 + 300 > 250). The `NOT_FOUND` of AC6 and the `INVALID_ARGUMENT` of AC8 each receive exactly 1 attempt.
+>
+> > SCOPE-QUESTION (Resolved): The stub request log cannot show the gaps between attempts: each entry holds a sequence number assigned at receipt, the operation, the outcome and the duration from receipt to close (CS-11-002), and no arrival time. The log proves the attempt counts, not the gaps: exactly 3 `ListTransactions` entries, each with outcome `UNAVAILABLE`, at a failure rate of 1.0; exactly 2 with the AC9 latency, each with outcome `CANCELLED`, read once the second delayed call has closed; and exactly 1 for AC6 and for each answer of AC8. The backoff is proven as a caller-measured total: the client-measured response of the failure-rate-1.0 request arrives at least 150 ms after it was sent, the 50 ms and 100 ms backoffs together. Each gap on its own, the second attempt exactly 50 ms and the third exactly 100 ms after the preceding failure, is proven on the controllable test clock of the call policy story (CS-11-003 AC2).
+>
 > - AC11: Fail hard: with a failure rate of 1.0 the request returns 503 `UNAVAILABLE`, and with the AC9 latency 504 `DEADLINE_EXCEEDED`, each carrying the receipt `traceId`. Both hold with no cache entry and with a page held under the request's key aged 60 s or 120 s on the test clock, past its 60 s fresh TTL: no held page is returned and the held entry is not rewritten. For each, the completion log line carries outcome `error` with the status and a `cutoffMs` of at most 900, and the client-measured response arrives below 1,000 ms.
 > - AC12: With both Auth calls at 250 ms latency and an empty cache, the AC3 request returns 200 with the six items after exactly one `ListTransactions` attempt, with `cutoffMs` at most 900 and a client-measured response below 1,000 ms. Auth failures fail closed: with the Auth stub failing every call the request returns 503 `UNAVAILABLE`, with an Auth latency of 2,000 ms 504 `DEADLINE_EXCEEDED`, and with `fixture-token-expired` 401 `UNAUTHENTICATED`. In each case the Transaction Activity stub request log holds zero entries and the cache records zero reads.
+>
+> > SCOPE-QUESTION (Resolved): AC12 also covers the residual budget running out in Stage 3. With both Auth calls succeeding at an Auth stub latency of 250 ms, a Transaction Activity stub latency of 350 ms (`STUB_LATENCY_MS`), above the 300 ms per-attempt timeout, and an empty cache, so no usable page is held, the AC3 request returns 504 `DEADLINE_EXCEEDED` with the receipt `traceId` after exactly one `ListTransactions` attempt. The Auth calls leave about 400 ms, the attempt times out at 300 ms, and a retry would need 50 + 300 ms where at most about 100 ms remain, so none starts. The Transaction Activity stub request log, read once the delayed call has closed, holds exactly one `ListTransactions` entry, with outcome `CANCELLED`, as CS-11-002 logs a call the client abandoned during its injected delay. No page is returned and no cache entry is written. The completion log line carries outcome `error` with status 504, the receipt `traceId` and a `cutoffMs` of at most 900 under the 900 ms request deadline (`REQUEST_DEADLINE_MS`), and the client-measured response arrives below 1,000 ms.
+>
 > - AC13: With a stale configuration snapshot, its values applied more than 300 s earlier on the test clock, and the Config stub failing every call, or with a Config latency of 2,000 ms, the AC3 request returns the same six items with `dataStatus` `FRESH`, a `cutoffMs` of at most 900 and a client-measured response below 1,000 ms.
 > - AC14: Every 200 of AC2, AC3, AC5 and AC7 carries `dataStatus` `FRESH` and an `asOf` in RFC 3339 form with microseconds and `Z`, equal to the upstream read time on a miss. With a page held under the AC3 key aged 30 s on the test clock, within its 60 s fresh TTL, the request returns that page with `asOf` equal to the entry's `cachedAt`, and the Transaction Activity stub request log holds zero entries.
 >
@@ -108,7 +125,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit — Applies: `TransactionListServiceTest` covers AC1–AC14 through the account access guard on the loopback stub harness, with per-test latency and failure-rate overrides, test-local scripted registrations, the recording entry store and the test clock. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass; at least 80% line coverage per module.
+- Unit — Applies: `TransactionListServiceTest` covers AC1–AC14 through the account access guard on the loopback stub harness, with per-test latency and failure-rate overrides, test-local scripted registrations, the recording entry store and the test clock. The cases include the upstream `UNAUTHENTICATED` after the allow, with its 401 and its one completion line (AC8); the residual-budget 504 at a 250 ms Auth latency and a 350 ms Transaction Activity latency, with one `ListTransactions` attempt (AC12); the retry backoff as a client-measured total of at least 150 ms at a failure rate of 1.0 (AC10); and, wherever an injected latency outlasts an attempt, each stub request log read only after its delayed calls have closed (AC9–AC12). Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass; at least 80% line coverage per module.
 - Integration — Not applicable — the Transaction Activity integration suite CS-10-007 covers the client this story calls on a real channel. Threshold when it applies: `./gradlew :card-servicing-service:integrationTest` passes, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance — Applies, through the transaction list SLA scenario CS-03-003, including the four filter shapes on account `10000000001`. Commands `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`; p50, p95 and p99 below 1,000 ms over successful requests with failure injection off, at 10 users × 100 sequential calls, 100,000 category balances and 1,000,000 transactions; injected failures proven by a logged `cutoffMs` at most 900 and a client-measured response below 1,000 ms.
 - End-to-end — Applies, through the transaction list end-to-end step CS-03-001 and the paging navigation step CS-03-002. Commands `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:e2eTest`, then `docker compose -f tests/docker-compose.yml down`; the four-step flow for account `00000000001` returns the expected fixture values, and each stub's request log shows at least one call.
@@ -152,7 +169,7 @@ sequenceDiagram
 - Fallback: none for the list, so a failure after the retry rules is final and no held page is served.
 - Provisioning: no new infrastructure, setting or store connection.
 - Cut-over: the real transaction source replaces the stub behind the same client, by target address and credential source only.
-- Failures: an unavailable status after the retry rules gives 503, an exhausted deadline gives 504, an unknown account gives the not-found status and a rejected page token gives the bad-request status.
+- Failures: an unavailable status after the retry rules gives 503, an exhausted deadline gives 504, an unknown account gives the not-found status, a rejected page token gives the bad-request status and an upstream refusal of the forwarded token gives the unauthenticated status, each failure closing the request with one completion line that carries its status.
 
 ### Design Option A — opaque pass-through of the upstream page token
 
@@ -216,6 +233,7 @@ Settled assumptions:
 - The transaction source answers the not-found status for an account with no cross-reference record.
 - The transaction client reads through the cache and raises each final status through the standard error mapping.
 - The access guard allows access before the service runs, under the one request deadline.
+- The transaction client turns an upstream refusal of the forwarded token into the unauthenticated status with no retry.
 - Receipt validation checks the page token shape, version and fingerprint before the access guard runs.
 
 Open assumptions:
@@ -232,11 +250,11 @@ Open assumptions:
 | AC5 | Holds | the source token returns to the caller unchanged |
 | AC6 | Holds | the not-found status ends the request after one attempt |
 | AC7 | Holds | the list makes no reference-data call and an empty page stays empty |
-| AC8 | Holds | the bad-request status keeps its page token detail |
+| AC8 | Holds | each typed failure of the read keeps its status and its details |
 | AC9 | Holds | the call policy cuts each attempt to the time left |
 | AC10 | Holds | the call policy retries only the two retryable statuses after the fit check |
 | AC11 | Holds | the list has no stale path |
-| AC12 | Holds | the access guard fails closed before the service runs |
+| AC12 | Holds | a fail-closed guard and the residual-budget rule bound every access-check and list outcome |
 | AC13 | Holds | the background refresh never blocks the request |
 | AC14 | Holds | the shared resolver reports fresh data with the read or entry time |
 
@@ -248,6 +266,7 @@ Settled assumptions:
 - List pages carry no stale fallback, so every successful page reports fresh data.
 - The transaction source answers the not-found status for an account with no cross-reference record.
 - The access guard allows access before the service runs, under the one request deadline.
+- The transaction client turns an upstream refusal of the forwarded token into the unauthenticated status with no retry.
 
 Open assumptions:
 
@@ -263,11 +282,11 @@ Open assumptions:
 | AC5 | Breaks | the caller receives the wrapped token rather than the source token |
 | AC6 | Holds | the not-found status ends the request after one attempt |
 | AC7 | Holds | the list makes no reference-data call and an empty page stays empty |
-| AC8 | Holds | the bad-request status keeps its page token detail |
+| AC8 | Holds | each typed failure of the read keeps its status and its details |
 | AC9 | Holds | the call policy cuts each attempt to the time left |
 | AC10 | Holds | the call policy retries only the two retryable statuses after the fit check |
 | AC11 | Holds | the list has no stale path |
-| AC12 | Holds | the access guard fails closed before the service runs |
+| AC12 | Holds | a fail-closed guard and the residual-budget rule bound every access-check and list outcome |
 | AC13 | Holds | the background refresh never blocks the request |
 | AC14 | Holds | the shared resolver reports fresh data with the read or entry time |
 

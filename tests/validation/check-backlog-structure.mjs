@@ -5,18 +5,26 @@
  * Run second by tests/validation/run-all.sh as `node tests/validation/check-backlog-structure.mjs`.
  * It reads every file under docs/backlog/epics/ and nothing else, prints one line per
  * violation and the final count through report(), and exits 0 with no violation, 1 with
- * any, and 2 on an internal error. A failing predicate is fixed in the backlog artifact,
- * never by relaxing the predicate.
+ * any, and 2 on a usage error (any argument but --help or -h) or an internal error. It
+ * takes no arguments; --help or -h prints the usage and exits 0 without scanning. A
+ * failing predicate is fixed in the backlog artifact, never by relaxing the predicate.
  *
  * Predicate groups and the gate each one implements:
  *  - S (paths, epic index, epic README records, story part order): the Validation Gate —
  *    structure of "Epic and Story Structure — Multi-File Variant". Only its three path
  *    forms exist under the epics area, every epic folder follows one identifier
- *    convention, carries a README and no subfolder but stories/, every epic README links
- *    every file in its stories/ folder, a story's title KEY equals its filename identifier,
- *    and story parts follow the rule's order. The request's sections 4–7 sit between the
+ *    convention, carries a README and no subfolder but stories/, the epic index is a single
+ *    table listing every epic README exactly once whose ID, Name and Folder cells equal the
+ *    linked epic's folder identifier, README title name and folder, every epic README links
+ *    every file in its stories/ folder and ends with "Owner: TBD" then "Status: TBD", a
+ *    story's title KEY equals its filename identifier, its parent epic line carries the
+ *    epic's README title name and links its README, and story parts follow the rule's
+ *    order. The request's sections 4–7 sit between the
  *    reproduced source body and Implementation Design, and the epic README holds the
- *    request's four epic sections inside the rule's record (the resolved backlog structure).
+ *    request's four epic sections inside the rule's record (the resolved backlog structure),
+ *    each with content: a business justification, requirements as list items carrying their
+ *    traces, criteria numbered 1..n each with text, and dependencies naming each
+ *    prerequisite epic with its producing story edges, or "N/A".
  *  - A (story statement, trace, classification lines, AC1–ACn, authorization and
  *    resilience obligations): the request's story and acceptance-criteria pass/fail lines,
  *    with AC1–ACn numbering from "Enforce Implementation Plan, Epic and Story Structure —
@@ -30,8 +38,11 @@
  *    Implementation Design and Design Validation, and single-clause table cells): the design
  *    voice requirements and content gate of "Enforce Implementation Plan, Epic and Story
  *    Structure — Base".
- *  - M (metadata block last with every field, integer Story Points of 5 or less, integer
- *    Estimated Files Touched, Build wave, Epic Name, Epic Link, Depends on): the metadata
+ *  - M (metadata block last holding each of its 20 fields exactly once and no other field,
+ *    no blank value, Issue Type Story and Priority High as the request supplies them, TBD
+ *    in every field no input supplies, integer Story Points of 5 or less, integer
+ *    Estimated Files Touched, Build wave, Epic Name, Epic Link, and Depends on as None or a
+ *    comma-separated list of distinct identifiers of other existing stories): the metadata
  *    requirements and content gate of "Enforce Implementation Plan, Epic and Story
  *    Structure — Base".
  * The plan-side half of that content gate is check-plan-consistency.mjs.
@@ -53,7 +64,7 @@ import {
   parseLinks,
   resolveLink,
   linkInCell,
-  parseMetadata,
+  metadataEntries,
   intStrict,
   plainText,
   report,
@@ -70,10 +81,10 @@ const STORY_COUNT = 58;
 
 const EPIC_FOLDER_RE = /^CS-(\d{2})-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const STORY_FILE_RE = /^CS-(\d{2})-(\d{3})-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
-const STORY_ID_RE = /CS-\d{2}-\d{3}/g;
+const DEPENDS_ON_ID_RE = /^CS-\d{2}-\d{3}$/;
 const EPIC_TITLE_RE = /^(CS-\d{2}): (.+)$/;
 const STORY_TITLE_RE = /^# (CS-\d{2}-\d{3}): (.+)$/;
-const PARENT_EPIC_RE = /^Parent epic: \[(CS-\d{2}) [^\]]+\]\(([^)]+)\)$/;
+const PARENT_EPIC_RE = /^Parent epic: \[(CS-\d{2}) ([^\]]+)\]\(([^)]+)\)$/;
 const STATEMENT_RE = /^As an? .+, I want .+, so that .+\.$/;
 const TRACE_RE = /^Trace: CARD_REQ_(\d{3}|TBD) · (Use Cases|Data Layouts|Requirements Analysis) · .+$/;
 const ACCESS_LABEL = 'Account-data access path:';
@@ -105,6 +116,28 @@ const METADATA_FIELDS = [
   'Epic Link',
   'Story Points',
   'Priority',
+  'Components',
+  'Fix Version/s',
+  'Team',
+  'Assignee',
+  'Reporter',
+  'Labels',
+  'Sprint',
+  'Due Date',
+  'Environment',
+  'Persona',
+  'Estimated Effort',
+];
+// The metadata requirements of "Enforce Implementation Plan, Epic and Story Structure —
+// Base" carry each input value and write TBD where no input supplies one. The request
+// header supplies Issue Type and Priority; it names no workflow state, component, version,
+// team or person, so these fields are TBD in every story.
+const SUPPLIED_METADATA = new Map([
+  ['Issue Type', 'Story'],
+  ['Priority', 'High'],
+]);
+const TBD_METADATA_FIELDS = [
+  'Status',
   'Components',
   'Fix Version/s',
   'Team',
@@ -373,8 +406,12 @@ function checkPaths(v) {
   return { files: fileSet, epics, storyKeys };
 }
 
-/** Group S: the epic index lists every epic README exactly once. */
-function checkEpicIndex(files, epics, v) {
+/**
+ * Group S: the epic index is one table that lists every epic README exactly once, and each
+ * row names the epic it links by ID, by README title name and by folder. `epicNames` maps
+ * an epic identifier to its README title name.
+ */
+function checkEpicIndex(files, epics, epicNames, v) {
   if (!files.has(INDEX_README)) return;
   const text = readText(INDEX_README);
   const readmeRe = /^docs\/backlog\/epics\/[^/]+\/README\.md$/;
@@ -387,11 +424,31 @@ function checkEpicIndex(files, epics, v) {
     }
     return null;
   };
-  const table = parseTables(text).find((t) => t.rows.some((r) => !isTotalsRow(r) && linkedReadme(r)));
-  if (!table) {
+  const tables = parseTables(text).filter((t) => t.rows.some((r) => !isTotalsRow(r) && linkedReadme(r)));
+  if (tables.length === 0) {
     v.push({ path: INDEX_README, message: 'no table in the epic index links the epic READMEs' });
     return;
   }
+  if (tables.length > 1) {
+    v.push({ path: INDEX_README, line: tables[1].line, message: `epic index holds ${tables.length} tables that link epic READMEs; exactly one index table is allowed` });
+  }
+  const [table] = tables;
+
+  // Identity columns, located by header text; every column under a required header is compared.
+  const columns = (name) => {
+    const found = [];
+    table.header.forEach((cell, k) => {
+      if (plainCell(cell).toLowerCase() === name.toLowerCase()) found.push(k);
+    });
+    if (found.length === 0) v.push({ path: INDEX_README, line: table.line, message: `epic index table has no "${name}" column` });
+    return found;
+  };
+  const idCols = columns('ID');
+  const nameCols = columns('Name');
+  const folderCols = columns('Folder');
+  const epicByReadme = new Map(epics.map((e) => [e.readme, e]));
+  const folderPrefix = `${EPICS_DIR}/`;
+
   const listed = new Map();
   table.rows.forEach((row, i) => {
     if (isTotalsRow(row)) return;
@@ -406,6 +463,35 @@ function checkEpicIndex(files, epics, v) {
       return;
     }
     listed.set(target, (listed.get(target) ?? []).concat(line));
+    const epic = epicByReadme.get(target);
+    if (!epic) return; // its folder is already reported as off-convention
+
+    for (const k of idCols) {
+      const id = plainCell(row[k]);
+      if (id !== epic.id) v.push({ path: INDEX_README, line, message: `epic index row for ${epic.id}: ID "${id}" differs from the folder identifier ${epic.id}` });
+    }
+    const expectedName = epicNames.get(epic.id);
+    if (expectedName !== undefined) {
+      for (const k of nameCols) {
+        const name = plainCell(row[k]);
+        if (name !== expectedName) {
+          v.push({ path: INDEX_README, line, message: `epic index row for ${epic.id}: Name "${name}" differs from the epic README title name "${expectedName}"` });
+        }
+      }
+    }
+    for (const k of folderCols) {
+      const shown = plainCell(row[k]);
+      let folder = shown.endsWith('/') ? shown.slice(0, -1) : shown;
+      if (folder.startsWith(folderPrefix)) folder = folder.slice(folderPrefix.length);
+      if (folder !== epic.folder) {
+        v.push({ path: INDEX_README, line, message: `epic index row for ${epic.id}: Folder "${shown}" differs from the epic folder ${epic.folder}/` });
+      }
+      const link = linkInCell(row[k]);
+      const linkTarget = link ? resolveLink(INDEX_README, link.target).path : null;
+      if (linkTarget !== null && linkTarget !== target) {
+        v.push({ path: INDEX_README, line, message: `epic index row for ${epic.id}: Folder cell links ${linkTarget}, not the row's epic README ${target}` });
+      }
+    }
   });
   for (const epic of epics) {
     if (!files.has(epic.readme)) continue;
@@ -447,6 +533,136 @@ function checkEpicReadme(epic, v) {
     );
     if (sentence === '') v.push({ path: rel, line: goal.startLine, message: 'Goal is empty; it states the epic goal in one sentence' });
     else if (hasSecondSentence(sentence)) v.push({ path: rel, line: goal.startLine, message: 'Goal holds more than one sentence' });
+  }
+
+  // The request's four epic sections hold content, not only their headings, and the README
+  // covers the epic's acceptance criteria as "Epic and Story Structure — Multi-File Variant"
+  // requires. The resolved backlog structure sets each section's form: requirements are list
+  // items carrying their traces, criteria are numbered 1..n, and Dependencies lists the
+  // prerequisite epics, each with its producing story edges, or reads "N/A". Whether those
+  // entries equal the epic-dependency table is check-dependency-order.mjs's predicate.
+  const LIST_ITEM_RE = /^( {0,3})([-*+]|\d{1,9}[.)])(?:([ \t]+)(.*))?$/;
+  const HEADING_LINE_RE = /^ {0,3}#{1,6}(?:[ \t]|$)/;
+  const TRACE_LABEL_RE = /(?<![\p{L}\p{N}_])Trace:/u;
+  const EPIC_REF_RE = /(?<![\w-])CS-\d{2}(?![\w-])/g;
+  const STORY_EDGE_RE = /(?<![\w-])CS-\d{2}-\d{3}\s*(?:→|->)\s*CS-\d{2}-\d{3}(?![\w-])/;
+  const hasText = (s) => /[\p{L}\p{N}]/u.test(plainText(s));
+  // Content lines of one H2 section with document line numbers, blank and fenced lines left
+  // out. A list item gathers its continuation lines: lazy lines straight after it, lines
+  // indented to its content after a gap, and nested items. Other lines are headings or loose.
+  const requestSection = (sectionName) => {
+    const section = h2Section(text, sectionName);
+    if (!section) return null;
+    const fences = fenceLineSet(section.text);
+    const content = [];
+    const items = [];
+    let item = null;
+    let afterGap = false;
+    splitLines(section.text).forEach((raw, k) => {
+      // Line k + 1 of the section text is document line section.startLine + k; line 1 is the heading.
+      if (k === 0) return;
+      if (raw.trim() === '' || fences.has(k + 1)) {
+        afterGap = true;
+        return;
+      }
+      const line = section.startLine + k;
+      const indent = raw.length - raw.trimStart().length;
+      const marker = LIST_ITEM_RE.exec(raw);
+      let kind;
+      if (HEADING_LINE_RE.test(raw)) {
+        item = null;
+        kind = 'heading';
+      } else if (marker && !(item && indent >= item.contentIndent)) {
+        const spaces = (marker[3] ?? ' ').length;
+        item = {
+          line,
+          number: /^\d/.test(marker[2]) ? Number.parseInt(marker[2], 10) : null,
+          text: marker[4] ?? '',
+          contentIndent: marker[1].length + marker[2].length + (spaces <= 4 ? spaces : 1),
+        };
+        items.push(item);
+        kind = 'item';
+      } else if (item && (!afterGap || indent >= item.contentIndent)) {
+        item.text += ` ${raw.trim()}`;
+        kind = 'continuation';
+      } else {
+        item = null;
+        kind = 'loose';
+      }
+      content.push({ line, raw, kind, item: kind === 'item' ? item : null });
+      afterGap = false;
+    });
+    return { section, content, items };
+  };
+
+  const justification = requestSection('Business Justification');
+  if (justification && !justification.content.some((c) => c.kind !== 'heading' && hasText(normaliseLabel(c.raw)))) {
+    v.push({ path: rel, line: justification.section.startLine, message: 'Business Justification is empty; it states why the epic is built' });
+  }
+
+  const requirements = requestSection('Requirements');
+  if (requirements) {
+    if (requirements.items.length === 0) {
+      v.push({ path: rel, line: requirements.section.startLine, message: 'Requirements lists no requirement; each requirement is a list item carrying its trace' });
+    }
+    for (const req of requirements.items) {
+      const plain = normaliseSpace(req.text.replace(/`/g, ''));
+      const at = plain.search(TRACE_LABEL_RE);
+      if (at < 0) {
+        v.push({ path: rel, line: req.line, message: 'Requirements item carries no "Trace:"; each requirement carries its trace' });
+      } else if (!TRACE_RE.test(plain.slice(at))) {
+        v.push({ path: rel, line: req.line, message: `Requirements item trace "${plain.slice(at)}" does not take the trace form of the stories, "Trace: CARD_REQ_<id> · <document> · <anchor>"` });
+      } else if (!hasText(plain.slice(0, at))) {
+        v.push({ path: rel, line: req.line, message: 'Requirements item holds a trace but no requirement' });
+      }
+    }
+  }
+
+  const criteria = requestSection('Acceptance Criteria');
+  if (criteria) {
+    for (const c of criteria.content) {
+      if (c.kind === 'heading' || c.kind === 'loose' || (c.kind === 'item' && c.item.number === null)) {
+        v.push({ path: rel, line: c.line, message: 'Acceptance Criteria line is not part of a numbered criterion; each criterion is a numbered list item' });
+      }
+    }
+    const numbered = criteria.items.filter((c) => c.number !== null);
+    if (numbered.length === 0) {
+      v.push({ path: rel, line: criteria.section.startLine, message: 'Acceptance Criteria lists no numbered criterion; the epic README covers its acceptance criteria' });
+    }
+    const outOfSequence = numbered.findIndex((c, k) => c.number !== k + 1);
+    if (outOfSequence >= 0) {
+      const c = numbered[outOfSequence];
+      v.push({ path: rel, line: c.line, message: `Acceptance Criteria item is numbered ${c.number} where ${outOfSequence + 1} is next; criteria run 1..n in order with no gap or duplicate` });
+    }
+    for (const c of numbered) {
+      if (!hasText(c.text)) v.push({ path: rel, line: c.line, message: `Acceptance Criteria item ${c.number} has no text` });
+    }
+  }
+
+  const dependencies = requestSection('Dependencies');
+  if (dependencies) {
+    const shape = 'it lists the prerequisite epics, each with its producing story edges, or reads "N/A"';
+    const body = dependencies.content.filter((c) => c.kind !== 'heading');
+    const notApplicable = dependencies.content.filter((c) => plainText(normaliseLabel(c.raw)) === 'N/A');
+    if (body.length === 0) {
+      v.push({ path: rel, line: dependencies.section.startLine, message: `Dependencies is empty; ${shape}` });
+    } else if (notApplicable.length > 0) {
+      if (dependencies.content.length > 1) {
+        v.push({ path: rel, line: notApplicable[0].line, message: `Dependencies mixes "N/A" with other content; ${shape}` });
+      }
+    } else if (dependencies.items.length === 0) {
+      v.push({ path: rel, line: dependencies.section.startLine, message: `Dependencies lists no entry; ${shape}` });
+    } else {
+      for (const entry of dependencies.items) {
+        const plain = normaliseSpace(plainText(entry.text));
+        if (!(plain.match(EPIC_REF_RE) ?? []).some((id) => id !== epic.id)) {
+          v.push({ path: rel, line: entry.line, message: 'Dependencies entry names no prerequisite epic "CS-NN"' });
+        }
+        if (!STORY_EDGE_RE.test(plain)) {
+          v.push({ path: rel, line: entry.line, message: 'Dependencies entry carries no producing story edge "CS-NN-NNN → CS-NN-NNN"' });
+        }
+      }
+    }
   }
 
   const stories = h2Section(text, 'Stories');
@@ -497,17 +713,20 @@ function checkEpicReadme(epic, v) {
   const tableEnd = toDoc(table.rowLines.length ? table.rowLines[table.rowLines.length - 1] : table.line + 1);
   const nonBlank = lines.map((l, i) => ({ text: normaliseLabel(l), line: i + 1 })).filter((l) => l.text !== '');
   const [owner, status] = nonBlank.slice(-2);
-  if (!owner || !/^Owner:\s*\S/.test(owner.text) || owner.line <= tableEnd) {
-    v.push({ path: rel, line: owner?.line, message: 'the line before the last non-blank line must be "Owner: <value>", after the Stories table' });
+  // No input names an epic owner or a workflow state, so both carry TBD: any other owner
+  // is one that "Enforce Implementation Plan, Epic and Story Structure — Base" calls invented.
+  const found = (l) => (l ? `; found "${l.text}"` : '');
+  if (!owner || owner.text !== 'Owner: TBD' || owner.line <= tableEnd) {
+    v.push({ path: rel, line: owner?.line, message: `the line before the last non-blank line must be "Owner: TBD", after the Stories table${found(owner)}` });
   }
-  if (!status || !/^Status:\s*\S/.test(status.text) || status.line <= tableEnd) {
-    v.push({ path: rel, line: status?.line, message: 'the last non-blank line must be "Status: <value>", after the Stories table' });
+  if (!status || status.text !== 'Status: TBD' || status.line <= tableEnd) {
+    v.push({ path: rel, line: status?.line, message: `the last non-blank line must be "Status: TBD", after the Stories table${found(status)}` });
   }
   return name;
 }
 
-/** Group S: title line and parent epic line. */
-function checkTitleAndParent(story, lines, v) {
+/** Group S: title line and parent epic line, whose epic name equals the epic README title name. */
+function checkTitleAndParent(story, lines, ctx, v) {
   const nonBlank = lines.map((l, i) => ({ text: l.trim(), line: i + 1 })).filter((l) => l.text !== '');
   const [title, parent] = nonBlank;
   const titleMatch = title ? STORY_TITLE_RE.exec(title.text) : null;
@@ -524,7 +743,12 @@ function checkTitleAndParent(story, lines, v) {
   if (parentMatch[1] !== story.epic.id) {
     v.push({ path: story.rel, line: parent.line, message: `parent epic line names ${parentMatch[1]}, not the folder's epic ${story.epic.id}` });
   }
-  if (resolveLink(story.rel, parentMatch[2]).path !== story.epic.readme) {
+  const parentName = normaliseSpace(parentMatch[2]);
+  const expectedName = ctx.epicNames.get(story.epic.id);
+  if (expectedName !== undefined && parentName !== expectedName) {
+    v.push({ path: story.rel, line: parent.line, message: `parent epic line names the epic "${parentName}", not the epic README title name "${expectedName}"` });
+  }
+  if (resolveLink(story.rel, parentMatch[3]).path !== story.epic.readme) {
     v.push({ path: story.rel, line: parent.line, message: `parent epic link does not resolve to ${story.epic.readme}` });
   }
 }
@@ -864,48 +1088,97 @@ function checkVoiceSection(story, section, fences, v) {
   }
 }
 
-/** Group M: every metadata field present, with valid points, files touched, wave, epic and dependencies. */
+/**
+ * Group M: the metadata block holds each field once and no other field, every value is
+ * non-blank, the supplied values and TBD defaults hold, and points, files touched, wave,
+ * epic and dependencies are valid. A finding about a value names the line that gives it.
+ */
 function checkMetadata(story, text, ctx, v) {
   const rel = story.rel;
   const section = h2Section(text, 'Metadata');
   if (!section) return;
-  const where = { path: rel, line: section.startLine };
-  const meta = parseMetadata(section.text);
-  const value = (field) => {
-    const key = normaliseSpace(field).toLowerCase();
-    return Object.prototype.hasOwnProperty.call(meta, key) ? plainCell(meta[key]) : null;
-  };
+  const fieldByKey = new Map(METADATA_FIELDS.map((field) => [normaliseSpace(field).toLowerCase(), field]));
+  // The first entry of each field is the one read; a repeat is reported at its own line.
+  const first = new Map();
+  for (const entry of metadataEntries(section.text)) {
+    const line = section.startLine + entry.line - 1;
+    const field = fieldByKey.get(entry.key);
+    if (field === undefined) {
+      v.push({ path: rel, line, message: `unexpected metadata field "${entry.key}"; the metadata block holds only ${METADATA_FIELDS.join(', ')}` });
+    } else if (first.has(field)) {
+      v.push({ path: rel, line, message: `metadata field "${field}" is given again; it is first given at line ${first.get(field).line}` });
+    } else {
+      first.set(field, { line, value: plainCell(entry.value) });
+    }
+  }
+  // A missing or blank field is reported once here; the value checks read only the rest.
+  const given = new Map();
   for (const field of METADATA_FIELDS) {
-    if (value(field) === null) v.push({ ...where, message: `metadata field "${field}" is missing` });
+    const entry = first.get(field);
+    if (!entry) v.push({ path: rel, line: section.startLine, message: `metadata field "${field}" is missing` });
+    else if (entry.value === '') v.push({ path: rel, line: entry.line, message: `metadata field "${field}" has no value` });
+    else given.set(field, entry);
+  }
+  const value = (field) => (given.has(field) ? given.get(field).value : null);
+  const at = (field) => ({ path: rel, line: given.get(field).line });
+
+  for (const [field, expected] of SUPPLIED_METADATA) {
+    const actual = value(field);
+    if (actual !== null && actual !== expected) {
+      v.push({ ...at(field), message: `${field} "${actual}" is not ${expected}, the value the request supplies` });
+    }
+  }
+  for (const field of TBD_METADATA_FIELDS) {
+    const actual = value(field);
+    if (actual !== null && actual !== 'TBD') {
+      v.push({ ...at(field), message: `${field} "${actual}" is not TBD; no input supplies a value for it` });
+    }
   }
 
   const points = value('Story Points');
   if (points !== null) {
     const n = intStrict(points);
-    if (n === null || n < 1 || n > 5) v.push({ ...where, message: `Story Points "${points}" is not an integer from 1 to 5` });
+    if (n === null || n < 1 || n > 5) v.push({ ...at('Story Points'), message: `Story Points "${points}" is not an integer from 1 to 5` });
   }
   const files = value('Estimated Files Touched');
   if (files !== null && intStrict(files) === null) {
-    v.push({ ...where, message: `Estimated Files Touched "${files}" is not a single integer` });
+    v.push({ ...at('Estimated Files Touched'), message: `Estimated Files Touched "${files}" is not a single integer` });
   }
   const wave = value('Build wave');
-  if (wave !== null && !WAVES.has(wave)) v.push({ ...where, message: `Build wave "${wave}" is not one of W0, W1, W2, W3` });
+  if (wave !== null && !WAVES.has(wave)) v.push({ ...at('Build wave'), message: `Build wave "${wave}" is not one of W0, W1, W2, W3` });
 
   const epicLink = value('Epic Link');
   if (epicLink !== null && epicLink !== story.epic.id) {
-    v.push({ ...where, message: `Epic Link "${epicLink}" differs from the parent epic ${story.epic.id}` });
+    v.push({ ...at('Epic Link'), message: `Epic Link "${epicLink}" differs from the parent epic ${story.epic.id}` });
   }
   const epicName = value('Epic Name');
   const expectedName = ctx.epicNames.get(story.epic.id);
   if (epicName !== null && expectedName && epicName !== expectedName) {
-    v.push({ ...where, message: `Epic Name "${epicName}" differs from the epic README title "${expectedName}"` });
+    v.push({ ...at('Epic Name'), message: `Epic Name "${epicName}" differs from the epic README title "${expectedName}"` });
   }
 
+  // Depends on is exactly None or a comma-separated list of distinct story identifiers.
+  // Each member is matched whole, so text beside an identifier is reported, never dropped.
   const dependsOn = value('Depends on');
   if (dependsOn !== null && dependsOn !== 'None') {
-    const ids = dependsOn.match(STORY_ID_RE) ?? [];
-    if (ids.length === 0) v.push({ ...where, message: `Depends on "${dependsOn}" is neither None nor a list of story identifiers` });
-    for (const id of new Set(ids)) {
+    const where = at('Depends on');
+    const ids = new Set();
+    dependsOn.split(',').forEach((raw, k) => {
+      const member = raw.trim();
+      const position = `member ${k + 1} of Depends on "${dependsOn}"`;
+      if (member === '') {
+        v.push({ ...where, message: `${position} is empty (a leading, trailing or doubled comma)` });
+      } else if (member === 'None') {
+        v.push({ ...where, message: `${position} is None inside a list; None stands alone, never beside story identifiers` });
+      } else if (!DEPENDS_ON_ID_RE.test(member)) {
+        v.push({ ...where, message: `${position} is "${member}", not a story identifier CS-NN-NNN; the value is None or story identifiers separated by commas` });
+      } else if (ids.has(member)) {
+        v.push({ ...where, message: `${position} repeats ${member}` });
+      } else {
+        ids.add(member);
+      }
+    });
+    for (const id of ids) {
       if (id === story.key) v.push({ ...where, message: `Depends on names the story itself (${id})` });
       else if (!ctx.storyKeys.has(id)) v.push({ ...where, message: `Depends on names ${id}, which has no story file` });
     }
@@ -918,7 +1191,7 @@ function checkStory(story, ctx, v) {
   const lines = splitLines(text);
   const fences = fenceLineSet(text);
 
-  checkTitleAndParent(story, lines, v);
+  checkTitleAndParent(story, lines, ctx, v);
   const h2 = parseHeadings(text).filter((h) => !h.quoted && h.level === 2);
   checkHeadingSequence(h2, STORY_SECTIONS, story.rel, '##', v);
   if (h2.some((h) => normaliseSpace(h.text) === 'Metadata') && normaliseSpace(h2[h2.length - 1].text) !== 'Metadata') {
@@ -945,13 +1218,13 @@ function checkStory(story, ctx, v) {
 function main() {
   const v = [];
   const { files, epics, storyKeys } = checkPaths(v);
-  checkEpicIndex(files, epics, v);
   const epicNames = new Map();
   for (const epic of epics) {
     if (!files.has(epic.readme)) continue;
     const name = checkEpicReadme(epic, v);
     if (name !== null) epicNames.set(epic.id, name);
   }
+  checkEpicIndex(files, epics, epicNames, v);
   const ctx = { storyKeys, epicNames };
   for (const epic of epics) {
     for (const story of epic.stories) checkStory(story, ctx, v);
@@ -959,8 +1232,45 @@ function main() {
   report(CHECK, v);
 }
 
+const HELP_FLAGS = new Set(['--help', '-h']);
+const USAGE = `Usage: node tests/validation/check-backlog-structure.mjs [--help | -h]
+
+Checks the backlog structure and story content under ${EPICS_DIR}/. It takes no
+arguments: --help or -h prints this message and exits 0 without scanning, and any other
+argument is a usage error. It runs from any directory, because every path resolves
+against the repository root derived from this script's own location.
+
+It scans every file and folder under ${EPICS_DIR}/ and nothing else: the epic
+index ${INDEX_README}, each epic folder's README.md and the story files in
+its stories/ folder. It never reads app/, diagrams/ or samples/.
+
+Output on stdout, one line per violation, then the count:
+  ${CHECK}: <path>[:<line>]: <message>
+  ${CHECK}: <N> violation(s)
+
+Exit status: 0 with no violation, 1 with one or more, 2 on a usage or internal error.`;
+
+/**
+ * The command-line contract, applied before any scan. With no argument the scan runs.
+ * Help flags alone print the usage on stdout. Any other argument, alone or beside a help
+ * flag, is a usage error: it is named on stderr with the usage, and the exit status is 2.
+ * Returns true only when the scan should run.
+ */
+function acceptArguments(args) {
+  if (args.length === 0) return true;
+  const unknown = args.filter((arg) => !HELP_FLAGS.has(arg));
+  if (unknown.length === 0) {
+    console.log(USAGE);
+  } else {
+    console.error(`${CHECK}: unknown argument(s): ${unknown.map((arg) => JSON.stringify(arg)).join(', ')}`);
+    console.error(USAGE);
+    process.exitCode = 2;
+  }
+  return false;
+}
+
 try {
-  main();
+  if (acceptArguments(process.argv.slice(2))) main();
 } catch (err) {
   console.error(`${CHECK}: internal error`);
   console.error(err && err.stack ? err.stack : String(err));

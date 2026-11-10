@@ -820,18 +820,9 @@ function metadataKey(raw) {
     .toLowerCase();
 }
 
-/**
- * Metadata fields of a section as a plain object keyed by the lower-cased, whitespace-
- * collapsed field name (`'estimated files touched'`, `'fix version/s'`), valued by the
- * trimmed raw text. Line forms: `- **Field:** v`, `* **Field:** v`, `- **Field**: v`,
- * `- Field: v`, `**Field:** v` and `Field: v`; table form: every table of two or more
- * columns maps its first cell to its second. Fenced code, headings and table lines are
- * not read as line forms. The first occurrence of a key in document order wins.
- * @param {string} sectionText
- * @returns {Record<string, string>}
- */
-export function parseMetadata(sectionText) {
-  const lines = splitLines(asText(sectionText, 'parseMetadata'));
+/** The field entries of metadataEntries; `fn` names the public caller in a type error. */
+function collectMetadataEntries(sectionText, fn) {
+  const lines = splitLines(asText(sectionText, fn));
   const mask = fenceMask(lines);
   const entries = [];
   const tableLines = new Set();
@@ -856,9 +847,37 @@ export function parseMetadata(sectionText) {
     if (plain) entries.push({ line: i + 1, key: metadataKey(plain[1]), value: plain[2].trim() });
   }
   entries.sort((a, b) => a.line - b.line);
+  return entries.filter((entry) => entry.key !== '');
+}
+
+/**
+ * Every metadata field entry of a section, in document line order, repeated keys
+ * included, so a caller can see a field given twice or a field outside its expected set.
+ * `line` is 1-based within sectionText, `key` the lower-cased, whitespace-collapsed field
+ * name (`'estimated files touched'`, `'fix version/s'`) and `value` the trimmed raw text.
+ * Line forms: `- **Field:** v`, `* **Field:** v`, `- **Field**: v`, `- Field: v`,
+ * `**Field:** v` and `Field: v`; table form: every body row of a table of two or more
+ * columns maps its first cell to its second. Fenced code, headings and table lines are not
+ * read as line forms, and an entry whose key is empty is dropped.
+ * @param {string} sectionText
+ * @returns {{ line: number, key: string, value: string }[]}
+ */
+export function metadataEntries(sectionText) {
+  return collectMetadataEntries(sectionText, 'metadataEntries');
+}
+
+/**
+ * Metadata fields of a section as a plain object built from metadataEntries: keyed by the
+ * lower-cased, whitespace-collapsed field name and valued by the trimmed raw text, with the
+ * same line and table forms. The first occurrence of a key in document order wins; a
+ * later repeat is visible only through metadataEntries.
+ * @param {string} sectionText
+ * @returns {Record<string, string>}
+ */
+export function parseMetadata(sectionText) {
   const out = {};
-  for (const { key, value } of entries) {
-    if (key === '' || Object.prototype.hasOwnProperty.call(out, key)) continue;
+  for (const { key, value } of collectMetadataEntries(sectionText, 'parseMetadata')) {
+    if (Object.prototype.hasOwnProperty.call(out, key)) continue;
     // defineProperty keeps a key such as "__proto__" an own data property.
     Object.defineProperty(out, key, { value, enumerable: true, writable: true, configurable: true });
   }

@@ -120,7 +120,7 @@ sequenceDiagram
     participant Client as Card servicing client
     participant Stub as Transaction activity stub
     participant Store as Relational store
-    Note over Stub,Store: Before each row read the stub confirms the account's cross-reference record
+    Note over Stub,Store: Before each row read the stub<br/>confirms the account's cross-reference record
     Client->>Stub: List one account, page size two
     Stub->>Store: Read the three newest rows of the account
     Store-->>Stub: Three rows

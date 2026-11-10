@@ -70,6 +70,7 @@ Parent epic: [CS-10 Transaction Activity Integration](../README.md)
 > - AC1: Timeout: each `ListTransactions` and `GetTransaction` attempt times out at the lesser of 300 ms (`UPSTREAM_TIMEOUT_MS`) and the time left before the cut-off of the 900 ms request deadline (`REQUEST_DEADLINE_MS`). With a per-test stub latency of 400 ms (`STUB_LATENCY_MS`) on stub `transaction-activity` and a fresh 900 ms budget, the first attempt of each operation ends with `DEADLINE_EXCEEDED` between 300 and 330 ms after it starts. With the same latency and 200 ms of budget left at call start, the attempt ends with `DEADLINE_EXCEEDED` no later than 230 ms after the call starts.
 > - AC2: Retry: on `UNAVAILABLE` or `DEADLINE_EXCEEDED` only, the client retries at most 2 times (`UPSTREAM_MAX_RETRIES`), waiting 50 ms before the first retry and 100 ms before the second, and starts a retry only when its backoff plus a full 300 ms attempt fits in the remaining budget. With a per-test failure rate of 1.0 (`STUB_FAILURE_RATE`), one call of each operation shows exactly 3 attempts in the stub request log and returns no earlier than 150 ms after it starts, the 50 ms and 100 ms backoff waits between attempts that fail at once.
 > - AC3: Fail hard on unavailable: a test request starts a 900 ms `RequestDeadline`, places a test `traceId` in the logging context and marks the cut-off when the call returns. With failure rate 1.0 and no cached entry, one call of each operation shows exactly 3 attempts in the stub request log and ends with the `UNAVAILABLE` failure, which the standard error mapping renders as 503. The client's warning line carries that `traceId`, the completion line logs `cutoffMs` ≤ 900, and the time the test measures from the deadline's start to the outcome is below 1,000 ms.
+>   > SCOPE-QUESTION (Resolved): Which step writes the completion line whose `cutoffMs` AC3 and AC4 assert, when the AC3 test request only starts the `RequestDeadline` and marks its cut-off? CS-11-003 keeps the two steps apart: marking records the cut-off, and completion writes the one structured line carrying `traceId`, the outcome with its response status and `cutoffMs`, while no endpoint takes part in these direct-client tests. The test helper, in test code only, marks the cut-off when the call returns or throws and then completes the deadline exactly once per test request, in a cleanup step that also runs when the call throws, while the test `traceId` is still in the logging context and before the test reads the completion line. Each operation's call is its own test request, as the AC4 attempt arithmetic, which gives each call the full 900 ms, requires. The helper completes with outcome `full` and status 200 for a `FRESH` result, `degraded` and status 200 for a `STALE` result, and `error` with the status the standard error mapping (CS-05-002) gives the raised failure: 503 for `UNAVAILABLE` and 504 for `DEADLINE_EXCEEDED`. Each test request therefore yields exactly one completion line, carrying the test `traceId` and `cutoffMs`. The client writes no completion line and gains no completion step: completion stays with the endpoint stories (CS-07-002, CS-08-002) and, in these tests, with the test request.
 > - AC4: Fail hard on deadline: with a per-test stub latency of 400 ms and no cached entry, the AC3 test request shows exactly 2 attempts for one call of each operation (300 + 50 + 300 = 650 ms, then 100 + 300 > 250) and ends with the `DEADLINE_EXCEEDED` failure, rendered as 504, with a logged `cutoffMs` ≤ 900 and a test-measured outcome below 1,000 ms.
 > - AC5: List page never stale: with failure rate 1.0 and a page held under `cs:v1:transaction-page:00000000001:2:~:~:~` aged 60 s or 120 s on the test clock, `transactions` for account `00000000001` at page size 2 with no filters and no token ends with the `UNAVAILABLE` failure (503) after exactly 3 attempts, returns no page and leaves the held entry unrewritten. With the AC4 latency of 400 ms in place of the failure rate, it ends with the `DEADLINE_EXCEEDED` failure (504) in the same way.
 > - AC6: Detail degrade or fail hard, per the `GetTransaction` row of the TRD degradation table: with failure rate 1.0 and a detail entry for `0000000776200014` held aged 60 s or 299 s on the test clock, `transaction` returns the held transaction marked `STALE` with its original `cachedAt` after exactly 3 attempts, and the entry is not rewritten. With the 400 ms latency the same holds after exactly 2 attempts. With the entry aged 300 s or more, or none held, the call ends with the `UNAVAILABLE` failure (503) or the `DEADLINE_EXCEEDED` failure (504) and returns no transaction.
@@ -135,7 +136,7 @@ sequenceDiagram
         Stub-->>Service: list page
         Service->>Cache: store page with its cached time
     else retries exhausted or deadline reached
-        Service->>Service: fail hard with unavailable or deadline-exceeded status, no stale page served
+        Service->>Service: fail hard with unavailable or<br/>deadline-exceeded status,<br/>no stale page served
     end
 ```
 
@@ -152,7 +153,7 @@ sequenceDiagram
 
 ### Design Option A — detail entries and list pages under separate key families
 
-The client keeps two key families in the shared cache. A detail entry is keyed by the transaction identifier alone, and a list page by the account, the page size, the page token and both filters. Both families stay fresh for one minute, and only the detail family keeps a five-minute stale window for outages.
+The client keeps two key families in the shared cache. A detail entry is keyed by the transaction identifier alone, and a list page by the account, the page size, the page token and both filters. Both families stay fresh for one minute, and only the detail family keeps a four-minute stale window for outages, ending at its five-minute maximum stale age.
 
 How it behaves:
 
@@ -173,7 +174,7 @@ Effort and risk: moderate effort, low risk.
 
 ### Design Option B — detail entries only
 
-Only detail entries are cached, under the same family, freshness window and stale window as Option A. Every list page, repeat pages included, calls the Transaction Activity stub. The cache footprint stays small.
+Only detail entries are cached, under the same family, freshness window and maximum stale age as Option A. Every list page, repeat pages included, calls the Transaction Activity stub. The cache footprint stays small.
 
 How it differs:
 
@@ -186,7 +187,7 @@ How it differs:
 |---|---|---|---|
 | 1 | No list-page cache (vs a list-page family) | the cache holds no page entries | every repeat page costs a remote call |
 | 2 | Detail entries in their own family (vs no cache) | a repeat detail read skips the remote call | one key family to maintain |
-| 3 | Detail stale window kept (vs fail hard) | a short outage still shows a transaction | a stale detail can be five minutes old |
+| 3 | Detail stale window kept (vs fail hard) | a short outage still shows a transaction | a stale detail can be nearly five minutes old |
 
 Effort and risk: small effort, at risk on the stage budget for repeat paging.
 
@@ -205,7 +206,7 @@ Effort and risk: small effort, at risk on the stage budget for repeat paging.
 Settled assumptions:
 
 - The call policy and the request deadline exist from the call policy story.
-- The read-through cache treats a cache failure as a miss and serves no stale entry for a family whose stale window equals its freshness window.
+- The read-through cache treats a cache failure as a miss and serves no stale entry for a family whose maximum stale age equals its freshness window, which leaves that family no stale window.
 - The degradation table gives the list no stale path and the detail a stale path within its maximum stale age.
 - This story fixes a one-minute freshness window for both families and a five-minute maximum stale age for detail entries.
 - The transport writes header values only through its frame logger, which a process-wide guard silences below the information level.
@@ -222,7 +223,7 @@ Open assumptions:
 | AC3 | Holds | with no usable entry the final unavailable status fails the call |
 | AC4 | Holds | the fit check stops the third attempt before the cut-off |
 | AC5 | Holds | the list family has no stale window |
-| AC6 | Holds | the detail family keeps a five-minute stale window |
+| AC6 | Holds | the detail family serves a held entry as stale until its five-minute maximum stale age |
 | AC7 | Holds | the not-found status ends the call after one attempt |
 | AC8 | Holds | the invalid-argument status keeps its page token field |
 | AC9 | Holds | both families answer fresh entries with no remote call |

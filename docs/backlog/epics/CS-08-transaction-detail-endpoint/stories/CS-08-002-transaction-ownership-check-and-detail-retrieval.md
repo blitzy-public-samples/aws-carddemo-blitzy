@@ -31,6 +31,7 @@ Parent epic: [CS-08 Transaction Detail Endpoint](../README.md)
 >   - Any other typed failure either client raises passes through with its own status. Every failure is a typed failure of the CS-05-002 code table, which the standard error handler renders with the `traceId` issued at receipt.
 >   - It resolves `dataStatus` and `asOf` through `card-servicing-service/src/main/java/com/example/cardservicing/integration/support/DataStatusResolver.java` (CS-05-005) from the two sources used: an upstream read contributes its read time and a cache entry its `cachedAt`, so a transaction from a fresh or stale cache entry sets `asOf` to that entry's `cachedAt`. Only `FRESH` and `STALE` occur, because this endpoint reads no descriptions, and Config outcomes never reach the resolver.
 >   - It completes the deadline exactly once, with outcome `full` for `FRESH`, `degraded` for `STALE`, and `error` with the response status for 404, 503 or 504, so the completion line carries `cutoffMs`, the outcome and the `traceId`.
+>     > SCOPE-QUESTION (Resolved): The completion rule above names 404, 503 and 504 only, while the typed-failure rule above it passes every other typed failure through with its own status. `TransactionActivityService.GetTransaction` and `CardDataService.GetCardCrossReference` both declare `INVALID_ARGUMENT` and `UNAUTHENTICATED`: the Transaction Activity client's status rules turn them into 400 and 401 (CS-10-006), and the Card Data client passes the final status unchanged (CS-09-005). Both arrive after the guard has allowed access, so the guard's rejection completion (CS-12-003) never runs for them, and the adapters complete nothing (CS-08-003). The service therefore completes the deadline exactly once for every status it returns: `full` for `FRESH`, `degraded` for `STALE`, and `error` with the response status for every propagated typed failure, 400 `INVALID_ARGUMENT` and 401 `UNAUTHENTICATED` from either read included, besides 404, 503 and 504. Each such completion line carries `cutoffMs`, the outcome and the receipt `traceId`.
 >   - It opens no store connection and holds no Redis client: Redis is reached only through `ReadThroughCache` inside the Transaction Activity client, and data only through the two gRPC clients.
 > - `card-servicing-service/src/main/java/com/example/cardservicing/drill/TransactionDetailResult.java` is the result: `accountId`, the transaction with every field of the `Transaction` message in `card-servicing-service/src/main/proto/cardservicing/api/v1/card_servicing_service.proto`, `dataStatus`, and `asOf` in RFC 3339 with microseconds and `Z`. Amounts stay the scale-2 decimal strings the contracts carry.
 > - Test: `card-servicing-service/src/test/java/com/example/cardservicing/drill/TransactionDetailServiceTest.java` sends each test request through the account access guard and then the service, as the endpoints will (CS-08-003).
@@ -64,7 +65,9 @@ Parent epic: [CS-08 Transaction Detail Endpoint](../README.md)
 > - AC4: Transaction `9999999999999999` under account `00000000001` returns 404 `NOT_FOUND` with `message` "Transaction not found", and the Transaction Activity stub request log shows exactly one `GetTransaction` call, because `NOT_FOUND` is not retried.
 > - AC5: With 200 ms injected latency on both the Transaction Activity and Card Data stubs, the Auth stub at zero latency and an empty cache, the request returns 200 with `dataStatus` `FRESH` and a logged `cutoffMs` below 400, while the two reads run in sequence would take at least 400 ms. This proves the two Stage 3 reads run concurrently.
 > - AC6: Each `GetTransaction` and `GetCardCrossReference` attempt times out at the lesser of 300 ms (`UPSTREAM_TIMEOUT_MS`) and the budget left before the cut-off. With 350 ms latency on both the Transaction Activity and Card Data stubs, an empty cache and healthy Auth, each stub request log records every attempt ending within 30 ms after that lesser value and shows exactly 2 attempts, and the request returns 504 `DEADLINE_EXCEEDED`.
+>   > SCOPE-QUESTION (Resolved): A stub request log cannot show where the client ends an attempt. Its duration runs from receipt to close, and the failure injector holds each call for the full injected 350 ms before it checks for cancellation and records `CANCELLED` (CS-11-002), so each entry of an attempt the client ended at 300 ms still reads at least 350 ms. The injector also wraps the stub's whole service definition, so no interceptor inside a registration sees a call during an injected delay. AC6 therefore reads as follows. With 350 ms injected latency on both the Transaction Activity and Card Data stubs, an empty cache and healthy Auth, the request returns 504 `DEADLINE_EXCEEDED`, the logged `cutoffMs` is at least 650 (300 + 50 + 300) and at most 900, and the client-measured response arrives below 1,000 ms. Each stub request log, read only once every 350 ms delay has elapsed, holds exactly 2 entries for its operation, each with outcome `CANCELLED`, and log durations are not the timing measure. The per-attempt bound is measured where the client ends each attempt. A test-local `StubRegistration` under each stub name, `transaction-activity` and `card-data`, nested in `TransactionDetailServiceTest` so the 3 files touched stand, holds every call of its operation 350 ms itself before it answers, with the injected latency at 0. It records on the real clock each call's arrival and, through a cancellation listener on the call's `io.grpc.Context`, the moment the client's cancellation of that call reaches it. With both registrations in place the request returns 504, each registration records exactly 2 arrivals, and each attempt's cancellation arrives no later than 30 ms after the lesser of 300 ms and the remaining budget, counted from that attempt's arrival, the remaining budget being 900 ms less the time from receipt to that arrival. The exact cut of an attempt to the remaining budget stays with the call policy's test-clock cases (CS-11-003 AC1). Apart from that cancellation bound, the 900 bound on `cutoffMs` and the 1,000 ms bound on the client-measured response, every duration in this case is asserted as a lower bound only.
 > - AC7: On `UNAVAILABLE` or `DEADLINE_EXCEEDED` only, each read is retried at most two times (`UPSTREAM_MAX_RETRIES`), with 50 ms then 100 ms backoff, and a retry starts only if its backoff plus a full 300 ms attempt fits before the 900 ms cut-off. With either stub failing every call, its request log shows exactly 3 attempts of its operation, at least 50 ms and then at least 100 ms apart.
+>   > SCOPE-QUESTION (Resolved): A stub request log entry carries no arrival time, and at `STUB_FAILURE_RATE` 1.0 the failure injector answers each call before any interceptor inside a registration sees it (CS-11-002), so the log cannot show how far apart the attempts start. With either stub failing every call, its request log supplies the count only: exactly 3 attempts of its operation, each with outcome `UNAVAILABLE`. The spacing is measured by a test-local `StubRegistration` under that stub's name, `transaction-activity` or `card-data`, nested in `TransactionDetailServiceTest` so the 3 files touched stand, with the injected latency and failure rate at 0. It answers every call of its operation `UNAVAILABLE` at once with one packed `ErrorObject` and records each call's arrival time on the real clock. It records exactly 3 arrivals: the second at least 50 ms after the first, and the third at least 100 ms after the second. Both are lower bounds only, and the exact 50 ms and 100 ms waits stay with the call policy's test-clock cases (CS-11-003 AC2).
 > - AC8: With the Transaction Activity stub failing every call (`STUB_FAILURE_RATE` 1.0) and no cache entry for the transaction, the request returns 503 `UNAVAILABLE` with no transaction body, and the stub log shows exactly 3 `GetTransaction` calls.
 > - AC9: With the Transaction Activity stub failing every call and an entry for `0000000776200014` aged 120 s on the test clock, past its 60 s fresh TTL and within its 300 s max stale age, the request under `00000000001` returns 200 with `dataStatus` `STALE`, `asOf` equal to the entry's `cachedAt`, and outcome `degraded` on the completion line. With the entry aged 300 s, the request returns 503 `UNAVAILABLE` as in AC8.
 > - AC10: With the Card Data stub failing every call and `0000000776200014` held in a fresh cache entry, the request returns 503 `UNAVAILABLE`, never 200, and the stub log shows exactly 3 `GetCardCrossReference` calls. With a Card Data stub latency of 2,000 ms in place of the failures, it returns 504 `DEADLINE_EXCEEDED` after exactly 2 `GetCardCrossReference` attempts.
@@ -74,6 +77,7 @@ Parent epic: [CS-08 Transaction Detail Endpoint](../README.md)
 > - AC14: With the Config stub failing every call, or with a 2,000 ms Config latency and a stale snapshot, the AC2 request returns the AC2 result with `dataStatus` `FRESH`, a `cutoffMs` of at most 900 and a client-measured response below 1,000 ms.
 > - AC15: With `fixture-token-expired`, the request returns 401 `UNAUTHENTICATED`. With the Auth stub failing every call, it returns 503 `UNAVAILABLE`. In both cases the Transaction Activity and Card Data stub logs hold zero entries and the cache records zero reads.
 > - AC16: Every error in AC1, AC3, AC4, AC6, AC8, AC10, AC11, AC12 and AC15 carries the `traceId` generated at receipt, equal to the `traceId` on that request's completion line.
+>   > SCOPE-QUESTION (Resolved): No criterion above covers a typed failure either read raises besides `NOT_FOUND`, `UNAVAILABLE` and `DEADLINE_EXCEEDED`, so the completion rule for 400 and 401 has no case. Four scripted cases cover it. Their answers come from test-local `StubRegistration` instances under stub names `transaction-activity` and `card-data`, which `StubHarness.allRegistered()` never discovers, nested in `TransactionDetailServiceTest`, so the 3 files touched stand. Each case sends token `fixture-token-user0001` with transaction `0000000776200014` under account `00000000001`: the guard allows access, the cache is empty and the other read's registered stub is healthy. The four scripted answers are `GetTransaction` answering `INVALID_ARGUMENT`, `GetTransaction` answering `UNAUTHENTICATED`, `GetCardCrossReference` answering `INVALID_ARGUMENT` and `GetCardCrossReference` answering `UNAUTHENTICATED`, each with one packed `ErrorObject` of that `code`. Each request returns the scripted status, 400 `INVALID_ARGUMENT` or 401 `UNAUTHENTICATED`, with the standard error object of that `code` carrying the receipt `traceId`, after exactly 1 call of the scripted operation in that stub's request log, because neither status is retried. Each writes exactly one completion line, with outcome `error`, that status, a `cutoffMs` of at most 900 (the 900 ms `REQUEST_DEADLINE_MS`) and that same `traceId`.
 >
 > ### 3. Dependencies
 >
@@ -109,7 +113,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass, with ≥80% line coverage per module. Cases: AC1–AC16 against in-JVM loopback stubs with per-test `STUB_LATENCY_MS` and `STUB_FAILURE_RATE`, the recording entry store and the test clock. Deadline cases assert a logged `cutoffMs` ≤ 900 and a client response below 1,000 ms.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass, with ≥80% line coverage per module. Cases: AC1–AC16 against in-JVM loopback stubs with per-test `STUB_LATENCY_MS` and `STUB_FAILURE_RATE`, the recording entry store and the test clock. Test-local `StubRegistration` instances under stub names `transaction-activity` and `card-data`, nested in `TransactionDetailServiceTest`, add three sets of cases: the AC6 timing registrations, which hold each call 350 ms and record its arrival and the arrival of its cancellation; the AC7 timing registrations, which answer `UNAVAILABLE` at once and record each arrival; and the scripted downstream failures beneath AC16, `INVALID_ARGUMENT` (400) and `UNAUTHENTICATED` (401) from `GetTransaction` and from `GetCardCrossReference`, each returning that status with the receipt `traceId` after one call and writing one `error` completion line. Deadline cases assert a logged `cutoffMs` ≤ 900 and a client response below 1,000 ms.
 - Integration: Not applicable — the integration suites belong to the external epics, the Card Data and Transaction Activity integration suites (CS-09-006, CS-10-007). Threshold when it applies: `./gradlew :card-servicing-service:integrationTest` passes, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS`, and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Applies, through the transaction detail SLA scenario (CS-04-002).
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -125,9 +129,9 @@ Completed during implementation.
 
 Recommended: Option A — the transaction read and the card-link read run side by side once access is allowed, and the card numbers are compared when both answer.
 
-Rationale: the ownership rule needs both answers, so overlapping the two reads costs the stage one read's latency and leaves the remaining budget for retries.
+Rationale: the ownership rule needs both answers, so overlapping the two reads fits both first attempts into the budget left after authentication, and a retry runs only when its wait plus a full attempt still fits the time left.
 
-- Rejected: Option B, reading the account's card links first and the transaction second, because two remote calls in a row share one budget and a cold path then leaves the second read no retry.
+- Rejected: Option B, reading the account's card links first and the transaction second, because two remote calls in a row share one budget, so on a cold path a slow card-link read can spend the time left and the transaction read then gets no attempt at all.
 
 ```mermaid
 sequenceDiagram
@@ -190,28 +194,30 @@ Effort and risk: one service, one result and one test, with the risk in the card
 
 ### Design Option B — card links first, then the transaction
 
-The service reads the account's card links, waits for them, and only then reads the transaction through the shared cache. The comparison and the outcome rules are the same as in Option A. An account with no card links ends in the not-found answer before any transaction read.
+The service reads the account's card links, waits for them, and only then reads the transaction through the shared cache. The card comparison is the same as in Option A, but a failed card-link read decides the answer first, so an unknown transaction then answers 503 or 504 rather than not found. An account with no card links ends in the not-found answer before any transaction read.
 
 How it differs:
 
 - The stage costs the sum of both reads.
 - On a cold path the two authentication calls can leave about 300 ms, which a slow card-link read can spend in full before the transaction read starts.
 - A fresh cached transaction still waits behind the card-link read.
-- An account with no card links skips the transaction call.
+- An account with no card links skips the transaction call, so it answers not found even while the transaction service is failing.
 - A card-link failure ends the request before any transaction read.
+- An unknown transaction answers 503 or 504 when the card-link read fails, where Option A gives the not-found answer.
+- When both reads would fail, the card-link read's status is the answer.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
 | 1 | Card links before the transaction (vs side by side) | an account with no card links skips the transaction call | the stage costs both latencies |
 | 2 | One read in flight at a time (vs two) | no worker pool use for this endpoint | no overlap absorbs a slow read |
-| 3 | Same outcome rules as Option A (vs new rules) | each outcome keeps its answer | the timing alone decides between the options |
+| 3 | Card-link status ahead of the transaction answer (vs the transaction answer first) | no transaction call follows a failed card-link read | an unknown transaction answers 503 or 504 instead of not found |
 
 Effort and risk: the same three files with no overlap of reads, with the risk in deadline-exceeded answers whenever both reads are slow.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: only side-by-side reads keep the stage within one read's latency, so the remaining budget still holds a retry on a cold path.
+- Why: only side-by-side reads keep the stage within one read's latency, so the worst cold path still gives each read its one full attempt, and a retry runs only when its wait plus a full attempt fits the time left.
 - Strongest argument against: every request spends a card-link read and a worker pool slot, even when the transaction turns out unknown.
 - Shared items that do not decide the choice: the ownership rule, the identical not-found answer, the fail-hard card-link read, the stale transaction fallback and the data status rules.
 - Flip conditions: the transaction service returns the owning account with each transaction, which removes the card-link read, or the card data client loses its worker pool, so the two reads can no longer overlap.
@@ -258,6 +264,7 @@ Settled assumptions:
 
 - The clients, cache periods and guard order are the same as in Option A.
 - The card-link read finishes before the transaction read starts.
+- A failed card-link read decides the answer before any transaction read, so its status stands ahead of the transaction outcome.
 - The card links are never cached, so each request compares against current ownership.
 
 Open assumptions:
