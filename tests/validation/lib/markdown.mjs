@@ -26,7 +26,8 @@
  * headings, tables, links and metadata inside a fenced code block or an HTML comment
  * block are ignored, links inside an inline HTML comment are ignored too, fence content
  * is reached only through fencedBlocks, and hiddenLines names every line of both kinds
- * of block for checks that scan lines themselves. A fence or comment opened inside a
+ * of block for checks that scan lines themselves, while blankComments gives those checks
+ * the text with every HTML comment blanked in place. A fence or comment opened inside a
  * blockquote ends when the quote level it opened in ends, even if an outer quote
  * continues. Line numbers are 1-based indexes into the text split on /\r?\n/.
  *
@@ -410,10 +411,11 @@ function commentEnd(s, i) {
 /**
  * The inline link of `s` whose text, matched by the caller, closes at the `]` at `close`:
  * the inlineTail that must follow that `]`, read on raw characters, with no line break
- * between the `]` and the link's end, or null.
+ * between the `]` and the link's end, or null. `destinationAt`, when given, reads the
+ * destination as inlineTail states.
  */
-function linkClosedAt(s, close) {
-  const tail = s[close + 1] === '(' ? inlineTail(s, close + 1) : null;
+function linkClosedAt(s, close, destinationAt) {
+  const tail = s[close + 1] === '(' ? inlineTail(s, close + 1, destinationAt) : null;
   return tail && !s.slice(close, tail.end).includes('\n') ? tail : null;
 }
 
@@ -430,20 +432,48 @@ function linkClosedAt(s, close) {
  * every earlier `[` but `![` from opening a link, since links do not nest. Where a `](`
  * forms no link when reached and blanking a later comment would complete one there, its
  * `(` is blanked too, so the result forms no link the run does not.
+ * Code spans are those findCodeSpans finds from the run's start or the end of the last
+ * comment, found lazily up to the scan's offset; a link tail is read on the raw run, which
+ * holds the same characters from the `]` on; and the `-->` search stops once one fails. So
+ * no comment makes the scan read the rest of the run again.
  */
 function blankRunComments(s) {
   let out = '';
   let copied = 0;
-  let base = 0;
-  let spans = findCodeSpans(s);
-  let next = 0;
+  // The code-span scan, run as findCodeSpans runs from its last restart: `scan` is the next
+  // offset it examines and `span` the span it found that the main scan has not yet passed.
+  let scan = 0;
+  let span = null;
+  const spanUpTo = (at) => {
+    while (span === null && scan <= at && scan < s.length) {
+      if (s[scan] === '\\') {
+        scan += 2;
+      } else if (s[scan] !== '`') {
+        scan++;
+      } else {
+        const found = codeSpanAt(s, scan);
+        if (found) {
+          span = { start: scan, end: found.end };
+          scan = found.end;
+        } else {
+          while (scan < s.length && s[scan] === '`') scan++;
+        }
+      }
+    }
+    return span;
+  };
   const openers = [];
+  // A link stops every opener beneath it on the stack but an image's: those below `floor` are
+  // stopped, and a pop that takes the stack below `floor` lowers it.
+  let floor = 0;
   const unlinked = [];
+  let unclosed = false;
+  let rawDestinations = null;
   let i = 0;
   while (i < s.length) {
-    if (next < spans.length && base + spans[next].start === i) {
-      i = base + spans[next].end;
-      next++;
+    if (spanUpTo(i)?.start === i) {
+      i = span.end;
+      span = null;
       continue;
     }
     if (s[i] === '\\') {
@@ -451,18 +481,23 @@ function blankRunComments(s) {
       continue;
     }
     if (s[i] === '[') {
-      openers.push({ at: i, image: i > 0 && s[i - 1] === '!' && !isEscaped(s, i - 1), active: true });
+      openers.push({ at: i, image: i > 0 && s[i - 1] === '!' && !isEscaped(s, i - 1) });
       i++;
       continue;
     }
     if (s[i] === ']') {
       const opener = openers.pop();
-      if (opener?.active && s[i + 1] === '(') {
-        const link = linkClosedAt(out + s.slice(copied), i);
+      const active = opener !== undefined && (opener.image || openers.length >= floor);
+      floor = Math.min(floor, openers.length);
+      if (active && s[i + 1] === '(') {
+        // Only the comments before `copied`, and so before this `]`, are blanked yet, and a tail
+        // reads from the `]` on, so the raw run gives the tail the blanked run would.
+        rawDestinations ??= destinationReader(s);
+        const link = linkClosedAt(s, i, rawDestinations);
         if (link) {
-          if (!opener.image) for (const o of openers) if (!o.image) o.active = false;
+          if (!opener.image) floor = openers.length;
           i = link.end;
-          while (next < spans.length && base + spans[next].start < i) next++;
+          while (spanUpTo(i) !== null && span.start < i) span = null;
           continue;
         }
         unlinked.push({ close: i });
@@ -470,8 +505,12 @@ function blankRunComments(s) {
       i++;
       continue;
     }
-    const end = s.startsWith('<!--', i) ? commentEnd(s, i) : -1;
+    const opens = s.startsWith('<!--', i);
+    // Once no `-->` follows one `<!--`, none follows a later one, and only `<!-->` or `<!--->` close.
+    const short = s.startsWith('<!-->', i) || s.startsWith('<!--->', i);
+    const end = opens && (!unclosed || short) ? commentEnd(s, i) : -1;
     if (end < 0) {
+      if (opens) unclosed = true;
       i++;
       continue;
     }
@@ -479,15 +518,22 @@ function blankRunComments(s) {
     copied = end;
     i = end;
     // Backticks inside a comment open no code span, so spans are matched again from its end.
-    base = end;
-    spans = findCodeSpans(s.slice(end));
-    next = 0;
+    scan = end;
+    span = null;
   }
-  let blanked = out + s.slice(copied);
+  const blanked = out + s.slice(copied);
+  // Blanking the `(` after an earlier `]` never changes the tail a later `]` reads, so each
+  // check reads the blanked run and the `(` are blanked together at the end.
+  let result = '';
+  let pos = 0;
+  let blankedDestinations = null;
   for (const { close } of unlinked) {
-    if (linkClosedAt(blanked, close)) blanked = `${blanked.slice(0, close + 1)} ${blanked.slice(close + 2)}`;
+    blankedDestinations ??= destinationReader(blanked);
+    if (!linkClosedAt(blanked, close, blankedDestinations)) continue;
+    result += `${blanked.slice(pos, close + 1)} `;
+    pos = close + 2;
   }
-  return blanked;
+  return result + blanked.slice(pos);
 }
 
 const LIST_ITEM_RE = /^ {0,3}(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)/;
@@ -580,6 +626,30 @@ export function hiddenLines(text) {
     if (hidden) out.add(i + 1);
   });
   return out;
+}
+
+/**
+ * The text as it renders for checks that read what a line says: each line of an HTML comment
+ * block becomes empty, and each inline HTML comment, one that runs over the following lines
+ * of its paragraph included, turns into spaces of equal length under blankInlineComments'
+ * rules. Fenced code, quote markers and every other character stay as written, so the line
+ * count and the line and column of each remaining character survive. Lines are joined by '\n'.
+ * @param {string} text
+ * @returns {string}
+ */
+export function blankComments(text) {
+  const lines = splitLines(asText(text, 'blankComments'));
+  const blocks = scanBlocks(lines);
+  const mask = new Array(lines.length).fill(false);
+  for (const b of blocks) {
+    for (let i = b.start; i <= b.end; i++) mask[i] = true;
+  }
+  const out = blankInlineComments(lines, mask);
+  for (const b of blocks) {
+    if (b.kind !== 'comment') continue;
+    for (let i = b.start; i <= b.end; i++) out[i] = '';
+  }
+  return out.join('\n');
 }
 
 /**
@@ -686,8 +756,12 @@ const PH_OPEN = '\uE000';
 const PH_CLOSE = '\uE001';
 const PH_RE = /\uE000(\d+)\uE001/g;
 const ASCII_PUNCT_RE = /[!-/:-@[-`{-~]/;
-const HTML_RE = /<!--[\s\S]*?-->|<\/?[A-Za-z][^<>]*>/g;
-const UNDERSCORE_EMPHASIS_RE = /(^|[^\p{L}\p{N}])_{1,2}(?=\S)(.+?)(?<=\S)_{1,2}(?=[^\p{L}\p{N}]|$)/gu;
+// Sticky: one HTML tag exactly at lastIndex. Its run stops at the next `<` or `>`.
+const HTML_TAG_RE = /<\/?[A-Za-z][^<>]*>/y;
+// Single code points: a letter or number, whitespace, and the four line terminators `.` skips.
+const LETTER_OR_NUMBER_RE = /[\p{L}\p{N}]/u;
+const WHITESPACE_RE = /\s/u;
+const LINE_TERMINATORS = new Set(['\n', '\r', '\u2028', '\u2029']);
 
 /**
  * Replaces code spans, backslash-escaped punctuation, character references and the
@@ -728,6 +802,262 @@ function protectInline(s) {
 }
 
 /**
+ * For each offset x of a prefix count `depth` that moves by at most one per character, the
+ * first offset y > x with depth[y] = depth[x] - 1, or -1: where a counter started at zero
+ * at x first drops below zero, so the character at y - 1 closes nothing opened since x.
+ * @param {Int32Array} depth
+ * @returns {Int32Array}
+ */
+function firstDrops(depth) {
+  const n = depth.length - 1;
+  const seen = new Int32Array(2 * n + 3).fill(-1);
+  const drops = new Int32Array(n + 1);
+  for (let x = n; x >= 0; x--) {
+    drops[x] = seen[depth[x] + n];
+    seen[depth[x] + n + 1] = x;
+  }
+  return drops;
+}
+
+/**
+ * inlineTail(s, open) reduced to its end, for any `(` at `open`: the offset after the tail,
+ * or -1 where inlineTail returns null. One right-to-left pass builds, for every offset, the
+ * next non-blank, the next whitespace or control character, the next unescaped `<` or `>`
+ * or line ending, and the next unescaped `"`, `'`, `(` and `)`, so each call costs O(1).
+ * `odd[x]` is 1 where the character at x is escaped, and `parens` counts unescaped `(`
+ * minus unescaped `)` before each offset, so a destination's first depth-0 `)` is where
+ * that count first drops below its value at the destination's start.
+ * @param {string} s
+ * @param {Uint8Array} odd
+ * @param {Int32Array} parens
+ * @returns {(open: number) => number}
+ */
+function tailEnds(s, odd, parens) {
+  const n = s.length;
+  const close = firstDrops(parens);
+  const blank = new Int32Array(n + 1).fill(n);
+  const stop = new Int32Array(n + 1).fill(n);
+  const angle = new Int32Array(n + 1).fill(n);
+  const double = new Int32Array(n + 1).fill(n);
+  const single = new Int32Array(n + 1).fill(n);
+  const openParen = new Int32Array(n + 1).fill(n);
+  const closeParen = new Int32Array(n + 1).fill(n);
+  for (let x = n - 1; x >= 0; x--) {
+    const c = s[x];
+    const code = s.charCodeAt(x);
+    const plain = !odd[x];
+    blank[x] = c === ' ' || c === '\t' ? blank[x + 1] : x;
+    stop[x] = code <= 32 || code === 127 ? x : stop[x + 1];
+    angle[x] = c === '\n' || ((c === '<' || c === '>') && plain) ? x : angle[x + 1];
+    double[x] = c === '"' && plain ? x : double[x + 1];
+    single[x] = c === "'" && plain ? x : single[x + 1];
+    openParen[x] = c === '(' && plain ? x : openParen[x + 1];
+    closeParen[x] = c === ')' && plain ? x : closeParen[x + 1];
+  }
+  // skipLinkSpace: spaces and tabs holding at most one line ending.
+  const skip = (k) => {
+    const j = blank[k];
+    return s[j] === '\n' ? blank[j + 1] : j;
+  };
+  return (open) => {
+    const k = skip(open + 1);
+    let destEnd;
+    if (s[k] === '<') {
+      const m = angle[k + 1];
+      if (s[m] !== '>') return -1;
+      destEnd = m + 1;
+    } else {
+      const shut = close[k] < 0 ? n : close[k] - 1;
+      if (shut < stop[k]) destEnd = shut;
+      else if (stop[k] === k || parens[stop[k]] !== parens[k]) return -1;
+      else destEnd = stop[k];
+    }
+    let j = skip(destEnd);
+    if (j > destEnd && (s[j] === '"' || s[j] === "'" || s[j] === '(')) {
+      // titleEnd: the next unescaped closer, where a `(` title holds no unescaped `(`.
+      const m = s[j] === '(' ? closeParen[j + 1] : s[j] === '"' ? double[j + 1] : single[j + 1];
+      if (m < n && (s[j] !== '(' || m < openParen[j + 1])) j = skip(m + 1);
+    }
+    return s[j] === ')' ? j + 1 : -1;
+  };
+}
+
+/**
+ * The inline link that each `[` of `s` opens, read on raw characters: its text runs to the
+ * `]` that balances it, a backslash escaping the character after it, and an inlineTail must
+ * follow that `]` at once. Code spans are not skipped, so callers pass text whose code spans
+ * are already held as placeholders. textEnd[i] and end[i] are that `]` and the link's end,
+ * both -1 where the `[` at i opens no link. Each scan, like inlineTail's, starts after a
+ * `[`, `(`, quote, `<` or whitespace, never inside a run of backslashes, so a character is
+ * escaped exactly when the run of backslashes before it is odd: an escaped bracket never
+ * counts, an escaped parenthesis, quote or angle bracket never closes, and a line ending
+ * or whitespace is never escaped, because only punctuation is. The `]` that balances a `[`
+ * is where the count of unescaped `[` minus unescaped `]` first drops below its value
+ * after the `[`, which holds for a `[` that is itself escaped too.
+ * @param {string} s
+ * @returns {{ textEnd: Int32Array, end: Int32Array }}
+ */
+function inlineLinks(s) {
+  const n = s.length;
+  const odd = new Uint8Array(n + 1);
+  const brackets = new Int32Array(n + 1);
+  const parens = new Int32Array(n + 1);
+  for (let x = 0, run = 0; x < n; x++) {
+    const c = s[x];
+    odd[x] = run & 1;
+    brackets[x + 1] = brackets[x] + (odd[x] ? 0 : c === '[' ? 1 : c === ']' ? -1 : 0);
+    parens[x + 1] = parens[x] + (odd[x] ? 0 : c === '(' ? 1 : c === ')' ? -1 : 0);
+    run = c === '\\' ? run + 1 : 0;
+  }
+  const balance = firstDrops(brackets);
+  const textEnd = new Int32Array(n).fill(-1);
+  const end = new Int32Array(n).fill(-1);
+  let tailEnd = null;
+  for (let i = s.indexOf('['); i >= 0; i = s.indexOf('[', i + 1)) {
+    const j = balance[i + 1] - 1;
+    if (j < 0 || s[j + 1] !== '(') continue;
+    tailEnd ??= tailEnds(s, odd, parens);
+    const e = tailEnd(j + 1);
+    if (e >= 0) {
+      textEnd[i] = j;
+      end[i] = e;
+    }
+  }
+  return { textEnd, end };
+}
+
+/**
+ * A link-cut forest over nodes 1..up.length - 1, 0 standing for none, with a weight on each
+ * node. `up[x]` starts as the parent of x, 0 for a root, and every weight at zero; the
+ * forest takes `up` over. pathSum(x) is the weight total on the path from x to its root;
+ * reparent(x, p, w) cuts x from its parent, gives it weight w and hangs it under p, which
+ * must not lie below x. Each is one access, which splays the preferred paths iteratively,
+ * in O(log n) amortized time over n nodes.
+ * @param {Int32Array} up
+ * @returns {{ pathSum: (x: number) => number, reparent: (x: number, p: number, w: number) => void }}
+ */
+function pathSumForest(up) {
+  const size = up.length;
+  const left = new Int32Array(size);
+  const right = new Int32Array(size);
+  const weight = new Int32Array(size);
+  const sum = new Int32Array(size);
+  const isRoot = (x) => left[up[x]] !== x && right[up[x]] !== x;
+  const pull = (x) => {
+    sum[x] = sum[left[x]] + sum[right[x]] + weight[x];
+  };
+  const rotate = (x) => {
+    const y = up[x];
+    const z = up[y];
+    if (!isRoot(y)) {
+      if (left[z] === y) left[z] = x;
+      else right[z] = x;
+    }
+    up[x] = z;
+    if (left[y] === x) {
+      left[y] = right[x];
+      if (right[x]) up[right[x]] = y;
+      right[x] = y;
+    } else {
+      right[y] = left[x];
+      if (left[x]) up[left[x]] = y;
+      left[x] = y;
+    }
+    up[y] = x;
+    pull(y);
+    pull(x);
+  };
+  const splay = (x) => {
+    while (!isRoot(x)) {
+      const y = up[x];
+      if (!isRoot(y)) rotate((left[y] === x) === (left[up[y]] === y) ? y : x);
+      rotate(x);
+    }
+  };
+  const access = (x) => {
+    for (let below = 0, y = x; y !== 0; below = y, y = up[y]) {
+      splay(y);
+      right[y] = below;
+      pull(y);
+    }
+    splay(x);
+  };
+  return {
+    pathSum(x) {
+      access(x);
+      return sum[x];
+    },
+    reparent(x, p, w) {
+      access(x);
+      if (left[x]) {
+        up[left[x]] = 0;
+        left[x] = 0;
+      }
+      weight[x] = w;
+      pull(x);
+      up[x] = p;
+    },
+  };
+}
+
+/**
+ * Which candidate links reduceLinks takes, decided in one left-to-right sweep instead of by
+ * reducing every link text in turn. `opens` lists, in order, each `[` whose link exists
+ * when nothing bounds it (end[i] >= 0); `next[x]` indexes the first of them at or after x,
+ * opens.length when none is. Every text is read by the same rule: from its first
+ * character, a candidate whose link ends inside the text is taken when it is an image or
+ * its own text takes no link, and reading resumes at the link's end; any other character
+ * is kept. A text ending at offset x therefore depends only on candidates whose links end
+ * by x, all known when the sweep reaches x. The forest hangs each candidate under the one
+ * reading reaches next, which is the one at or after its link's end once it is taken and
+ * that end has been swept, and weighs it 1 when that taking counts as a link: a link, or
+ * an image whose text takes one. At the `]` closing a candidate's text, the weight on the
+ * path from the first candidate inside that text tells whether the text takes a link; the
+ * links ending there are hung first, since a link ending at the text's end is inside it.
+ * Returns { taken, counts }, per index of `opens`: whether reading takes the candidate
+ * wherever its link ends inside the text being read, and whether that taking counts as a link.
+ * @param {string} s
+ * @param {number[]} opens
+ * @param {Int32Array} next
+ * @param {Int32Array} textEnd
+ * @param {Int32Array} end
+ * @returns {{ taken: Uint8Array, counts: Uint8Array }}
+ */
+function takenLinks(s, opens, next, textEnd, end) {
+  const n = s.length;
+  const count = opens.length;
+  const taken = new Uint8Array(count);
+  const counts = new Uint8Array(count);
+  const closing = new Int32Array(n + 1).fill(-1);
+  const ending = new Int32Array(n + 1).fill(-1);
+  const closingNext = new Int32Array(count);
+  const endingNext = new Int32Array(count);
+  const up = new Int32Array(count + 2);
+  for (let t = 0; t < count; t++) {
+    const i = opens[t];
+    closingNext[t] = closing[textEnd[i]];
+    closing[textEnd[i]] = t;
+    endingNext[t] = ending[end[i]];
+    ending[end[i]] = t;
+    up[t + 1] = next[i + 1] + 1;
+  }
+  const forest = pathSumForest(up);
+  for (let x = 0; x <= n; x++) {
+    for (let t = ending[x]; t >= 0; t = endingNext[t]) {
+      if (taken[t]) forest.reparent(t + 1, next[x] + 1, counts[t]);
+    }
+    for (let t = closing[x]; t >= 0; t = closingNext[t]) {
+      const i = opens[t];
+      const image = i > 0 && s[i - 1] === '!';
+      const innerLinked = forest.pathSum(next[i + 1] + 1) > 0;
+      taken[t] = image || !innerLinked ? 1 : 0;
+      counts[t] = !image || innerLinked ? 1 : 0;
+    }
+  }
+  return { taken, counts };
+}
+
+/**
  * A link destination decoded as CommonMark's unescapeString decodes it, in one left-to-right
  * pass: a backslash before ASCII punctuation gives that character, so `\&amp;` stays the text
  * `&amp;`; a character reference gives the text it stands for (charReference); every other
@@ -753,32 +1083,165 @@ function unescapeString(s) {
 }
 
 /**
+ * Inline text, read after its code spans and links are taken out, with each escape replaced
+ * by the character it renders as: unescapeString's one left-to-right pass, so `page\_token`,
+ * `page&#95;token`, `page&#x5F;token` and `page&lowbar;token` all give `page_token`, while
+ * `\&amp;` gives the text `&amp;` and a name the WHATWG list lacks, such as `&bogus;`, stays
+ * as written.
+ * @param {string} s
+ * @returns {string}
+ */
+export function unescapeInline(s) {
+  return unescapeString(asText(s, 'unescapeInline'));
+}
+
+/**
  * Inline links and images of a protected string reduced to their text: a link keeps its
  * text and an image (`!` before the `[`) its alt text, each reduced in turn, while the
  * destination and title are dropped. As in CommonMark, a link whose text holds a link is
  * not a link, so its brackets stay literal, and so does a `[` that opens no link.
  * Returns { text, linked }, with `linked` true when a link, not only images, was reduced.
+ * The links are those inlineLinks finds, each bounded by the text that holds it; inlineLinks
+ * and takenLinks settle every one in linear and O(n log n) time, and the text is then read
+ * once with an explicit stack, each character at one level.
+ * @param {string} s
+ * @returns {{ text: string, linked: boolean }}
  */
 function reduceLinks(s) {
-  let text = '';
+  if (!s.includes('](')) return { text: s, linked: false };
+  const n = s.length;
+  const { textEnd, end } = inlineLinks(s);
+  const opens = [];
+  for (let i = s.indexOf('['); i >= 0; i = s.indexOf('[', i + 1)) if (end[i] >= 0) opens.push(i);
+  if (opens.length === 0) return { text: s, linked: false };
+  const next = new Int32Array(n + 1).fill(opens.length);
+  for (let t = opens.length - 1; t >= 0; t--) next.fill(t, t > 0 ? opens[t - 1] + 1 : 0, opens[t] + 1);
+  const { taken, counts } = takenLinks(s, opens, next, textEnd, end);
+  const pieces = [];
+  const resume = [];
+  const bound = [];
   let linked = false;
   let i = 0;
-  while (i < s.length) {
-    const link = s[i] === '[' ? matchInlineLink(s, i) : null;
-    if (link) {
-      const image = i > 0 && s[i - 1] === '!';
-      const inner = reduceLinks(s.slice(i + 1, link.textEnd));
-      if (image || !inner.linked) {
-        text = (image ? text.slice(0, -1) : text) + inner.text;
-        linked = linked || inner.linked || !image;
-        i = link.end;
-        continue;
-      }
+  let hi = n;
+  while (i < hi || resume.length > 0) {
+    if (i >= hi) {
+      i = resume.pop();
+      hi = bound.pop();
+      continue;
     }
-    text += s[i];
-    i++;
+    let t = next[i];
+    while (t < opens.length && opens[t] < hi && !(taken[t] && end[opens[t]] <= hi)) t++;
+    const o = t < opens.length && opens[t] < hi ? opens[t] : hi;
+    if (o > i) pieces.push([i, o]);
+    if (o === hi) {
+      i = hi;
+      continue;
+    }
+    if (o > 0 && s[o - 1] === '!') pieces[pieces.length - 1][1]--;
+    if (resume.length === 0) linked = linked || counts[t] === 1;
+    resume.push(end[o]);
+    bound.push(hi);
+    i = o + 1;
+    hi = textEnd[o];
   }
-  return { text, linked };
+  return { text: pieces.map(([a, b]) => s.slice(a, b)).join(''), linked };
+}
+
+/**
+ * `s` with every HTML comment and tag removed: the result of replacing
+ * /<!--[\s\S]*?-->|<\/?[A-Za-z][^<>]*>/g with '', computed in one pass. A comment runs from
+ * `<!--` to the first `-->` that starts after it, and once one `<!--` finds no `-->`, no
+ * later one can. A tag holds no `<` or `>` before its closing `>`, so a `<` that opens no
+ * tag is passed over with work bounded by the distance to the next `<`.
+ */
+function stripHtml(s) {
+  let out = '';
+  let pos = 0;
+  let commentCloses = true;
+  let open = s.indexOf('<');
+  while (open >= 0) {
+    let end = -1;
+    if (s.startsWith('<!--', open)) {
+      const close = commentCloses ? s.indexOf('-->', open + 4) : -1;
+      if (close < 0) commentCloses = false;
+      else end = close + 3;
+    } else {
+      HTML_TAG_RE.lastIndex = open;
+      if (HTML_TAG_RE.test(s)) end = HTML_TAG_RE.lastIndex;
+    }
+    if (end < 0) {
+      open = s.indexOf('<', open + 1);
+      continue;
+    }
+    out += s.slice(pos, open);
+    pos = end;
+    open = s.indexOf('<', end);
+  }
+  return out + s.slice(pos);
+}
+
+/**
+ * `s` with `_`/`__` emphasis delimiters removed at word boundaries: the result of replacing
+ * /(^|[^\p{L}\p{N}])_{1,2}(?=\S)(.+?)(?<=\S)_{1,2}(?=[^\p{L}\p{N}]|$)/gu with '$1$2',
+ * computed in one pass over code points. For a content start c, that pattern's lazy content
+ * ends at the first e > c where a closing delimiter fits: `_` at e after a non-space, then
+ * `__` or `_` before a non-letter, non-number or the end. That e depends on c only through
+ * the bound e > c and the first line terminator at or after c, so one right-to-left pass
+ * records the next such e and the next line terminator for every position. Each match
+ * attempt then tries, in the pattern's order, the `^` alternative at the start, the boundary
+ * character, and two opening underscores before one.
+ */
+function stripUnderscoreEmphasis(s) {
+  if (!s.includes('_')) return s;
+  const cp = Array.from(s);
+  const n = cp.length;
+  const offset = new Array(n + 1);
+  offset[0] = 0;
+  for (let i = 0; i < n; i++) offset[i + 1] = offset[i] + cp[i].length;
+  const word = cp.map((c) => LETTER_OR_NUMBER_RE.test(c));
+  const nonSpace = cp.map((c) => !WHITESPACE_RE.test(c));
+  // Closing delimiter length at e: 2 when `__` fits, 1 when `_` fits, 0 when neither does.
+  const closeLength = (e) => {
+    if (cp[e] !== '_') return 0;
+    if (cp[e + 1] === '_' && (e + 2 === n || !word[e + 2])) return 2;
+    return e + 1 === n || !word[e + 1] ? 1 : 0;
+  };
+  const nextClose = new Int32Array(n + 1).fill(n);
+  const nextBreak = new Int32Array(n + 1).fill(n);
+  for (let i = n - 1; i >= 0; i--) {
+    nextClose[i] = i > 0 && nonSpace[i - 1] && closeLength(i) > 0 ? i : nextClose[i + 1];
+    nextBreak[i] = LINE_TERMINATORS.has(cp[i]) ? i : nextBreak[i + 1];
+  }
+  // The match whose opening delimiter starts at u, as content [start, end) and match end.
+  const attempt = (u) => {
+    for (const k of [2, 1]) {
+      if (cp[u] !== '_' || (k === 2 && cp[u + 1] !== '_')) continue;
+      const start = u + k;
+      if (start >= n || !nonSpace[start]) continue;
+      const end = nextClose[start + 1];
+      if (end < n && end < nextBreak[start]) return { start, end, last: end + closeLength(end) };
+    }
+    return null;
+  };
+  let out = '';
+  let pos = 0;
+  let p = 0;
+  while (p < n) {
+    let keep = 0;
+    let m = p === 0 ? attempt(0) : null;
+    if (!m && !word[p]) {
+      m = attempt(p + 1);
+      keep = 1;
+    }
+    if (!m) {
+      p++;
+      continue;
+    }
+    out += s.slice(offset[pos], offset[p + keep]) + s.slice(offset[m.start], offset[m.end]);
+    pos = m.last;
+    p = m.last;
+  }
+  return out + s.slice(offset[pos]);
 }
 
 /**
@@ -793,10 +1256,7 @@ function reduceLinks(s) {
  */
 export function plainText(text) {
   const { out, held } = protectInline(String(text ?? ''));
-  const stripped = reduceLinks(out)
-    .text.replace(HTML_RE, '')
-    .replace(/\*/g, '')
-    .replace(UNDERSCORE_EMPHASIS_RE, '$1$2');
+  const stripped = stripUnderscoreEmphasis(stripHtml(reduceLinks(out).text).replace(/\*/g, ''));
   return stripped.replace(PH_RE, (_, n) => held[Number(n)]);
 }
 
@@ -830,13 +1290,30 @@ export function slugify(text, seen) {
   return slug;
 }
 
-const ATX_RE = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
+const ATX_OPEN_RE = /^ {0,3}(#{1,6})(?=[ \t]|$)/;
+// A line terminator, which heading text never holds.
+const LINE_TERMINATOR_RE = /[\n\r\u2028\u2029]/;
 
-/** ATX heading on an already-unquoted line, or null; a heading of only `#` is empty. */
+/**
+ * ATX heading on an already-unquoted line, or null; a heading of only `#` is empty. The
+ * text leaves out the spaces and tabs around it and a closing `#` run that a space or tab
+ * precedes. Index scans from both ends keep the work linear in the line's length.
+ */
 function matchAtx(rest) {
-  const m = ATX_RE.exec(rest);
-  if (!m) return null;
-  const text = (m[2] ?? '').trim();
+  const m = ATX_OPEN_RE.exec(rest);
+  if (!m || LINE_TERMINATOR_RE.test(rest.slice(m[0].length))) return null;
+  const blank = (i) => rest[i] === ' ' || rest[i] === '\t';
+  let start = m[0].length;
+  while (start < rest.length && blank(start)) start++;
+  let end = rest.length;
+  while (end > start && blank(end - 1)) end--;
+  let close = end;
+  while (close > start && rest[close - 1] === '#') close--;
+  if (close < end && close > start && blank(close - 1)) {
+    end = close;
+    while (end > start && blank(end - 1)) end--;
+  }
+  const text = rest.slice(start, end).trim();
   return { level: m[1].length, text: /^#+$/.test(text) ? '' : text };
 }
 
@@ -1216,14 +1693,60 @@ function linkDestination(s, k) {
 }
 
 /**
+ * linkDestination(s, k) for every `k` not preceded by a backslash, as every link tail's
+ * destination start is: it follows the `(`, a space, a tab or a line ending. A destination
+ * opening with `<` is read by linkDestination itself; any other comes from tables built once
+ * in linear time, so tails that nest or overlap rescan nothing. The tables read `s` left to
+ * right as linkDestination does, and from such a `k` that reading is the one linkDestination
+ * starts there: a backslash before ASCII punctuation makes both characters ordinary, the
+ * other parentheses count towards the depth, and the destination ends at the first space or
+ * control character or at the first `)` at its opening depth. It is valid only when its
+ * parentheses balance and, when empty, only before a `)`.
+ * @param {string} s
+ * @returns {(k: number) => ({ start: number, stop: number, end: number } | null)}
+ */
+function destinationReader(s) {
+  const n = s.length;
+  // 0: ordinary; 1: an unescaped `(`; 2: an unescaped `)`; 3: a space or control character.
+  const kind = new Uint8Array(n);
+  for (let m = 0; m < n; m++) {
+    const c = s[m];
+    if (c === '\\' && m + 1 < n && ASCII_PUNCT_RE.test(s[m + 1])) m++;
+    else kind[m] = c === '(' ? 1 : c === ')' ? 2 : c <= ' ' || c === '\x7f' ? 3 : 0;
+  }
+  // depth[m]: unescaped `(` less unescaped `)` before m. stop[m]: the first space or control
+  // character at or after m; close[m]: the first unescaped `)` at or after m at depth[m]; each
+  // n when there is none.
+  const depth = new Int32Array(n + 1);
+  for (let m = 0; m < n; m++) depth[m + 1] = depth[m] + (kind[m] === 1 ? 1 : kind[m] === 2 ? -1 : 0);
+  const stop = new Int32Array(n + 1).fill(n);
+  const close = new Int32Array(n + 1).fill(n);
+  const nearest = new Map();
+  for (let m = n - 1; m >= 0; m--) {
+    stop[m] = kind[m] === 3 ? m : stop[m + 1];
+    if (kind[m] === 2) nearest.set(depth[m], m);
+    close[m] = nearest.get(depth[m]) ?? n;
+  }
+  return (k) => {
+    if (s[k] === '<') return linkDestination(s, k);
+    const end = Math.min(stop[k], close[k]);
+    const parens = end === close[k] && end < n ? 0 : depth[end] - depth[k];
+    if (parens !== 0 || (end === k && s[k] !== ')')) return null;
+    return { start: k, stop: end, end };
+  };
+}
+
+/**
  * The inline-link tail that opens at `open`, the `(` right after a link text's `]`, read on
  * raw characters: optional whitespace, a linkDestination, an optional title set off from it
  * by whitespace, optional whitespace and `)`. Returns { destStart, destEnd, end }.
+ * `destinationAt(k)` gives linkDestination(s, k); a destinationReader of `s` gives it
+ * without rescanning when one string holds many tails.
  */
-function inlineTail(s, open) {
+function inlineTail(s, open, destinationAt = (k) => linkDestination(s, k)) {
   // Destination first, as in CommonMark: `[a]( "t")` has the destination `"t"`, quotes
   // included, and only `<>` gives an empty destination that a title can follow.
-  const dest = linkDestination(s, skipLinkSpace(s, open + 1));
+  const dest = destinationAt(skipLinkSpace(s, open + 1));
   if (!dest) return null;
   let k = skipLinkSpace(s, dest.end);
   if (k > dest.end && (s[k] === '"' || s[k] === "'" || s[k] === '(')) {
@@ -1232,32 +1755,6 @@ function inlineTail(s, open) {
   }
   return s[k] === ')' ? { destStart: dest.start, destEnd: dest.stop, end: k + 1 } : null;
 }
-
-/**
- * The inline link whose text opens at `open`, a `[`: the text runs to the `]` that balances
- * it, a backslash escaping the character after it, and an inlineTail must follow that `]` at
- * once. Code spans are not skipped, so callers pass text whose code spans are already held
- * as placeholders. Returns { textEnd, destStart, destEnd, end }, `textEnd` being the `]`.
- */
-function matchInlineLink(s, open) {
-  let depth = 0;
-  for (let j = open + 1; j < s.length; j++) {
-    if (s[j] === '\\') {
-      j++;
-    } else if (s[j] === '[') {
-      depth++;
-    } else if (s[j] === ']') {
-      if (depth > 0) {
-        depth--;
-        continue;
-      }
-      const tail = s[j + 1] === '(' ? inlineTail(s, j + 1) : null;
-      return tail ? { textEnd: j, ...tail } : null;
-    }
-  }
-  return null;
-}
-
 
 /** The CommonMark autolink `<scheme:…>` or `<user@host>` that opens at `i`, or null. */
 function autolinkAt(s, i) {

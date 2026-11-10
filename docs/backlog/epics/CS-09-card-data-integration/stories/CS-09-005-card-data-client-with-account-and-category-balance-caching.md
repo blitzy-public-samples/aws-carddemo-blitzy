@@ -12,6 +12,8 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 >
 > Account-data access path: No
 >
+> > SCOPE-QUESTION (Resolved): Should this client carry the account-data classification? This client is the service's only path to account, cross-reference and category-balance records, so every account-data read of the request path runs through it, and the line resolves to `Account-data access path: Yes`. The client does not duplicate authorization: the account access guard (CS-12-003) allows access before any caller invokes the client, and AC15 states the constraint.
+>
 > External integration or SLA-bound: Yes
 >
 > Capability: one Card Data client is the service's only path to account records (`Data Layouts · CVACT01Y`), card cross-references (`Data Layouts · CVACT03Y`) and category balances (`Data Layouts · CVTRA01Y`). It serves the Stage 3 reads of the request path: `GetAccount` and `ListCategoryBalances` run concurrently for the balance summary, `ListCategoryBalances` serves category balances, and `GetCardCrossReference` serves the ownership check of the transaction detail. Account and category-balance reads are cached with a stale fallback, and the cross-reference read is never cached. Target paths:
@@ -82,6 +84,9 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 > - AC12: Credentials: every stub call carries the forwarded `authorization` bearer token and the `x-api-key` value. On all three operations the header-capturing interceptor records `authorization` equal to `Bearer ` followed by the test token, and `x-api-key` equal to the configured value, or an empty value when the key is empty. With the root log level and the client frame logger at DEBUG on a live channel, the log output captured across the AC1, AC2, AC6, AC7 and AC9 paths contains neither value, and no written cache key contains either.
 > - AC13: Swap point: with `card-servicing.clients.card-data.target` set to the port of a second `StubHarness` serving `CardDataStubRegistration`, every call of the three operations lands in that harness's request log and none in the first harness's log, with no change to any class. With the property not overridden, the bound target address is `localhost:9090`.
 > - AC14: Bounded worker pool: with a stub latency of 400 ms, 20 concurrent `account` reads for the accounts `00000000001` to `00000000020` each reach the stub within 50 ms of submission, as the interceptor's arrival times show. With a stub latency of 2,000 ms, 96 concurrent `account` reads for `00000000001` fill the 32 worker threads and the 64 queue places, and a 97th read, for `00000000002`, submitted before any of them completes, ends exceptionally with `UNAVAILABLE` while the recording entry store holds no command for `cs:v1:account:00000000002`.
+> > SCOPE-QUESTION (Resolved): Which criterion carries the authorization constraint of this account-data access path? None of AC1–AC14 does. Resolution: AC15 below. The client adds no access check of its own, and its unit suite adds no case for AC15: the account access guard (CS-12-003) decides access before any caller invokes the client, so the proof sits with the guard and with the endpoint stories that call this client.
+> >
+> > - AC15: Authorization: a request for account `00000000011` with `fixture-token-user0001`, outside the entitlements of `USER0001` (CS-12-001), returns 403 with `code` `PERMISSION_DENIED` from the account access guard before any call reaches this client. For that request the Card Data stub request log holds zero entries and the cache records zero reads of `cs:v1:account:00000000011` and `cs:v1:category-balances:00000000011`, so no account data is read from upstream or cache before access is allowed. The proof is delegated to CS-12-003 AC1, CS-12-005 AC3 and the endpoint stories that call this client: CS-05-005 AC2, CS-06-002 AC4 and CS-08-002 AC1.
 >
 > ### 3. Dependencies
 >
@@ -104,7 +109,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass with ≥80% line coverage per module. `CardDataClientTest` and `CardDataClientCacheTest` cover AC1–AC14 on the loopback stub harness with per-test latency and failure overrides: the attempt timeout, the retry counts and the non-retried statuses, the fit rule, the 2,000 ms deadline case, fresh hit, miss and write-back, stale refresh, stale fallback at 60 s and 299 s, expiry at 300 s and with no entry, the fail-hard cross-reference read, not-found, Redis failure, the forwarded credentials and their absence from logs, the swap point and the worker-pool bound.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass with ≥80% line coverage per module. `CardDataClientTest` and `CardDataClientCacheTest` cover AC1–AC14 on the loopback stub harness with per-test latency and failure overrides: the attempt timeout, the retry counts and the non-retried statuses, the fit rule, the 2,000 ms deadline case, fresh hit, miss and write-back, stale refresh, stale fallback at 60 s and 299 s, expiry at 300 s and with no entry, the fail-hard cross-reference read, not-found, Redis failure, the forwarded credentials and their absence from logs, the swap point and the worker-pool bound. AC15 is proven where the account access guard runs, by CS-12-003, CS-12-005 and the endpoint stories that call this client.
 - Integration: Applies through the Card Data integration suite CS-09-006, which runs this client against the Card Data stub on a real gRPC channel with Testcontainers `postgres:16.6` and `redis:7.4.2`; this story adds no integration suite. Command `./gradlew :card-servicing-service:integrationTest`; all pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Applies through the balance summary SLA scenario (CS-01-005) and the category balance SLA scenario (CS-02-002), whose endpoints call this client:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -239,6 +244,7 @@ Open assumptions:
 | AC12 | Holds | both credentials ride on each call with the frame logger silenced |
 | AC13 | Holds | the channel reads its target address from configuration |
 | AC14 | Holds | the pool bound turns overflow into the unavailable status |
+| AC15 | Holds | the account access guard denies the request before any read reaches the client |
 
 ### Option B
 
@@ -270,6 +276,7 @@ Open assumptions:
 | AC12 | Holds | both credentials ride on each call with the frame logger silenced |
 | AC13 | Holds | the channel reads its target address from configuration |
 | AC14 | Breaks | the option holds no worker pool to fill |
+| AC15 | Holds | the account access guard denies the request before any callback chain starts |
 
 ## Metadata
 

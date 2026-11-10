@@ -104,6 +104,7 @@ Parent epic: [CS-03 Transaction List Drill-Down](../README.md)
   - [transaction-activity-service.yaml](../../../../../card-servicing-service/src/main/resources/openapi/transaction-activity-service.yaml)
   - [transaction_activity_service.proto](../../../../../card-servicing-service/src/main/proto/cardservicing/transactionactivity/v1/transaction_activity_service.proto)
   - [auth-service.yaml](../../../../../card-servicing-service/src/main/resources/openapi/auth-service.yaml)
+  - [auth_service.proto](../../../../../card-servicing-service/src/main/proto/cardservicing/auth/v1/auth_service.proto)
   - [common.proto](../../../../../card-servicing-contracts/src/main/proto/cardservicing/common/v1/common.proto)
 
 ## 5. Documentation Changes

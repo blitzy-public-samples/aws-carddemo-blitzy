@@ -5,16 +5,39 @@
  * `node tests/validation/check-contracts.mjs`. It takes no arguments; -h or --help
  * prints its usage and exits 0, and any other argument exits 2.
  *
- * Passes when every listed interface has its `.proto` and OpenAPI 3.1 document,
- * buf.yaml and .spectral.yaml pass validation (checkLintConfigs), no path this check
- * reads or a tool lints (buf.yaml, the two proto roots and everything inside them,
- * .spectral.yaml and the six OpenAPI documents) is or sits below a symbolic link,
- * `buf lint` and Spectral report zero errors, no proto carries a `buf:lint:ignore`
- * directive (a comment line that begins with it), the fourteen Stub Contract Baseline
- * operations are present under their baseline RPC names, REST methods and paths,
- * every RPC and OpenAPI operation carries examples and the standard error object, and
- * the ErrorObject schema is identical across the six OpenAPI documents and mirrors
- * cardservicing.common.v1.ErrorObject in camelCase.
+ * Passes when every listed interface has its `.proto` and OpenAPI 3.1 document and:
+ * - buf.yaml and .spectral.yaml pass validation (checkLintConfigs), and `buf lint`
+ *   (buf.yaml v2 over both proto roots with STANDARD and COMMENTS) and Spectral
+ *   (.spectral.yaml extending spectral:oas) report zero errors;
+ * - no path this check reads or a tool lints (buf.yaml, the two proto roots and
+ *   everything inside them, .spectral.yaml and the six OpenAPI documents) is or sits
+ *   below a symbolic link, and no proto carries a `buf:lint:ignore` directive (a
+ *   comment line that begins with it);
+ * - the fourteen Stub Contract Baseline operations are present under their RPC
+ *   names, REST methods, paths and operationIds;
+ * - the fixed baseline field contracts hold, extended only additively: proto message
+ *   field types, labels, numbers, JSON names and oneof membership and RPC signatures;
+ *   REST parameters, request bodies, 200 headers and 200 schemas, by every JSON Schema
+ *   contract keyword, those beside a `$ref` included; and the ErrorObject schema;
+ * - each baseline RPC agrees with its REST twin field by field, added fields included;
+ * - every service proto imports common.proto and declares the ErrorDetail carrier of
+ *   cardservicing.common.v1.ErrorObject, and every RPC's comment carries an Example
+ *   request and an Example response, each JSON matching its message, and Errors
+ *   codes that are standard ErrorObject codes matching its REST twin's error
+ *   statuses, with the commitment that the ErrorObject is packed into
+ *   google.rpc.Status details;
+ * - every OpenAPI operation has a description, its baseline status set (any other
+ *   operation a 200 and an error response), a 200 with a JSON schema and an example,
+ *   examples that carry a value valid against their schema, and on every error
+ *   response, `default` included, the ErrorObject schema with no keyword beside its
+ *   `$ref`, and an example, carrying its status's ErrorObject code where the status
+ *   maps to one;
+ * - ErrorObject is identical across the six OpenAPI documents and mirrors
+ *   cardservicing.common.v1.ErrorObject in camelCase.
+ * A content violation prints as path:line. One with no source site prints as path:
+ * a missing or unreadable file, a symbolic link, a missing tool or YAML parser, a
+ * linter process failure or a tool held back, or YAML content read by the js-yaml
+ * fallback.
  *
  * Nothing reached through a symbolic link is read by this check or linted by a tool,
  * because a link may lead outside the repository or into a CardDemo reference root.
@@ -31,7 +54,7 @@
  * more violation naming why, so neither tool reads a path the checks did not allow.
  *
  * A failing check is fixed in the contracts, never by weakening this script.
- * Output: one line per violation and a final count (lib/markdown.mjs report).
+ * Output: one line per distinct violation and a final count (lib/markdown.mjs report).
  * Informational lines read `check-contracts (note): <note>` and are not violations.
  * Exit 0 with no violation, 1 with any, 2 on an internal or setup error, such as no
  * resolvable YAML parser or @stoplight/spectral-rulesets (the count is still printed).
@@ -133,8 +156,24 @@ function repoRelative(printed) {
   return toPosix(rel);
 }
 
+/** Maps a 0-based character offset in `text` to its 1-based line. */
+function lineLocator(text) {
+  const starts = [0];
+  for (let i = 0; i < text.length; i++) if (text[i] === '\n') starts.push(i + 1);
+  return (offset) => {
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid] <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo + 1;
+  };
+}
+
 // ---------------------------------------------------------------------------
-// YAML parser
+// YAML parser and source locations
 // ---------------------------------------------------------------------------
 
 /** A YAML syntax error, duplicate keys included, with its 1-based line (undefined when unknown). */
@@ -148,25 +187,33 @@ class YamlSyntaxError extends Error {
 
 /**
  * Resolves a strict YAML parser from the locked tool tree: @stoplight/yaml (Spectral's
- * own parser), else js-yaml (hoisted by the mermaid toolchain). The parser it returns
- * throws a YamlSyntaxError on any syntax error or duplicate key; @stoplight/yaml's plain
- * `parse` returns a partial result instead, which would let a malformed configuration
- * be judged by its fragments. Never add a YAML package to package.json for this: the
- * manifest pins exactly the three validation tools.
+ * own parser), else js-yaml (hoisted by the mermaid toolchain). Never add a YAML package
+ * to package.json for this: the manifest pins exactly the three validation tools.
+ *
+ * The parser maps YAML text to { data, locate } and throws a YamlSyntaxError on any
+ * syntax error or duplicate key; @stoplight/yaml's plain `parse` returns a partial
+ * result instead, which would let a malformed document be judged by its fragments.
+ * `locate(jsonPath)` gives the 1-based line of the key a JSON path reaches (see
+ * yamlLine); @stoplight/yaml provides it from its AST. js-yaml keeps no node positions,
+ * so under it `locate` is null and every content violation of a YAML document falls
+ * back to file-level output.
  */
 function resolveYamlParser() {
   const require = createRequire(new URL('./package.json', import.meta.url));
   try {
-    const { parseWithPointers } = require('@stoplight/yaml');
-    if (typeof parseWithPointers === 'function') {
+    const { parseWithPointers, Kind } = require('@stoplight/yaml');
+    if (typeof parseWithPointers === 'function' && isObject(Kind)) {
       return (text) => {
-        const { data, diagnostics } = parseWithPointers(text);
-        const error = (Array.isArray(diagnostics) ? diagnostics : []).find((d) => d?.severity === 0);
+        const result = parseWithPointers(text);
+        const diagnostics = Array.isArray(result.diagnostics) ? result.diagnostics : [];
+        const error = diagnostics.find((d) => d?.severity === 0);
         if (error) {
           const line = error.range?.start?.line;
           throw new YamlSyntaxError(String(error.message ?? 'syntax error'), Number.isInteger(line) ? line + 1 : undefined);
         }
-        return data;
+        const lineAt = lineLocator(text);
+        const locate = result.ast ? (jsonPath) => astKeyLine(result.ast, Kind, jsonPath, lineAt) : null;
+        return { data: result.data, locate };
       };
     }
   } catch {
@@ -177,7 +224,7 @@ function resolveYamlParser() {
     if (typeof load === 'function') {
       return (text) => {
         try {
-          return load(text);
+          return { data: load(text), locate: null };
         } catch (err) {
           if (err?.name !== 'YAMLException') throw err;
           const line = err.mark?.line;
@@ -190,6 +237,86 @@ function resolveYamlParser() {
   }
   return null;
 }
+
+/**
+ * 1-based line of the deepest key a JSON path reaches in a @stoplight/yaml AST: the
+ * line of the path's last mapping key (or sequence item), so a path whose tail does
+ * not exist gives its nearest existing ancestor, and the empty path gives line 1. A
+ * key is matched as the data is built, the last of duplicate keys winning.
+ */
+function astKeyLine(ast, Kind, jsonPath, lineAt) {
+  let node = ast;
+  let offset = 0;
+  for (const segment of jsonPath) {
+    while (node?.kind === Kind.ANCHOR_REF) node = node.value;
+    if (node?.kind === Kind.MAP && Array.isArray(node.mappings)) {
+      const key = String(segment);
+      const mapping = node.mappings.findLast((m) => m?.key?.kind === Kind.SCALAR && m.key.value === key);
+      if (!mapping) break;
+      offset = mapping.key.startPosition;
+      node = mapping.value;
+    } else if (node?.kind === Kind.SEQ && Array.isArray(node.items)) {
+      const item = /^\d+$/.test(String(segment)) ? node.items[Number(segment)] : undefined;
+      if (!item) break;
+      offset = item.startPosition;
+      node = item;
+    } else {
+      break;
+    }
+  }
+  return lineAt(offset);
+}
+
+/** Location of every object and array loadYaml returned: node → { locate, path }. */
+const yamlLocations = new WeakMap();
+
+/**
+ * Records each object and array of a loaded document with the document's locator and
+ * the JSON path that reaches it (the first one walked, should a node be shared).
+ */
+function recordYamlLocations(root, locate) {
+  const stack = [[root, []]];
+  while (stack.length > 0) {
+    const [node, jsonPath] = stack.pop();
+    if (node === null || typeof node !== 'object' || yamlLocations.has(node)) continue;
+    yamlLocations.set(node, { locate, path: jsonPath });
+    const entries = Array.isArray(node) ? node.map((v, i) => [i, v]) : Object.entries(node);
+    for (let i = entries.length - 1; i >= 0; i--) stack.push([entries[i][1], [...jsonPath, entries[i][0]]]);
+  }
+}
+
+/**
+ * Source line for a violation's `line`, from the YAML location of an object or array
+ * that loadYaml returned or that is reachable from it. A deref result is located at
+ * its own definition, because a resolved `$ref` target is that node itself.
+ *
+ *   yamlLine(node)       line of node's own key (or sequence item); 1 for a document root
+ *   yamlLine(node, key)  line of node[key]'s key; when node has no key `key`, node's own
+ *                        line, so a missing key is reported at its nearest existing ancestor
+ *
+ * Returns undefined when nothing locates the node: a scalar, null or undefined, a value
+ * not taken from a loaded document, or any node under the js-yaml fallback parser.
+ * Pass the result as `line` as it is: report() prints an undefined line in the
+ * file-level form.
+ *
+ * @param {unknown} node
+ * @param {string | number} [key] mapping key, or sequence index
+ * @returns {number | undefined}
+ */
+function yamlLine(node, key) {
+  const at = node !== null && typeof node === 'object' ? yamlLocations.get(node) : undefined;
+  if (!at) return undefined;
+  return at.locate(key === undefined ? at.path : [...at.path, key]);
+}
+
+/**
+ * yamlLine for a document root that loadYaml returned. An empty or scalar document has
+ * no node to locate, and its site is line 1.
+ * @param {unknown} doc
+ * @param {string | number} [key]
+ * @returns {number | undefined}
+ */
+const yamlDocLine = (doc, key) => (doc !== null && typeof doc === 'object' ? yamlLine(doc, key) : 1);
 
 // ---------------------------------------------------------------------------
 // Linters
@@ -532,6 +659,25 @@ function nonLocalRefs(value) {
   return out;
 }
 
+/**
+ * Line of the first `$ref` key in a loaded YAML value whose target is `ref`, in the
+ * document order nonLocalRefs walks; undefined when no node is located (yamlLine).
+ */
+function refLine(value, ref) {
+  const seen = new Set();
+  const walk = (node) => {
+    if (node === null || typeof node !== 'object' || seen.has(node)) return undefined;
+    seen.add(node);
+    if (!Array.isArray(node) && node.$ref === ref) return yamlLine(node, '$ref');
+    for (const child of Array.isArray(node) ? node : Object.values(node)) {
+      const line = walk(child);
+      if (line !== undefined) return line;
+    }
+    return undefined;
+  };
+  return walk(value);
+}
+
 /** The first three references, quoted, followed by the count of any others. */
 function listRefs(refs) {
   const shown = refs
@@ -583,72 +729,80 @@ function keepsErrorSeverity(setting) {
 /** Validates buf.yaml as checkLintConfigs sets out; true when buf may run on it. */
 function checkBufConfig(parseYaml, violations) {
   const before = violations.length;
-  const add = (message) => violations.push({ path: BUF_CONFIG, message });
+  const add = (message, line) => violations.push({ path: BUF_CONFIG, line, message });
   const buf = loadYaml(BUF_CONFIG, parseYaml, violations);
   if (buf === undefined) return false;
   if (!isObject(buf)) {
-    add('configuration is not a YAML mapping');
+    add('configuration is not a YAML mapping', yamlDocLine(buf));
     return false;
   }
   for (const key of Object.keys(buf)) {
     if (!BUF_KEYS.includes(key)) {
-      add(`key "${key}" is not allowed: ${BUF_KEY_REASONS[key] ?? `buf.yaml may hold only ${BUF_KEYS.join(', ')}`}`);
+      add(`key "${key}" is not allowed: ${BUF_KEY_REASONS[key] ?? `buf.yaml may hold only ${BUF_KEYS.join(', ')}`}`, yamlLine(buf, key));
     }
   }
   if (buf.version !== 'v2') {
-    add(`version is ${buf.version === undefined ? 'missing' : JSON.stringify(buf.version)}, expected "v2"`);
+    add(`version is ${buf.version === undefined ? 'missing' : JSON.stringify(buf.version)}, expected "v2"`, yamlDocLine(buf, 'version'));
   }
 
   const roots = [CONTRACTS_PROTO_ROOT, SERVICE_PROTO_ROOT];
   const paths = [];
+  // The line of each entry in paths, so a repeated or extra path is reported at its entry.
+  const pathLines = [];
+  const modulesLine = yamlDocLine(buf, 'modules');
   if (!Array.isArray(buf.modules)) {
-    add('modules is not a list of path entries');
+    add('modules is not a list of path entries', modulesLine);
   } else {
     buf.modules.forEach((entry, i) => {
       const label = typeof entry?.path === 'string' ? `module ${entry.path}` : `module entry ${i + 1}`;
+      const entryLine = yamlLine(buf.modules, i);
       if (!isObject(entry)) {
-        add(`${label} is not a mapping`);
+        add(`${label} is not a mapping`, entryLine);
         return;
       }
       for (const key of Object.keys(entry)) {
         if (key !== 'path') {
-          add(`${label}: key "${key}" is not allowed: a module entry holds only path, so nothing narrows what buf lints in it`);
+          add(`${label}: key "${key}" is not allowed: a module entry holds only path, so nothing narrows what buf lints in it`, yamlLine(entry, key));
         }
       }
-      if (typeof entry.path === 'string') paths.push(entry.path);
-      else add(`${label}: path is missing or not a string`);
+      if (typeof entry.path === 'string') {
+        paths.push(entry.path);
+        pathLines.push(yamlLine(entry, 'path'));
+      } else {
+        add(`${label}: path is missing or not a string`, yamlLine(entry, 'path'));
+      }
     });
   }
   for (const root of roots) {
-    if (!paths.includes(root)) add(`modules lack path ${root}`);
+    if (!paths.includes(root)) add(`modules lack path ${root}`, modulesLine);
   }
   const seen = new Set();
-  for (const p of paths) {
-    if (seen.has(p)) add(`modules list path ${p} more than once`);
-    else if (!roots.includes(p)) add(`modules include path ${p}, which buf would read; the modules must be exactly ${roots.join(' and ')}`);
+  paths.forEach((p, j) => {
+    if (seen.has(p)) add(`modules list path ${p} more than once`, pathLines[j]);
+    else if (!roots.includes(p)) add(`modules include path ${p}, which buf would read; the modules must be exactly ${roots.join(' and ')}`, pathLines[j]);
     seen.add(p);
-  }
+  });
 
   const lint = buf.lint;
-  if (lint !== undefined && !isObject(lint)) add('lint is not a mapping');
+  if (lint !== undefined && !isObject(lint)) add('lint is not a mapping', yamlDocLine(buf, 'lint'));
   const settings = isObject(lint) ? lint : {};
   const use = settings.use;
   if (use !== undefined && !(Array.isArray(use) && use.every((name) => typeof name === 'string'))) {
-    add('lint.use is not a list of rule and category names');
+    add('lint.use is not a list of rule and category names', yamlLine(settings, 'use'));
   }
   const used = Array.isArray(use) ? use : [];
   for (const category of ['STANDARD', 'COMMENTS']) {
-    if (!used.includes(category)) add(`lint.use lacks ${category}`);
+    if (!used.includes(category)) add(`lint.use lacks ${category}`, yamlLine(settings, 'use') ?? yamlDocLine(buf, 'lint'));
   }
   for (const [key, value] of Object.entries(settings)) {
     if (key === 'use' || (key === 'disallow_comment_ignores' && value === true)) continue;
     if (key === 'disallow_comment_ignores') {
-      add(`lint.disallow_comment_ignores is ${JSON.stringify(value)}; only true is allowed`);
+      add(`lint.disallow_comment_ignores is ${JSON.stringify(value)}; only true is allowed`, yamlLine(settings, key));
     } else {
       const reason =
         BUF_LINT_KEY_REASONS[key] ??
         'lint may hold only use and disallow_comment_ignores: true, because any other setting relaxes the STANDARD or COMMENTS rules';
-      add(`lint.${key} is not allowed: ${reason}`);
+      add(`lint.${key} is not allowed: ${reason}`, yamlLine(settings, key));
     }
   }
   return violations.length === before;
@@ -661,43 +815,46 @@ function checkBufConfig(parseYaml, violations) {
  */
 function checkSpectralRuleset(parseYaml, violations) {
   const before = violations.length;
-  const add = (message) => violations.push({ path: SPECTRAL_RULESET, message });
+  const add = (message, line) => violations.push({ path: SPECTRAL_RULESET, line, message });
   const ruleset = loadYaml(SPECTRAL_RULESET, parseYaml, violations);
   if (ruleset === undefined) return { ready: false, setupFailure: false };
   if (!isObject(ruleset)) {
-    add('ruleset is not a YAML mapping');
+    add('ruleset is not a YAML mapping', yamlDocLine(ruleset));
     return { ready: false, setupFailure: false };
   }
   for (const key of Object.keys(ruleset)) {
     if (!SPECTRAL_KEYS.includes(key)) {
-      add(`key "${key}" is not allowed: ${SPECTRAL_KEY_REASONS[key] ?? `the ruleset may hold only ${SPECTRAL_KEYS.join(' and ')}`}`);
+      add(`key "${key}" is not allowed: ${SPECTRAL_KEY_REASONS[key] ?? `the ruleset may hold only ${SPECTRAL_KEYS.join(' and ')}`}`, yamlLine(ruleset, key));
     }
   }
 
   const ext = ruleset.extends;
   const entries = ext === undefined ? [] : Array.isArray(ext) ? ext : [ext];
   const namesOas = (entry) => entry === OAS_RULESET || (Array.isArray(entry) && entry[0] === OAS_RULESET);
-  if (!entries.some(namesOas)) add(`extends does not include "${OAS_RULESET}"`);
+  const extendsLine = yamlDocLine(ruleset, 'extends');
+  // An entry's line: its item when extends is a list, else the extends key.
+  const entryLine = (i) => (Array.isArray(ext) ? yamlLine(ext, i) ?? extendsLine : extendsLine);
+  if (!entries.some(namesOas)) add(`extends does not include "${OAS_RULESET}"`, extendsLine);
   let oasEntries = 0;
-  for (const entry of entries) {
+  entries.forEach((entry, i) => {
     if (!namesOas(entry)) {
-      add(`extends entry ${describeSetting(entry)} is not allowed: Spectral would load it before any check; extends holds only "${OAS_RULESET}"`);
+      add(`extends entry ${describeSetting(entry)} is not allowed: Spectral would load it before any check; extends holds only "${OAS_RULESET}"`, entryLine(i));
     } else if (entry !== OAS_RULESET && !(entry.length === 2 && OAS_MODES.includes(entry[1]))) {
-      add(`extends entry ${JSON.stringify(entry)} is not allowed: only "${OAS_RULESET}" or ["${OAS_RULESET}", "recommended" | "all"] keeps its rules active`);
+      add(`extends entry ${JSON.stringify(entry)} is not allowed: only "${OAS_RULESET}" or ["${OAS_RULESET}", "recommended" | "all"] keeps its rules active`, entryLine(i));
     } else if (++oasEntries > 1) {
-      add(`extends lists "${OAS_RULESET}" more than once`);
+      add(`extends lists "${OAS_RULESET}" more than once`, entryLine(i));
     }
-  }
+  });
 
   for (const ref of nonLocalRefs(ruleset)) {
-    add(`$ref ${JSON.stringify(ref)} is not allowed: Spectral would load it before any check; only local "#" references are`);
+    add(`$ref ${JSON.stringify(ref)} is not allowed: Spectral would load it before any check; only local "#" references are`, refLine(ruleset, ref));
   }
 
   let setupFailure = false;
   if (hasOwn(ruleset, 'rules')) {
     const rules = ruleset.rules;
     if (!isObject(rules)) {
-      add('rules is not a mapping of rule names to settings');
+      add('rules is not a mapping of rule names to settings', yamlLine(ruleset, 'rules'));
     } else if (Object.keys(rules).length > 0) {
       const errorRules = oasErrorRules();
       if (errorRules === null) {
@@ -711,6 +868,7 @@ function checkSpectralRuleset(parseYaml, violations) {
           if (errorRules.has(name) && !keepsErrorSeverity(setting)) {
             add(
               `rules.${name} is ${describeSetting(setting)}: ${OAS_RULESET} reports this rule as an error, and an override may only keep it at error ("error" or true)`,
+              yamlLine(rules, name),
             );
           }
         }
@@ -754,12 +912,23 @@ function checkLintConfigs(parseYaml, violations, linked) {
   return { bufReady, spectralReady: spectral.ready, setupFailure: spectral.setupFailure };
 }
 
+/*
+ * Source anchors. A violation about content that exists in a file carries the
+ * 1-based `line` of its site (yamlLine for a YAML node, the parseProto model's lines
+ * for a proto), and report() prints it as `path:line:`. A violation with no source
+ * site keeps the file-level `path:` form: an expected file that is missing or cannot
+ * be read, a symbolic link, a missing tool binary, a buf or Spectral process failure
+ * or a tool held back, no resolvable YAML parser, and any YAML content under the
+ * js-yaml fallback, which keeps no node positions.
+ */
+
 /**
- * Parses a root-relative YAML file; undefined (with a violation) when it is absent,
- * cannot be read (a directory, no permission and the like) or does not parse. Only a
- * YamlSyntaxError, duplicate keys included, is a parse failure, reported at the line
- * the parser names; any other error the parser throws is an internal error. Callers
- * never pass a path reached through a symbolic link: main reports the link instead.
+ * Parses a root-relative YAML file and records its node locations for yamlLine;
+ * undefined (with a violation) when it is absent, cannot be read (a directory, no
+ * permission and the like) or does not parse. Only a YamlSyntaxError, duplicate keys
+ * included, is a parse failure, reported at the line the parser names; any other error
+ * the parser throws is an internal error. Callers never pass a path reached through a
+ * symbolic link: main reports the link instead.
  */
 function loadYaml(rel, parseYaml, violations) {
   if (!exists(rel)) {
@@ -773,8 +942,9 @@ function loadYaml(rel, parseYaml, violations) {
     violations.push({ path: rel, message: `cannot be read: ${String(err?.message ?? err).split('\n')[0]}` });
     return undefined;
   }
+  let parsed;
   try {
-    return parseYaml(text) ?? null;
+    parsed = parseYaml(text);
   } catch (err) {
     if (!(err instanceof YamlSyntaxError)) throw err;
     violations.push({
@@ -784,6 +954,9 @@ function loadYaml(rel, parseYaml, violations) {
     });
     return undefined;
   }
+  const data = parsed.data ?? null;
+  if (parsed.locate) recordYamlLocations(data, parsed.locate);
+  return data;
 }
 
 // ---------------------------------------------------------------------------
@@ -865,12 +1038,18 @@ function closingBrace(src, open) {
   return src.length;
 }
 
+/** `text` from `start` on replaced by `lead` and spaces, keeping its length. */
+const blankFrom = (text, start, lead) => `${text.slice(0, start)}${lead}${' '.repeat(text.length - start - lead.length)}`;
+
 /**
  * A message body's own statements: nested message, enum and extend blocks and option
  * aggregates are dropped, while oneof bodies are kept, because oneof members are
- * fields of the enclosing message.
+ * fields of the enclosing message. Dropped text is blanked and a dropped block or a
+ * oneof's closing brace becomes `;`, so the result is as long as the body and an
+ * offset in it is the same offset in the body. When `oneofs` is an array, each oneof
+ * is appended to it as { name, start, end }: the body offsets its members lie between.
  */
-function topLevelStatements(body) {
+function topLevelStatements(body, oneofs) {
   let out = '';
   for (let i = 0; i < body.length; i++) {
     const ch = body[i];
@@ -881,9 +1060,15 @@ function topLevelStatements(body) {
     } else if (ch === '{') {
       const close = closingBrace(body, i);
       const inner = body.slice(i + 1, close);
-      const oneof = /\boneof\s+[A-Za-z_]\w*\s*$/.exec(out);
-      if (oneof) out = `${out.slice(0, oneof.index)};${topLevelStatements(inner)};`;
-      else out = `${out.replace(/\b(?:message|enum|extend)\s+[\w.]+\s*$/, '')};`;
+      const oneof = /\boneof\s+([A-Za-z_]\w*)\s*$/.exec(out);
+      if (oneof) {
+        oneofs?.push({ name: oneof[1], start: i + 1, end: close });
+        out = `${blankFrom(out, oneof.index, ';')} ${topLevelStatements(inner)};`;
+      } else {
+        const header = /\b(?:message|enum|extend)\s+[\w.]+\s*$/.exec(out);
+        if (header) out = blankFrom(out, header.index, '');
+        out += `${' '.repeat(close - i)};`;
+      }
       i = close;
     } else {
       out += ch;
@@ -896,11 +1081,11 @@ const TYPE_NAME = String.raw`\.?[A-Za-z_][\w.]*`;
 const MAP_TYPE = String.raw`map\s*<\s*[\w.]+\s*,\s*[\w.]+\s*>`;
 /** One field statement: label, type (map types included), name, number and options. */
 const FIELD_RE = new RegExp(
-  String.raw`^(?:(?:repeated|optional|required)\s+)?(${MAP_TYPE}|${TYPE_NAME})\s+([A-Za-z_]\w*)\s*=\s*(\d+)\s*(\[[\s\S]*\])?$`,
+  String.raw`^(?:(repeated|optional|required)\s+)?(${MAP_TYPE}|${TYPE_NAME})\s+([A-Za-z_]\w*)\s*=\s*(\d+)\s*(\[[\s\S]*\])?$`,
 );
-/** One RPC declaration, ended by `;` or an options body. */
+/** One RPC declaration, ended by `;` or an options body: name, then each side's stream flag and type. */
 const RPC_RE = new RegExp(
-  String.raw`\brpc\s+([A-Za-z_]\w*)\s*\(\s*(?:stream\s+)?${TYPE_NAME}\s*\)\s*returns\s*\(\s*(?:stream\s+)?${TYPE_NAME}\s*\)\s*[;{]`,
+  String.raw`\brpc\s+([A-Za-z_]\w*)\s*\(\s*(stream\s+)?(${TYPE_NAME})\s*\)\s*returns\s*\(\s*(stream\s+)?(${TYPE_NAME})\s*\)\s*[;{]`,
   'g',
 );
 
@@ -919,27 +1104,38 @@ function jsonName(fieldName) {
 }
 
 /**
- * Imports, services with their RPCs (name and 1-based line), and messages with their
- * fields (name and JSON name, json_name option honoured) of one proto file.
+ * The model of one proto file that the content checks read. Every line is 1-based,
+ * of the statement's first token.
+ *
+ *   imports   [{ path, line }]  each import statement, in file order
+ *   package   { name, line } of the package statement, or null when there is none
+ *   services  Map name → { name, line, rpcs }; rpcs: [{ name, line, requestType,
+ *             requestStream, responseType, responseStream, comment, commentLines }],
+ *             where a type is as written (a leading `.` kept), a stream flag is true
+ *             when the side is declared `stream`, comment is the leading `//` block
+ *             joined with "\n" (each line's text after `//`), and commentLines is
+ *             that block as [{ line, text }]
+ *   messages  Map name → { name, line, fields } for every message, nested ones
+ *             included (the first of a repeated name kept); fields: [{ name, json,
+ *             type, label, number, oneof, line }] for the message's own fields, oneof
+ *             members included and nested messages' fields excluded, where json is
+ *             the proto3 JSON name (json_name option honoured), type is as written
+ *             (`map<K, V>` included), label is 'repeated', 'optional', 'required'
+ *             (proto2 only) or '' for a singular field, number is an integer, and
+ *             oneof is the name of the oneof the field is a member of, '' for none (a
+ *             proto3 `optional` field is not a member of any)
  */
 function parseProto(text) {
   const { code, comments } = scanProto(text);
   const src = code.join('\n');
-  const lineStarts = [0];
-  for (let i = 0; i < src.length; i++) if (src[i] === '\n') lineStarts.push(i + 1);
-  const lineAt = (offset) => {
-    let lo = 0;
-    let hi = lineStarts.length - 1;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      if (lineStarts[mid] <= offset) lo = mid;
-      else hi = mid - 1;
-    }
-    return lo + 1;
-  };
+  const lineAt = lineLocator(src);
 
   const imports = [];
-  for (const m of src.matchAll(/\bimport\s+(?:(?:public|weak)\s+)?"([^"]*)"\s*;/g)) imports.push(m[1]);
+  for (const m of src.matchAll(/\bimport\s+(?:(?:public|weak)\s+)?"([^"]*)"\s*;/g)) {
+    imports.push({ path: m[1], line: lineAt(m.index) });
+  }
+
+  const pkg = /\bpackage\s+([A-Za-z_][\w.]*)\s*;/.exec(src);
 
   const services = new Map();
   for (const m of src.matchAll(/\bservice\s+([A-Za-z_]\w*)\s*\{/g)) {
@@ -948,9 +1144,19 @@ function parseProto(text) {
     const rpcs = [];
     for (const r of body.matchAll(RPC_RE)) {
       const line = lineAt(open + r.index);
-      rpcs.push({ name: r[1], line, comment: leadingComment(code, comments, line - 1) });
+      const commentLines = leadingComment(code, comments, line - 1);
+      rpcs.push({
+        name: r[1],
+        line,
+        requestType: r[3],
+        requestStream: r[2] !== undefined,
+        responseType: r[5],
+        responseStream: r[4] !== undefined,
+        comment: commentLines.map((c) => c.text).join('\n'),
+        commentLines,
+      });
     }
-    if (!services.has(m[1])) services.set(m[1], { line: lineAt(m.index), rpcs });
+    if (!services.has(m[1])) services.set(m[1], { name: m[1], line: lineAt(m.index), rpcs });
   }
 
   const messages = new Map();
@@ -958,28 +1164,603 @@ function parseProto(text) {
     if (messages.has(m[1])) continue;
     const open = m.index + m[0].length - 1;
     const fields = [];
-    for (const statement of topLevelStatements(src.slice(open + 1, closingBrace(src, open))).split(';')) {
+    const oneofs = [];
+    let offset = open + 1;
+    for (const statement of topLevelStatements(src.slice(open + 1, closingBrace(src, open)), oneofs).split(';')) {
+      const start = offset + (statement.length - statement.trimStart().length);
+      offset += statement.length + 1;
       const f = FIELD_RE.exec(statement.trim());
-      if (!f || f[1] === 'option') continue;
-      const explicit = f[4] ? /\bjson_name\s*=\s*"([^"]*)"/.exec(f[4]) : null;
-      fields.push({ name: f[2], json: explicit ? explicit[1] : jsonName(f[2]) });
+      if (!f || f[2] === 'option') continue;
+      // A proto string literal takes either quote.
+      const explicit = f[5] ? /\bjson_name\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(f[5]) : null;
+      const at = start - (open + 1);
+      fields.push({
+        name: f[3],
+        json: explicit ? (explicit[1] ?? explicit[2]) : jsonName(f[3]),
+        type: f[2],
+        label: f[1] ?? '',
+        number: Number(f[4]),
+        oneof: oneofs.find((o) => at >= o.start && at < o.end)?.name ?? '',
+        line: lineAt(start),
+      });
     }
-    messages.set(m[1], { line: lineAt(m.index), fields });
+    messages.set(m[1], { name: m[1], line: lineAt(m.index), fields });
   }
-  return { imports, services, messages };
+  return { imports, package: pkg ? { name: pkg[1], line: lineAt(pkg.index) } : null, services, messages };
 }
 
 /**
- * The contiguous `//` comment block directly above a 0-based line: comment-only lines,
- * stopping at the first blank or code line.
+ * The contiguous `//` comment block directly above a 0-based line, as [{ line, text }]
+ * with 1-based lines: comment-only lines, stopping at the first blank or code line.
  */
 function leadingComment(code, comments, index) {
   const block = [];
   for (let i = index - 1; i >= 0; i--) {
     if (comments[i] === null || code[i].trim() !== '') break;
-    block.unshift(comments[i]);
+    block.unshift({ line: i + 1, text: comments[i] });
   }
-  return block.join('\n');
+  return block;
+}
+
+// ---------------------------------------------------------------------------
+// RPC examples, Errors blocks and the error carrier
+// ---------------------------------------------------------------------------
+
+/** The example markers of RPC_COMMENT_MARKERS, each with the rpc model key of the type it shows. */
+const RPC_EXAMPLE_TYPES = { 'Example request:': 'requestType', 'Example response:': 'responseType' };
+const RPC_ERRORS_MARKER = 'Errors:';
+/** One Errors entry, `CODE - description`. */
+const ERROR_ENTRY_RE = /^\s*([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*)\s+-\s*(.*)$/;
+/**
+ * The standard ErrorObject codes, each with the REST status it maps to, as the
+ * ErrorObject.code comment in common.proto lists them.
+ */
+const ERROR_CODE_STATUS = new Map([
+  ['INVALID_ARGUMENT', '400'],
+  ['UNAUTHENTICATED', '401'],
+  ['PERMISSION_DENIED', '403'],
+  ['NOT_FOUND', '404'],
+  ['UNAVAILABLE', '503'],
+  ['DEADLINE_EXCEEDED', '504'],
+]);
+/**
+ * The baseline status mapping, ERROR_CODE_STATUS keyed by status: the ErrorObject
+ * `code` every example of a mapped status carries.
+ */
+const ERROR_CODE_BY_STATUS = new Map(Array.from(ERROR_CODE_STATUS, ([code, status]) => [status, code]));
+const ERROR_OBJECT_TYPE = 'cardservicing.common.v1.ErrorObject';
+/** The message each service proto declares to name the error object its RPCs pack. */
+const ERROR_CARRIER = 'ErrorDetail';
+
+const SCALAR_TYPES = new Set([
+  'double', 'float', 'int32', 'int64', 'uint32', 'uint64', 'sint32', 'sint64',
+  'fixed32', 'fixed64', 'sfixed32', 'sfixed64', 'bool', 'string', 'bytes',
+]);
+const INT32_RANGE = [-(2n ** 31n), 2n ** 31n - 1n];
+const UINT32_RANGE = [0n, 2n ** 32n - 1n];
+const INT64_RANGE = [-(2n ** 63n), 2n ** 63n - 1n];
+const UINT64_RANGE = [0n, 2n ** 64n - 1n];
+/** The value range of each integer scalar, which proto3 JSON gives as a number or a decimal string. */
+const INT_RANGES = {
+  int32: INT32_RANGE, sint32: INT32_RANGE, sfixed32: INT32_RANGE,
+  uint32: UINT32_RANGE, fixed32: UINT32_RANGE,
+  int64: INT64_RANGE, sint64: INT64_RANGE, sfixed64: INT64_RANGE,
+  uint64: UINT64_RANGE, fixed64: UINT64_RANGE,
+};
+const MAP_TYPE_RE = /^map\s*<\s*([\w.]+)\s*,\s*([\w.]+)\s*>$/;
+const JSON_NUMBER_RE = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
+const BASE64_RE = /^[A-Za-z0-9+/_-]*={0,2}$/;
+
+/** JSON path of an object member or array item, from `$` for the root value. */
+const memberPath = (p, key) => (/^[A-Za-z_$][\w$]*$/.test(key) ? `${p}.${key}` : `${p}[${JSON.stringify(key)}]`);
+const itemPath = (p, n) => `${p}[${n}]`;
+
+/** A JSON value for a message: its kind, and a scalar's text cut to 40 characters. */
+function jsonKind(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  if (typeof value === 'object') return 'an object';
+  const text = JSON.stringify(value);
+  return `${typeof value} ${text.length > 40 ? `${text.slice(0, 37)}...` : text}`;
+}
+
+/** Simple names of every enum a proto file declares, nested ones included. */
+function protoEnumNames(text) {
+  const src = scanProto(text).code.join('\n');
+  return new Set(Array.from(src.matchAll(/\benum\s+([A-Za-z_]\w*)\s*\{/g), (m) => m[1]));
+}
+
+/**
+ * Every parsed proto as a type scope for resolveProtoType: root-relative path →
+ * { rel, pkg, model, enums }, pkg being '' for a file without a package statement.
+ */
+function protoTypeFiles(protos) {
+  const files = new Map();
+  for (const [rel, model] of protos) {
+    files.set(rel, { rel, pkg: model.package?.name ?? '', model, enums: protoEnumNames(readText(rel)) });
+  }
+  return files;
+}
+
+/**
+ * Resolves a message or enum type as written in the file `from` (a protoTypeFiles
+ * entry) under protobuf scoping: a leading `.` makes the name absolute, else it is
+ * tried in the file's package and then in each enclosing package. A candidate is
+ * looked up in the file itself and in the parsed files it imports, a nested name by
+ * its chain of message names. Returns { kind: 'message', message, file } or
+ * { kind: 'enum' }, or null for a type declared in a file this check does not parse.
+ */
+function resolveProtoType(written, from, typeFiles) {
+  const absolute = written.startsWith('.');
+  const name = absolute ? written.slice(1) : written;
+  const visible = [from];
+  for (const imported of from.model.imports) {
+    for (const root of [CONTRACTS_PROTO_ROOT, SERVICE_PROTO_ROOT]) {
+      const file = typeFiles.get(`${root}/${imported.path}`);
+      if (file && !visible.includes(file)) visible.push(file);
+    }
+  }
+  const scopes = [];
+  if (!absolute) for (let p = from.pkg; p !== ''; p = p.slice(0, Math.max(p.lastIndexOf('.'), 0))) scopes.push(`${p}.`);
+  scopes.push('');
+  for (const scope of scopes) {
+    const full = `${scope}${name}`;
+    for (const file of visible) {
+      const prefix = file.pkg === '' ? '' : `${file.pkg}.`;
+      if (!full.startsWith(prefix)) continue;
+      const parts = full.slice(prefix.length).split('.');
+      const simple = parts.pop();
+      if (!parts.every((outer) => file.model.messages.has(outer))) continue;
+      if (file.model.messages.has(simple)) return { kind: 'message', message: file.model.messages.get(simple), file };
+      if (file.enums.has(simple)) return { kind: 'enum' };
+    }
+  }
+  return null;
+}
+
+/** What a proto3 JSON value of a scalar type must be, or null when `value` is one. */
+function scalarExpectation(value, type) {
+  if (type === 'string') return typeof value === 'string' ? null : 'a string';
+  if (type === 'bytes') return typeof value === 'string' && BASE64_RE.test(value) ? null : 'a base64 string';
+  if (type === 'bool') return typeof value === 'boolean' ? null : 'true or false';
+  if (type === 'double' || type === 'float') {
+    const ok =
+      typeof value === 'number' ||
+      (typeof value === 'string' && (JSON_NUMBER_RE.test(value) || ['NaN', 'Infinity', '-Infinity'].includes(value)));
+    return ok ? null : 'a number, or "NaN", "Infinity" or "-Infinity"';
+  }
+  const [min, max] = INT_RANGES[type];
+  let n = null;
+  if (typeof value === 'number' && Number.isInteger(value)) n = BigInt(value);
+  else if (typeof value === 'string' && /^-?\d+$/.test(value)) n = BigInt(value);
+  return n !== null && n >= min && n <= max ? null : `an integer from ${min} to ${max}, as a number or a decimal string`;
+}
+
+/**
+ * Appends to `out` each way a singular value (a repeated item or map value included)
+ * departs from the proto3 JSON form of a type as written in `file`. A type declared
+ * in a file this check does not parse has a JSON form of its own (a well-known type,
+ * for example), so its value is not checked.
+ */
+function valueProblems(value, type, file, typeFiles, path, out) {
+  if (SCALAR_TYPES.has(type)) {
+    const expected = scalarExpectation(value, type);
+    if (expected) out.push({ path, problem: `is ${jsonKind(value)}, expected ${type} (${expected})` });
+    return;
+  }
+  const resolved = resolveProtoType(type, file, typeFiles);
+  if (resolved?.kind === 'message') {
+    if (isObject(value)) messageProblems(value, resolved.message, resolved.file, typeFiles, path, out);
+    else out.push({ path, problem: `is ${jsonKind(value)}, expected an object (message ${type})` });
+  } else if (resolved?.kind === 'enum' && typeof value !== 'string' && !Number.isInteger(value)) {
+    out.push({ path, problem: `is ${jsonKind(value)}, expected enum ${type} (a value name or an integer)` });
+  }
+}
+
+/** valueProblems for a field's value: repeated fields take an array, map fields an object. */
+function fieldProblems(value, field, file, typeFiles, path, out) {
+  const map = MAP_TYPE_RE.exec(field.type);
+  if (map) {
+    if (!isObject(value)) {
+      out.push({ path, problem: `is ${jsonKind(value)}, expected an object (${field.type})` });
+      return;
+    }
+    const [, keyType, valueType] = map;
+    for (const [key, item] of Object.entries(value)) {
+      const child = memberPath(path, key);
+      let expected = null;
+      if (keyType === 'bool') {
+        expected = key === 'true' || key === 'false' ? null : '"true" or "false"';
+      } else if (hasOwn(INT_RANGES, keyType)) {
+        const [min, max] = INT_RANGES[keyType];
+        const inRange = /^-?\d+$/.test(key) && BigInt(key) >= min && BigInt(key) <= max;
+        expected = inRange ? null : `a decimal integer from ${min} to ${max}`;
+      }
+      if (expected) out.push({ path: child, problem: `has a key that is not ${keyType} (${expected})` });
+      valueProblems(item, valueType, file, typeFiles, child, out);
+    }
+  } else if (field.label === 'repeated') {
+    if (!Array.isArray(value)) {
+      out.push({ path, problem: `is ${jsonKind(value)}, expected an array (repeated ${field.type})` });
+      return;
+    }
+    value.forEach((item, n) => valueProblems(item, field.type, file, typeFiles, itemPath(path, n), out));
+  } else {
+    valueProblems(value, field.type, file, typeFiles, path, out);
+  }
+}
+
+/**
+ * Appends to `out` each way a JSON object departs from a message under the proto3
+ * JSON mapping: every key is a field's JSON name or proto name, no field is set under
+ * both, every non-null value has its field's JSON form (null stands for any field's
+ * default, so a null oneof member is unset), and at most one member of each oneof
+ * carries a non-null value. A field's second key is reported at its own path, naming
+ * the field and its first key's path; a null value still sets the key, as proto3 JSON
+ * parsers reject a field already set before reading its value. Each further member of
+ * a oneof is reported at its own path, naming the member set first and its path. A
+ * key repeated verbatim is out of reach here, since JSON.parse keeps only its last
+ * occurrence; jsonSites finds it in the text.
+ */
+function messageProblems(obj, message, file, typeFiles, path, out) {
+  // field → path of the first key that set it.
+  const fieldsSet = new Map();
+  // oneof name → { field, path } of its first member with a non-null value.
+  const oneofsSet = new Map();
+  for (const [key, value] of Object.entries(obj)) {
+    const child = memberPath(path, key);
+    const field = message.fields.find((f) => f.json === key) ?? message.fields.find((f) => f.name === key);
+    if (!field) {
+      out.push({ path: child, problem: `is not a field of ${message.name}` });
+      continue;
+    }
+    const setAt = fieldsSet.get(field);
+    if (setAt === undefined) {
+      fieldsSet.set(field, child);
+    } else {
+      out.push({
+        path: child,
+        problem:
+          `sets field ${message.name}.${field.name}, already set at ${setAt}; proto3 JSON sets a field ` +
+          `once, under its JSON name ${field.json} or its proto name ${field.name}`,
+      });
+    }
+    if (value === null) continue;
+    if (field.oneof) {
+      const first = oneofsSet.get(field.oneof);
+      if (!first) {
+        oneofsSet.set(field.oneof, { field, path: child });
+      } else if (first.field !== field) {
+        out.push({
+          path: child,
+          problem:
+            `sets member ${field.name} of oneof ${message.name}.${field.oneof}, whose member ` +
+            `${first.field.name} is already set at ${first.path}; a oneof holds at most one member`,
+        });
+      }
+    }
+    fieldProblems(value, field, file, typeFiles, child, out);
+  }
+}
+
+/**
+ * Offset of each value's site in a valid JSON text, by the JSON path memberPath and
+ * itemPath build: a member's key, an array item's first character, 0 for the root. A
+ * key repeated within one object keeps its last site, the occurrence JSON.parse keeps,
+ * and each repetition is appended to `repeats` as { path, key, site, first }, first
+ * being the offset of the key's first occurrence in that object.
+ */
+function jsonSites(text, repeats = []) {
+  const sites = new Map([['$', 0]]);
+  let i = 0;
+  const skip = () => {
+    while (i < text.length && /\s/.test(text[i])) i++;
+  };
+  const string = () => {
+    const start = i++;
+    while (i < text.length && text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
+    i++;
+    return JSON.parse(text.slice(start, i));
+  };
+  const value = (p) => {
+    skip();
+    const open = text[i];
+    if (open === '{' || open === '[') {
+      const close = open === '{' ? '}' : ']';
+      // An object's key → offset of its first occurrence.
+      const keys = new Map();
+      i++;
+      skip();
+      for (let n = 0; i < text.length && text[i] !== close; n++) {
+        const site = i;
+        let child = itemPath(p, n);
+        if (open === '{') {
+          const key = string();
+          child = memberPath(p, key);
+          if (keys.has(key)) repeats.push({ path: child, key, site, first: keys.get(key) });
+          else keys.set(key, site);
+          skip();
+          i++; // the ':'
+        }
+        sites.set(child, site);
+        value(child);
+        skip();
+        if (text[i] === ',') i++;
+        skip();
+      }
+      i++;
+    } else if (open === '"') {
+      string();
+    } else {
+      while (i < text.length && !/[\s,\]}]/.test(text[i])) i++;
+    }
+  };
+  value('$');
+  return sites;
+}
+
+/**
+ * The JSON value an example marker introduces in an RPC's leading comment. After the
+ * marker only whitespace, across comment lines, may come before a value opening with
+ * `{` or `[`; the value runs to its balanced close, string-aware, and prose after it
+ * is not part of it. Returns { error, line } when no value follows or it never
+ * closes, else { text, line, lineOf }, lineOf mapping an offset in text to its line.
+ */
+function exampleValue(rpc, marker) {
+  const lines = rpc.commentLines;
+  const at = lines.findIndex((c) => c.text.includes(marker));
+  const first = lines[at];
+  // The rest of the marker line, then every later line of the block, whose lines are consecutive.
+  const rest = first.text.slice(first.text.indexOf(marker) + marker.length);
+  const src = [rest, ...lines.slice(at + 1).map((c) => c.text)].join('\n');
+  const lineAt = lineLocator(src);
+  const start = src.search(/\S/);
+  if (start < 0 || (src[start] !== '{' && src[start] !== '[')) {
+    const found = start < 0 ? '' : ` (found "${src.slice(start).split('\n')[0].trim().slice(0, 40)}")`;
+    return { error: `is not followed by a JSON example${found}`, line: first.line };
+  }
+  const startLine = first.line + lineAt(start) - 1;
+  const end = balancedEnd(src, start);
+  if (end === -2) return { error: 'example opens a JSON value whose brackets do not match', line: startLine };
+  if (end < 0) return { error: 'example opens a JSON value that never closes', line: startLine };
+  return { text: src.slice(start, end + 1), line: startLine, lineOf: (offset) => first.line + lineAt(start + offset) - 1 };
+}
+
+/**
+ * Checks the example after one example marker: a JSON object that parses, repeats no
+ * key within any of its objects, and matches the RPC's request or response message
+ * under the proto3 JSON mapping, so `{}` suits every message. A type declared in a
+ * file this check does not parse is held to being an object with no repeated key.
+ */
+function checkRpcExample(rel, rpc, marker, typeName, typeFiles, violations) {
+  const where = `rpc ${rpc.name}: "${marker}"`;
+  const found = exampleValue(rpc, marker);
+  if (found.error) {
+    violations.push({ path: rel, line: found.line, message: `${where} ${found.error}` });
+    return;
+  }
+  let value;
+  try {
+    value = JSON.parse(found.text);
+  } catch (err) {
+    const reason = String(err?.message ?? err).split('\n')[0];
+    violations.push({ path: rel, line: found.line, message: `${where} example does not parse as JSON: ${reason}` });
+    return;
+  }
+  if (!isObject(value)) {
+    violations.push({ path: rel, line: found.line, message: `${where} example is ${jsonKind(value)}, expected a JSON object (${typeName})` });
+    return;
+  }
+  // JSON.parse keeps only the last of a repeated key, so repetitions are read from the text.
+  const repeats = [];
+  const sites = jsonSites(found.text, repeats);
+  for (const { path: at, key, site, first } of repeats) {
+    violations.push({
+      path: rel,
+      line: found.lineOf(site),
+      message:
+        `${where} example ${at}: key ${JSON.stringify(key)} repeated (first at line ${found.lineOf(first)}); ` +
+        'proto3 JSON allows each field once',
+    });
+  }
+  const from = typeFiles.get(rel);
+  const resolved = from ? resolveProtoType(typeName, from, typeFiles) : null;
+  if (resolved?.kind !== 'message') return;
+  const problems = [];
+  messageProblems(value, resolved.message, resolved.file, typeFiles, '$', problems);
+  for (const { path: at, problem } of problems) {
+    violations.push({ path: rel, line: found.lineOf(sites.get(at) ?? 0), message: `${where} example ${at} ${problem}` });
+  }
+}
+
+/**
+ * The Errors block of an RPC's leading comment, or null when the comment has no
+ * "Errors:" line: the rest of that line and the comment lines after it, up to a blank
+ * comment line, the next marker or the end of the comment. Returns { line, entries,
+ * prose }: line is the marker's, entries holds each `CODE - description` line as
+ * { code, description, line }, and prose the trimmed text of every other line.
+ */
+function rpcErrorsBlock(rpc) {
+  const lines = rpc.commentLines;
+  const at = lines.findIndex((c) => c.text.includes(RPC_ERRORS_MARKER));
+  if (at < 0) return null;
+  const marker = lines[at];
+  const body = [{ line: marker.line, text: marker.text.slice(marker.text.indexOf(RPC_ERRORS_MARKER) + RPC_ERRORS_MARKER.length) }];
+  for (const c of lines.slice(at + 1)) {
+    if (c.text.trim() === '' || RPC_COMMENT_MARKERS.some((m) => c.text.includes(m))) break;
+    body.push(c);
+  }
+  const entries = [];
+  const prose = [];
+  for (const c of body) {
+    if (c.text.trim() === '') continue;
+    const m = ERROR_ENTRY_RE.exec(c.text);
+    if (m) entries.push({ code: m[1], description: m[2].trim(), line: c.line });
+    else prose.push(c.text.trim());
+  }
+  return { line: marker.line, entries, prose };
+}
+
+/**
+ * One whole sentence declaring the packing affirmatively for every error status; group 1
+ * is the packed type as written and group 2 the status type. The leading lookahead
+ * refuses any sentence that carries a denial or restriction token.
+ */
+const PACKING_DECLARATION_RE = new RegExp(
+  [
+    String.raw`^(?!.*(?:\b(?:no|not|never|none|nothing|neither|nor|without|cannot|except|unless|only|some)\b|n['’]t\b))`,
+    String.raw`(?:every|each|all)\s+(?:non-ok\s+status(?:es)?|error\s+status(?:es)?|errors?)\s+`,
+    String.raw`(?:packs?|(?:is|are)\s+packed)\s+(?:as\s+)?(\.?[A-Za-z_][\w.]*)\s+`,
+    String.raw`in(?:to)?\s+(?:the\s+)?([A-Za-z_][\w.]*)\s+details\.?$`,
+  ].join(''),
+  'i',
+);
+
+/**
+ * True when one sentence of `text` declares, affirmatively and for every error status,
+ * that cardservicing.common.v1.ErrorObject is packed into google.rpc.Status details.
+ * The sentence opens with its subject, Every, Each or All followed by non-OK status(es),
+ * error status(es) or error(s); its verb is pack, packs, is packed or are packed, an
+ * "as" allowed after it; then come the type, a leading "." allowed, "in" or "into",
+ * an optional "the", google.rpc.Status and "details", where the sentence ends. A
+ * sentence carrying no, not, never, none, nothing, neither, nor, without, cannot, n't,
+ * except, unless, only or some never counts, so a denial such as "No non-OK status ever
+ * packs …" or a restriction such as "Some non-OK statuses pack …" fails. Words match
+ * in any case, the two type names exactly. Sentences end at a full stop before
+ * whitespace, so the dots of a qualified name stay inside their sentence.
+ */
+function statesPacking(text) {
+  return text.split(/(?<=\.)\s+/).some((sentence) => {
+    const m = PACKING_DECLARATION_RE.exec(sentence.trim());
+    return m !== null && m[1].replace(/^\./, '') === ERROR_OBJECT_TYPE && m[2] === 'google.rpc.Status';
+  });
+}
+
+/**
+ * Checks an RPC's Errors block: at least one `CODE - description` entry, each code a
+ * standard ErrorObject code listed once with a description, and the commitment that
+ * cardservicing.common.v1.ErrorObject is packed into google.rpc.Status details.
+ */
+function checkRpcErrors(rel, rpc, violations) {
+  const block = rpcErrorsBlock(rpc);
+  if (!block) return;
+  const where = `rpc ${rpc.name}: "${RPC_ERRORS_MARKER}"`;
+  if (block.entries.length === 0) {
+    violations.push({ path: rel, line: block.line, message: `${where} lists no "CODE - description" entry` });
+  }
+  const first = new Map();
+  for (const entry of block.entries) {
+    if (!ERROR_CODE_STATUS.has(entry.code)) {
+      violations.push({
+        path: rel,
+        line: entry.line,
+        message: `${where} code ${entry.code} is not a standard ErrorObject code (${[...ERROR_CODE_STATUS.keys()].join(', ')})`,
+      });
+    }
+    if (first.has(entry.code)) {
+      violations.push({ path: rel, line: entry.line, message: `${where} lists ${entry.code} again (first at line ${first.get(entry.code)})` });
+    } else {
+      first.set(entry.code, entry.line);
+    }
+    if (entry.description === '') {
+      violations.push({ path: rel, line: entry.line, message: `${where} entry ${entry.code} has no description` });
+    }
+  }
+  if (!statesPacking(block.prose.join(' '))) {
+    violations.push({
+      path: rel,
+      line: block.line,
+      message: `${where} block does not state that ${ERROR_OBJECT_TYPE} is packed into google.rpc.Status details`,
+    });
+  }
+}
+
+/**
+ * Checks a service proto's error carrier: message ErrorDetail, whose field `error` is
+ * singular, numbered 1 and of type cardservicing.common.v1.ErrorObject, the message
+ * every RPC packs into google.rpc.Status details. A missing message is reported at the
+ * package statement, a missing field at the message and a wrong field at the field.
+ */
+function checkErrorCarrier(rel, proto, typeFiles, violations) {
+  const carrier = proto.messages.get(ERROR_CARRIER);
+  if (!carrier) {
+    violations.push({
+      path: rel,
+      line: proto.package?.line ?? 1,
+      message: `missing message ${ERROR_CARRIER} with field "${ERROR_OBJECT_TYPE} error = 1", the standard error carrier`,
+    });
+    return;
+  }
+  const field = carrier.fields.find((f) => f.name === 'error');
+  if (!field) {
+    violations.push({ path: rel, line: carrier.line, message: `${ERROR_CARRIER} lacks field "${ERROR_OBJECT_TYPE} error = 1"` });
+    return;
+  }
+  const where = `${ERROR_CARRIER}.error`;
+  if (field.label === 'repeated' || MAP_TYPE_RE.test(field.type)) {
+    violations.push({ path: rel, line: field.line, message: `${where} is ${field.label === 'repeated' ? 'repeated' : 'a map'}, expected a singular field` });
+  }
+  if (field.number !== 1) {
+    violations.push({ path: rel, line: field.line, message: `${where} has number ${field.number}, expected 1` });
+  }
+  // Resolved when common.proto is parsed, so a relative name counts; else compared as written.
+  const from = typeFiles.get(rel);
+  const resolved = from ? resolveProtoType(field.type, from, typeFiles) : null;
+  const errorPackage = ERROR_OBJECT_TYPE.slice(0, ERROR_OBJECT_TYPE.lastIndexOf('.'));
+  const errorName = ERROR_OBJECT_TYPE.slice(errorPackage.length + 1);
+  const isErrorObject = resolved
+    ? resolved.kind === 'message' && resolved.file.pkg === errorPackage && resolved.message.name === errorName
+    : field.type.replace(/^\./, '') === ERROR_OBJECT_TYPE;
+  if (!isErrorObject) {
+    violations.push({ path: rel, line: field.line, message: `${where} has type ${field.type}, expected ${ERROR_OBJECT_TYPE}` });
+  }
+}
+
+/**
+ * Holds each baseline RPC's Errors codes to the error statuses of its REST twin under
+ * the ErrorObject code-to-status mapping: a twin status that maps to a code needs that
+ * code under the RPC's "Errors:", reported at that line, and every standard code
+ * listed there needs its status among the twin's responses, reported at `responses`.
+ * Statuses with no code (429, 4XX, default) are not compared. A missing RPC, Errors
+ * block or twin operation is reported by the other checks and skipped here.
+ */
+function checkRpcErrorStatuses(protos, docs, violations) {
+  for (const iface of INTERFACES) {
+    const service = protos.get(iface.proto)?.services.get(iface.service);
+    const doc = docs.get(iface.openapi);
+    if (!service || !doc) continue;
+    for (const op of iface.operations) {
+      const rpc = service.rpcs.find((r) => r.name === op.rpc);
+      const block = rpc ? rpcErrorsBlock(rpc) : null;
+      const twin = `${op.method.toUpperCase()} ${op.path}`;
+      // A broken Path Item reference is reported once, by operationsOf, so it is not collected here.
+      const item = hasOwn(doc.paths, op.path) ? deref(doc, doc.paths[op.path], iface.openapi, twin, []) : undefined;
+      const operation = isObject(item) ? item[op.method] : undefined;
+      if (!block || !isObject(operation)) continue;
+      const statuses = isObject(operation.responses) ? Object.keys(operation.responses) : [];
+      const codes = new Set(block.entries.map((e) => e.code));
+      for (const status of statuses) {
+        const code = ERROR_CODE_BY_STATUS.get(status);
+        if (code && !codes.has(code)) {
+          violations.push({
+            path: iface.proto,
+            line: block.line,
+            message: `rpc ${op.rpc}: "${RPC_ERRORS_MARKER}" lacks ${code}, the code of the ${status} response of REST twin ${twin} in ${iface.openapi}`,
+          });
+        }
+      }
+      for (const code of codes) {
+        const status = ERROR_CODE_STATUS.get(code);
+        if (status && !statuses.includes(status)) {
+          violations.push({
+            path: iface.openapi,
+            line: yamlLine(operation, 'responses'),
+            message: `${twin} (${op.rpc}): responses lack ${status}, the status of ${code}, which rpc ${op.rpc} lists under "${RPC_ERRORS_MARKER}" in ${iface.proto}`,
+          });
+        }
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -987,20 +1768,23 @@ function leadingComment(code, comments, index) {
 // ---------------------------------------------------------------------------
 
 /**
- * Checks the common import, every RPC's comment blocks and the baseline RPCs of each
- * service proto, and returns the camelCase field names of the shared ErrorObject and
- * FieldViolation messages (null for a message that cannot be read).
- *
- * A proto for which `linked(rel)` is true, common.proto included, is reached through a
- * symbolic link and is skipped unread, as a missing one is: main reports the link. A
- * skipped common.proto leaves both shared field lists null.
+ * Checks the common import, every RPC's comment blocks (examples and Errors block), the
+ * ErrorDetail error carrier and the baseline RPCs of each service proto, and returns
+ * the camelCase field names of the shared ErrorObject and FieldViolation messages
+ * (null for a message that cannot be read). `protos` maps each existing proto's
+ * root-relative path to its parseProto model, and `typeFiles` is
+ * protoTypeFiles(protos). main leaves out a proto reached through a symbolic link, as
+ * a missing one is, and reports the link; a left-out common.proto leaves both shared
+ * field lists null. A missing declaration is reported at the package statement, where
+ * imports and declarations follow, or at line 1 when the file has none.
  */
-function checkProtos(violations, linked) {
+function checkProtos(protos, typeFiles, violations) {
   for (const iface of INTERFACES) {
-    if (linked(iface.proto) || !exists(iface.proto)) continue;
-    const proto = parseProto(readText(iface.proto));
-    if (!proto.imports.includes(COMMON_IMPORT)) {
-      violations.push({ path: iface.proto, message: `missing import "${COMMON_IMPORT}"` });
+    const proto = protos.get(iface.proto);
+    if (!proto) continue;
+    const head = proto.package?.line ?? 1;
+    if (!proto.imports.some((i) => i.path === COMMON_IMPORT)) {
+      violations.push({ path: iface.proto, line: head, message: `missing import "${COMMON_IMPORT}"` });
     }
     for (const service of proto.services.values()) {
       for (const rpc of service.rpcs) {
@@ -1011,13 +1795,18 @@ function checkProtos(violations, linked) {
               line: rpc.line,
               message: `rpc ${rpc.name}: leading comment lacks "${marker}"`,
             });
+          } else if (hasOwn(RPC_EXAMPLE_TYPES, marker)) {
+            checkRpcExample(iface.proto, rpc, marker, rpc[RPC_EXAMPLE_TYPES[marker]], typeFiles, violations);
+          } else if (marker === RPC_ERRORS_MARKER) {
+            checkRpcErrors(iface.proto, rpc, violations);
           }
         }
       }
     }
+    checkErrorCarrier(iface.proto, proto, typeFiles, violations);
     const service = proto.services.get(iface.service);
     if (!service) {
-      violations.push({ path: iface.proto, message: `missing baseline service ${iface.service}` });
+      violations.push({ path: iface.proto, line: head, message: `missing baseline service ${iface.service}` });
       continue;
     }
     const names = new Set(service.rpcs.map((r) => r.name));
@@ -1033,15 +1822,19 @@ function checkProtos(violations, linked) {
   }
 
   const shared = { errorObject: null, fieldViolation: null };
-  if (linked(COMMON_PROTO) || !exists(COMMON_PROTO)) return shared;
-  const common = parseProto(readText(COMMON_PROTO));
+  const common = protos.get(COMMON_PROTO);
+  if (!common) return shared;
   for (const [key, name] of [
     ['errorObject', 'ErrorObject'],
     ['fieldViolation', 'FieldViolation'],
   ]) {
     const message = common.messages.get(name);
     if (!message || message.fields.length === 0) {
-      violations.push({ path: COMMON_PROTO, message: `missing message ${name} with fields` });
+      violations.push({
+        path: COMMON_PROTO,
+        line: message?.line ?? common.package?.line ?? 1,
+        message: `missing message ${name} with fields`,
+      });
     } else {
       shared[key] = message.fields.map((f) => f.json);
     }
@@ -1218,13 +2011,13 @@ function deref(doc, node, rel, where, violations) {
   let current = node;
   while (isObject(current) && typeof current.$ref === 'string') {
     if (seen.has(current.$ref)) {
-      violations.push({ path: rel, message: `${where}: $ref "${current.$ref}" is circular` });
+      violations.push({ path: rel, line: yamlLine(current, '$ref'), message: `${where}: $ref "${current.$ref}" is circular` });
       return undefined;
     }
     seen.add(current.$ref);
     const { value, error } = resolvePointer(doc, current.$ref);
     if (error) {
-      violations.push({ path: rel, message: `${where}: ${error}` });
+      violations.push({ path: rel, line: yamlLine(current, '$ref'), message: `${where}: ${error}` });
       return undefined;
     }
     current = value;
@@ -1232,13 +2025,357 @@ function deref(doc, node, rel, where, violations) {
   return current;
 }
 
-const hasMediaExample = (media) =>
-  hasOwn(media, 'example') || (isObject(media?.examples) && Object.keys(media.examples).length > 0);
+/** Key of BASELINE_RESPONSE_STATUSES: an operation's OpenAPI document, method and path. */
+const baselineResponseKey = (rel, method, p) => `${rel} ${method.toUpperCase()} ${p}`;
 
-const hasSchemaExample = (schema) =>
-  hasOwn(schema, 'example') ||
-  (Array.isArray(schema?.examples) && schema.examples.length > 0) ||
-  (isObject(schema?.examples) && Object.keys(schema.examples).length > 0);
+/**
+ * The responses each of the fourteen baseline operations must document: its 200 and
+ * every status of the baseline status mapping the operation can return, as the
+ * delivered documents define them. Each member must be present under its exact key, so
+ * '201' or '2XX' does not stand in for '200'. Statuses beyond the set are allowed,
+ * because the baseline is only ever extended additively.
+ */
+const BASELINE_RESPONSE_STATUSES = new Map(
+  [
+    [
+      'card-servicing-api.yaml',
+      ['200', '400', '401', '403', '404', '503', '504'],
+      [
+        ['get', '/v1/accounts/{accountId}/balance-summary'],
+        ['get', '/v1/accounts/{accountId}/category-balances'],
+        ['get', '/v1/accounts/{accountId}/transactions'],
+        ['get', '/v1/accounts/{accountId}/transactions/{transactionId}'],
+      ],
+    ],
+    [
+      'card-data-service.yaml',
+      ['200', '400', '401', '404', '503', '504'],
+      [
+        ['get', '/v1/card-data/accounts/{accountId}'],
+        ['get', '/v1/card-data/accounts/{accountId}/card-cross-references'],
+        ['get', '/v1/card-data/accounts/{accountId}/category-balances'],
+      ],
+    ],
+    [
+      'transaction-activity-service.yaml',
+      ['200', '400', '401', '404', '503', '504'],
+      [
+        ['get', '/v1/transaction-activity/accounts/{accountId}/transactions'],
+        ['get', '/v1/transaction-activity/transactions/{transactionId}'],
+      ],
+    ],
+    ['config-service.yaml', ['200', '400', '401', '503', '504'], [['get', '/v1/config']]],
+    [
+      'reference-data-service.yaml',
+      ['200', '401', '503', '504'],
+      [
+        ['get', '/v1/reference-data/transaction-types'],
+        ['get', '/v1/reference-data/transaction-categories'],
+      ],
+    ],
+    [
+      'auth-service.yaml',
+      ['200', '400', '401', '503', '504'],
+      [
+        ['post', '/v1/auth/token-validations'],
+        ['get', '/v1/auth/subjects/{subject}/accounts/{accountId}/access'],
+      ],
+    ],
+  ].flatMap(([file, statuses, operations]) =>
+    operations.map(([method, p]) => [baselineResponseKey(`${OPENAPI_DIR}/${file}`, method, p), statuses]),
+  ),
+);
+
+/** Schema every error example is validated against. */
+const ERROR_SCHEMA = { $ref: ERROR_SCHEMA_REF };
+
+/**
+ * The sample payloads a media type entry carries, as { label, value, line }: its own
+ * `example`, and each `examples` entry that resolves, through local references, to an
+ * Example Object with its own `value`. Any other entry is reported at its line, because
+ * a summary or description alone is a label, not a payload. `at` prefixes each message,
+ * as "<operation>: response <status>".
+ */
+function mediaExampleValues(doc, rel, at, media, violations) {
+  const out = [];
+  if (hasOwn(media, 'example')) out.push({ label: 'example', value: media.example, line: yamlLine(media, 'example') });
+  if (media.examples === undefined) return out;
+  if (!isObject(media.examples)) {
+    violations.push({
+      path: rel,
+      line: yamlLine(media, 'examples'),
+      message: `${at} examples is not a map of Example Objects`,
+    });
+    return out;
+  }
+  for (const [name, raw] of Object.entries(media.examples)) {
+    const label = `example "${name}"`;
+    const line = yamlLine(media.examples, name);
+    const example = deref(doc, raw, rel, `${at} ${label}`, violations);
+    if (example === undefined) continue; // a broken or circular reference, reported by deref
+    if (hasOwn(example, 'value')) {
+      out.push({ label, value: example.value, line });
+    } else if (hasOwn(example, 'externalValue')) {
+      // externalValue names a payload outside the contract files. This check runs offline
+      // and reads only those files, so it can neither fetch nor validate that payload.
+      violations.push({
+        path: rel,
+        line,
+        message: `${at} ${label} has only externalValue, which an offline check can neither fetch nor validate`,
+      });
+    } else if (isObject(example)) {
+      violations.push({
+        path: rel,
+        line,
+        message: `${at} ${label} has no value; a summary or description is not an example`,
+      });
+    } else {
+      violations.push({ path: rel, line, message: `${at} ${label} is not an Example Object` });
+    }
+  }
+  return out;
+}
+
+/**
+ * Sample payloads a resolved media schema carries itself, as { label, value, line }: its
+ * `example` and each item of its `examples` array. A success response with no media-level
+ * example may take its payload from here.
+ */
+function schemaExampleValues(schema) {
+  const out = [];
+  if (hasOwn(schema, 'example')) {
+    out.push({ label: 'schema example', value: schema.example, line: yamlLine(schema, 'example') });
+  }
+  if (Array.isArray(schema?.examples)) {
+    schema.examples.forEach((value, i) => {
+      const line = yamlLine(schema.examples, i) ?? yamlLine(schema, 'examples');
+      out.push({ label: `schema examples[${i}]`, value, line });
+    });
+  }
+  return out;
+}
+
+/** JSON-path form of a child of `at`: `.name` for an identifier, `["…"]` for any other key, `[i]` for an index. */
+const childPath = (at, key) =>
+  typeof key === 'number'
+    ? `${at}[${key}]`
+    : /^[A-Za-z_$][\w$]*$/.test(key)
+      ? `${at}.${key}`
+      : `${at}[${JSON.stringify(key)}]`;
+
+/** JSON Schema type name of a YAML-loaded value; a value JSON cannot carry is named by what it is. */
+function jsonTypeOf(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  if (value instanceof Date) return 'timestamp';
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return 'non-finite number';
+    return Number.isInteger(value) ? 'integer' : 'number';
+  }
+  return typeof value;
+}
+
+function matchesType(value, type) {
+  const actual = jsonTypeOf(value);
+  if (type === 'number') return actual === 'number' || actual === 'integer';
+  return actual === type;
+}
+
+/** A value for a message: its JSON text, cut at 60 characters. */
+function shown(value) {
+  const text = JSON.stringify(value) ?? String(value);
+  return text.length > 60 ? `${text.slice(0, 57)}...` : text;
+}
+
+const sameJson = (a, b) => canonicalJson(a) === canonicalJson(b);
+
+const compiledPatterns = new Map();
+
+/** A JSON Schema `pattern` compiled as an ECMA-262 Unicode regular expression; null when it does not compile. */
+function compilePattern(pattern) {
+  if (!compiledPatterns.has(pattern)) {
+    let re = null;
+    try {
+      re = new RegExp(pattern, 'u');
+    } catch {
+      // Reported by the caller as an invalid pattern.
+    }
+    compiledPatterns.set(pattern, re);
+  }
+  return compiledPatterns.get(pattern);
+}
+
+/**
+ * First place where a JSON value breaks a JSON Schema, as { at, message } with `at` a
+ * JSON path from `$`; null when the value conforms. Local `$ref`s resolve against the
+ * document. The validating keywords are those the contracts use, and their JSON Schema
+ * 2020-12 neighbours: type (a name or a list, "null" included), enum, const, pattern
+ * (Unicode), minLength and maxLength (in code points), minimum, maximum,
+ * exclusiveMinimum, exclusiveMaximum, multipleOf, minItems, maxItems, uniqueItems,
+ * items, prefixItems, properties, required, additionalProperties (boolean or schema),
+ * patternProperties, minProperties, maxProperties, allOf, anyOf, oneOf, not and $ref.
+ * `format` and every other keyword are annotations here and never fail a value.
+ *
+ * `refs` holds the references already followed for this same value, so a reference
+ * cycle that never descends into the value is reported instead of recursing forever.
+ */
+function schemaMismatch(doc, schema, value, at = '$', refs = new Set()) {
+  if (schema === undefined || schema === true) return null;
+  if (schema === false) return { at, message: 'no value is allowed here (schema false)' };
+  if (!isObject(schema)) return null;
+  const fail = (message) => ({ at, message });
+
+  if (typeof schema.$ref === 'string') {
+    if (refs.has(schema.$ref)) return fail(`$ref "${schema.$ref}" is circular`);
+    const { value: target, error } = resolvePointer(doc, schema.$ref);
+    if (error) return fail(error);
+    const found = schemaMismatch(doc, target, value, at, new Set([...refs, schema.$ref]));
+    if (found) return found;
+  }
+
+  if (schema.type !== undefined) {
+    const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+    if (!types.some((t) => matchesType(value, t))) {
+      return fail(`is ${jsonTypeOf(value)}, expected ${types.join(' or ')}`);
+    }
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.some((e) => sameJson(e, value))) {
+    return fail(`${shown(value)} is not one of ${shown(schema.enum)}`);
+  }
+  if (hasOwn(schema, 'const') && !sameJson(schema.const, value)) {
+    return fail(`${shown(value)} is not the const ${shown(schema.const)}`);
+  }
+
+  if (typeof value === 'string') {
+    const length = [...value].length;
+    if (typeof schema.minLength === 'number' && length < schema.minLength) {
+      return fail(`length ${length} is below minLength ${schema.minLength}`);
+    }
+    if (typeof schema.maxLength === 'number' && length > schema.maxLength) {
+      return fail(`length ${length} is above maxLength ${schema.maxLength}`);
+    }
+    if (typeof schema.pattern === 'string') {
+      const re = compilePattern(schema.pattern);
+      if (re === null) return fail(`pattern "${schema.pattern}" is not a valid regular expression`);
+      if (!re.test(value)) return fail(`${shown(value)} does not match pattern "${schema.pattern}"`);
+    }
+  }
+
+  if (typeof value === 'number') {
+    if (typeof schema.minimum === 'number' && value < schema.minimum) {
+      return fail(`${value} is below minimum ${schema.minimum}`);
+    }
+    if (typeof schema.maximum === 'number' && value > schema.maximum) {
+      return fail(`${value} is above maximum ${schema.maximum}`);
+    }
+    if (typeof schema.exclusiveMinimum === 'number' && value <= schema.exclusiveMinimum) {
+      return fail(`${value} is not above exclusiveMinimum ${schema.exclusiveMinimum}`);
+    }
+    if (typeof schema.exclusiveMaximum === 'number' && value >= schema.exclusiveMaximum) {
+      return fail(`${value} is not below exclusiveMaximum ${schema.exclusiveMaximum}`);
+    }
+    if (typeof schema.multipleOf === 'number' && schema.multipleOf > 0) {
+      const quotient = value / schema.multipleOf;
+      if (Math.abs(quotient - Math.round(quotient)) > 1e-9 * Math.max(1, Math.abs(quotient))) {
+        return fail(`${value} is not a multiple of ${schema.multipleOf}`);
+      }
+    }
+  }
+
+  if (Array.isArray(value)) {
+    if (typeof schema.minItems === 'number' && value.length < schema.minItems) {
+      return fail(`item count ${value.length} is below minItems ${schema.minItems}`);
+    }
+    if (typeof schema.maxItems === 'number' && value.length > schema.maxItems) {
+      return fail(`item count ${value.length} is above maxItems ${schema.maxItems}`);
+    }
+    if (schema.uniqueItems === true) {
+      const seen = new Map();
+      for (let i = 0; i < value.length; i++) {
+        const key = canonicalJson(value[i]);
+        if (seen.has(key)) return fail(`items [${seen.get(key)}] and [${i}] are equal, but uniqueItems is true`);
+        seen.set(key, i);
+      }
+    }
+    const prefix = Array.isArray(schema.prefixItems) ? schema.prefixItems : [];
+    for (let i = 0; i < value.length; i++) {
+      const found = schemaMismatch(doc, i < prefix.length ? prefix[i] : schema.items, value[i], childPath(at, i));
+      if (found) return found;
+    }
+  }
+
+  if (isObject(value) && !(value instanceof Date)) {
+    const keys = Object.keys(value);
+    if (typeof schema.minProperties === 'number' && keys.length < schema.minProperties) {
+      return fail(`property count ${keys.length} is below minProperties ${schema.minProperties}`);
+    }
+    if (typeof schema.maxProperties === 'number' && keys.length > schema.maxProperties) {
+      return fail(`property count ${keys.length} is above maxProperties ${schema.maxProperties}`);
+    }
+    for (const name of Array.isArray(schema.required) ? schema.required : []) {
+      if (!hasOwn(value, name)) return fail(`required property "${name}" is missing`);
+    }
+    const properties = isObject(schema.properties) ? schema.properties : {};
+    const patterns = isObject(schema.patternProperties) ? Object.entries(schema.patternProperties) : [];
+    for (const key of keys) {
+      const keyAt = childPath(at, key);
+      let declared = false;
+      if (hasOwn(properties, key)) {
+        declared = true;
+        const found = schemaMismatch(doc, properties[key], value[key], keyAt);
+        if (found) return found;
+      }
+      for (const [pattern, sub] of patterns) {
+        const re = compilePattern(pattern);
+        if (re === null) return fail(`patternProperties pattern "${pattern}" is not a valid regular expression`);
+        if (!re.test(key)) continue;
+        declared = true;
+        const found = schemaMismatch(doc, sub, value[key], keyAt);
+        if (found) return found;
+      }
+      if (!declared && schema.additionalProperties !== undefined) {
+        if (schema.additionalProperties === false) {
+          return { at: keyAt, message: 'property is not allowed (additionalProperties is false)' };
+        }
+        const found = schemaMismatch(doc, schema.additionalProperties, value[key], keyAt);
+        if (found) return found;
+      }
+    }
+  }
+
+  for (const sub of Array.isArray(schema.allOf) ? schema.allOf : []) {
+    const found = schemaMismatch(doc, sub, value, at, refs);
+    if (found) return found;
+  }
+  if (Array.isArray(schema.anyOf) && !schema.anyOf.some((sub) => schemaMismatch(doc, sub, value, at, refs) === null)) {
+    return fail('matches none of the anyOf schemas');
+  }
+  if (Array.isArray(schema.oneOf)) {
+    const matched = schema.oneOf.filter((sub) => schemaMismatch(doc, sub, value, at, refs) === null).length;
+    if (matched !== 1) return fail(`matches ${matched} of the oneOf schemas, expected exactly 1`);
+  }
+  if (schema.not !== undefined && schemaMismatch(doc, schema.not, value, at, refs) === null) {
+    return fail('matches the schema under not');
+  }
+  return null;
+}
+
+/**
+ * Reports, at the sample's line, the first mismatch of each sample payload that does
+ * not conform to `schema`; `at` prefixes each message, as "<operation>: response <status>".
+ */
+function reportExampleMismatches(doc, rel, at, schema, samples, violations) {
+  for (const { label, value, line } of samples) {
+    const mismatch = schemaMismatch(doc, schema, value);
+    if (mismatch) {
+      violations.push({
+        path: rel,
+        line,
+        message: `${at} ${label} does not match its schema at ${mismatch.at}: ${mismatch.message}`,
+      });
+    }
+  }
+}
 
 /** Every operation of a document as { method, path, op }, Path Item references resolved. */
 function operationsOf(doc, rel, violations) {
@@ -1253,53 +2390,113 @@ function operationsOf(doc, rel, violations) {
   return out;
 }
 
+/**
+ * Checks one operation: a description; a 200 under that exact key, whose JSON content
+ * carries an example; for a baseline operation, every other status of
+ * BASELINE_RESPONSE_STATUSES too, and for any other operation at least one error
+ * response. Every 2xx JSON content has a schema, and every error response (4xx, 5xx,
+ * a 4XX/5XX range or `default`) has JSON content with the ErrorObject schema and at
+ * least one example. Every example must carry a value that conforms to its schema, and
+ * a mapped status's examples carry that status's code.
+ */
 function checkOperation(doc, rel, { method, path: p, op }, violations) {
   const id = typeof op.operationId === 'string' ? ` (${op.operationId})` : '';
   const where = `${method.toUpperCase()} ${p}${id}`;
   if (typeof op.description !== 'string' || op.description.trim() === '') {
-    violations.push({ path: rel, message: `${where}: description is missing or empty` });
+    violations.push({ path: rel, line: yamlLine(op, 'description'), message: `${where}: description is missing or empty` });
   }
+  const responsesLine = yamlLine(op, 'responses');
+  const required = BASELINE_RESPONSE_STATUSES.get(baselineResponseKey(rel, method, p));
+  for (const status of required ?? ['200']) {
+    if (!hasOwn(op.responses, status)) {
+      const kind = required === undefined ? 'response' : 'baseline response';
+      violations.push({ path: rel, line: responsesLine, message: `${where}: ${kind} ${status} is missing` });
+    }
+  }
+  const errorSchemaResolves = resolvePointer(doc, ERROR_SCHEMA_REF).value !== undefined;
   const responses = isObject(op.responses) ? Object.entries(op.responses) : [];
-  let success = 0;
-  let successWithExample = 0;
   let errors = 0;
   for (const [status, raw] of responses) {
     const isSuccess = /^2(?:\d\d|XX)$/i.test(status);
-    const isError = /^[45](?:\d\d|XX)$/i.test(status);
+    // `default` answers every status the operation does not list, so it is an error response.
+    const isError = /^[45](?:\d\d|XX)$/i.test(status) || status === 'default';
     if (!isSuccess && !isError) continue;
+    const at = `${where}: response ${status}`;
     const response = deref(doc, raw, rel, `${where} response ${status}`, violations);
+    if (isError) errors++;
+    if (response === undefined) continue;
     const media = isObject(response?.content) ? response.content[JSON_MEDIA] : undefined;
-    if (isSuccess) {
-      success++;
-      if (!isObject(media)) continue;
-      const schema =
-        media.schema === undefined
-          ? undefined
-          : deref(doc, media.schema, rel, `${where} response ${status} schema`, violations);
-      if (hasMediaExample(media) || hasSchemaExample(schema)) successWithExample++;
+    const is200 = status === '200';
+    if (!isObject(media)) {
+      if (isError || is200) {
+        violations.push({
+          path: rel,
+          line: yamlLine(response, 'content') ?? yamlLine(op.responses, status),
+          message: `${at} has no ${JSON_MEDIA} content`,
+        });
+      }
       continue;
     }
-    errors++;
-    if (response === undefined) continue;
-    if (!isObject(media)) {
-      violations.push({ path: rel, message: `${where}: response ${status} has no ${JSON_MEDIA} content` });
+    const examples = mediaExampleValues(doc, rel, at, media, violations);
+    if (isSuccess) {
+      let schema;
+      if (media.schema === undefined || media.schema === null) {
+        violations.push({
+          path: rel,
+          line: yamlLine(media, 'schema'),
+          message: `${at} ${JSON_MEDIA} content has no schema`,
+        });
+      } else {
+        schema = deref(doc, media.schema, rel, `${where} response ${status} schema`, violations);
+      }
+      const samples = examples.length === 0 && schema !== undefined ? schemaExampleValues(schema) : examples;
+      if (samples.length === 0 && is200) {
+        violations.push({
+          path: rel,
+          line: yamlLine(media, 'examples'),
+          message: `${at} has no ${JSON_MEDIA} example`,
+        });
+      }
+      if (schema !== undefined) reportExampleMismatches(doc, rel, at, media.schema, samples, violations);
       continue;
     }
     if (media.schema?.$ref !== ERROR_SCHEMA_REF) {
-      violations.push({ path: rel, message: `${where}: response ${status} schema is not $ref ${ERROR_SCHEMA_REF}` });
+      violations.push({
+        path: rel,
+        line: yamlLine(media, 'schema'),
+        message: `${at} schema is not $ref ${ERROR_SCHEMA_REF}`,
+      });
     } else {
       deref(doc, media.schema, rel, `${where} response ${status} schema`, violations);
+      // OpenAPI 3.1 applies a keyword beside `$ref` with the referenced schema, so one would change the error object.
+      for (const keyword of CONTRACT_KEYWORDS.filter((k) => hasOwn(media.schema, k))) {
+        violations.push({
+          path: rel,
+          line: yamlLine(media.schema, keyword),
+          message: `${at} schema sets ${keyword} beside $ref ${ERROR_SCHEMA_REF}; the standard error object takes none`,
+        });
+      }
     }
-    if (!hasMediaExample(media)) {
-      violations.push({ path: rel, message: `${where}: response ${status} has no ${JSON_MEDIA} example` });
+    if (examples.length === 0) {
+      violations.push({ path: rel, line: yamlLine(media, 'examples'), message: `${at} has no ${JSON_MEDIA} example` });
+    }
+    // A missing ErrorObject is reported once per document, by checkErrorObjects.
+    if (errorSchemaResolves) reportExampleMismatches(doc, rel, at, ERROR_SCHEMA, examples, violations);
+    const code = ERROR_CODE_BY_STATUS.get(status);
+    for (const { label, value, line } of code === undefined ? [] : examples) {
+      if (hasOwn(value, 'code') && value.code !== code) {
+        violations.push({
+          path: rel,
+          line,
+          message: `${at} ${label} has code ${shown(value.code)}, expected "${code}"`,
+        });
+      }
     }
   }
-  if (success === 0) {
-    violations.push({ path: rel, message: `${where}: no 2xx response` });
-  } else if (successWithExample === 0) {
-    violations.push({ path: rel, message: `${where}: no 2xx ${JSON_MEDIA} response carries an example` });
+  // A baseline operation's error statuses are each required above.
+  if (required === undefined && errors === 0) {
+    violations.push({ path: rel, line: responsesLine, message: `${where}: no 4xx or 5xx response` });
   }
-  if (errors === 0) violations.push({ path: rel, message: `${where}: no 4xx or 5xx response` });
 }
 
 function checkBaselineOperations(doc, iface, violations) {
@@ -1309,10 +2506,16 @@ function checkBaselineOperations(doc, iface, violations) {
     const item = hasOwn(doc.paths, op.path) ? deref(doc, doc.paths[op.path], iface.openapi, where, []) : undefined;
     const operation = isObject(item) ? item[op.method] : undefined;
     if (!isObject(operation)) {
-      violations.push({ path: iface.openapi, message: `missing baseline operation ${where} (${op.rpc})` });
+      // Reported at the nearest existing ancestor: the path item, else `paths`.
+      let line;
+      if (isObject(item)) line = yamlLine(item, op.method);
+      else if (isObject(doc.paths)) line = yamlLine(doc.paths, op.path);
+      else line = yamlLine(doc, 'paths');
+      violations.push({ path: iface.openapi, line, message: `missing baseline operation ${where} (${op.rpc})` });
     } else if (operation.operationId !== op.rpc) {
       violations.push({
         path: iface.openapi,
+        line: yamlLine(operation, 'operationId'),
         message: `${where}: operationId is "${operation.operationId ?? ''}", expected "${op.rpc}"`,
       });
     }
@@ -1337,7 +2540,7 @@ function canonicalJson(value) {
   return JSON.stringify(sort(value));
 }
 
-function compareNames(rel, label, actual, expected, violations) {
+function compareNames(rel, line, label, actual, expected, violations) {
   const missing = expected.filter((n) => !actual.includes(n));
   const extra = actual.filter((n) => !expected.includes(n));
   if (missing.length > 0 || extra.length > 0) {
@@ -1346,9 +2549,18 @@ function compareNames(rel, label, actual, expected, violations) {
     if (extra.length > 0) parts.push(`unexpected ${extra.join(', ')}`);
     violations.push({
       path: rel,
+      line,
       message: `${label} properties must be ${expected.join(', ')} (camelCase of common.proto): ${parts.join('; ')}`,
     });
   }
+}
+
+/** Line of an ErrorObject schema's properties.details.items, or of its nearest existing ancestor. */
+function itemsLine(schema) {
+  const properties = isObject(schema?.properties) ? schema.properties : undefined;
+  if (isObject(properties?.details)) return yamlLine(properties.details, 'items');
+  if (properties) return yamlLine(properties, 'details');
+  return yamlLine(schema, 'properties');
 }
 
 /**
@@ -1361,7 +2573,12 @@ function checkErrorObjects(docs, shared, violations) {
   for (const [rel, doc] of docs) {
     const schema = isObject(doc.components?.schemas) ? doc.components.schemas.ErrorObject : undefined;
     if (!isObject(schema)) {
-      violations.push({ path: rel, message: 'components.schemas.ErrorObject is missing' });
+      // Reported at the nearest existing ancestor of components.schemas.ErrorObject.
+      let line;
+      if (isObject(doc.components?.schemas)) line = yamlLine(doc.components.schemas, 'ErrorObject');
+      else if (isObject(doc.components)) line = yamlLine(doc.components, 'schemas');
+      else line = yamlLine(doc, 'components');
+      violations.push({ path: rel, line, message: 'components.schemas.ErrorObject is missing' });
       continue;
     }
     const itemsRaw = schema.properties?.details?.items;
@@ -1377,32 +2594,1499 @@ function checkErrorObjects(docs, shared, violations) {
   for (const e of entries) {
     if (e === base) continue;
     if (canonicalJson(e.schema) !== baseJson) {
-      violations.push({ path: e.rel, message: `ErrorObject schema differs from the one in ${base.rel}` });
+      violations.push({
+        path: e.rel,
+        line: yamlLine(e.schema),
+        message: `ErrorObject schema differs from the one in ${base.rel}`,
+      });
     }
     if ((e.itemsIsRef || base.itemsIsRef) && canonicalJson(e.items ?? null) !== baseItemsJson) {
-      violations.push({ path: e.rel, message: `ErrorObject details item schema differs from the one in ${base.rel}` });
+      violations.push({
+        path: e.rel,
+        line: yamlLine(e.items) ?? itemsLine(e.schema),
+        message: `ErrorObject details item schema differs from the one in ${base.rel}`,
+      });
     }
   }
 
   for (const e of entries) {
     if (shared.errorObject) {
       const props = isObject(e.schema.properties) ? Object.keys(e.schema.properties) : [];
-      compareNames(e.rel, 'ErrorObject', props, shared.errorObject, violations);
+      compareNames(e.rel, yamlLine(e.schema, 'properties'), 'ErrorObject', props, shared.errorObject, violations);
     }
     if (shared.fieldViolation) {
       if (!isObject(e.items?.properties)) {
-        violations.push({ path: e.rel, message: 'ErrorObject.details has no item schema with properties' });
+        violations.push({
+          path: e.rel,
+          line: yamlLine(e.items, 'properties') ?? itemsLine(e.schema),
+          message: 'ErrorObject.details has no item schema with properties',
+        });
       } else {
         const props = Object.keys(e.items.properties);
-        compareNames(e.rel, 'ErrorObject.details item', props, shared.fieldViolation, violations);
+        const line = yamlLine(e.items, 'properties');
+        compareNames(e.rel, line, 'ErrorObject.details item', props, shared.fieldViolation, violations);
       }
     }
   }
 }
 
 // ---------------------------------------------------------------------------
+// Baseline field contracts and proto/REST twin agreement
+// ---------------------------------------------------------------------------
+
+/*
+ * The Stub Contract Baseline is only ever extended additively, so its field contracts
+ * are fixed here. PROTO_BASELINE, REST_BASELINE and ERROR_OBJECT_BASELINE were
+ * generated from the delivered contracts with this file's parseProto and loadYaml,
+ * never typed by hand. Each RPC and the REST operation that is its HTTP/JSON form must
+ * also agree field by field, added fields included (checkTwinAgreement).
+ */
+
+/**
+ * Stub Contract Baseline proto messages per proto file: every message's fields as
+ * `[label ]type name = number`, with types relative to the file's package
+ * (protoFieldSpec, which also writes a oneof membership and a non-default JSON name;
+ * the baseline has neither), and every baseline RPC's signature (rpcSignature). The
+ * service protos' ErrorDetail carrier is held to the RPC error contract instead.
+ * Messages, fields and RPCs may be added; a baseline one is never removed, retyped,
+ * relabelled, renumbered, given another JSON name, moved into or out of a oneof or made
+ * streaming, and an added field never reuses a baseline number.
+ */
+const PROTO_BASELINE = {
+  [COMMON_PROTO]: {
+    messages: {
+      ErrorObject: [
+        'string code = 1',
+        'string message = 2',
+        'string trace_id = 3',
+        'repeated FieldViolation details = 4',
+      ],
+      FieldViolation: ['string field = 1', 'string description = 2'],
+    },
+  },
+  [`${SERVICE_PROTOS}/api/v1/card_servicing_service.proto`]: {
+    rpcs: {
+      GetBalanceSummary: '(GetBalanceSummaryRequest) returns (GetBalanceSummaryResponse)',
+      ListCategoryBalances: '(ListCategoryBalancesRequest) returns (ListCategoryBalancesResponse)',
+      ListTransactions: '(ListTransactionsRequest) returns (ListTransactionsResponse)',
+      GetTransaction: '(GetTransactionRequest) returns (GetTransactionResponse)',
+    },
+    messages: {
+      GetBalanceSummaryRequest: ['string account_id = 1'],
+      GetBalanceSummaryResponse: [
+        'string account_id = 1',
+        'string current_balance = 2',
+        'string credit_limit = 3',
+        'repeated TypeGroupBalance balances_by_type_group = 4',
+        'string data_status = 5',
+        'string as_of = 6',
+        'string active_status = 7',
+        'string open_date = 8',
+        'string expiration_date = 9',
+        'string reissue_date = 10',
+        'string cash_credit_limit = 11',
+        'string current_cycle_credit = 12',
+        'string current_cycle_debit = 13',
+        'optional string group_id = 14',
+      ],
+      TypeGroupBalance: ['string type_code = 1', 'optional string type_description = 2', 'string balance = 3'],
+      ListCategoryBalancesRequest: ['string account_id = 1', 'optional string type_code = 2'],
+      ListCategoryBalancesResponse: [
+        'string account_id = 1',
+        'repeated CategoryBalance category_balances = 2',
+        'string data_status = 3',
+        'string as_of = 4',
+      ],
+      CategoryBalance: [
+        'string type_code = 1',
+        'optional string type_description = 2',
+        'string category_code = 3',
+        'optional string category_description = 4',
+        'string balance = 5',
+      ],
+      ListTransactionsRequest: [
+        'string account_id = 1',
+        'optional string type_code = 2',
+        'optional string category_code = 3',
+        'optional int32 page_size = 4',
+        'string page_token = 5',
+      ],
+      ListTransactionsResponse: [
+        'string account_id = 1',
+        'repeated TransactionSummary transactions = 2',
+        'string next_page_token = 3',
+        'string data_status = 4',
+        'string as_of = 5',
+      ],
+      TransactionSummary: [
+        'string transaction_id = 1',
+        'string type_code = 2',
+        'string category_code = 3',
+        'string description = 4',
+        'string amount = 5',
+        'string original_timestamp = 6',
+        'string processed_timestamp = 7',
+      ],
+      GetTransactionRequest: ['string account_id = 1', 'string transaction_id = 2'],
+      GetTransactionResponse: [
+        'string account_id = 1',
+        'Transaction transaction = 2',
+        'string data_status = 3',
+        'string as_of = 4',
+      ],
+      Transaction: [
+        'string transaction_id = 1',
+        'string type_code = 2',
+        'string category_code = 3',
+        'string source = 4',
+        'string description = 5',
+        'string amount = 6',
+        'string merchant_id = 7',
+        'string merchant_name = 8',
+        'string merchant_city = 9',
+        'string merchant_zip = 10',
+        'string card_number = 11',
+        'string original_timestamp = 12',
+        'string processed_timestamp = 13',
+      ],
+    },
+  },
+  [`${SERVICE_PROTOS}/carddata/v1/card_data_service.proto`]: {
+    rpcs: {
+      GetAccount: '(GetAccountRequest) returns (GetAccountResponse)',
+      GetCardCrossReference: '(GetCardCrossReferenceRequest) returns (GetCardCrossReferenceResponse)',
+      ListCategoryBalances: '(ListCategoryBalancesRequest) returns (ListCategoryBalancesResponse)',
+    },
+    messages: {
+      GetAccountRequest: ['string account_id = 1'],
+      GetAccountResponse: ['Account account = 1'],
+      Account: [
+        'string account_id = 1',
+        'string active_status = 2',
+        'string current_balance = 3',
+        'string credit_limit = 4',
+        'string cash_credit_limit = 5',
+        'string open_date = 6',
+        'string expiration_date = 7',
+        'string reissue_date = 8',
+        'string current_cycle_credit = 9',
+        'string current_cycle_debit = 10',
+        'string address_zip = 11',
+        'optional string group_id = 12',
+      ],
+      GetCardCrossReferenceRequest: ['string account_id = 1'],
+      GetCardCrossReferenceResponse: ['repeated CardCrossReference card_cross_references = 1'],
+      CardCrossReference: ['string card_number = 1', 'string customer_id = 2', 'string account_id = 3'],
+      ListCategoryBalancesRequest: ['string account_id = 1'],
+      ListCategoryBalancesResponse: ['repeated CategoryBalance category_balances = 1'],
+      CategoryBalance: [
+        'string account_id = 1',
+        'string type_code = 2',
+        'string category_code = 3',
+        'string balance = 4',
+      ],
+    },
+  },
+  [`${SERVICE_PROTOS}/transactionactivity/v1/transaction_activity_service.proto`]: {
+    rpcs: {
+      ListTransactions: '(ListTransactionsRequest) returns (ListTransactionsResponse)',
+      GetTransaction: '(GetTransactionRequest) returns (GetTransactionResponse)',
+    },
+    messages: {
+      ListTransactionsRequest: [
+        'string account_id = 1',
+        'optional string type_code = 2',
+        'optional string category_code = 3',
+        'int32 page_size = 4',
+        'string page_token = 5',
+      ],
+      ListTransactionsResponse: ['repeated Transaction transactions = 1', 'string next_page_token = 2'],
+      GetTransactionRequest: ['string transaction_id = 1'],
+      GetTransactionResponse: ['Transaction transaction = 1'],
+      Transaction: [
+        'string transaction_id = 1',
+        'string type_code = 2',
+        'string category_code = 3',
+        'string source = 4',
+        'string description = 5',
+        'string amount = 6',
+        'string merchant_id = 7',
+        'string merchant_name = 8',
+        'string merchant_city = 9',
+        'string merchant_zip = 10',
+        'string card_number = 11',
+        'string original_timestamp = 12',
+        'string processed_timestamp = 13',
+      ],
+    },
+  },
+  [`${SERVICE_PROTOS}/config/v1/config_service.proto`]: {
+    rpcs: { GetConfig: '(GetConfigRequest) returns (GetConfigResponse)' },
+    messages: { GetConfigRequest: ['repeated string keys = 1'], GetConfigResponse: ['map<string, string> values = 1'] },
+  },
+  [`${SERVICE_PROTOS}/referencedata/v1/reference_data_service.proto`]: {
+    rpcs: {
+      ListTransactionTypes: '(ListTransactionTypesRequest) returns (ListTransactionTypesResponse)',
+      ListTransactionCategories: '(ListTransactionCategoriesRequest) returns (ListTransactionCategoriesResponse)',
+    },
+    messages: {
+      ListTransactionTypesRequest: [],
+      ListTransactionTypesResponse: ['repeated TransactionType transaction_types = 1'],
+      TransactionType: ['string type_code = 1', 'string type_description = 2'],
+      ListTransactionCategoriesRequest: [],
+      ListTransactionCategoriesResponse: ['repeated TransactionCategory transaction_categories = 1'],
+      TransactionCategory: ['string type_code = 1', 'string category_code = 2', 'string category_description = 3'],
+    },
+  },
+  [`${SERVICE_PROTOS}/auth/v1/auth_service.proto`]: {
+    rpcs: {
+      ValidateToken: '(ValidateTokenRequest) returns (ValidateTokenResponse)',
+      AuthorizeAccountAccess: '(AuthorizeAccountAccessRequest) returns (AuthorizeAccountAccessResponse)',
+    },
+    messages: {
+      ValidateTokenRequest: ['string token = 1'],
+      ValidateTokenResponse: ['string subject = 1', 'repeated string roles = 2'],
+      AuthorizeAccountAccessRequest: ['string subject = 1', 'string account_id = 2'],
+      AuthorizeAccountAccessResponse: ['bool allowed = 1'],
+    },
+  },
+};
+
+/**
+ * Stub Contract Baseline REST operations per OpenAPI document and RPC name: the
+ * parameters, the request body, the 200 response headers and the 200 application/json
+ * schema, every schema reduced to CONTRACT_KEYWORDS, with `$ref`s that resolve in the
+ * document's `schemas` here. An operation may add optional parameters, response
+ * properties and headers. Every baseline parameter, header and property keeps its
+ * constraints and required flag, a response's baseline `required` names stay required,
+ * and a request never gains a required parameter, body or property.
+ */
+const REST_BASELINE = {
+  [`${OPENAPI_DIR}/card-servicing-api.yaml`]: {
+    operations: {
+      GetBalanceSummary: {
+        parameters: [
+          { name: 'accountId', in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9]{11}$' } },
+        ],
+        headers: {
+          'X-Data-Status': { required: true, schema: { type: 'string', enum: ['FRESH', 'STALE', 'PARTIAL'] } },
+        },
+        response: { $ref: '#/components/schemas/GetBalanceSummaryResponse' },
+      },
+      ListCategoryBalances: {
+        parameters: [
+          { name: 'accountId', in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9]{11}$' } },
+          { name: 'typeCode', in: 'query', required: false, schema: { type: 'string', pattern: '^[\\s\\S]{2}$' } },
+        ],
+        headers: {
+          'X-Data-Status': { required: true, schema: { type: 'string', enum: ['FRESH', 'STALE', 'PARTIAL'] } },
+        },
+        response: { $ref: '#/components/schemas/ListCategoryBalancesResponse' },
+      },
+      ListTransactions: {
+        parameters: [
+          { name: 'accountId', in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9]{11}$' } },
+          { name: 'typeCode', in: 'query', required: false, schema: { type: 'string', pattern: '^[\\s\\S]{2}$' } },
+          { name: 'categoryCode', in: 'query', required: false, schema: { type: 'string', pattern: '^[0-9]{4}$' } },
+          { name: 'pageSize', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 100 } },
+          {
+            name: 'pageToken',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', pattern: '^[A-Za-z0-9_-]*$', maxLength: 166 },
+          },
+        ],
+        headers: {
+          'X-Data-Status': { required: true, schema: { type: 'string', enum: ['FRESH', 'STALE', 'PARTIAL'] } },
+        },
+        response: { $ref: '#/components/schemas/ListTransactionsResponse' },
+      },
+      GetTransaction: {
+        parameters: [
+          { name: 'accountId', in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9]{11}$' } },
+          { name: 'transactionId', in: 'path', required: true, schema: { type: 'string', pattern: '^[\\s\\S]{16}$' } },
+        ],
+        headers: {
+          'X-Data-Status': { required: true, schema: { type: 'string', enum: ['FRESH', 'STALE', 'PARTIAL'] } },
+        },
+        response: { $ref: '#/components/schemas/GetTransactionResponse' },
+      },
+    },
+    schemas: {
+      GetBalanceSummaryResponse: {
+        type: 'object',
+        required: [
+          'accountId', 'currentBalance', 'creditLimit', 'balancesByTypeGroup', 'dataStatus', 'asOf', 'activeStatus',
+          'openDate', 'expirationDate', 'reissueDate', 'cashCreditLimit', 'currentCycleCredit', 'currentCycleDebit',
+        ],
+        properties: {
+          accountId: { type: 'string', pattern: '^[0-9]{11}$' },
+          currentBalance: { type: 'string', pattern: '^-?[0-9]{1,10}\\.[0-9]{2}$' },
+          creditLimit: { type: 'string', pattern: '^-?[0-9]{1,10}\\.[0-9]{2}$' },
+          balancesByTypeGroup: { type: 'array', items: { $ref: '#/components/schemas/TypeGroupBalance' } },
+          dataStatus: { type: 'string', enum: ['FRESH', 'STALE', 'PARTIAL'] },
+          asOf: {
+            type: 'string',
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$',
+            format: 'date-time',
+          },
+          activeStatus: { type: 'string', maxLength: 1 },
+          openDate: { type: 'string', pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$', format: 'date' },
+          expirationDate: { type: 'string', pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$', format: 'date' },
+          reissueDate: { type: 'string', pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$', format: 'date' },
+          cashCreditLimit: { type: 'string', pattern: '^-?[0-9]{1,10}\\.[0-9]{2}$' },
+          currentCycleCredit: { type: 'string', pattern: '^-?[0-9]{1,10}\\.[0-9]{2}$' },
+          currentCycleDebit: { type: 'string', pattern: '^-?[0-9]{1,10}\\.[0-9]{2}$' },
+          groupId: { type: 'string', maxLength: 10 },
+        },
+        additionalProperties: false,
+      },
+      TypeGroupBalance: {
+        type: 'object',
+        required: ['typeCode', 'typeDescription', 'balance'],
+        properties: {
+          typeCode: { type: 'string', pattern: '^[\\s\\S]{2}$' },
+          typeDescription: { type: ['string', 'null'], maxLength: 50 },
+          balance: { type: 'string', pattern: '^-?[0-9]+\\.[0-9]{2}$' },
+        },
+        additionalProperties: false,
+      },
+      ListCategoryBalancesResponse: {
+        type: 'object',
+        required: ['accountId', 'categoryBalances', 'dataStatus', 'asOf'],
+        properties: {
+          accountId: { type: 'string', pattern: '^[0-9]{11}$' },
+          categoryBalances: { type: 'array', items: { $ref: '#/components/schemas/CategoryBalance' } },
+          dataStatus: { type: 'string', enum: ['FRESH', 'STALE', 'PARTIAL'] },
+          asOf: {
+            type: 'string',
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$',
+            format: 'date-time',
+          },
+        },
+        additionalProperties: false,
+      },
+      CategoryBalance: {
+        type: 'object',
+        required: ['typeCode', 'typeDescription', 'categoryCode', 'categoryDescription', 'balance'],
+        properties: {
+          typeCode: { type: 'string', pattern: '^[\\s\\S]{2}$' },
+          typeDescription: { type: ['string', 'null'], maxLength: 50 },
+          categoryCode: { type: 'string', pattern: '^[0-9]{4}$' },
+          categoryDescription: { type: ['string', 'null'], maxLength: 50 },
+          balance: { type: 'string', pattern: '^-?[0-9]{1,9}\\.[0-9]{2}$' },
+        },
+        additionalProperties: false,
+      },
+      ListTransactionsResponse: {
+        type: 'object',
+        required: ['accountId', 'transactions', 'dataStatus', 'asOf'],
+        properties: {
+          accountId: { type: 'string', pattern: '^[0-9]{11}$' },
+          transactions: { type: 'array', items: { $ref: '#/components/schemas/TransactionSummary' } },
+          nextPageToken: { type: 'string', pattern: '^[A-Za-z0-9_-]+$', maxLength: 166 },
+          dataStatus: { type: 'string', enum: ['FRESH', 'STALE', 'PARTIAL'] },
+          asOf: {
+            type: 'string',
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$',
+            format: 'date-time',
+          },
+        },
+        additionalProperties: false,
+      },
+      TransactionSummary: {
+        type: 'object',
+        required: [
+          'transactionId', 'typeCode', 'categoryCode', 'description', 'amount', 'originalTimestamp',
+          'processedTimestamp',
+        ],
+        properties: {
+          transactionId: { type: 'string', pattern: '^[\\s\\S]{16}$' },
+          typeCode: { type: 'string', pattern: '^[\\s\\S]{2}$' },
+          categoryCode: { type: 'string', pattern: '^[0-9]{4}$' },
+          description: { type: 'string', maxLength: 100 },
+          amount: { type: 'string', pattern: '^-?[0-9]{1,9}\\.[0-9]{2}$' },
+          originalTimestamp: {
+            type: 'string',
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$',
+            format: 'date-time',
+          },
+          processedTimestamp: {
+            type: 'string',
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$',
+            format: 'date-time',
+          },
+        },
+        additionalProperties: false,
+      },
+      GetTransactionResponse: {
+        type: 'object',
+        required: ['accountId', 'transaction', 'dataStatus', 'asOf'],
+        properties: {
+          accountId: { type: 'string', pattern: '^[0-9]{11}$' },
+          transaction: { $ref: '#/components/schemas/Transaction' },
+          dataStatus: { type: 'string', enum: ['FRESH', 'STALE', 'PARTIAL'] },
+          asOf: {
+            type: 'string',
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$',
+            format: 'date-time',
+          },
+        },
+        additionalProperties: false,
+      },
+      Transaction: {
+        type: 'object',
+        required: [
+          'transactionId', 'typeCode', 'categoryCode', 'source', 'description', 'amount', 'merchantId', 'merchantName',
+          'merchantCity', 'merchantZip', 'cardNumber', 'originalTimestamp', 'processedTimestamp',
+        ],
+        properties: {
+          transactionId: { type: 'string', pattern: '^[\\s\\S]{16}$' },
+          typeCode: { type: 'string', pattern: '^[\\s\\S]{2}$' },
+          categoryCode: { type: 'string', pattern: '^[0-9]{4}$' },
+          source: { type: 'string', maxLength: 10 },
+          description: { type: 'string', maxLength: 100 },
+          amount: { type: 'string', pattern: '^-?[0-9]{1,9}\\.[0-9]{2}$' },
+          merchantId: { type: 'string', pattern: '^[0-9]{9}$' },
+          merchantName: { type: 'string', maxLength: 50 },
+          merchantCity: { type: 'string', maxLength: 50 },
+          merchantZip: { type: 'string', maxLength: 10 },
+          cardNumber: { type: 'string', maxLength: 16 },
+          originalTimestamp: {
+            type: 'string',
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$',
+            format: 'date-time',
+          },
+          processedTimestamp: {
+            type: 'string',
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$',
+            format: 'date-time',
+          },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  [`${OPENAPI_DIR}/card-data-service.yaml`]: {
+    operations: {
+      GetAccount: {
+        parameters: [
+          { name: 'accountId', in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9]{11}$' } },
+        ],
+        response: { $ref: '#/components/schemas/GetAccountResponse' },
+      },
+      GetCardCrossReference: {
+        parameters: [
+          { name: 'accountId', in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9]{11}$' } },
+        ],
+        response: { $ref: '#/components/schemas/GetCardCrossReferenceResponse' },
+      },
+      ListCategoryBalances: {
+        parameters: [
+          { name: 'accountId', in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9]{11}$' } },
+        ],
+        response: { $ref: '#/components/schemas/ListCategoryBalancesResponse' },
+      },
+    },
+    schemas: {
+      GetAccountResponse: {
+        type: 'object',
+        required: ['account'],
+        properties: { account: { $ref: '#/components/schemas/Account' } },
+        additionalProperties: false,
+      },
+      Account: {
+        type: 'object',
+        required: [
+          'accountId', 'activeStatus', 'currentBalance', 'creditLimit', 'cashCreditLimit', 'openDate', 'expirationDate',
+          'reissueDate', 'currentCycleCredit', 'currentCycleDebit', 'addressZip',
+        ],
+        properties: {
+          accountId: { type: 'string', pattern: '^[0-9]{11}$' },
+          activeStatus: { type: 'string', maxLength: 1 },
+          currentBalance: { type: 'string', pattern: '^-?[0-9]{1,10}\\.[0-9]{2}$' },
+          creditLimit: { type: 'string', pattern: '^-?[0-9]{1,10}\\.[0-9]{2}$' },
+          cashCreditLimit: { type: 'string', pattern: '^-?[0-9]{1,10}\\.[0-9]{2}$' },
+          openDate: { type: 'string', pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$', format: 'date' },
+          expirationDate: { type: 'string', pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$', format: 'date' },
+          reissueDate: { type: 'string', pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$', format: 'date' },
+          currentCycleCredit: { type: 'string', pattern: '^-?[0-9]{1,10}\\.[0-9]{2}$' },
+          currentCycleDebit: { type: 'string', pattern: '^-?[0-9]{1,10}\\.[0-9]{2}$' },
+          addressZip: { type: 'string', maxLength: 10 },
+          groupId: { type: 'string', maxLength: 10 },
+        },
+        additionalProperties: false,
+      },
+      GetCardCrossReferenceResponse: {
+        type: 'object',
+        required: ['cardCrossReferences'],
+        properties: {
+          cardCrossReferences: { type: 'array', items: { $ref: '#/components/schemas/CardCrossReference' } },
+        },
+        additionalProperties: false,
+      },
+      CardCrossReference: {
+        type: 'object',
+        required: ['cardNumber', 'customerId', 'accountId'],
+        properties: {
+          cardNumber: { type: 'string', maxLength: 16 },
+          customerId: { type: 'string', pattern: '^[0-9]{9}$' },
+          accountId: { type: 'string', pattern: '^[0-9]{11}$' },
+        },
+        additionalProperties: false,
+      },
+      ListCategoryBalancesResponse: {
+        type: 'object',
+        required: ['categoryBalances'],
+        properties: { categoryBalances: { type: 'array', items: { $ref: '#/components/schemas/CategoryBalance' } } },
+        additionalProperties: false,
+      },
+      CategoryBalance: {
+        type: 'object',
+        required: ['accountId', 'typeCode', 'categoryCode', 'balance'],
+        properties: {
+          accountId: { type: 'string', pattern: '^[0-9]{11}$' },
+          typeCode: { type: 'string', pattern: '^[\\s\\S]{2}$' },
+          categoryCode: { type: 'string', pattern: '^[0-9]{4}$' },
+          balance: { type: 'string', pattern: '^-?[0-9]{1,9}\\.[0-9]{2}$' },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  [`${OPENAPI_DIR}/transaction-activity-service.yaml`]: {
+    operations: {
+      ListTransactions: {
+        parameters: [
+          { name: 'accountId', in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9]{11}$' } },
+          { name: 'typeCode', in: 'query', required: false, schema: { type: 'string', pattern: '^[\\s\\S]{2}$' } },
+          { name: 'categoryCode', in: 'query', required: false, schema: { type: 'string', pattern: '^[0-9]{4}$' } },
+          { name: 'pageSize', in: 'query', required: true, schema: { type: 'integer', minimum: 1, maximum: 100 } },
+          {
+            name: 'pageToken',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', pattern: '^[A-Za-z0-9_-]*$', maxLength: 166 },
+          },
+        ],
+        response: { $ref: '#/components/schemas/ListTransactionsResponse' },
+      },
+      GetTransaction: {
+        parameters: [
+          { name: 'transactionId', in: 'path', required: true, schema: { type: 'string', pattern: '^[\\s\\S]{16}$' } },
+        ],
+        response: { $ref: '#/components/schemas/GetTransactionResponse' },
+      },
+    },
+    schemas: {
+      ListTransactionsResponse: {
+        type: 'object',
+        required: ['transactions'],
+        properties: {
+          transactions: { type: 'array', items: { $ref: '#/components/schemas/Transaction' } },
+          nextPageToken: { type: 'string', pattern: '^[A-Za-z0-9_-]+$', maxLength: 166 },
+        },
+        additionalProperties: false,
+      },
+      Transaction: {
+        type: 'object',
+        required: [
+          'transactionId', 'typeCode', 'categoryCode', 'source', 'description', 'amount', 'merchantId', 'merchantName',
+          'merchantCity', 'merchantZip', 'cardNumber', 'originalTimestamp', 'processedTimestamp',
+        ],
+        properties: {
+          transactionId: { type: 'string', pattern: '^[\\s\\S]{16}$' },
+          typeCode: { type: 'string', pattern: '^[\\s\\S]{2}$' },
+          categoryCode: { type: 'string', pattern: '^[0-9]{4}$' },
+          source: { type: 'string', maxLength: 10 },
+          description: { type: 'string', maxLength: 100 },
+          amount: { type: 'string', pattern: '^-?[0-9]{1,9}\\.[0-9]{2}$' },
+          merchantId: { type: 'string', pattern: '^[0-9]{9}$' },
+          merchantName: { type: 'string', maxLength: 50 },
+          merchantCity: { type: 'string', maxLength: 50 },
+          merchantZip: { type: 'string', maxLength: 10 },
+          cardNumber: { type: 'string', maxLength: 16 },
+          originalTimestamp: {
+            type: 'string',
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$',
+            format: 'date-time',
+          },
+          processedTimestamp: {
+            type: 'string',
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$',
+            format: 'date-time',
+          },
+        },
+        additionalProperties: false,
+      },
+      GetTransactionResponse: {
+        type: 'object',
+        required: ['transaction'],
+        properties: { transaction: { $ref: '#/components/schemas/Transaction' } },
+        additionalProperties: false,
+      },
+    },
+  },
+  [`${OPENAPI_DIR}/config-service.yaml`]: {
+    operations: {
+      GetConfig: {
+        parameters: [
+          {
+            name: 'keys',
+            in: 'query',
+            required: true,
+            style: 'form',
+            explode: false,
+            schema: { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 },
+          },
+        ],
+        response: { $ref: '#/components/schemas/GetConfigResponse' },
+      },
+    },
+    schemas: {
+      GetConfigResponse: {
+        type: 'object',
+        required: ['values'],
+        properties: { values: { type: 'object', additionalProperties: { type: 'string', pattern: '^[0-9]+$' } } },
+        additionalProperties: false,
+      },
+    },
+  },
+  [`${OPENAPI_DIR}/reference-data-service.yaml`]: {
+    operations: {
+      ListTransactionTypes: { parameters: [], response: { $ref: '#/components/schemas/ListTransactionTypesResponse' } },
+      ListTransactionCategories: {
+        parameters: [],
+        response: { $ref: '#/components/schemas/ListTransactionCategoriesResponse' },
+      },
+    },
+    schemas: {
+      ListTransactionTypesResponse: {
+        type: 'object',
+        required: ['transactionTypes'],
+        properties: { transactionTypes: { type: 'array', items: { $ref: '#/components/schemas/TransactionType' } } },
+        additionalProperties: false,
+      },
+      TransactionType: {
+        type: 'object',
+        required: ['typeCode', 'typeDescription'],
+        properties: {
+          typeCode: { type: 'string', pattern: '^[\\s\\S]{2}$' },
+          typeDescription: { type: 'string', maxLength: 50 },
+        },
+        additionalProperties: false,
+      },
+      ListTransactionCategoriesResponse: {
+        type: 'object',
+        required: ['transactionCategories'],
+        properties: {
+          transactionCategories: { type: 'array', items: { $ref: '#/components/schemas/TransactionCategory' } },
+        },
+        additionalProperties: false,
+      },
+      TransactionCategory: {
+        type: 'object',
+        required: ['typeCode', 'categoryCode', 'categoryDescription'],
+        properties: {
+          typeCode: { type: 'string', pattern: '^[\\s\\S]{2}$' },
+          categoryCode: { type: 'string', pattern: '^[0-9]{4}$' },
+          categoryDescription: { type: 'string', maxLength: 50 },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  [`${OPENAPI_DIR}/auth-service.yaml`]: {
+    operations: {
+      ValidateToken: {
+        parameters: [],
+        requestBody: { required: true, schema: { $ref: '#/components/schemas/ValidateTokenRequest' } },
+        response: { $ref: '#/components/schemas/ValidateTokenResponse' },
+      },
+      AuthorizeAccountAccess: {
+        parameters: [
+          { name: 'subject', in: 'path', required: true, schema: { type: 'string', minLength: 1, maxLength: 64 } },
+          { name: 'accountId', in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9]{11}$' } },
+        ],
+        response: { $ref: '#/components/schemas/AuthorizeAccountAccessResponse' },
+      },
+    },
+    schemas: {
+      ValidateTokenRequest: {
+        type: 'object',
+        required: ['token'],
+        properties: { token: { type: 'string', minLength: 1 } },
+        additionalProperties: false,
+      },
+      ValidateTokenResponse: {
+        type: 'object',
+        required: ['subject', 'roles'],
+        properties: {
+          subject: { type: 'string', minLength: 1, maxLength: 64 },
+          roles: { type: 'array', items: { type: 'string', enum: ['REGULAR', 'ADMIN'] } },
+        },
+        additionalProperties: false,
+      },
+      AuthorizeAccountAccessResponse: {
+        type: 'object',
+        required: ['allowed'],
+        properties: { allowed: { type: 'boolean' } },
+        additionalProperties: false,
+      },
+    },
+  },
+};
+
+/**
+ * The standard error object, components.schemas.ErrorObject, reduced to
+ * CONTRACT_KEYWORDS. checkErrorObjects holds the six documents' copies identical to
+ * each other; this holds each copy to the baseline, so a change made to all six at
+ * once still fails.
+ */
+const ERROR_OBJECT_BASELINE = {
+  type: 'object',
+  required: ['code', 'message', 'traceId', 'details'],
+  properties: {
+    code: { type: 'string' },
+    message: { type: 'string' },
+    traceId: { type: 'string' },
+    details: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['field', 'description'],
+        properties: { field: { type: 'string' }, description: { type: 'string' } },
+        additionalProperties: false,
+      },
+    },
+  },
+  additionalProperties: false,
+};
+
+/**
+ * JSON-schema keywords that carry a contract: every validation, applicator, unevaluated,
+ * format and content keyword of JSON Schema 2020-12 (the OpenAPI 3.1 dialect), the
+ * earlier drafts' dependencies and additionalItems, which a declared dialect may still
+ * apply, and $dynamicRef. Annotations (title, description, default, examples,
+ * deprecated, readOnly, writeOnly), $comment and OpenAPI's example, discriminator, xml
+ * and externalDocs carry none.
+ */
+const CONTRACT_KEYWORDS = [
+  'type', 'required', 'properties', 'items', 'additionalProperties', 'enum', 'const', 'pattern', 'format', 'minimum',
+  'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'minItems', 'maxItems',
+  'uniqueItems', 'minProperties', 'maxProperties', 'dependentRequired', 'minContains', 'maxContains', 'allOf', 'anyOf',
+  'oneOf', 'not', 'if', 'then', 'else', 'dependentSchemas', 'prefixItems', 'contains', 'patternProperties',
+  'propertyNames', 'unevaluatedProperties', 'unevaluatedItems', 'contentEncoding', 'contentMediaType', 'contentSchema',
+  'dependencies', 'additionalItems', '$dynamicRef',
+];
+
+/** The CONTRACT_KEYWORDS compared by value; required, properties, items and additionalProperties are walked. */
+const CONTRACT_VALUE_KEYWORDS = CONTRACT_KEYWORDS.filter((k) => !['required', 'properties', 'items', 'additionalProperties'].includes(k));
+
+/** CONTRACT_KEYWORDS whose value is one schema; an earlier draft's items and additionalItems may be a list of them. */
+const SUBSCHEMA_KEYWORDS = new Set([
+  'items', 'additionalProperties', 'additionalItems', 'not', 'if', 'then', 'else', 'contains', 'propertyNames',
+  'unevaluatedProperties', 'unevaluatedItems', 'contentSchema',
+]);
+
+/** CONTRACT_KEYWORDS whose value is a list of schemas. */
+const SUBSCHEMA_LIST_KEYWORDS = new Set(['allOf', 'anyOf', 'oneOf', 'prefixItems']);
+
+/** CONTRACT_KEYWORDS whose value maps names to schemas (a dependencies entry may instead be a list of names). */
+const SUBSCHEMA_MAP_KEYWORDS = new Set(['properties', 'patternProperties', 'dependentSchemas', 'dependencies']);
+
+/**
+ * A schema reduced to its `$ref` and CONTRACT_KEYWORDS at every depth, the form the REST
+ * baselines hold, so two schemas stating one contract compare equal under canonicalJson.
+ * A `$ref` is kept as written and never followed; a boolean schema, or any other value
+ * that is not an object, is kept as it is.
+ */
+function contractForm(schema) {
+  if (!isObject(schema)) return schema;
+  const reduce = (keyword, value) => {
+    if (SUBSCHEMA_LIST_KEYWORDS.has(keyword) || (SUBSCHEMA_KEYWORDS.has(keyword) && Array.isArray(value))) {
+      return Array.isArray(value) ? value.map(contractForm) : value;
+    }
+    if (SUBSCHEMA_KEYWORDS.has(keyword)) return contractForm(value);
+    if (SUBSCHEMA_MAP_KEYWORDS.has(keyword) && isObject(value)) {
+      return Object.fromEntries(Object.entries(value).map(([name, sub]) => [name, contractForm(sub)]));
+    }
+    return value;
+  };
+  const out = {};
+  if (hasOwn(schema, '$ref')) out.$ref = schema.$ref;
+  for (const keyword of CONTRACT_KEYWORDS) if (hasOwn(schema, keyword)) out[keyword] = reduce(keyword, schema[keyword]);
+  return out;
+}
+
+const SCHEMA_REF_PREFIX = '#/components/schemas/';
+
+/** JSON-schema types a proto scalar's REST twin may carry under the proto3 JSON mapping. */
+const PROTO_SCALAR_JSON_TYPES = new Map([
+  ['string', ['string']],
+  ['bytes', ['string']],
+  ['bool', ['boolean']],
+  ...['int32', 'sint32', 'sfixed32', 'uint32', 'fixed32'].map((t) => [t, ['integer']]),
+  ...['int64', 'sint64', 'sfixed64', 'uint64', 'fixed64'].map((t) => [t, ['integer', 'string']]),
+  ['float', ['number']],
+  ['double', ['number']],
+]);
+
+/**
+ * The twin presence rule: a singular or repeated proto field (a map field included)
+ * has a REST twin that is required, a path parameter always being required; an
+ * `optional` proto field or a oneof member has a REST twin that is not required; and no
+ * REST twin admits null. These are its documented exceptions, keyed by JSON name, each
+ * applying only to a proto field with the label given:
+ *   typeDescription, categoryDescription: proto `optional string`, unset when dataStatus
+ *     is PARTIAL; REST required with type [string, "null"], null when PARTIAL.
+ *   nextPageToken: proto singular string, empty on the last page; REST omits the
+ *     property then, so it is not required.
+ *   pageToken: proto singular string, empty for the first page; REST omits the
+ *     parameter then, so it is not required.
+ */
+const TWIN_PRESENCE_EXCEPTIONS = new Map([
+  ['typeDescription', { label: 'optional', required: true, nullable: true }],
+  ['categoryDescription', { label: 'optional', required: true, nullable: true }],
+  ['nextPageToken', { label: '', required: false, nullable: false }],
+  ['pageToken', { label: '', required: false, nullable: false }],
+]);
+
+/** A proto type relative to the package `pkg`: a leading `.` and the package prefix dropped, map spacing fixed. */
+function baselineProtoType(type, pkg) {
+  const map = /^map\s*<\s*([\w.]+)\s*,\s*([\w.]+)\s*>$/.exec(type);
+  if (map) return `map<${baselineProtoType(map[1], pkg)}, ${baselineProtoType(map[2], pkg)}>`;
+  const name = type.startsWith('.') ? type.slice(1) : type;
+  return pkg && name.startsWith(`${pkg}.`) ? name.slice(pkg.length + 1) : name;
+}
+
+/**
+ * A parseProto field in PROTO_BASELINE form: `[oneof O: ][label ]type name = number[ [json_name = "j"]]`,
+ * the oneof prefix only for a member of oneof O and the json_name suffix only when the
+ * JSON name is not the default jsonName(name).
+ */
+const protoFieldSpec = (field, pkg) =>
+  `${field.oneof ? `oneof ${field.oneof}: ` : ''}${field.label ? `${field.label} ` : ''}` +
+  `${baselineProtoType(field.type, pkg)} ${field.name} = ${field.number}` +
+  `${field.json === jsonName(field.name) ? '' : ` [json_name = "${field.json}"]`}`;
+
+/** One PROTO_BASELINE field: oneof, label, type, name, number and a non-default JSON name. */
+const PROTO_FIELD_SPEC_RE =
+  /^(?:oneof (?<oneof>[A-Za-z_]\w*): )?(?:(?<label>repeated|optional|required) )?(?<type>map<[\w.]+, [\w.]+>|[\w.]+) (?<name>[A-Za-z_]\w*) = (?<number>\d+)(?: \[json_name = "(?<json>[^"]*)"\])?$/;
+
+/** A parseProto RPC in PROTO_BASELINE form: `(stream? Request) returns (stream? Response)`. */
+const rpcSignature = (rpc, pkg) =>
+  `(${rpc.requestStream ? 'stream ' : ''}${baselineProtoType(rpc.requestType, pkg)}) returns ` +
+  `(${rpc.responseStream ? 'stream ' : ''}${baselineProtoType(rpc.responseType, pkg)})`;
+
+/**
+ * Holds every proto to PROTO_BASELINE. A missing baseline message is reported at the
+ * package statement, a missing field at its message, a changed or number-reusing field
+ * at that field, and a changed RPC at the RPC. A missing file, service or RPC is
+ * reported by main and checkProtos.
+ */
+function checkProtoBaseline(protos, violations) {
+  for (const [rel, baseline] of Object.entries(PROTO_BASELINE)) {
+    const proto = protos.get(rel);
+    if (!proto) continue;
+    const pkg = proto.package?.name ?? '';
+    const head = proto.package?.line ?? 1;
+    for (const [name, specs] of Object.entries(baseline.messages)) {
+      const message = proto.messages.get(name);
+      if (!message) {
+        violations.push({ path: rel, line: head, message: `missing baseline message ${name} { ${specs.join('; ')} }` });
+        continue;
+      }
+      const fields = new Map(message.fields.map((f) => [f.name, f]));
+      const numbers = new Map();
+      for (const spec of specs) {
+        const { name: fieldName, number } = PROTO_FIELD_SPEC_RE.exec(spec).groups;
+        numbers.set(Number(number), spec);
+        const field = fields.get(fieldName);
+        if (!field) {
+          violations.push({ path: rel, line: message.line, message: `message ${name} lacks baseline field "${spec}"` });
+        } else if (protoFieldSpec(field, pkg) !== spec) {
+          violations.push({
+            path: rel,
+            line: field.line,
+            message: `message ${name} field ${fieldName} is "${protoFieldSpec(field, pkg)}", baseline "${spec}"`,
+          });
+        }
+      }
+      const baselineNames = new Set(specs.map((spec) => PROTO_FIELD_SPEC_RE.exec(spec).groups.name));
+      for (const field of message.fields) {
+        const taken = baselineNames.has(field.name) ? undefined : numbers.get(field.number);
+        if (taken) {
+          violations.push({
+            path: rel,
+            line: field.line,
+            message: `message ${name} added field "${protoFieldSpec(field, pkg)}" reuses the number of baseline field "${taken}"`,
+          });
+        }
+      }
+    }
+    const iface = INTERFACES.find((i) => i.proto === rel);
+    const service = iface ? proto.services.get(iface.service) : undefined;
+    for (const [rpcName, signature] of Object.entries(baseline.rpcs ?? {})) {
+      const rpc = service?.rpcs.find((r) => r.name === rpcName);
+      if (rpc && rpcSignature(rpc, pkg) !== signature) {
+        violations.push({
+          path: rel,
+          line: rpc.line,
+          message: `rpc ${rpcName} is ${rpcSignature(rpc, pkg)}, baseline ${signature}`,
+        });
+      }
+    }
+  }
+}
+
+/** The schema a REST_BASELINE `$ref` names, from its document's baseline `schemas`. */
+function restBaselineSchema(baseline, schema) {
+  let current = schema;
+  for (let hops = 0; isObject(current) && typeof current.$ref === 'string'; hops++) {
+    const name = current.$ref.startsWith(SCHEMA_REF_PREFIX) ? current.$ref.slice(SCHEMA_REF_PREFIX.length) : '';
+    if (!hasOwn(baseline.schemas, name) || hops > 64) throw new Error(`REST_BASELINE $ref ${current.$ref} does not resolve`);
+    current = baseline.schemas[name];
+  }
+  return current;
+}
+
+/** A schema's `type` as a sorted list of names; [] when absent. */
+function schemaTypeList(schema) {
+  const type = isObject(schema) ? schema.type : undefined;
+  if (type === undefined) return [];
+  return [...new Set((Array.isArray(type) ? type : [type]).map(String))].sort();
+}
+
+/** True when two values of a keyword state the same constraint; `type` and `enum` compare as sets. */
+function sameConstraint(keyword, a, b) {
+  if (a === undefined || b === undefined) return a === b;
+  if (keyword === 'type') return canonicalJson(schemaTypeList({ type: a })) === canonicalJson(schemaTypeList({ type: b }));
+  if (keyword === 'enum' && Array.isArray(a) && Array.isArray(b)) {
+    const members = (v) => v.map(canonicalJson).sort();
+    return canonicalJson(members(a)) === canonicalJson(members(b));
+  }
+  return canonicalJson(a) === canonicalJson(b);
+}
+
+const constraintText = (value) => (value === undefined ? 'absent' : JSON.stringify(value));
+
+/** The schema a `$ref` names in a REST_BASELINE document's baseline `schemas`; undefined when it names none. */
+function baselineRefTarget(baseline, ref) {
+  const name = ref.startsWith(SCHEMA_REF_PREFIX) ? ref.slice(SCHEMA_REF_PREFIX.length) : '';
+  return hasOwn(baseline.schemas, name) ? baseline.schemas[name] : undefined;
+}
+
+/**
+ * The CONTRACT_KEYWORDS set beside `$ref` along the reference chain that starts at
+ * `schema`, as [{ node, keyword, value }] in chain order, value in contractForm.
+ * `target` maps a `$ref` to the schema it names, undefined when none. OpenAPI 3.1
+ * applies such a keyword together with the referenced schema, and deref and
+ * restBaselineSchema keep only the referenced schema.
+ */
+function refSiblings(schema, target) {
+  const out = [];
+  const seen = new Set();
+  for (let node = schema; isObject(node) && typeof node.$ref === 'string' && !seen.has(node.$ref); node = target(node.$ref)) {
+    seen.add(node.$ref);
+    const form = contractForm(node);
+    for (const keyword of CONTRACT_KEYWORDS) if (hasOwn(form, keyword)) out.push({ node, keyword, value: form[keyword] });
+  }
+  return out;
+}
+
+/**
+ * Compares the current schema `raw` with its baseline `base`, reporting at `at` (a
+ * JSON-path-like site such as `200 body.balancesByTypeGroup[].typeCode`). ctx is
+ * { doc, rel, where, baseline, mode, violations, refViolations }: in mode 'response' a
+ * baseline `required` name must stay required, in mode 'request' `required` must stay
+ * exactly the baseline's. The keywords beside each `$ref` on the way to the schema must
+ * be the baseline's beside its `$ref`s, none when it has none. Every other contract
+ * keyword (CONTRACT_KEYWORDS) must be absent where the baseline lacks it and equal it
+ * where present, subschemas compared in contractForm; every baseline property must
+ * remain and match, and an added property passes. A broken `$ref` goes to refViolations.
+ */
+function compareToBaseline(ctx, base, raw, at, fallbackLine) {
+  const expected = restBaselineSchema(ctx.baseline, base);
+  const push = (line, text) =>
+    ctx.violations.push({ path: ctx.rel, line: line ?? fallbackLine, message: `${ctx.where}: ${at}: ${text}` });
+  const found = refSiblings(raw, (ref) => resolvePointer(ctx.doc, ref).value);
+  const wanted = refSiblings(base, (ref) => baselineRefTarget(ctx.baseline, ref));
+  for (const keyword of new Set([...wanted, ...found].map((s) => s.keyword))) {
+    const now = found.filter((s) => s.keyword === keyword);
+    const was = wanted.filter((s) => s.keyword === keyword);
+    if (now.length !== was.length || now.some((s, i) => !sameConstraint(keyword, was[i].value, s.value))) {
+      const text = (list) => (list.length === 0 ? 'absent' : list.map((s) => JSON.stringify(s.value)).join(', '));
+      push(now.length > 0 ? yamlLine(now[0].node, keyword) : yamlLine(raw), `${keyword} beside $ref is ${text(now)}, baseline ${text(was)}`);
+    }
+  }
+  const node = deref(ctx.doc, raw, ctx.rel, `${ctx.where} ${at}`, ctx.refViolations);
+  if (!isObject(node)) {
+    if (!(isObject(raw) && typeof raw.$ref === 'string')) push(undefined, `schema is ${constraintText(node)}, expected a schema object`);
+    return;
+  }
+  const form = contractForm(node);
+  for (const keyword of CONTRACT_VALUE_KEYWORDS) {
+    if (!sameConstraint(keyword, expected[keyword], form[keyword])) {
+      push(yamlLine(node, keyword), `${keyword} is ${constraintText(form[keyword])}, baseline ${constraintText(expected[keyword])}`);
+    }
+  }
+  const baseRequired = Array.isArray(expected.required) ? expected.required : [];
+  const required = Array.isArray(node.required) ? node.required.map(String) : [];
+  const dropped = baseRequired.filter((n) => !required.includes(n));
+  if (dropped.length > 0) push(yamlLine(node, 'required'), `required lacks baseline ${dropped.join(', ')}`);
+  const added = ctx.mode === 'request' ? required.filter((n) => !baseRequired.includes(n)) : [];
+  if (added.length > 0) {
+    push(yamlLine(node, 'required'), `required adds ${added.join(', ')}; a request may add only optional properties`);
+  }
+  const props = isObject(node.properties) ? node.properties : {};
+  for (const [name, prop] of Object.entries(isObject(expected.properties) ? expected.properties : {})) {
+    if (hasOwn(props, name)) compareToBaseline(ctx, prop, props[name], `${at}.${name}`, yamlLine(props, name));
+    else push(yamlLine(node, 'properties'), `lacks baseline property ${name}`);
+  }
+  if (expected.items !== undefined) {
+    if (node.items === undefined) push(yamlLine(node, 'items'), 'items is absent; the baseline has an item schema');
+    else compareToBaseline(ctx, expected.items, node.items, `${at}[]`, yamlLine(node, 'items'));
+  }
+  const extra = expected.additionalProperties;
+  if (isObject(extra)) {
+    if (isObject(node.additionalProperties)) {
+      compareToBaseline(ctx, extra, node.additionalProperties, `${at}{*}`, yamlLine(node, 'additionalProperties'));
+    } else {
+      const found = constraintText(node.additionalProperties);
+      push(yamlLine(node, 'additionalProperties'), `additionalProperties is ${found}; the baseline has a value schema`);
+    }
+  } else if (node.additionalProperties !== extra) {
+    const found = isObject(node.additionalProperties) ? 'a schema' : constraintText(node.additionalProperties);
+    push(yamlLine(node, 'additionalProperties'), `additionalProperties is ${found}, baseline ${constraintText(extra)}`);
+  }
+}
+
+/** A baseline operation's path item and operation object, or null when absent (checkBaselineOperations reports it). */
+function locateBaselineOperation(doc, rel, op) {
+  const item = hasOwn(doc.paths, op.path) ? deref(doc, doc.paths[op.path], rel, op.path, []) : undefined;
+  const operation = isObject(item) ? item[op.method] : undefined;
+  return isObject(operation) ? { item, operation } : null;
+}
+
+/** A parameter's OpenAPI serialization: its style and explode, defaulted for its location. */
+function parameterSerialization(param) {
+  let style = param.in === 'query' || param.in === 'cookie' ? 'form' : 'simple';
+  if (typeof param.style === 'string') style = param.style;
+  return { style, explode: typeof param.explode === 'boolean' ? param.explode : style === 'form' };
+}
+
+/** A parameter's identity: its location and name, a header name case-insensitively. */
+const parameterIdentity = (param) => `${param.in} ${param.in === 'header' ? param.name.toLowerCase() : param.name}`;
+
+/**
+ * An operation's parameters, the path item's overridden by the operation's own, as a
+ * Map parameterIdentity → resolved Parameter Object. A broken `$ref` goes to `violations`;
+ * a parameter without a name and location is left out, because Spectral reports it.
+ */
+function effectiveParameters(doc, rel, where, { item, operation }, violations) {
+  const params = new Map();
+  for (const list of [item.parameters, operation.parameters]) {
+    if (!Array.isArray(list)) continue;
+    list.forEach((raw, i) => {
+      const param = deref(doc, raw, rel, `${where} parameter ${i + 1}`, violations);
+      if (isObject(param) && typeof param.name === 'string' && typeof param.in === 'string') {
+        params.set(parameterIdentity(param), param);
+      }
+    });
+  }
+  return params;
+}
+
+/** Holds an operation's parameters to its baseline ones: each one kept as it was, and no new one required. */
+function compareBaselineParameters(ctx, expected, located) {
+  const current = effectiveParameters(ctx.doc, ctx.rel, ctx.where, located, ctx.violations);
+  const opLine = yamlLine(located.operation, 'parameters') ?? yamlLine(located.operation);
+  const push = (line, text) => ctx.violations.push({ path: ctx.rel, line: line ?? opLine, message: `${ctx.where}: ${text}` });
+  for (const base of expected) {
+    const at = `${base.in} parameter ${base.name}`;
+    const param = current.get(parameterIdentity(base));
+    if (!param) {
+      push(opLine, `lacks baseline ${at}`);
+      continue;
+    }
+    const required = param.required === true;
+    if (required !== base.required) {
+      push(yamlLine(param, 'required') ?? yamlLine(param), `${at}: required is ${required}, baseline ${base.required}`);
+    }
+    const found = parameterSerialization(param);
+    const wanted = parameterSerialization(base);
+    for (const key of ['style', 'explode']) {
+      if (found[key] !== wanted[key]) push(yamlLine(param, key), `${at}: ${key} is ${found[key]}, baseline ${wanted[key]}`);
+    }
+    if (param.schema === undefined) push(yamlLine(param), `${at}: schema is absent; the baseline has one`);
+    else compareToBaseline(ctx, base.schema, param.schema, `${at} schema`, yamlLine(param, 'schema'));
+  }
+  const baseKeys = new Set(expected.map(parameterIdentity));
+  for (const [key, param] of current) {
+    if (!baseKeys.has(key) && param.required === true) {
+      push(
+        yamlLine(param, 'required'),
+        `adds required ${param.in} parameter ${param.name}; a baseline operation may add only optional parameters`,
+      );
+    }
+  }
+}
+
+/** Holds an operation's request body to the baseline one, or to being absent or optional when the baseline has none. */
+function compareBaselineRequestBody(ctx, expected, operation) {
+  const push = (line, text) =>
+    ctx.violations.push({ path: ctx.rel, line: line ?? yamlLine(operation), message: `${ctx.where}: ${text}` });
+  if (operation.requestBody === undefined) {
+    if (expected) push(yamlLine(operation), 'lacks the baseline request body');
+    return;
+  }
+  const body = deref(ctx.doc, operation.requestBody, ctx.rel, `${ctx.where} request body`, ctx.violations);
+  if (!isObject(body)) return;
+  const required = body.required === true;
+  if (!expected) {
+    if (required) push(yamlLine(body, 'required'), 'adds a required request body; a baseline operation may add only an optional one');
+    return;
+  }
+  if (required !== expected.required) {
+    push(yamlLine(body, 'required') ?? yamlLine(body), `request body required is ${required}, baseline ${expected.required}`);
+  }
+  const media = isObject(body.content) ? body.content[JSON_MEDIA] : undefined;
+  if (!isObject(media) || media.schema === undefined) {
+    push(yamlLine(body, 'content') ?? yamlLine(body), `request body has no ${JSON_MEDIA} schema; the baseline has one`);
+    return;
+  }
+  compareToBaseline(ctx, expected.schema, media.schema, 'request body', yamlLine(media, 'schema'));
+}
+
+/**
+ * Holds an operation's 200 response headers and application/json schema to the
+ * baseline. A missing 200 response, JSON media or schema is reported by checkOperation,
+ * so it is skipped here.
+ */
+function compareBaselineSuccess(ctx, expected, operation) {
+  const raw = isObject(operation.responses) ? operation.responses['200'] : undefined;
+  const response = raw === undefined ? undefined : deref(ctx.doc, raw, ctx.rel, '', []);
+  if (!isObject(response)) return;
+  const push = (line, text) =>
+    ctx.violations.push({ path: ctx.rel, line: line ?? yamlLine(response), message: `${ctx.where}: ${text}` });
+  const headers = isObject(response.headers) ? response.headers : {};
+  for (const [name, base] of Object.entries(expected.headers ?? {})) {
+    const at = `200 header ${name}`;
+    const key = Object.keys(headers).find((k) => k.toLowerCase() === name.toLowerCase());
+    if (key === undefined) {
+      push(yamlLine(response, 'headers'), `200 response lacks baseline header ${name}`);
+      continue;
+    }
+    const header = deref(ctx.doc, headers[key], ctx.rel, `${ctx.where} ${at}`, ctx.violations);
+    if (!isObject(header)) continue;
+    const required = header.required === true;
+    if (required !== base.required) {
+      push(yamlLine(header, 'required') ?? yamlLine(header), `${at}: required is ${required}, baseline ${base.required}`);
+    }
+    if (header.schema === undefined) push(yamlLine(header), `${at}: schema is absent; the baseline has one`);
+    else compareToBaseline(ctx, base.schema, header.schema, `${at} schema`, yamlLine(header, 'schema'));
+  }
+  const media = isObject(response.content) ? response.content[JSON_MEDIA] : undefined;
+  const schema = isObject(media) && media.schema !== undefined ? deref(ctx.doc, media.schema, ctx.rel, '', []) : undefined;
+  // The schema as written, so the keywords beside its `$ref` are compared too.
+  if (isObject(schema)) compareToBaseline(ctx, expected.response, media.schema, '200 body', yamlLine(media, 'schema'));
+}
+
+/** Holds the baseline operations of every document to REST_BASELINE, and every ErrorObject to ERROR_OBJECT_BASELINE. */
+function checkRestBaseline(docs, violations) {
+  for (const iface of INTERFACES) {
+    const doc = docs.get(iface.openapi);
+    const baseline = REST_BASELINE[iface.openapi];
+    if (!doc || !baseline) continue;
+    for (const op of iface.operations) {
+      const located = locateBaselineOperation(doc, iface.openapi, op);
+      if (!located) continue;
+      const where = `${op.method.toUpperCase()} ${op.path} (${op.rpc})`;
+      const ctx = { doc, rel: iface.openapi, where, baseline, mode: 'request', violations, refViolations: violations };
+      const expected = baseline.operations[op.rpc];
+      compareBaselineParameters(ctx, expected.parameters, located);
+      compareBaselineRequestBody(ctx, expected.requestBody, located.operation);
+      compareBaselineSuccess({ ...ctx, mode: 'response' }, expected, located.operation);
+    }
+  }
+  for (const [rel, doc] of docs) {
+    const schema = isObject(doc.components?.schemas) ? doc.components.schemas.ErrorObject : undefined;
+    if (!isObject(schema)) continue;
+    // A missing ErrorObject or a broken details-item reference is reported by checkErrorObjects.
+    const ctx = {
+      doc,
+      rel,
+      where: 'standard error object',
+      baseline: { schemas: {} },
+      mode: 'response',
+      violations,
+      refViolations: [],
+    };
+    compareToBaseline(ctx, ERROR_OBJECT_BASELINE, schema, 'ErrorObject', yamlLine(schema));
+  }
+}
+
+/** A proto field as `Message.field (path:line)`. */
+const protoFieldSite = (owner, field) => `${owner.message.name}.${field.name} (${owner.file.rel}:${field.line})`;
+
+/** A proto message as `Message (path:line)`. */
+const protoMessageSite = (owner) => `${owner.message.name} (${owner.file.rel}:${owner.message.line})`;
+
+/**
+ * Compares a proto message with its REST object schema: the field types, and, as tc
+ * sets them, presence (tc.presence) and name parity in both directions (tc.names). tc
+ * is { typeFiles, doc, rel, where, violations, presence, names }, typeFiles being the
+ * run's protoTypeFiles map; owner is a message as resolveProtoType returns it,
+ * { message, file }; `stack` holds the messages being compared, so a recursive one stops.
+ */
+function compareTwinMessage(tc, owner, schema, at, line, stack) {
+  const push = (l, text) => tc.violations.push({ path: tc.rel, line: l ?? line, message: `${tc.where}: ${at}: ${text}` });
+  const types = schemaTypeList(schema).filter((t) => t !== 'null');
+  if (types.length !== 1 || types[0] !== 'object') {
+    push(yamlLine(schema, 'type'), `type is ${constraintText(schema.type)}, expected "object" for proto message ${protoMessageSite(owner)}`);
+    return;
+  }
+  const props = isObject(schema.properties) ? schema.properties : {};
+  const required = new Set(Array.isArray(schema.required) ? schema.required.map(String) : []);
+  for (const field of owner.message.fields) {
+    if (!hasOwn(props, field.json)) {
+      if (tc.names) push(yamlLine(schema, 'properties'), `lacks property ${field.json} of proto field ${protoFieldSite(owner, field)}`);
+      continue;
+    }
+    compareTwinField(tc, owner, field, {
+      schema: props[field.json],
+      required: required.has(field.json),
+      requiredLine: yamlLine(schema, 'required'),
+      at: `${at}.${field.json}`,
+      line: yamlLine(props, field.json),
+    }, stack);
+  }
+  if (!tc.names) return;
+  const names = new Set(owner.message.fields.map((f) => f.json));
+  for (const name of Object.keys(props)) {
+    if (!names.has(name)) push(yamlLine(props, name), `property ${name} has no field in proto message ${protoMessageSite(owner)}`);
+  }
+}
+
+/**
+ * Compares one proto field with its REST twin { schema, required, requiredLine, at,
+ * line }: presence under the twin presence rule (TWIN_PRESENCE_EXCEPTIONS), null
+ * admitted only where that rule says, and the type: repeated ↔ array of the element,
+ * map ↔ object whose additionalProperties is the value, anything else ↔ its value.
+ */
+function compareTwinField(tc, owner, field, twin, stack) {
+  const site = protoFieldSite(owner, field);
+  const push = (line, text) => tc.violations.push({ path: tc.rel, line: line ?? twin.line, message: `${tc.where}: ${twin.at}: ${text}` });
+  const exception = TWIN_PRESENCE_EXCEPTIONS.get(field.json);
+  const rule = exception?.label === field.label ? exception : undefined;
+  if (tc.presence) {
+    // A oneof member tracks presence as an `optional` field does: at most one member is set.
+    const expected = rule ? rule.required : field.label !== 'optional' && field.oneof === '';
+    if (twin.required !== expected) {
+      const state = (r) => (r ? 'required' : 'not required');
+      const kind = field.oneof ? `oneof ${field.oneof} member` : field.label || 'singular';
+      push(twin.requiredLine, `is ${state(twin.required)}, expected ${state(expected)} for proto ${kind} field ${site}`);
+    }
+  }
+  const schema = deref(tc.doc, twin.schema, tc.rel, '', []);
+  if (!isObject(schema)) return;
+  const nullable = schemaTypeList(schema).includes('null');
+  if (nullable !== (rule?.nullable === true)) {
+    push(
+      yamlLine(schema, 'type'),
+      nullable
+        ? `type ${constraintText(schema.type)} admits null, which proto field ${site} never carries`
+        : `type ${constraintText(schema.type)} lacks "null", which stands for the unset proto field ${site}`,
+    );
+  }
+  const types = schemaTypeList(schema).filter((t) => t !== 'null');
+  const map = /^map\s*<\s*[\w.]+\s*,\s*([\w.]+)\s*>$/.exec(field.type);
+  if (field.label === 'repeated') {
+    if (types.length !== 1 || types[0] !== 'array') {
+      push(yamlLine(schema, 'type'), `type is ${constraintText(schema.type)}, expected "array" for repeated proto field ${site}`);
+    } else if (schema.items === undefined) {
+      push(yamlLine(schema, 'type'), `items is absent; repeated proto field ${site} needs an item schema`);
+    } else {
+      compareTwinValue(tc, owner, field, field.type, { schema: schema.items, at: `${twin.at}[]`, line: yamlLine(schema, 'items') }, stack);
+    }
+  } else if (map) {
+    if (types.length !== 1 || types[0] !== 'object' || !isObject(schema.additionalProperties)) {
+      push(
+        yamlLine(schema, 'additionalProperties') ?? yamlLine(schema, 'type'),
+        `expected an object whose additionalProperties is the value schema of map proto field ${site}`,
+      );
+    } else {
+      const value = { schema: schema.additionalProperties, at: `${twin.at}{*}`, line: yamlLine(schema, 'additionalProperties') };
+      compareTwinValue(tc, owner, field, map[1], value, stack);
+    }
+  } else {
+    compareTwinValue(tc, owner, field, field.type, { schema, at: twin.at, line: twin.line }, stack);
+  }
+}
+
+/**
+ * Compares one value of a proto field (the field itself, a repeated field's element or
+ * a map's value) of proto type `type` with its REST schema { schema, at, line }: a
+ * message ↔ an object compared field by field, an enum ↔ string, a scalar ↔ the
+ * PROTO_SCALAR_JSON_TYPES of its type.
+ */
+function compareTwinValue(tc, owner, field, type, value, stack) {
+  const schema = deref(tc.doc, value.schema, tc.rel, '', []);
+  if (!isObject(schema)) return;
+  const scalar = PROTO_SCALAR_JSON_TYPES.get(type);
+  const resolved = scalar ? null : resolveProtoType(type, owner.file, tc.typeFiles);
+  if (resolved?.kind === 'message') {
+    const key = `${resolved.file.rel}#${resolved.message.name}`;
+    if (!stack.includes(key)) compareTwinMessage(tc, resolved, schema, value.at, value.line, [...stack, key]);
+    return;
+  }
+  const allowed = scalar ?? (resolved?.kind === 'enum' ? ['string'] : null);
+  if (!allowed) return;
+  const types = schemaTypeList(schema).filter((t) => t !== 'null');
+  if (types.length === 0 || types.some((t) => !allowed.includes(t))) {
+    tc.violations.push({
+      path: tc.rel,
+      line: yamlLine(schema, 'type') ?? value.line,
+      message:
+        `${tc.where}: ${value.at}: type is ${constraintText(schema.type)}, expected ${allowed.map((t) => `"${t}"`).join(' or ')} ` +
+        `for proto ${type} field ${protoFieldSite(owner, field)}`,
+    });
+  }
+}
+
+/**
+ * Compares an RPC's request message with its REST operation's path and query
+ * parameters and request body properties, by JSON name in both directions. Header and
+ * cookie parameters travel as gRPC metadata, not as message fields, so they have no twin.
+ */
+function compareTwinRequest(tc, owner, located) {
+  const opLine = yamlLine(located.operation, 'parameters') ?? yamlLine(located.operation);
+  const push = (line, text) => tc.violations.push({ path: tc.rel, line: line ?? opLine, message: `${tc.where}: ${text}` });
+  const twins = new Map();
+  for (const param of effectiveParameters(tc.doc, tc.rel, tc.where, located, []).values()) {
+    if (param.in !== 'path' && param.in !== 'query') continue;
+    twins.set(param.name, {
+      schema: param.schema,
+      required: param.in === 'path' || param.required === true,
+      requiredLine: yamlLine(param, 'required') ?? yamlLine(param),
+      at: `${param.in} parameter ${param.name}`,
+      line: yamlLine(param, 'schema') ?? yamlLine(param),
+    });
+  }
+  const rawBody = located.operation.requestBody;
+  const body = rawBody === undefined ? undefined : deref(tc.doc, rawBody, tc.rel, '', []);
+  const media = isObject(body?.content) ? body.content[JSON_MEDIA] : undefined;
+  const bodySchema = isObject(media) && media.schema !== undefined ? deref(tc.doc, media.schema, tc.rel, '', []) : undefined;
+  if (isObject(bodySchema)) {
+    const types = schemaTypeList(bodySchema).filter((t) => t !== 'null');
+    if (types.length !== 1 || types[0] !== 'object') {
+      push(
+        yamlLine(bodySchema, 'type') ?? yamlLine(media, 'schema'),
+        `request body: type is ${constraintText(bodySchema.type)}, expected "object" for proto message ${protoMessageSite(owner)}`,
+      );
+    }
+    const props = isObject(bodySchema.properties) ? bodySchema.properties : {};
+    const required = new Set(Array.isArray(bodySchema.required) ? bodySchema.required.map(String) : []);
+    for (const [name, schema] of Object.entries(props)) {
+      twins.set(name, {
+        schema,
+        required: body.required === true && required.has(name),
+        requiredLine: yamlLine(bodySchema, 'required') ?? yamlLine(body, 'required'),
+        at: `request body.${name}`,
+        line: yamlLine(props, name),
+      });
+    }
+  }
+  const stack = [`${owner.file.rel}#${owner.message.name}`];
+  for (const field of owner.message.fields) {
+    const twin = twins.get(field.json);
+    if (twin) compareTwinField(tc, owner, field, twin, stack);
+    else push(opLine, `request lacks a parameter or body property ${field.json} for proto field ${protoFieldSite(owner, field)}`);
+  }
+  const names = new Set(owner.message.fields.map((f) => f.json));
+  for (const [name, twin] of twins) {
+    if (!names.has(name)) push(twin.line, `${twin.at} has no field in proto request message ${protoMessageSite(owner)}`);
+  }
+}
+
+/**
+ * Holds every baseline RPC and its REST operation to twin agreement, field by field,
+ * added fields included: the request message with the parameters and request body, the
+ * response message with the 200 application/json schema. Also holds the types of
+ * cardservicing.common.v1.ErrorObject's fields to every document's ErrorObject (name
+ * parity there is checkErrorObjects'). A twin difference is reported at the REST site,
+ * since each OpenAPI operation is the HTTP/JSON form of its RPC.
+ */
+function checkTwinAgreement(protos, typeFiles, docs, violations) {
+  for (const iface of INTERFACES) {
+    const proto = protos.get(iface.proto);
+    const doc = docs.get(iface.openapi);
+    const service = proto?.services.get(iface.service);
+    if (!service || !doc) continue;
+    const self = typeFiles.get(iface.proto);
+    for (const op of iface.operations) {
+      const rpc = service.rpcs.find((r) => r.name === op.rpc);
+      const located = locateBaselineOperation(doc, iface.openapi, op);
+      if (!rpc || !located) continue;
+      const where = `${op.method.toUpperCase()} ${op.path} (${op.rpc})`;
+      const tc = { typeFiles, doc, rel: iface.openapi, where, violations, presence: true, names: true };
+      const request = resolveProtoType(rpc.requestType, self, typeFiles);
+      if (request?.kind === 'message') compareTwinRequest(tc, request, located);
+      const response = resolveProtoType(rpc.responseType, self, typeFiles);
+      const responses = located.operation.responses;
+      const raw = isObject(responses) ? responses['200'] : undefined;
+      const success = raw === undefined ? undefined : deref(doc, raw, iface.openapi, '', []);
+      const media = isObject(success?.content) ? success.content[JSON_MEDIA] : undefined;
+      const schema = isObject(media) && media.schema !== undefined ? deref(doc, media.schema, iface.openapi, '', []) : undefined;
+      if (response?.kind === 'message' && isObject(schema)) {
+        const stack = [`${response.file.rel}#${response.message.name}`];
+        compareTwinMessage(tc, response, schema, '200 body', yamlLine(media, 'schema'), stack);
+      }
+    }
+  }
+  const common = protos.get(COMMON_PROTO);
+  const errorObject = common?.messages.get('ErrorObject');
+  if (!errorObject) return;
+  const owner = { message: errorObject, file: typeFiles.get(COMMON_PROTO) };
+  for (const [rel, doc] of docs) {
+    const schema = isObject(doc.components?.schemas) ? doc.components.schemas.ErrorObject : undefined;
+    if (!isObject(schema)) continue;
+    const tc = { typeFiles, doc, rel, where: 'standard error object', violations, presence: false, names: false };
+    compareTwinMessage(tc, owner, schema, 'ErrorObject', yamlLine(schema), [`${COMMON_PROTO}#ErrorObject`]);
+  }
+}
+
+/**
+ * The fixed baseline field contracts and the proto/REST twin agreement: every proto
+ * against PROTO_BASELINE, every baseline operation and ErrorObject against REST_BASELINE
+ * and ERROR_OBJECT_BASELINE, and every baseline RPC against its REST twin.
+ */
+function checkBaselineContracts(protos, typeFiles, docs, violations) {
+  checkProtoBaseline(protos, violations);
+  checkRestBaseline(docs, violations);
+  checkTwinAgreement(protos, typeFiles, docs, violations);
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
+
+/**
+ * The violations with each (path, line, message) once, first occurrence kept. A YAML
+ * syntax error makes @stoplight/yaml (in loadYaml) and Spectral's parser rule report a
+ * diagnostic at each column it disturbs, and a violation keeps only the line, so
+ * several of one line's diagnostics would print as the same line.
+ */
+function distinctViolations(violations) {
+  const seen = new Set();
+  return violations.filter((v) => {
+    const key = JSON.stringify([v.path, v.line ?? null, v.message]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 /** --help text. No line starts with `check-contracts:`, so none reads as a violation. */
 const USAGE = `Usage: node tests/validation/check-contracts.mjs [--help]
@@ -1410,8 +4094,10 @@ const USAGE = `Usage: node tests/validation/check-contracts.mjs [--help]
 Validates card-servicing-contracts/buf.yaml and .spectral.yaml, then runs buf lint over
 both proto roots and Spectral over the six OpenAPI 3.1 documents, and checks that the
 fourteen Stub Contract Baseline operations are present under their RPC names, methods and
-paths, that every RPC and operation carries examples and the standard error object, and
+paths, that the baseline field contracts hold and each RPC agrees with its REST twin, that
+every RPC and operation carries real, valid examples and the standard error object, and
 that ErrorObject is identical across the OpenAPI documents and mirrors common.proto.
+Content violations print as path:line.
 
 Runs from any working directory: every path resolves against the repository root.
 Takes no argument other than -h or --help, which prints this text.
@@ -1462,8 +4148,18 @@ function main() {
     if (!linked(rel) && !exists(rel)) violations.push({ path: rel, message: 'expected contract file is missing' });
   }
 
+  // Every existing proto reached through no symbolic link, parsed once: root-relative
+  // path → parseProto model. A linked proto is left out, as a missing one is; its link
+  // violation stands for it.
+  const protos = new Map();
+  for (const rel of [COMMON_PROTO, ...INTERFACES.map((i) => i.proto)]) {
+    if (!linked(rel) && exists(rel)) protos.set(rel, parseProto(readText(rel)));
+  }
+  // The same protos as type scopes, built once for every type resolution of the run.
+  const typeFiles = protoTypeFiles(protos);
+
   const parseYaml = resolveYamlParser();
-  const shared = checkProtos(violations, linked);
+  const shared = checkProtos(protos, typeFiles, violations);
 
   const bufBlocked = [];
   const bufConfigLink = linkOf.get(BUF_CONFIG);
@@ -1539,11 +4235,15 @@ function main() {
     const docs = new Map();
     for (const { iface, doc } of loaded) {
       if (!isObject(doc)) {
-        violations.push({ path: iface.openapi, message: 'document is not a YAML mapping' });
+        violations.push({ path: iface.openapi, line: 1, message: 'document is not a YAML mapping' });
         continue;
       }
       if (!/^3\.1\.\d+$/.test(String(doc.openapi ?? ''))) {
-        violations.push({ path: iface.openapi, message: `openapi is "${doc.openapi ?? ''}", expected 3.1.x` });
+        violations.push({
+          path: iface.openapi,
+          line: yamlLine(doc, 'openapi'),
+          message: `openapi is "${doc.openapi ?? ''}", expected 3.1.x`,
+        });
       }
       docs.set(iface.openapi, doc);
       checkBaselineOperations(doc, iface, violations);
@@ -1551,12 +4251,14 @@ function main() {
         checkOperation(doc, iface.openapi, operation, violations);
       }
     }
+    checkRpcErrorStatuses(protos, docs, violations);
     checkErrorObjects(docs, shared, violations);
+    checkBaselineContracts(protos, typeFiles, docs, violations);
   }
 
   // `<check> (note): …` can never be read as a `<check>: <path>: <message>` violation line.
   for (const note of notes) console.log(`${CHECK} (note): ${note}`);
-  report(CHECK, violations);
+  report(CHECK, distinctViolations(violations));
   // report() sets exit 0 or 1; a setup failure overrides it after the count is printed.
   if (setupFailure) process.exitCode = 2;
 }

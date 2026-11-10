@@ -60,6 +60,11 @@ Parent epic: [CS-04 Transaction Detail Drill-Down](../README.md)
 > - AC5: Setup calls that collect transaction identifiers run before the measured window and are excluded from the percentiles.
 > - AC6: Outside the percentile set, each regular fixture identity makes one call for an account outside its entitlements (e.g. `USER0001` → `10000002001`). Each such call returns 403 with `code` `PERMISSION_DENIED`, and the Transaction Activity and Card Data stub request logs gain no entry for it, so no account data is read from upstream before access is allowed. The cache side is proven by CS-12-003.
 > - AC7: Over the measured window, the Transaction Activity and Card Data stub request logs record zero `UNAVAILABLE` or `DEADLINE_EXCEEDED` outcomes. No attempt therefore reached the per-attempt timeout (the lesser of 300 ms `UPSTREAM_TIMEOUT_MS` and the remaining budget), and no retry occurred (cap two, `UPSTREAM_MAX_RETRIES`, 50 ms then 100 ms backoff). Injected-failure timeouts and retries are proven by CS-08-002 and the integration suites.
+>
+> SCOPE-QUESTION (Resolved): AC7 gives the retry cap and backoffs but not which outcomes are retried or when a retry may start, and it reads the absence of timeouts from zero `UNAVAILABLE` and `DEADLINE_EXCEEDED` outcomes, although a stub logs an attempt the service abandoned at its per-attempt timeout as `CANCELLED` (CS-11-002 AC10). The call policy retries only after `UNAVAILABLE` or `DEADLINE_EXCEEDED` and never after any other status. A retry starts only when its backoff plus a full 300 ms attempt fits the budget left before the cut-off of the 900 ms deadline (`REQUEST_DEADLINE_MS`). AC7's evidence is the runner's no-timeout-retry condition (CS-01-003 AC7), which the scenario declares on `cardservicing.transactionactivity.v1.TransactionActivityService/GetTransaction` and `cardservicing.carddata.v1.CardDataService/GetCardCrossReference`, as the stub conditions of section 1 state. The condition fails the scenario on any entry of either operation whose outcome is `CANCELLED` or `DEADLINE_EXCEEDED`, or that lasts 300 ms or more, and the retry count of each of the two operations, its entries with outcome `UNAVAILABLE`, `DEADLINE_EXCEEDED` or `CANCELLED` (CS-01-003), is 0. Injected-failure timeouts and retries stay with CS-08-002 and the integration suites.
+>
+> SCOPE-QUESTION (Resolved): AC7 states the per-attempt timeout, the retry cap and the backoffs only as limits the measured window did not reach. The scenario runs on the Compose stack, whose call policy (CS-01-001 AC6, CS-11-003) sets them: each attempt times out at the lesser of 300 ms (`UPSTREAM_TIMEOUT_MS`) and the remaining budget, and at most two retries (`UPSTREAM_MAX_RETRIES`) follow, after 50 ms then 100 ms backoff.
+>
 > - AC8: Every measured call's completion log line records `cutoffMs` at most 900 (`REQUEST_DEADLINE_MS`, receipt to cut-off), and the p99 client-measured response is below 1,000 ms.
 >
 > SCOPE-QUESTION (Resolved): AC8 states its cut-off bound as `cutoffMs` at most 900 without a unit. The bound is the 900 ms request deadline (`REQUEST_DEADLINE_MS`), measured from receipt to the cut-off, so AC8 requires the cut-off of every request it names to fall at or before 900 ms after receipt.
@@ -95,7 +100,7 @@ Completed during implementation.
 ## 6. Test Plan
 
 - Unit — Not applicable — the story is a scenario definition only, which `performanceTest` runs and `test` never does. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass, with ≥80% line coverage per module.
-- Integration — Not applicable — injected stub exceptions, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap are covered by the integration suites CS-09-006, CS-10-007, CS-12-005 and CS-11-007. Command `./gradlew :card-servicing-service:integrationTest`.
+- Integration — Not applicable — injected stub exceptions, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap are covered by the integration suites CS-09-006, CS-10-007, CS-12-005 and CS-11-007. Command `./gradlew :card-servicing-service:integrationTest`; one suite per external epic covering those three cases.
 - Performance — Applies — this story is the transaction detail scenario. Commands `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`; p50/p95/p99 below 1,000 ms over successful requests, with failure injection off, at 10 users × 100 sequential calls, 100,000 category balances and 1,000,000 transactions; injected failures are proven elsewhere by a logged `cutoffMs` ≤ 900 and a client-measured response below 1,000 ms.
 - End-to-end — Not applicable — the detail step is CS-04-001. Command `./gradlew :card-servicing-service:e2eTest`, which runs the four-step flow for account `00000000001`.
 
@@ -200,7 +205,7 @@ Open assumptions:
 | AC6 | Holds | the denied calls run after the timed window with both upstream logs compared |
 | AC7 | Holds | injection off leaves no failed or timed-out attempt |
 | AC8 | Conditional | the check rests on the completion log carrying the cut-off time per call |
-| AC9 | Holds | no injected failure runs, so any unavailable, deadline or stale answer fails the scenario |
+| AC9 | Holds | any unavailable, deadline or stale answer fails the scenario with injection off |
 
 ### Design Option B
 
@@ -226,7 +231,7 @@ Open assumptions:
 | AC6 | Holds | the denied calls run after the timed window with both upstream logs compared |
 | AC7 | Holds | injection off leaves no failed or timed-out attempt |
 | AC8 | Conditional | the check rests on the completion log carrying the cut-off time per call |
-| AC9 | Holds | no injected failure runs, so any unavailable, deadline or stale answer fails the scenario |
+| AC9 | Holds | any unavailable, deadline or stale answer fails the scenario with injection off |
 
 ## Metadata
 

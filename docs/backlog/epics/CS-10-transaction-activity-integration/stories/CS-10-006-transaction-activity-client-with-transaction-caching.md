@@ -12,6 +12,8 @@ Parent epic: [CS-10 Transaction Activity Integration](../README.md)
 >
 > Account-data access path: No
 >
+> > SCOPE-QUESTION (Resolved): Should this client carry the account-data classification? This client is the service's only path to posted-transaction records, so every transaction read of the request path runs through it, and the line resolves to `Account-data access path: Yes`. The client does not duplicate authorization: the account access guard (CS-12-003) allows access before any caller invokes the client, and AC14 states the constraint.
+>
 > External integration or SLA-bound: Yes
 >
 > Capability: one Transaction Activity client is the service's only path to posted transactions (`Data Layouts · CVTRA05Y`). It serves the Stage 3 reads of both drill-downs: `ListTransactions` for the transaction list, which pages an account's transactions as `Use Cases · COTRN00C` pages its list, and `GetTransaction` for the transaction detail, which reads one transaction by TRAN-ID as `Use Cases · COTRN01C` does. Every call runs through the upstream call policy inside the request deadline, and both reads go through the read-through cache: a list page is served only while fresh, and a detail entry may answer an outage as stale, as the TRD degradation table sets out for each operation. Target paths:
@@ -81,6 +83,9 @@ Parent epic: [CS-10 Transaction Activity Integration](../README.md)
 > - AC11: Redis failure: with every entry-store command failing, each `transaction` and `transactions` read is treated as a miss: it reaches the stub exactly once, returns the stub's result `FRESH`, and no Redis error reaches the caller. With the stub failing as well, the stub's `UNAVAILABLE` is the failure returned.
 > - AC12: Credentials: every stub call of both operations carries `authorization` equal to `Bearer ` followed by the test token and `x-api-key` equal to the value bound from `AUTH_SERVICE_API_KEY`, or an empty value when the key is empty, as the header-capturing interceptor records. With the root log level and the client frame logger at DEBUG on a live channel, the log output captured across the AC1, AC3, AC6 and AC9 paths contains neither value, and no written cache key contains either.
 > - AC13: Swap point: with `card-servicing.clients.transaction-activity.target` set to the port of a second `StubHarness` serving `TransactionActivityStubRegistration`, every call of both operations lands in that harness's request log and none in the first harness's log, with no change to any class. With the property not overridden, the bound target address is `localhost:9090`.
+> > SCOPE-QUESTION (Resolved): Which criterion carries the authorization constraint of this account-data access path? None of AC1–AC13 does. Resolution: AC14 below. The client adds no access check of its own, and its unit suite adds no case for AC14: the account access guard (CS-12-003) decides access before any caller invokes the client, so the proof sits with the guard and with the endpoint stories that call this client.
+> >
+> > - AC14: Authorization: a request for account `00000000011` with `fixture-token-user0001`, outside the entitlements of `USER0001` (CS-12-001), returns 403 with `code` `PERMISSION_DENIED` from the account access guard before any call reaches this client. For that request the Transaction Activity stub request log holds zero entries and the cache records zero reads under the `transaction` and `transaction-page` key families, so no account data is read from upstream or cache before access is allowed. The proof is delegated to CS-12-003 AC1, CS-12-005 AC3 and the endpoint stories that call this client: CS-07-002 AC1 and CS-08-002 AC1.
 >
 > ### 3. Dependencies
 >
@@ -103,7 +108,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit — Applies: `TransactionActivityClientTest` and `TransactionActivityClientCacheTest` cover AC1–AC13 on the loopback stub harness with per-test latency and failure overrides: the attempt timeout, the retry waits, the fit rule, the fail-hard list read, the detail stale fallback and its expiry, the not-found and invalid-token statuses, fresh hit, miss and write-back, key separation and encoding, Redis failure, the forwarded credentials and their absence from logs, and the swap point. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass; at least 80% line coverage per module.
+- Unit — Applies: `TransactionActivityClientTest` and `TransactionActivityClientCacheTest` cover AC1–AC13 on the loopback stub harness with per-test latency and failure overrides: the attempt timeout, the retry waits, the fit rule, the fail-hard list read, the detail stale fallback and its expiry, the not-found and invalid-token statuses, fresh hit, miss and write-back, key separation and encoding, Redis failure, the forwarded credentials and their absence from logs, and the swap point. AC14 is proven where the account access guard runs, by CS-12-003, CS-12-005 and the endpoint stories that call this client. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass; at least 80% line coverage per module.
 - Integration — Applies, through the Transaction Activity integration suite CS-10-007, which runs this client against the stub on a real gRPC channel with Testcontainers `postgres:16.6` and `redis:7.4.2`; this story adds no integration suite. Command `./gradlew :card-servicing-service:integrationTest`; one suite per external epic (CS-10-007 for this epic) covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance — Applies, through the transaction list SLA scenario CS-03-003 and the transaction detail SLA scenario CS-04-002, whose endpoints call this client. `docker compose -f tests/docker-compose.yml up -d --wait`, `./gradlew :card-servicing-service:performanceTest`, `docker compose -f tests/docker-compose.yml down`; p50, p95 and p99 below 1,000 ms over successful requests with failure injection off at 10 users × 100 sequential calls, 100,000 category balances and 1,000,000 transactions; injected failures proven by a logged `cutoffMs` at most 900 and a client-measured response below 1,000 ms; applies to balance-retrieval and drill-down stories.
 - End-to-end — Not applicable — covered by CS-03-001 and CS-04-001 at the endpoint level. Where it applies: `docker compose -f tests/docker-compose.yml up -d --wait`, `./gradlew :card-servicing-service:e2eTest`, `docker compose -f tests/docker-compose.yml down`; the four-step flow for account `00000000001` returns the expected fixture values and each stub's request log shows at least one call.
@@ -231,6 +236,7 @@ Open assumptions:
 | AC11 | Holds | the read-through cache treats its own failure as a miss |
 | AC12 | Holds | both credentials ride on each call with the frame logger silenced |
 | AC13 | Holds | the channel reads its target address from configuration |
+| AC14 | Holds | the account access guard denies the request before any read reaches the client |
 
 ### Option B
 
@@ -260,6 +266,7 @@ Open assumptions:
 | AC11 | Holds | the read-through cache treats its own failure as a miss |
 | AC12 | Holds | both credentials ride on each call with the frame logger silenced |
 | AC13 | Holds | the channel reads its target address from configuration |
+| AC14 | Holds | the account access guard denies the request before any cache or remote read |
 
 ## Metadata
 

@@ -48,6 +48,7 @@ Parent epic: [CS-04 Transaction Detail Drill-Down](../README.md)
 > - AC3: `GET /v1/accounts/00000000001/transactions/9999999999999999` with `USER0001`'s token returns 404 with `code` `NOT_FOUND` and a non-empty `traceId`.
 > - AC4: `GET /v1/accounts/00000000001/transactions/12345` with `USER0001`'s token returns 400 with `code` `INVALID_ARGUMENT`, a `details` entry naming `transactionId` and a non-empty `traceId`. No stub request log, Auth included, gains an entry for that request.
 > - AC5: `GET /v1/accounts/00000000011/transactions/0000000776200014` with `USER0001`'s token returns 403 with `code` `PERMISSION_DENIED`. The Transaction Activity and Card Data stub request logs gain no entry for that request, so no account data is read from upstream before access is allowed. The cache side of that rule is proven by CS-12-003.
+>   > SCOPE-QUESTION (Resolved): AC5 does not state why the request is denied. Account `00000000011` lies outside the entitlements of `USER0001`, which hold `00000000001`–`00000000010` among the sample accounts and the synthetic slice `10000000001`–`10000002000` (CS-12-001), so AC5 requires that a request for an account outside the caller's entitlements returns 403 with `code` `PERMISSION_DENIED`.
 > - AC6: The AC1 request sent with the expired fixture token returns 401 with `code` `UNAUTHENTICATED`, and the Transaction Activity and Card Data stub request logs gain no entry for it.
 > - AC7: After this step, the last of the four, the Auth, Config, Card Data, Reference Data and Transaction Activity stub request logs, each read in full through the end-to-end client, each show at least one call. The Config entry may come from the first allowed call of any end-to-end test on the stack, because the service refreshes its configuration snapshot once per 300 s fresh period.
 > - AC8: For the AC1 request, each stub request log shows at most one entry per operation, so no retry occurred with failure injection off. Behaviour under injected failures is proven by CS-08-002 and the integration suites CS-10-007, CS-09-006 and CS-12-005. That covers the per-attempt timeout, the lesser of 300 ms (`UPSTREAM_TIMEOUT_MS`) and the remaining budget, and the retry cap: two retries (`UPSTREAM_MAX_RETRIES`), with 50 ms then 100 ms backoff, on `UNAVAILABLE` or `DEADLINE_EXCEEDED` only, a retry starting only when backoff plus a full 300 ms attempt fits the budget.
@@ -81,6 +82,7 @@ Parent epic: [CS-04 Transaction Detail Drill-Down](../README.md)
   - [card_servicing_service.proto](../../../../../card-servicing-service/src/main/proto/cardservicing/api/v1/card_servicing_service.proto)
   - [common.proto](../../../../../card-servicing-contracts/src/main/proto/cardservicing/common/v1/common.proto)
   - [auth-service.yaml](../../../../../card-servicing-service/src/main/resources/openapi/auth-service.yaml) (fixture tokens)
+  - [auth_service.proto](../../../../../card-servicing-service/src/main/proto/cardservicing/auth/v1/auth_service.proto) (fixture tokens)
 
 ## 5. Documentation Changes
 

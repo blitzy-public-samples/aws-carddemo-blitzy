@@ -245,7 +245,7 @@ Open assumptions:
 | AC2 | Holds | both reads answer and the card numbers match |
 | AC3 | Holds | the card number is absent from the second account's card links |
 | AC4 | Holds | the not-found status ends the transaction read after one attempt |
-| AC5 | Holds | the two reads overlap, so the stage costs one latency |
+| AC5 | Holds | the overlapping reads cost the stage one latency |
 | AC6 | Holds | the call policy cuts each attempt to the remaining budget |
 | AC7 | Holds | the call policy applies the retry cap, the waits and the fit rule |
 | AC8 | Holds | with no usable entry the unavailable status stands |

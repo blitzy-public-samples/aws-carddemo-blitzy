@@ -86,6 +86,9 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 > - AC3: At most two retries (`UPSTREAM_MAX_RETRIES` = 2): an upstream answering `UNAVAILABLE` at once on every attempt receives exactly 3 attempts, and the policy returns `UNAVAILABLE`, which the standard error mapping turns into 503 with the receipt `traceId`. With `UPSTREAM_MAX_RETRIES` = 0 the same upstream receives exactly 1 attempt.
 > - AC4: Retry only on `UNAVAILABLE` or `DEADLINE_EXCEEDED`: an upstream answering `NOT_FOUND`, `INVALID_ARGUMENT`, `UNAUTHENTICATED` or `PERMISSION_DENIED` receives exactly 1 attempt and its status is returned unchanged.
 > - AC5: Retry-fit rule boundary: when a first attempt fails with 340 ms remaining, no retry starts (50 + 300 > 340) and the last status is returned; when it fails with 350 ms remaining, a retry starts.
+>
+> > SCOPE-QUESTION (Resolved): AC5 tests the boundary of the retry-fit rule but does not state the rule. A retry starts only when its backoff plus a full 300 ms attempt fits the remaining budget of the 900 ms deadline (`REQUEST_DEADLINE_MS`): with 340 ms left the first retry, which needs 50 + 300 = 350 ms, does not start, and with 350 ms left it does.
+>
 > - AC6: Deadline exhaustion: an upstream delaying 2,000 ms on every attempt receives exactly 2 attempts, `DEADLINE_EXCEEDED` (504) is returned, the logged `cutoffMs` is at most 900, and the test caller, measuring from receipt, receives the outcome below 1,000 ms.
 > - AC7: Cold path: two sequential calls succeeding after 290 ms each leave 320 ms; the next call gets one attempt with a 300 ms deadline, and an immediate `UNAVAILABLE` on it is not retried (50 + 300 > 320).
 > - AC8: A call started with no budget left (remaining ≤ 0) makes no attempt and returns `DEADLINE_EXCEEDED`.

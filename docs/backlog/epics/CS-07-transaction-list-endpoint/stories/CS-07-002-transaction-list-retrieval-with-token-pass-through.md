@@ -88,6 +88,9 @@ Parent epic: [CS-07 Transaction List Endpoint](../README.md)
 > > SCOPE-QUESTION (Resolved): The stub request log cannot show the gaps between attempts: each entry holds a sequence number assigned at receipt, the operation, the outcome and the duration from receipt to close (CS-11-002), and no arrival time. The log proves the attempt counts, not the gaps: exactly 3 `ListTransactions` entries, each with outcome `UNAVAILABLE`, at a failure rate of 1.0; exactly 2 with the AC9 latency, each with outcome `CANCELLED`, read once the second delayed call has closed; and exactly 1 for AC6 and for each answer of AC8. The backoff is proven as a caller-measured total: the client-measured response of the failure-rate-1.0 request arrives at least 150 ms after it was sent, the 50 ms and 100 ms backoffs together. Each gap on its own, the second attempt exactly 50 ms and the third exactly 100 ms after the preceding failure, is proven on the controllable test clock of the call policy story (CS-11-003 AC2).
 >
 > - AC11: Fail hard: with a failure rate of 1.0 the request returns 503 `UNAVAILABLE`, and with the AC9 latency 504 `DEADLINE_EXCEEDED`, each carrying the receipt `traceId`. Both hold with no cache entry and with a page held under the request's key aged 60 s or 120 s on the test clock, past its 60 s fresh TTL: no held page is returned and the held entry is not rewritten. For each, the completion log line carries outcome `error` with the status and a `cutoffMs` of at most 900, and the client-measured response arrives below 1,000 ms.
+>
+> SCOPE-QUESTION (Resolved): AC11 does not name the stub that fails. Its failure rate of 1.0 and the AC9 latency are those AC10 and AC9 set on stub `transaction-activity`, so AC11 is the `ListTransactions` row of the TRD degradation table: a `ListTransactions` call that fails after retries or is unfinished at the cut-off fails hard with 503 or 504, and a page is never served stale.
+>
 > - AC12: With both Auth calls at 250 ms latency and an empty cache, the AC3 request returns 200 with the six items after exactly one `ListTransactions` attempt, with `cutoffMs` at most 900 and a client-measured response below 1,000 ms. Auth failures fail closed: with the Auth stub failing every call the request returns 503 `UNAVAILABLE`, with an Auth latency of 2,000 ms 504 `DEADLINE_EXCEEDED`, and with `fixture-token-expired` 401 `UNAUTHENTICATED`. In each case the Transaction Activity stub request log holds zero entries and the cache records zero reads.
 >
 > > SCOPE-QUESTION (Resolved): AC12 also covers the residual budget running out in Stage 3. With both Auth calls succeeding at an Auth stub latency of 250 ms, a Transaction Activity stub latency of 350 ms (`STUB_LATENCY_MS`), above the 300 ms per-attempt timeout, and an empty cache, so no usable page is held, the AC3 request returns 504 `DEADLINE_EXCEEDED` with the receipt `traceId` after exactly one `ListTransactions` attempt. The Auth calls leave about 400 ms, the attempt times out at 300 ms, and a retry would need 50 + 300 ms where at most about 100 ms remain, so none starts. The Transaction Activity stub request log, read once the delayed call has closed, holds exactly one `ListTransactions` entry, with outcome `CANCELLED`, as CS-11-002 logs a call the client abandoned during its injected delay. No page is returned and no cache entry is written. The completion log line carries outcome `error` with status 504, the receipt `traceId` and a `cutoffMs` of at most 900 under the 900 ms request deadline (`REQUEST_DEADLINE_MS`), and the client-measured response arrives below 1,000 ms.
@@ -244,7 +247,7 @@ Open assumptions:
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Holds | the access guard rejects the account before any read |
-| AC2 | Holds | the source applies both filters and the service keeps its order |
+| AC2 | Holds | the source applies both filters, with its item order kept by the service |
 | AC3 | Holds | the service returns every source item unchanged |
 | AC4 | Holds | the caller's token and the effective page size reach the source unchanged |
 | AC5 | Holds | the source token returns to the caller unchanged |
@@ -276,7 +279,7 @@ Open assumptions:
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Holds | the access guard rejects the account before any read |
-| AC2 | Holds | the source applies both filters and the service keeps its order |
+| AC2 | Holds | the source applies both filters, with its item order kept by the service |
 | AC3 | Holds | the service returns every source item unchanged |
 | AC4 | Breaks | the source receives the unwrapped inner token rather than the caller's token |
 | AC5 | Breaks | the caller receives the wrapped token rather than the source token |

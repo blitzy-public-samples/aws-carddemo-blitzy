@@ -102,6 +102,8 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 >
 > > SCOPE-QUESTION (Resolved): "No attempt, timeout or retry of its own" concerns the upstream read, which the cache wraps in no timer. The cache's own Redis commands each wait at most 50 ms or the time left, whichever is less, and never shorten or repeat the upstream read.
 >
+> > SCOPE-QUESTION (Resolved): AC10 names the call policy's retry cap, backoffs and retried statuses but not its retry-fit rule. Inside the read, a retry starts only when its backoff plus a full 300 ms attempt fits the budget left before the cut-off (CS-11-003), and the cache neither adds nor withholds a retry.
+>
 > - AC11: Deadline: when the upstream read throws `DEADLINE_EXCEEDED` because the 900 ms deadline (`REQUEST_DEADLINE_MS`) reached its cut-off, the cache returns the stale value or the failure with no further Redis or upstream call. The cut-off therefore stays at or before 900 ms (logged `cutoffMs` ≤ 900) with a client-measured response below 1,000 ms, which the integration suites (CS-11-007, CS-09-006, CS-10-007, CS-13-004) time end to end.
 >
 > > SCOPE-QUESTION (Resolved): The cache never waits past the time its caller has left: the entry read before the upstream read and the write-back after it each end by then, and once no time is left no Redis command is sent, so the cache's own waits never move the cut-off past 900 ms.
