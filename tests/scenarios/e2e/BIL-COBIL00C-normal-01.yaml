@@ -1,0 +1,235 @@
+# COBIL00C pays the full balance of repository account 00000000001 and shows
+# 'Payment successful.  Your Transaction ID is <max+1>.' (tech-spec seeds "Bill
+# Payment Integration Workflow" and "Scenario 3: Bill Payment with Balance
+# Reconciliation"; the repository account replaces the tech-spec account
+# 00000234567, which exists nowhere in app/data, GAP-DOC-011). Account
+# 00000000001 is record 1 of app/data/ASCII/acctdata.txt (balance 194.00); its
+# card 9680294154603697 is record 49 of app/data/ASCII/cardxref.txt.
+#
+# Step 1: USER0001 signs on through CC00; COSGN00C routes the type 'U' user to
+# COMEN01C, which sends the main menu COMEN01 headed CM00/COMEN01C
+# [app/cbl/COSGN00C.cbl:221-239] [app/cbl/COMEN01C.cbl:82-90].
+# Step 2: option '10' is 'Bill Payment', user type U, program COBIL00C
+# [app/cpy/COMEN02Y.cpy:80-84]. COMEN01C resets the program context and
+# transfers control (XCTL) to COBIL00C [app/cbl/COMEN01C.cbl:115-156]. Entered
+# without CDEMO-PGM-REENTER and with no transaction selected (the COMMAREA
+# COMEN01C passes ends before CDEMO-CB00-INFO, so the move pads it with
+# spaces), COBIL00C sets the re-enter flag, moves LOW-VALUES to COBIL0AO and
+# sends COBIL00 with its header and a blank message
+# [app/cbl/COBIL00C.cbl:107-122,289-338].
+# Step 3: ENTER with Acct ID 00000000001 and CONFIRM left blank, under CB00:
+# - The blank CONFIRM takes the WHEN SPACES / WHEN LOW-VALUES branch: READ
+#   ACCTDAT with UPDATE is NORMAL, and the balance 194.00 is edited through
+#   WS-CURR-BAL (PIC +9999999999.99) into CURBAL as +0000000194.00
+#   [app/cbl/COBIL00C.cbl:56,154-194,343-358].
+# - The balance is above zero and the payment is not confirmed, so 'Confirm to
+#   make a bill payment...' goes to WS-MESSAGE, the cursor goes to CONFIRM and
+#   COBIL00 is sent [app/cbl/COBIL00C.cbl:197-244]. RETURN TRANSID CB00 ends the
+#   task and releases the READ UPDATE hold [app/cbl/COBIL00C.cbl:146-149].
+# Step 4: ENTER with Acct ID 00000000001 and CONFIRM Y, under CB00:
+# - CONFIRM Y sets CONF-PAY-YES; READ ACCTDAT with UPDATE is NORMAL and the
+#   balance is still 194.00 [app/cbl/COBIL00C.cbl:173-206].
+# - READ CXACAIX by account id gives card 9680294154603697; STARTBR TRANSACT at
+#   HIGH-VALUES and READPREV return the highest key, 0000000996722787 (the last
+#   of the 300 DALYTRAN ids in key order), and the payment's TRAN-ID is that
+#   number plus 1 [app/cbl/COBIL00C.cbl:210-219,408-505].
+# - INITIALIZE TRAN-RECORD, then the moves build the record: type '02',
+#   category 2, source 'POS TERM', description 'BILL PAYMENT - ONLINE', amount
+#   ACCT-CURR-BAL, the cross-reference card, merchant 999999999 'BILL PAYMENT'
+#   'N/A' 'N/A' [app/cbl/COBIL00C.cbl:218-229].
+# - TRAN-ORIG-TS and TRAN-PROC-TS take WS-TIMESTAMP: FORMATTIME's YYYY-MM-DD
+#   date and HH:MM:SS time over the CSDAT01Y group, whose FILLERs keep their
+#   VALUEs through INITIALIZE (' ' at byte 11, '.' at byte 20) and whose
+#   WS-TIMESTAMP-TM-MS6 is moved ZEROS: 'YYYY-MM-DD HH:MM:SS.000000'
+#   [app/cbl/COBIL00C.cbl:230-232,249-267] [app/cpy/CSDAT01Y.cpy:42-55].
+# - The WRITE is NORMAL: INITIALIZE-ALL-FIELDS moves spaces to ACTIDIN, CURBAL,
+#   CONFIRM and WS-MESSAGE, and STRING composes 'Payment successful. ', ' Your
+#   Transaction ID is ', TRAN-ID and '.', so two spaces precede 'Your'; ERRMSG is
+#   set green and COBIL00 is sent [app/cbl/COBIL00C.cbl:510-532,560-566].
+# - SEND-BILLPAY-SCREEN has no RETURN, so the pay block goes on: COMPUTE
+#   ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT leaves 0.00, and the REWRITE of
+#   ACCTDAT is NORMAL [app/cbl/COBIL00C.cbl:233-235,377-389].
+# - COBIL00 is sent once more with WS-MESSAGE unchanged, and the task ends with
+#   RETURN TRANSID CB00, which commits the WRITE and the REWRITE
+#   [app/cbl/COBIL00C.cbl:242,146-149]. The screen holds that last send: the
+#   cleared input fields and the success message.
+#
+# Expected values are derived from the source (no TPE region runs in CI). Text
+# values keep their full BMS or record width with trailing spaces: ERRMSG is the
+# first 78 bytes of the 80-byte WS-MESSAGE. CURDATE, CURTIME and the payment
+# timestamps come from the region clock, so they are matchers and the clock is
+# relative.
+id: BIL-COBIL00C-normal-01
+level: e2e
+type: normal
+description: >-
+  USER0001 signs on, chooses main-menu option 10 (Bill Payment), enters
+  repository account 00000000001 on COBIL00 and is shown its balance
+  +0000000194.00 with 'Confirm to make a bill payment...', then confirms with
+  CONFIRM Y. COBIL00C writes TRANSACT record 0000000996722788, one more than
+  the highest of the 300 fixture ids: type 02, category 2, 'POS TERM', 'BILL
+  PAYMENT - ONLINE', amount 194.00, card 9680294154603697. It rewrites the
+  account with a balance of 0.00, clears the input fields and shows 'Payment
+  successful.  Your Transaction ID is 0000000996722788.'
+# Primary item first, then the program, the maps asserted, the transaction
+# steps 3 and 4 run under, the CSD files COBIL00C reads, browses, writes and
+# rewrites, and the online-only copybooks it copies. The written record, its
+# generated id and the zero balance are asserted in file_state, so the
+# TRANSACT WRITE, next-TRAN-ID and full-balance payment items are listed too.
+# Sign-on and the menu option (CC00, CM00, COSGN00, USRSEC) are verified by the
+# SEC and MNU scenarios; the batch record copybooks (CVACT01Y, CVACT03Y,
+# CVTRA05Y) and the data files at the lowest level that executes them.
+inventory_ids:
+- INV-BIL-014  # COBIL00C message 'Payment successful.  Your Transaction ID is <TRAN-ID>.'
+- INV-BIL-001  # COBIL00C program
+- INV-MNU-003  # COMEN01 map, where option 10 is entered
+- INV-BIL-002  # COBIL00 map, the bill payment screen of steps 2 to 4
+- INV-BIL-019  # COBIL00C TRANSACT WRITE (interface), the payment record in file_state
+- INV-BIL-020  # COBIL00C next TRAN-ID (calculation): highest id plus 1
+- INV-BIL-021  # COBIL00C full-balance payment (calculation): amount = balance, 0.00 after
+- INV-CFG-012  # CB00 transaction, under which COBIL00C receives steps 3 and 4
+- INV-CFG-001  # ACCTDAT CSD file: read for update and rewritten
+- INV-CFG-006  # CXACAIX CSD file: cross-reference read by account id
+- INV-CFG-007  # TRANSACT CSD file: browsed backwards and written
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE, CURTIME and the WS-TIMESTAMP of the payment
+- INV-LAY-008  # CSMSG01Y, copied by COBIL00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-008  # BIL end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-011  # repository account 00000000001 in place of the tech-spec account 00000234567
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001.
+    USRSEC: {base: USRSEC}
+    # Account 00000000001 with its fixture balance of 194.00.
+    ACCTDATA: {base: ACCTDATA}
+    # The region's CCXREF file and its CXACAIX path: account 00000000001 maps
+    # to card 9680294154603697.
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT is a built dataset with no repository data of its own, so the
+    # schema refuses it as a base: it is loaded from the repository's 300 daily
+    # transactions (the same 350-byte shape as TRAN-RECORD), keyed by TRAN-ID,
+    # so the backward browse finds 0000000996722787 as the highest key.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+# PASSWORD is the documented demo password of README.md, not a secret.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '10'
+  # CONFIRM is left blank, so COBIL00C shows the balance and asks for the
+  # confirmation.
+  - aid: ENTER
+    '@map': COBIL00
+    fields:
+      ACTIDIN: '00000000001'
+  - aid: ENTER
+    '@map': COBIL00
+    fields:
+      ACTIDIN: '00000000001'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN010: '10. Bill Payment                        '
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: 'CB00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COBIL00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CURBAL: '              '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: 'CB00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COBIL00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000001'
+    CURBAL: '+0000000194.00'
+    CONFIRM: ' '
+    ERRMSG: 'Confirm to make a bill payment...                                             '
+  - '@map': COBIL00
+    TRNNAME: 'CB00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COBIL00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CURBAL: '              '
+    CONFIRM: ' '
+    ERRMSG: 'Payment successful.  Your Transaction ID is 0000000996722788.                 '
+  # The ERRMSG of each step: blank on the menu and on the empty bill payment
+  # screen, then the confirmation request and the success message.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Confirm to make a bill payment...                                             '
+  - 'Payment successful.  Your Transaction ID is 0000000996722788.                 '
+  file_state:
+    # The 300 fixture records stand unchanged and the payment record follows
+    # them in key order. Values are in decoded form: TRAN-CAT-CD is the number
+    # 2 and TRAN-AMT the decimal 194.00, the whole old balance. The record's
+    # FILLER is not asserted: INITIALIZE leaves FILLER items alone, so it keeps
+    # the bytes READPREV read into TRAN-RECORD.
+    TRANSACT:
+      count: 301
+      contains:
+      - TRAN-ID: '0000000996722788'
+        TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '2'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'BILL PAYMENT - ONLINE                                                                               '
+        TRAN-AMT: '194.00'
+        TRAN-MERCHANT-ID: '999999999'
+        TRAN-MERCHANT-NAME: 'BILL PAYMENT                                      '
+        TRAN-MERCHANT-CITY: 'N/A                                               '
+        TRAN-MERCHANT-ZIP: 'N/A       '
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: {match: run-timestamp, format: '%Y-%m-%d %H:%M:%S.000000'}
+        TRAN-PROC-TS: {match: run-timestamp, format: '%Y-%m-%d %H:%M:%S.000000'}
+    # Account 00000000001 as rewritten: ACCT-CURR-BAL reduced by the 194.00
+    # payment to 0.00, every other field as loaded; the other 49 accounts are
+    # untouched.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '0.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: 'A000000000'
+        ACCT-GROUP-ID: '          '
