@@ -1,0 +1,21 @@
+# Derived from source (capture_platform: derived), never observed: ENTER with
+# a blank user id re-sends map COSGN00 with 'Please enter User ID ...' before
+# any USRSEC read [app/cbl/COSGN00C.cbl:117-122,138-140,145-157,177-196].
+# Fields are at their full BMS width with trailing spaces kept (ERRMSG 78,
+# TITLE01/TITLE02 40), because screens and messages compare exactly. CURDATE
+# and CURTIME come from the region clock, so they are matchers.
+messages:
+- 'Please enter User ID ...                                                      '
+screens:
+- '@map': COSGN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S '
+    match: run-time
+  ERRMSG: 'Please enter User ID ...                                                      '
+  PGMNAME: COSGN00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CC00

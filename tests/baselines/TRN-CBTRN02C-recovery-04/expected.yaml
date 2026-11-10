@@ -1,0 +1,18 @@
+datasets:
+  TRANSACT:
+    count: 0
+file_state:
+  ACCTDATA:
+    contains:
+    - ACCT-CURR-BAL: '194.00'
+      ACCT-CURR-CYC-CREDIT: '0.00'
+      ACCT-CURR-CYC-DEBIT: '0.00'
+      ACCT-ID: '1'
+    count: 50
+messages:
+- START OF EXECUTION OF PROGRAM CBTRN02C
+- ERROR REWRITING TRANSACTION BALANCE FILE
+- 'FILE STATUS IS: NNNN0030'
+- ABENDING PROGRAM
+- CARDDEMO-ABEND CEE3ABD
+return_code: null

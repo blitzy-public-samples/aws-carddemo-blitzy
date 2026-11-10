@@ -94,8 +94,9 @@ expected:
   file_state:
     # The first record was posted and its account rewritten before the failing
     # READ; the abend does not undo the REWRITE [app/cbl/CBTRN02C.cbl:545-560].
+    # Records are written in decoded form: ACCT-ID 00000000001 decodes as 1.
     ACCTDATA:
       contains:
-      - ACCT-ID: '00000000001'
+      - ACCT-ID: '1'
         ACCT-CURR-BAL: '204.00'
         ACCT-CURR-CYC-CREDIT: '10.00'
