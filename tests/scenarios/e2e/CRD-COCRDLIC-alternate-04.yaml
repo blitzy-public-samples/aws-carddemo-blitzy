@@ -1,0 +1,243 @@
+# A second PF8 on the last page of the COCRDLIC card list gives 'NO MORE PAGES
+# TO DISPLAY' [app/cbl/COCRDLIC.cbl:905-909].
+#
+# USER0001 signs on (CC00) and COSGN00C routes the type-U user to COMEN01C.
+# Option 3 is the COMEN02Y entry 'Credit Card List', program COCRDLIC, which
+# COMEN01C enters with program context 0 [app/cbl/COMEN01C.cbl:145-155]
+# [app/cpy/COMEN02Y.cpy:37-41]. COCRDLIC, entered from the menu, starts afresh
+# with WS-CA-SCREEN-NUM 1 and the last-page flag WS-CA-LAST-PAGE-DISPLAYED at 9
+# (CA-LAST-PAGE-NOT-SHOWN), and reads forward from blank keys, so page 1
+# begins at the lowest card number [app/cbl/COCRDLIC.cbl:237-241,334-342,
+# 572-582]. No account or card filter is entered and none comes from the user
+# type, so every one of the 50 CARDDAT records is listed in card-number order
+# (digits sort alike in ASCII and cp037) [app/cbl/COCRDLIC.cbl:1003-1012,
+# 1036-1046,1382-1407].
+#
+# Paging: 9000-READ-FORWARD fills at most 7 rows, then issues one more
+# READNEXT; when that finds a record, CA-NEXT-PAGE-EXISTS is set and that
+# record's key, the first of the next page, becomes WS-CA-LAST-CARD-NUM, the
+# GTEQ start key of the next PF8 [app/cbl/COCRDLIC.cbl:177-178,486-497,
+# 1123-1221]. Page k therefore holds cards 7k-6 to 7k of the sorted file: the
+# seven PF8s of steps 3-9 show pages 2 to 8, page 7 ending at card 49, and
+# page 8 holds only card 50, 9805583408996588 of account 00000000040.
+#
+# Step 9 (the first PF8 that reaches page 8): the READNEXT after card 50
+# returns ENDFILE, so CA-NEXT-PAGE-NOT-EXISTS is set and 'NO MORE RECORDS TO
+# SHOW' goes to WS-ERROR-MSG [app/cbl/COCRDLIC.cbl:1233-1240]. In
+# 1400-SETUP-MESSAGE the flag still reads NOT-SHOWN, so the branch PF8 AND
+# NOT-EXISTS sets the info message 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD'
+# and CA-LAST-PAGE-SHOWN [app/cbl/COCRDLIC.cbl:910-916].
+#
+# Step 10 (PF8 again): only a key other than PF8 resets the last-page flag
+# [app/cbl/COCRDLIC.cbl:410-414]. With CA-NEXT-PAGE-NOT-EXISTS the PF8 page-down
+# branch does not apply, so WHEN OTHER reads forward again from
+# WS-CA-FIRST-CARD-NUM, card 50, with the page number unchanged at 8
+# [app/cbl/COCRDLIC.cbl:486-497,572-582,1176]. That read again ends in ENDFILE
+# and 'NO MORE RECORDS TO SHOW', which the first 1400 branch, PF8 AND
+# NOT-EXISTS AND CA-LAST-PAGE-SHOWN, replaces with 'NO MORE PAGES TO DISPLAY'.
+# No info message is set, so INFOMSG keeps the spaces 1100-SCREEN-INIT moved
+# to it [app/cbl/COCRDLIC.cbl:669-671,896-930].
+#
+# Screen values are whole fields at their BMS length, trailing spaces kept.
+# PAGENO is the PIC 9(1) page number moved to the PIC X(3) field, so '8  '
+# [app/cbl/COCRDLIC.cbl:237,667] [app/cpy-bms/COCRDLI.CPY:332]. ERRMSG is the
+# 75-byte WS-ERROR-MSG padded to 78. Rows 2-7 of page 8 are LOW-VALUES and are
+# not moved to the map, which 1100-SCREEN-INIT cleared to LOW-VALUES and which
+# is sent with ERASE, so they show blank [app/cbl/COCRDLIC.cbl:643,678-743,
+# 1124,938-946]. The account and card filters stay blank: 2210/2220 zero the
+# COMMAREA ids and 1300 sends LOW-VALUES [app/cbl/COCRDLIC.cbl:837-869].
+# CURDATE and CURTIME come from the region clock, so they are matchers and the
+# clock is relative.
+id: CRD-COCRDLIC-alternate-04
+level: e2e
+type: alternate
+description: >-
+  USER0001 opens the card list from the main menu (option 3) and pages forward
+  with PF8 through the 50 repository cards, 7 per page. The seventh PF8 shows
+  page 8, holding only the 50th card in key order, 9805583408996588 of account
+  00000000040, with 'NO MORE RECORDS TO SHOW'; an eighth PF8 shows the same
+  last page again with 'NO MORE PAGES TO DISPLAY' and no info message.
+inventory_ids:
+- INV-CRD-013  # COCRDLIC message 'NO MORE PAGES TO DISPLAY'
+- INV-CRD-001  # COCRDLIC program
+- INV-MNU-003  # COMEN01 map, the screen sign-on lands on
+- INV-CRD-004  # COCRDLI map, every list page
+- INV-CFG-014  # CCLI transaction, the list's pseudo-conversation
+- INV-CFG-003  # CARDDAT CSD file, browsed by card number
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the paging keys
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COCRDLIC
+- INV-LAY-011  # CSSTRPFY copybook, maps the PF8 AID
+- INV-LAY-019  # CVCRD01Y copybook, the AID flags and filter work areas
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # derived CRD end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    CARDDATA: {base: CARDDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '3'
+  - aid: PF8
+    '@map': COCRDLI
+    fields: {}
+  - aid: PF8
+    '@map': COCRDLI
+    fields: {}
+  - aid: PF8
+    '@map': COCRDLI
+    fields: {}
+  - aid: PF8
+    '@map': COCRDLI
+    fields: {}
+  - aid: PF8
+    '@map': COCRDLI
+    fields: {}
+  - aid: PF8
+    '@map': COCRDLI
+    fields: {}
+  - aid: PF8
+    '@map': COCRDLI
+    fields: {}
+  - aid: PF8
+    '@map': COCRDLI
+    fields: {}
+# Screens 2-8 assert the page number and the first card of each page, cards 1,
+# 8, 15, 22, 29, 36 and 43 of the sorted file, which pins the paging that
+# leads to page 8; the full content of a page is the list-content item's.
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COCRDLI
+    TRNNAME: 'CCLI'
+    PGMNAME: 'COCRDLIC'
+    PAGENO: '1  '
+    CRDNUM1: '0500024453765740'
+  - '@map': COCRDLI
+    TRNNAME: 'CCLI'
+    PGMNAME: 'COCRDLIC'
+    PAGENO: '2  '
+    CRDNUM1: '1561409106491600'
+  - '@map': COCRDLI
+    TRNNAME: 'CCLI'
+    PGMNAME: 'COCRDLIC'
+    PAGENO: '3  '
+    CRDNUM1: '3766281984155154'
+  - '@map': COCRDLI
+    TRNNAME: 'CCLI'
+    PGMNAME: 'COCRDLIC'
+    PAGENO: '4  '
+    CRDNUM1: '5407099850479866'
+  - '@map': COCRDLI
+    TRNNAME: 'CCLI'
+    PGMNAME: 'COCRDLIC'
+    PAGENO: '5  '
+    CRDNUM1: '6503535181795992'
+  - '@map': COCRDLI
+    TRNNAME: 'CCLI'
+    PGMNAME: 'COCRDLIC'
+    PAGENO: '6  '
+    CRDNUM1: '7094142751055551'
+  - '@map': COCRDLI
+    TRNNAME: 'CCLI'
+    PGMNAME: 'COCRDLIC'
+    PAGENO: '7  '
+    CRDNUM1: '8262593602473076'
+  - '@map': COCRDLI
+    TRNNAME: 'CCLI'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COCRDLIC'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENO: '8  '
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '00000000040'
+    CRDNUM1: '9805583408996588'
+    CRDSTS1: 'Y'
+    CRDSEL2: ' '
+    ACCTNO2: '           '
+    CRDNUM2: '                '
+    CRDSTS2: ' '
+    CRDSEL3: ' '
+    ACCTNO3: '           '
+    CRDNUM3: '                '
+    CRDSTS3: ' '
+    CRDSEL4: ' '
+    ACCTNO4: '           '
+    CRDNUM4: '                '
+    CRDSTS4: ' '
+    CRDSEL5: ' '
+    ACCTNO5: '           '
+    CRDNUM5: '                '
+    CRDSTS5: ' '
+    CRDSEL6: ' '
+    ACCTNO6: '           '
+    CRDNUM6: '                '
+    CRDSTS6: ' '
+    CRDSEL7: ' '
+    ACCTNO7: '           '
+    CRDNUM7: '                '
+    CRDSTS7: ' '
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: 'NO MORE RECORDS TO SHOW                                                       '
+  - '@map': COCRDLI
+    TRNNAME: 'CCLI'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COCRDLIC'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENO: '8  '
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '00000000040'
+    CRDNUM1: '9805583408996588'
+    CRDSTS1: 'Y'
+    CRDSEL2: ' '
+    ACCTNO2: '           '
+    CRDNUM2: '                '
+    CRDSTS2: ' '
+    CRDSEL3: ' '
+    ACCTNO3: '           '
+    CRDNUM3: '                '
+    CRDSTS3: ' '
+    CRDSEL4: ' '
+    ACCTNO4: '           '
+    CRDNUM4: '                '
+    CRDSTS4: ' '
+    CRDSEL5: ' '
+    ACCTNO5: '           '
+    CRDNUM5: '                '
+    CRDSTS5: ' '
+    CRDSEL6: ' '
+    ACCTNO6: '           '
+    CRDNUM6: '                '
+    CRDSTS6: ' '
+    CRDSEL7: ' '
+    ACCTNO7: '           '
+    CRDNUM7: '                '
+    CRDSTS7: ' '
+    INFOMSG: '                                             '
+    ERRMSG: 'NO MORE PAGES TO DISPLAY                                                      '
