@@ -1,0 +1,46 @@
+# Derived from the source, not observed (inferred-not-observed: GAP-INF-005,
+# GAP-INF-012); only report.py --import-unikix replaces it with a UniKix run.
+# Step 3 enters account 00000000003 on COACTUP (CAUP). CXACAIX gives customer
+# 000000003 and ACCTDAT holds the account, but the CUSTDATA fixture omits the
+# customer, so the CUSTDAT READ is NOTFND [app/cbl/COACTUPC.cbl:3753-3790].
+# FOUND-CUST-IN-MASTER stays unset, so ACUP-SHOW-DETAILS is never set and the
+# screen is sent as for a search [app/cbl/COACTUPC.cbl:2568-2580]: the account
+# id echoed, the detail fields at LOW-VALUES (captured as spaces), the search
+# prompt in INFOMSG and WS-RETURN-MSG in ERRMSG
+# [app/cbl/COACTUPC.cbl:2698-2726,2955-2982].
+# ERRMSG: the STRING operands total 78 characters ('CustId:', the customer
+# id, ' not found', ' in customer master.Resp: ', ERROR-RESP, ' REAS:',
+# ERROR-RESP2), and WS-RETURN-MSG is X(75), so the text is cut at 75. The
+# X(10) ERROR-RESP and ERROR-RESP2 hold the nine RESP digits and a space
+# (NOTFND is RESP 13), and only the first 7 digits of ERROR-RESP2 survive:
+# '0000000' for any RESP2 below 100, so the value does not depend on the exact
+# RESP2 the runtime returns. The 75 characters fill the 78-byte ERRMSGO with 3
+# trailing spaces. CURDATE and CURTIME come from the region clock, so they are
+# matchers judged against the run date. Screen values are whole fields at
+# their BMS length, trailing spaces kept.
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN002: '02. Account Update                      '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  ACCTSID: '00000000003'
+  ACSTNUM: '         '
+  ACSTTUS: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'CustId:000000003 not found in customer master.Resp: 000000013  REAS:0000000   '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP

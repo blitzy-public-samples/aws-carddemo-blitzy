@@ -1,0 +1,203 @@
+# Derived baseline of scenario ACT-COACTUPC-recovery-03 (capture_platform:
+# derived): USER0001 opens Account Update, fetches account 00000000001,
+# changes the customer's first name, has it validated, and confirms with PF5
+# while another task holds customer 000000001 for update. Authored from the
+# source, never captured; open under GAP-INF-005 and GAP-INF-012 until an
+# eligible UniKix run is imported, and unexecutable until a lock-holding
+# mechanism resolves GAP-MIS-014.
+# One screen per step, each the screen sent after the step's AID, at full BMS
+# field width with trailing spaces kept; fields sent as LOW-VALUES read as
+# spaces. messages holds each step's ERRMSG. CURDATE and CURTIME come from the
+# region clock, hence the run-date and run-time matchers.
+# Step 5: PF5 is valid while the changes wait for confirmation and 1200 leaves
+# at once [app/cbl/COACTUPC.cbl:905-911,1463-1467]. 9600 locks ACCTDAT, then
+# the CUSTDAT READ UPDATE does not answer NORMAL, so it sets
+# COULD-NOT-LOCK-CUST-FOR-UPDATE and leaves before either REWRITE
+# [app/cbl/COACTUPC.cbl:3888-3942,519-520]. 2000-DECIDE-ACTION has no WHEN for
+# that outcome and sets ACUP-CHANGES-OKAYED-AND-DONE, a value of
+# ACUP-CHANGES-MADE, so 3203 shows the received values and 3250 pairs
+# 'Changes committed to database' in INFOMSG with the lock failure in ERRMSG
+# [app/cbl/COACTUPC.cbl:660-665,2602-2615,2718-2720,2955-2981]. That pairing is
+# a suspected defect, pinned as derived and never fixed (GAP-DEF-015).
+# No record is rewritten: ACCTDATA and CUSTDATA keep the loaded values.
+file_state:
+  ACCTDATA:
+    contains:
+    - ACCT-ACTIVE-STATUS: Y
+      ACCT-ADDR-ZIP: A000000000
+      ACCT-CASH-CREDIT-LIMIT: '1020.00'
+      ACCT-CREDIT-LIMIT: '2020.00'
+      ACCT-CURR-BAL: '194.00'
+      ACCT-CURR-CYC-CREDIT: '0.00'
+      ACCT-CURR-CYC-DEBIT: '0.00'
+      ACCT-EXPIRAION-DATE: '2025-05-20'
+      ACCT-GROUP-ID: '          '
+      ACCT-ID: '1'
+      ACCT-OPEN-DATE: '2014-11-20'
+      ACCT-REISSUE-DATE: '2025-05-20'
+    count: 50
+  CUSTDATA:
+    contains:
+    - CUST-ADDR-COUNTRY-CD: USA
+      CUST-ADDR-LINE-1: '100 Test Street                                   '
+      CUST-ADDR-LINE-2: 'Suite 1                                           '
+      CUST-ADDR-LINE-3: 'Raleigh                                           '
+      CUST-ADDR-STATE-CD: NC
+      CUST-ADDR-ZIP: '27601     '
+      CUST-DOB-YYYY-MM-DD: '1961-06-08'
+      CUST-EFT-ACCOUNT-ID: 0053581756
+      CUST-FICO-CREDIT-SCORE: '700'
+      CUST-FIRST-NAME: 'Testfirst                '
+      CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+      CUST-ID: '1'
+      CUST-LAST-NAME: 'Testlast                 '
+      CUST-MIDDLE-NAME: 'Testmiddle               '
+      CUST-PHONE-NUM-1: '(919)555-0101  '
+      CUST-PHONE-NUM-2: '(919)555-0102  '
+      CUST-PRI-CARD-HOLDER-IND: Y
+      CUST-SSN: '123456789'
+    count: 50
+messages:
+- '                                                                              '
+- '                                                                              '
+- '                                                                              '
+- '                                                                              '
+- 'Could not lock customer record for update                                     '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN002: '02. Account Update                      '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
+  ACSADL1: '100 Test Street                                   '
+  ACSADL2: 'Suite 1                                           '
+  ACSCITY: 'Raleigh                                           '
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
+  ACSFNAM: 'Testfirst                '
+  ACSGOVT: 'TESTGOVT0001        '
+  ACSHLIM: +      1,020.00
+  ACSLNAM: 'Testlast                 '
+  ACSMNAM: 'Testmiddle               '
+  ACSPFLG: Y
+  ACSPH1A: '919'
+  ACSPH1B: '555'
+  ACSPH1C: '0101'
+  ACSPH2A: '919'
+  ACSPH2B: '555'
+  ACSPH2C: '0102'
+  ACSSTTE: NC
+  ACSTFCO: '700'
+  ACSTNUM: '000000001'
+  ACSTTUS: Y
+  ACSZIPC: '27601'
+  ACTSSN1: '123'
+  ACTSSN2: '45'
+  ACTSSN3: '6789'
+  ACURBAL: +        194.00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  DOBDAY: 08
+  DOBMON: '06'
+  DOBYEAR: '1961'
+  ERRMSG: '                                                                              '
+  EXPDAY: '20'
+  EXPMON: '05'
+  EXPYEAR: '2025'
+  INFOMSG: 'Update account details presented above.      '
+  OPNDAY: '20'
+  OPNMON: '11'
+  OPNYEAR: '2014'
+  PGMNAME: COACTUPC
+  RISDAY: '20'
+  RISMON: '05'
+  RISYEAR: '2025'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP
+- '@map': COACTUP
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
+  ACSFNAM: 'Testnewname              '
+  ACSHLIM: +      1,020.00
+  ACSLNAM: 'Testlast                 '
+  ACSMNAM: 'Testmiddle               '
+  ACSTNUM: '000000001'
+  ACURBAL: +        194.00
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Changes validated.Press F5 to save           '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
+  ACSADL1: '100 Test Street                                   '
+  ACSADL2: 'Suite 1                                           '
+  ACSCITY: 'Raleigh                                           '
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
+  ACSFNAM: 'Testnewname              '
+  ACSGOVT: 'TESTGOVT0001        '
+  ACSHLIM: +      1,020.00
+  ACSLNAM: 'Testlast                 '
+  ACSMNAM: 'Testmiddle               '
+  ACSPFLG: Y
+  ACSPH1A: '919'
+  ACSPH1B: '555'
+  ACSPH1C: '0101'
+  ACSPH2A: '919'
+  ACSPH2B: '555'
+  ACSPH2C: '0102'
+  ACSSTTE: NC
+  ACSTFCO: '700'
+  ACSTNUM: '000000001'
+  ACSTTUS: Y
+  ACSZIPC: '27601'
+  ACTSSN1: '123'
+  ACTSSN2: '45'
+  ACTSSN3: '6789'
+  ACURBAL: +        194.00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  DOBDAY: 08
+  DOBMON: '06'
+  DOBYEAR: '1961'
+  ERRMSG: 'Could not lock customer record for update                                     '
+  EXPDAY: '20'
+  EXPMON: '05'
+  EXPYEAR: '2025'
+  INFOMSG: 'Changes committed to database                '
+  OPNDAY: '20'
+  OPNMON: '11'
+  OPNYEAR: '2014'
+  PGMNAME: COACTUPC
+  RISDAY: '20'
+  RISMON: '05'
+  RISYEAR: '2025'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP

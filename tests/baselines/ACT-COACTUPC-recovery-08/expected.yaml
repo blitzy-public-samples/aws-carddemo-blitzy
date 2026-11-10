@@ -1,0 +1,72 @@
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'File Error: READ     on CUSTDAT   returned RESP 000000084 ,RESP2 000000050    '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN002: '02. Account Update                      '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: '               '
+  ACRCYDB: '               '
+  ACRDLIM: '               '
+  ACSADL1: '                                                  '
+  ACSADL2: '                                                  '
+  ACSCITY: '                                                  '
+  ACSCTRY: '   '
+  ACSEFTC: '          '
+  ACSFNAM: '                         '
+  ACSGOVT: '                    '
+  ACSHLIM: '               '
+  ACSLNAM: '                         '
+  ACSMNAM: '                         '
+  ACSPFLG: ' '
+  ACSPH1A: '   '
+  ACSPH1B: '   '
+  ACSPH1C: '    '
+  ACSPH2A: '   '
+  ACSPH2B: '   '
+  ACSPH2C: '    '
+  ACSSTTE: '  '
+  ACSTFCO: '   '
+  ACSTNUM: '         '
+  ACSTTUS: ' '
+  ACSZIPC: '     '
+  ACTSSN1: '999'
+  ACTSSN2: '99'
+  ACTSSN3: '9999'
+  ACURBAL: '               '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  DOBDAY: '  '
+  DOBMON: '  '
+  DOBYEAR: '    '
+  ERRMSG: 'File Error: READ     on CUSTDAT   returned RESP 000000084 ,RESP2 000000050    '
+  EXPDAY: '  '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  FKEYS: ENTER=Process F3=Exit
+  INFOMSG: 'Enter or update id of account to update      '
+  OPNDAY: '  '
+  OPNMON: '  '
+  OPNYEAR: '    '
+  PGMNAME: COACTUPC
+  RISDAY: '  '
+  RISMON: '  '
+  RISYEAR: '    '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP

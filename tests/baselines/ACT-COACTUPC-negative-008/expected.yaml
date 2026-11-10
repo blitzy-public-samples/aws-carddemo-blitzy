@@ -1,0 +1,37 @@
+# Derived from the source, not observed: account 00000000002 has a card in
+# CXACAIX (customer 000000002) but no ACCTDAT record, so the READ answers NOTFND
+# (RESP 13, RESP2 80) and 9300 STRINGs the not-found text into the 75-byte
+# WS-RETURN-MSG, which cuts RESP2 to '0000' [app/cbl/COACTUPC.cbl:3701-3733].
+# DID-NOT-FIND-ACCT-IN-ACCTDAT is never set, so the customer read still runs
+# and the details screen comes back with the change prompt
+# [app/cbl/COACTUPC.cbl:2568-2580,3608-3646,2955-2983].
+# Holds exactly the keys and values the scenario's expected names. Screen
+# values are whole fields at their BMS length with trailing spaces kept.
+# CURDATE and CURTIME come from the region clock, which cannot be fixed, so
+# they are strftime matchers judged against the run date.
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN002: '02. Account Update                      '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  ACCTSID: '00000000002'
+  ACSFNAM: 'Enrico                   '
+  ACSLNAM: 'Rosenbaum                '
+  ACSTNUM: '000000002'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Account:00000000002 not found in Acct Master file.Resp:000000013  Reas:0000   '
+  INFOMSG: 'Update account details presented above.      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
