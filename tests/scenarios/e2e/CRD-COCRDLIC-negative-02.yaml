@@ -1,0 +1,159 @@
+# The card list refuses two selections at once. USER0001 signs on through CC00
+# and reaches the main menu, whose option 3 'Credit Card List' makes COMEN01C
+# XCTL to COCRDLIC with CDEMO-FROM-PROGRAM COMEN01C and CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:115-155] [app/cpy/COMEN02Y.cpy:37-41]. Entered from the
+# menu, COCRDLIC starts afresh on page 1, browses CARDDAT forward from the
+# initialized first-card key (spaces) and shows the first 7 cards in key order;
+# the look-ahead READNEXT finds an 8th card, so no end-of-file message is set.
+# Each row with data gets an unprotected selection field (DFHBMFSE), and 1400
+# finds no info message and sets 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD'
+# [app/cbl/COCRDLIC.cbl:336-343,572-582,1123-1260,1191-1232,751-831,917-919].
+# The task returns TRANSID CCLI with CDEMO-FROM-PROGRAM COCRDLIC [:604-619].
+#
+# S on row 1 and U on row 2, then ENTER, re-enter CCLI from this program, so
+# 2000-RECEIVE-MAP runs [app/cbl/COCRDLIC.cbl:357-362,962-979]. Both filters
+# come back empty: 2210 and 2220 leave them blank and zero CDEMO-ACCT-ID and
+# CDEMO-CARD-NUM [:1003-1067]. 2250-EDIT-ARRAY tallies 2 occurrences of S and U
+# in the selection flags, sets INPUT-ERROR and WS-MORE-THAN-1-ACTION ('PLEASE
+# SELECT ONLY ONE RECORD TO VIEW OR UPDATE') and flags rows 1 and 2 in error
+# [:123-124,1073-1115]. INPUT-ERROR is the first WHEN of the main EVALUATE, so
+# neither the S nor the U transfer is taken: the filters are not in error, so
+# 9000-READ-FORWARD re-reads the list, 1000-SEND-MAP sends COCRDLI again and
+# the task returns CCLI [:418-438]. That path never sets WS-CARD-RID-CARDNUM,
+# which the start of the task initialized to spaces [:136-141,300-302], so the
+# re-read starts at the first card: page 1 again, the page this scenario is on.
+#
+# On the resent screen the rows echo the entered S and U [:678-743]; rows 1 and
+# 2 are coloured red and the cursor sits on row 2's selection [:751-773],
+# attributes a 3270 text capture does not show. ACCTSID and CARDSID are sent as
+# LOW-VALUES because CDEMO-ACCT-ID and CDEMO-CARD-NUM are zero [:837-868], and
+# INFOMSG again shows the prompt [:917-930]. No record is written: COCRDLIC
+# only browses CARDDAT.
+#
+# Screen fields are compared at their full BMS length, trailing spaces kept:
+# ERRMSG is 78 characters (the 75-byte WS-ERROR-MSG padded), INFOMSG 45, and
+# PAGENO the 1-digit WS-CA-SCREEN-NUM moved to the 3-byte field. CURDATE and
+# CURTIME come from the region clock, so they are matchers. The UniKix copy of
+# COCRDLIC and COCRDLI.bms matches app/; the baseline is derived from the
+# source because no TPE region runs in CI.
+id: CRD-COCRDLIC-negative-02
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 3 'Credit Card List' on the main menu and,
+  on the first page of the card list (CCLI), types S beside the first card and
+  U beside the second, then presses ENTER. 2250-EDIT-ARRAY counts two actions,
+  so COCRDLIC transfers to neither the card detail nor the card update program:
+  it re-reads the list from the first card and sends COCRDLI again with the
+  same 7 rows, the S and U still shown, the prompt 'TYPE S FOR DETAIL, U TO
+  UPDATE ANY RECORD' in INFOMSG and 'PLEASE SELECT ONLY ONE RECORD TO VIEW OR
+  UPDATE' in the message line.
+inventory_ids:
+- INV-CRD-010  # COCRDLIC message 'PLEASE SELECT ONLY ONE RECORD TO VIEW OR UPDATE' (rule)
+- INV-CRD-001  # COCRDLIC program
+- INV-MNU-003  # COMEN01 map, the menu option 3 is entered on
+- INV-CRD-004  # COCRDLI map, sent on entry and again with the refusal
+- INV-CFG-014  # CCLI transaction, under which the two selections are processed
+- INV-CFG-003  # CARDDAT CSD file, browsed for both list screens
+- INV-LAY-002  # COCOM01Y: CDEMO-FROM-PROGRAM, which makes ENTER a re-entry of the list
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDLIC
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CCARD-AID, CC-ACCT-ID, CC-CARD-NUM and CCARD-ERROR-MSG
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '3'
+  - aid: ENTER
+    '@map': COCRDLI
+    fields:
+      CRDSEL1: S
+      CRDSEL2: U
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN003: '03. Credit Card List                    '
+    ERRMSG: '                                                                              '
+  # The first list page: the two rows the selections are typed on.
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    PAGENO: '1  '
+    CRDSEL1: ' '
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSEL2: ' '
+    ACCTNO2: '00000000027'
+    CRDNUM2: '0683586198171516'
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: '                                                                              '
+  # The refusal: still COCRDLI (no XCTL), page 1 re-read from the first card.
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    PAGENO: '1  '
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDSEL1: S
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    CRDSEL2: U
+    ACCTNO2: '00000000027'
+    CRDNUM2: '0683586198171516'
+    CRDSTS2: 'Y'
+    CRDSEL3: ' '
+    ACCTNO3: '00000000002'
+    CRDNUM3: '0923877193247330'
+    CRDSTS3: 'Y'
+    CRDSEL4: ' '
+    ACCTNO4: '00000000020'
+    CRDNUM4: '0927987108636232'
+    CRDSTS4: 'Y'
+    CRDSEL5: ' '
+    ACCTNO5: '00000000012'
+    CRDNUM5: '0982496213629795'
+    CRDSTS5: 'Y'
+    CRDSEL6: ' '
+    ACCTNO6: '00000000044'
+    CRDNUM6: '1014086565224350'
+    CRDSTS6: 'Y'
+    CRDSEL7: ' '
+    ACCTNO7: '00000000037'
+    CRDNUM7: '1142167692878931'
+    CRDSTS7: 'Y'
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: 'PLEASE SELECT ONLY ONE RECORD TO VIEW OR UPDATE                               '
+  # One ERRMSG value per step: blank on the menu and on the first list page,
+  # then the refusal of the two selections.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'PLEASE SELECT ONLY ONE RECORD TO VIEW OR UPDATE                               '

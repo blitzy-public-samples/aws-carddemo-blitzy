@@ -1,0 +1,137 @@
+# Transaction CCLI entered directly from a cleared screen, with no sign-on.
+# A transaction started this way runs COCRDLIC with EIBCALEN = 0, so it
+# initializes CARDDEMO-COMMAREA and its own page state (CDEMO-FROM-PROGRAM
+# COCRDLIC, CDEMO-USRTYP-USER, CDEMO-PGM-ENTER, CA-FIRST-PAGE) instead of
+# returning to sign-on as eleven of the online programs do, receives no map,
+# and lists the cards [app/cbl/COCRDLIC.cbl:300-325,357-362]. With I-SELECTED
+# still 0, the S and U selections test WS-EDIT-SELECT(0), the byte before the
+# table (the last byte of the packed WS-EDIT-SELECT-COUNTER, never 'S' or 'U'),
+# so WHEN OTHER browses CARDDAT forward from blanks (GTEQ) and sends the first
+# seven cards in key order [app/cbl/COCRDLIC.cbl:69-83,516-583,1123-1261]. The
+# task returns with TRANSID CCLI and a 2000-byte COMMAREA
+# [app/cbl/COCRDLIC.cbl:604-620]. Whether direct entry without sign-on is
+# intended is the open question of GAP-UNC-010, so the behaviour is pinned as
+# the source shows it (observed-only). The user type is set to 'U', yet every
+# card is listed: no account restriction applies, although the program's header
+# comment says a non-admin user sees only the cards of the COMMAREA's account
+# [app/cbl/COCRDLIC.cbl:4-7,1382-1408].
+#
+# The step's '@map' names the input screen the adapter identifies after starting
+# the transaction (Clear, CCLI, Enter): COCRDLI, the screen COCRDLIC's direct
+# entry sends. It is not TEXT: a cleared screen is never the step's input
+# screen, because the adapter types the transaction id before it identifies one.
+# Had COCRDLIC returned to the sign-on screen, that screen would be identified
+# instead, driving would stop there, and screen 1 would not match. The
+# direct-entry screen itself is never captured, because every step presses an
+# AID; screen 1 is the result of ENTER pressed on it with no field entered.
+#
+# That ENTER re-enters COCRDLIC with its own COMMAREA (CDEMO-FROM-PROGRAM
+# COCRDLIC), so the map is received [app/cbl/COCRDLIC.cbl:357-362,962-981]. The
+# account and card filters arrive blank, so both filters stay blank with
+# CDEMO-ACCT-ID and CDEMO-CARD-NUM at zero; the select fields, sent with FSET,
+# return blank, so no row is selected and I-SELECTED stays 0
+# [app/cbl/COCRDLIC.cbl:1003-1119]. WHEN OTHER browses again from the first
+# card the first task listed, giving the same seven rows; an eighth card exists,
+# so no end-of-list message is set [app/cbl/COCRDLIC.cbl:572-583,1141-1261].
+# The page number stays 1, the filters are sent as LOW-VALUES because both are
+# zero, and, with no message set, the information line asks for an S or U
+# selection [app/cbl/COCRDLIC.cbl:642-676,837-893,895-932]. The program still
+# asks for no sign-on.
+#
+# Every value is derived from the source (inferred-not-observed): no TPE region
+# runs in CI. Screen fields are compared at their full BMS length, trailing
+# spaces kept; fields left at LOW-VALUES read as spaces. The dark, unset
+# CRDSTP2-CRDSTP7 stoppers carry no outcome and are not asserted, as in
+# CRD-COCRDLIC-normal-01. PAGENO is the one-digit WS-CA-SCREEN-NUM
+# moved to the 3-character PAGENOO, so it is left-justified. CURDATE and CURTIME
+# come from the region clock, so they are matchers. The UniKix copy of
+# COCRDLIC, COCRDLI.bms and CSSTRPFY matches app/ statement for statement.
+id: CRD-COCRDLIC-alternate-09
+level: e2e
+type: alternate
+description: >-
+  CCLI is entered directly, with no sign-on and no COMMAREA. COCRDLIC starts a
+  fresh COMMAREA as a user on page 1 and shows its own card list (COCRDLI)
+  rather than the sign-on screen. ENTER on that list with no filter and no
+  selection is handled by COCRDLIC itself: page 1 is resent with the first seven
+  cards of CARDDAT in key order, blank filters, no error and the prompt
+  'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD'.
+# Primary item first, then the program, the map asserted, the transaction both
+# tasks run, the CSD file the list browses, and the online-only copybooks
+# COCRDLIC copies. The prompt and the list content are the primary items of
+# other COCRDLIC scenarios; here they are asserted only as the screen the
+# direct-entry path leads to. CVACT02Y (the card record) and CSUSR01Y are
+# batch-level layouts, so they are not listed.
+inventory_ids:
+- INV-CRD-024  # COCRDLIC entry without COMMAREA starts without sign-on
+- INV-CRD-001  # COCRDLIC program
+- INV-CRD-004  # COCRDLI map
+- INV-CFG-014  # transaction CCLI
+- INV-CFG-003  # CARDDAT CSD file: STARTBR and READNEXT of the card list
+- INV-LAY-002  # COCOM01Y: CARDDEMO-COMMAREA, CDEMO-USRTYP-USER, CDEMO-PGM-ENTER
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDLIC
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps EIBAID to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CCARD-AID flags, CC-ACCT-ID and CC-CARD-NUM
+tags:
+- inferred-not-observed
+- observed-only
+gap_ids:
+- GAP-INF-006  # card (CRD) e2e baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-UNC-010  # direct entry without sign-on: intended or not
+preconditions:
+  datasets:
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CCLI
+    '@map': COCRDLI
+    fields: {}
+    aid: ENTER
+expected:
+  screens:
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    PAGENO: '1  '
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    CRDSEL2: ' '
+    ACCTNO2: '00000000027'
+    CRDNUM2: '0683586198171516'
+    CRDSTS2: 'Y'
+    CRDSEL3: ' '
+    ACCTNO3: '00000000002'
+    CRDNUM3: '0923877193247330'
+    CRDSTS3: 'Y'
+    CRDSEL4: ' '
+    ACCTNO4: '00000000020'
+    CRDNUM4: '0927987108636232'
+    CRDSTS4: 'Y'
+    CRDSEL5: ' '
+    ACCTNO5: '00000000012'
+    CRDNUM5: '0982496213629795'
+    CRDSTS5: 'Y'
+    CRDSEL6: ' '
+    ACCTNO6: '00000000044'
+    CRDNUM6: '1014086565224350'
+    CRDSTS6: 'Y'
+    CRDSEL7: ' '
+    ACCTNO7: '00000000037'
+    CRDNUM7: '1142167692878931'
+    CRDSTS7: 'Y'
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: '                                                                              '
