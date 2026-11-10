@@ -138,7 +138,7 @@ How it behaves:
 |---|---|---|---|
 | 1 | Values bound as configuration properties (vs a fixture file) | one source holds every stub setting | the values sit apart from the other fixture data |
 | 2 | Baseline values as in-code defaults (vs values in the packaged service configuration) | the service configuration stays unchanged | a baseline change needs a code change |
-| 3 | Key map checked when the stub is built (vs checked on each read) | a bad override fails before any client call | the check refuses any key the baseline does not name |
+| 3 | Construction-time map checks (vs checks on each read) | a bad override fails before any client call | nonbaseline keys are rejected |
 
 Effort and risk: one small service, one registration and one test class, with the risk in override keys that lose their underscores when written without brackets.
 
@@ -193,7 +193,7 @@ Open assumptions:
 | AC4 | Holds | an empty key list or an empty key name is refused before any lookup |
 | AC5 | Holds | the deadline can never enter the map |
 | AC6 | Holds | a bound value replaces only its own key |
-| AC7 | Holds | the map is checked when the stub is built |
+| AC7 | Holds | the map receives construction-time validation |
 | AC8 | Holds | the shared injector and log wrap every call to the stub |
 | AC9 | Holds | the stub carries no interceptor beyond the injector and the log |
 | AC10 | Holds | the registration sits in the discovered test package beside a conditional container hosting |

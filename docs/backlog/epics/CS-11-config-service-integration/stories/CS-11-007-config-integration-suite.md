@@ -138,68 +138,67 @@ Completed during implementation.
 
 Recommended: Design Option A — one container base shared per test JVM.
 
-Rationale: containers that the test code starts once and every integration suite reuses keep the integration gate self-contained, while the stubs stay inside the test JVM where per-test failure injection applies.
+Rationale: test-code containers, started once and reused by every suite, keep the integration gate self-contained.
 
-- Rejected: Design Option B, the relational store and cache from the shared container stack, because it ties the integration gate to the stack that the performance and end-to-end stages own.
-- Rejected: the stub containers of the shared container stack, because per-test failure injection needs the stubs inside the test JVM.
+- Rejected: Design Option B, the shared stack's store and cache, because it ties the integration gate to the performance and end-to-end stack.
+- Rejected: the stub containers of the shared stack, because per-test failure injection needs in-JVM stubs.
 
 Shared by both options:
 
-- Topology: stubs on loopback ports inside the test JVM, with a real relational store and a real cache in containers.
-- Naming: every integration suite carries the integration tag, so only the integration task runs it.
-- Addressing: the store and cache addresses are bound into the service settings before each application context starts.
-- Isolation: per-test overrides are cleared after each test, the cache is emptied before each test, and each test starts a new application context.
-- Fallback: none, since a missing container runtime fails the stage instead of skipping it.
-- Provisioning: the two images are pinned by tag in one checked-in definition.
-- Cut-over: the other four external suites reuse the same containers with no change to the Config suite.
-- Failures: each injected failure is asserted through the stub request log and the refresh log line.
+- Topology: in-JVM stubs on loopback ports, with the relational store and cache in real containers.
+- Naming: every integration suite carries the integration tag.
+- Addressing: store and cache addresses enter the service settings before each context start.
+- Isolation: each test gets cleared overrides, an emptied cache and a new application context.
+- Fallback: none, since a missing container runtime fails the stage.
+- Provisioning: two images pinned by tag in one checked-in definition.
+- Cut-over: the other four external suites reuse these containers, leaving the Config suite unchanged.
+- Failures: stub request logs and refresh log lines show each injected failure.
 
 ### Design Option A
 
-A shared container base in the test code starts one relational store container and one cache container when the first integration suite loads, and every later suite in the same test JVM reuses them. The base binds their addresses into the service settings and empties the cache before each test. The Config suite extends it and runs the configuration client and snapshot against the in-process Config stub over a real remote procedure channel.
+A shared test-code base starts one store and one cache container with the first integration suite, and every later suite reuses them. The Config suite extends it, running the configuration client and snapshot against the in-process Config stub over a real remote procedure channel.
 
 How it behaves:
 
-- The first suite to load pays the container start, and every later suite reuses the same two containers.
-- The container runtime chooses the ports at start, so parallel runs on one host never collide.
-- A start failure fails every suite with a message naming the image, so no suite is skipped.
-- The cache-outage case starts a third container of its own and stops it, so the shared pair keeps running.
-- The integration stage runs one build command after the unit stage, with no separate stack step.
+- The container runtime chooses the ports at start.
+- A start failure fails every suite with a message naming the image.
+- The cache-outage case stops a dedicated third container, so the shared pair keeps running.
+- The integration stage runs one build command, with no stack step.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Containers started once per test JVM by the base (vs once per suite) | one start serves all five suites | a container left dirty by one suite reaches the next |
-| 2 | Ports chosen at start and bound into settings (vs fixed ports) | parallel runs on one host never collide | settings are known only after the containers start |
+| 1 | Containers started once per test JVM (vs once per suite) | one start serves all five suites | a container left dirty by one suite reaches the next |
+| 2 | Ports chosen at start and bound into settings (vs fixed ports) | parallel runs on one host never collide | addresses remain unknown until container startup |
 | 3 | A start failure fails the suite (vs skipping it) | the gate never passes on skipped suites | a developer without a container runtime cannot run the suites |
 
-Effort and risk: one base, one suite, one profile and two build edits, with the risk in image pulls on a cold runner.
+Effort and risk: one base, one suite, one profile and two build edits, with the risk in cold-runner image pulls.
 
 ### Design Option B
 
-A pipeline step starts the relational store and cache services of the shared container stack before the integration task and stops them after it. The suites read fixed addresses from the integration profile, and the stubs still run inside the test JVM. The test code holds no container lifecycle.
+Pipeline steps start and stop the shared stack's store and cache around the integration task. The suites read fixed addresses from the integration profile, with the stubs still inside the test JVM.
 
 How it differs:
 
-- The stack definition that the performance and end-to-end stages own also serves the integration stage.
-- Fixed published ports replace ports chosen at start, so two runs on one host collide.
-- A local run needs the same start and stop steps around the build command.
-- The cache-outage case must stop a cache that every other suite of the run shares.
+- The performance and end-to-end stack also serves the integration stage.
+- Fixed published ports replace ports chosen at start.
+- A local run wraps the build command in the stack steps.
+- The cache-outage case stops the cache every other suite shares.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Store and cache from the shared stack (vs containers started by the test code) | one stack definition serves three stages | a change made for the performance stage can break the integration stage |
-| 2 | Fixed ports published by the stack (vs ports chosen at start) | settings are known before the run | two runs on one host collide on the same ports |
+| 1 | Store and cache from the shared stack (vs test-code containers) | one stack definition serves three stages | a performance-stage change can break the integration stage |
+| 2 | Fixed ports published by the stack (vs ports chosen at start) | settings are known before the run | two runs on one host collide |
 | 3 | Pipeline steps start and stop the stack (vs the test code) | the test code holds no container lifecycle | a local run needs two manual steps |
 
-Effort and risk: no base but two pipeline steps and a reduced service list, with the risk in coupling to a stack that the later stages change.
+Effort and risk: two pipeline steps and a reduced service list, with the risk in coupling to a stack other stages change.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: the integration gate depends only on the build command and a container runtime, and every suite reuses one pair of containers.
-- Strongest argument against: every integration run pays the start of two containers, and a cold runner also pays two image pulls.
-- Shared items that do not decide the choice: the in-JVM stubs, the request-log assertions, the per-test overrides, the pinned images and the stage order.
-- Flip condition: a pull-request runner that offers no container runtime to test code but does run the shared container stack.
+- Why: the gate needs only the build command and a container runtime, with one container pair for every suite.
+- Strongest argument against: each run pays two container starts, plus two image pulls on a cold runner.
+- Shared items that do not decide the choice: in-JVM stubs, request-log assertions, per-test overrides, pinned images and stage order.
+- Flip condition: a pull-request runner offering the shared stack but no container runtime to test code.
 
 ## Design Validation
 
@@ -207,60 +206,59 @@ Effort and risk: no base but two pipeline steps and a reduced service list, with
 
 Settled assumptions:
 
-- The scaffold story's integration task runs only suites carrying the integration tag, and its unit task excludes them.
+- The scaffold story's integration task runs only tagged suites, and its unit task excludes them.
 - The configuration-client story's refresh reads the mirror entry first and runs under its own 900 ms budget.
-- The test harness clears the request logs before each test and the per-test overrides after each test.
+- The test harness clears request logs before each test and overrides after it.
 - A stub call whose client deadline expires during an injected delay is logged as cancelled.
-- The read-through cache treats a refused cache connection as a miss.
-- The read-through cache ends each wait on an unanswered command at 50 ms or the refresh's time left, so an outage after connection costs a refresh at most 50 ms on the mirror read.
+- The read-through cache treats a refused connection as a miss and caps each wait on an unanswered command at 50 ms or the refresh's time left.
 - The mirror entry holds the four values with their cache time and no expiry.
 
 Open assumptions:
 
-- Open → the first pull-request run settles that the runner offers a container runtime to test code.
-- Open → the first pull-request run settles that the channel setup takes at most 200 ms on the runner, with the mirror read held to the cache's 50 ms wait limit.
-- Open → the technical requirements settle the refresh budget, which this suite takes from the configuration-client story as 900 ms from launch.
+- Open → the first pull-request run settles that the runner offers test code a container runtime.
+- Open → the first pull-request run settles channel setup within 200 ms on the runner.
+- Open → the technical requirements settle the 900 ms refresh budget from launch.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the base starts each container in one static step per test JVM |
+| AC1 | Holds | the base starts each container once per test JVM |
 | AC2 | Holds | the snapshot keeps its held values on every failed refresh |
-| AC3 | Conditional | the two-attempt count assumes a channel setup of at most 200 ms beside a mirror read capped at 50 ms |
-| AC4 | Conditional | the three-attempt count assumes a channel setup of at most 400 ms beside a mirror read capped at 50 ms |
-| AC5 | Conditional | the under-1,000 ms response depends on thread scheduling on the runner |
+| AC3 | Conditional | the two-attempt count assumes channel setup within 200 ms and a 50 ms mirror-read cap |
+| AC4 | Conditional | the three-attempt count assumes channel setup within 400 ms and a 50 ms mirror-read cap |
+| AC5 | Conditional | the under-1,000 ms response depends on runner thread scheduling |
 | AC6 | Holds | a successful refresh writes the mirror entry through the real cache |
 | AC7 | Holds | the refresh reads the mirror entry before any configuration read |
-| AC8 | Holds | a refused connection or an unanswered command counts as a miss within the cache's wait limit |
+| AC8 | Holds | a refused connection or unanswered command counts as a miss within the cache's wait limit |
 | AC9 | Holds | the integration tag routes the suite to the integration task alone |
-| AC10 | Holds | the integration stage fills its reserved slot after the unit stage |
+| AC10 | Holds | the stage fills its reserved slot after the unit stage |
 | AC11 | Holds | the base reports a start failure instead of skipping |
 
 ### Option B validation
 
 Settled assumptions:
 
-- The scaffold story's integration task runs only suites carrying the integration tag, and its unit task excludes them.
-- The shared container stack can start its relational store and cache without the other services.
+- The scaffold story's integration task runs only tagged suites, and its unit task excludes them.
+- The shared container stack can start its store and cache alone.
 - The test harness keeps the stubs inside the test JVM.
-- The read-through cache ends each wait on an unanswered command at 50 ms or the refresh's time left.
+- The read-through cache caps each wait on an unanswered command at 50 ms or the refresh's time left.
 
 Open assumptions:
 
 - Open → the stack owners settle that one fixed port set stays free on every runner.
-- Open → the first pull-request run settles that the channel setup takes at most 200 ms on the runner, with the mirror read held to the cache's 50 ms wait limit.
+- Open → the first pull-request run settles channel setup within 200 ms on the runner.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Breaks | no base in the test JVM starts or reuses the containers |
+| AC1 | Breaks | no test-JVM base starts or reuses the containers |
 | AC2 | Holds | the snapshot keeps its held values on every failed refresh |
-| AC3 | Conditional | the two-attempt count assumes a channel setup of at most 200 ms beside a mirror read capped at 50 ms |
-| AC4 | Conditional | the three-attempt count assumes a channel setup of at most 400 ms beside a mirror read capped at 50 ms |
-| AC5 | Conditional | the under-1,000 ms response depends on thread scheduling on the runner |
+| AC3 | Conditional | the two-attempt count assumes channel setup within 200 ms and a 50 ms mirror-read cap |
+| AC4 | Conditional | the three-attempt count assumes channel setup within 400 ms and a 50 ms mirror-read cap |
+| AC5 | Conditional | the under-1,000 ms response depends on runner thread scheduling |
 | AC6 | Holds | a successful refresh writes the mirror entry through the stack cache |
 | AC7 | Holds | the refresh reads the seeded mirror entry before any configuration read |
-| AC8 | At risk | stopping or pausing the stack cache affects every other suite of the run |
+| AC8 | At risk | stopping or pausing the stack cache affects every other suite |
 | AC9 | Holds | the integration tag routes the suite to the integration task alone |
-| AC10 | Conditional | the stage passes only with the stack steps placed ahead of the task |
+| AC10 | Conditional | the stage passes only with the stack steps ahead of the task |
 | AC11 | Conditional | a missing container runtime fails the stack step instead of the suite |
 
 ## Metadata
