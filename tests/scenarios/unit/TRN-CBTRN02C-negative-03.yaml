@@ -1,0 +1,119 @@
+# Reject 102, over the credit limit: one cent past the exact-limit posting of
+# TRN-CBTRN02C-boundary-01. Card 9680294154603697 cross-references account
+# 00000000001, whose credit limit is 2020.00 and whose cycle credit and debit are
+# both 0.00, so WS-TEMP-BAL = 0.00 - 0.00 + 2020.01 exceeds ACCT-CREDIT-LIMIT and
+# 1500-B-LOOKUP-ACCT sets 0102 'OVERLIMIT TRANSACTION'. The origination date
+# 2022-07-05 is before the expiration date 2025-05-20, so the later expiry check
+# leaves the reason at 102 [app/cbl/CBTRN02C.cbl:393-422]. The rejected record is
+# written to DALYREJS, and 2000-POST-TRANSACTION, the only paragraph that
+# rewrites the account and its category balance, is skipped
+# [app/cbl/CBTRN02C.cbl:206-216,446-465]. The run ends with RETURN-CODE 4
+# [app/cbl/CBTRN02C.cbl:227-231]. This is the credit-limit
+# violation "error code 102" of the tech-spec error-handling scenario, with a
+# repository card in place of the tech-spec values (GAP-DOC-011).
+id: TRN-CBTRN02C-negative-03
+level: unit
+type: negative
+description: >-
+  CBTRN02C receives one daily transaction of 2020.01 for account 00000000001,
+  whose credit limit is 2020.00 and whose cycle balance is zero. It rejects the
+  transaction with reason 0102 'OVERLIMIT TRANSACTION', writes the 430-byte
+  DALYREJS record (the transaction followed by the reason and its description),
+  posts nothing to TRANSACT, leaves ACCTDATA and TCATBALF unchanged, displays one
+  processed and one rejected transaction, and ends with return code 4.
+inventory_ids:
+- INV-TRN-076  # CBTRN02C reject 102 overlimit (rule)
+- INV-TRN-008  # CBTRN02C program
+- INV-TRN-085  # CBTRN02C DALYREJS 430-byte reject record (interface)
+- INV-TRN-080  # CBTRN02C return code 4 when any record is rejected (rule)
+- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
+- INV-DTA-013  # EBCDIC CARDXREF, its cross-check counterpart
+- INV-DTA-001  # acctdata.txt, the ACCTDATA fixture source
+- INV-DTA-011  # EBCDIC ACCTDATA, its cross-check counterpart
+- INV-DTA-007  # tcatbal.txt, the TCATBALF fixture source
+- INV-DTA-018  # EBCDIC TCATBALF, its cross-check counterpart
+tags: []
+gap_ids:
+- GAP-STB-010  # Berkeley DB indexed files in place of VSAM; TRANFILE OPEN OUTPUT recreates it
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    # One synthetic transaction; the id, merchant and description are invented.
+    # DALYTRAN-PROC-TS is left blank, as in the repository's daily transactions.
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9900000000000361'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '1'
+        DALYTRAN-SOURCE: POS TERM
+        DALYTRAN-DESC: Synthetic over limit
+        DALYTRAN-AMT: '2020.01'
+        DALYTRAN-MERCHANT-ID: '900000361'
+        DALYTRAN-MERCHANT-NAME: Synthetic Merchant 361
+        DALYTRAN-MERCHANT-CITY: Testville
+        DALYTRAN-MERCHANT-ZIP: '00361'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+    CARDXREF: {base: CARDXREF}
+    ACCTDATA: {base: ACCTDATA}
+    TCATBALF: {base: TCATBALF}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN02C
+expected:
+  return_code: 4
+  # The reason as the four digits WS-VALIDATION-FAIL-REASON holds in the record.
+  reject_reason_codes:
+  - '0102'
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN02C
+  - 'TRANSACTIONS PROCESSED :000000001'
+  - 'TRANSACTIONS REJECTED  :000000001'
+  - END OF EXECUTION OF PROGRAM CBTRN02C
+  datasets:
+    # The transaction exactly as read, then the validation trailer: the reason
+    # and its description, space-padded to 76 characters. Decoded numbers are
+    # Decimal text with their scale (CAT-CD 0001 decodes as 1, reason 0102 as 102).
+    DALYREJS:
+      records:
+      - DALYTRAN-ID: '9900000000000361'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '1'
+        DALYTRAN-SOURCE: 'POS TERM  '
+        DALYTRAN-DESC: 'Synthetic over limit                                                                                '
+        DALYTRAN-AMT: '2020.01'
+        DALYTRAN-MERCHANT-ID: '900000361'
+        DALYTRAN-MERCHANT-NAME: 'Synthetic Merchant 361                            '
+        DALYTRAN-MERCHANT-CITY: 'Testville                                         '
+        DALYTRAN-MERCHANT-ZIP: '00361     '
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        DALYTRAN-PROC-TS: '                          '
+        WS-VALIDATION-FAIL-REASON: '102'
+        WS-VALIDATION-FAIL-REASON-DESC: 'OVERLIMIT TRANSACTION                                                       '
+    # Nothing is posted: TRANFILE is opened OUTPUT and receives no record.
+    TRANSACT:
+      count: 0
+  file_state:
+    # A rejected record is never rewritten: account 00000000001 keeps its balance
+    # and its zero cycle fields, and the 50 accounts stay 50.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+    # No category balance is created or updated: account 00000000001's type 01
+    # category 0001 balance stays 0.00 and the 50 records stay 50.
+    TCATBALF:
+      count: 50
+      contains:
+      - TRANCAT-ACCT-ID: '1'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '1'
+        TRAN-CAT-BAL: '0.00'

@@ -1,0 +1,82 @@
+id: TRN-CBTRN02C-recovery-01
+level: unit
+type: recovery
+description: >-
+  CBTRN02C runs with no card cross-reference KSDS. The DALYTRAN and TRANFILE opens
+  succeed; OPEN INPUT XREFFILE, the third open, returns file status 35, so
+  0200-XREFFILE-OPEN displays 'ERROR OPENING CROSS REF FILE' and the status as
+  NNNN0035, and 9999-ABEND-PROGRAM displays 'ABENDING PROGRAM' and calls CEE3ABD
+  [app/cbl/CBTRN02C.cbl:193-199,273-289,707-711,714-727]. The run ends before the
+  DALYREJS, ACCTFILE and TCATBALF opens and before any record is read, so the
+  processed and rejected counts are never displayed and the account file the daily
+  transaction would post to is left as loaded.
+inventory_ids:
+- INV-TRN-087  # CBTRN02C abend on open failure (recovery)
+- INV-TRN-008  # CBTRN02C program
+# The file_state assertion decodes ACCTDATA through CVACT01Y.
+- INV-LAY-016  # CVACT01Y copybook
+- INV-DTA-001  # acctdata.txt, the ACCTDATA fixture source
+- INV-DTA-011  # EBCDIC account data file, the ACCTDATA cross-check counterpart
+- INV-DTA-007  # tcatbal.txt, the TCATBALF fixture source
+- INV-DTA-018  # EBCDIC category balance file, the TCATBALF cross-check counterpart
+# Untagged by design: GAP-DEF-001 (the parameterless CALL 'CEE3ABD' that ends
+# every CB* abend path) is cited as the gap this abend passes through, as in
+# every batch open-failure case; suspected-defect marks the cases that pin a
+# program's own defect.
+tags: []
+gap_ids:
+- GAP-STB-001  # CEE3ABD stub: no abend code, dump or LE condition handling
+- GAP-DEF-001  # CALL 'CEE3ABD' without parameters
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  # CARDXREF is deliberately not provided: on gnucobol-batch the open fault below
+  # is produced by leaving the dataset out. TRANSACT and DALYREJS are outputs the
+  # program creates. The daily transaction is for card 9680294154603697, which
+  # the repository cross-reference maps to account 00000000001, so posting it
+  # would change that account; its merchant data is invented.
+  datasets:
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9900000000000391'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '0001'
+        DALYTRAN-SOURCE: POS TERM
+        DALYTRAN-DESC: Purchase at Synthetic Test Merchant
+        DALYTRAN-AMT: '10.00'
+        DALYTRAN-MERCHANT-ID: '990000391'
+        DALYTRAN-MERCHANT-NAME: Synthetic Test Merchant
+        DALYTRAN-MERCHANT-CITY: Testville
+        DALYTRAN-MERCHANT-ZIP: '99999'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+    ACCTDATA: {base: ACCTDATA}
+    TCATBALF: {base: TCATBALF}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  - target: CARDXREF
+    operation: open
+    condition: unavailable
+inputs:
+  program: CBTRN02C
+expected:
+  return_code: null
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN02C
+  - ERROR OPENING CROSS REF FILE
+  - 'FILE STATUS IS: NNNN0035'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD
+  file_state:
+    # All 50 repository accounts survive, and account 1 keeps the balance and
+    # cycle totals of acctdata.txt record 1: nothing was posted.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'

@@ -1,0 +1,96 @@
+id: TRN-CBTRN02C-recovery-02
+level: unit
+type: recovery
+description: >-
+  CBTRN02C opens its six files, reads the first daily transaction and posts it to
+  account 00000000001 (TCATBAL updated, ACCT-CURR-BAL and ACCT-CURR-CYC-CREDIT
+  raised by 10.00 and rewritten, the TRANSACT record written); the second READ of
+  DALYTRAN then fails with an I/O error. 1000-DALYTRAN-GET-NEXT displays 'ERROR
+  READING DALYTRAN FILE', the status through 9910-DISPLAY-IO-STATUS and 'ABENDING
+  PROGRAM', then calls CEE3ABD without parameters, so the close paragraphs, the
+  processed and rejected counts and the end-of-execution line are never reached
+  [app/cbl/CBTRN02C.cbl:193-219,345-369,380-444,526-560,707-727]. No adapter
+  injects a read failure after a successful open (GAP-MIS-013), so the scenario
+  stays implemented-unexecuted and its baseline is derived from the source
+  (GAP-INF-013).
+# Only the I/O-failure-after-open item: this case never executes, so listing the
+# program, the CVTRA06Y or CVACT01Y layout or the data files here would block items
+# that the executed CBTRN02C scenarios verify (one scenario lists an item only when
+# the item's verification depends on it).
+inventory_ids:
+- INV-TRN-088
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013
+- GAP-INF-013
+- GAP-STB-001
+- GAP-DEF-001
+preconditions:
+  datasets:
+    # Two synthetic transactions on card 9680294154603697, which CARDXREF maps to
+    # account 00000000001 (balance 194.00, credit limit 2020.00, cycle credit and
+    # debit 0.00, expiry 2025-05-20). Its TCATBAL record 00000000001/01/0001 exists,
+    # so the first record takes the update path and displays nothing. Ids, merchant
+    # and description are invented.
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9900000000000401'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '0001'
+        DALYTRAN-SOURCE: 'POS TERM'
+        DALYTRAN-DESC: 'Purchase at Synthetic Test Merchant'
+        DALYTRAN-AMT: '10.00'
+        DALYTRAN-MERCHANT-ID: '900000401'
+        DALYTRAN-MERCHANT-NAME: 'Synthetic Test Merchant'
+        DALYTRAN-MERCHANT-CITY: 'Testville'
+        DALYTRAN-MERCHANT-ZIP: '99401'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+      - DALYTRAN-ID: '9900000000000402'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '0001'
+        DALYTRAN-SOURCE: 'POS TERM'
+        DALYTRAN-DESC: 'Purchase at Synthetic Test Merchant'
+        DALYTRAN-AMT: '10.00'
+        DALYTRAN-MERCHANT-ID: '900000402'
+        DALYTRAN-MERCHANT-NAME: 'Synthetic Test Merchant'
+        DALYTRAN-MERCHANT-CITY: 'Testville'
+        DALYTRAN-MERCHANT-ZIP: '99402'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+    CARDXREF:
+      base: CARDXREF
+    ACCTDATA:
+      base: ACCTDATA
+    TCATBALF:
+      base: TCATBALF
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  # after: 1 -- the first READ returns record 1, the second fails.
+  - target: DALYTRAN
+    operation: read
+    condition: io-error
+    after: 1
+inputs:
+  program: CBTRN02C
+expected:
+  return_code: null
+  messages:
+  - 'START OF EXECUTION OF PROGRAM CBTRN02C'
+  - 'ERROR READING DALYTRAN FILE'
+  # An io-error is taken as IBM file status 30 (inferred, GAP-INF-013): numeric
+  # and not 9x, so 9910-DISPLAY-IO-STATUS shows it as NNNN0030.
+  - 'FILE STATUS IS: NNNN0030'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'
+  file_state:
+    # The first record was posted and its account rewritten before the failing
+    # READ; the abend does not undo the REWRITE [app/cbl/CBTRN02C.cbl:545-560].
+    ACCTDATA:
+      contains:
+      - ACCT-ID: '00000000001'
+        ACCT-CURR-BAL: '204.00'
+        ACCT-CURR-CYC-CREDIT: '10.00'

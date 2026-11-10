@@ -1,0 +1,117 @@
+# Reject 103, a transaction received after the account expired. The repository
+# data never produces it (every daily transaction is dated 2022-06-10), so one
+# synthetic DALYTRAN record for card 9680294154603697 (account 00000000001,
+# ACCT-EXPIRAION-DATE 2025-05-20) is dated 2025-05-21, one day past the
+# equal-date case of TRN-CBTRN02C-boundary-02. The XREF and account lookups
+# succeed and the amount stays within the credit limit (0.00 - 0.00 + 10.00 <=
+# 2020.00), so only the expiry test fails: ACCT-EXPIRAION-DATE >=
+# DALYTRAN-ORIG-TS(1:10) is false and 103 is moved with its description
+# [app/cbl/CBTRN02C.cbl:393-422]. The record is written to DALYREJS, nothing is
+# posted, and the reject count sets return code 4 [app/cbl/CBTRN02C.cbl:202-231,
+# 446-465].
+id: TRN-CBTRN02C-negative-04
+level: unit
+type: negative
+description: >-
+  CBTRN02C receives one transaction for account 00000000001 dated 2025-05-21, a
+  day after the account's expiration date 2025-05-20. It rejects the record with
+  reason 0103 'TRANSACTION RECEIVED AFTER ACCT EXPIRATION', writes the 430-byte
+  DALYREJS record, posts nothing (TRANSACT stays empty, the account and category
+  balances are unchanged), reports 1 processed and 1 rejected and ends with
+  return code 4.
+inventory_ids:
+- INV-TRN-077  # CBTRN02C reject 103 expired account (rule), the primary item
+- INV-TRN-008  # CBTRN02C program
+- INV-TRN-085  # CBTRN02C DALYREJS 430-byte reject record (interface)
+- INV-TRN-080  # CBTRN02C return code 4 when any record is rejected (rule)
+# Also listed, beyond the plan's list for this file: the counts report and the
+# copybooks whose decoded assertions below depend on this run. A copybook is
+# covered through every scenario whose decoded assertions use its layout.
+- INV-TRN-086  # CBTRN02C processed and rejected counts (report)
+- INV-LAY-026  # CVTRA06Y, the DALYTRAN record and the reject's transaction data
+- INV-LAY-016  # CVACT01Y, the ACCTDATA records
+- INV-LAY-021  # CVTRA01Y, the TCATBALF records
+- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
+- INV-DTA-013  # EBCDIC card cross-reference file, its cross-check counterpart
+- INV-DTA-001  # acctdata.txt, the ACCTDATA fixture source
+- INV-DTA-011  # EBCDIC account data file, its cross-check counterpart
+- INV-DTA-007  # tcatbal.txt, the TCATBALF fixture source
+- INV-DTA-018  # EBCDIC category balance file, its cross-check counterpart
+tags: []
+gap_ids:
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    # Synthetic, invented transaction: its id, merchant and description match no
+    # repository record. DALYTRAN-PROC-TS and the FILLER are left as spaces, as in
+    # the repository's daily transactions.
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9900000000000371'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '0001'
+        DALYTRAN-SOURCE: POS TERM
+        DALYTRAN-DESC: Synthetic after expiry
+        DALYTRAN-AMT: '10.00'
+        DALYTRAN-MERCHANT-ID: '990000371'
+        DALYTRAN-MERCHANT-NAME: Synthetic Merchant 371
+        DALYTRAN-MERCHANT-CITY: Nowhere City
+        DALYTRAN-MERCHANT-ZIP: '99999'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2025-05-21 09:15:00.000000'
+    CARDXREF: {base: CARDXREF}
+    ACCTDATA: {base: ACCTDATA}
+    TCATBALF: {base: TCATBALF}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'  # the suite default; no record is posted, so no TRAN-PROC-TS is stamped
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN02C
+expected:
+  return_code: 4
+  # The reason as the 4-digit text the reject trailer holds.
+  reject_reason_codes:
+  - '0103'
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN02C
+  - 'TRANSACTIONS PROCESSED :000000001'
+  - 'TRANSACTIONS REJECTED  :000000001'
+  - END OF EXECUTION OF PROGRAM CBTRN02C
+  # Decoded values: numbers carry their scale and no leading zeros (category
+  # 0001 decodes as '1', reason 0103 as '103'), and text keeps its trailing
+  # spaces. The description is 76 bytes, padded with spaces.
+  datasets:
+    DALYREJS:
+      records:
+      - DALYTRAN-ID: '9900000000000371'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '1'
+        DALYTRAN-SOURCE: 'POS TERM  '
+        DALYTRAN-AMT: '10.00'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2025-05-21 09:15:00.000000'
+        WS-VALIDATION-FAIL-REASON: '103'
+        WS-VALIDATION-FAIL-REASON-DESC: 'TRANSACTION RECEIVED AFTER ACCT EXPIRATION                                  '
+    TRANSACT:
+      count: 0
+  # A rejected record is never posted, so account 1 keeps its balances and its
+  # type 01 / category 0001 balance record is neither updated nor recreated.
+  file_state:
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+    TCATBALF:
+      count: 50
+      contains:
+      - TRANCAT-ACCT-ID: '1'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '1'
+        TRAN-CAT-BAL: '0.00'
