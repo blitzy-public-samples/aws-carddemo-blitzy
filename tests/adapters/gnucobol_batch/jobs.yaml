@@ -1,0 +1,1348 @@
+# gnucobol-batch job table: one step table per job, transcribed from app/jcl, app/proc
+# and app/ctl, plus TRNRPT00, the job CORPT00C writes to the JOBS queue.
+#
+# Purpose
+#   The job driver (jobs.py) runs a job scenario through these tables and never parses
+#   JCL. Program steps run the programs.yaml units; utility steps run the utilities.py
+#   replacements: IDCAMS (GAP-STB-005), SORT (GAP-STB-006), IEBGENER, IEFBR14 and DISP
+#   (GAP-STB-007), SDSF (GAP-STB-008). datasets.py emulates the catalog and the GDG
+#   generations (GAP-STB-009). Every value restates the read-only app/ sources.
+#
+# Coverage
+#   The 26 jobs of app/jcl other than CBADMCDJ, OPENFIL and CLOSEFIL, which act on a CICS
+#   region and run only on unikix (GAP-MIS-016, GAP-MIS-011), and TRNRPT00. A scenario
+#   whose inputs.job names a job missing here is not gnucobol-batch capable.
+#
+# Readers
+#   harness/scenarios.py  capable_adapters: inputs.job (a name or an ordered list) is
+#                         gnucobol-capable when every named job is a key of jobs
+#   harness/results.py    source_identity: each job's source, procs and member sources,
+#                         and the units of its program steps
+#   datasets.py           DsnMap (dsn, logical, aix_path of every dd and concat entry) and
+#                         Catalog.seed (catalog_seed)
+#   build.py              key profiles from the KEYS and RECORDSIZE of the DEFINE CLUSTER
+#                         and DEFINE ALTERNATEINDEX sysin lines
+#   jobs.py, utilities.py, adapter.py
+#
+# Schema (schema_version 1)
+#   catalog_seed:
+#     gdg_bases:
+#     - {name, limit, scratch, empty, source}   a GDG base as app/catlg/LISTCAT.txt records it
+#   jobs:
+#     <JOBNAME>:
+#       source: <path> | "<path>:<lines>"   the JCL this table transcribes
+#       procs: [<path>...]                  procedures expanded inline; present when used
+#       jcllib: [<PDS>...]                  JCLLIB ORDER; recorded only, present when coded
+#       steps:                              every step, in JCL order
+#       - step: <name>        a job step keeps its name; a step inside a procedure is named
+#                             by the job step and each procedure step, joined with dots
+#                             (STEP05R.PRC001, STEP10.STEP01R.PRC001). Duplicate names stay
+#                             as written and list position tells them apart (DEFCUST,
+#                             TRANREPT; GAP-DEF-009). tests/adapters/unikix/resources.yaml
+#                             uses the same names, so both adapters write the same STEP lines.
+#         kind: program | idcams | sort | iebgener | iefbr14 | sdsf
+#         program: <UNIT>     kind program only: a programs.yaml unit whose run is not called
+#         parm: '<text>'      the EXEC PARM text without its quotes
+#         proc: {name, source, procstep, symbols}
+#                             for a step expanded from a procedure: the innermost procedure,
+#                             its step name and the symbolic parameters of the EXEC calling it
+#         cond: '<value>'     the EXEC COND value, verbatim
+#         dd:                 the step's DDs in JCL order, procedure overrides applied in place
+#           <DDNAME>:
+#             dsn: <DSN>              without its generation or member
+#             gdg: "+1" | "0"         the relative generation, always a string
+#             logical: <name>         the tests/fixtures/datasets.yaml dataset the DSN holds
+#             aix_path: <path>        on an alternate-index path DSN: the alternate_keys[].path
+#                                     of its base dataset in datasets.yaml, as @AIX:<path> names it
+#             disp: [<sub>...]        the DISP subparameters as coded ([SHR], [NEW, CATLG, DELETE])
+#             dcb: {lrecl, recfm}     DCB LRECL and RECFM; DCB=(*.SORTIN) is {refer: SORTIN}
+#             concat: [{dsn, gdg?, logical?, disp?}...]   a concatenation, in order
+#             instream: [<line>...]   DD * data
+#             member: {name, source}  DSN=<PDS>(<member>): source is the repository file holding
+#                                     the member, read at run time; dsn names the PDS
+#             dummy: true             DD DUMMY
+#             sysout: '*'             SYSOUT=*
+#         params:             control statements coded DD *
+#           sysin: [<line>...]        IDCAMS and SORT SYSIN
+#           symnames: [<line>...]     SORT SYMNAMES, remark text included
+#           isfin: [<line>...]        SDSF ISFIN commands
+#
+# Transcription rules
+#   - SYSIN lines are columns 1-72; SYMNAMES, ISFIN and instream lines are columns 1-80
+#     (the //Date remarks of the TRANREPT SYMNAMES end in column 73). Trailing blanks are
+#     removed and nothing else changes: leading blanks, continuation '-' and the spelling
+#     of each statement are kept. The driver pads instream lines with spaces to the record
+#     length of their target.
+#   - SYSIN of IDCAMS and SORT, SYMNAMES and ISFIN coded DD * appear under params only. A
+#     data DD coded DD * (SYSUT1, the TRNRPT00 DATEPARM) keeps its lines under instream.
+#   - STEPLIB, SYSPRINT, SYSOUT, ISFOUT and CMDOUT are transcribed although they have no
+#     effect at run time: the DD order of CREASTMT STEP040 is the TIOT order the
+#     page-zero shim gives CBSTM03A.
+#   - UNIT, SPACE, BLKSIZE, DSORG, VOLUMES and the JOB card parameters are left out: no
+#     replacement emulates them.
+#   - COND and the abnormal-termination DISP subparameter are recorded and never evaluated:
+#     they are JCL-semantics items verified only on unikix. The driver applies the
+#     normal-end disposition so data flows from step to step.
+#   - A program step names every ddname programs.yaml declares for its unit and the units
+#     it calls, with the same logical dataset.
+#   - Every DSN maps to at most one logical name, and every logical name to one DSN.
+
+schema_version: 1
+
+# The GDG bases of app/catlg/LISTCAT.txt, all LIMIT 5 and NOEMPTY. datasets.py seeds a
+# job scenario's catalog with exactly the bases that a gdg DD of its jobs references and
+# that no DEFINE GENERATIONDATAGROUP statement of those jobs defines, so DEFGDGB, DALYREJS
+# and REPTFILE start from a catalog without them. The seed follows LISTCAT, the catalog
+# these jobs ran against: DEFGDGB defines TRANSACT.BKUP and TRANSACT.DALY with SCRATCH,
+# where LISTCAT records NOSCRATCH, and REPTFILE defines TRANREPT with LIMIT(10).
+catalog_seed:
+  gdg_bases:
+  - {name: AWS.M2.CARDDEMO.DALYREJS, limit: 5, scratch: true, empty: false, source: "app/catlg/LISTCAT.txt:684,690"}
+  - {name: AWS.M2.CARDDEMO.SYSTRAN, limit: 5, scratch: true, empty: false, source: "app/catlg/LISTCAT.txt:1098,1106"}
+  - {name: AWS.M2.CARDDEMO.TCATBALF.BKUP, limit: 5, scratch: true, empty: false, source: "app/catlg/LISTCAT.txt:1202,1208"}
+  - {name: AWS.M2.CARDDEMO.TRANREPT, limit: 5, scratch: true, empty: false, source: "app/catlg/LISTCAT.txt:1527,1535"}
+  - {name: AWS.M2.CARDDEMO.TRANSACT.BKUP, limit: 5, scratch: false, empty: false, source: "app/catlg/LISTCAT.txt:1631,1637"}
+  - {name: AWS.M2.CARDDEMO.TRANSACT.COMBINED, limit: 5, scratch: true, empty: false, source: "app/catlg/LISTCAT.txt:2919,2925"}
+  - {name: AWS.M2.CARDDEMO.TRANSACT.DALY, limit: 5, scratch: false, empty: false, source: "app/catlg/LISTCAT.txt:3021,3027"}
+
+jobs:
+
+  # Delete, define and load the account master KSDS from ACCTDATA.PS.
+  ACCTFILE:
+    source: app/jcl/ACCTFILE.jcl
+    steps:
+    # [app/jcl/ACCTFILE.jcl:22-28]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DELETE AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS -"
+        - "          CLUSTER"
+        - "   IF MAXCC LE 08 THEN SET MAXCC = 0"
+    # [app/jcl/ACCTFILE.jcl:33-50]
+    - step: STEP10
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE CLUSTER (NAME(AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS) -"
+        - "          CYLINDERS(1 5) -"
+        - "          VOLUMES(AWSHJ1 -"
+        - "          ) -"
+        - "          KEYS(11 0) -"
+        - "          RECORDSIZE(300 300) -"
+        - "          SHAREOPTIONS(2 3) -"
+        - "          ERASE -"
+        - "          INDEXED -"
+        - "          ) -"
+        - "          DATA (NAME(AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS.DATA) -"
+        - "          ) -"
+        - "          INDEX (NAME(AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS.INDEX) -"
+        - "          )"
+    # [app/jcl/ACCTFILE.jcl:54-62]
+    - step: STEP15
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+        ACCTDATA: {dsn: AWS.M2.CARDDEMO.ACCTDATA.PS, logical: ACCTDATA-PS, disp: [SHR]}
+        ACCTVSAM: {dsn: AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS, logical: ACCTDATA, disp: [SHR]}
+      params:
+        sysin:
+        - "   REPRO INFILE(ACCTDATA) OUTFILE(ACCTVSAM)"
+
+  # Close the region files, delete, define and load the card master KSDS, build its
+  # account-id alternate index and path, and reopen the region files.
+  CARDFILE:
+    source: app/jcl/CARDFILE.jcl
+    steps:
+    # [app/jcl/CARDFILE.jcl:22-28]
+    # SDSF CEMT commands are a no-op RC 0 here (GAP-STB-008).
+    - step: CLCIFIL
+      kind: sdsf
+      dd:
+        ISFOUT: {sysout: '*'}
+        CMDOUT: {sysout: '*'}
+      params:
+        isfin:
+        - " /F CICSAWSA,'CEMT SET FIL(CARDDAT ) CLO'"
+        - " /F CICSAWSA,'CEMT SET FIL(CARDAIX ) CLO'"
+    # [app/jcl/CARDFILE.jcl:33-42]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DELETE AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS -"
+        - "          CLUSTER"
+        - "   IF MAXCC LE 08 THEN SET MAXCC = 0"
+        - "   DELETE AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX -"
+        - "          ALTERNATEINDEX"
+        - "   IF MAXCC LE 08 THEN SET MAXCC = 0"
+    # [app/jcl/CARDFILE.jcl:47-64]
+    - step: STEP10
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE CLUSTER (NAME(AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS) -"
+        - "          CYLINDERS(1 5) -"
+        - "          VOLUMES(AWSHJ1 -"
+        - "          ) -"
+        - "          KEYS(16 0) -"
+        - "          RECORDSIZE(150 150) -"
+        - "          SHAREOPTIONS(2 3) -"
+        - "          ERASE -"
+        - "          INDEXED -"
+        - "          ) -"
+        - "          DATA (NAME(AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS.DATA) -"
+        - "          ) -"
+        - "          INDEX (NAME(AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS.INDEX) -"
+        - "          )"
+    # [app/jcl/CARDFILE.jcl:68-76]
+    - step: STEP15
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+        CARDDATA: {dsn: AWS.M2.CARDDEMO.CARDDATA.PS, logical: CARDDATA-PS, disp: [SHR]}
+        CARDVSAM: {dsn: AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS, logical: CARDDATA, disp: [SHR]}
+      params:
+        sysin:
+        - "   REPRO INFILE(CARDDATA) OUTFILE(CARDVSAM)"
+    # [app/jcl/CARDFILE.jcl:80-93]
+    - step: STEP40
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE ALTERNATEINDEX (NAME(AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX)-"
+        - "   RELATE(AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS)                    -"
+        - "   KEYS(11 16)                                                   -"
+        - "   NONUNIQUEKEY                                                  -"
+        - "   UPGRADE                                                       -"
+        - "   RECORDSIZE(150,150)                                           -"
+        - "   VOLUMES(AWSHJ1)                                               -"
+        - "   CYLINDERS(5,1))                                               -"
+        - "   DATA (NAME(AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX.DATA))           -"
+        - "   INDEX (NAME(AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX.INDEX))"
+    # [app/jcl/CARDFILE.jcl:97-103]
+    - step: STEP50
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "  DEFINE PATH                                           -"
+        - "   (NAME(AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX.PATH)        -"
+        - "    PATHENTRY(AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX))"
+    # [app/jcl/CARDFILE.jcl:107-113]
+    - step: STEP60
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   BLDINDEX                                                      -"
+        - "   INDATASET(AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS)                 -"
+        - "   OUTDATASET(AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX)"
+    # [app/jcl/CARDFILE.jcl:118-124]
+    # SDSF CEMT commands are a no-op RC 0 here (GAP-STB-008).
+    - step: OPCIFIL
+      kind: sdsf
+      dd:
+        ISFOUT: {sysout: '*'}
+        CMDOUT: {sysout: '*'}
+      params:
+        isfin:
+        - " /F CICSAWSA,'CEMT SET FIL(CARDDAT ) OPE'"
+        - " /F CICSAWSA,'CEMT SET FIL(CARDAIX ) OPE'"
+
+  # Merge the TRANSACT backup and the interest transactions by TRAN-ID and load the
+  # result into the emptied TRANSACT KSDS; the README runs TRANBKP first (GAP-DOC-015).
+  COMBTRAN:
+    source: app/jcl/COMBTRAN.jcl
+    steps:
+    # [app/jcl/COMBTRAN.jcl:22-37]
+    - step: STEP05R
+      kind: sort
+      dd:
+        SORTIN:
+          concat:
+          - {dsn: AWS.M2.CARDDEMO.TRANSACT.BKUP, gdg: "0", logical: TRANSACT-BKUP, disp: [SHR]}
+          - {dsn: AWS.M2.CARDDEMO.SYSTRAN, gdg: "0", logical: SYSTRAN, disp: [SHR]}
+        SYSOUT: {sysout: '*'}
+        SORTOUT: {dsn: AWS.M2.CARDDEMO.TRANSACT.COMBINED, gdg: "+1", logical: TRANSACT-COMBINED, disp: [NEW, CATLG, DELETE], dcb: {refer: SORTIN}}
+      params:
+        sysin:
+        - " SORT FIELDS=(TRAN-ID,A)"
+        symnames:
+        - "TRAN-ID,1,16,CH"
+    # [app/jcl/COMBTRAN.jcl:41-49]
+    - step: STEP10
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+        TRANSACT: {dsn: AWS.M2.CARDDEMO.TRANSACT.COMBINED, gdg: "+1", logical: TRANSACT-COMBINED, disp: [SHR]}
+        TRANVSAM: {dsn: AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, logical: TRANSACT, disp: [SHR]}
+      params:
+        sysin:
+        - "   REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM)"
+
+  # Rebuild TRXFL keyed by card and transaction id, then write the text and HTML
+  # statements with CBSTM03A, which calls CBSTM03B. COND=(0,NE) on STEP020 to STEP040 is
+  # recorded, not evaluated (JCL-semantics item, unikix only).
+  CREASTMT:
+    source: app/jcl/CREASTMT.JCL
+    steps:
+    # [app/jcl/CREASTMT.JCL:22-40]
+    - step: DELDEF01
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "  DELETE    AWS.M2.CARDDEMO.TRXFL.SEQ"
+        - "  DELETE    AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS                     -"
+        - "            CLUSTER"
+        - "  SET       MAXCC = 0"
+        - "  DEFINE    CLUSTER  (NAME(AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS)     -"
+        - "                      KEYS(32 0)                                -"
+        - "                      VOLUMES(TSU023)                           -"
+        - "                      RECORDSIZE(350 350)                       -"
+        - "                      SHAREOPTIONS(2 3)                         -"
+        - "                      ERASE                                     -"
+        - "                      INDEXED                                   -"
+        - "                      CYL(1 5))                                 -"
+        - "            DATA      (NAME(AWS.M2.CARDDEMO.TRXFL.DATA)         -"
+        - "                      CISZ(4096))                               -"
+        - "            INDEX     (NAME(AWS.M2.CARDDEMO.TRXFL.INDEX))"
+    # [app/jcl/CREASTMT.JCL:44-55]
+    - step: STEP010
+      kind: sort
+      dd:
+        SORTIN: {dsn: AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, logical: TRANSACT, disp: [SHR]}
+        SYSPRINT: {sysout: '*'}
+        SYSOUT: {sysout: '*'}
+        SORTOUT: {dsn: AWS.M2.CARDDEMO.TRXFL.SEQ, logical: TRXFL-SEQ, disp: [NEW, CATLG, DELETE], dcb: {lrecl: 350, recfm: FB}}
+      params:
+        sysin:
+        - "  SORT FIELDS=(263,16,CH,A,1,16,CH,A)"
+        - "  OUTREC FIELDS=(1:263,16,17:1,262,279:279,50)"
+    # [app/jcl/CREASTMT.JCL:56-62]
+    - step: STEP020
+      kind: idcams
+      cond: '(0,NE)'
+      dd:
+        SYSPRINT: {sysout: '*'}
+        INFILE: {dsn: AWS.M2.CARDDEMO.TRXFL.SEQ, logical: TRXFL-SEQ, disp: [SHR]}
+        OUTFILE: {dsn: AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS, logical: TRXFL, disp: [SHR]}
+      params:
+        sysin:
+        - "  REPRO INFILE(INFILE) OUTFILE(OUTFILE)"
+    # [app/jcl/CREASTMT.JCL:66-75]
+    # Deletes the previous statements; absent datasets are not an error.
+    - step: STEP030
+      kind: iefbr14
+      cond: '(0,NE)'
+      dd:
+        HTMLFILE: {dsn: AWS.M2.CARDDEMO.STATEMNT.HTML, logical: HTMLFILE, disp: [MOD, DELETE, DELETE], dcb: {lrecl: 80, recfm: FB}}
+        STMTFILE: {dsn: AWS.M2.CARDDEMO.STATEMNT.PS, logical: STMTFILE, disp: [MOD, DELETE, DELETE], dcb: {lrecl: 80, recfm: FB}}
+    # [app/jcl/CREASTMT.JCL:79-96]
+    # The DD order is the TIOT order of programs.yaml CBSTM03A tiot. The text after the
+    # blank on the STMTFILE SPACE line is a JCL comment [app/jcl/CREASTMT.JCL:90].
+    - step: STEP040
+      kind: program
+      program: CBSTM03A
+      cond: '(0,NE)'
+      dd:
+        STEPLIB: {dsn: AWS.M2.CARDDEMO.LOADLIB, disp: [SHR]}
+        SYSPRINT: {sysout: '*'}
+        SYSOUT: {sysout: '*'}
+        TRNXFILE: {dsn: AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS, logical: TRXFL, disp: [SHR]}
+        XREFFILE: {dsn: AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS, logical: CARDXREF, disp: [SHR]}
+        ACCTFILE: {dsn: AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS, logical: ACCTDATA, disp: [SHR]}
+        CUSTFILE: {dsn: AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS, logical: CUSTDATA, disp: [SHR]}
+        STMTFILE: {dsn: AWS.M2.CARDDEMO.STATEMNT.PS, logical: STMTFILE, disp: [NEW, CATLG, DELETE], dcb: {lrecl: 80, recfm: FB}}
+        HTMLFILE: {dsn: AWS.M2.CARDDEMO.STATEMNT.HTML, logical: HTMLFILE, disp: [NEW, CATLG, DELETE], dcb: {lrecl: 100, recfm: FB}}
+
+  # Close the region file, delete, define and load the customer master KSDS, and
+  # reopen the region file.
+  CUSTFILE:
+    source: app/jcl/CUSTFILE.jcl
+    steps:
+    # [app/jcl/CUSTFILE.jcl:22-27]
+    # SDSF CEMT commands are a no-op RC 0 here (GAP-STB-008).
+    - step: CLCIFIL
+      kind: sdsf
+      dd:
+        ISFOUT: {sysout: '*'}
+        CMDOUT: {sysout: '*'}
+      params:
+        isfin:
+        - " /F CICSAWSA,'CEMT SET FIL(CUSTDAT ) CLO'"
+    # [app/jcl/CUSTFILE.jcl:32-38]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DELETE AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS -"
+        - "          CLUSTER"
+        - "   IF MAXCC LE 08 THEN SET MAXCC = 0"
+    # [app/jcl/CUSTFILE.jcl:43-60]
+    - step: STEP10
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE CLUSTER (NAME(AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS) -"
+        - "          CYLINDERS(1 5) -"
+        - "          VOLUMES(AWSHJ1 -"
+        - "          ) -"
+        - "          KEYS(9 0) -"
+        - "          RECORDSIZE(500 500) -"
+        - "          SHAREOPTIONS(2 3) -"
+        - "          ERASE -"
+        - "          INDEXED -"
+        - "          ) -"
+        - "          DATA (NAME(AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS.DATA) -"
+        - "          ) -"
+        - "          INDEX (NAME(AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS.INDEX) -"
+        - "          )"
+    # [app/jcl/CUSTFILE.jcl:64-72]
+    - step: STEP15
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+        CUSTDATA: {dsn: AWS.M2.CARDDEMO.CUSTDATA.PS, logical: CUSTDATA-PS, disp: [SHR]}
+        CUSTVSAM: {dsn: AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS, logical: CUSTDATA, disp: [SHR]}
+      params:
+        sysin:
+        - "   REPRO INFILE(CUSTDATA) OUTFILE(CUSTVSAM)"
+    # [app/jcl/CUSTFILE.jcl:76-81]
+    # SDSF CEMT commands are a no-op RC 0 here (GAP-STB-008).
+    - step: OPCIFIL
+      kind: sdsf
+      dd:
+        ISFOUT: {sysout: '*'}
+        CMDOUT: {sysout: '*'}
+      params:
+        isfin:
+        - " /F CICSAWSA,'CEMT SET FIL(CUSTDAT ) OPE'"
+
+  # Define the DALYREJS GDG base.
+  DALYREJS:
+    source: app/jcl/DALYREJS.jcl
+    steps:
+    # [app/jcl/DALYREJS.jcl:21-29]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE GENERATIONDATAGROUP -"
+        - "   (NAME(AWS.M2.CARDDEMO.DALYREJS) -"
+        - "    LIMIT(5) -"
+        - "    SCRATCH -"
+        - "   )"
+
+  # Delete AWS.CCDA.CUSTDATA.CLUSTER and define AWS.CUSTDATA.CLUSTER, in two steps both
+  # named STEP05; neither name is a CARDDEMO dataset (GAP-DEF-009).
+  DEFCUST:
+    source: app/jcl/DEFCUST.jcl
+    steps:
+    # [app/jcl/DEFCUST.jcl:22-27]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DELETE AWS.CCDA.CUSTDATA.CLUSTER -"
+        - "          CLUSTER"
+    # [app/jcl/DEFCUST.jcl:32-47]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE CLUSTER (NAME(AWS.CUSTDATA.CLUSTER) -"
+        - "          CYLINDERS(1 5) -"
+        - "          KEYS(10 0) -"
+        - "          RECORDSIZE(500 500) -"
+        - "          SHAREOPTIONS(1 4) -"
+        - "          ERASE -"
+        - "          INDEXED -"
+        - "          ) -"
+        - "          DATA (NAME(AWS.CUSTDATA.CLUSTER.DATA) -"
+        - "          ) -"
+        - "          INDEX (NAME(AWS.CUSTDATA.CLUSTER.INDEX) -"
+        - "          )"
+
+  # Define six GDG bases; IF LASTCC=12 tolerates a base that already exists.
+  DEFGDGB:
+    source: app/jcl/DEFGDGB.jcl
+    steps:
+    # [app/jcl/DEFGDGB.jcl:21-60]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE GENERATIONDATAGROUP -"
+        - "   (NAME(AWS.M2.CARDDEMO.TRANSACT.BKUP) -"
+        - "    LIMIT(5) -"
+        - "    SCRATCH -"
+        - "   )"
+        - "   IF LASTCC=12 THEN SET MAXCC=0"
+        - "   DEFINE GENERATIONDATAGROUP -"
+        - "   (NAME(AWS.M2.CARDDEMO.TRANSACT.DALY) -"
+        - "    LIMIT(5) -"
+        - "    SCRATCH -"
+        - "   )"
+        - "   IF LASTCC=12 THEN SET MAXCC=0"
+        - "   DEFINE GENERATIONDATAGROUP -"
+        - "   (NAME(AWS.M2.CARDDEMO.TRANREPT) -"
+        - "    LIMIT(5) -"
+        - "    SCRATCH -"
+        - "   )"
+        - "   IF LASTCC=12 THEN SET MAXCC=0"
+        - "   DEFINE GENERATIONDATAGROUP -"
+        - "   (NAME(AWS.M2.CARDDEMO.TCATBALF.BKUP) -"
+        - "    LIMIT(5) -"
+        - "    SCRATCH -"
+        - "   )"
+        - "   IF LASTCC=12 THEN SET MAXCC=0"
+        - "   DEFINE GENERATIONDATAGROUP -"
+        - "   (NAME(AWS.M2.CARDDEMO.SYSTRAN) -"
+        - "    LIMIT(5) -"
+        - "    SCRATCH -"
+        - "   )"
+        - "   IF LASTCC=12 THEN SET MAXCC=0"
+        - "   DEFINE GENERATIONDATAGROUP -"
+        - "   (NAME(AWS.M2.CARDDEMO.TRANSACT.COMBINED) -"
+        - "    LIMIT(5) -"
+        - "    SCRATCH -"
+        - "   )"
+        - "   IF LASTCC=12 THEN SET MAXCC=0"
+
+  # Delete, define and load the disclosure group KSDS from DISCGRP.PS.
+  DISCGRP:
+    source: app/jcl/DISCGRP.jcl
+    steps:
+    # [app/jcl/DISCGRP.jcl:22-28]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DELETE AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS -"
+        - "          CLUSTER"
+        - "   SET    MAXCC = 0"
+    # [app/jcl/DISCGRP.jcl:33-50]
+    - step: STEP10
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE CLUSTER (NAME(AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS) -"
+        - "          CYLINDERS(1 5) -"
+        - "          VOLUMES(AWSHJ1 -"
+        - "          ) -"
+        - "          KEYS(16 0) -"
+        - "          RECORDSIZE(50 50) -"
+        - "          SHAREOPTIONS(2 3) -"
+        - "          ERASE -"
+        - "          INDEXED -"
+        - "          ) -"
+        - "          DATA (NAME(AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS.DATA) -"
+        - "          ) -"
+        - "          INDEX (NAME(AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS.INDEX) -"
+        - "          )"
+    # [app/jcl/DISCGRP.jcl:54-62]
+    - step: STEP15
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+        DISCGRP: {dsn: AWS.M2.CARDDEMO.DISCGRP.PS, logical: DISCGRP-PS, disp: [SHR]}
+        DISCVSAM: {dsn: AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS, logical: DISCGRP, disp: [OLD]}
+      params:
+        sysin:
+        - "   REPRO INFILE(DISCGRP) OUTFILE(DISCVSAM)"
+
+  # Write the 10 in-stream users to USRSEC.PS and load them into the USRSEC KSDS.
+  DUSRSECJ:
+    source: app/jcl/DUSRSECJ.jcl
+    steps:
+    # [app/jcl/DUSRSECJ.jcl:23-26]
+    - step: PREDEL
+      kind: iefbr14
+      dd:
+        DD01: {dsn: AWS.M2.CARDDEMO.USRSEC.PS, logical: USRSEC-PS, disp: [MOD, DELETE, DELETE]}
+    # [app/jcl/DUSRSECJ.jcl:32-52]
+    # Each in-stream user line is padded with spaces to LRECL=80.
+    - step: STEP01
+      kind: iebgener
+      dd:
+        SYSUT1:
+          instream:
+          - "ADMIN001MARGARET            GOLD                PASSWORDA"
+          - "ADMIN002RUSSELL             RUSSELL             PASSWORDA"
+          - "ADMIN003RAYMOND             WHITMORE            PASSWORDA"
+          - "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA"
+          - "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA"
+          - "USER0001LAWRENCE            THOMAS              PASSWORDU"
+          - "USER0002AJITH               KUMAR               PASSWORDU"
+          - "USER0003LAURITZ             ALME                PASSWORDU"
+          - "USER0004AVERARDO            MAZZI               PASSWORDU"
+          - "USER0005LEE                 TING                PASSWORDU"
+        SYSUT2: {dsn: AWS.M2.CARDDEMO.USRSEC.PS, logical: USRSEC-PS, disp: [NEW, CATLG, DELETE], dcb: {lrecl: 80, recfm: FB}}
+        SYSPRINT: {sysout: '*'}
+        SYSIN: {dummy: true}
+    # [app/jcl/DUSRSECJ.jcl:58-74]
+    - step: STEP02
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - " DELETE                  AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS"
+        - " SET       MAXCC = 0"
+        - " DEFINE    CLUSTER (NAME(AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS)    -"
+        - "                    KEYS(8,0)                                 -"
+        - "                    RECORDSIZE(80,80)                         -"
+        - "                    REUSE                                     -"
+        - "                    INDEXED                                   -"
+        - "                    TRACKS(45,15)                             -"
+        - "                    FREESPACE(10,15)                          -"
+        - "                    CISZ(8192))                               -"
+        - "           DATA    (NAME(AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS.DAT)) -"
+        - "           INDEX   (NAME(AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS.IDX))"
+    # [app/jcl/DUSRSECJ.jcl:80-88]
+    - step: STEP03
+      kind: idcams
+      dd:
+        IN: {dsn: AWS.M2.CARDDEMO.USRSEC.PS, logical: USRSEC-PS, disp: [SHR]}
+        OUT: {dsn: AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS, logical: USRSEC, disp: [SHR]}
+        SYSOUT: {sysout: '*'}
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "  REPRO INFILE(IN) OUTFILE(OUT)"
+
+  # Compute monthly interest with CBACT04C, writing the interest transactions to
+  # SYSTRAN(+1).
+  INTCALC:
+    source: app/jcl/INTCALC.jcl
+    steps:
+    # [app/jcl/INTCALC.jcl:22-41]
+    # CBACT04C has no SELECT for XREFFIL1 and never opens the path
+    # [app/cbl/CBACT04C.cbl:28-56].
+    - step: STEP15
+      kind: program
+      program: CBACT04C
+      parm: '2022071800'
+      dd:
+        STEPLIB: {dsn: AWS.M2.CARDDEMO.LOADLIB, disp: [SHR]}
+        SYSPRINT: {sysout: '*'}
+        SYSOUT: {sysout: '*'}
+        TCATBALF: {dsn: AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS, logical: TCATBALF, disp: [SHR]}
+        XREFFILE: {dsn: AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS, logical: CARDXREF, disp: [SHR]}
+        XREFFIL1: {dsn: AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH, aix_path: CXACAIX, disp: [SHR]}
+        ACCTFILE: {dsn: AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS, logical: ACCTDATA, disp: [SHR]}
+        DISCGRP: {dsn: AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS, logical: DISCGRP, disp: [SHR]}
+        TRANSACT: {dsn: AWS.M2.CARDDEMO.SYSTRAN, gdg: "+1", logical: SYSTRAN, disp: [NEW, CATLG, DELETE], dcb: {lrecl: 350, recfm: F}}
+
+  # Post the daily transactions with CBTRN02C, writing rejects to DALYREJS(+1).
+  POSTTRAN:
+    source: app/jcl/POSTTRAN.jcl
+    steps:
+    # [app/jcl/POSTTRAN.jcl:23-42]
+    - step: STEP15
+      kind: program
+      program: CBTRN02C
+      dd:
+        STEPLIB: {dsn: AWS.M2.CARDDEMO.LOADLIB, disp: [SHR]}
+        SYSPRINT: {sysout: '*'}
+        SYSOUT: {sysout: '*'}
+        TRANFILE: {dsn: AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, logical: TRANSACT, disp: [SHR]}
+        DALYTRAN: {dsn: AWS.M2.CARDDEMO.DALYTRAN.PS, logical: DALYTRAN, disp: [SHR]}
+        XREFFILE: {dsn: AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS, logical: CARDXREF, disp: [SHR]}
+        DALYREJS: {dsn: AWS.M2.CARDDEMO.DALYREJS, gdg: "+1", logical: DALYREJS, disp: [NEW, CATLG, DELETE], dcb: {lrecl: 430, recfm: F}}
+        ACCTFILE: {dsn: AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS, logical: ACCTDATA, disp: [SHR]}
+        TCATBALF: {dsn: AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS, logical: TCATBALF, disp: [SHR]}
+
+  # Back up TCATBALF to TCATBALF.BKUP(+1) and print it sorted and edited to TCATBALF.REPT.
+  PRTCATBL:
+    source: app/jcl/PRTCATBL.jcl
+    procs: [app/proc/REPROC.prc]
+    jcllib: [AWS.M2.CARDDEMO.PROC]
+    steps:
+    # [app/jcl/PRTCATBL.jcl:21-25]
+    - step: DELDEF
+      kind: iefbr14
+      dd:
+        THEFILE: {dsn: AWS.M2.CARDDEMO.TCATBALF.REPT, logical: TCATBALF-REPT, disp: [MOD, DELETE]}
+    # Step PRC001 of procedure REPROC [app/proc/REPROC.prc:21-28], called by
+    # [app/jcl/PRTCATBL.jcl:29-39] with FILEIN and FILEOUT overridden.
+    - step: STEP05R.PRC001
+      kind: idcams
+      proc: {name: REPROC, source: app/proc/REPROC.prc, procstep: PRC001, symbols: {CNTLLIB: AWS.M2.CARDDEMO.CNTL}}
+      dd:
+        SYSPRINT: {sysout: '*'}
+        FILEIN: {dsn: AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS, logical: TCATBALF, disp: [SHR]}
+        FILEOUT: {dsn: AWS.M2.CARDDEMO.TCATBALF.BKUP, gdg: "+1", logical: TCATBALF-BKUP, disp: [NEW, CATLG, DELETE], dcb: {lrecl: 50, recfm: FB}}
+        SYSIN: {dsn: AWS.M2.CARDDEMO.CNTL, disp: [SHR], member: {name: REPROCT, source: app/ctl/REPROCT.ctl}}
+    # [app/jcl/PRTCATBL.jcl:43-63]
+    # The OUTREC builds 41 bytes for LRECL=40; the SORT replacement decides the
+    # truncation (GAP-STB-006).
+    - step: STEP10R
+      kind: sort
+      dd:
+        SORTIN: {dsn: AWS.M2.CARDDEMO.TCATBALF.BKUP, gdg: "+1", logical: TCATBALF-BKUP, disp: [SHR]}
+        SYSOUT: {sysout: '*'}
+        SORTOUT: {dsn: AWS.M2.CARDDEMO.TCATBALF.REPT, logical: TCATBALF-REPT, disp: [NEW, CATLG, DELETE], dcb: {lrecl: 40, recfm: FB}}
+      params:
+        sysin:
+        - " SORT FIELDS=(TRANCAT-ACCT-ID,A,TRANCAT-TYPE-CD,A,TRANCAT-CD,A)"
+        - " OUTREC FIELDS=(TRANCAT-ACCT-ID,X,"
+        - "     TRANCAT-TYPE-CD,X,"
+        - "     TRANCAT-CD,X,"
+        - "     TRAN-CAT-BAL,EDIT=(TTTTTTTTT.TT),9X)"
+        symnames:
+        - "TRANCAT-ACCT-ID,1,11,ZD"
+        - "TRANCAT-TYPE-CD,12,2,CH"
+        - "TRANCAT-CD,14,4,ZD"
+        - "TRAN-CAT-BAL,18,11,ZD"
+
+  # List the account master with CBACT01C.
+  READACCT:
+    source: app/jcl/READACCT.jcl
+    steps:
+    # [app/jcl/READACCT.jcl:22-28]
+    - step: STEP05
+      kind: program
+      program: CBACT01C
+      dd:
+        STEPLIB: {dsn: AWS.M2.CARDDEMO.LOADLIB, disp: [SHR]}
+        ACCTFILE: {dsn: AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS, logical: ACCTDATA, disp: [SHR]}
+        SYSOUT: {sysout: '*'}
+        SYSPRINT: {sysout: '*'}
+
+  # List the card master with CBACT02C.
+  READCARD:
+    source: app/jcl/READCARD.jcl
+    steps:
+    # [app/jcl/READCARD.jcl:22-28]
+    - step: STEP05
+      kind: program
+      program: CBACT02C
+      dd:
+        STEPLIB: {dsn: AWS.M2.CARDDEMO.LOADLIB, disp: [SHR]}
+        CARDFILE: {dsn: AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS, logical: CARDDATA, disp: [SHR]}
+        SYSOUT: {sysout: '*'}
+        SYSPRINT: {sysout: '*'}
+
+  # List the customer master with CBCUS01C.
+  READCUST:
+    source: app/jcl/READCUST.jcl
+    steps:
+    # [app/jcl/READCUST.jcl:6-12]
+    - step: STEP05
+      kind: program
+      program: CBCUS01C
+      dd:
+        STEPLIB: {dsn: AWS.M2.CARDDEMO.LOADLIB, disp: [SHR]}
+        CUSTFILE: {dsn: AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS, logical: CUSTDATA, disp: [SHR]}
+        SYSOUT: {sysout: '*'}
+        SYSPRINT: {sysout: '*'}
+
+  # List the card cross-reference with CBACT03C.
+  READXREF:
+    source: app/jcl/READXREF.jcl
+    steps:
+    # [app/jcl/READXREF.jcl:22-28]
+    - step: STEP05
+      kind: program
+      program: CBACT03C
+      dd:
+        STEPLIB: {dsn: AWS.M2.CARDDEMO.LOADLIB, disp: [SHR]}
+        XREFFILE: {dsn: AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS, logical: CARDXREF, disp: [SHR]}
+        SYSOUT: {sysout: '*'}
+        SYSPRINT: {sysout: '*'}
+
+  # Define the TRANREPT GDG base with LIMIT(10), where LISTCAT and DEFGDGB give 5.
+  REPTFILE:
+    source: app/jcl/REPTFILE.jcl
+    steps:
+    # [app/jcl/REPTFILE.jcl:22-29]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE GENERATIONDATAGROUP -"
+        - "   (NAME(AWS.M2.CARDDEMO.TRANREPT) -"
+        - "    LIMIT(10) -"
+        - "   )"
+
+  # Delete, define and load the transaction category balance KSDS from TCATBALF.PS.
+  TCATBALF:
+    source: app/jcl/TCATBALF.jcl
+    steps:
+    # [app/jcl/TCATBALF.jcl:22-28]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DELETE AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS -"
+        - "          CLUSTER"
+        - "   SET    MAXCC = 0"
+    # [app/jcl/TCATBALF.jcl:33-50]
+    - step: STEP10
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE CLUSTER (NAME(AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS) -"
+        - "          CYLINDERS(1 5) -"
+        - "          VOLUMES(AWSHJ1 -"
+        - "          ) -"
+        - "          KEYS(17 0) -"
+        - "          RECORDSIZE(50 50) -"
+        - "          SHAREOPTIONS(2 3) -"
+        - "          ERASE -"
+        - "          INDEXED -"
+        - "          ) -"
+        - "          DATA (NAME(AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS.DATA) -"
+        - "          ) -"
+        - "          INDEX (NAME(AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS.INDEX) -"
+        - "          )"
+    # [app/jcl/TCATBALF.jcl:54-62]
+    - step: STEP15
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+        TCATBAL: {dsn: AWS.M2.CARDDEMO.TCATBALF.PS, logical: TCATBALF-PS, disp: [SHR]}
+        TCATBALV: {dsn: AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS, logical: TCATBALF, disp: [OLD]}
+      params:
+        sysin:
+        - "   REPRO INFILE(TCATBAL) OUTFILE(TCATBALV)"
+
+  # Back up TRANSACT to TRANSACT.BKUP(+1), then delete and redefine it empty.
+  TRANBKP:
+    source: app/jcl/TRANBKP.jcl
+    procs: [app/proc/REPROC.prc]
+    jcllib: [AWS.M2.CARDDEMO.PROC]
+    steps:
+    # Step PRC001 of procedure REPROC [app/proc/REPROC.prc:21-28], called by
+    # [app/jcl/TRANBKP.jcl:23-33] with FILEIN and FILEOUT overridden.
+    - step: STEP05R.PRC001
+      kind: idcams
+      proc: {name: REPROC, source: app/proc/REPROC.prc, procstep: PRC001, symbols: {CNTLLIB: AWS.M2.CARDDEMO.CNTL}}
+      dd:
+        SYSPRINT: {sysout: '*'}
+        FILEIN: {dsn: AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, logical: TRANSACT, disp: [SHR]}
+        FILEOUT: {dsn: AWS.M2.CARDDEMO.TRANSACT.BKUP, gdg: "+1", logical: TRANSACT-BKUP, disp: [NEW, CATLG, DELETE], dcb: {lrecl: 350, recfm: FB}}
+        SYSIN: {dsn: AWS.M2.CARDDEMO.CNTL, disp: [SHR], member: {name: REPROCT, source: app/ctl/REPROCT.ctl}}
+    # [app/jcl/TRANBKP.jcl:37-46]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DELETE AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS -"
+        - "          CLUSTER"
+        - "   IF MAXCC LE 08 THEN SET MAXCC = 0"
+        - "   DELETE AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX -"
+        - "          ALTERNATEINDEX"
+        - "   IF MAXCC LE 08 THEN SET MAXCC = 0"
+    # [app/jcl/TRANBKP.jcl:51-68]
+    # COND=(4,LT) is recorded, not evaluated (JCL-semantics item, unikix only).
+    - step: STEP10
+      kind: idcams
+      cond: '(4,LT)'
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE CLUSTER (NAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS) -"
+        - "          CYLINDERS(1 5) -"
+        - "          VOLUMES(AWSHJ1 -"
+        - "          ) -"
+        - "          KEYS(16 0) -"
+        - "          RECORDSIZE(350 350) -"
+        - "          SHAREOPTIONS(2 3) -"
+        - "          ERASE -"
+        - "          INDEXED -"
+        - "          ) -"
+        - "          DATA (NAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS.DATA) -"
+        - "          ) -"
+        - "          INDEX (NAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS.INDEX) -"
+        - "          )"
+
+  # Delete, define and load the transaction category KSDS from TRANCATG.PS.
+  TRANCATG:
+    source: app/jcl/TRANCATG.jcl
+    steps:
+    # [app/jcl/TRANCATG.jcl:22-28]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DELETE AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS -"
+        - "          CLUSTER"
+        - "   SET    MAXCC = 0"
+    # [app/jcl/TRANCATG.jcl:33-50]
+    - step: STEP10
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE CLUSTER (NAME(AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS) -"
+        - "          CYLINDERS(1 5) -"
+        - "          VOLUMES(AWSHJ1 -"
+        - "          ) -"
+        - "          KEYS(6 0) -"
+        - "          RECORDSIZE(60 60) -"
+        - "          SHAREOPTIONS(2 3) -"
+        - "          ERASE -"
+        - "          INDEXED -"
+        - "          ) -"
+        - "          DATA (NAME(AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS.DATA) -"
+        - "          ) -"
+        - "          INDEX (NAME(AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS.INDEX) -"
+        - "          )"
+    # [app/jcl/TRANCATG.jcl:54-62]
+    - step: STEP15
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+        TRANCATG: {dsn: AWS.M2.CARDDEMO.TRANCATG.PS, logical: TRANCATG-PS, disp: [SHR]}
+        TCATVSAM: {dsn: AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS, logical: TRANCATG, disp: [OLD]}
+      params:
+        sysin:
+        - "   REPRO INFILE(TRANCATG) OUTFILE(TCATVSAM)"
+
+  # Close the region files, delete, define and seed the TRANSACT KSDS from
+  # DALYTRAN.PS.INIT, build its processing-timestamp alternate index and path, and
+  # reopen the region files.
+  TRANFILE:
+    source: app/jcl/TRANFILE.jcl
+    steps:
+    # [app/jcl/TRANFILE.jcl:22-28]
+    # SDSF CEMT commands are a no-op RC 0 here (GAP-STB-008).
+    - step: CLCIFIL
+      kind: sdsf
+      dd:
+        ISFOUT: {sysout: '*'}
+        CMDOUT: {sysout: '*'}
+      params:
+        isfin:
+        - " /F CICSAWSA,'CEMT SET FIL(TRANSACT ) CLO'"
+        - " /F CICSAWSA,'CEMT SET FIL(CXACAIX ) CLO'"
+    # [app/jcl/TRANFILE.jcl:32-41]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DELETE AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS -"
+        - "          CLUSTER"
+        - "   IF MAXCC LE 08 THEN SET MAXCC = 0"
+        - "   DELETE AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX -"
+        - "          ALTERNATEINDEX"
+        - "   IF MAXCC LE 08 THEN SET MAXCC = 0"
+    # [app/jcl/TRANFILE.jcl:46-63]
+    - step: STEP10
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE CLUSTER (NAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS) -"
+        - "          CYLINDERS(1 5) -"
+        - "          VOLUMES(AWSHJ1 -"
+        - "          ) -"
+        - "          KEYS(16 0) -"
+        - "          RECORDSIZE(350 350) -"
+        - "          SHAREOPTIONS(2 3) -"
+        - "          ERASE -"
+        - "          INDEXED -"
+        - "          ) -"
+        - "          DATA (NAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS.DATA) -"
+        - "          ) -"
+        - "          INDEX (NAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS.INDEX) -"
+        - "          )"
+    # [app/jcl/TRANFILE.jcl:67-75]
+    - step: STEP15
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+        TRANSACT: {dsn: AWS.M2.CARDDEMO.DALYTRAN.PS.INIT, logical: TRANSACT-INIT, disp: [SHR]}
+        TRANVSAM: {dsn: AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, logical: TRANSACT, disp: [SHR]}
+      params:
+        sysin:
+        - "   REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM)"
+    # [app/jcl/TRANFILE.jcl:79-92]
+    - step: STEP20
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE ALTERNATEINDEX (NAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX)-"
+        - "   RELATE(AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS)                    -"
+        - "   KEYS(26 304)                                                  -"
+        - "   NONUNIQUEKEY                                                  -"
+        - "   UPGRADE                                                       -"
+        - "   RECORDSIZE(350,350)                                           -"
+        - "   VOLUMES(AWSHJ1)                                               -"
+        - "   CYLINDERS(5,1))                                               -"
+        - "   DATA (NAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX.DATA))           -"
+        - "   INDEX (NAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX.INDEX))"
+    # [app/jcl/TRANFILE.jcl:96-102]
+    - step: STEP25
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "  DEFINE PATH                                           -"
+        - "   (NAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX.PATH)        -"
+        - "    PATHENTRY(AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX))"
+    # [app/jcl/TRANFILE.jcl:106-112]
+    - step: STEP30
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   BLDINDEX                                                      -"
+        - "   INDATASET(AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS)                 -"
+        - "   OUTDATASET(AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX)"
+    # [app/jcl/TRANFILE.jcl:116-122]
+    # SDSF CEMT commands are a no-op RC 0 here (GAP-STB-008).
+    - step: OPCIFIL
+      kind: sdsf
+      dd:
+        ISFOUT: {sysout: '*'}
+        CMDOUT: {sysout: '*'}
+      params:
+        isfin:
+        - " /F CICSAWSA,'CEMT SET FIL(TRANSACT ) OPE'"
+        - " /F CICSAWSA,'CEMT SET FIL(CXACAIX ) OPE'"
+
+  # Build the processing-timestamp alternate index and path of TRANSACT.
+  TRANIDX:
+    source: app/jcl/TRANIDX.jcl
+    steps:
+    # [app/jcl/TRANIDX.jcl:22-35]
+    - step: STEP20
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE ALTERNATEINDEX (NAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX)-"
+        - "   RELATE(AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS)                    -"
+        - "   KEYS(26 304)                                                  -"
+        - "   NONUNIQUEKEY                                                  -"
+        - "   UPGRADE                                                       -"
+        - "   RECORDSIZE(350,350)                                           -"
+        - "   VOLUMES(AWSHJ1)                                               -"
+        - "   CYLINDERS(5,1))                                               -"
+        - "   DATA (NAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX.DATA))           -"
+        - "   INDEX (NAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX.INDEX))"
+    # [app/jcl/TRANIDX.jcl:39-45]
+    - step: STEP25
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "  DEFINE PATH                                           -"
+        - "   (NAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX.PATH)        -"
+        - "    PATHENTRY(AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX))"
+    # [app/jcl/TRANIDX.jcl:49-55]
+    - step: STEP30
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   BLDINDEX                                                      -"
+        - "   INDATASET(AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS)                 -"
+        - "   OUTDATASET(AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX)"
+
+  # Back up TRANSACT, select and sort the window's records by card, and report them
+  # with CBTRN03C. The REPROC step and the SORT step are both named STEP05R
+  # (GAP-DEF-009).
+  TRANREPT:
+    source: app/jcl/TRANREPT.jcl
+    procs: [app/proc/REPROC.prc]
+    jcllib: [AWS.M2.CARDDEMO.PROC]
+    steps:
+    # Step PRC001 of procedure REPROC [app/proc/REPROC.prc:21-28], called by
+    # [app/jcl/TRANREPT.jcl:23-33] with FILEIN and FILEOUT overridden.
+    - step: STEP05R.PRC001
+      kind: idcams
+      proc: {name: REPROC, source: app/proc/REPROC.prc, procstep: PRC001, symbols: {CNTLLIB: AWS.M2.CARDDEMO.CNTL}}
+      dd:
+        SYSPRINT: {sysout: '*'}
+        FILEIN: {dsn: AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, logical: TRANSACT, disp: [SHR]}
+        FILEOUT: {dsn: AWS.M2.CARDDEMO.TRANSACT.BKUP, gdg: "+1", logical: TRANSACT-BKUP, disp: [NEW, CATLG, DELETE], dcb: {lrecl: 350, recfm: FB}}
+        SYSIN: {dsn: AWS.M2.CARDDEMO.CNTL, disp: [SHR], member: {name: REPROCT, source: app/ctl/REPROCT.ctl}}
+    # [app/jcl/TRANREPT.jcl:37-55]
+    - step: STEP05R
+      kind: sort
+      dd:
+        SORTIN: {dsn: AWS.M2.CARDDEMO.TRANSACT.BKUP, gdg: "+1", logical: TRANSACT-BKUP, disp: [SHR]}
+        SYSOUT: {sysout: '*'}
+        SORTOUT: {dsn: AWS.M2.CARDDEMO.TRANSACT.DALY, gdg: "+1", logical: TRANSACT-DALY, disp: [NEW, CATLG, DELETE], dcb: {refer: SORTIN}}
+      params:
+        sysin:
+        - " SORT FIELDS=(TRAN-CARD-NUM,A)"
+        - " INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,"
+        - "         TRAN-PROC-DT,LE,PARM-END-DATE)"
+        symnames:
+        - "TRAN-CARD-NUM,263,16,ZD"
+        - "TRAN-PROC-DT,305,10,CH"
+        - "PARM-START-DATE,C'2022-01-01'                                      //Date"
+        - "PARM-END-DATE,C'2022-07-06'                                        //Date"
+    # [app/jcl/TRANREPT.jcl:59-80]
+    # No job or data file creates AWS.M2.CARDDEMO.DATEPARM; scenarios supply it
+    # (GAP-MIS-001).
+    - step: STEP10R
+      kind: program
+      program: CBTRN03C
+      dd:
+        STEPLIB: {dsn: AWS.M2.CARDDEMO.LOADLIB, disp: [SHR]}
+        SYSOUT: {sysout: '*'}
+        SYSPRINT: {sysout: '*'}
+        TRANFILE: {dsn: AWS.M2.CARDDEMO.TRANSACT.DALY, gdg: "+1", logical: TRANSACT-DALY, disp: [SHR]}
+        CARDXREF: {dsn: AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS, logical: CARDXREF, disp: [SHR]}
+        TRANTYPE: {dsn: AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS, logical: TRANTYPE, disp: [SHR]}
+        TRANCATG: {dsn: AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS, logical: TRANCATG, disp: [SHR]}
+        DATEPARM: {dsn: AWS.M2.CARDDEMO.DATEPARM, logical: DATEPARM, disp: [SHR]}
+        TRANREPT: {dsn: AWS.M2.CARDDEMO.TRANREPT, gdg: "+1", logical: TRANREPT, disp: [NEW, CATLG, DELETE], dcb: {lrecl: 133, recfm: FB}}
+
+  # Delete, define and load the transaction type KSDS from TRANTYPE.PS.
+  TRANTYPE:
+    source: app/jcl/TRANTYPE.jcl
+    steps:
+    # [app/jcl/TRANTYPE.jcl:22-28]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DELETE AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS -"
+        - "          CLUSTER"
+        - "   SET    MAXCC = 0"
+    # [app/jcl/TRANTYPE.jcl:33-50]
+    - step: STEP10
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE CLUSTER (NAME(AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS) -"
+        - "          CYLINDERS(1 5) -"
+        - "          VOLUMES(AWSHJ1 -"
+        - "          ) -"
+        - "          KEYS(2 0) -"
+        - "          RECORDSIZE(60 60) -"
+        - "          SHAREOPTIONS(1 4) -"
+        - "          ERASE -"
+        - "          INDEXED -"
+        - "          ) -"
+        - "          DATA (NAME(AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS.DATA) -"
+        - "          ) -"
+        - "          INDEX (NAME(AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS.INDEX) -"
+        - "          )"
+    # [app/jcl/TRANTYPE.jcl:54-62]
+    - step: STEP15
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+        TRANTYPE: {dsn: AWS.M2.CARDDEMO.TRANTYPE.PS, logical: TRANTYPE-PS, disp: [SHR]}
+        TTYPVSAM: {dsn: AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS, logical: TRANTYPE, disp: [OLD]}
+      params:
+        sysin:
+        - "   REPRO INFILE(TRANTYPE) OUTFILE(TTYPVSAM)"
+
+  # The job CORPT00C writes to the JOBS queue for a report request: //STEP10 EXEC
+  # PROC=TRANREPT with in-stream overrides of STEP05R.SYMNAMES and STEP10R.DATEPARM.
+  # The member TRANREPT is found by name although its first statement reads
+  # //REPROC PROC [app/proc/TRANREPT.prc:1] (GAP-DEF-008; proc resolution is verified
+  # only on unikix). {{DATEPARM_START}} and {{DATEPARM_END}} stand in the fields where
+  # CORPT00C moves the report's start and end dates [app/cbl/CORPT00C.cbl:106,111,118,120]
+  # [app/cbl/CORPT00C.cbl:220-253,429-432]; jobs.py substitutes them from the scenario's
+  # DATEPARM (YYYY-MM-DD YYYY-MM-DD) before the steps run.
+  TRNRPT00:
+    source: "app/cbl/CORPT00C.cbl:84-127"
+    procs: [app/proc/TRANREPT.prc, app/proc/REPROC.prc]
+    jcllib: [AWS.M2.CARDDEMO.PROC]
+    steps:
+    # Step PRC001 of procedure REPROC [app/proc/REPROC.prc:21-28], called by
+    # [app/proc/TRANREPT.prc:21-31] with FILEIN and FILEOUT overridden, within
+    # [app/cbl/CORPT00C.cbl:94].
+    - step: STEP10.STEP01R.PRC001
+      kind: idcams
+      proc: {name: REPROC, source: app/proc/REPROC.prc, procstep: PRC001, symbols: {CNTLLIB: AWS.M2.CARDDEMO.CNTL}}
+      dd:
+        SYSPRINT: {sysout: '*'}
+        FILEIN: {dsn: AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, logical: TRANSACT, disp: [SHR]}
+        FILEOUT: {dsn: AWS.M2.CARDDEMO.TRANSACT.BKUP, gdg: "+1", logical: TRANSACT-BKUP, disp: [NEW, CATLG, DELETE], dcb: {lrecl: 350, recfm: FB}}
+        SYSIN: {dsn: AWS.M2.CARDDEMO.CNTL, disp: [SHR], member: {name: REPROCT, source: app/ctl/REPROCT.ctl}}
+    # Step STEP05R of procedure TRANREPT [app/proc/TRANREPT.prc:35-53], called by
+    # [app/cbl/CORPT00C.cbl:94]; SYMNAMES overridden in-stream [app/cbl/CORPT00C.cbl:98-114].
+    - step: STEP10.STEP05R
+      kind: sort
+      proc: {name: TRANREPT, source: app/proc/TRANREPT.prc, procstep: STEP05R, symbols: {}}
+      dd:
+        SORTIN: {dsn: AWS.M2.CARDDEMO.TRANSACT.BKUP, gdg: "+1", logical: TRANSACT-BKUP, disp: [SHR]}
+        SYSOUT: {sysout: '*'}
+        SORTOUT: {dsn: AWS.M2.CARDDEMO.TRANSACT.DALY, gdg: "+1", logical: TRANSACT-DALY, disp: [NEW, CATLG, DELETE], dcb: {refer: SORTIN}}
+      params:
+        sysin:
+        - " SORT FIELDS=(TRAN-CARD-NUM,A)"
+        - " INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,"
+        - "         TRAN-PROC-DT,LE,PARM-END-DATE)"
+        symnames:
+        - "TRAN-CARD-NUM,263,16,ZD"
+        - "TRAN-PROC-DT,305,10,CH"
+        - "PARM-START-DATE,C'{{DATEPARM_START}}'"
+        - "PARM-END-DATE,C'{{DATEPARM_END}}'"
+    # Step STEP10R of procedure TRANREPT [app/proc/TRANREPT.prc:57-78], called by
+    # [app/cbl/CORPT00C.cbl:94]; DATEPARM overridden in-stream [app/cbl/CORPT00C.cbl:116-123].
+    # The override replaces DSN=AWS.M2.CARDDEMO.DATEPARM, so the DD names no
+    # logical dataset.
+    - step: STEP10.STEP10R
+      kind: program
+      program: CBTRN03C
+      proc: {name: TRANREPT, source: app/proc/TRANREPT.prc, procstep: STEP10R, symbols: {}}
+      dd:
+        STEPLIB: {dsn: AWS.M2.CARDDEMO.LOADLIB, disp: [SHR]}
+        SYSOUT: {sysout: '*'}
+        SYSPRINT: {sysout: '*'}
+        TRANFILE: {dsn: AWS.M2.CARDDEMO.TRANSACT.DALY, gdg: "+1", logical: TRANSACT-DALY, disp: [SHR]}
+        CARDXREF: {dsn: AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS, logical: CARDXREF, disp: [SHR]}
+        TRANTYPE: {dsn: AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS, logical: TRANTYPE, disp: [SHR]}
+        TRANCATG: {dsn: AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS, logical: TRANCATG, disp: [SHR]}
+        DATEPARM:
+          instream:
+          - "{{DATEPARM_START}} {{DATEPARM_END}}"
+        TRANREPT: {dsn: AWS.M2.CARDDEMO.TRANREPT, gdg: "+1", logical: TRANREPT, disp: [NEW, CATLG, DELETE], dcb: {lrecl: 133, recfm: FB}}
+
+  # Delete, define and load the card cross-reference KSDS, build its account-id
+  # alternate index and path.
+  XREFFILE:
+    source: app/jcl/XREFFILE.jcl
+    steps:
+    # [app/jcl/XREFFILE.jcl:22-31]
+    - step: STEP05
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DELETE AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS -"
+        - "          CLUSTER"
+        - "   IF MAXCC LE 08 THEN SET MAXCC = 0"
+        - "   DELETE  AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX  -"
+        - "          ALTERNATEINDEX"
+        - "   IF MAXCC LE 08 THEN SET MAXCC = 0"
+    # [app/jcl/XREFFILE.jcl:36-53]
+    - step: STEP10
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE CLUSTER (NAME(AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS) -"
+        - "          CYLINDERS(1 5) -"
+        - "          VOLUMES(AWSHJ1 -"
+        - "          ) -"
+        - "          KEYS(16 0) -"
+        - "          RECORDSIZE(50 50) -"
+        - "          SHAREOPTIONS(2 3) -"
+        - "          ERASE -"
+        - "          INDEXED -"
+        - "          ) -"
+        - "          DATA (NAME(AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS.DATA) -"
+        - "          ) -"
+        - "          INDEX (NAME(AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS.INDEX) -"
+        - "          )"
+    # [app/jcl/XREFFILE.jcl:57-65]
+    - step: STEP15
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+        XREFDATA: {dsn: AWS.M2.CARDDEMO.CARDXREF.PS, logical: CARDXREF-PS, disp: [SHR]}
+        XREFVSAM: {dsn: AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS, logical: CARDXREF, disp: [SHR]}
+      params:
+        sysin:
+        - "   REPRO INFILE(XREFDATA) OUTFILE(XREFVSAM)"
+    # [app/jcl/XREFFILE.jcl:69-83]
+    # KEYS(11,25) is written with a comma: length 11 at offset 25.
+    - step: STEP20
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   DEFINE ALTERNATEINDEX (NAME(AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX)-"
+        - "   RELATE(AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS)                    -"
+        - "   KEYS(11,25)                                                   -"
+        - "   NONUNIQUEKEY                                                  -"
+        - "   UPGRADE                                                       -"
+        - "   RECORDSIZE(50,50)                                             -"
+        - "   FREESPACE(10,20)                                              -"
+        - "   VOLUMES(AWSHJ1)                                               -"
+        - "   CYLINDERS(5,1))                                               -"
+        - "   DATA (NAME(AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.DATA))           -"
+        - "   INDEX (NAME(AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.INDEX))"
+    # [app/jcl/XREFFILE.jcl:87-93]
+    - step: STEP25
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "  DEFINE PATH                                           -"
+        - "   (NAME(AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH)        -"
+        - "    PATHENTRY(AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX))"
+    # [app/jcl/XREFFILE.jcl:97-103]
+    - step: STEP30
+      kind: idcams
+      dd:
+        SYSPRINT: {sysout: '*'}
+      params:
+        sysin:
+        - "   BLDINDEX                                                      -"
+        - "   INDATASET(AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS)                 -"
+        - "   OUTDATASET(AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX)"
