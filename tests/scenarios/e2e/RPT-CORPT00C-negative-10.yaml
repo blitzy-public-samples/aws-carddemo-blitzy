@@ -1,0 +1,159 @@
+# A custom-range report request whose start year is '1-2-', the probe of the
+# start-year format check 'Start Date - Not a valid Year...'
+# [app/cbl/CORPT00C.cbl:347-353].
+#
+# Steps 1-2 reach the empty CORPT00 screen as RPT-CORPT00C-negative-04 does:
+# USER0001 signs on, COSGN00C routes the type-U user to COMEN01C, and option 9
+# transfers control to CORPT00C with CDEMO-PGM-CONTEXT zero, so CORPT00C sets
+# CDEMO-PGM-REENTER and sends CORPT0AO at LOW-VALUES with a blank ERRMSG
+# [app/cbl/CORPT00C.cbl:172-181,556-580] [app/cpy/COMEN02Y.cpy:74-78].
+#
+# Step 3 runs under CR00 [app/cbl/CORPT00C.cbl:199-202,585-591]. SDTYYYY is a
+# NUM field [app/bms/CORPT00.bms:149-154], so the terminal accepts '1-2-'
+# (digits, '.' and '-'). MONTHLY and YEARLY keep their blank INITIAL and CUSTOM
+# holds 'X', so the custom branch runs; no date part is empty
+# [app/cbl/CORPT00C.cbl:212-303].
+# - COMPUTE WS-NUM-9999 = FUNCTION NUMVAL-C(SDTYYYYI) then MOVE WS-NUM-9999 TO
+#   SDTYYYYI run before the year check [app/cbl/CORPT00C.cbl:313-315]. '1-2-'
+#   is no NUMVAL-C format: a digit follows the trailing sign. IBM leaves the
+#   value undefined for such an argument; the digits pinned, '0012', are what
+#   GnuCOBOL 3.2 returns (-12, stored unsigned). WS-NUM-9999 is an unsigned
+#   PIC 9999 [app/cbl/CORPT00C.cbl:75], so whatever NUMVAL-C returns, the MOVE
+#   leaves four digits in SDTYYYYI.
+# - SDTYYYYI IS NOT NUMERIC is therefore false and 'Start Date - Not a valid
+#   Year...' is not set; the month, day and end-date checks pass too
+#   [app/cbl/CORPT00C.cbl:305-379].
+# - CSUTLDTC gets '0012-01-01' with mask 'YYYY-MM-DD'. CEEDAYS supports
+#   1582-10-15 to 9999-12-31 and answers CEE2EH, severity 3, message 2513, for
+#   an earlier date; CORPT00C ignores message 2513, so the start date is
+#   accepted. Any year NUMVAL-C could make of '1-2-' lies before 1582. The end
+#   date 2022-07-06 is accepted with severity 0 [app/cbl/CORPT00C.cbl:381-426]
+#   [app/cbl/CSUTLDTC.cbl:61-70,116-124].
+# - With no error flag set, WS-REPORT-NAME becomes 'Custom' and
+#   SUBMIT-JOB-TO-INTRDR runs. CONFIRM was left blank, so STRING builds
+#   'Please confirm to print the Custom report...', the error flag is set and
+#   CORPT00 is sent; SEND-TRNRPT-SCREEN ends the task, so nothing is written to
+#   JOBS [app/cbl/CORPT00C.cbl:429-474,556-580].
+#
+# Expected values are derived from the source (no TPE region runs in CI).
+# CORPT0AO redefines CORPT0AI [app/cpy-bms/CORPT00.CPY:121], so the screen
+# shows the fields as NUMVAL-C rewrote them: SDTMM '01', SDTDD '01', SDTYYYY
+# '0012', EDTMM '07', EDTDD '06', EDTYYYY '2022'. An imported UniKix run whose
+# NUMVAL-C gives other digits for SDTYYYY replaces '0012' on import.
+id: RPT-CORPT00C-negative-10
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects main-menu option 9 (Transaction Reports) and, on
+  the CORPT00 screen (CR00), asks for a custom report from 01/01 to
+  07/06/2022 with the start year '1-2-', without confirming. NUMVAL-C cannot
+  turn '1-2-' into a valid
+  year, but the unsigned PIC 9999 it is stored through always gives
+  SDTYYYY four digits, pinned as '0012'. So 'Start Date - Not a valid
+  Year...' is not shown. CSUTLDTC sees a date before 1582, which CEEDAYS
+  rejects with message 2513, and CORPT00C ignores that message. The request
+  goes through and CORPT00C asks for confirmation with 'Please confirm to
+  print the Custom report...'. Whether the year message can be reached at all
+  is doubtful (GAP-UNC-013), so the outcome is pinned as observed.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the online-only copybooks CORPT00C copies, and the CSUTLDTC date
+# acceptance whose message 2513 decides the outcome. The confirmation message
+# itself is verified by its own CORPT00C scenario, and sign-on and the menu by
+# the SEC and MNU scenarios.
+inventory_ids:
+- INV-RPT-019  # CORPT00C message 'Start Date - Not a valid Year...' (rule), shown not to appear
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, where option 9 is entered
+- INV-RPT-002  # CORPT00 map, the empty screen and the rewritten request
+- INV-CFG-019  # CR00 transaction, under which the request is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes step 3 a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+- INV-UTL-003  # CSUTLDTC date acceptance for mask YYYY-MM-DD: the start date before 1582
+tags:
+- inferred-not-observed
+- observed-only
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# The year check is a message that no screen can show: the unsigned MOVE
+# before it always leaves four digits. GAP-UNC-013 is the open uncertain-purpose
+# entry for online message texts that cannot appear, so no second entry asks
+# the same question.
+- GAP-UNC-013
+- GAP-INF-001  # which dates CEEDAYS accepts is known only through the stub
+- GAP-MIS-010  # whether UniKix supplies CEEDAYS
+# The UniKix copy of CSUTLDTC trims the Vstring lengths it passes to CEEDAYS;
+# it lists INV-UTL-003, so a unikix record of this scenario never verifies the
+# app/ date acceptance.
+- GAP-DOC-021
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; CORPT00C reads no file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # The valid custom range with SDTYYYY '1-2-' and CONFIRM left as sent.
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      CUSTOM: 'X'
+      SDTMM: '01'
+      SDTDD: '01'
+      SDTYYYY: '1-2-'
+      EDTMM: '07'
+      EDTDD: '06'
+      EDTYYYY: '2022'
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. CONFIRM has no INITIAL and was not typed into, so it
+# shows as a space. CURDATE and CURTIME come from the region clock, in the
+# MM/DD/YY and HH:MM:SS forms POPULATE-HEADER-INFO builds
+# [app/cbl/CORPT00C.cbl:609-628].
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: 'X'
+    SDTMM: '01'
+    SDTDD: '01'
+    SDTYYYY: '0012'
+    EDTMM: '07'
+    EDTDD: '06'
+    EDTYYYY: '2022'
+    CONFIRM: ' '
+    ERRMSG: 'Please confirm to print the Custom report...                                  '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # CORPT00 screen, the confirmation request after ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Please confirm to print the Custom report...                                  '
