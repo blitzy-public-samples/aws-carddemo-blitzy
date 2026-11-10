@@ -1,0 +1,122 @@
+# The card view refuses a search with neither filter. USER0001 (type U in the
+# USRSEC fixture) signs on through CC00 and reaches the main menu, whose option
+# 4 'Credit Card View' makes COMEN01C XCTL to COCRDSLC with CDEMO-PGM-CONTEXT 0
+# [app/cpy/COMEN02Y.cpy:43-47] [app/cbl/COMEN01C.cbl:145-155]. Entered from the
+# menu and not as a re-entry, COCRDSLC initializes the COMMAREA and takes the
+# CDEMO-PGM-ENTER path: it sends COCRDSL with both filters LOW-VALUES, no error
+# and the prompt 'Please enter Account and Card Number', with no '*' marks
+# because the task is not a re-entry, then sets CDEMO-PGM-REENTER and returns
+# TRANSID CCDL [app/cbl/COCRDSLC.cbl:268-272,349-356,402-406,457-496,541-551,
+# 563-576].
+#
+# ENTER with ACCTSID and CARDSID erased re-enters CCDL and performs
+# 2000-PROCESS-INPUTS [app/cbl/COCRDSLC.cbl:357-359]. Both fields are FSET, so
+# they come back modified and empty; 2200-EDIT-MAP-INPUTS moves LOW-VALUES to
+# CC-ACCT-ID and CC-CARD-NUM [app/cbl/COCRDSLC.cbl:510-511,615-627].
+# 2210-EDIT-ACCOUNT finds the account blank, sets INPUT-ERROR and
+# FLG-ACCTFILTER-BLANK and, WS-RETURN-MSG being off from the start of the task,
+# sets 'Account number not provided'; 2220-EDIT-CARD finds the card blank too
+# and leaves that message alone [app/cbl/COCRDSLC.cbl:264,651-660,691-701].
+# The cross-field edit then sees both filters blank and sets
+# NO-SEARCH-CRITERIA-RECEIVED, so WS-RETURN-MSG becomes 'No input received'
+# before anything is sent [app/cbl/COCRDSLC.cbl:142-143,636-640].
+#
+# INPUT-ERROR skips 9000-READ-DATA, so CARDDAT is never read and the card
+# detail fields stay LOW-VALUES, shown blank [app/cbl/COCRDSLC.cbl:360-363,
+# 428,474-485]. CDEMO-ACCT-ID and CDEMO-CARD-NUM were zeroed by the edits, and
+# 1300-SETUP-SCREEN-ATTRS marks each blank filter of a re-entry with '*'
+# [app/cbl/COCRDSLC.cbl:462-472,541-551]. WS-INFO-MSG is blank, so INFOMSG
+# shows the prompt again [app/cbl/COCRDSLC.cbl:490-496].
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included: ERRMSG is 80 characters (the 75-byte WS-RETURN-MSG padded), INFOMSG
+# 40, ACCTSID 11, CARDSID 16, CRDNAME 50. CURDATE and CURTIME come from the
+# region clock, so they are matchers. The baseline is derived from the source:
+# no TPE region runs in CI.
+id: CRD-COCRDSLC-negative-04
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 4 'Credit Card View' on the main menu and
+  presses ENTER on the COCRDSLC card search screen (CCDL) with both the account
+  number and the card number left blank. 2210-EDIT-ACCOUNT sets 'Account number
+  not provided', and the cross-field edit of 2200-EDIT-MAP-INPUTS replaces it
+  with 'No input received', which COCRDSL shows. Both filters are marked '*',
+  the prompt 'Please enter Account and Card Number' stays in INFOMSG, the card
+  file is not read and no card detail is shown.
+inventory_ids:
+- INV-CRD-031  # COCRDSLC message 'No input received' (rule)
+- INV-CRD-002  # COCRDSLC program
+- INV-MNU-003  # COMEN01 map, the menu option 4 is entered on
+- INV-CRD-005  # COCRDSL map, sent on entry and again with the refusal
+- INV-CFG-013  # CCDL transaction, under which the blank search is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose CDEMO-PGM-REENTER makes ENTER a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDSLC
+- INV-LAY-009  # CSMSG02Y, copied by COCRDSLC (abend data area)
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CCARD-AID, CC-ACCT-ID, CC-CARD-NUM and CCARD-ERROR-MSG
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '4'
+  - aid: ENTER
+    '@map': COCRDSL
+    fields:
+      ACCTSID: ''
+      CARDSID: ''
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN004: '04. Credit Card View                    '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '*          '
+    CARDSID: '*               '
+    CRDNAME: '                                                  '
+    CRDSTCD: ' '
+    EXPMON: '  '
+    EXPYEAR: '    '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: 'No input received                                                               '
+  # One ERRMSG value per step: blank on the menu and on the first card search
+  # screen, then the cross-field refusal of the empty search.
+  messages:
+  - '                                                                              '
+  - '                                                                                '
+  - 'No input received                                                               '

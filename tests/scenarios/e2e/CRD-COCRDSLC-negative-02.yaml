@@ -1,0 +1,116 @@
+# ENTER on the credit card view with a card number but no account number.
+# USER0001 signs on through CC00 and COSGN00C transfers control to the main
+# menu COMEN01C [app/cbl/COSGN00C.cbl:221-240]; option 4 'Credit Card View'
+# XCTLs to COCRDSLC with CDEMO-PGM-CONTEXT 0 [app/cpy/COMEN02Y.cpy:43-47]
+# [app/cbl/COMEN01C.cbl:117-155]. Coming from COMEN01C and not reentered,
+# COCRDSLC initializes the COMMAREA and takes the CDEMO-PGM-ENTER path: it sends
+# COCRDSL with both filters blank (ACCTSIDO and CARDSIDO low-values), the INFOMSG
+# prompt 'Please enter Account and Card Number' and no error, marks the COMMAREA
+# for reentry and returns TRANSID CCDL, reading no file
+# [app/cbl/COCRDSLC.cbl:268-272,349-356,394-406,457-497,563-577].
+#
+# Step 3 erases ACCTSID, types repository card 0500024453765740 (the first
+# record of carddata.txt) into CARDSID and presses ENTER. On reentry
+# 2200-EDIT-MAP-INPUTS moves the empty account filter to CC-ACCT-ID as
+# LOW-VALUES [app/cbl/COCRDSLC.cbl:357-363,615-620]. 2210-EDIT-ACCOUNT finds it
+# blank, sets INPUT-ERROR and FLG-ACCTFILTER-BLANK and, since WS-RETURN-MSG is
+# still off from the start of the task, sets WS-PROMPT-FOR-ACCT 'Account number
+# not provided' [app/cbl/COCRDSLC.cbl:138-139,264,647-660]. 2220-EDIT-CARD
+# accepts the 16-digit card and keeps it in CDEMO-CARD-NUM, so the cross-field
+# edit does not set 'No input received' and the account message is the one
+# shown [app/cbl/COCRDSLC.cbl:637-640,685-719].
+#
+# INPUT-ERROR skips 9000-READ-DATA, so no CARDDAT or CARDAIX read is issued
+# although the CARDDATA fixture holds the card, and COCRDSL is sent again
+# [app/cbl/COCRDSLC.cbl:357-363]. 1200-SETUP-SCREEN-VARS leaves ACCTSID
+# low-values for the zero CDEMO-ACCT-ID, puts the card number back in CARDSID,
+# and leaves the card detail fields low-values because FOUND-CARDS-FOR-ACCOUNT
+# is not set; WS-INFO-MSG starts blank on every task, so INFOMSG shows the prompt
+# again [app/cbl/COCRDSLC.cbl:254-256,457-496]. 1300-SETUP-SCREEN-ATTRS then
+# writes '*' in ACCTSID because the account filter is blank on a reentry
+# [app/cbl/COCRDSLC.cbl:540-545].
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included: ERRMSG is the 75-byte WS-RETURN-MSG in the 80-byte field, which runs
+# from row 23 column 2 onto row 24 column 1 [app/bms/COCRDSL.bms:144-147];
+# INFOMSG is 40 bytes, ACCTSID 11, CARDSID 16; positions the program leaves as
+# low-values read back as spaces. CURDATE and CURTIME come from the region clock,
+# so they are matchers. The baseline is derived from the source: no TPE region
+# runs in CI.
+id: CRD-COCRDSLC-negative-02
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 4 (Credit Card View) on the main menu and,
+  on the COCRDSLC card view screen, presses ENTER with the account number field
+  empty and repository card 0500024453765740 in the card number field. COCRDSLC
+  reads no file and sends the card view screen again with '*' in the account
+  number field, the card number kept, no card details, the prompt 'Please enter
+  Account and Card Number' and 'Account number not provided' in the message
+  line.
+inventory_ids:
+- INV-CRD-029  # COCRDSLC message 'Account number not provided' (rule)
+- INV-CRD-002  # COCRDSLC program
+- INV-MNU-003  # COMEN01 map, the main menu the sign-on lands on
+- INV-CRD-005  # COCRDSL map, sent on entry and again with the refusal
+- INV-CFG-013  # CCDL transaction, the TRANSID COCRDSLC returns with and the ENTER runs under
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA whose reenter flag routes the ENTER to the edits
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COCRDSLC
+- INV-LAY-009  # CSMSG02Y copybook, the abend data COCRDSLC copies
+- INV-LAY-011  # CSSTRPFY copybook, YYYY-STORE-PFKEY mapping ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y copybook, CCARD-AID and the CC-ACCT-ID and CC-CARD-NUM filters
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '4'}, '@map': COMEN01}
+  - {aid: ENTER, fields: {ACCTSID: '', CARDSID: '0500024453765740'}, '@map': COCRDSL}
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN004: '04. Credit Card View                    '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    ACCTSID: '*          '
+    CARDSID: '0500024453765740'
+    CRDNAME: '                                                  '
+    CRDSTCD: ' '
+    EXPMON: '  '
+    EXPYEAR: '    '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: 'Account number not provided                                                     '
+  # One ERRMSG value per step: blank on the menu and on the first card view,
+  # then the refusal of the blank account number.
+  messages:
+  - '                                                                              '
+  - '                                                                                '
+  - 'Account number not provided                                                     '

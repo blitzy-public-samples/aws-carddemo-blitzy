@@ -1,0 +1,200 @@
+# The CARDDAT read inside the page-up loop of the COCRDLIC card list fails.
+#
+# Steps 1-2: USER0001 (type U) signs on through CC00 and COSGN00C transfers
+# control to COMEN01C, which sends the main menu [app/cbl/COSGN00C.cbl:209-240]
+# [app/cbl/COMEN01C.cbl:82-90]. Option 3 selects 'Credit Card List', program
+# COCRDLIC, entered with CDEMO-PGM-CONTEXT 0 [app/cbl/COMEN01C.cbl:115-157]
+# [app/cpy/COMEN02Y.cpy:37-41]. COCRDLIC starts afresh on page 1, browses
+# CARDDAT GTEQ from a blank key and shows the first 7 of the 50 fixture cards;
+# its look-ahead READNEXT finds the 8th, so CA-NEXT-PAGE-EXISTS holds and
+# WS-CA-LAST-CARD-NUM is the 8th card [app/cbl/COCRDLIC.cbl:334-343,572-582,
+# 1123-1260].
+# Steps 3-4: each PF8 adds 1 to WS-CA-SCREEN-NUM and browses forward from the
+# look-ahead card, so page 2 starts at the 8th card, 1561409106491600, and
+# page 3 at the 15th, 3766281984155154, which becomes WS-CA-FIRST-CARD-NUM
+# [app/cbl/COCRDLIC.cbl:486-497,1173-1176] [app/data/ASCII/carddata.txt:8,15].
+# Step 5: PF7 on page 3 subtracts 1 from WS-CA-SCREEN-NUM and performs
+# 9100-READ-BACKWARDS from the 15th card [app/cbl/COCRDLIC.cbl:501-513]. The
+# STARTBR GTEQ positions on it and the positioning READPREV returns that same
+# card, which only counts WS-SCRN-COUNTER down from 8 to 7
+# [app/cbl/COCRDLIC.cbl:1264-1318]. The first READPREV of the
+# PERFORM UNTIL READ-LOOP-EXIT loop, which would return the 14th card for row
+# 7, is the one the fault fails. Its response is neither NORMAL nor DUPREC, so
+# WHEN OTHER sets READ-LOOP-EXIT, moves 'READ' to ERROR-OPNAME, LIT-CARD-FILE
+# 'CARDDAT ' to ERROR-FILE, the RESP and RESP2 to ERROR-RESP and ERROR-RESP2,
+# and the composed WS-FILE-ERROR-MESSAGE to WS-ERROR-MSG; the loop ends and
+# ENDBR follows [app/cbl/COCRDLIC.cbl:1320-1380]. No row was filled, so
+# WS-ALL-ROWS keeps the LOW-VALUES 9100-READ-BACKWARDS moved to it.
+#
+# Why the list is paged to page 3 first (a departure from the plan's
+# PF8-then-PF7 steps): PF7 on page 2 brings WS-CA-SCREEN-NUM down to 1 before
+# the map is built, and 1400-SETUP-MESSAGE then takes its PF7-and-first-page
+# branch, which moves 'NO PREVIOUS PAGES TO DISPLAY' over WS-ERROR-MSG
+# [app/cbl/COCRDLIC.cbl:238,895-904,924]. The file error message would never
+# reach the screen. From page 3 the page number is 2, so the branch is not
+# taken and ERRMSG carries the composed message.
+#
+# The screen of step 5 [app/cbl/COCRDLIC.cbl:624-672,678-743,837-946]: the
+# titles, CCLI, COCRDLIC, the run date and time; PAGENO '2  ', the PIC 9(1)
+# page number moved to the 3-byte field; ACCTSID and CARDSID at LOW-VALUES,
+# because both filters were received blank; every row field at the LOW-VALUES
+# of 1100-SCREEN-INIT, because 1200-SCREEN-ARRAY-INIT skips rows that are
+# LOW-VALUES, all shown as spaces after the ERASE. 1100-SCREEN-INIT sets
+# WS-NO-INFO-MESSAGE, which shares a WHEN with CA-NEXT-PAGE-EXISTS, so INFOMSG
+# is 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD' [app/cbl/COCRDLIC.cbl:669,
+# 917-919,926-930].
+#
+# The composed message is 80 bytes [app/cbl/COCRDLIC.cbl:153-171]:
+# 'File Error: ', ERROR-OPNAME X(8), ' on ', ERROR-FILE X(9), ' returned RESP ',
+# ERROR-RESP X(10), ',RESP2 ', ERROR-RESP2 X(10) and a 5-byte FILLER. WS-ERROR-MSG
+# is X(75) [app/cbl/COCRDLIC.cbl:117], so the FILLER is cut, and ERRMSGO X(78)
+# pads it with 3 spaces [app/bms/COCRDLI.bms:331-334]. Moving the S9(09) COMP
+# WS-RESP-CD and WS-REAS-CD to X(10) yields their 9 unsigned digits and a space.
+#
+# Assumption behind the numeric parts: the injected I/O error is answered as
+# CICS answers one on a file control READPREV, IOERR with RESP 17 and RESP2
+# 120. No mechanism returns IOERR in a TPE region (GAP-MIS-014), so the runner
+# raises MissingPrerequisite and the scenario stays implemented-unexecuted.
+# The expectation is derived from the source and the CICS response codes,
+# never observed (GAP-INF-006); an imported UniKix run confirms or replaces it.
+id: CRD-COCRDLIC-recovery-04
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, chooses main menu option 3 'Credit Card List', pages
+  forward twice with PF8 to page 3 and presses PF7. The first READPREV of
+  COCRDLIC's backward-read loop fails with an I/O error, so the list is sent
+  as page 2 with no rows, the prompt 'TYPE S FOR DETAIL, U TO UPDATE ANY
+  RECORD' and the composed message 'File Error: READ on CARDDAT returned RESP
+  <resp>,RESP2 <resp2>'.
+# Primary item first, then the program, the maps asserted, the transaction the
+# paging steps run under (COCRDLIC returns with TRANSID CCLI), the CSD file the
+# READPREV fails on, and the online-only copybooks COCRDLIC copies. Sign-on,
+# the menu routing and the content of pages 1-3 are verified by the scenarios
+# that own them.
+inventory_ids:
+- INV-CRD-020  # COCRDLIC 'File Error: READ on CARDDAT' (9100-READ-BACKWARDS, READPREV at line 1322)
+- INV-CRD-001  # COCRDLIC program
+- INV-MNU-003  # COMEN01 map, where option 3 is entered
+- INV-CRD-004  # COCRDLI map, the list screen PF8 and PF7 are pressed on
+- INV-CFG-014  # CCLI transaction, under which PF8 and PF7 run
+- INV-CFG-003  # CARDDAT CSD file, browsed forward and then backward
+- INV-LAY-002  # COCOM01Y: CDEMO-FROM-PROGRAM COCRDLIC selects the receive and paging logic
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDLIC
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps DFHPF8 and DFHPF7
+- INV-LAY-019  # CVCRD01Y: CCARD-AID-PFK07/PFK08 and the filter work area
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-014  # no mechanism returns IOERR from a TPE region file
+preconditions:
+  datasets:
+    # COCRDLIC browses the 50 fixture cards, in card-number order.
+    CARDDATA: {base: CARDDATA}
+    # COSGN00C reads the sign-on user USER0001.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  # after: 29 counts the CARDDAT read requests (STARTBR, READNEXT, READPREV)
+  # from the start of the session that succeed before the failing one: STARTBR
+  # and 8 READNEXT (7 rows and the look-ahead) for each of pages 1, 2 and 3,
+  # then the STARTBR and the positioning READPREV of the PF7 task. Counting only
+  # the record reads (READNEXT, READPREV) it is 25. The ENDBR of each browse
+  # reads nothing.
+  faults:
+  - target: CARDDAT
+    operation: read
+    condition: io-error
+    after: 29
+# PASSWORD is the README's documented demo password, not a secret: the scenario
+# schema accepts no other sign-on password.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '3'
+  - aid: PF8
+    '@map': COCRDLI
+    fields: {}
+  - aid: PF8
+    '@map': COCRDLI
+    fields: {}
+  - aid: PF7
+    '@map': COCRDLI
+    fields: {}
+# Screens 2-4 pin the page each PF key is pressed on and, for pages 2 and 3,
+# the first card, from which the next browse starts; their full content is the
+# item of the COCRDLIC list and paging scenarios. Text values are whole fields
+# at their BMS length, trailing spaces kept: ERRMSG 78, INFOMSG 45, the titles
+# 40, PAGENO 3. CURDATE and CURTIME come from the region clock.
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    PAGENO: '1  '
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    PAGENO: '2  '
+    CRDNUM1: '1561409106491600'
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    PAGENO: '3  '
+    CRDNUM1: '3766281984155154'
+    ERRMSG: '                                                                              '
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDLIC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENO: '2  '
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '           '
+    CRDNUM1: '                '
+    CRDSTS1: ' '
+    CRDSEL2: ' '
+    ACCTNO2: '           '
+    CRDNUM2: '                '
+    CRDSTS2: ' '
+    CRDSEL3: ' '
+    ACCTNO3: '           '
+    CRDNUM3: '                '
+    CRDSTS3: ' '
+    CRDSEL4: ' '
+    ACCTNO4: '           '
+    CRDNUM4: '                '
+    CRDSTS4: ' '
+    CRDSEL5: ' '
+    ACCTNO5: '           '
+    CRDNUM5: '                '
+    CRDSTS5: ' '
+    CRDSEL6: ' '
+    ACCTNO6: '           '
+    CRDNUM6: '                '
+    CRDSTS6: ' '
+    CRDSEL7: ' '
+    ACCTNO7: '           '
+    CRDNUM7: '                '
+    CRDSTS7: ' '
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: 'File Error: READ     on CARDDAT   returned RESP 000000017 ,RESP2 000000120    '

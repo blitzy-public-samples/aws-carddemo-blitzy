@@ -1,0 +1,143 @@
+# The card view's account-not-found message cannot be produced. COCRDSLC sets
+# DID-NOT-FIND-ACCT-IN-CARDXREF 'Did not find this account in cards database'
+# [app/cbl/COCRDSLC.cbl:151-152] only at line 799, on a NOTFND from the READ of
+# CARDAIX by account id in 9150-GETCARD-BYACCT [app/cbl/COCRDSLC.cbl:779-810].
+# No statement performs 9150: 9000-READ-DATA performs only
+# 9100-GETCARD-BYACCTCARD [app/cbl/COCRDSLC.cbl:726-733], which reads CARDDAT by
+# card number alone, and its move of the account id into the record key is
+# commented out [app/cbl/COCRDSLC.cbl:736-775]. 9150 is dead code, and it holds
+# the application's only READ of CARDAIX; the other programs that name CARDAIX
+# only declare the literal. The inventory counts the message as reachable
+# because its 88-level is the target of a SET. This scenario is the primary case
+# of that item and pins what the screen shows instead when the account owns no
+# such card. What 9150 and its message are for is the open uncertain-purpose
+# question of GAP-UNC-013, hence the observed-only tag.
+#
+# Steps 1-2 reach the COCRDSL search screen as MNU-COMEN01C-alternate-04 does:
+# option 4 'Credit Card View' makes COMEN01C XCTL to COCRDSLC with
+# CDEMO-FROM-PROGRAM COMEN01C and CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:117-155] [app/cpy/COMEN02Y.cpy:43-47]. Entered from the
+# menu, COCRDSLC initializes the COMMAREA, so CDEMO-FROM-PROGRAM is spaces and
+# both ids are zero; the CDEMO-PGM-ENTER path sends COCRDSL with the blank ids,
+# WS-INFO-MSG blank so 1200-SETUP-SCREEN-VARS sets the prompt 'Please enter
+# Account and Card Number', and ERRMSG blank. 1400-SEND-SCREEN sets
+# CDEMO-PGM-REENTER and the task returns TRANSID CCDL
+# [app/cbl/COCRDSLC.cbl:254-279,349-356,394-406,457-497,562-576].
+#
+# Step 3 enters account 99999999999, which owns no card in the CARDDATA
+# fixture, with card 0500024453765740, record 1 of app/data/ASCII/carddata.txt
+# (account 00000000050). The re-entry takes 2000-PROCESS-INPUTS: both ids are
+# numeric and non-zero, so 2210 and 2220 accept them and INPUT-OK holds
+# [app/cbl/COCRDSLC.cbl:357-370,582-724]. 9100 reads CARDDAT by the card number:
+# NORMAL, so FOUND-CARDS-FOR-ACCOUNT sets WS-INFO-MSG '   Displaying requested
+# details' and WS-RETURN-MSG stays off [app/cbl/COCRDSLC.cbl:742-754]. 1200
+# echoes the entered ids and moves the card's embossed name, the year and month
+# of CARD-EXPIRAION-DATE '2023-03-09' through CARD-EXPIRAION-DATE-X, and the
+# active status [app/cbl/COCRDSLC.cbl:84-92,462-496]. The card is shown under
+# an account it does not belong to and ERRMSG stays blank.
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included: ERRMSG is 80 characters on COCRDSL (the 75-byte WS-RETURN-MSG
+# padded) and 78 on COMEN01, INFOMSG 40, CRDNAME 50. CURDATE and CURTIME come
+# from the region clock, so they are matchers. The baseline is derived from the
+# source: no TPE region runs in CI.
+id: CRD-COCRDSLC-negative-05
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects main-menu option 4 'Credit Card View' and, on the
+  COCRDSLC search screen (CCDL), enters account 99999999999, which owns no card,
+  with card 0500024453765740 of account 00000000050. 'Did not find this account
+  in cards database' does not appear: its only SET is in 9150-GETCARD-BYACCT,
+  the account lookup through CARDAIX, which no statement performs, so the
+  paragraph is dead code and GAP-UNC-013 carries the question of its purpose.
+  The program reads CARDDAT by card number alone and never compares the card's
+  account with the one entered, so COCRDSL shows the card's name 'Aniya Von',
+  active status Y and expiry 03/2023 with the info message 'Displaying
+  requested details', the entered account id echoed, and no error.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the CSD files of the card lookups, and the online-only
+# copybooks COCRDSLC copies. CARDAIX is listed because this scenario pins that
+# the card view never reads through it: its only READ is in the dead 9150.
+# The 'Displaying requested details' message and the card detail content are
+# not listed: their own scenarios verify them.
+inventory_ids:
+- INV-CRD-034  # COCRDSLC message 'Did not find this account in cards database' (recovery), set only in dead code
+- INV-CRD-002  # COCRDSLC program
+- INV-MNU-003  # COMEN01 map, where option 4 is entered
+- INV-CRD-005  # COCRDSL map, the search screen and the card shown
+- INV-CFG-013  # CCDL transaction, under which the ids are processed
+- INV-CFG-003  # CARDDAT CSD file: the card read by card number
+- INV-CFG-002  # CARDAIX CSD file: the account path 9150 would read, never reached
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose CDEMO-PGM-REENTER makes ENTER a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDSLC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COCRDSLC
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, CC-CARD-NUM and the AID flags
+tags:
+- inferred-not-observed
+- observed-only
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-UNC-013  # online code defined but never executed: 9150-GETCARD-BYACCT and its message
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '4'
+  - aid: ENTER
+    '@map': COCRDSL
+    fields:
+      ACCTSID: '99999999999'
+      CARDSID: '0500024453765740'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN004: '04. Credit Card View                    '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '99999999999'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'Aniya Von                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: '   Displaying requested details         '
+    ERRMSG: '                                                                                '
+  # One ERRMSG value per step: blank on the menu, on the search screen, and on
+  # the card shown for the mismatched account, where the dead 9150 message
+  # would otherwise appear.
+  messages:
+  - '                                                                              '
+  - '                                                                                '
+  - '                                                                                '

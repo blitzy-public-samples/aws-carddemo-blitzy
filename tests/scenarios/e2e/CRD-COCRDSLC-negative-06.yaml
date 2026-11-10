@@ -1,0 +1,137 @@
+# A card number the card master does not hold, entered on the card view screen.
+# USER0001 (type U) signs on through CC00 and COSGN00C routes it to COMEN01C
+# [app/cbl/COSGN00C.cbl:221-240]. Option '4' is 'Credit Card View', program
+# COCRDSLC [app/cpy/COMEN02Y.cpy:43-47], so COMEN01C sets CDEMO-PGM-CONTEXT to
+# zero and XCTLs to it [app/cbl/COMEN01C.cbl:115-155].
+#
+# Step 2: COCRDSLC tests CDEMO-FROM-PROGRAM before it has copied DFHCOMMAREA,
+# so on a fresh task that test fails and the COMMAREA from COMEN01C is moved in
+# [app/cbl/COCRDSLC.cbl:268-279]. ENTER is a valid key and CDEMO-PGM-ENTER holds
+# without a COCRDLIC caller, so 1000-SEND-MAP shows the empty search screen
+# [app/cbl/COCRDSLC.cbl:291-299,349-356]. ACCTSID and CARDSID are sent as
+# LOW-VALUES or as the spaces CC-WORK-AREA was initialized to, both shown blank
+# [app/cbl/COCRDSLC.cbl:254-256,459-472]. The info message starts blank, so the
+# prompt 'Please enter Account and Card Number' fills INFOMSG, and ERRMSG holds
+# the cleared WS-RETURN-MSG [app/cbl/COCRDSLC.cbl:126-132,264,489-496].
+# 1400-SEND-SCREEN sets CDEMO-PGM-REENTER and the task returns with TRANSID
+# CCDL [app/cbl/COCRDSLC.cbl:394-406,563-577].
+#
+# Step 3 enters account 00000000050 and card 9999999999999999 under CCDL. Both
+# are supplied, numeric and non-zero, so 2210-EDIT-ACCOUNT and 2220-EDIT-CARD
+# pass, store them in CDEMO-ACCT-ID and CDEMO-CARD-NUM, and leave INPUT-OK
+# [app/cbl/COCRDSLC.cbl:357-369,608-724]. 9100-GETCARD-BYACCTCARD reads CARDDAT
+# by the card number alone; the account part of the key is commented out
+# [app/cbl/COCRDSLC.cbl:736-750]. The card master holds no card
+# 9999999999999999, so the READ answers NOTFND: the record's absence is the
+# notfnd condition, and no fault entry is needed. That branch sets INPUT-ERROR
+# and both filter flags NOT-OK, and, with no message set yet, the primary item
+# DID-NOT-FIND-ACCTCARD-COMBO, 'Did not find cards for this search condition'
+# [app/cbl/COCRDSLC.cbl:153-154,752-761]. The 75-byte WS-RETURN-MSG goes to the
+# 80-byte ERRMSGO [app/cbl/COCRDSLC.cbl:134,494] [app/cpy-bms/COCRDSL.CPY:194].
+#
+# 1200-SETUP-SCREEN-VARS echoes the entered account and card from CC-ACCT-ID
+# and CC-CARD-NUM, because CDEMO-ACCT-ID and CDEMO-CARD-NUM are non-zero. Without
+# FOUND-CARDS-FOR-ACCOUNT it leaves CRDNAME, CRDSTCD, EXPMON and EXPYEAR at the
+# LOW-VALUES 1100-SCREEN-INIT moved to the output map, which are captured as
+# spaces. WS-INFO-MSG is still blank, so the prompt is shown again
+# [app/cbl/COCRDSLC.cbl:427-428,457-497].
+#
+# Screen fields are compared at their full BMS length with trailing spaces.
+# ERRMSG is defined at POS=(23,1) with LENGTH=80, so its last data position is
+# row 24 column 1, the attribute byte of FKEYS [app/bms/COCRDSL.bms:144-152];
+# that position shows as a space, as the padding of the message already is.
+# CURDATE and CURTIME come from the region clock, so they are matchers. The
+# expected outcome is derived from the source (GAP-INF-006). No step writes a
+# file, so file_state is not asserted.
+id: CRD-COCRDSLC-negative-06
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 4 'Credit Card View' and asks
+  COCRDSLC (CCDL) for card 9999999999999999 of account 00000000050. The card
+  master holds no such card, so the READ of CARDDAT answers NOTFND and COCRDSL
+  shows 'Did not find cards for this search condition', keeps the entered
+  account and card numbers, leaves the card name, status and expiry blank, and
+  prompts again with 'Please enter Account and Card Number'.
+# The message condition is the primary item. After it come the program, the maps
+# asserted (COMEN01 on step 1, COCRDSL on steps 2 and 3), the transaction that
+# runs the lookup, the CSD file it reads, and the online-only copybooks COCRDSLC
+# copies. The batch copybooks (CVACT02Y, CVCUS01Y, CSUSR01Y) and the data files
+# are left out, because their lowest executing level is unit or integration.
+inventory_ids:
+- INV-CRD-035  # COCRDSLC message 'Did not find cards for this search condition' (recovery)
+- INV-CRD-002  # COCRDSLC program
+- INV-MNU-003  # COMEN01 map, the main menu option 4 is entered on
+- INV-CRD-005  # COCRDSL map, the card view screen of steps 2 and 3
+- INV-CFG-013  # CCDL transaction, under which the card lookup runs
+- INV-CFG-003  # CARDDAT CSD file, the card read by card number that answers NOTFND
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carried from COMEN01C and across CCDL
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COCRDSLC
+- INV-LAY-009  # CSMSG02Y copybook, the abend data of COCRDSLC's HANDLE ABEND
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping that makes ENTER the search key
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID and CC-CARD-NUM holding the entered and echoed ids
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # The card master is the repository data, which holds no card
+    # 9999999999999999, so its READ answers NOTFND. Account 00000000050 is a
+    # repository account (card 0500024453765740); COCRDSLC does not use it in the
+    # key. USRSEC holds the sign-on user.
+    CARDDATA: {base: CARDDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '4'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000050', CARDSID: '9999999999999999'}
+    '@map': COCRDSL
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN004: '04. Credit Card View                    '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDSLC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '9999999999999999'
+    CRDNAME: '                                                  '
+    CRDSTCD: ' '
+    EXPMON: '  '
+    EXPYEAR: '    '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: 'Did not find cards for this search condition                                    '
+  # The ERRMSG of each step's screen, in step order: blank on the menu and on
+  # the first card view, then the not-found message.
+  messages:
+  - '                                                                              '
+  - '                                                                                '
+  - 'Did not find cards for this search condition                                    '

@@ -1,0 +1,103 @@
+# Transaction CCDL entered directly from a cleared screen, with no sign-on.
+# A transaction started this way runs COCRDSLC with EIBCALEN = 0, so it
+# initializes CARDDEMO-COMMAREA and its own COMMAREA (CDEMO-PGM-CONTEXT 0,
+# CDEMO-PGM-ENTER) instead of returning to sign-on as eleven of the online
+# programs do, and sends its own credit card detail screen: no user id or user
+# type is checked and no file is read [app/cbl/COCRDSLC.cbl:254-279,349-356].
+# 1200-SETUP-SCREEN-VARS sets WS-PROMPT-FOR-INPUT for EIBCALEN = 0, so the
+# screen carries 'Please enter Account and Card Number' and a blank message;
+# 1400-SEND-SCREEN sets CDEMO-PGM-REENTER, sends COCRDSL with ERASE, and the task
+# returns with TRANSID CCDL and a 2000-byte COMMAREA
+# [app/cbl/COCRDSLC.cbl:394-406,457-497,563-577]. Whether direct entry without
+# sign-on is intended is the open question of GAP-UNC-010, so the behaviour is
+# pinned as the source shows it (observed-only).
+#
+# The step's '@map' names the input screen the adapter identifies after starting
+# the transaction (Clear, CCDL, Enter): COCRDSL, not TEXT, because the cleared
+# terminal is never the input screen of a step that starts a transaction. Had
+# COCRDSLC returned to the sign-on screen, that screen would be identified
+# instead, driving would stop there, and screen 1 would not match. The
+# direct-entry screen itself is never captured, because every step presses an
+# AID; screen 1 is the result of ENTER pressed on it with no field entered.
+#
+# That ENTER re-enters COCRDSLC with its own COMMAREA: CDEMO-FROM-PROGRAM is
+# blank, not COMEN01C, so the COMMAREA is kept and CDEMO-PGM-REENTER selects
+# 2000-PROCESS-INPUTS [app/cbl/COCRDSLC.cbl:268-279,357-363]. The account and
+# card ids arrive empty, so 2210-EDIT-ACCOUNT sets INPUT-ERROR and
+# FLG-ACCTFILTER-BLANK with 'Account number not provided', 2220-EDIT-CARD sets
+# FLG-CARDFILTER-BLANK, and the cross-field edit replaces the message with
+# 'No input received' (NO-SEARCH-CRITERIA-RECEIVED); CDEMO-ACCT-ID and
+# CDEMO-CARD-NUM are zeroed [app/cbl/COCRDSLC.cbl:608-720]. No card is read, and
+# the map is resent: the empty info message brings the prompt back, and both
+# search fields show '*' because each filter is blank on a re-entry; the card
+# detail fields stay at LOW-VALUES [app/cbl/COCRDSLC.cbl:457-551]. The program
+# still asks for no sign-on and shows no card data.
+#
+# Every value is derived from the source (inferred-not-observed): no TPE region
+# runs in CI. Screen fields are compared at their full BMS length, trailing
+# spaces kept; fields left at LOW-VALUES read as spaces. The 80-character ERRMSG
+# ends on FKEYS's attribute position (row 24, column 1), which reads as a space.
+# CURDATE and CURTIME come from the region clock, so they are matchers.
+id: CRD-COCRDSLC-alternate-03
+level: e2e
+type: alternate
+description: >-
+  CCDL is entered directly, with no sign-on and no COMMAREA. COCRDSLC starts a
+  fresh COMMAREA and shows its own credit card detail screen (COCRDSL) rather
+  than the sign-on screen. ENTER on that screen with no account or card number
+  is handled by COCRDSLC itself: the screen is resent with 'No input received',
+  '*' in both search fields, the prompt 'Please enter Account and Card Number'
+  and every card detail field blank.
+# Primary item first, then the program, the map asserted, the transaction both
+# tasks run, and the online-only copybooks COCRDSLC copies. The prompt and the
+# 'No input received' message are the primary items of other COCRDSLC
+# scenarios; here they are asserted only as the screen the direct-entry path
+# leads to. No file is read, so no CSD file is listed and no dataset is loaded.
+inventory_ids:
+- INV-CRD-045  # COCRDSLC entry without COMMAREA starts without sign-on
+- INV-CRD-002  # COCRDSLC program
+- INV-CRD-005  # COCRDSL map
+- INV-CFG-013  # transaction CCDL
+- INV-LAY-002  # COCOM01Y: CARDDEMO-COMMAREA, CDEMO-PGM-CONTEXT
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDSLC
+- INV-LAY-009  # CSMSG02Y, the abend variables COCRDSLC copies
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps EIBAID to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CCARD-AID flags, CC-ACCT-ID and CC-CARD-NUM
+tags:
+- inferred-not-observed
+- observed-only
+gap_ids:
+- GAP-INF-006  # card (CRD) e2e baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-UNC-010  # direct entry without sign-on: intended or not
+preconditions:
+  datasets: {}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CCDL
+    '@map': COCRDSL
+    fields: {}
+    aid: ENTER
+expected:
+  screens:
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '*          '
+    CARDSID: '*               '
+    CRDNAME: '                                                  '
+    CRDSTCD: ' '
+    EXPMON: '  '
+    EXPYEAR: '    '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: 'No input received                                                               '
+    FKEYS: 'ENTER=Search Cards  F3=Exit                                                '
