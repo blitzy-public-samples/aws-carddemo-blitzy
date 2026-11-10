@@ -1,0 +1,10 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-10'
+capture_platform: derived
+source_commit: 93ebec71ff7b59a68cedd7c501afe496a8eaa68d
+source_identity:
+  commit: 93ebec71ff7b59a68cedd7c501afe496a8eaa68d
+  tree: app
+  units:
+    app/cbl/CBCUS01C.cbl: 494b1ca4ab8a4334eef77d2b87cc7df266f80cbeab2a3f191e9c776d4437d497
+    app/cpy/CVCUS01Y.cpy: 944fd9a8eb10a683d0db97b9a87f2151982f649970287eb74358826056af25f8

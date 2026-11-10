@@ -1,0 +1,109 @@
+# Derived baseline of scenario BIL-COBIL00C-normal-02; not observed.
+# USER0001 signs on (CC00), takes main-menu option 10 'Bill Payment' and, on
+# COBIL00 (transaction CB00), pays repository account 00000000002's balance of
+# 158.00 by entering the account id with CONFIRM Y in one step.
+# Authored from the source, never captured:
+# - app/cbl/COMEN01C.cbl:236-250 and app/cpy/COMEN02Y.cpy:80-84 (the menu
+#   option text, X(40), sent with a blank ERRMSG);
+# - app/cbl/COBIL00C.cbl:107-122,289-338 (first entry: LOW-VALUES map, blank
+#   ERRMSG, CB00 header);
+# - app/cbl/COBIL00C.cbl:154-244 (READ ACCTDAT UPDATE finds ACCT-CURR-BAL
+#   158.00; READ CXACAIX gives card 0923877193247330, the only cardxref.txt
+#   entry of account 2; the browse from HIGH-VALUES reads the highest TRANSACT
+#   key 0000000996722787 of the fixture built from app/data/ASCII/dailytran.txt,
+#   so TRAN-ID is 0000000996722788; INITIALIZE TRAN-RECORD and the pay-block
+#   moves fill the record; the REWRITE leaves account 2 at 0.00);
+# - app/cbl/COBIL00C.cbl:249-267 with app/cpy/CSDAT01Y.cpy:42-55 (WS-TIMESTAMP
+#   is 'YYYY-MM-DD hh:mm:ss.000000' from the region clock, hence the
+#   run-timestamp matcher with that format on TRAN-ORIG-TS and TRAN-PROC-TS);
+# - app/cbl/COBIL00C.cbl:505-532,560-566 (the WRITE answers NORMAL:
+#   INITIALIZE-ALL-FIELDS blanks ACTIDIN, CURBAL and CONFIRM, and STRING builds
+#   the 61-character success message, padded to the 78-byte ERRMSG); COBIL00 is
+#   sent again unchanged after the REWRITE, and that second screen is captured.
+# Open under GAP-INF-008 (derived BIL end-to-end baselines) and GAP-INF-012
+# (online-only copybooks). Only `report.py --import-unikix` promotes it, from
+# imported UniKix evidence; it is never edited by hand to match a run.
+# The body is the scenario's expected in harness.dump_yaml form: one screen per
+# step, messages holding each step's ERRMSG, text at full field width with its
+# trailing spaces, numbers as decoded text with their scale. TRAN-RECORD's
+# FILLER is not asserted, as in the scenario: INITIALIZE skips it, so it holds
+# whatever the READPREV left.
+file_state:
+  ACCTDATA:
+    contains:
+    - ACCT-ACTIVE-STATUS: Y
+      ACCT-ADDR-ZIP: A000000000
+      ACCT-CASH-CREDIT-LIMIT: '5448.00'
+      ACCT-CREDIT-LIMIT: '6130.00'
+      ACCT-CURR-BAL: '0.00'
+      ACCT-CURR-CYC-CREDIT: '0.00'
+      ACCT-CURR-CYC-DEBIT: '0.00'
+      ACCT-EXPIRAION-DATE: '2024-08-11'
+      ACCT-GROUP-ID: '          '
+      ACCT-ID: '2'
+      ACCT-OPEN-DATE: '2013-06-19'
+      ACCT-REISSUE-DATE: '2024-08-11'
+    count: 50
+  TRANSACT:
+    contains:
+    - TRAN-AMT: '603.22'
+      TRAN-CARD-NUM: '3260763612337560'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+      TRAN-ID: 0000000996722787
+      TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+      TRAN-MERCHANT-ID: '800000000'
+      TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+      TRAN-MERCHANT-ZIP: 53200-7529
+      TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+      TRAN-PROC-TS: '                          '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '158.00'
+      TRAN-CARD-NUM: 0923877193247330
+      TRAN-CAT-CD: '2'
+      TRAN-DESC: 'BILL PAYMENT - ONLINE                                                                               '
+      TRAN-ID: 0000000996722788
+      TRAN-MERCHANT-CITY: 'N/A                                               '
+      TRAN-MERCHANT-ID: '999999999'
+      TRAN-MERCHANT-NAME: 'BILL PAYMENT                                      '
+      TRAN-MERCHANT-ZIP: 'N/A       '
+      TRAN-ORIG-TS:
+        format: '%Y-%m-%d %H:%M:%S.000000'
+        match: run-timestamp
+      TRAN-PROC-TS:
+        format: '%Y-%m-%d %H:%M:%S.000000'
+        match: run-timestamp
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '02'
+    count: 301
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Payment successful.  Your Transaction ID is 0000000996722788.                 '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN010: '10. Bill Payment                        '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COBIL00
+  ACTIDIN: '           '
+  CURBAL: '              '
+  ERRMSG: '                                                                              '
+  PGMNAME: COBIL00C
+  TRNNAME: CB00
+- '@map': COBIL00
+  ACTIDIN: '           '
+  CONFIRM: ' '
+  CURBAL: '              '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Payment successful.  Your Transaction ID is 0000000996722788.                 '
+  PGMNAME: COBIL00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CB00
