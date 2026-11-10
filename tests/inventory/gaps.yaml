@@ -159,6 +159,17 @@ gaps:
   needed: The owner's confirmation of intent. The behaviour is pinned as derived and never fixed under app/. The unikix outcome of USR-COUSR00C-alternate-03 would show whether the region abends at the ENDBR.
   resolving_evidence: null
   status: open
+- gap_id: GAP-DEF-014
+  category: suspected-defect
+  unknown: 'The ABEND-ROUTINE of COACTVWC, COACTUPC, COCRDSLC and COCRDUPC moves ''UNEXPECTED ABEND OCCURRED.'' to ABEND-MSG only when ABEND-MSG equals LOW-VALUES [app/cbl/COACTVWC.cbl:918-920] [app/cbl/COACTUPC.cbl:4205-4207] [app/cbl/COCRDSLC.cbl:859-861] [app/cbl/COCRDUPC.cbl:1533-1535], but CSMSG02Y declares ABEND-MSG with VALUE SPACES [app/cpy/CSMSG02Y.cpy:28-29] and no statement moves LOW-VALUES to it. The default text is therefore never moved: after a HANDLE ABEND the routine sends ABEND-DATA with a blank message, or with the ''UNEXPECTED DATA SCENARIO'' that COACTUPC and COCRDUPC set before performing it [app/cbl/COACTUPC.cbl:2633-2640] [app/cbl/COCRDUPC.cbl:1019-1026]. The UniKix copy has the same code. Whether the default text was meant to appear is unknown; ACT-COACTVWC-recovery-05 pins the blank message as the source derives it.'
+  affected_inventory_ids:
+  - INV-ACT-024
+  - INV-ACT-065
+  - INV-CRD-043
+  - INV-CRD-076
+  needed: The owner's confirmation of intent, and the unikix outcome of a HANDLE ABEND scenario once GAP-MIS-014 gives a way to force the abend. The behaviour is pinned as derived and never fixed under app/.
+  resolving_evidence: null
+  status: open
 - gap_id: GAP-DOC-001
   category: doc-conflict
   unknown: 'The tech spec counts 18 online programs ("eighteen CICS programs", Section 1.2.2.1; "Online Programs (18 CICS Programs)", Section 1.2.2.2; "Online Programs (app/cbl/CO*.cbl): 18 programs", Section 6.6.2.1.2), but app/cbl holds 17 online sources. COCRDSEC (''CREDIT CARD SEARCH'') exists only as a CSD definition [app/csd/CARDDEMO.CSD:211-218], started by transaction CDV1 ''DEVELOPER TRANSACTION - 1'' [app/csd/CARDDEMO.CSD:388-390]; neither app/cbl nor the UniKix copy''s migrated_app/cbl holds its source, so both items are unreachable.'

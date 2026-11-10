@@ -1,0 +1,124 @@
+# The account search key left blank on the Account Update screen. USER0001
+# signs on through CC00 and COSGN00C routes the type 'U' user to the main menu
+# COMEN01. Option '2' is 'Account Update', so COMEN01C moves CM00 and COMEN01C
+# to CDEMO-FROM-TRANID and CDEMO-FROM-PROGRAM, zeroes CDEMO-PGM-CONTEXT and
+# transfers control (XCTL) to COACTUPC [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:31-35]. Entered from the menu without
+# CDEMO-PGM-REENTER, COACTUPC sends COACTUP with the search-key prompt, sets
+# CDEMO-PGM-REENTER and ACUP-DETAILS-NOT-FETCHED, and returns with
+# TRANSID(CAUP) [app/cbl/COACTUPC.cbl:880-893,964-973,1007-1019].
+# ENTER with ACCTSID left empty then starts CAUP again with that COMMAREA:
+# WHEN OTHER performs 1000-PROCESS-INPUTS, 2000-DECIDE-ACTION and 3000-SEND-MAP
+# [app/cbl/COACTUPC.cbl:996-1003]. 1100-RECEIVE-MAP moves the empty ACCTSIDI to
+# CC-ACCT-ID [app/cbl/COACTUPC.cbl:1051-1058]; 1210-EDIT-ACCOUNT finds it blank,
+# sets INPUT-ERROR and FLG-ACCTFILTER-BLANK and, the message line being off,
+# SET WS-PROMPT-FOR-ACCT, the primary item [app/cbl/COACTUPC.cbl:1783-1797].
+# Back in 1200-EDIT-MAP-INPUTS, FLG-ACCTFILTER-BLANK makes the program SET
+# NO-SEARCH-CRITERIA-RECEIVED on the same WS-RETURN-MSG without testing whether
+# a message is already there [app/cbl/COACTUPC.cbl:1433-1446]. 1210-EDIT-ACCOUNT
+# is performed from nowhere else, so 'Account number not provided' is always
+# replaced by 'No input received' before the screen is built.
+# 2000-DECIDE-ACTION does nothing for a blank filter (FLG-ACCTFILTER-ISVALID is
+# false) [app/cbl/COACTUPC.cbl:2568-2580]; 3250-SETUP-INFOMSG sets
+# PROMPT-FOR-SEARCH-KEYS for ACUP-DETAILS-NOT-FETCHED and moves WS-INFO-MSG to
+# INFOMSG and WS-RETURN-MSG to ERRMSG [app/cbl/COACTUPC.cbl:2955-2982];
+# 3300-SETUP-SCREEN-ATTRS moves '*' to ACCTSIDO because the filter is blank on a
+# reentry [app/cbl/COACTUPC.cbl:3180-3184]. No file is read, so no file_state
+# is asserted and no CSD file item is listed.
+# Text fields are compared at their full BMS length with trailing spaces:
+# ACCTSID is 11 bytes, INFOMSG 45 (the 40-byte WS-INFO-MSG padded), ERRMSG 78
+# (the 75-byte WS-RETURN-MSG padded). The baseline is derived from the source:
+# no TPE region runs in CI.
+id: ACT-COACTUPC-negative-001
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 2 'Account Update' on the main menu and
+  presses ENTER on the Account Update screen COACTUP with the account number
+  left empty. COACTUPC sets 'Account number not provided' for the blank search
+  key and then overwrites it with 'No input received', so COACTUP is sent again
+  with 'No input received' in the message line, '*' in the account number
+  field and the search-key prompt; no account is read.
+# Primary item first. The message pinned on screen is that of INV-ACT-038 'No
+# input received', which its own scenario verifies; this scenario pins that the
+# primary item's text never reaches ERRMSG. The sign-on step only establishes
+# the session: CC00, COSGN00, COSGN00C and the USRSEC read are verified by the
+# SEC-COSGN00C scenarios. Batch copybooks and data-file items are not listed.
+inventory_ids:
+- INV-ACT-035  # COACTUPC message 'Account number not provided' (rule)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, the main menu option 2 is entered on
+- INV-ACT-004  # COACTUP map, the screen ENTER is pressed on and sent again
+- INV-CFG-009  # CAUP transaction, under which the ENTER is processed
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y copybook
+- INV-LAY-006  # CSDAT01Y copybook
+- INV-LAY-007  # CSLKPCDY copybook
+- INV-LAY-008  # CSMSG01Y copybook
+- INV-LAY-009  # CSMSG02Y copybook
+- INV-LAY-010  # CSSETATY copybook
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping that accepts ENTER
+- INV-LAY-013  # CSUTLDPY copybook
+- INV-LAY-014  # CSUTLDWY copybook
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID
+# observed-only: the primary item's message is set and then overwritten, so the
+# replacement is pinned as observed. GAP-UNC-013 is the open uncertain-purpose
+# entry for COACTUPC message conditions whose text never appears.
+tags:
+- inferred-not-observed
+- observed-only
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-UNC-013  # COACTUPC message text defined but never shown
+# GAP-DOC-025: the UniKix copy of COACTUP.bms drops the unnamed field at row 1,
+# columns 1-9, where TRNNAME is asserted, so a UniKix run of this scenario never
+# verifies the COACTUP map item while that entry is open.
+- GAP-DOC-025
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001. The account files are loaded as
+    # the region holds them, but this path reads none of them.
+    USRSEC: {base: USRSEC}
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+    CARDXREF: {base: CARDXREF}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: ''}
+    '@map': COACTUP
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '*          '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: 'No input received                                                             '
+  # One ERRMSG value per step: blank on the main menu and on the first Account
+  # Update screen, 'No input received' after ENTER with the account left empty.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'No input received                                                             '

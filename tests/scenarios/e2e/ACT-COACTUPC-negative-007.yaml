@@ -1,0 +1,135 @@
+# COACTUPC account update: an account id that the card cross-reference does not
+# hold gives the composed 'Account:<id> not found in Cross ref file.' message of
+# 9200-GETCARDXREF-BYACCT [app/cbl/COACTUPC.cbl:3650-3697].
+#
+# Step 1: USER0001 signs on through CC00; COSGN00C XCTLs to COMEN01C, which sends
+# the main menu and returns TRANSID CM00.
+# Step 2: option '2' makes COMEN01C XCTL to COACTUPC with CDEMO-FROM-PROGRAM
+# COMEN01C and CDEMO-PGM-CONTEXT 0 [app/cbl/COMEN01C.cbl:145-156]. Entered from
+# the menu and not re-entered, COACTUPC takes its fresh-entry path: it sends
+# COACTUP with the search-key prompt and no message, sets CDEMO-PGM-REENTER and
+# ACUP-DETAILS-NOT-FETCHED, and returns TRANSID CAUP with its COMMAREA
+# [app/cbl/COACTUPC.cbl:964-973,1007-1019,2955-2981]. No file is read.
+# Step 3: ENTER under CAUP with ACCTSID 99999999999. The COMMAREA is re-entered,
+# so WHEN OTHER runs 1000-PROCESS-INPUTS: the id is numeric and non-zero, so
+# 1210-EDIT-ACCOUNT makes it CDEMO-ACCT-ID and sets FLG-ACCTFILTER-ISVALID
+# [app/cbl/COACTUPC.cbl:996-1003,1051-1062,1429-1446,1783-1818].
+# 2000-DECIDE-ACTION: WHEN ACUP-DETAILS-NOT-FETCHED shares the PF12 branch, which
+# clears WS-RETURN-MSG and performs 9000-READ-ACCT [app/cbl/COACTUPC.cbl:2568-2580].
+# The READ of CXACAIX by the 11-byte account id finds no record (no CARDXREF
+# fixture record carries account 99999999999), so RESP is NOTFND: INPUT-ERROR and
+# FLG-ACCTFILTER-NOT-OK are set and the message is composed; 9000-READ-ACCT ends
+# before ACCTDAT or CUSTDAT is read [app/cbl/COACTUPC.cbl:3608-3622,3654-3685].
+#
+# The composed message, derived from the STRING (no TPE region runs in CI):
+# - 'Account:' (8), WS-CARD-RID-ACCT-ID-X (11), ' not found in' (13),
+#   ' Cross ref file.  Resp:' (23), ERROR-RESP X(10), ' Reas:' (6) and
+#   ERROR-RESP2 X(10) make 81 characters, DELIMITED BY SIZE, into the 75-byte
+#   WS-RETURN-MSG [app/cbl/COACTUPC.cbl:401-406,479]. The STRING has no ON
+#   OVERFLOW clause, so it stops at byte 75: only the first 4 characters of
+#   ERROR-RESP2 appear.
+# - MOVE of the S9(9) COMP RESP and RESP2 to X(10) gives 9 unsigned digits and a
+#   trailing space: NOTFND, DFHRESP 13, shows as '000000013 '; READ NOTFND has
+#   RESP2 80, '000000080 ', of which '0000' fits. Any RESP2 below 100000 shows the
+#   same 4 characters.
+# - 3250-SETUP-INFOMSG moves the 75-byte message to the 78-byte ERRMSG, padding
+#   it with 3 spaces [app/cbl/COACTUPC.cbl:2981].
+# Screen 3 also shows the entered id, because 3200-SETUP-SCREEN-VARS moves
+# CC-ACCT-ID to ACCTSID once the program is re-entered, and no '*' replaces it
+# because the filter is not blank; the detail fields stay at LOW-VALUES
+# (3201-SHOW-INITIAL-VALUES) and INFOMSG keeps the search-key prompt, since the
+# details are still not fetched [app/cbl/COACTUPC.cbl:2698-2726,2955-2977,3176-3185].
+#
+# Screen fields are compared at their full BMS length, trailing spaces kept:
+# ERRMSG 78, INFOMSG 45, TITLE01, TITLE02 and OPTN002 40 [app/bms/COACTUP.bms]
+# [app/bms/COMEN01.bms]. CURDATE (mm/dd/yy) and CURTIME come from the region
+# clock through CSDAT01Y, hence the matchers and clock_mode relative. ACCTSID on
+# the first COACTUP screen is LOW-VALUES and is not asserted. The UniKix copy of
+# COACTUP.bms lacks the unnamed field at row 1, columns 1-9 (GAP-DOC-025).
+id: ACT-COACTUPC-negative-007
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects main-menu option 2 (Account Update), and enters
+  account 99999999999, which no card cross-reference record holds, on the
+  COACTUPC screen (CAUP). The READ of CXACAIX by account id returns NOTFND, so
+  the message line shows the composed not-found text with the account id, the
+  RESP code 000000013 and the first four characters of RESP2, cut off where the
+  75-byte return message ends. The screen keeps the entered account id and the
+  search-key prompt, and neither the account nor the customer master is read.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs, the CSD file it reads, and the online-only copybooks COACTUPC copies.
+# Sign-on and the menu (CC00, CM00, COSGN00, USRSEC) are verified by the SEC and
+# MNU scenarios; ACCTDAT and CUSTDAT are not read on this path; the batch record
+# copybooks and the data files are verified at the lowest level that executes them.
+inventory_ids:
+- INV-ACT-059  # COACTUPC message 'Account:<id> not found in Cross ref file.  Resp:<RESP> Reas:<RESP2>'
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, where option 2 is entered
+- INV-ACT-004  # COACTUP map, the prompt and the not-found screen
+- INV-CFG-009  # CAUP transaction, which runs the account lookup
+- INV-CFG-006  # CXACAIX CSD file: card cross-reference by account id, NOTFND
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and the account id
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-007  # CSLKPCDY, copied by COACTUPC
+- INV-LAY-008  # CSMSG01Y, copied by COACTUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COACTUPC
+- INV-LAY-010  # CSSETATY: the attribute settings of 3300-SETUP-SCREEN-ATTRS
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
+- INV-LAY-013  # CSUTLDPY, copied by COACTUPC
+- INV-LAY-014  # CSUTLDWY, copied by COACTUPC
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-025  # the UniKix COACTUP.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+    CARDXREF: {base: CARDXREF}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '2'
+  - aid: ENTER
+    '@map': COACTUP
+    fields:
+      ACCTSID: '99999999999'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '99999999999'
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: 'Account:99999999999 not found in Cross ref file.  Resp:000000013  Reas:0000   '
