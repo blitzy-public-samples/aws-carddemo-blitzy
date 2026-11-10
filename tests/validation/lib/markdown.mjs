@@ -10,8 +10,15 @@
  * Portability guard: the suite moves unchanged to the delivery repository, so no
  * helper ever opens, stats or lists anything under the CardDemo reference roots
  * (app/, diagrams/, samples/) or outside the repository. File helpers take
- * repository-root-relative POSIX paths and throw on such a path; callers classify
- * link targets with isReferencePath before touching the filesystem.
+ * repository-root-relative POSIX paths and throw on such a path, judged lexically and
+ * then through every symbolic link in it: each component is examined with lstat from
+ * the repository root, a link's relative target is resolved from the link's own folder,
+ * and a destination outside the repository or inside a reference root, an absolute link
+ * target, or a chain of more than 40 links throws before the destination is touched.
+ * Past a missing component the path is judged by its lexical destination, so a dangling
+ * link into a reference root throws here and in the delivery repository alike. Walks
+ * confine every link they meet the same way, and listEntries never follows one.
+ * Callers classify link targets with isReferencePath before touching the filesystem.
  *
  * Node.js built-ins only (node:fs, node:path, node:url); no side effect at import
  * time beyond computing repoRoot. Every parser is fence-aware: headings, tables,
@@ -29,7 +36,14 @@ export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)
 /** Top-level CardDemo reference roots that validation must never read. */
 export const REFERENCE_ROOTS = Object.freeze(['app', 'diagrams', 'samples']);
 
-const SKIPPED_DIRS = new Set(['node_modules', '.git']);
+/**
+ * Root-relative paths that both walkers, listFiles and listEntries, neither report nor
+ * descend: the repository's own metadata and installed packages at its root, the suite's
+ * installed tools, and the reference roots. Each is matched as a whole root-relative path,
+ * so a node_modules or .git anywhere else, under docs/ for example, is listed like any
+ * other content.
+ */
+const LISTING_EXCLUSIONS = new Set(['.git', 'node_modules', 'tests/validation/node_modules', ...REFERENCE_ROOTS]);
 
 /**
  * True when a root-relative path points into a reference root. Pure: never touches disk.
@@ -43,7 +57,20 @@ export function isReferencePath(rel) {
   return REFERENCE_ROOTS.includes(p.split('/')[0]);
 }
 
-/** Resolves a root-relative path to an absolute one, enforcing the portability guard. */
+/** Most symbolic links one path may pass through, the same limit Linux applies. */
+const MAX_LINK_HOPS = 40;
+
+/**
+ * Resolves a root-relative path to an absolute one, enforcing the portability guard: the
+ * lexical path is tested first, then every symbolic link in it is followed by confineLinks
+ * before anything touches the destination. The returned path is the lexical one, which
+ * reaches only the destination confined here.
+ * @param {string} rel
+ * @returns {string}
+ * @throws {Error} `path outside repository: <rel>`, `reference source is off-limits to
+ *   validation: <rel>` or `too many symbolic links: <rel>`; when a symbolic link led there,
+ *   the message ends with `(symbolic link <link> -> <target>)`
+ */
 function toAbs(rel) {
   const r = String(rel ?? '');
   const abs = path.resolve(repoRoot, r === '' ? '.' : r);
@@ -55,7 +82,62 @@ function toAbs(rel) {
   if (REFERENCE_ROOTS.includes(segments[0])) {
     throw new Error(`reference source is off-limits to validation: ${r}`);
   }
+  confineLinks(r, fromRoot === '' ? [] : segments);
   return abs;
+}
+
+/**
+ * The physical half of the guard. Walks the lexically normalised components of `rel` from
+ * repoRoot one at a time with lstat, which never follows a link. A symbolic link is replaced
+ * by its target, resolved from the link's own folder: each `..` leaves a folder already
+ * resolved, and leaving repoRoot is outside the repository. Each resolved prefix is tested
+ * against the reference roots before it is touched, so nothing under them is ever statted.
+ * An absolute target throws, because it does not move with the repository, and so does a
+ * chain of more than MAX_LINK_HOPS links. Once a component is missing (ENOENT) or sits
+ * under a non-folder (ENOTDIR), the rest of the path is judged by its lexical destination,
+ * so a dangling link into a reference root throws here and in the delivery repository alike.
+ * @param {string} r the caller's path, for messages
+ * @param {string[]} segments lexically normalised components below repoRoot
+ */
+function confineLinks(r, segments) {
+  const resolved = [];
+  const pending = [...segments];
+  let hops = 0;
+  let physical = true;
+  let via = '';
+  while (pending.length > 0) {
+    const name = pending.shift();
+    if (name === '' || name === '.') continue;
+    if (name === '..') {
+      if (resolved.length === 0) throw new Error(`path outside repository: ${r}${via}`);
+      resolved.pop();
+      continue;
+    }
+    resolved.push(name);
+    if (REFERENCE_ROOTS.includes(resolved[0])) {
+      throw new Error(`reference source is off-limits to validation: ${r}${via}`);
+    }
+    if (!physical) continue;
+    const abs = path.join(repoRoot, ...resolved);
+    let stat;
+    try {
+      stat = fs.lstatSync(abs);
+    } catch (err) {
+      if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw err;
+      physical = false;
+      continue;
+    }
+    if (!stat.isSymbolicLink()) continue;
+    const target = fs.readlinkSync(abs, 'utf8');
+    via = ` (symbolic link ${resolved.join('/')} -> ${target})`;
+    if (path.isAbsolute(target)) {
+      throw new Error(`path outside repository: ${r}${via.slice(0, -1)}, an absolute target that does not move with the repository)`);
+    }
+    hops += 1;
+    if (hops > MAX_LINK_HOPS) throw new Error(`too many symbolic links: ${r}${via}`);
+    resolved.pop();
+    pending.unshift(...target.split('/'));
+  }
 }
 
 /**
@@ -80,66 +162,116 @@ export function exists(rel) {
 }
 
 /**
+ * 'file', 'dir' or 'other' for an existing root-relative path, null when it is missing or
+ * sits under a non-directory (ENOENT, ENOTDIR). The portability guard runs first, so a
+ * symbolic link is followed only once its destination is confined.
+ * @param {string} rel
+ * @returns {'file' | 'dir' | 'other' | null}
+ */
+export function pathKind(rel) {
+  return statKind(toAbs(rel));
+}
+
+/** pathKind for an absolute path the guard has already confined; follows symbolic links. */
+function statKind(abs) {
+  let stat;
+  try {
+    stat = fs.statSync(abs);
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return null;
+    throw err;
+  }
+  return stat.isFile() ? 'file' : stat.isDirectory() ? 'dir' : 'other';
+}
+
+/**
+ * The guarded start of a walk as { abs, rel } with rel in root-relative POSIX form, or null
+ * when the directory is missing or is not a directory.
+ */
+function walkStart(relDir) {
+  const abs = toAbs(relDir);
+  if (statKind(abs) !== 'dir') return null;
+  return { abs, rel: path.relative(repoRoot, abs).split(path.sep).join('/') };
+}
+
+/**
+ * Depth-first walk that never follows a symbolic link: entries come from readdir's Dirents,
+ * so a link is seen as itself and its target is neither statted nor read here.
+ * visit(entry, childRel, childAbs) sees every entry, and the walk descends into a real
+ * directory only when visit returns true.
+ */
+function walkDirents(absDir, relPosix, visit) {
+  for (const entry of fs.readdirSync(absDir, { withFileTypes: true })) {
+    const childRel = relPosix === '' ? entry.name : `${relPosix}/${entry.name}`;
+    const childAbs = path.join(absDir, entry.name);
+    if (visit(entry, childRel, childAbs) && entry.isDirectory()) walkDirents(childAbs, childRel, visit);
+  }
+}
+
+/**
  * Lists every file below a root-relative directory, recursively, as sorted root-relative
  * POSIX paths. Dotfiles are included so the path-form gate of the Epic and Story
- * Structure — Multi-File Variant rule sees stray files; node_modules
- * and .git are skipped at any depth, and the reference roots are skipped when walking
- * from the repository root. A missing path or a non-directory gives [].
+ * Structure — Multi-File Variant rule sees stray files. Only LISTING_EXCLUSIONS are left
+ * out: .git and node_modules directly under the repository root, tests/validation/node_modules,
+ * and the reference roots when walking from the root; a node_modules or .git anywhere else
+ * is listed like other content. The start directory and every symbolic link met pass the
+ * portability guard before anything stats them, and an unsafe link throws. A safe link to a
+ * file is listed under its own path, a link to a folder is not descended, so a link can
+ * neither loop nor widen the walk, and a dangling link is skipped. A missing path or a
+ * non-directory gives [].
  * @param {string} relDir
  * @param {{ exts?: string[] }} [options] extensions matched case-sensitively against path.extname
  * @returns {string[]}
+ * @throws {Error} the portability guard's error for an unsafe start directory or link
  */
 export function listFiles(relDir, { exts } = {}) {
   if (exts != null && !Array.isArray(exts)) {
     throw new TypeError('listFiles: exts must be an array of extensions such as [".md"]');
   }
-  const startAbs = toAbs(relDir);
-  let startStat;
-  try {
-    startStat = fs.statSync(startAbs);
-  } catch (err) {
-    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return [];
-    throw err;
-  }
-  if (!startStat.isDirectory()) return [];
-
+  const start = walkStart(relDir);
+  if (start === null) return [];
   const extSet = exts ? new Set(exts) : null;
-  const startRel = path.relative(repoRoot, startAbs).split(path.sep).join('/');
+  const wanted = (name) => !extSet || extSet.has(path.extname(name));
   const out = [];
-  const walk = (absDir, relPosix) => {
-    for (const entry of fs.readdirSync(absDir, { withFileTypes: true })) {
-      const name = entry.name;
-      const childAbs = path.join(absDir, name);
-      const childRel = relPosix === '' ? name : `${relPosix}/${name}`;
-      let isDir = entry.isDirectory();
-      let isFile = entry.isFile();
-      if (entry.isSymbolicLink()) {
-        // Symlinked files are followed; symlinked directories are not descended, so a
-        // link cannot loop or lead the walk outside the guarded tree.
-        let target;
-        try {
-          target = fs.statSync(childAbs);
-        } catch (err) {
-          if (err.code === 'ENOENT') continue; // dangling link: no file to report
-          throw err;
-        }
-        isDir = false;
-        isFile = target.isFile();
-      }
-      if (isDir) {
-        if (SKIPPED_DIRS.has(name)) continue;
-        if (relPosix === '' && REFERENCE_ROOTS.includes(name)) continue;
-        walk(childAbs, childRel);
-      } else if (isFile) {
-        // A .git file is a worktree or submodule pointer, never repository content.
-        if (name === '.git') continue;
-        if (extSet && !extSet.has(path.extname(name))) continue;
-        out.push(childRel);
-      }
+  walkDirents(start.abs, start.rel, (entry, childRel, childAbs) => {
+    if (LISTING_EXCLUSIONS.has(childRel)) return false;
+    if (entry.isSymbolicLink()) {
+      toAbs(childRel);
+      if (statKind(childAbs) === 'file' && wanted(entry.name)) out.push(childRel);
+      return false;
     }
-  };
-  walk(startAbs, startRel);
+    if (entry.isFile() && wanted(entry.name)) out.push(childRel);
+    return entry.isDirectory();
+  });
   return out.sort(compareCodeUnits);
+}
+
+/**
+ * Every entry below a root-relative directory, recursively, as { path, type } sorted by
+ * path in code-unit order, with type 'file', 'dir', 'symlink' or 'other'. A symbolic link
+ * is reported as 'symlink' and never followed, statted or read; only real directories are
+ * descended. LISTING_EXCLUSIONS are neither reported nor descended, the same as in
+ * listFiles, so the reference roots are never listed, even from the repository root; a
+ * node_modules or .git anywhere else is reported like other content. The start directory
+ * passes the portability guard first. A missing path or a non-directory gives [].
+ * @param {string} relDir
+ * @returns {{ path: string, type: 'file' | 'dir' | 'symlink' | 'other' }[]}
+ * @throws {Error} the portability guard's error for an unsafe start directory
+ */
+export function listEntries(relDir) {
+  const start = walkStart(relDir);
+  if (start === null) return [];
+  const out = [];
+  walkDirents(start.abs, start.rel, (entry, childRel) => {
+    if (LISTING_EXCLUSIONS.has(childRel)) return false;
+    let type = 'other';
+    if (entry.isSymbolicLink()) type = 'symlink';
+    else if (entry.isDirectory()) type = 'dir';
+    else if (entry.isFile()) type = 'file';
+    out.push({ path: childRel, type });
+    return type === 'dir';
+  });
+  return out.sort((a, b) => compareCodeUnits(a.path, b.path));
 }
 
 function compareCodeUnits(a, b) {
@@ -898,8 +1030,11 @@ export function intStrict(s) {
 /**
  * Prints each violation as `<check>: <path>:<line>: <message>` (`:<line>` omitted when
  * absent, `<check>: <message>` when path is empty), sorted by path, line and message,
- * then the final line `<check>: <N> violation(s)` that run-all.sh parses. Sets
- * process.exitCode to 0 or 1 and returns N; never calls process.exit.
+ * then the final line `<check>: <N> violation(s)` that run-all.sh parses. Each
+ * violation is exactly one physical line: every CR in path or message prints as the
+ * two characters `\r` and every LF as `\n`; nothing else is escaped, and sorting uses
+ * the raw values. Sets process.exitCode to 0 or 1 and returns N; never calls
+ * process.exit.
  * @param {string} check
  * @param {{ path: string, line?: number, message: string }[]} violations
  * @returns {number}
@@ -914,10 +1049,15 @@ export function report(check, violations) {
     (a, b) =>
       compareCodeUnits(a.path, b.path) || (a.line ?? 0) - (b.line ?? 0) || compareCodeUnits(a.message, b.message),
   );
+  // Printed text only: CR and LF become the two characters \r and \n, so each
+  // violation stays one physical line and the count line stays the last one.
+  const oneLine = (s) => s.replace(/[\r\n]/g, (c) => (c === '\r' ? '\\r' : '\\n'));
   for (const v of list) {
-    if (v.path === '') console.log(`${check}: ${v.message}`);
-    else if (v.line === undefined) console.log(`${check}: ${v.path}: ${v.message}`);
-    else console.log(`${check}: ${v.path}:${v.line}: ${v.message}`);
+    const p = oneLine(v.path);
+    const m = oneLine(v.message);
+    if (p === '') console.log(`${check}: ${m}`);
+    else if (v.line === undefined) console.log(`${check}: ${p}: ${m}`);
+    else console.log(`${check}: ${p}:${v.line}: ${m}`);
   }
   console.log(`${check}: ${list.length} violation(s)`);
   process.exitCode = list.length === 0 ? 0 : 1;
@@ -926,15 +1066,27 @@ export function report(check, violations) {
 
 /**
  * Absolute path of a locally installed tool binary (buf, spectral, mmdc) under
- * tests/validation/node_modules/.bin, or null when it is not installed. Callers run it
- * with cwd repoRoot and report a missing binary as their own violation.
- * @param {string} name
+ * tests/validation/node_modules/.bin, or null when it is not installed. The path is
+ * returned only when the entry, after following its link, is a regular file; a missing
+ * entry, a dangling link, a link loop, a directory or any other non-file gives null.
+ * There is no fallback to PATH. Callers run it with cwd repoRoot and report a missing
+ * binary as their own violation.
+ * @param {string} name a single file name, never '', '.', '..' or a path
  * @returns {string | null}
+ * @throws {TypeError} when name is not a single file name
  */
 export function toolBin(name) {
   const n = String(name ?? '');
-  if (n === '' || n !== path.basename(n)) throw new TypeError(`toolBin: not a binary name: ${n}`);
+  if (n === '' || n === '.' || n === '..' || n.includes('\0') || n !== path.basename(n)) {
+    throw new TypeError(`toolBin: not a binary name: ${n}`);
+  }
   const bin = path.join(repoRoot, 'tests', 'validation', 'node_modules', '.bin', n);
-  return fs.existsSync(bin) ? bin : null;
+  let stat;
+  try {
+    stat = fs.statSync(bin);
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR' || err.code === 'ELOOP') return null;
+    throw err;
+  }
+  return stat.isFile() ? bin : null;
 }
-

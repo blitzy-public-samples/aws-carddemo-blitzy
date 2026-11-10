@@ -26,12 +26,11 @@
  * working directory).
  * Exit: 0 with no violations, 1 with violations, 2 on an internal error or a bad argument.
  */
-import fs from 'node:fs';
 import path from 'node:path';
 import {
-  repoRoot,
   readText,
   exists,
+  pathKind,
   listFiles,
   parseLinks,
   resolveLink,
@@ -118,14 +117,11 @@ function isFsError(err) {
 /**
  * 'file' for a regular file, 'dir' for a directory, 'other' for anything else (a FIFO, socket or
  * device, never opened) and null when nothing is there. Callers classify delivery-set membership
- * first; exists() runs before the stat so the shared library's guard rejects repository escapes
- * and the reference roots before any filesystem access.
+ * first; pathKind runs the shared library's guard, which rejects a path or symbolic link leading
+ * outside the repository or into a reference root, before the stat that tells them apart.
  */
 function kindOf(rel) {
-  if (!exists(rel)) return null;
-  const stat = fs.statSync(path.join(repoRoot, rel));
-  if (stat.isFile()) return 'file';
-  return stat.isDirectory() ? 'dir' : 'other';
+  return pathKind(rel);
 }
 
 /**

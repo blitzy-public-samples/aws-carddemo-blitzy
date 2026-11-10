@@ -76,6 +76,7 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 > - Stub failure injection and the stub request log (CS-11-002).
 > - Per-client degrade or fail-hard handling of a returned status (CS-09-005, CS-10-006, CS-11-006, CS-12-002, CS-13-003).
 > - Endpoint deadline outcomes, including starting the request deadline at receipt and marking the cut-off (CS-05-005, CS-06-002, CS-07-002, CS-08-002).
+>   > SCOPE-QUESTION (Resolved): On the category balances route the cut-off after an allow is marked by the category balance REST and gRPC endpoints story (CS-06-003), whose adapters mark it right after the Stage 3 unknown-`typeCode` check, while the retrieval story (CS-06-002) marks it only for its own 404, 503 and 504 and keeps the endpoint deadline outcomes.
 > - The real-channel proof of this policy (CS-09-006, CS-10-007, CS-11-007, CS-12-005, CS-13-004).
 >
 > ### 2. Acceptance Criteria

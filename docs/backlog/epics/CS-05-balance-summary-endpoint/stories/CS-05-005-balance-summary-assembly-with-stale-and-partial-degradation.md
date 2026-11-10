@@ -68,6 +68,9 @@ Parent epic: [CS-05 Balance Summary Endpoint](../README.md)
 > - AC9: When `GetAccount` returns `NOT_FOUND` for an account the caller is entitled to, the request returns 404 `NOT_FOUND`, whatever the other two reads return. The Card Data stub log shows exactly one `GetAccount` call, with no retry.
 > - AC10: With a Card Data stub latency of 350 ms, an empty cache and healthy Auth, the Card Data stub request log records every `GetAccount` attempt as ending within 30 ms after the lesser of 300 ms (`UPSTREAM_TIMEOUT_MS`) and the budget left when the attempt started. The log shows exactly 2 attempts, and the request returns 504 `DEADLINE_EXCEEDED`.
 > - AC11: On `UNAVAILABLE` or `DEADLINE_EXCEEDED`, a read is retried at most two times (`UPSTREAM_MAX_RETRIES`), with 50 ms then 100 ms backoff. A retry starts only if its backoff plus a full 300 ms attempt fits the remaining budget. `NOT_FOUND` and `INVALID_ARGUMENT` are never retried. With the Card Data stub failing every call, its request log shows exactly 3 `GetAccount` attempts, at least 50 ms and then at least 100 ms apart; with a latency of 400 ms it shows exactly 2.
+>
+> SCOPE-QUESTION (Resolved): AC11 takes the spacing of the `GetAccount` attempts from the Card Data stub request log, but a log entry of the stub hosting story (CS-11-002) holds a sequence number, the operation, the outcome and the duration from receipt to close, and no arrival time. The request log proves the count and the outcomes: exactly 3 `GetAccount` entries with outcome `UNAVAILABLE` under the injected `STUB_FAILURE_RATE` 1.0, and exactly 2 at a latency of 400 ms. Because `StubFailureInjector` answers an injected failure before the stub's service definition sees the call, the spacing is measured in `BalanceSummaryAssemblerTest` by a test-local Card Data `StubRegistration` under stub name `card-data`, which `StubHarness.allRegistered()` never discovers. Its handler answers every `GetAccount` at once with `UNAVAILABLE`, serves the other Card Data reads from the stub's fixture set, and records each `GetAccount` arrival time on the monotonic `System.nanoTime()` clock, not the controllable test clock, as it receives the call. AC11's spacing holds when there are exactly 3 arrivals, the second at least 50 ms after the first and the third at least 100 ms after the second. The request log of CS-11-002 stays unchanged, and the 5 files stand.
+>
 > - AC12: For every degraded 200, 503 and 504 in AC5–AC11, the completion log line's `cutoffMs` is at most 900 (`REQUEST_DEADLINE_MS`), the line carries the outcome and the receipt `traceId`, and the client-measured response arrives below 1,000 ms. The same holds on a cold path with an Auth stub latency of 250 ms beside the AC10 Card Data latency, where the Card Data stub log shows exactly one `GetAccount` attempt and the request returns 504.
 >
 > SCOPE-QUESTION (Resolved): AC12 states its cut-off bound as `cutoffMs` at most 900 without a unit. The bound is the 900 ms request deadline (`REQUEST_DEADLINE_MS`), measured from receipt to the cut-off, so AC12 requires the cut-off of every request it names to fall at or before 900 ms after receipt.
@@ -107,7 +110,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass, with ≥80% line coverage per module. Cases: AC1–AC15 against in-JVM loopback stubs with per-test `STUB_LATENCY_MS` and `STUB_FAILURE_RATE`. Deadline cases assert a logged `cutoffMs` ≤ 900 and a client response below 1,000 ms.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass, with ≥80% line coverage per module. Cases: AC1–AC15 against in-JVM loopback stubs with per-test `STUB_LATENCY_MS` and `STUB_FAILURE_RATE`. The AC11 spacing case takes the `GetAccount` arrival times recorded by a test-local Card Data registration that answers `UNAVAILABLE` at once, and the attempt count and outcomes from the stub request log. Deadline cases assert a logged `cutoffMs` ≤ 900 and a client response below 1,000 ms.
 - Integration: Not applicable — the integration suites belong to the external epics, the Card Data and Reference Data integration suites (CS-09-006, CS-13-004). Threshold when it applies: `./gradlew :card-servicing-service:integrationTest` passes, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS`, and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Applies, through the account balance summary SLA scenario (CS-01-005).
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -224,11 +227,11 @@ Settled assumptions:
 - The clients apply each read's degrade rule.
 - Cache entries carry their write time.
 - Foreign keys keep every balance type present in reference data.
+- Each source degrades on its own, so a stale account entry may stand beside fresh balances and the summary is then marked stale.
 
 Open assumptions:
 
-- Open → the load of three concurrent calls on the real card data service, settled when the real service replaces the stub.
-- Open → whether a stale account may appear beside fresh balances, settled by the Requirements Analysis author.
+- Open → the load of two concurrent calls on the real card data service and one on the real reference data service, settled when the real services replace the stubs.
 
 | AC | Verdict | Why |
 |---|---|---|
@@ -256,11 +259,11 @@ Settled assumptions:
 - The clients apply each read's degrade rule.
 - Cache entries carry their write time.
 - Foreign keys keep every balance type present in reference data.
+- Each source degrades on its own, so a stale account entry may stand beside fresh balances and the summary is then marked stale.
 
 Open assumptions:
 
 - Open → the share of the budget each read receives, settled by measuring the three reads on the test stack.
-- Open → whether a stale account may appear beside fresh balances, settled by the Requirements Analysis author.
 
 | AC | Verdict | Why |
 |---|---|---|

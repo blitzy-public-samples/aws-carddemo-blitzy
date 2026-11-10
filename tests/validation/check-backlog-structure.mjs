@@ -47,13 +47,10 @@
  *    Structure — Base".
  * The plan-side half of that content gate is check-plan-consistency.mjs.
  */
-import fs from 'node:fs';
-import path from 'node:path';
 import {
-  repoRoot,
   readText,
-  exists,
-  listFiles,
+  pathKind,
+  listEntries,
   fencedBlocks,
   parseHeadings,
   sections,
@@ -284,50 +281,29 @@ function checkHeadingSequence(found, expected, rel, marks, v) {
 }
 
 /**
- * Every folder below a root-relative directory, plus entries listFiles does not report as
- * files (links to folders, dangling links, sockets), so empty or stray folders are caught.
- * Nothing is skipped: a node_modules or .git folder under the epics area is itself stray.
+ * Group S: path forms, folder and filename conventions, epic and story counts. The epics
+ * area is listed with listEntries, which never follows a symbolic link, so only real files
+ * reach readText. Every link, whatever its target, and every entry that is neither a file
+ * nor a folder is itself stray, and nothing is skipped: a node_modules or .git folder under
+ * the epics area is stray too.
  */
-function walkTree(relDir) {
-  const dirs = [];
-  const others = [];
-  const walk = (rel) => {
-    const abs = path.join(repoRoot, ...rel.split('/'));
-    const entries = fs.readdirSync(abs, { withFileTypes: true }).sort((a, b) => compare(a.name, b.name));
-    for (const entry of entries) {
-      const childRel = `${rel}/${entry.name}`;
-      if (entry.isDirectory()) {
-        dirs.push(childRel);
-        walk(childRel);
-      } else if (entry.isSymbolicLink()) {
-        let target = null;
-        try {
-          target = fs.statSync(path.join(abs, entry.name));
-        } catch (err) {
-          if (err.code !== 'ENOENT') throw err;
-        }
-        if (target === null) others.push({ path: childRel, kind: 'dangling symbolic link' });
-        else if (target.isDirectory()) others.push({ path: childRel, kind: 'symbolic link to a folder' });
-      } else if (!entry.isFile()) {
-        others.push({ path: childRel, kind: 'entry that is neither a file nor a folder' });
-      }
-    }
-  };
-  walk(relDir);
-  return { dirs, others };
-}
-
-/** Group S: path forms, folder and filename conventions, epic and story counts. */
 function checkPaths(v) {
-  if (!exists(EPICS_DIR)) {
-    v.push({ path: EPICS_DIR, message: 'epics area is missing' });
+  const kind = pathKind(EPICS_DIR);
+  if (kind !== 'dir') {
+    v.push({ path: EPICS_DIR, message: kind === null ? 'epics area is missing' : 'epics area is not a directory' });
     return { files: new Set(), epics: [], storyKeys: new Map() };
   }
   const prefix = `${EPICS_DIR}/`;
-  const files = listFiles(EPICS_DIR);
-  const { dirs, others } = walkTree(EPICS_DIR);
-  for (const o of others) {
-    v.push({ path: o.path, message: `${o.kind} under the epics area; only ${PATH_FORMS} may exist there` });
+  const dirs = [];
+  const files = [];
+  for (const entry of listEntries(EPICS_DIR)) {
+    if (entry.type === 'dir') dirs.push(entry.path);
+    else if (entry.type === 'file') files.push(entry.path);
+    else if (entry.type === 'symlink') {
+      v.push({ path: entry.path, message: `symbolic link under the epics area; only ${PATH_FORMS} may exist there` });
+    } else {
+      v.push({ path: entry.path, message: `entry that is neither a file nor a folder under the epics area; only ${PATH_FORMS} may exist there` });
+    }
   }
 
   const epicByFolder = new Map();

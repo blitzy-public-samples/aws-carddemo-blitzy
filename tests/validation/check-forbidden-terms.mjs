@@ -26,9 +26,7 @@
  * then `check-forbidden-terms: <N> violation(s)`. Exit status is 0 when N = 0, 1 when
  * N > 0, and 2 on an internal error or an invalid argument.
  */
-import fs from 'node:fs';
-import path from 'node:path';
-import { listFiles, readText, repoRoot, report } from './lib/markdown.mjs';
+import { listFiles, pathKind, readText, report } from './lib/markdown.mjs';
 
 const CHECK = 'check-forbidden-terms';
 const BACKLOG_DIR = 'docs/backlog';
@@ -80,12 +78,7 @@ const USAGE = [
 
 /** True when the root-relative path is an existing directory. */
 function isDirectory(rel) {
-  try {
-    return fs.statSync(path.join(repoRoot, rel)).isDirectory();
-  } catch (err) {
-    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return false;
-    throw err;
-  }
+  return pathKind(rel) === 'dir';
 }
 
 /**

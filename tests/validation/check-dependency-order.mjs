@@ -19,7 +19,6 @@
  * loosening this check.
  * Takes no arguments: -h or --help prints usage and exits 0; any other argument exits 2.
  */
-import fs from 'node:fs';
 import path from 'node:path';
 import {
   exists,
@@ -30,6 +29,7 @@ import {
   parseHeadings,
   parseMetadata,
   parseTables,
+  pathKind,
   plainText,
   readText,
   report,
@@ -767,16 +767,13 @@ function checkInventory(edges, storyTable, derived, epicTable, add) {
 }
 
 /**
- * True when the root-relative path is a regular file, or a link to one. exists() is also
- * true for a directory, which readText cannot read.
+ * True when the root-relative path is a regular file, or a symbolic link the portability
+ * guard confines to one; false when it is missing, sits under a non-directory or is not a
+ * file. exists() is also true for a directory, which readText cannot read. The guard throws
+ * for an unsafe link before its target is statted.
  */
 function isFile(rel) {
-  try {
-    return fs.statSync(path.join(repoRoot, rel)).isFile();
-  } catch (err) {
-    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return false;
-    throw err;
-  }
+  return pathKind(rel) === 'file';
 }
 
 /**

@@ -108,7 +108,9 @@ Completed during implementation.
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
   - Pass: p50/p95/p99 below 1,000 ms over successful requests, with failure injection off, at 10 users × 100 sequential calls, 100,000 category balances and 1,000,000 transactions.
   - Injected failures are proven by a logged `cutoffMs` ≤ 900 and a client-measured response below 1,000 ms.
-- End-to-end: Not applicable — the category balance flow step is CS-02-001, which sends valid input only. Threshold when it applies: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:e2eTest`, then `docker compose -f tests/docker-compose.yml down`; the four-step flow for account `00000000001` returns the expected fixture values, and each stub's request log shows at least one call.
+- End-to-end: Applies, through the category balance end-to-end step (CS-02-001), which owns the end-to-end calls with a malformed and an unknown type code, both sent over REST for account `00000000001` with `fixture-token-user0001`. The `typeCode=1` call (CS-02-001 AC5) sends the one-character value of AC2 and asserts the empty request logs on all five stubs of AC4, both at Stage 0. The `typeCode=99` call (CS-02-001 AC4) exercises the Stage 3 rejection of AC5 with a usable type list and a `FRESH` category list, the latter read once from the Reference Data stub. The two 200 calls, with `typeCode=01` and with no `typeCode`, show the REST pass case of AC1. The step's expired-token 401 and access-denial 403 calls prove the account access guard (CS-12-003), not this story's rules. The boundaries not exercised there stay with the unit cases: `001`, the empty value and `A1`, the AC3 account numbers, both fields malformed (AC9), the `STALE` usable and the unusable category lists (AC5–AC7), the stored type with no category and the unusable type list (AC10 and AC11), the AC6 `KNOWN` and `NOT_REQUESTED` answers, the zero cache reads and the expired-token ordering of AC4, the AC8 trace and schema checks, and every gRPC case.
+  - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:e2eTest`, then `docker compose -f tests/docker-compose.yml down`.
+  - Pass: the four-step flow for account `00000000001` returns the expected fixture values, and each stub's request log shows at least one call. The `typeCode=1` call returns 400 with `code` `INVALID_ARGUMENT`, `message` "Transaction type code must be exactly 2 characters", a non-empty `traceId` and exactly one `details` entry for `typeCode`, and leaves the request logs of all five stubs empty. The `typeCode=99` call returns 400 with `code` `INVALID_ARGUMENT`, `message` "Transaction type code is unknown", a non-empty `traceId` and exactly one `details` entry for `typeCode`, with exactly one `ListTransactionCategories` call on the Reference Data stub, outcome `OK`.
 
 ## 7. Validation Results
 
@@ -196,11 +198,12 @@ Settled assumptions:
 - The HTTP interface description declares exactly two characters of any kind for the type code.
 - The reference data client returns one result per list, each stating whether the list is usable and whether it holds a type code.
 - The account number rule and the receipt stage come from the shared validator story.
+- The category balance type labels come from the type list and the category labels from the category list, as the retrieval story settles, because a category carries no type description.
+- The retrieval hands on the type list result beside the category list result to the known-type check, as the retrieval story settles.
 
 Open assumptions:
 
 - Open → the reference data client's usability signal distinguishes a list within its maximum stale age from an unusable one, settled by that story's unit tests.
-- Open → the retrieval hands on the type list result beside the category list result, settled by the retrieval story.
 
 | AC | Verdict | Why |
 |---|---|---|
