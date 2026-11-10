@@ -1,0 +1,37 @@
+# Derived baseline of MNU-COADM01C-alternate-02. Only unikix can run the
+# scenario, so expected.yaml is authored from the source and is
+# inferred-not-observed (GAP-INF-003, GAP-INF-012); it pins GAP-DOC-019. It
+# names no execution_id or execution_fingerprint and holds no datasets/ until
+# an eligible UniKix run is imported (report.py --import-unikix).
+#
+# source_identity.units are the app/ sources the four expected screens are
+# derived from, each program with its COPY closure (DFHAID and DFHBMSCA are
+# CICS-supplied): COADM01C, entered without a COMMAREA, XCTLs to COSGN00C
+# [app/cbl/COADM01C.cbl:82-84,160-167]; COSGN00C renders the sign-on screens
+# and the plain-text farewell, with the COSGN00 map. COMEN01C and the COMEN01
+# map are included as well: the steps pass through the main menu, whose
+# screen and PF3 return are asserted on screens 1 and 2, and a source identity
+# names every program and map the expected outcome was derived from.
+baseline_version: 1.0.0
+capture_date: '2026-11-10'
+capture_platform: derived
+source_commit: 4f2b836d1d24e280b78fb588c22b1942c806a09a
+source_identity:
+  commit: 4f2b836d1d24e280b78fb588c22b1942c806a09a
+  tree: app
+  units:
+    app/bms/COMEN01.bms: f87af09e6f60ab198d5c05817e3007361a6d29ed957322ef25b11c5420c84b4c
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
+    app/cbl/COADM01C.cbl: 69842c4dd419ed70365682d65423d2744173f3eec695b25b5ed27bd29289608d
+    app/cbl/COMEN01C.cbl: ad5e376ac9221b21b8ce47597a5ca17fc1f39dc913793c814c6675e9b046fc09
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cpy-bms/COADM01.CPY: ced4c34fdb3fa4284561d83ff8e273cef2a1b45cefc36e56c34da6fec5528006
+    app/cpy-bms/COMEN01.CPY: 21275363519e57f47c5c7842178344208f3ad773a551e74e5eeff285c775ad5c
+    app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
+    app/cpy/COADM02Y.cpy: 71015b5a8770e9e3733023cd6a6fa66dd4d8b528739b7a31e07433f71a044bc5
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COMEN02Y.cpy: 22b1be06734c9ae91a25c4b544f9a9c4c85ab3f281a3d3bcc0765fb17e585d85
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb

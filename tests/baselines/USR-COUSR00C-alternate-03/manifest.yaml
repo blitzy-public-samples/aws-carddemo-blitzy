@@ -1,0 +1,30 @@
+# Manifest of the derived baseline of USR-COUSR00C-alternate-03: only unikix
+# can run the scenario, so expected.yaml was authored from the NOTFND path of
+# the user-id search in app/cbl/COUSR00C.cbl:149-232,282-331,522-614,687-691
+# (derived_from: source), not captured, and is inferred-not-observed
+# (GAP-INF-004, GAP-INF-012). It names no execution_id or
+# execution_fingerprint and holds no datasets/*.bin until an eligible UniKix
+# run is imported (report.py --import-unikix).
+#
+# source_identity.units are COUSR00C's COPY closure, as harness.results
+# computes it for a program, plus the BMS source of its map COUSR00. The
+# sign-on and admin-menu steps only reach the list screen, whose content their
+# own scenarios pin, so their programs are not listed. DFHAID and DFHBMSCA are
+# CICS-supplied and not in the repository.
+baseline_version: 1.0.0
+capture_date: '2026-11-10'
+capture_platform: derived
+derived_from: source
+source_commit: 4f2b836d1d24e280b78fb588c22b1942c806a09a
+source_identity:
+  commit: 4f2b836d1d24e280b78fb588c22b1942c806a09a
+  tree: app
+  units:
+    app/bms/COUSR00.bms: 82a453530e4457e45f8af028b68307f7049e24fa13fedb8644007f68a9738f88
+    app/cbl/COUSR00C.cbl: 831433c6ec8306038c85cb86a8307f91dca48c26ef33a997f402187cbd9f4e04
+    app/cpy-bms/COUSR00.CPY: 88c9031484d3bd2da62488c6941c431ee3b910b3feaf7918762968ba0bb9c318
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb

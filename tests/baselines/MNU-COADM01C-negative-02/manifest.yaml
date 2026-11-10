@@ -1,0 +1,30 @@
+# Manifest of the derived baseline of MNU-COADM01C-negative-02 (PF5 on the
+# admin menu). Only unikix can run the scenario, so expected.yaml is authored
+# from the source and is inferred-not-observed (GAP-INF-003, GAP-INF-012). It
+# names no execution_id or execution_fingerprint and holds no datasets/ until
+# an eligible UniKix run is imported (report.py --import-unikix).
+#
+# source_identity.units are the app/ sources the expected screens are derived
+# from: COADM01C's reentry WHEN OTHER path and its SEND-MENU-SCREEN header and
+# option build [app/cbl/COADM01C.cbl:92-103,172-263], CCDA-MSG-INVALID-KEY
+# [app/cpy/CSMSG01Y.cpy:20-21], the four options of COADM02Y that fill
+# OPTN001-OPTN004, the TITLE01/TITLE02 texts of COTTL01Y, the field lengths of
+# the COADM01 map, and CSDAT01Y, whose '/' and ':' fillers and 8-byte MM/DD/YY
+# and HH:MM:SS fields give the asserted CURDATE and CURTIME formats
+# [app/cpy/CSDAT01Y.cpy:30-41]. COSGN00C only routes ADMIN001 to COADM01C, and
+# COCOM01Y, CSUSR01Y and the symbolic map shape no asserted value, so they are
+# not listed.
+baseline_version: 1.0.0
+capture_date: '2026-11-10'
+capture_platform: derived
+source_commit: 4f2b836d1d24e280b78fb588c22b1942c806a09a
+source_identity:
+  commit: 4f2b836d1d24e280b78fb588c22b1942c806a09a
+  tree: app
+  units:
+    app/bms/COADM01.bms: 44a3f209e7fa8445355ab7ba687b3ac6e32ef4dfec225e04f4eb2bd57e39386a
+    app/cbl/COADM01C.cbl: 69842c4dd419ed70365682d65423d2744173f3eec695b25b5ed27bd29289608d
+    app/cpy/COADM02Y.cpy: 71015b5a8770e9e3733023cd6a6fa66dd4d8b528739b7a31e07433f71a044bc5
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda

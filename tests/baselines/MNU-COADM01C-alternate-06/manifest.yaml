@@ -1,0 +1,9 @@
+baseline_version: '1.0.0'
+capture_date: '2026-11-10'
+capture_platform: derived
+source_commit: 4f2b836d1d24e280b78fb588c22b1942c806a09a
+source_identity:
+  commit: 4f2b836d1d24e280b78fb588c22b1942c806a09a
+  tree: app
+  units:
+    app/cbl/COADM01C.cbl: 69842c4dd419ed70365682d65423d2744173f3eec695b25b5ed27bd29289608d
