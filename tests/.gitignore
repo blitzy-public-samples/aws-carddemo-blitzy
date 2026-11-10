@@ -1,0 +1,4 @@
+# Run-time output and Python bytecode that must never be committed.
+reports/runtime/
+__pycache__/
+*.pyc
