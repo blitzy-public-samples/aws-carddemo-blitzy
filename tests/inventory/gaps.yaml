@@ -194,6 +194,15 @@ gaps:
   needed: The owner's confirmation of intent. The behaviour is pinned as derived and never fixed under app/. The unikix outcome of ACT-COACTUPC-alternate-02 would show the redisplay on a live region.
   resolving_evidence: null
   status: open
+- gap_id: GAP-DEF-018
+  category: suspected-defect
+  unknown: 'COACTUPC names the field of each edit message through WS-EDIT-VARIABLE-NAME, declared PIC X(25) [app/cbl/COACTUPC.cbl:53], but moves the 26-character literal ''Current Cycle Credit Limit'' into it [app/cbl/COACTUPC.cbl:1515], so the MOVE truncates the name to ''Current Cycle Credit Limi''. 1250-EDIT-SIGNED-9V2 then composes ''Current Cycle Credit Limi must be supplied.'' and ''Current Cycle Credit Limi is not valid'' [app/cbl/COACTUPC.cbl:2189-2194,2207-2211], where the inventory items and every other field name read in full (''Current Cycle Debit Limit'' is exactly 25 characters). The UniKix copy declares the same X(25) and makes the same MOVE [migrated_app/cbl/COACTUPC.cl2:53,1515]. Whether the truncated text is intended is unknown; ACT-COACTUPC-negative-057 (blank field) and ACT-COACTUPC-negative-058 (not a signed amount) pin the truncated messages as derived.'
+  affected_inventory_ids:
+  - INV-ACT-115
+  - INV-ACT-116
+  needed: The owner's confirmation of intent. The behaviour is pinned as derived and never fixed under app/. The unikix outcome of the Current Cycle Credit Limit scenarios would show the message the region sends.
+  resolving_evidence: null
+  status: open
 - gap_id: GAP-DOC-001
   category: doc-conflict
   unknown: 'The tech spec counts 18 online programs ("eighteen CICS programs", Section 1.2.2.1; "Online Programs (18 CICS Programs)", Section 1.2.2.2; "Online Programs (app/cbl/CO*.cbl): 18 programs", Section 6.6.2.1.2), but app/cbl holds 17 online sources. COCRDSEC (''CREDIT CARD SEARCH'') exists only as a CSD definition [app/csd/CARDDEMO.CSD:211-218], started by transaction CDV1 ''DEVELOPER TRANSACTION - 1'' [app/csd/CARDDEMO.CSD:388-390]; neither app/cbl nor the UniKix copy''s migrated_app/cbl holds its source, so both items are unreachable.'
