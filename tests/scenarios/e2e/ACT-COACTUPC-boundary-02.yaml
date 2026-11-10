@@ -3,7 +3,7 @@
 # and 1275-EDIT-FICO-SCORE both pass, so no FICO message appears and the
 # change goes on to the confirmation prompt [app/cbl/COACTUPC.cbl:1545-1556,
 # 2109-2176,2514-2531]. The other FICO Score boundary scenarios take 299, 850
-# and 851; ACT-COACTUPC-negative-088 is the refusal well inside the range.
+# and 851; ACT-COACTUPC-negative-088 refuses 150, outside the accepted range.
 #
 # Steps 1-3 reach the fetched account as ACT-COACTUPC-normal-02 does: USER0001
 # signs on through CC00, chooses option 2 (Account Update) on COMEN01, and

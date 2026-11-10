@@ -121,9 +121,8 @@ gap_ids:
 # (COACTUPC.cl2:2462-2468), so a UniKix run shows 'SSN: First 3 chars' padded
 # to 25 bytes before the colon and never verifies the item.
 - GAP-DOC-022
-# Not in the planned gap list; cited as the other COACTUPC update scenarios
-# cite it: the UniKix COACTUP.bms differs at row 1, columns 1-9, where TRNNAME
-# stands.
+# The UniKix COACTUP.bms differs at row 1, columns 1-9, where TRNNAME stands;
+# the other COACTUPC update scenarios cite it too.
 - GAP-DOC-025
 preconditions:
   datasets:

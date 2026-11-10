@@ -94,14 +94,13 @@ gap_ids:
 # The UniKix COACTUPC changes the edits and the change detection this
 # acceptance passes through, so a UniKix run never verifies the item.
 - GAP-DOC-022
-# Not in the planned gap list; cited as the other COACTUPC update scenarios
-# cite it: the UniKix COACTUP.bms differs at row 1, columns 1-9, where TRNNAME
-# stands.
+# The UniKix COACTUP.bms differs at row 1, columns 1-9, where TRNNAME stands;
+# the other COACTUPC update scenarios cite it too.
 - GAP-DOC-025
-# Not in the planned gap list; cited as ACT-COACTUPC-normal-02 cites them for
-# the same save prompt: 'Changes validated' needs all four date edits to pass,
-# which rests on CEEDAYS accepting the dates (never observed, 001) and on the
-# CSUTLDTC (021) and CSUTLDPY (024) code the UniKix copy changes.
+# 'Changes validated' needs all four date edits to pass, which rests on CEEDAYS
+# accepting the dates (never observed, 001) and on the CSUTLDTC (021) and
+# CSUTLDPY (024) code the UniKix copy changes; ACT-COACTUPC-normal-02 cites them
+# for the same save prompt.
 - GAP-INF-001
 - GAP-DOC-021
 - GAP-DOC-024

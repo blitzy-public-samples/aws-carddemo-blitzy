@@ -102,9 +102,9 @@ gap_ids:
 # The UniKix CSUTLDPY drops FUNCTION TRIM from the field name of every composed
 # date-edit message, so a unikix run shows the copy's text, not this one.
 - GAP-DOC-024
-# Not in the planned gap list: the UniKix COACTUP.bms lacks the unnamed field at
-# row 1, columns 1-9, beside the TRNNAME this scenario asserts, and every
-# COACTUP scenario cites that difference.
+# The UniKix COACTUP.bms lacks the unnamed field at row 1, columns 1-9, beside
+# the TRNNAME this scenario asserts, and every COACTUP scenario cites that
+# difference.
 - GAP-DOC-025
 preconditions:
   datasets:

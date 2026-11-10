@@ -26,9 +26,14 @@
 #   Score, the names, the address, the state, the zip, the city, the country
 #   and Phone Number 1 pass with these fixtures and leave the message line off
 #   [app/cbl/COACTUPC.cbl:876,1472-1638].
-# - 1260-EDIT-US-PHONE-NUM receives '(919)555-' with LOW-VALUES in the line
-#   number. Its all-blank test fails on the area code '919', so the phone is
-#   edited part by part [app/cbl/COACTUPC.cbl:2234-2245]. The area code is
+# - 1200-EDIT-MAP-INPUTS moves the 15-byte ACUP-NEW-CUST-PHONE-NUM-2 to
+#   WS-EDIT-US-PHONE-NUM, whose area code, prefix and line number are bytes
+#   2-4, 6-8 and 10-13. INITIALIZE set the number to spaces and 1100 moved
+#   only those three parts, so 1260-EDIT-US-PHONE-NUM receives, without
+#   punctuation, a space, '919', a space, '555', a space, four LOW-VALUES and
+#   two spaces [app/cbl/COACTUPC.cbl:82-100,820-829,1047,1378-1397,1640-1642].
+#   Its all-blank test fails on the area code '919', so the phone is edited
+#   part by part [app/cbl/COACTUPC.cbl:2234-2245]. The area code is
 #   supplied, numeric, not zero and a North America general-purpose code, and
 #   the prefix '555' is supplied, numeric and not zero
 #   [app/cbl/COACTUPC.cbl:2246-2368] [app/cpy/CSLKPCDY.cpy:521,895].
@@ -58,7 +63,7 @@
 #   ERRMSG is 'Phone Number 2: Line number code must be supplied.' (50
 #   characters) in the 75-byte WS-RETURN-MSG, moved to the 78-byte ERRMSGO: 28
 #   trailing spaces. ACSPH2C is '*' in the 4-byte field (BMS LENGTH=4,
-#   POS=(20,18)); output data is not justified, so the '*' stands in column 18
+#   POS=(20,18)); output data is not justified, so the '*' stands in column 19
 #   [app/bms/COACTUP.bms:453-457]. INFOMSG is the 40-byte WS-INFO-MSG in the
 #   45-byte INFOMSGO.
 # - AADDGRP is sent as LOW-VALUES on screen 4 (the blank group id comes back as

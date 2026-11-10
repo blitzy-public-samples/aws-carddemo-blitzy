@@ -20,7 +20,7 @@
 # MDT on, so all of them come back on the next AID
 # [app/cbl/COACTUPC.cbl:2568-2580,2787-2865,2955-3000,3500-3561,3608-3884].
 # Step 4 types the year, month and day of the day before the run date over the
-# fetched 1961-06-08 and presses ENTER; 1200-RECEIVE-MAP builds
+# fetched 1961-06-08 and presses ENTER; 1100-RECEIVE-MAP builds
 # ACUP-NEW-CUST-DOB-YYYY-MM-DD from them [app/cbl/COACTUPC.cbl:1256-1274].
 # 1205-COMPARE-OLD-NEW finds the date of birth changed, and
 # 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs every edit in field

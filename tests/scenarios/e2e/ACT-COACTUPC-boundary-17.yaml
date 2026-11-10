@@ -120,10 +120,9 @@ gap_ids:
 # The UniKix CSUTLDPY changes the date edits this scenario runs, so a unikix run
 # observes the copy's behaviour of them.
 - GAP-DOC-024
-# Not in the planned gap list, cited because the UniKix copy also changes code
-# this scenario passes through: CSUTLDTC's Vstring lengths (021), COACTUPC's
-# amount edits and change detection (022) and COACTUP's row 1, where TRNNAME
-# stands (025).
+# The UniKix copy also changes code this scenario passes through: CSUTLDTC's
+# Vstring lengths (021), COACTUPC's amount edits and change detection (022) and
+# COACTUP's row 1, where TRNNAME stands (025).
 - GAP-DOC-021
 - GAP-DOC-022
 - GAP-DOC-025

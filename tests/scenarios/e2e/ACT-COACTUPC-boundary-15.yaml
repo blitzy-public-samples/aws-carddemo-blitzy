@@ -115,16 +115,14 @@ gap_ids:
 - GAP-DOC-024
 - GAP-INF-001  # which dates CEEDAYS accepts is known only through the stub
 - GAP-MIS-010  # whether UniKix supplies CEEDAYS
-# Not in the planned gap list. The UniKix copy of CSUTLDTC trims the Vstring
-# lengths it passes to CEEDAYS, so the call described above differs on UniKix;
-# the entry lists INV-UTL-003.
+# The UniKix copy of CSUTLDTC trims the Vstring lengths it passes to CEEDAYS,
+# so the call described above differs on UniKix; the entry lists INV-UTL-003.
 - GAP-DOC-021
-# Not in the planned gap list. The UniKix COACTUPC comments out the TEST-NUMVAL-C
-# amount checks this path runs, so the amounts re-edited on screen 4 may differ
-# on UniKix.
+# The UniKix COACTUPC comments out the TEST-NUMVAL-C amount checks this path
+# runs, so the amounts re-edited on screen 4 may differ on UniKix.
 - GAP-DOC-022
-# Not in the planned gap list. The UniKix COACTUP.bms differs at row 1,
-# columns 1-9, where TRNNAME stands; the entry lists INV-ACT-004.
+# The UniKix COACTUP.bms differs at row 1, columns 1-9, where TRNNAME stands;
+# the entry lists INV-ACT-004.
 - GAP-DOC-025
 preconditions:
   datasets:
