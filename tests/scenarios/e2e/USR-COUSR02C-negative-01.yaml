@@ -13,8 +13,8 @@
 # CCDA-MSG-INVALID-KEY of CSMSG01Y to WS-MESSAGE; SEND-USRUPD-SCREEN rebuilds
 # the header from COTTL01Y and CSDAT01Y and moves the message to ERRMSG
 # [app/cbl/COUSR02C.cbl:106-131,266-315] [app/cpy/CSMSG01Y.cpy:20-21]. USRSEC
-# is read and rewritten only by the ENTER and PF5 paths, so no user changes
-# and no file_state is asserted.
+# is read and rewritten only by the ENTER, PF5 and PF3 paths (PF3 performs the
+# PF5 save before it returns), so no user changes and no file_state is asserted.
 # USRIDIN, FNAME, LNAME, PASSWD and USRTYPE are not asserted: on this path they
 # are whatever the received map held, sent back unchanged, and carry no
 # business outcome.

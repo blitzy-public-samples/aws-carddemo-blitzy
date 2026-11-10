@@ -29,22 +29,36 @@ Command line (run from the repository root)::
     python tests/harness/inventory_tools.py --check    # drift check, exit 1 on drift
 
 The tool only reads ``app/``, ``samples/`` and ``README.md``; the UniKix zip is
-read in memory with ``zipfile``. It writes nothing outside ``tests/inventory/``
-and makes no network call.
+read in memory with ``zipfile``. It makes no network call and writes nothing
+outside ``tests/inventory/``: ``--freeze`` and ``append_items`` resolve the
+inventory path, symlinks followed, and refuse any target outside
+``tests/inventory/`` of the repository holding this script, a directory, or an
+existing file that is empty or no inventory. ``--inventory`` points ``--check``
+at any file, read only; to freeze a copy of the repository, run that copy's
+own tool. Writes are atomic and serialized by a lock on the inventory's
+directory, so concurrent writers never lose an addition.
 """
 
 from __future__ import annotations
 
 import argparse
 import bisect
+import contextlib
 import datetime
+import fcntl
+import itertools
+import os
 import re
+import reprlib
 import sys
 import zipfile
+import zlib
 from collections import Counter
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Iterable, Iterator, Sequence
+
+import yaml
 
 _TESTS_ROOT = str(Path(__file__).resolve().parents[1])
 if _TESTS_ROOT not in sys.path:
@@ -60,6 +74,15 @@ from harness import (  # noqa: E402
     load_yaml,
     write_text,
 )
+from harness.layouts import (  # noqa: E402
+    SourceLine,
+    Token,
+    fixed_format_lines,
+    join_continuations,
+    mask_literals,
+    read_source_lines,
+)
+from harness.layouts import tokenize as _tokenize_lines  # noqa: E402
 
 __all__ = [
     "ACTIVATIONS",
@@ -135,15 +158,14 @@ INTERFACE_PATTERNS = (
     r"\bCSQ\w*",
 )
 INTERFACE_SEARCH_DIRS = ("app/cbl", "app/cpy", "app/jcl", "app/proc", "app/csd")
+# The fixed-format COBOL among them, searched as code as well.
+INTERFACE_CODE_DIRS = ("app/cbl", "app/cpy")
 
 UNIKIX_ZIP = "samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip"
 FCT_MEMBER = "migrated_app/catlg/tpe/fct.lst"
 CSD_PATH = "app/csd/CARDDEMO.CSD"
 README_PATH = "README.md"
 
-# cobc is run with -ftab-width=4; the copybooks holding tabs (CUSTREC,
-# CSLKPCDY) are read the same way.
-TAB_WIDTH = 4
 # CICS-supplied copybooks: not in the repository and not inventoried.
 CICS_SUPPLIED_COPYBOOKS = frozenset({"DFHAID", "DFHBMSCA"})
 COPYBOOK_DIRS = ("app/cpy", "app/cpy-bms")
@@ -152,6 +174,19 @@ COPYBOOK_DIRS = ("app/cpy", "app/cpy-bms")
 class InventoryError(HarnessError):
     """The repository, the inventory file or an extraction anchor does not
     have the shape the inventory rules expect."""
+
+
+# Values from the inventory file are shown abbreviated: YAML aliases can make
+# a small file hold a structure whose full repr would never finish.
+_REPR = reprlib.Repr()
+_REPR.maxlevel = 3
+_REPR.maxlist = _REPR.maxtuple = _REPR.maxdict = _REPR.maxset = 4
+_REPR.maxstring = 200
+_REPR.maxother = 80
+
+
+def _shown(value: Any) -> str:
+    return _REPR.repr(value)
 
 
 # --------------------------------------------------------------------------
@@ -230,21 +265,22 @@ DATA_LEVEL_OVERRIDES = {
 # --------------------------------------------------------------------------
 # Source reading and COPY resolution
 # --------------------------------------------------------------------------
+#
+# Fixed-format COBOL is read by the shared layer in harness/layouts.py
+# (SourceLine, fixed_format_lines, join_continuations, mask_literals,
+# tokenize); its HarnessError reaches the callers of this module as the
+# InventoryError they handle.
 
 
-@dataclass(frozen=True)
-class SourceLine:
-    """One code line of a COBOL source, after COPY resolution.
-
-    ``text`` is columns 8-72 exactly as written, so a literal continued on the
-    next line keeps its trailing spaces up to column 72.
-    """
-
-    path: str  # repository-relative path of the file the line comes from
-    line: int  # 1-based line number in that file
-    text: str
-    area_a: bool  # columns 8-11 hold code: a paragraph name or an 01 entry
-    continued: bool  # column 7 is '-': the line continues a literal
+@contextlib.contextmanager
+def _inventory_errors() -> Iterator[None]:
+    """Raise a HarnessError of the shared layer as an InventoryError."""
+    try:
+        yield
+    except InventoryError:
+        raise
+    except HarnessError as exc:
+        raise InventoryError(str(exc)) from exc
 
 
 def _relative(path: Path, root: Path) -> str:
@@ -254,73 +290,71 @@ def _relative(path: Path, root: Path) -> str:
         raise InventoryError(f"{path} lies outside the repository {root}") from None
 
 
+def _os_reason(exc: OSError) -> str:
+    return exc.strerror or str(exc)
+
+
 def read_lines(path: Path) -> list[str]:
     """The lines of a text file read as latin-1, without line terminators or
-    ``\\r``, with tabs expanded to the cobc tab width."""
-    lines = path.read_text(encoding="latin-1").split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()
-    return [line.rstrip("\r").expandtabs(TAB_WIDTH) for line in lines]
+    ``\\r``, with tabs expanded to the cobc tab width. A missing or unreadable
+    file raises InventoryError."""
+    try:
+        with _inventory_errors():
+            return read_source_lines(path)
+    except OSError as exc:
+        raise InventoryError(f"cannot read {path}: {_os_reason(exc)}") from exc
+
+
+def _directory_entries(folder: Path) -> list[Path]:
+    """The entries of ``folder``, sorted; a missing or unreadable directory
+    raises InventoryError."""
+    try:
+        return sorted(folder.iterdir())
+    except OSError as exc:
+        raise InventoryError(f"cannot list {folder}: {_os_reason(exc)}") from exc
+
+
+def _regular_files(folder: Path) -> list[Path]:
+    """The regular files directly in ``folder``, sorted."""
+    entries = _directory_entries(folder)
+    try:
+        return [path for path in entries if path.is_file()]
+    except OSError as exc:
+        raise InventoryError(f"cannot read an entry of {folder}: {_os_reason(exc)}") from exc
+
+
+# What zipfile raises for a missing, truncated or damaged archive or member:
+# a bad header or CRC, a corrupt deflate stream, a damaged compression method
+# or encryption flag, or a corrupt end-of-central-directory record.
+_ZIP_ERRORS = (
+    OSError, EOFError, zipfile.BadZipFile, zlib.error, NotImplementedError, RuntimeError, ValueError,
+)
+
+
+def _zip_member(archive_path: Path, shown: str, member: str) -> bytes:
+    """The bytes of ``member`` of the zip at ``archive_path`` (``shown`` in
+    messages), read in memory. ``__MACOSX/`` AppleDouble entries and
+    directories are no members. A missing member, or a missing, unreadable or
+    damaged zip, raises InventoryError."""
+    if not member or member.startswith("__MACOSX/") or member.endswith("/"):
+        raise InventoryError(f"{shown}:{member} is not a member file of the zip")
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            if member not in archive.namelist():
+                raise InventoryError(f"{shown} holds no {member}")
+            return archive.read(member)
+    except _ZIP_ERRORS as exc:
+        reason = _os_reason(exc) if isinstance(exc, OSError) else str(exc) or type(exc).__name__
+        raise InventoryError(f"cannot read {member} from {shown}: {reason}") from exc
 
 
 def code_lines(path: Path, repo_root: Path = REPO_ROOT) -> list[SourceLine]:
     """The code lines of a fixed-format COBOL file: comment lines (``*``,
-    ``/``, debugging ``D`` in column 7) and blank code areas are dropped."""
+    ``/``, debugging ``D`` in column 7) and blank code areas are dropped, and
+    any other indicator than a blank or ``-`` raises InventoryError."""
     rel = _relative(path, repo_root)
-    result = []
-    for number, raw in enumerate(read_lines(path), start=1):
-        indicator = raw[6:7]
-        if indicator in ("*", "/", "D", "d"):
-            continue
-        text = raw[7:72]
-        if not text.strip():
-            continue
-        result.append(
-            SourceLine(rel, number, text, bool(raw[7:11].strip()), indicator == "-")
-        )
-    return result
-
-
-def _mask_literals(lines: Sequence[SourceLine]) -> list[str]:
-    """Each line's text with the characters inside literals replaced by
-    ``x``, so keywords and separator periods can be found outside them. A
-    literal left open at column 72 resumes after the first quote of the next
-    (continuation) line."""
-    masked = []
-    open_quote: str | None = None
-    for source_line in lines:
-        text = source_line.text
-        chars = list(text)
-        position = 0
-        quote: str | None = None
-        if open_quote is not None:
-            resume = text.find(open_quote) if source_line.continued else -1
-            if resume < 0:
-                raise InventoryError(
-                    f"{source_line.path}:{source_line.line}: literal opened on the "
-                    f"previous line is not continued"
-                )
-            position, quote = resume + 1, open_quote
-        while position < len(text):
-            char = text[position]
-            if quote is not None:
-                if char == quote:
-                    if position + 1 < len(text) and text[position + 1] == quote:
-                        chars[position] = chars[position + 1] = "x"
-                        position += 2
-                        continue
-                    quote = None
-                else:
-                    chars[position] = "x"
-            elif char in "'\"":
-                quote = char
-            position += 1
-        open_quote = quote
-        masked.append("".join(chars))
-    if open_quote is not None and lines:
-        last = lines[-1]
-        raise InventoryError(f"{last.path}:{last.line}: literal is not closed")
-    return masked
+    with _inventory_errors():
+        return fixed_format_lines(read_lines(path), rel)
 
 
 _COPY_RE = re.compile(r"(?<![A-Za-z0-9-])COPY\s+(['\"]?)([A-Za-z0-9][A-Za-z0-9-]*)\1", re.I)
@@ -336,7 +370,7 @@ def find_copybook(name: str, repo_root: Path = REPO_ROOT) -> Path:
         folder = repo_root / directory
         if not folder.is_dir():
             continue
-        for candidate in sorted(folder.iterdir()):
+        for candidate in _directory_entries(folder):
             if candidate.suffix.lower() == ".cpy" and candidate.stem.upper() == wanted:
                 return candidate
     raise InventoryError(f"copybook {name} not found in {', '.join(COPYBOOK_DIRS)}")
@@ -368,7 +402,8 @@ def _resolve(
             SourceLine(ln.path, ln.line, _apply_replacing(ln.text, replacing), ln.area_a, ln.continued)
             for ln in lines
         ]
-    masked = _mask_literals(lines)
+    with _inventory_errors():
+        masked = mask_literals(lines)
     result: list[SourceLine] = []
     index = 0
     while index < len(lines):
@@ -461,92 +496,12 @@ def copy_closure(path: str | Path, repo_root: Path = REPO_ROOT) -> list[Path]:
 # --------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class Token:
-    text: str
-    word: str  # upper-case text of a word or punctuation; "" for a literal
-    value: str  # content of a literal; "" otherwise
-    path: str
-    line: int
-    first: bool  # first token of its source line
-    area_a: bool  # its source line starts in area A
-
-    @property
-    def literal(self) -> bool:
-        return not self.word
-
-
-_TOKEN_RE = re.compile(
-    r"""(?P<lit>'(?:[^']|'')*'|"(?:[^"]|"")*")"""
-    r"""|(?P<open>['"].*$)"""
-    r"""|(?P<num>[+-]?\d+\.\d+(?![A-Za-z0-9-]))"""
-    r"""|(?P<word>[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)"""
-    r"""|(?P<punct>==|\S)"""
-)
-_PICTURE_RE = re.compile(r"\s*(?:IS\s+)?(\S+?)(\.?)(?=\s|$)", re.I)
-
-
-def _literal_value(text: str) -> str:
-    quote = text[0]
-    return text[1:-1].replace(quote * 2, quote)
-
-
 def tokenize(lines: Sequence[SourceLine]) -> list[Token]:
     """Split resolved code lines into COBOL tokens: literals (continuations
     joined, value unescaped), words, decimal numbers, picture strings and
     punctuation."""
-    tokens: list[Token] = []
-    pending: tuple[str, SourceLine] | None = None  # literal open at column 72
-    for source_line in lines:
-        text = source_line.text
-        position = 0
-        first = True
-        if pending is not None:
-            partial, origin = pending
-            quote = partial[0]
-            resume = text.find(quote) if source_line.continued else -1
-            if resume < 0:
-                raise InventoryError(f"{origin.path}:{origin.line}: literal is not continued")
-            rest = text[resume + 1:]
-            closing = re.match(r"(?:[^%s]|%s%s)*%s" % ((re.escape(quote),) * 4), rest)
-            if closing is None:
-                pending = (partial + rest, origin)
-                continue
-            literal = partial + closing.group(0)
-            tokens.append(Token(literal, "", _literal_value(literal), origin.path, origin.line, False, origin.area_a))
-            position = resume + 1 + closing.end()
-            pending = None
-            first = False
-        while position < len(text):
-            match = _TOKEN_RE.search(text, position)
-            if match is None:
-                break
-            position = match.end()
-            kind = match.lastgroup
-            if kind == "open":
-                # Continued literal: the area up to column 72 belongs to it.
-                pending = (match.group(0).ljust(72 - 7 - match.start()), source_line)
-                break
-            raw = match.group(0)
-            origin = (source_line.path, source_line.line)
-            if kind == "lit":
-                token = Token(raw, "", _literal_value(raw), *origin, first, source_line.area_a)
-            else:
-                token = Token(raw, raw.upper(), "", *origin, first, source_line.area_a)
-            tokens.append(token)
-            first = False
-            if token.word in ("PIC", "PICTURE"):
-                picture = _PICTURE_RE.match(text, position)
-                if picture is not None:
-                    text_ = picture.group(1)
-                    tokens.append(Token(text_, text_.upper(), "", *origin, False, source_line.area_a))
-                    if picture.group(2):
-                        tokens.append(Token(".", ".", "", *origin, False, source_line.area_a))
-                    position = picture.end()
-    if pending is not None:
-        origin = pending[1]
-        raise InventoryError(f"{origin.path}:{origin.line}: literal is not closed")
-    return tokens
+    with _inventory_errors():
+        return _tokenize_lines(lines)
 
 
 # Words that begin or end a statement. A MOVE target list or a STRING
@@ -934,11 +889,28 @@ PREDICATE_LABELS: dict[str, tuple[str, ...]] = {
 }
 # Cross-field edits compose their message without the field name.
 CROSS_FIELD_LABELS = {"1280-EDIT-US-STATE-ZIP-CD": "State with Zip"}
+# Inputs a PERFORM range accepts before its edit routines run: (head
+# paragraph, exit paragraph, the words by which an IF of the head paragraph
+# accepts the input and leaves the range, the condition under which the
+# routines' predicates apply, the acceptance, {field} naming the field).
+# The predicates of the paragraphs after the head, up to the exit, carry
+# both while the words remain.
+PREDICATE_GUARDS: tuple[tuple[str, str, tuple[str, ...], str, str], ...] = (
+    (
+        "1260-EDIT-US-PHONE-NUM", "1260-EDIT-US-PHONE-NUM-EXIT",
+        ("SET", "WS-EDIT-US-PHONE-IS-VALID", "TO", "TRUE", "GO", "TO", "EDIT-US-PHONE-EXIT"),
+        "once any part of it is entered",
+        "A wholly blank {field} (area code, prefix and line number all blank) is accepted without these edits",
+    ),
+)
 
 
 @dataclass(frozen=True)
 class Predicate:
     field: str | None  # None: the routine is performed for no field
+    # The field name as the message shows it: the MOVE into
+    # WS-EDIT-VARIABLE-NAME cuts the literal to that item's width.
+    shown_field: str | None
     routine: str  # paragraph holding the STRING statement
     ordinal: int  # position among that paragraph's predicates
     label: str
@@ -964,6 +936,65 @@ def _predicate_label(routine: str, ordinal: int, statement: StringStatement) -> 
     return "".join(p for p in statement.parts if not p.startswith("<")).strip(" :")
 
 
+_ALPHANUMERIC_PICTURE_RE = re.compile(r"(?:[XA](?:\(\d+\))?)+")
+_PICTURE_SYMBOL_RE = re.compile(r"([XA])(?:\((\d+)\))?")
+
+
+def _alphanumeric_width(program: CobolProgram, name: str) -> tuple[int, bool] | None:
+    """(character width, JUSTIFIED RIGHT) of the alphanumeric or alphabetic
+    data item ``name``, read from its PICTURE (``X(25)``, ``XXX``,
+    ``A(2)X``); None when the item has no such single definition, so a MOVE
+    into it is not cut."""
+    found: set[tuple[int, bool]] = set()
+    for entry in program.data_by_name.get(name.upper(), ()):
+        clauses = program.words[entry.start + 2:entry.end]
+        pictures = [clauses[k + 1] for k in range(len(clauses) - 1) if clauses[k] in ("PIC", "PICTURE")]
+        if not pictures or not _ALPHANUMERIC_PICTURE_RE.fullmatch(pictures[0]):
+            return None
+        width = sum(int(count or 1) for _symbol, count in _PICTURE_SYMBOL_RE.findall(pictures[0]))
+        found.add((width, any(word in ("JUST", "JUSTIFIED") for word in clauses)))
+    return found.pop() if len(found) == 1 else None
+
+
+def _predicate_guard(program: CobolProgram, routine: str) -> tuple[str, str] | None:
+    """The condition and the acceptance sentence, ``{field}`` still in it and
+    the guard's paragraph and lines at its end, of the PREDICATE_GUARDS entry
+    whose PERFORM range holds ``routine`` after its head paragraph; None when
+    no entry does or the head paragraph no longer accepts the input under an
+    IF."""
+    index = program.paragraph_index.get(routine)
+    if index is None:
+        return None
+    for head_name, exit_name, words, condition, acceptance in PREDICATE_GUARDS:
+        head_index = program.paragraph_index.get(head_name)
+        exit_index = program.paragraph_index.get(exit_name)
+        if head_index is None or exit_index is None or not head_index < index <= exit_index:
+            continue
+        head = program.paragraphs[head_index]
+        found = program.find_words(*words, start=head.start, stop=head.end)
+        if found < 0:
+            continue
+        # The innermost IF still open at the words, within their sentence.
+        guard, depth = -1, 0
+        for position in range(found - 1, head.start, -1):
+            word = program.words[position]
+            if word == ".":
+                break
+            if word == "END-IF":
+                depth += 1
+            elif word == "IF":
+                if depth == 0:
+                    guard = position
+                    break
+                depth -= 1
+        if guard < 0:
+            continue
+        _path, first, last = program.span(guard, found + len(words) - 1)
+        lines = f"line {first}" if first == last else f"lines {first}-{last}"
+        return condition, f"{acceptance} ({head_name}, {lines})."
+    return None
+
+
 def field_edit_predicates(program: CobolProgram) -> tuple[list[Predicate], set[str]]:
     """The (field, predicate) pairs of a program whose edit routines take the
     field name in ``WS-EDIT-VARIABLE-NAME``, and the paragraphs that compose
@@ -974,8 +1005,10 @@ def field_edit_predicates(program: CobolProgram) -> tuple[list[Predicate], set[s
     paragraphs in source order) in textual order. Every ``STRING ... INTO
     WS-RETURN-MSG`` met while a field name is set is one predicate of that
     field; a ``MOVE`` inside a routine renames the field (the SSN parts).
-    Routines composing such messages that nothing performs yield predicates
-    with no field.
+    The field keeps the full literal, while the message shows what the
+    routines' ``FUNCTION TRIM`` finds in ``WS-EDIT-VARIABLE-NAME``: the
+    literal cut to that item's PICTURE width. Routines composing such
+    messages that nothing performs yield predicates with no field.
     """
     label_moves = [
         index for index, _end, sending, targets in program.moves()
@@ -993,7 +1026,8 @@ def field_edit_predicates(program: CobolProgram) -> tuple[list[Predicate], set[s
     predicates: list[Predicate] = []
     seen: set[tuple[str | None, int]] = set()
     composing: set[str] = set()
-    state: dict[str, str | None] = {"field": None}
+    state: dict[str, str | None] = {"field": None, "shown": None}
+    receiver = _alphanumeric_width(program, FIELD_NAME_VARIABLE)
 
     def walk_range(first: int, last: int, stack: tuple[str, ...]) -> None:
         for para in program.paragraphs[first:last + 1]:
@@ -1011,7 +1045,12 @@ def field_edit_predicates(program: CobolProgram) -> tuple[list[Predicate], set[s
                 and program.words[position + 2] == "TO"
                 and program.words[position + 3] == FIELD_NAME_VARIABLE
             ):
-                state["field"] = program.tokens[position + 1].value.strip()
+                literal = program.tokens[position + 1].value
+                state["field"] = literal.strip()
+                if receiver is not None:
+                    width, right = receiver
+                    literal = literal[-width:] if right else literal[:width]
+                state["shown"] = literal.strip()
                 position += 4
                 continue
             if word == "PERFORM" and program.words[position + 1] in program.paragraph_index:
@@ -1028,15 +1067,16 @@ def field_edit_predicates(program: CobolProgram) -> tuple[list[Predicate], set[s
                 routine, ordinal = ordinal_of[position]
                 names_field = FIELD_NAME_VARIABLE in statement.names
                 field_name = state["field"] if names_field else CROSS_FIELD_LABELS.get(routine, routine)
+                shown_name = state["shown"] if names_field else field_name
                 key = (field_name, statement.start)
                 if key not in seen:
                     seen.add(key)
                     composing.add(routine)
                     template = "".join(p for p in statement.parts if p != f"<{FIELD_NAME_VARIABLE}>")
-                    message = f"{field_name}{template}" if names_field else template
+                    message = f"{shown_name}{template}" if names_field else template
                     predicates.append(
                         Predicate(
-                            field_name, routine, ordinal, _predicate_label(routine, ordinal, statement),
+                            field_name, shown_name, routine, ordinal, _predicate_label(routine, ordinal, statement),
                             message, names_field, program.span(statement.start, statement.end),
                         )
                     )
@@ -1060,7 +1100,7 @@ def field_edit_predicates(program: CobolProgram) -> tuple[list[Predicate], set[s
             template = "".join(p for p in statement.parts if p != f"<{FIELD_NAME_VARIABLE}>")
             predicates.append(
                 Predicate(
-                    None, para_name, ordinal, _predicate_label(para_name, ordinal, statement),
+                    None, None, para_name, ordinal, _predicate_label(para_name, ordinal, statement),
                     template, True, program.span(statement.start, statement.end),
                 )
             )
@@ -1106,6 +1146,7 @@ class Message:
     unused: bool = False
     context: str = ""  # paragraph of a STRING or file-error site
     constant: str = ""  # CSMSG01Y constant name
+    sinks: set[str] = field(default_factory=set)  # where it is shown: map fields, "@text", "@abend"
 
 
 def classify_message(message: Message) -> str:
@@ -1138,10 +1179,147 @@ def _governing_command(program: CobolProgram, index: int, lower: int) -> tuple[s
     return None
 
 
+# Where a message is shown. A BMS output field is a data name ending in 'O'
+# that a symbolic map copybook defines; it is recorded without the 'O', as
+# the map field the screen shows (ERRMSG, INFOMSG). A message sent with EXEC
+# CICS SEND TEXT is an unformatted screen, observed as '@map: TEXT' with its
+# '@text'; a message moved to ABEND-MSG is part of the abend data.
+_SYMBOLIC_MAP_DIR = "app/cpy-bms/"
+_TEXT_SINK = "@text"
+_ABEND_SINK = "@abend"
+_ABEND_MESSAGE_FIELD = "ABEND-MSG"
+# Phrases of the sinks, in the order a description lists them. Any other map
+# field is 'the screen field <NAME>', listed between these two groups.
+_MAP_SINK_PHRASES = {
+    "ERRMSG": "the screen message (ERRMSG)",
+    "INFOMSG": "the information message (INFOMSG)",
+}
+_OTHER_SINK_PHRASES = {
+    _TEXT_SINK: "the unformatted SEND TEXT screen (@map TEXT, @text)",
+    _ABEND_SINK: "the abend data sent to the terminal",
+}
+
+
+def _field_sinks(program: CobolProgram) -> Callable[[str], set[str]]:
+    """A function giving where the value of a message field is shown when no
+    SEND TEXT sends it: the abend data for ABEND-MSG, otherwise the map
+    output fields the value reaches through MOVEs of one identifier to
+    another, each without its trailing 'O'."""
+    edges: dict[str, set[str]] = {}
+    for _start, _end, sending, targets in program.moves():
+        if not sending.literal:
+            edges.setdefault(sending.word, set()).update(targets)
+    reached: dict[str, frozenset[str]] = {}
+
+    def is_map_output(name: str) -> bool:
+        return name.endswith("O") and any(
+            program.tokens[entry.start].path.startswith(_SYMBOLIC_MAP_DIR)
+            for entry in program.data_by_name.get(name, ())
+        )
+
+    def sinks(name: str) -> set[str]:
+        if name == _ABEND_MESSAGE_FIELD:
+            return {_ABEND_SINK}
+        if name not in reached:
+            seen: set[str] = set()
+            found: set[str] = set()
+            pending = [name]
+            while pending:
+                current = pending.pop()
+                if current in seen:
+                    continue
+                seen.add(current)
+                if is_map_output(current):
+                    found.add(current[:-1])
+                else:
+                    pending.extend(edges.get(current, ()))
+            reached[name] = frozenset(found)
+        return set(reached[name])
+
+    return sinks
+
+
+def _text_senders(program: CobolProgram) -> dict[str, set[str]]:
+    """Paragraph name -> the fields that its EXEC CICS SEND TEXT blocks send,
+    as their FROM option names them."""
+    senders: dict[str, set[str]] = {}
+    for start, end in program.exec_blocks():
+        if program.words[start + 1:start + 3] != ["CICS", "SEND"]:
+            continue
+        options: dict[str, int] = {}  # option word -> its index, outside parentheses
+        position = start + 3
+        while position < end:
+            if program.words[position] == "(":
+                position = program.close_paren(position) + 1
+                continue
+            options.setdefault(program.words[position], position)
+            position += 1
+        if "TEXT" not in options:
+            continue
+        line = program.tokens[start].line
+        opening = options.get("FROM", -1) + 1
+        if opening <= 0 or program.words[opening] != "(":
+            raise InventoryError(f"{program.path}: SEND TEXT at line {line} has no FROM data area")
+        names, _after = program.operands(opening + 1, program.close_paren(opening))
+        if not names:
+            raise InventoryError(f"{program.path}: SEND TEXT at line {line} sends no data name")
+        para = program.paragraph_at(start)
+        if para is None:
+            continue  # before the first paragraph, so no PERFORM reaches it
+        senders.setdefault(para.name, set()).add(names[0])
+    return senders
+
+
+def _site_sinks(
+    program: CobolProgram, end: int, fields: set[str],
+    senders: dict[str, set[str]], field_sinks: Callable[[str], set[str]],
+) -> set[str]:
+    """Where a message that the statement ending at token ``end`` places in
+    ``fields`` is shown. When the first PERFORM of a paragraph after the
+    statement, within its paragraph, performs a SEND TEXT of one of the
+    fields, the message is the unformatted text screen; otherwise it is
+    where the fields themselves are shown."""
+    para = program.paragraph_at(end)
+    upper = para.end if para is not None else len(program.tokens)
+    for position in range(end + 1, upper):
+        if program.words[position] != "PERFORM":
+            continue
+        operands = program.words[position + 1:position + 4]
+        if not operands or operands[0] not in program.paragraph_index:
+            continue  # an inline PERFORM
+        first = last = program.paragraph_index[operands[0]]
+        if operands[1:2] in (["THRU"], ["THROUGH"]):
+            through = operands[2] if len(operands) > 2 else ""
+            last = program.paragraph_index[program.paragraph(through).name]
+        sent = {name for performed in program.paragraphs[first:last + 1] for name in senders.get(performed.name, ())}
+        if sent & fields:
+            return {_TEXT_SINK}
+        break
+    shown: set[str] = set()
+    for name in fields:
+        shown |= field_sinks(name)
+    return shown
+
+
+def _sink_phrase(program: CobolProgram, message: Message) -> str:
+    """Where a description says ``message`` appears: its sinks joined by
+    'or', ERRMSG and INFOMSG first, then any other map field by name, then
+    the text screen and the abend data."""
+    if not message.sinks:
+        raise InventoryError(f"{program.path}: nothing shows the {program.name} message '{message.text}'")
+    others = sorted(message.sinks.difference(_MAP_SINK_PHRASES, _OTHER_SINK_PHRASES))
+    phrases = [phrase for sink, phrase in _MAP_SINK_PHRASES.items() if sink in message.sinks]
+    phrases += [f"the screen field {sink}" for sink in others]
+    phrases += [phrase for sink, phrase in _OTHER_SINK_PHRASES.items() if sink in message.sinks]
+    return " or ".join(phrases)
+
+
 def online_messages(program: CobolProgram, field_edit_paragraphs: set[str]) -> list[Message]:
     """The screen messages of an online program (rule 1), in source order."""
     keyed: dict[str, Message] = {}
     per_site: list[Message] = []
+    field_sinks = _field_sinks(program)
+    senders = _text_senders(program)
 
     def in_field_edit(index: int) -> bool:
         para = program.paragraph_at(index)
@@ -1162,6 +1340,7 @@ def online_messages(program: CobolProgram, field_edit_paragraphs: set[str]) -> l
             message.conditions.append(entry.name)
             message.condition_lines.append(span)
             message.targets.add(entry.parent)
+            message.sinks |= field_sinks(entry.parent)
 
     common = {
         entry.name: entry.values[0].value.rstrip()
@@ -1190,7 +1369,9 @@ def online_messages(program: CobolProgram, field_edit_paragraphs: set[str]) -> l
             message.position, message.span = start, span
             message.constant = constant or message.constant
         message.sites.append(span[1])
-        message.targets.update(t for t in targets if t in MESSAGE_FIELDS)
+        receiving = {t for t in targets if t in MESSAGE_FIELDS}
+        message.targets.update(receiving)
+        message.sinks |= _site_sinks(program, end, receiving, senders, field_sinks)
 
     for message in keyed.values():
         if message.origin == "condition":
@@ -1205,6 +1386,7 @@ def online_messages(program: CobolProgram, field_edit_paragraphs: set[str]) -> l
             Message(
                 "".join(statement.parts), "string", statement.start, span,
                 sites=[span[1]], targets={statement.target}, context=para.name if para else "",
+                sinks=_site_sinks(program, statement.end, {statement.target}, senders, field_sinks),
             )
         )
 
@@ -1239,10 +1421,11 @@ def online_messages(program: CobolProgram, field_edit_paragraphs: set[str]) -> l
         command = _governing_command(program, start, lower)
         if command:
             context += f", {command[0]} at line {command[1]}"
+        receiving = {t for t in shown[3] if t in MESSAGE_FIELDS}
         per_site.append(
             Message(
-                text, "file-error", start, span, sites=[span[1]],
-                targets={t for t in shown[3] if t in MESSAGE_FIELDS}, context=context,
+                text, "file-error", start, span, sites=[span[1]], targets=receiving, context=context,
+                sinks=_site_sinks(program, shown[1], receiving, senders, field_sinks),
             )
         )
     return sorted(list(keyed.values()) + per_site, key=lambda m: m.position)
@@ -1345,6 +1528,179 @@ def _menu_options(program: CobolProgram) -> list[tuple[str, str, str, str, tuple
     return result
 
 
+def _pf3_save_description(program: CobolProgram, index: int, end: int, to: str) -> str | None:
+    """The description of a PF3 return that saves before it leaves: the PF3
+    branch (tokens ``index`` to ``end``) PERFORMs, before its transfer of
+    control, a paragraph that reaches an EXEC CICS WRITE, REWRITE or DELETE,
+    directly or through further PERFORMs. None when it reaches none, so the
+    plain PF3 description stands.
+
+    The text is built from what the code shows: the saving paragraphs; the
+    other AID keys whose branch PERFORMs the same paragraphs; each command
+    with its file and, through ``item_ref``, the SIDE_EFFECTS item whose
+    ``("cics", VERB, RESOURCE)`` anchor designates it; whether every command
+    is guarded by an IF or EVALUATE on its path; whether a screen is sent;
+    and whether a performed paragraph can end the task itself (EXEC CICS
+    RETURN, XCTL or ABEND), in which case the transfer is not certain."""
+    words = program.words
+    name = program.name
+
+    def performed(position: int) -> list[str]:
+        # The paragraphs the PERFORM at ``position`` runs: one paragraph, a
+        # THRU range or a SECTION's paragraphs; none for an inline PERFORM.
+        first = program.paragraph_index.get(words[position + 1]) if position + 1 < len(words) else None
+        if first is None:
+            return []
+        last = first
+        after = words[position + 2:position + 4]
+        if len(after) == 2 and after[0] in ("THRU", "THROUGH") and after[1] in program.paragraph_index:
+            last = max(first, program.paragraph_index[after[1]])
+        elif words[program.paragraphs[first].start + 1] == "SECTION":
+            while last + 1 < len(program.paragraphs) and words[program.paragraphs[last + 1].start + 1] != "SECTION":
+                last += 1
+        return [para.name for para in program.paragraphs[first:last + 1]]
+
+    def conditional(para: Paragraph, position: int) -> bool:
+        # Whether the statement at ``position`` lies inside an IF or EVALUATE
+        # of its paragraph; a separator period closes every open one.
+        depth = 0
+        for word in words[para.start:position]:
+            if word in ("IF", "EVALUATE"):
+                depth += 1
+            elif word in ("END-IF", "END-EVALUATE"):
+                depth = max(depth - 1, 0)
+            elif word == ".":
+                depth = 0
+        return depth > 0
+
+    def file_of(start: int, stop: int) -> str:
+        # The DATASET or FILE operand of an EXEC block, its constant resolved.
+        for position in range(start, stop - 1):
+            if words[position] in ("DATASET", "FILE") and words[position + 1] == "(":
+                token = program.tokens[position + 2]
+                if token.literal:
+                    return token.value.strip()
+                return (program.constant(token.word) or "").strip() or token.word
+        return ""
+
+    def item_of(start: int, stop: int, verb: str) -> str:
+        # A reference to the side-effect item of this program whose
+        # ("cics", VERB, RESOURCE) anchor designates the EXEC block; "" when
+        # no row does.
+        block = program.tokens[start:stop + 1]
+        for owner, _kind, label, anchors, _description in SIDE_EFFECTS:
+            if owner != name:
+                continue
+            for anchor in anchors:
+                if anchor[0] == "cics" and anchor[1] == verb and any(
+                    token.word == anchor[2] or (token.literal and token.value.strip() == anchor[2])
+                    for token in block
+                ):
+                    return f" ({item_ref(f'{owner} {label}')})"
+        return ""
+
+    # The paragraphs PF3 performs before it transfers, its RETURN-TO-...
+    # transfer excepted.
+    roots: list[str] = []
+    for position in range(index, end + 1):
+        if words[position] == "PERFORM":
+            for root in performed(position):
+                if not root.startswith("RETURN-TO-") and root not in roots:
+                    roots.append(root)
+
+    # Follow each one's PERFORMs, every paragraph once per guard state.
+    commands: dict[tuple[str, str], list[Any]] = {}  # (verb, file) -> [item reference, guarded]
+    saving: list[str] = []
+    enders: set[str] = set()
+    sends = False
+    for root in roots:
+        pending: list[tuple[str, bool]] = [(root, False)]
+        seen: set[tuple[str, bool]] = set()
+        while pending:
+            state = pending.pop()
+            if state in seen:
+                continue
+            seen.add(state)
+            para_name, guarded = state
+            para = program.paragraph(para_name)
+            position = para.start
+            while position < para.end:
+                word = words[position]
+                if word == "PERFORM":
+                    inner = guarded or conditional(para, position)
+                    pending.extend((target, inner) for target in performed(position))
+                elif word == "EXEC" and words[position + 1] == "CICS":
+                    stop = program.statement_end(position)
+                    verb = words[position + 2]
+                    if verb in ("WRITE", "REWRITE", "DELETE"):
+                        entry = commands.setdefault(
+                            (verb, file_of(position, stop)), [item_of(position, stop, verb), True]
+                        )
+                        entry[1] = entry[1] and (guarded or conditional(para, position))
+                        if root not in saving:
+                            saving.append(root)
+                    elif verb in ("RETURN", "XCTL", "ABEND"):
+                        enders.add(verb)
+                    elif verb == "SEND":
+                        sends = True
+                    position = stop
+                position += 1
+    if not commands:
+        return None
+
+    # The other AID keys whose WHEN or IF branch PERFORMs every saving
+    # paragraph.
+    keys: list[str] = []
+    for position in range(program.proc_start + 1, len(words)):
+        aid = re.fullmatch(r"(?:DFH|CCARD-AID-)(?:ENTER|PFK?(\d+))", words[position])
+        if aid is None or words[position] in PF3_CONDITIONS or program.tokens[position].path != program.path:
+            continue
+        if words[position - 1] == "IF" or words[position - 2:position] == ["IF", "("]:
+            stop = _branch_end(program, position - 1 if words[position - 1] == "IF" else position - 2)
+        elif words[position - 1] == "WHEN":
+            stop, depth, body = len(words) - 1, 0, position + 1
+            for later in range(position + 1, len(words)):
+                word = words[later]
+                if word == "WHEN" and depth == 0 and later == body:
+                    body = later + 2  # WHEN phrases in a row share the branch that follows
+                elif word == "EVALUATE":
+                    depth += 1
+                elif word == "END-EVALUATE" and depth:
+                    depth -= 1
+                elif (word in ("WHEN", "END-EVALUATE") and depth == 0) or word == ".":
+                    stop = later
+                    break
+        else:
+            continue
+        branch: set[str] = set()
+        for later in range(position + 1, stop):
+            if words[later] == "PERFORM":
+                branch.update(performed(later))
+        key = f"PF{int(aid.group(1))}" if aid.group(1) else "ENTER"
+        if branch.issuperset(saving) and key not in keys:
+            keys.append(key)
+
+    guarded = all(entry[1] for entry in commands.values())
+    acts = " or ".join(
+        f"{verb} the {file + ' ' if file else ''}record{reference}"
+        for (verb, file), (reference, _guarded) in commands.items()
+    )
+    sharing = ", ".join(keys[:-1]) + f" and {keys[-1]}" if len(keys) > 1 else "".join(keys)
+    shared = f", the save {sharing} perform{'s' if len(keys) == 1 else ''}" if keys else ""
+    accept = "when it accepts the edited fields it can " if guarded else "it can "
+    refused = "; a refused or unchanged save only sends its message" if guarded and sends else ""
+    if enders:
+        ending = " or ".join(sorted(enders))
+        then = f"Unless a paragraph it performs ends the task itself (EXEC CICS {ending}), PF3 then"
+    else:
+        then = "In every case PF3 then"
+    replaced = f", whose screen replaces {name}'s" if sends else ""
+    return (
+        f"PF3 first performs {' and '.join(saving)}{shared}: {accept}{acts}{refused}. {then} leaves {name} and "
+        f"transfers control to {to}{replaced}, so a PF3 save is observed in file_state."
+    )
+
+
 def online_navigation(program: CobolProgram) -> list[Navigation]:
     """The navigation paths of an online program (rule 2), in the order:
     sign-on routing, menu options, PF3 return, list selections, entry
@@ -1405,10 +1761,12 @@ def online_navigation(program: CobolProgram) -> list[Navigation]:
                 end = _transfer_end(program, index, len(program.tokens))
                 targets = _transfer_targets(program, index, end)
                 to = " or ".join(targets) if targets else "the previous screen"
+                # A PF3 branch that saves before it transfers says so.
+                saves = _pf3_save_description(program, index, end, to)
                 result.append(
                     Navigation(
                         "PF3 return",
-                        f"PF3 leaves {name} and transfers control to {to}.",
+                        saves or f"PF3 leaves {name} and transfers control to {to}.",
                         program.span(index - 1 if program.words[index - 1] != "(" else index - 2, end),
                     )
                 )
@@ -1579,8 +1937,10 @@ SIDE_EFFECTS: tuple[tuple[str, str, str, tuple[Anchor, ...], str], ...] = (
      "Adding a user writes a new 80-byte USRSEC record (CSUSR01Y) keyed by the user id; observed as the "
      "record in file_state."),
     ("COUSR02C", "interface", "USRSEC REWRITE", (("cics", "REWRITE", "WS-USRSEC-FILE"),),
-     "Saving changes (PF5) rewrites the USRSEC record of the selected user id with the edited names, "
-     "password and type; observed as the record in file_state."),
+     "Saving changes rewrites the USRSEC record of the selected user id with the edited names, password and "
+     "type when every field is supplied and at least one differs from the record: PF5 saves and stays on the "
+     "screen, and PF3 performs the same save before it returns ({item:COUSR02C PF3 return}); observed as the "
+     "record in file_state."),
     ("COUSR03C", "interface", "USRSEC DELETE", (("cics", "DELETE", "WS-USRSEC-FILE"),),
      "Confirming the deletion (PF5) deletes the USRSEC record of the selected user id; observed as its "
      "absence in file_state."),
@@ -1706,7 +2066,7 @@ UNREACHABLE_MESSAGES: tuple[tuple[str, str, str, Callable[[CobolProgram], bool],
 
 def _message_draft(area: str, program: CobolProgram, message: Message) -> dict[str, Any]:
     name = program.name
-    shown = "the abend data sent to the terminal" if "ABEND-MSG" in message.targets else "the screen message (ERRMSG)"
+    shown = _sink_phrase(program, message)
     fields = ", ".join(sorted(message.targets))
     lines = _line_list(message.sites)
     if message.origin == "condition":
@@ -1767,6 +2127,7 @@ def online_items(area: str, program: CobolProgram) -> list[dict[str, Any]]:
             _draft(area, "rule", f"{program.name} {navigation.label}", cite_span(navigation.span),
                    navigation.description, "e2e", gap_ids=navigation.gap_ids)
         )
+    receiver = _alphanumeric_width(program, FIELD_NAME_VARIABLE)
     for predicate in predicates:
         if predicate.field is None:
             drafts.append(
@@ -1779,12 +2140,23 @@ def online_items(area: str, program: CobolProgram) -> list[dict[str, Any]]:
             )
             continue
         described = f"'{predicate.message}'" if predicate.names_field else f"'{predicate.message}' (no field name)"
+        if predicate.names_field and predicate.shown_field != predicate.field and receiver is not None:
+            described += (
+                f" (the MOVE cuts the {len(predicate.field)}-character name '{predicate.field}' to the "
+                f"{receiver[0]} characters of {FIELD_NAME_VARIABLE})"
+            )
+        guard = _predicate_guard(program, predicate.routine)
+        condition = f", {guard[0]}," if guard is not None else ""
+        description = (
+            f"{program.name} refuses {predicate.field}{condition} unless {predicate.label}: ERRMSG shows "
+            f"{described} and the field is flagged (edit routine {predicate.routine})."
+        )
+        if guard is not None:
+            description += " " + guard[1].format(field=predicate.field)
         drafts.append(
             _draft(
                 area, "rule", f"{program.name} {predicate.field}: {predicate.label}", cite_span(predicate.span),
-                f"{program.name} refuses {predicate.field} unless {predicate.label}: ERRMSG shows {described} "
-                f"and the field is flagged (edit routine {predicate.routine}).",
-                "e2e",
+                description, "e2e",
             )
         )
     for owner, kind, label, anchors, description in SIDE_EFFECTS:
@@ -2087,17 +2459,23 @@ BATCH_ROWS += (
      "always", ()),
     ("RPT", "CBSTM03A", "report", "HTML statement",
      (("paragraph", "5100-WRITE-HTML-HEADER"), ("paragraph", "5200-WRITE-HTML-NMADBS"),
-      ("paragraph", "6000-WRITE-TRANS")),
-     "The same statement is written to HTMLFILE as 100-byte HTML lines: header, name and address, account "
-     "details, a table row per transaction and the total.",
+      ("paragraph", "6000-WRITE-TRANS"), ("paragraph", "4000-TRNXFILE-GET")),
+     "For each card the statement is also written to HTMLFILE as 100-byte HTML lines: the document and table "
+     "header, 'Statement for Account Number: <account id>', the bank name and address ('Bank of XYZ', '410 "
+     "Terry Ave N', 'Seattle WA 99999'), the customer name and three address lines, 'Basic Details' with the "
+     "Account ID, Current Balance and FICO Score lines, 'Transaction Summary' with the Tran ID, Tran Details "
+     "and Amount headers, a table row per transaction (id, details, amount), and fixed closing lines with "
+     "'<h3>End of Statement</h3>'. The HTML statement has no total: the transaction total is written only to "
+     "STMTFILE.",
      "always", ()),
     ("RPT", "CBSTM03A", "report", "JCL step and DD display", (("main",),),
      "CBSTM03A walks the z/OS PSA, TCB and TIOT from address 0 and displays 'Running JCL : <job> Step <step>' "
      "and each DD name with a valid or null UCB; this runs only where page zero holds those control blocks.",
      "conditional", ("GAP-DOC-020", "GAP-STB-003")),
     ("RPT", "CBSTM03A", "calculation", "per-statement transaction total", (("paragraph", "4000-TRNXFILE-GET"),),
-     "The amounts of the card's transactions are summed into WS-TOTAL-AMT, which the statement shows as the "
-     "total; it is reset for each card.",
+     "The amounts of the card's transactions are summed into WS-TOTAL-AMT, which is reset for each card; the "
+     "total is shown only on the text statement, as the STMTFILE 'Total EXP:' line, never on the HTML "
+     "statement.",
      "always", ()),
     ("RPT", "CBSTM03B", "interface", "file service operations O/C/R/K/W/Z",
      (("regex", r"05\s+LK-M03B-OPER.*?88\s+M03B-REWRITE[^\n]*"), ("paragraph", "0000-START")),
@@ -2139,9 +2517,14 @@ BATCH_ROWS += (
      "CORPT00C and COTRN02C, 'YYYYMMDD' from COACTUPC through CSUTLDPY (EDIT-DATE-LE).",
      "always", ()),
     ("UTL", "CSUTLDTC", "interface", "result message layout and RETURN-CODE",
-     (("regex", r"01\s+WS-MESSAGE\..*?WS-DATE-FMT[^\n]*"), ("main",)),
-     "The 80-byte result is the 4-digit severity, 'Mesg Code:', the message number, the 15-character text, "
-     "'TstDate:' with the date and 'Mask used:' with the mask; RETURN-CODE is set to the severity.",
+     (("regex", r"01\s+WS-MESSAGE\..*?WS-DATE-FMT[^\n]*"), ("main",),
+      ("regex", r"MOVE\s+WS-DATE-TO-TEST\s+TO\s+WS-DATE(?![\w-])")),
+     "The 80-byte result is the 4-digit severity, 'Mesg Code: ', the 4-digit message number, a space, the "
+     "15-character text, a space, 'TstDate: ', a 10-byte date field, a space, 'Mask used:', the 10-byte mask "
+     "as passed and 4 spaces; RETURN-CODE is set to the severity. The date field does not hold the date: "
+     "after CEEDAYS the whole WS-DATE-TO-TEST group is moved into it, so it holds the binary Vstring length "
+     "x'000A' followed by the first 8 characters of the date passed, and the last two characters of a "
+     "10-character date are lost.",
      "always", ()),
 )
 
@@ -2155,9 +2538,12 @@ BATCH_ROWS += (
 JCL_ROWS: tuple[tuple[str, str, str, str, str, tuple[str, ...], str], ...] = (
     ("DAT", "ACCTFILE", "recovery", "JCL MAXCC reset after DELETE", "app/jcl/ACCTFILE.jcl",
      (r"IF\s+MAXCC\s+LE\s+08\s+THEN\s+SET\s+MAXCC\s*=\s*0",),
-     "After the IDCAMS DELETE of a cluster that may not exist, 'IF MAXCC LE 08 THEN SET MAXCC = 0' resets the "
-     "condition code so the DEFINE and REPRO steps run and the job ends with return code 0; the same "
-     "statement is in {jobs}."),
+     "In STEP05 the IDCAMS DELETE of the cluster is followed by 'IF MAXCC LE 08 THEN SET MAXCC = 0': a DELETE "
+     "ending with condition code 8 or less (8 when the cluster does not exist) leaves the step with return "
+     "code 0, while a higher code is kept as the step's return code. The DEFINE (STEP10) and REPRO (STEP15) "
+     "steps have no COND and run whatever STEP05 returned; their own return codes decide the job's outcome, "
+     "so a final return code 0 is not guaranteed. The same conditional statement is in {jobs}; an "
+     "unconditional 'SET MAXCC = 0' is in {reset}, and 'IF LASTCC=12 THEN SET MAXCC=0' is in {lastcc}."),
     ("DAT", "POSTTRAN", "recovery", "JCL DISP=(NEW,CATLG,DELETE) on step failure", "app/jcl/POSTTRAN.jcl",
      (r"//DALYREJS\s+DD\s+DISP=\(NEW,CATLG,DELETE\).*?DALYREJS\(\+1\)",),
      "An output generation allocated with DISP=(NEW,CATLG,DELETE), such as DALYREJS(+1), is catalogued when "
@@ -2165,8 +2551,14 @@ JCL_ROWS: tuple[tuple[str, str, str, str, str, tuple[str, ...], str], ...] = (
      "generation."),
     ("DAT", "TRANBKP", "recovery", "JCL COND=(4,LT) on the DEFINE step", "app/jcl/TRANBKP.jcl",
      (r"//STEP10\s+EXEC\s+PGM=IDCAMS,COND=\(4,LT\)",),
-     "The TRANSACT DEFINE step is bypassed when a previous step ended with a return code greater than 4, so "
-     "a failed backup or delete leaves the cluster undefined."),
+     "The TRANSACT DEFINE (STEP10) is bypassed when an earlier step ended with a return code greater than 4. "
+     "STEP05 deletes the cluster and then its alternate index, each DELETE followed by 'IF MAXCC LE 08 THEN "
+     "SET MAXCC = 0', so a DELETE of a missing cluster or alternate index (code 8 or less) becomes 0 and does "
+     "not bypass the DEFINE. STEP05 has no COND, so it runs even after the REPROC backup (STEP05R) ended with "
+     "a return code above 4; the DEFINE is then bypassed, and a successful DELETE leaves the cluster "
+     "undefined. A DELETE ending above 8 keeps its code and bypasses the DEFINE: after a failed cluster "
+     "DELETE the old cluster can remain in place, after a failed alternate-index DELETE the deleted cluster "
+     "stays undefined. Whether the cluster exists after the job therefore depends on the DELETE's outcome."),
     ("DAT", "DEFGDGB", "config", "JCL GDG (+1)/(0) generation roll", "app/jcl/DEFGDGB.jcl",
      (r"DEFINE\s+GENERATIONDATAGROUP.*DEFINE\s+GENERATIONDATAGROUP[^\n]*",),
      "Each (+1) reference ({plus}) creates a new generation of a GDG base defined here, and each (0) "
@@ -2217,16 +2609,20 @@ def _jobs_matching(pattern: str, repo_root: Path) -> list[str]:
     folder = repo_root / "app/jcl"
     regex = re.compile(pattern)
     return sorted(
-        path.stem.upper() for path in folder.iterdir()
-        if path.is_file() and regex.search("\n".join(read_lines(path)))
+        path.stem.upper() for path in _regular_files(folder)
+        if regex.search("\n".join(read_lines(path)))
     )
 
 
 def jcl_items(repo_root: Path = REPO_ROOT) -> list[dict[str, Any]]:
-    maxcc = [job for job in _jobs_matching(r"SET\s+MAXCC\s*=\s*0", repo_root) if job != "ACCTFILE"]
+    maxcc = [job for job in _jobs_matching(r"IF\s+MAXCC\s+LE\s+08\s+THEN\s+SET\s+MAXCC\s*=\s*0", repo_root)
+             if job != "ACCTFILE"]
+    reset = _jobs_matching(r"(?m)^[ \t]*SET\s+MAXCC\s*=\s*0", repo_root)
+    lastcc = _jobs_matching(r"IF\s+LASTCC\s*=\s*12\s+THEN\s+SET\s+MAXCC\s*=\s*0", repo_root)
     plus = _jobs_matching(r"\(\+1\)", repo_root)
     zero = _jobs_matching(r"\(0\)", repo_root)
-    fills = {"jobs": ", ".join(maxcc), "plus": ", ".join(plus), "zero": ", ".join(zero)}
+    fills = {"jobs": ", ".join(maxcc) or "no other job", "reset": ", ".join(reset) or "no job",
+             "lastcc": ", ".join(lastcc) or "no job", "plus": ", ".join(plus), "zero": ", ".join(zero)}
     drafts = []
     for area, owner, kind, label, path, patterns, description in JCL_ROWS:
         drafts.append(
@@ -2281,11 +2677,13 @@ def parse_csd(repo_root: Path = REPO_ROOT) -> list[CsdEntry]:
 def read_fct_list(repo_root: Path = REPO_ROOT) -> list[tuple[int, str]]:
     """(line, file name) of each entry of the UniKix copy's ``fct.lst``, read
     from the zip in memory. ``__MACOSX/`` AppleDouble members are skipped."""
-    with zipfile.ZipFile(repo_root / UNIKIX_ZIP) as archive:
-        members = [n for n in archive.namelist() if n == FCT_MEMBER and not n.startswith("__MACOSX/")]
-        if not members:
-            raise InventoryError(f"{UNIKIX_ZIP} holds no {FCT_MEMBER}")
-        text = archive.read(members[0]).decode("ascii")
+    data = _zip_member(repo_root / UNIKIX_ZIP, UNIKIX_ZIP, FCT_MEMBER)
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise InventoryError(
+            f"{UNIKIX_ZIP}:{FCT_MEMBER} is not ASCII text: byte {exc.start} is {data[exc.start]:#04x}"
+        ) from exc
     return [
         (number, line.split(",")[0].strip().upper())
         for number, line in enumerate(text.splitlines(), start=1)
@@ -2295,7 +2693,7 @@ def read_fct_list(repo_root: Path = REPO_ROOT) -> list[tuple[int, str]]:
 
 def _files(directory: Path) -> list[Path]:
     return sorted(
-        (p for p in directory.iterdir() if p.is_file() and p.name != ".gitkeep"),
+        (p for p in _regular_files(directory) if p.name != ".gitkeep"),
         key=lambda p: p.name,
     )
 
@@ -2420,8 +2818,10 @@ def _control_card_item(area: str, repo: _Repository, name: str) -> dict[str, Any
 
 
 def _map_item(area: str, repo: _Repository, map_name: str) -> dict[str, Any]:
-    bms = next(p for p in _files(repo.root / "app/bms") if p.stem.upper() == map_name)
     symbolic = f"app/cpy-bms/{map_name}.CPY"
+    bms = next((p for p in _files(repo.root / "app/bms") if p.stem.upper() == map_name), None)
+    if bms is None:
+        raise InventoryError(f"app/bms has no mapset {map_name} for the symbolic map copybook {symbolic}")
     shown_by = ", ".join(repo.copiers.get(symbolic, [])) or "no program"
     description = (
         f"BMS mapset {map_name} ({_relative(bms, repo.root)}) with its symbolic map copybook {symbolic}; sent and "
@@ -2527,7 +2927,10 @@ def _data_items(repo: _Repository) -> list[dict[str, Any]]:
         length = EBCDIC_RECORD_LENGTHS.get(path.name)
         if length is None:
             raise InventoryError(f"no record length is registered for {path.name}")
-        size = path.stat().st_size
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise InventoryError(f"cannot read {path}: {_os_reason(exc)}") from exc
         if size % length:
             raise InventoryError(f"{path.name}: {size} bytes is not a multiple of the record length {length}")
         records = size // length
@@ -2674,10 +3077,23 @@ def _drafts_by_area(repo: _Repository) -> dict[str, list[dict[str, Any]]]:
     return by_area
 
 
+_ITEM_REF_RE = re.compile(r"\{item:([^{}]+)\}")
+
+
+def item_ref(name: str) -> str:
+    """A reference, inside a description, to the item called ``name``;
+    generate_items replaces it with that item's id once every item is
+    numbered. Static descriptions write the same ``{item:<name>}`` text."""
+    if "{" in name or "}" in name:
+        raise InventoryError(f"item name {name!r} cannot be referenced: it contains a brace")
+    return f"{{item:{name}}}"
+
+
 def generate_items(repo_root: Path = REPO_ROOT) -> list[dict[str, Any]]:
     """Every inventory item the extraction rules and tables produce for the
     repository at ``repo_root``, numbered per area: source items first, then
-    behaviour items."""
+    behaviour items. Item references (``item_ref``) in descriptions are
+    replaced by the cited item's id."""
     repo = _Repository.load(Path(repo_root))
     items = []
     for area, drafts in _drafts_by_area(repo).items():
@@ -2689,6 +3105,14 @@ def generate_items(repo_root: Path = REPO_ROOT) -> list[dict[str, Any]]:
     duplicates = sorted(name for name, count in names.items() if count > 1)
     if duplicates:
         raise InventoryError("item names are not unique: " + "; ".join(duplicates))
+    ids = {item["name"]: item["id"] for item in items}
+    for item in items:
+        for cited in _ITEM_REF_RE.findall(item["description"]):
+            if cited not in ids:
+                raise InventoryError(f"{item['id']} ({item['name']}): description cites unknown item {cited!r}")
+        item["description"] = _ITEM_REF_RE.sub(lambda match: ids[match.group(1)], item["description"])
+        if "{item:" in item["description"]:
+            raise InventoryError(f"{item['id']} ({item['name']}): malformed item reference in its description")
     return items
 
 
@@ -2775,8 +3199,64 @@ def header_from_items(
             }
             for area in AREAS
         },
-        "changes": [dict(change) for change in changes],
+        "changes": [_change_copy(change) for change in changes],
     }
+
+
+def _change_copy(change: Any) -> dict[str, Any]:
+    if not isinstance(change, dict):
+        raise InventoryError(f"header: change {_shown(change)} is not a mapping")
+    return dict(change)
+
+
+def _is_counts(value: Any) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(key, str) and isinstance(count, int) and not isinstance(count, bool)
+        for key, count in value.items()
+    )
+
+
+def _header_problems(header: dict[str, Any]) -> list[str]:
+    """Shape problems of the header fields present, found before any count or
+    change is computed from them: no key outside the eight header fields, the
+    commit and base are strings, the date a string or date, the total an
+    integer, ``source_items`` and ``derived_items`` map kinds to counts,
+    ``by_area`` maps each area to its counts, and ``changes`` is a list of
+    mappings with a date and a reason."""
+    problems = []
+    unexpected = sorted(key if isinstance(key, str) else _shown(key) for key in header if key not in _HEADER_KEYS)
+    if unexpected:
+        problems.append(f"header: unexpected key(s) {', '.join(unexpected)}")
+    for key, types in (("frozen_commit", str), ("frozen_on", (str, datetime.date)), ("protected_base", str)):
+        if key in header and not isinstance(header[key], types):
+            problems.append(f"header: {key} {_shown(header[key])} is not a string")
+    total = header.get("total")
+    if "total" in header and (not isinstance(total, int) or isinstance(total, bool)):
+        problems.append(f"header: total {_shown(total)} is not an integer")
+    for key in ("source_items", "derived_items"):
+        if key in header and not _is_counts(header[key]):
+            problems.append(f"header: {key} {_shown(header[key])} is not a mapping of kind to count")
+    if "by_area" in header:
+        by_area = header["by_area"]
+        if not isinstance(by_area, dict):
+            problems.append(f"header: by_area {_shown(by_area)} is not a mapping of area to counts")
+        else:
+            problems.extend(
+                f"header: by_area {_shown(area)} {_shown(counts)} is not a mapping of part to count"
+                for area, counts in by_area.items()
+                if not isinstance(area, str) or not _is_counts(counts)
+            )
+    if "changes" in header:
+        changes = header["changes"]
+        if not isinstance(changes, list):
+            problems.append(f"header: changes {_shown(changes)} is not a list")
+        else:
+            for change in changes:
+                if not isinstance(change, dict) or not change.get("reason") or not change.get("date"):
+                    problems.append(f"header: change {_shown(change)} lacks a date or reason")
+                elif not isinstance(change.get("inventory_id") or "", str):
+                    problems.append(f"header: change {_shown(change)} has an inventory_id that is not a string")
+    return problems
 
 
 # --------------------------------------------------------------------------
@@ -2790,16 +3270,81 @@ def _area_order(item: dict[str, Any]) -> tuple[int, str]:
     return AREAS.index(item_area(item)), item["id"]
 
 
+@contextlib.contextmanager
+def _locked(target: Path) -> Iterator[None]:
+    """Hold an exclusive lock on the directory of the inventory file
+    ``target`` (created if missing) while a load, modify and write runs, so
+    concurrent writers take turns and none loses another's additions. The
+    lock is taken on the directory itself, so no lock file is created."""
+    directory = target.parent
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(directory, os.O_RDONLY)
+    except OSError as exc:
+        raise InventoryError(f"cannot lock {directory}: {exc.strerror or exc}") from exc
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)  # closing the descriptor releases the lock
+
+
+_ABSENT = object()
+
+
+def _yaml_problem(exc: yaml.YAMLError) -> str:
+    """``exc`` on one line: its problem and the line where it was found."""
+    problem, mark = getattr(exc, "problem", None), getattr(exc, "problem_mark", None)
+    if problem and mark is not None:
+        return f"{' '.join(problem.split())} (line {mark.line + 1})"
+    return " ".join(str(exc).split())
+
+
+def _read_yaml(path: str | Path) -> Any:
+    """The YAML document at ``path``, safely loaded (``None`` for a file with
+    no document), or ``_ABSENT`` when no file exists there. An unreadable,
+    non-UTF-8 or malformed file raises InventoryError naming it."""
+    try:
+        return load_yaml(path)
+    except FileNotFoundError:
+        return _ABSENT
+    except UnicodeDecodeError as exc:
+        raise InventoryError(f"{path} is not UTF-8 text: byte {exc.start} cannot be decoded") from exc
+    except OSError as exc:
+        raise InventoryError(f"cannot read {path}: {_os_reason(exc)}") from exc
+    except yaml.YAMLError as exc:
+        raise InventoryError(f"{path} is not valid YAML: {_yaml_problem(exc)}") from exc
+    # PyYAML's safe constructors raise these, not YAMLError, on bad input: an
+    # impossible date or time, an integer over Python's digit limit, a !!int,
+    # !!float, !!bool or !!timestamp value that is not one, or nesting too
+    # deep for the pure-Python loader.
+    except (ValueError, KeyError, AttributeError, RecursionError) as exc:
+        detail = " ".join(str(exc).split())
+        raise InventoryError(
+            f"{path} is not valid YAML: a value cannot be constructed ({type(exc).__name__}: {detail})"
+        ) from exc
+
+
 def load(path: str | Path = INVENTORY_FILE, missing_ok: bool = False) -> dict[str, Any]:
     """The inventory file as ``{"header": {...}, "items": [...]}``.
 
     A missing file raises InventoryError unless ``missing_ok``, which returns
-    an empty inventory."""
-    data = load_yaml(path, missing_ok=True)
-    if data is None:
+    an empty inventory. A file that exists but is empty, unreadable, not
+    UTF-8, not valid YAML or not an inventory raises InventoryError whatever
+    ``missing_ok`` says, so a damaged inventory is never taken for an absent
+    one and regenerated over."""
+    data = _read_yaml(path)
+    if data is _ABSENT:
         if missing_ok:
             return {"header": {}, "items": []}
         raise InventoryError(f"{path} does not exist; run inventory_tools.py --freeze")
+    if data is None:
+        raise InventoryError(
+            f"{path} is empty: restore it from version control (deleting it and running "
+            f"inventory_tools.py --freeze regenerates it without the items added after the freeze)"
+        )
+    if isinstance(data, dict) and "header" not in data and "items" not in data:
+        raise InventoryError(f"{path} is not an inventory: it has neither 'header' nor 'items'")
     if (
         not isinstance(data, dict)
         or not isinstance(data.get("items", []), list)
@@ -2809,9 +3354,34 @@ def load(path: str | Path = INVENTORY_FILE, missing_ok: bool = False) -> dict[st
     return {"header": data.get("header") or {}, "items": data.get("items") or []}
 
 
-def write(inventory: dict[str, Any], path: str | Path = INVENTORY_FILE) -> bool:
+def _confined_target(path: str | Path, repo_root: Path) -> Path:
+    """The file ``path`` resolves to, symlinks followed, provided it lies
+    inside ``tests/inventory/`` of ``repo_root`` and is not a directory; any
+    other target raises InventoryError before anything is read or written."""
+    root = Path(os.path.realpath(repo_root))
+    allowed = root / "tests" / "inventory"
+    real = Path(os.path.realpath(path))
+    if allowed not in real.parents:
+        raise InventoryError(
+            f"{path} resolves to {real} outside tests/inventory/ of {root}; the inventory is written only there"
+        )
+    try:
+        is_directory = real.is_dir()
+    except OSError as exc:
+        raise InventoryError(f"cannot read {path}: {_os_reason(exc)}") from exc
+    if is_directory:
+        raise InventoryError(f"{path} resolves to the directory {real}, not an inventory file")
+    return real
+
+
+def write(
+    inventory: dict[str, Any], path: str | Path = INVENTORY_FILE, *, repo_root: Path = REPO_ROOT
+) -> bool:
     """Write ``inventory`` as canonical YAML, items in area order then id.
-    Returns whether the file changed."""
+    Returns whether the file changed. ``path`` must resolve inside
+    ``tests/inventory/`` of ``repo_root``; the file it resolves to is
+    replaced atomically."""
+    target = _confined_target(path, repo_root)
     records = inventory.get("items", [])
     for item in records:
         missing = [key for key in ITEM_FIELDS if key not in item]
@@ -2821,7 +3391,10 @@ def write(inventory: dict[str, Any], path: str | Path = INVENTORY_FILE) -> bool:
         "header": inventory.get("header", {}),
         "items": [{key: item[key] for key in ITEM_FIELDS} for item in sorted(records, key=_area_order)],
     }
-    return write_text(path, dump_yaml(document))
+    try:
+        return write_text(target, dump_yaml(document))
+    except OSError as exc:
+        raise InventoryError(f"cannot write {path}: {_os_reason(exc)}") from exc
 
 
 def items(inventory: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -2849,7 +3422,7 @@ def next_id(area: str, inventory: dict[str, Any] | None = None) -> str:
     return f"INV-{area}-{number:03d}"
 
 
-def _validate_new_item(item: dict[str, Any]) -> None:
+def _validate_new_item(item: dict[str, Any], repo_root: Path) -> None:
     for key in ("kind", "name", "source", "description"):
         if not isinstance(item.get(key), str) or not item[key].strip():
             raise InventoryError(f"new item needs a non-empty {key}: {item!r}")
@@ -2862,10 +3435,43 @@ def _validate_new_item(item: dict[str, Any]) -> None:
     for gap in item["gap_ids"]:
         if not _GAP_RE.match(gap):
             raise InventoryError(f"new item gap id {gap!r} is not GAP-<CAT>-<nnn>")
+    problem = _source_problem(item["source"], repo_root)
+    if problem:
+        raise InventoryError(f"new item {item['name']!r}: {problem}")
+
+
+def _id_list(candidate: dict[str, Any], key: str) -> list[str]:
+    """The ``scenario_ids`` or ``gap_ids`` of a new item: absent or a list of
+    non-empty strings."""
+    value = candidate.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)) or not all(isinstance(entry, str) and entry.strip() for entry in value):
+        raise InventoryError(f"new item {key} must be a list of non-empty strings, not {_shown(value)}")
+    return list(value)
+
+
+def _known_gap_ids(repo_root: Path) -> set[str]:
+    """The ``gap_id`` of every entry of the ``gaps`` list of
+    ``tests/inventory/gaps.yaml`` of ``repo_root``."""
+    path = Path(repo_root) / "tests" / "inventory" / "gaps.yaml"
+    data = _read_yaml(path)
+    if data is _ABSENT:
+        raise InventoryError(f"{path} does not exist, so the gap ids of new items cannot be checked")
+    gaps = data.get("gaps") if isinstance(data, dict) else None
+    if not isinstance(gaps, list):
+        raise InventoryError(f"{path} has no 'gaps' list")
+    return {
+        entry["gap_id"] for entry in gaps if isinstance(entry, dict) and isinstance(entry.get("gap_id"), str)
+    }
 
 
 def append_items(
-    new_items: Sequence[dict[str, Any]], reason: str, path: str | Path = INVENTORY_FILE
+    new_items: Sequence[dict[str, Any]],
+    reason: str,
+    path: str | Path = INVENTORY_FILE,
+    *,
+    repo_root: Path = REPO_ROOT,
 ) -> list[str]:
     """Add behaviour or source items found after the freeze.
 
@@ -2875,47 +3481,77 @@ def append_items(
     the area, each addition is recorded in ``header.changes`` as ``{date,
     inventory_id, reason}`` and ``header.total`` rises with it. Items are
     never deleted. Returns the assigned ids.
+
+    ``path`` must resolve inside ``tests/inventory/`` of ``repo_root``. The
+    load, the additions and the write run under a lock on its directory, so
+    concurrent calls each record every id they return.
     """
     if not isinstance(reason, str) or not reason.strip():
         raise InventoryError("an inventory addition needs a reason")
-    inventory = load(path)
-    header = dict(inventory["header"])
-    if not header:
-        raise InventoryError(f"{path} has no header; freeze the inventory before adding items")
-    records = list(inventory["items"])
-    changes = list(header.get("changes") or [])
-    today = datetime.date.today().isoformat()
-    assigned = []
-    for new in new_items:
-        candidate = dict(new)
-        area = candidate.pop("area", None)
-        item = {
-            "kind": candidate.get("kind"),
-            "name": candidate.get("name"),
-            "source": candidate.get("source"),
-            "description": candidate.get("description"),
-            "activation": candidate.get("activation", "always"),
-            "level": candidate.get("level"),
-            "scenario_ids": sorted(candidate.get("scenario_ids") or []),
-            "status": "not-covered",
-            "gap_ids": sorted(set(candidate.get("gap_ids") or [])),
-        }
-        _validate_new_item(item)
-        item_id = next_id(area, {"header": header, "items": records})
-        records.append({"id": item_id, **item})
-        changes.append({"date": today, "inventory_id": item_id, "reason": reason.strip()})
-        assigned.append(item_id)
-    header.update(
-        header_from_items(
-            records,
-            frozen_commit=header.get("frozen_commit", "unknown"),
-            frozen_on=header.get("frozen_on", today),
-            changes=changes,
-            protected_base=header.get("protected_base", PROTECTED_BASE),
+    target = _confined_target(path, repo_root)
+    with _locked(target):
+        inventory = load(path)
+        header = dict(inventory["header"])
+        if not header:
+            raise InventoryError(f"{path} has no header; freeze the inventory before adding items")
+        records = list(inventory["items"])
+        problems = _header_problems(header) + _item_problems(records)
+        if problems:
+            raise _refusal(path, "extended", problems)
+        changes = list(header.get("changes") or [])
+        today = datetime.date.today().isoformat()
+        assigned = []
+        requested_gaps: set[str] = set()
+        for new in new_items:
+            if not isinstance(new, dict):
+                raise InventoryError(f"new item {_shown(new)} is not a mapping")
+            candidate = dict(new)
+            area = candidate.pop("area", None)
+            item = {
+                "kind": candidate.get("kind"),
+                "name": candidate.get("name"),
+                "source": candidate.get("source"),
+                "description": candidate.get("description"),
+                "activation": candidate.get("activation", "always"),
+                "level": candidate.get("level"),
+                "scenario_ids": sorted(_id_list(candidate, "scenario_ids")),
+                "status": "not-covered",
+                "gap_ids": sorted(set(_id_list(candidate, "gap_ids"))),
+            }
+            _validate_new_item(item, repo_root)
+            requested_gaps.update(item["gap_ids"])
+            item_id = next_id(area, {"header": header, "items": records})
+            records.append({"id": item_id, **item})
+            changes.append({"date": today, "inventory_id": item_id, "reason": reason.strip()})
+            assigned.append(item_id)
+        unknown_gaps = sorted(requested_gaps - _known_gap_ids(repo_root)) if requested_gaps else []
+        if unknown_gaps:
+            raise InventoryError(
+                f"new item gap id(s) {', '.join(unknown_gaps)} are not entries of tests/inventory/gaps.yaml"
+            )
+        header.update(
+            header_from_items(
+                records,
+                frozen_commit=header.get("frozen_commit", "unknown"),
+                frozen_on=header.get("frozen_on", today),
+                changes=changes,
+                protected_base=header.get("protected_base", PROTECTED_BASE),
+            )
         )
-    )
-    write({"header": header, "items": records}, path)
+        write({"header": header, "items": records}, target, repo_root=repo_root)
     return assigned
+
+
+_MAX_REFUSAL_PROBLEMS = 3
+
+
+def _refusal(path: str | Path, action: str, problems: Sequence[str]) -> InventoryError:
+    """One line naming ``path`` and its first problems."""
+    listed = "; ".join(problems[:_MAX_REFUSAL_PROBLEMS])
+    more = len(problems) - _MAX_REFUSAL_PROBLEMS
+    if more > 0:
+        listed += f"; {more} more: run inventory_tools.py --check --inventory {path} to list them"
+    return InventoryError(f"{path} cannot be {action}: {listed}")
 
 
 def _added_ids(header: dict[str, Any]) -> set[str]:
@@ -2931,24 +3567,34 @@ def freeze(path: str | Path = INVENTORY_FILE, repo_root: Path = REPO_ROOT) -> di
 
     An inventory with no items is generated first, numbered and stamped with
     the commit and date of the freeze. Existing items are never renumbered or
-    rewritten; only the header counts are recomputed. Returns the header."""
-    inventory = load(path, missing_ok=True)
-    header = inventory["header"]
-    records = inventory["items"]
-    if not records:
-        records = generate_items(repo_root)
-        frozen_commit, frozen_on = git_head(repo_root), datetime.date.today().isoformat()
-    else:
-        frozen_commit = header.get("frozen_commit") or git_head(repo_root)
-        frozen_on = header.get("frozen_on") or datetime.date.today().isoformat()
-    new_header = header_from_items(
-        records,
-        frozen_commit=frozen_commit,
-        frozen_on=frozen_on,
-        changes=header.get("changes") or [],
-        protected_base=header.get("protected_base") or PROTECTED_BASE,
-    )
-    write({"header": new_header, "items": records}, path)
+    rewritten; only the header counts are recomputed. Returns the header.
+
+    ``path`` must resolve, symlinks followed, inside ``tests/inventory/`` of
+    ``repo_root``; that is checked before anything is generated. A file that
+    exists there but is empty or no inventory is refused, never regenerated
+    over. The load, generation and write run under a lock on its directory."""
+    target = _confined_target(path, repo_root)
+    with _locked(target):
+        inventory = load(path, missing_ok=True)
+        header = inventory["header"]
+        records = inventory["items"]
+        problems = _header_problems(header) + _item_problems(records)
+        if problems:
+            raise _refusal(path, "frozen", problems)
+        if not records:
+            records = generate_items(repo_root)
+            frozen_commit, frozen_on = git_head(repo_root), datetime.date.today().isoformat()
+        else:
+            frozen_commit = header.get("frozen_commit") or git_head(repo_root)
+            frozen_on = header.get("frozen_on") or datetime.date.today().isoformat()
+        new_header = header_from_items(
+            records,
+            frozen_commit=frozen_commit,
+            frozen_on=frozen_on,
+            changes=header.get("changes") or [],
+            protected_base=header.get("protected_base") or PROTECTED_BASE,
+        )
+        write({"header": new_header, "items": records}, target, repo_root=repo_root)
     return new_header
 
 
@@ -2993,6 +3639,64 @@ def parse_source(source: str) -> tuple[str, list[tuple[int, int]]]:
     return path, ranges
 
 
+def _line_count(data: bytes) -> int:
+    lines = data.decode("latin-1").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return max(len(lines), 1)
+
+
+def _source_problem(source: Any, repo_root: Path) -> str | None:
+    """Why ``source`` cites no existing lines of the repository at
+    ``repo_root``, or ``None`` when it does.
+
+    The cited path is normalized, relative to the repository, and resolves
+    to a regular file inside it. Every range runs forward from line 1 to no
+    further than the file's end: its lines (an empty file has one, as
+    whole-file citations count it), its records for an ``app/data/EBCDIC``
+    file, or the member's lines for a zip member citation
+    ``<zip>:<member>:<lines>``."""
+    if not isinstance(source, str):
+        return f"source {_shown(source)} is not '<path>:<lines>'"
+    try:
+        cited, ranges = parse_source(source)
+    except InventoryError as exc:
+        return str(exc)
+    shown = _shown(source)
+    archive, colon, member = cited.partition(":")
+    in_zip = bool(colon) and archive.lower().endswith(".zip")
+    relative = archive if in_zip else cited
+    pure = PurePosixPath(relative)
+    if pure.is_absolute() or ".." in pure.parts or pure.as_posix() != relative:
+        return f"source {shown}: {relative} is not a normalized path relative to the repository"
+    root = Path(os.path.realpath(repo_root))
+    real = Path(os.path.realpath(root / relative))
+    if real != root and root not in real.parents:
+        return f"source {shown}: {relative} resolves outside the repository"
+    try:
+        if not real.is_file():
+            return f"source {shown}: {relative} is not a file of the repository"
+        if in_zip:
+            bound, unit = _line_count(_zip_member(real, relative, member)), "lines"
+        elif pure.parent.as_posix() == "app/data/EBCDIC":
+            length = EBCDIC_RECORD_LENGTHS.get(pure.name)
+            if length is None:
+                return f"source {shown}: no record length is registered for {pure.name}"
+            bound, unit = real.stat().st_size // length, "records"
+        else:
+            bound, unit = max(len(read_lines(real)), 1), "lines"
+    except OSError as exc:
+        return f"source {shown}: cannot read {relative}: {_os_reason(exc)}"
+    except InventoryError as exc:
+        return f"source {shown}: {exc}"
+    for first, last in ranges:
+        if first < 1 or first > last:
+            return f"source {shown}: range {first}-{last} does not run forward from line 1 or later"
+        if last > bound:
+            return f"source {shown}: {last} is past the end of {cited}, which has {bound} {unit}"
+    return None
+
+
 def _item_problems(records: Sequence[Any]) -> list[str]:
     problems: list[str] = []
     seen: dict[str, int] = {}
@@ -3001,8 +3705,8 @@ def _item_problems(records: Sequence[Any]) -> list[str]:
         if not isinstance(item, dict):
             problems.append(f"item {position} is not a mapping")
             continue
-        label = item.get("id", f"item {position}")
-        extra = sorted(set(item) - set(ITEM_FIELDS))
+        label = item["id"] if isinstance(item.get("id"), str) else f"item {position}"
+        extra = sorted(str(key) for key in set(item) - set(ITEM_FIELDS))
         missing = [key for key in ITEM_FIELDS if key not in item]
         if missing:
             problems.append(f"{label}: missing field(s) {', '.join(missing)}")
@@ -3014,24 +3718,27 @@ def _item_problems(records: Sequence[Any]) -> list[str]:
             problems.append(f"{label}: id is not INV-<AREA>-<nnn>")
         else:
             numbers[match.group(1)].append(int(match.group(2)))
-        seen[item["id"]] = seen.get(item["id"], 0) + 1
+            seen[item["id"]] = seen.get(item["id"], 0) + 1
         for key, allowed in (("kind", KINDS), ("activation", ACTIVATIONS), ("level", LEVELS), ("status", STATUSES)):
             if item[key] not in allowed:
-                problems.append(f"{label}: {key} {item[key]!r} is not one of {', '.join(allowed)}")
+                problems.append(f"{label}: {key} {_shown(item[key])} is not one of {', '.join(allowed)}")
         for key in ("name", "description"):
             if not isinstance(item[key], str) or not item[key].strip():
                 problems.append(f"{label}: {key} is empty")
-        try:
-            parse_source(item["source"])
-        except InventoryError as exc:
-            problems.append(f"{label}: {exc}")
+        if not isinstance(item["source"], str):
+            problems.append(f"{label}: source {_shown(item['source'])} is not '<path>:<lines>'")
+        else:
+            try:
+                parse_source(item["source"])
+            except InventoryError as exc:
+                problems.append(f"{label}: {exc}")
         for key in ("scenario_ids", "gap_ids"):
             if not isinstance(item[key], list):
                 problems.append(f"{label}: {key} is not a list")
         if isinstance(item["gap_ids"], list):
             for gap in item["gap_ids"]:
-                if not _GAP_RE.match(str(gap)):
-                    problems.append(f"{label}: gap id {gap!r} is not GAP-<CAT>-<nnn>")
+                if not isinstance(gap, str) or not _GAP_RE.match(gap):
+                    problems.append(f"{label}: gap id {_shown(gap)} is not GAP-<CAT>-<nnn>")
     problems.extend(f"{item_id}: id used {count} times" for item_id, count in sorted(seen.items()) if count > 1)
     for area, used in numbers.items():
         if used and sorted(used) != list(range(1, max(used) + 1)):
@@ -3043,19 +3750,56 @@ def _subtract(counts: Counter, minus: Counter) -> dict[str, int]:
     return {key: counts.get(key, 0) - minus.get(key, 0) for key in set(counts) | set(minus)}
 
 
+def _match_spans(regex: re.Pattern[str], lines: Sequence[str]) -> Iterator[tuple[int, int, int, int]]:
+    """For every match of ``regex`` in ``lines`` joined by newlines: the index
+    of the line it starts on and its offset in that line, then the same for
+    its last character."""
+    offsets = list(itertools.accumulate((len(line) + 1 for line in lines[:-1]), initial=0))
+    for match in regex.finditer("\n".join(lines)):
+        start, end = match.start(), max(match.end() - 1, match.start())
+        first, last = (bisect.bisect_right(offsets, offset) - 1 for offset in (start, end))
+        yield first, start - offsets[first], last, end - offsets[last]
+
+
 def interface_hits(repo_root: Path = REPO_ROOT) -> list[tuple[str, int, str]]:
     """(path, line, text) of every match of INTERFACE_PATTERNS in the
-    application sources, comments included."""
+    application sources: ``line`` is the line the match starts on and
+    ``text`` the lines it spans, stripped and joined by single spaces. One hit
+    per line, in file and line order.
+
+    Each file is searched whole, comments included, so a match may span
+    lines. A COBOL source (INTERFACE_CODE_DIRS) is searched as code as well,
+    sequence areas and comment lines left out and continuation lines joined,
+    so a statement such as ``EXEC SQL`` split over lines that carry sequence
+    numbers, or with comment lines between its words, is found too.
+    InventoryError when such a source cannot be read as code."""
     regex = re.compile("|".join(f"(?:{pattern})" for pattern in INTERFACE_PATTERNS), re.I)
     hits = []
     for directory in INTERFACE_SEARCH_DIRS:
         folder = repo_root / directory
-        if not folder.is_dir():
-            continue
-        for path in sorted(p for p in folder.rglob("*") if p.is_file()):
-            for number, line in enumerate(read_lines(path), start=1):
-                if regex.search(line):
-                    hits.append((_relative(path, repo_root), number, line.strip()))
+        try:
+            if not folder.is_dir():
+                continue
+            paths = sorted(p for p in folder.rglob("*") if p.is_file())
+        except OSError as exc:
+            raise InventoryError(f"cannot search {folder}: {_os_reason(exc)}") from exc
+        for path in paths:
+            raw = read_lines(path)
+            reach: dict[int, int] = {}  # line a match starts on -> last line spanned
+            spans = [(first + 1, last + 1) for first, _, last, _ in _match_spans(regex, raw)]
+            if directory in INTERFACE_CODE_DIRS:
+                with _inventory_errors():
+                    logical = join_continuations(code_lines(path, repo_root))
+                spans.extend(
+                    (logical[first].origin(start).line, logical[last].origin(end).line)
+                    for first, start, last, end in _match_spans(regex, [line.text for line in logical])
+                )
+            for first, last in spans:
+                reach[first] = max(reach.get(first, first), last)
+            rel = _relative(path, repo_root)
+            for first in sorted(reach):
+                text = " ".join(filter(None, (line.strip() for line in raw[first - 1:reach[first]])))
+                hits.append((rel, first, text))
     return hits
 
 
@@ -3067,8 +3811,12 @@ def check(path: str | Path = INVENTORY_FILE, repo_root: Path = REPO_ROOT) -> lis
     result must equal the recorded items (``scenario_ids``, ``status`` and
     ``gap_ids`` ignored) apart from the additions recorded in
     ``header.changes``, and the header counts net of those additions."""
+    return _check_inventory(load(path), repo_root)
+
+
+def _check_inventory(inventory: dict[str, Any], repo_root: Path) -> list[str]:
+    """The findings of ``check`` for an inventory already loaded."""
     findings: list[str] = []
-    inventory = load(path)
     header, records = inventory["header"], inventory["items"]
     findings.extend(_item_problems(records))
     if findings:
@@ -3076,6 +3824,11 @@ def check(path: str | Path = INVENTORY_FILE, repo_root: Path = REPO_ROOT) -> lis
     for key in _HEADER_KEYS:
         if key not in header:
             findings.append(f"header: missing {key}")
+    if findings:
+        return findings
+    # The counts and the change log are computed from the header below, so a
+    # header of the wrong shape is reported before anything reads it.
+    findings.extend(_header_problems(header))
     if findings:
         return findings
     if header["protected_base"] != PROTECTED_BASE:
@@ -3091,12 +3844,17 @@ def check(path: str | Path = INVENTORY_FILE, repo_root: Path = REPO_ROOT) -> lis
             findings.append(f"header: {key} {header[key]} does not match the recorded items {expected[key]}")
     known = {item["id"] for item in records}
     for change in header["changes"]:
-        if not isinstance(change, dict) or not change.get("reason") or not change.get("date"):
-            findings.append(f"header: change {change!r} lacks a date or reason")
-        elif change.get("inventory_id") and change["inventory_id"] not in known:
+        if change.get("inventory_id") and change["inventory_id"] not in known:
             findings.append(f"header: change cites unknown item {change['inventory_id']}")
 
     added = _added_ids(header)
+    # Regeneration does not cover the additions, so their citations are
+    # checked against the repository here.
+    for item in records:
+        if item["id"] in added:
+            problem = _source_problem(item["source"], repo_root)
+            if problem:
+                findings.append(f"{item['id']}: {problem}")
     try:
         regenerated = generate_items(repo_root)
     except InventoryError as exc:
@@ -3153,7 +3911,12 @@ def check(path: str | Path = INVENTORY_FILE, repo_root: Path = REPO_ROOT) -> lis
         if item["kind"] == "interface":
             file_path, ranges = parse_source(item["source"])
             cited.setdefault(file_path, []).extend(ranges)
-    for file_path, number, text in interface_hits(repo_root):
+    try:
+        hits = interface_hits(repo_root)
+    except InventoryError as exc:
+        findings.append(f"interface search failed: {exc}")
+        return findings
+    for file_path, number, text in hits:
         if not any(first <= number <= last for first, last in cited.get(file_path, [])):
             findings.append(f"{file_path}:{number}: external interface reference with no interface item: {text}")
     return findings
@@ -3164,10 +3927,30 @@ def check(path: str | Path = INVENTORY_FILE, repo_root: Path = REPO_ROOT) -> lis
 # --------------------------------------------------------------------------
 
 
+_EPILOG = """\
+examples (from the repository root):
+  python tests/harness/inventory_tools.py --check
+  python tests/harness/inventory_tools.py --freeze
+  python tests/harness/inventory_tools.py --check --inventory /scratch/copy/tests/inventory/inventory.yaml
+
+exit codes:
+  0  --check passed, or --freeze wrote the header (or found it current)
+  1  --check found drift, or the inventory was refused or could not be read
+  2  usage error
+
+A relative --inventory path resolves against the current directory, not the
+repository root. --check reads any path and checks it against this repository.
+--freeze writes only inside tests/inventory/ of the repository holding this
+script; to freeze a copy of the repository, run that copy's own tool.
+"""
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="inventory_tools.py",
         description="Freeze the CardDemo functional inventory or check it for drift.",
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--freeze", action="store_true",
@@ -3192,7 +3975,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("note: record each difference in header.changes with its reason before committing the freeze",
                       file=sys.stderr)
             return 0
-        findings = check(args.inventory)
+        inventory = load(args.inventory)
+        findings = _check_inventory(inventory, REPO_ROOT)
     except HarnessError as exc:
         print(f"inventory_tools: {exc}", file=sys.stderr)
         return 1
@@ -3201,7 +3985,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(finding, file=sys.stderr)
         print(f"inventory check failed: {len(findings)} finding(s)", file=sys.stderr)
         return 1
-    print(f"inventory check passed: {len(load(args.inventory)['items'])} items match the repository")
+    print(f"inventory check passed: {len(inventory['items'])} items match the repository")
     return 0
 
 

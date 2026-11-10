@@ -27,8 +27,8 @@
 # 3250 overwrite the same WS-INFO-MSG before every send [app/cbl/COACTUPC.cbl:
 # 1452,2791,2962-2963].
 #
-# The message is sent to INFOMSG, not ERRMSG, as the inventory item's wording
-# has it: 3250-SETUP-INFOMSG moves WS-INFO-MSG to INFOMSGO
+# The message is sent to INFOMSG, as the inventory item INV-ACT-030 says,
+# because 3250-SETUP-INFOMSG moves WS-INFO-MSG to INFOMSGO
 # [app/cbl/COACTUPC.cbl:2979].
 #
 # Expected values are derived from the source (no TPE region runs in CI):

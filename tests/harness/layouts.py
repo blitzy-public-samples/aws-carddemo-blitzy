@@ -51,19 +51,25 @@ Constructs whose storage this module cannot describe exactly (``SIGN``,
 ON``, hexadecimal literals) raise ``HarnessError`` instead of producing a layout
 that would decode wrongly.
 
+The fixed-format COBOL reading (indicator area, continuation lines, literals
+and tokens) is the one ``harness/inventory_tools.py`` uses as well:
+``read_source_lines``, ``fixed_format_lines``, ``join_continuations``,
+``mask_literals`` and ``tokenize``.
+
 The module only reads ``app/`` and only writes ``tests/inventory/layouts.yaml``.
 """
 
 from __future__ import annotations
 
 import argparse
+import bisect
 import copy
 import functools
 import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Sequence
 
 import yaml
 
@@ -84,18 +90,27 @@ from harness import (  # noqa: E402
 __all__ = [
     "LAYOUTS_FILE",
     "LAYOUT_CLUSTER",
+    "LogicalLine",
     "SCHEMA_VERSION",
+    "SourceLine",
     "TEXT_LAYOUTS",
+    "Token",
     "field_map",
+    "fixed_format_lines",
     "generate",
+    "join_continuations",
     "load",
     "main",
+    "mask_literals",
     "parse_bms",
     "parse_copybook",
     "parse_listcat",
+    "read_source_lines",
     "record",
     "record_length",
     "screen",
+    "tokenize",
+    "tokenize_logical",
 ]
 
 SCHEMA_VERSION = 1
@@ -181,16 +196,6 @@ def _relative(path: Path, repo_root: Path) -> str:
         raise HarnessError(f"{path} lies outside the repository {repo_root}") from None
 
 
-def _read_lines(path: Path, tab_width: int | None) -> list[str]:
-    """Physical lines of a source file: latin-1 (byte preserving), carriage
-    returns dropped (COSTM01.CPY has CRLF endings), tabs expanded."""
-    text = path.read_bytes().decode("latin-1").replace("\r", "")
-    lines = text.split("\n")
-    if tab_width is not None:
-        lines = [line.expandtabs(tab_width) for line in lines]
-    return lines
-
-
 def _citation(rel: str, first: int, last: int) -> str:
     return f"{rel}:{first}" if first == last else f"{rel}:{first}-{last}"
 
@@ -198,49 +203,292 @@ def _citation(rel: str, first: int, last: int) -> str:
 # --------------------------------------------------------------------------
 # COBOL fixed-format source
 # --------------------------------------------------------------------------
+#
+# The one reading of fixed-format COBOL in the harness: this module parses
+# data description entries over it, inventory_tools.py resolves COPY
+# statements and extracts behaviour items over it.
 
 _CODE_AREA_WIDTH = 65  # columns 8-72
+_COMMENT_INDICATORS = "*/"  # column 7 of a comment line
+_QUOTE_RE = re.compile(r"['\"]")
 
 
-@dataclass
-class _CodeLine:
-    number: int  # physical line where the logical line starts
-    text: str  # code area (columns 8-72), continuation lines joined
-    last_segment: int  # width of the last physical segment joined
+def read_source_lines(path: Path, tab_width: int | None = TAB_WIDTH) -> list[str]:
+    """Physical lines of a source file: latin-1 (byte preserving), every
+    carriage return dropped (COSTM01.CPY has CRLF endings), no element for the
+    terminator of the last line, and tabs expanded to ``tab_width`` columns
+    unless it is None."""
+    lines = path.read_bytes().decode("latin-1").replace("\r", "").split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    if tab_width is not None:
+        lines = [line.expandtabs(tab_width) for line in lines]
+    return lines
 
 
-def _code_lines(raw_lines: list[str], rel: str) -> list[_CodeLine]:
-    """Code area of every non-comment line. Columns 1-6 and 73-80 are sequence
-    areas; ``*`` or ``/`` in column 7 is a comment, ``D`` a debugging line
-    (compiled only WITH DEBUGGING MODE), ``-`` a continuation."""
-    out: list[_CodeLine] = []
+@dataclass(frozen=True)
+class SourceLine:
+    """One code line of a fixed-format COBOL source, as read or after COPY
+    resolution.
+
+    ``text`` is columns 8-72 exactly as written, so a literal continued on the
+    next line keeps its trailing spaces up to column 72.
+    """
+
+    path: str  # repository-relative path of the file the line comes from
+    line: int  # 1-based line number in that file
+    text: str
+    area_a: bool  # columns 8-11 hold code: a paragraph name or an 01 entry
+    continued: bool  # column 7 is '-': the line continues the one before it
+
+
+def fixed_format_lines(raw_lines: Sequence[str], rel: str) -> list[SourceLine]:
+    """The code lines of the fixed-format COBOL source ``rel`` from its
+    physical lines. Columns 1-6 and 73-80 are sequence areas; column 7 holds
+    the indicator: ``*`` or ``/`` a comment and ``D`` a debugging line
+    (compiled only WITH DEBUGGING MODE), both dropped, ``-`` a continuation
+    line and a space a code line. Any other indicator, and a continuation
+    line before the first code line, raise HarnessError. Lines shorter than
+    seven columns and blank code areas are dropped."""
+    out: list[SourceLine] = []
     for number, raw in enumerate(raw_lines, start=1):
         if len(raw) < 7:
             continue
         indicator = raw[6]
-        if indicator in "*/Dd":
+        if indicator in _COMMENT_INDICATORS or indicator in "Dd":
             continue
-        code = raw[7:72]
-        if indicator == "-":
-            if not out:
-                raise HarnessError(f"{rel}:{number}: continuation line without a line to continue")
-            previous = out[-1]
-            stripped = code.lstrip()
-            if stripped[:1] in ("'", '"'):
-                # A continued literal runs to column 72 of the line it starts on
-                # and resumes after the quote that opens the continuation line.
-                pad = " " * max(0, _CODE_AREA_WIDTH - previous.last_segment)
-                previous.text = previous.text + pad + stripped[1:]
-            else:
-                previous.text = previous.text.rstrip() + stripped
-            previous.last_segment = len(code)
-            continue
-        if indicator != " ":
+        if indicator not in " -":
             raise HarnessError(f"{rel}:{number}: unsupported indicator {indicator!r} in column 7")
-        if not code.strip():
+        text = raw[7:72]
+        if not text.strip():
             continue
-        out.append(_CodeLine(number=number, text=code, last_segment=len(code)))
+        if indicator == "-" and not out:
+            raise HarnessError(f"{rel}:{number}: continuation line without a line to continue")
+        out.append(SourceLine(rel, number, text, bool(raw[7:11].strip()), indicator == "-"))
     return out
+
+
+def _literal_spans(
+    text: str, quote: str | None = None, start: int = 0
+) -> tuple[list[tuple[int, int]], str | None]:
+    """``(begin, end)`` of the content of every literal in ``text`` from
+    ``start``: the characters between its opening and closing delimiter, ``'``
+    or ``"``, inside which a doubled delimiter stands for one character. With
+    ``quote``, a literal it delimits is already open at ``start``, continued
+    from the line before. The second element is the delimiter of a literal
+    still open at the end of ``text``, whose span ends there, or None."""
+    spans: list[tuple[int, int]] = []
+    position = start
+    while True:
+        if quote is None:
+            opening = _QUOTE_RE.search(text, position)
+            if opening is None:
+                return spans, None
+            quote, position = opening.group(), opening.end()
+        begin = position
+        while True:
+            close = text.find(quote, position)
+            if close < 0:
+                spans.append((begin, len(text)))
+                return spans, quote
+            if not text.startswith(quote, close + 1):
+                break
+            position = close + 2
+        spans.append((begin, close))
+        position, quote = close + 1, None
+
+
+def _resume(previous: SourceLine, line: SourceLine, quote: str) -> int:
+    """Index in ``line.text`` after the delimiter that resumes the literal
+    ``previous`` leaves open: ``line`` must be a continuation line whose first
+    nonblank character repeats the literal's delimiter."""
+    if not line.continued:
+        raise HarnessError(f"{previous.path}:{previous.line}: literal is not continued on the next line")
+    content = line.text.lstrip()
+    if not content.startswith(quote):
+        raise HarnessError(
+            f"{line.path}:{line.line}: the continued {quote}...{quote} literal must resume with "
+            f"{quote} as the first nonblank character"
+        )
+    return len(line.text) - len(content) + 1
+
+
+@dataclass(frozen=True)
+class LogicalLine:
+    """A code line with its continuation lines joined into the ``text`` the
+    compiler reads. ``segments`` holds ``(offset, line)`` for each physical
+    line joined: the offset in ``text`` where the code of ``line`` starts."""
+
+    text: str
+    segments: tuple[tuple[int, SourceLine], ...]
+
+    @property
+    def path(self) -> str:
+        return self.segments[0][1].path
+
+    @property
+    def line(self) -> int:
+        """The physical line the logical line starts on."""
+        return self.segments[0][1].line
+
+    def origin(self, offset: int) -> SourceLine:
+        """The physical line ``text[offset]`` comes from; the blanks that pad a
+        continued literal to column 72 belong to the line it is continued
+        from."""
+        index = bisect.bisect_right(self.segments, offset, key=lambda segment: segment[0])
+        return self.segments[max(index - 1, 0)][1]
+
+
+def join_continuations(lines: Iterable[SourceLine]) -> list[LogicalLine]:
+    """Logical lines: each code line joined with the continuation lines that
+    follow it. A literal open at the end of a line runs to its column 72 and
+    resumes after the delimiter that opens the continuation line; otherwise
+    the continuation line, leading blanks dropped, continues the last word of
+    the line before it, trailing blanks dropped. HarnessError for a
+    continuation line with nothing to continue, and for a literal left open
+    where the end or a line that does not continue it follows."""
+    out: list[LogicalLine] = []
+    text = ""
+    segments: list[tuple[int, SourceLine]] = []
+    column = 0  # index in the last joined line's text where its code starts
+    quote: str | None = None  # delimiter of a literal open at the end of text
+    for line in lines:
+        if quote is not None:
+            resume = _resume(segments[-1][1], line, quote)
+            text = text.ljust(segments[-1][0] + _CODE_AREA_WIDTH - column)
+            start, column = len(text), resume
+            text += line.text[resume:]
+        elif not line.continued:
+            if segments:
+                out.append(LogicalLine(text, tuple(segments)))
+            text, segments, start, column = line.text, [], 0, 0
+        elif segments:
+            column = len(line.text) - len(line.text.lstrip())
+            text = text.rstrip()
+            start = len(text)
+            text += line.text[column:]
+        else:
+            raise HarnessError(f"{line.path}:{line.line}: continuation line without a line to continue")
+        segments.append((start, line))
+        quote = _literal_spans(text, quote, start)[1]
+    if quote is not None:
+        last = segments[-1][1]
+        raise HarnessError(f"{last.path}:{last.line}: literal is not closed")
+    if segments:
+        out.append(LogicalLine(text, tuple(segments)))
+    return out
+
+
+def mask_literals(lines: Sequence[SourceLine]) -> list[str]:
+    """Each line's text with the content of its literals, doubled delimiters
+    included, replaced by ``x`` and the delimiters kept, so keywords and
+    separator periods can be found outside literals at the columns they are
+    written in. A literal open at the end of a line resumes after the
+    delimiter that opens the next line, as in ``join_continuations``, and
+    raises the same HarnessError where it does not or is never closed."""
+    masked: list[str] = []
+    quote: str | None = None
+    for index, line in enumerate(lines):
+        start = 0 if quote is None else _resume(lines[index - 1], line, quote)
+        spans, quote = _literal_spans(line.text, quote, start)
+        parts, position = [], 0
+        for begin, end in spans:
+            parts += [line.text[position:begin], "x" * (end - begin)]
+            position = end
+        parts.append(line.text[position:])
+        masked.append("".join(parts))
+    if quote is not None:
+        last = lines[-1]
+        raise HarnessError(f"{last.path}:{last.line}: literal is not closed")
+    return masked
+
+
+@dataclass(frozen=True)
+class Token:
+    """A COBOL token of a logical line, cited at the physical line it starts
+    on."""
+
+    text: str  # as written; a literal with its delimiters
+    word: str  # upper-case text of a word or punctuation; "" for a literal
+    value: str  # content of a literal, doubled delimiters undone; "" otherwise
+    path: str
+    line: int
+    first: bool  # first token of its logical line
+    area_a: bool  # its source line starts in area A
+    spaced: bool  # a blank, or the start of its logical line, precedes it
+
+    @property
+    def literal(self) -> bool:
+        return not self.word
+
+
+_TOKEN_RE = re.compile(
+    r"""(?P<num>[+-]?\d+\.\d+(?![A-Za-z0-9-]))"""
+    r"""|(?P<word>[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)"""
+    r"""|(?P<punct>==|\S)"""
+)
+_PICTURE_RE = re.compile(r"\s*(?:IS\s+)?(\S+?)(\.?)(?=\s|$)", re.I)
+
+
+def _literal_value(text: str) -> str:
+    quote = text[0]
+    return text[1:-1].replace(quote * 2, quote)
+
+
+def _token(logical: LogicalLine, start: int, end: int, first: bool) -> Token:
+    raw = logical.text[start:end]
+    source = logical.origin(start)
+    spaced = start == 0 or logical.text[start - 1].isspace()
+    if raw[0] in "'\"":
+        word, value = "", _literal_value(raw)
+    else:
+        word, value = raw.upper(), ""
+    return Token(raw, word, value, source.path, source.line, first, source.area_a, spaced)
+
+
+def tokenize_logical(lines: Iterable[LogicalLine]) -> Iterator[Token]:
+    """The COBOL tokens of logical lines, in order: literals, words, decimal
+    numbers, punctuation and, after PIC or PICTURE, the picture string, a
+    period that ends it being a token of its own. HarnessError for a literal
+    left open."""
+    for logical in lines:
+        text = logical.text
+        spans, quote = _literal_spans(text)
+        if quote is not None:
+            opened = logical.origin(spans[-1][0] - 1)
+            raise HarnessError(f"{opened.path}:{opened.line}: literal is not closed")
+        position, first = 0, True
+        # Each literal, delimiters included, then the end of the line; the gap
+        # before each holds the other tokens.
+        bounds = [(begin - 1, end + 1) for begin, end in spans]
+        bounds.append((len(text), len(text)))
+        for literal_start, literal_end in bounds:
+            while True:
+                match = _TOKEN_RE.search(text, position, literal_start)
+                if match is None:
+                    break
+                yield _token(logical, match.start(), match.end(), first)
+                position, first = match.end(), False
+                if match.group().upper() in ("PIC", "PICTURE"):
+                    picture = _PICTURE_RE.match(text, position, literal_start)
+                    if picture is not None:
+                        yield _token(logical, picture.start(1), picture.end(1), False)
+                        if picture.group(2):
+                            yield _token(logical, picture.start(2), picture.end(2), False)
+                        position = picture.end()
+            if literal_start < literal_end:
+                yield _token(logical, literal_start, literal_end, first)
+                position, first = literal_end, False
+
+
+def tokenize(lines: Iterable[SourceLine]) -> list[Token]:
+    """The COBOL tokens of code lines, read by ``fixed_format_lines`` or
+    produced by COPY resolution, continuation lines joined."""
+    return list(tokenize_logical(join_continuations(lines)))
+
+
+def _code_lines(raw_lines: Sequence[str], rel: str) -> list[LogicalLine]:
+    return join_continuations(fixed_format_lines(raw_lines, rel))
 
 
 @dataclass(frozen=True)
@@ -253,57 +501,41 @@ class _Token:
 _LITERAL_PREFIXES = {"X", "N", "NX", "Z", "G", "B"}
 
 
-def _tokenize(lines: Iterable[_CodeLine], rel: str) -> Iterator[_Token]:
-    """Words, literals and separator periods. A comma or semicolon followed by
-    a space is a separator and dropped; a period ends an entry only where a
-    space or the end of the line follows it, so ``-ZZZ,ZZZ,ZZZ.ZZ.`` yields the
-    picture string and then the period."""
-    for line in lines:
-        text = line.text
-        size = len(text)
-        index = 0
-        while index < size:
-            char = text[index]
-            if char.isspace():
-                index += 1
+def _words(run: Sequence[Token]) -> Iterator[_Token]:
+    """The word, and the separator period, that touching tokens form."""
+    word = "".join(token.text for token in run).rstrip(",;")
+    period = word.endswith(".")
+    if period:
+        word = word[:-1].rstrip(",;")
+    if word:
+        yield _Token("word", word, run[0].line)
+    if period:
+        yield _Token("period", ".", run[-1].line)
+
+
+def _tokenize(lines: Iterable[LogicalLine], rel: str) -> Iterator[_Token]:
+    """Words, literals and separator periods. Tokens that touch form one word,
+    which a blank or a literal ends. A comma or semicolon followed by a space
+    is a separator and dropped; a period ends an entry only where a space or
+    the end of the line follows it, so ``-ZZZ,ZZZ,ZZZ.ZZ.`` yields the picture
+    string and then the period."""
+    run: list[Token] = []
+    for token in tokenize_logical(lines):
+        if run and not token.spaced:
+            if not token.literal:
+                run.append(token)
                 continue
-            if char in ("'", '"'):
-                quote = char
-                chars: list[str] = []
-                index += 1
-                while True:
-                    if index >= size:
-                        raise HarnessError(f"{rel}:{line.number}: unterminated literal")
-                    current = text[index]
-                    if current == quote:
-                        if index + 1 < size and text[index + 1] == quote:
-                            chars.append(quote)
-                            index += 2
-                            continue
-                        index += 1
-                        break
-                    chars.append(current)
-                    index += 1
-                yield _Token("literal", "".join(chars), line.number)
-                continue
-            end = index
-            while end < size and not text[end].isspace() and text[end] not in ("'", '"'):
-                end += 1
-            word = text[index:end]
-            if end < size and text[end] in ("'", '"') and word.upper() in _LITERAL_PREFIXES:
-                raise HarnessError(
-                    f"{rel}:{line.number}: {word}{text[end]}...{text[end]} literals "
-                    "are not supported"
-                )
-            index = end
-            word = word.rstrip(",;")
-            period = word.endswith(".")
-            if period:
-                word = word[:-1].rstrip(",;")
-            if word:
-                yield _Token("word", word, line.number)
-            if period:
-                yield _Token("period", ".", line.number)
+            prefix = "".join(part.text for part in run)
+            if prefix.upper() in _LITERAL_PREFIXES:
+                quote = token.text[0]
+                raise HarnessError(f"{rel}:{run[0].line}: {prefix}{quote}...{quote} literals are not supported")
+        yield from _words(run)
+        if token.literal:
+            run = []
+            yield _Token("literal", token.value, token.line)
+        else:
+            run = [token]
+    yield from _words(run)
 
 
 # --------------------------------------------------------------------------
@@ -837,14 +1069,14 @@ class _Copybook:
 def _recln_comment(raw_lines: list[str]) -> int | None:
     """The ``RECLN 300`` / ``RECLN = 350`` figure of the comment header."""
     for raw in raw_lines:
-        if len(raw) > 7 and raw[6] in "*/":
+        if len(raw) > 7 and raw[6] in _COMMENT_INDICATORS:
             match = _RECLN_RE.search(raw[7:72])
             if match:
                 return int(match.group(1))
     return None
 
 
-def _classify(lines: list[_CodeLine], rel: str) -> str:
+def _classify(lines: list[LogicalLine], rel: str) -> str:
     if not lines:
         raise HarnessError(f"{rel}: the copybook holds no code")
     first = lines[0].text.split()[0].rstrip(".")
@@ -856,7 +1088,7 @@ def _classify(lines: list[_CodeLine], rel: str) -> str:
 def _parse_copybook(path: Path, repo_root: Path) -> _Copybook:
     rel = _relative(path, repo_root)
     stem = path.stem.upper()
-    raw_lines = _read_lines(path, TAB_WIDTH)
+    raw_lines = read_source_lines(path)
     lines = _code_lines(raw_lines, rel)
     kind = _classify(lines, rel)
     book = _Copybook(
@@ -921,7 +1153,7 @@ def _walk(item: _Item) -> Iterator[_Item]:
         yield from _walk(child)
 
 
-def _program_record(lines: list[_CodeLine], name: str, rel: str) -> _Item:
+def _program_record(lines: list[LogicalLine], name: str, rel: str) -> _Item:
     """The laid-out 01 entry ``name`` of a program, read up to the next 01/77
     entry or the first statement that is not a data description entry."""
     start = re.compile(rf"^\s*0?1\s+{re.escape(name)}(?=[\s.]|$)", re.IGNORECASE)
@@ -944,11 +1176,11 @@ def _program_record(lines: list[_CodeLine], name: str, rel: str) -> _Item:
     return roots[0]
 
 
-def _statement_line(lines: list[_CodeLine], pattern: str, rel: str, statement: str) -> int:
+def _statement_line(lines: list[LogicalLine], pattern: str, rel: str, statement: str) -> int:
     regex = re.compile(pattern, re.IGNORECASE)
     for line in lines:
         if regex.search(line.text):
-            return line.number
+            return line.line
     raise HarnessError(
         f"{rel}: '{statement}' not found, so the composed record no longer matches the program"
     )
@@ -976,7 +1208,7 @@ def _derived_record(
 ) -> dict[str, Any]:
     path = repo_root / spec.program
     rel = _relative(path, repo_root)
-    lines = _code_lines(_read_lines(path, TAB_WIDTH), rel)
+    lines = _code_lines(read_source_lines(path), rel)
     root = _program_record(lines, spec.record, rel)
     declared_length = root.extent
     first, last = root.line, root.last_line()
@@ -1073,7 +1305,7 @@ def parse_listcat(path: str | Path, repo_root: str | Path = REPO_ROOT) -> dict[s
     path, repo_root = Path(path), Path(repo_root)
     rel = _relative(path, repo_root)
     sections: list[dict[str, Any]] = []
-    for number, line in enumerate(_read_lines(path, None), start=1):
+    for number, line in enumerate(read_source_lines(path, None), start=1):
         match = _LISTCAT_SECTION_RE.match(line)
         if match:
             sections.append(
@@ -1324,7 +1556,7 @@ def parse_bms(path: str | Path, repo_root: str | Path = REPO_ROOT) -> dict[str, 
     mapset: str | None = None
     maps: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
-    for statement in _bms_statements(_read_lines(path, None), rel):
+    for statement in _bms_statements(read_source_lines(path, None), rel):
         if statement.op in _BMS_IGNORED_OPS:
             continue
         operands = _bms_operands(statement.operands, rel, statement.line)
@@ -1619,11 +1851,31 @@ def _first_difference(left: Any, right: Any, path: str = "") -> str | None:
     return path or "(top level)"
 
 
+_EPILOG = f"""\
+examples (from the repository root):
+  python {GENERATED_BY} --write
+  python {GENERATED_BY} --check
+
+exit codes:
+  0  --check: the file is current; --write: the file was written or was current
+  1  --check: the file is stale, missing or invalid; either action: a source or
+     the file could not be read, parsed or written
+  2  usage error
+
+The sources and tests/inventory/layouts.yaml are those of the repository holding
+this script, whatever the current directory.
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="layouts.py",
-        description="Generate or check tests/inventory/layouts.yaml from app/cpy, app/bms, "
+        # The raw formatter keeps the epilog's layout, so the description
+        # carries its own line break.
+        description="Generate or check tests/inventory/layouts.yaml from app/cpy, app/bms,\n"
         "app/catlg/LISTCAT.txt and app/cbl/CBTRN02C.cbl.",
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--write", action="store_true", help="write tests/inventory/layouts.yaml")
@@ -1632,15 +1884,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    shown = _relative(LAYOUTS_FILE, REPO_ROOT)
     try:
+        # An output symlink resolving outside the repository is refused here,
+        # before anything is generated or written.
+        shown = _relative(LAYOUTS_FILE, REPO_ROOT)
         generated = generate()
+        text = dump_yaml(generated)
     except HarnessError as exc:
         print(f"layouts: {exc}", file=sys.stderr)
         return 1
-    text = dump_yaml(generated)
+    except OSError as exc:
+        where = exc.filename if exc.filename is not None else "a source"
+        print(f"layouts: cannot read {where}: {exc.strerror or exc}", file=sys.stderr)
+        return 1
     if args.write:
-        written = write_text(LAYOUTS_FILE, text)
+        try:
+            written = write_text(LAYOUTS_FILE, text)
+        except OSError as exc:
+            print(f"layouts: cannot write {shown}: {exc.strerror or exc}", file=sys.stderr)
+            return 1
         print(
             f"{'wrote' if written else 'unchanged'} {shown}: {len(generated['records'])} records, "
             f"{len(generated['screens'])} screens, {len(generated['copybooks'])} copybooks"
@@ -1651,14 +1913,40 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError:
         print(f"{shown} is missing: run python {GENERATED_BY} --write", file=sys.stderr)
         return 1
+    except UnicodeDecodeError:
+        print(
+            f"layouts: {shown} is not UTF-8 text: run python {GENERATED_BY} --write",
+            file=sys.stderr,
+        )
+        return 1
+    except OSError as exc:
+        print(f"layouts: cannot read {shown}: {exc.strerror or exc}", file=sys.stderr)
+        return 1
     if committed_text == text:
         print(f"{shown} is current")
         return 0
     try:
         committed = load_yaml(LAYOUTS_FILE)
     except yaml.YAMLError as exc:
+        problem = " ".join(str(exc).split())
         print(
-            f"{shown} is not valid YAML ({exc}): run python {GENERATED_BY} --write", file=sys.stderr
+            f"{shown} is not valid YAML ({problem}): run python {GENERATED_BY} --write",
+            file=sys.stderr,
+        )
+        return 1
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"layouts: cannot read {shown}: {exc}", file=sys.stderr)
+        return 1
+    # PyYAML's safe constructors raise these, not YAMLError, on bad input: an
+    # impossible date or time, an integer over Python's digit limit, a !!int,
+    # !!float, !!bool or !!timestamp value that is not one, or nesting too
+    # deep for the pure-Python loader. UnicodeDecodeError, a ValueError, is
+    # taken by the branch above.
+    except (ValueError, KeyError, AttributeError, RecursionError) as exc:
+        problem = f"a value cannot be constructed, {type(exc).__name__}: {' '.join(str(exc).split())}"
+        print(
+            f"{shown} is not valid YAML ({problem}): run python {GENERATED_BY} --write",
+            file=sys.stderr,
         )
         return 1
     where = _first_difference(committed, generated) or "(formatting only)"

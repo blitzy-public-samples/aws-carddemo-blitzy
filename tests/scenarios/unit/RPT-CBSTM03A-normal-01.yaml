@@ -53,8 +53,10 @@ description: >-
   TRXFL built from the repository daily transactions: it displays the job, step
   and nine DD names the page-zero shim supplies, then writes one statement per
   cross-reference record in card order, 50 text statements of 25 lines (1,250
-  records) and 50 HTML documents of 130 lines (6,500 records), each listing the
-  card's six transactions and their total, and ends with return code 0.
+  records), each listing the card's six transactions and their 'Total EXP:'
+  total, and 50 HTML documents of 130 lines (6,500 records), each listing the
+  card's six transactions as table rows with no total, and ends with return
+  code 0.
 inventory_ids:
 - INV-RPT-045  # CBSTM03A text statement (report)
 - INV-RPT-004  # CBSTM03A program

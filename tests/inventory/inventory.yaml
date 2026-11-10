@@ -104,7 +104,7 @@ items:
   source: app/bms/COSGN00.bms:1-210
   status: not-covered
 - activation: always
-  description: COSGN00C moves CCDA-MSG-THANK-YOU ('Thank you for using CardDemo application...', defined in app/cpy/CSMSG01Y.cpy) to WS-MESSAGE at line(s) 89; the text appears in the screen message (ERRMSG).
+  description: COSGN00C moves CCDA-MSG-THANK-YOU ('Thank you for using CardDemo application...', defined in app/cpy/CSMSG01Y.cpy) to WS-MESSAGE at line(s) 89; the text appears in the unformatted SEND TEXT screen (@map TEXT, @text).
   gap_ids: []
   id: INV-SEC-003
   kind: rule
@@ -937,7 +937,7 @@ items:
   source: app/cbl/COUSR02C.cbl:386-387
   status: not-covered
 - activation: always
-  description: PF3 leaves COUSR02C and transfers control to COADM01C or the calling program.
+  description: 'PF3 first performs UPDATE-USER-INFO, the save PF5 performs: when it accepts the edited fields it can REWRITE the USRSEC record (INV-USR-048); a refused or unchanged save only sends its message. In every case PF3 then leaves COUSR02C and transfers control to COADM01C or the calling program, whose screen replaces COUSR02C''s, so a PF3 save is observed in file_state.'
   gap_ids: []
   id: INV-USR-046
   kind: rule
@@ -957,7 +957,7 @@ items:
   source: app/cbl/COUSR02C.cbl:90-92
   status: not-covered
 - activation: always
-  description: Saving changes (PF5) rewrites the USRSEC record of the selected user id with the edited names, password and type; observed as the record in file_state.
+  description: 'Saving changes rewrites the USRSEC record of the selected user id with the edited names, password and type when every field is supplied and at least one differs from the record: PF5 saves and stays on the screen, and PF3 performs the same save before it returns (INV-USR-046); observed as the record in file_state.'
   gap_ids: []
   id: INV-USR-048
   kind: interface
@@ -1107,7 +1107,7 @@ items:
   source: app/bms/COACTUP.bms:1-512
   status: not-covered
 - activation: always
-  description: 'Message condition WS-PROMPT-FOR-INPUT of WS-INFO-MSG (VALUE ''Enter or update id of account to display''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition WS-PROMPT-FOR-INPUT of WS-INFO-MSG (VALUE ''Enter or update id of account to display''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-ACT-005
   kind: rule
@@ -1117,7 +1117,7 @@ items:
   source: app/cbl/COACTVWC.cbl:113-114
   status: not-covered
 - activation: unused
-  description: 'Message condition WS-INFORM-OUTPUT of WS-INFO-MSG (VALUE ''Displaying details of given Account''): when the condition is set the text appears in the screen message (ERRMSG). Unused: WS-INFORM-OUTPUT is never set or tested outside its definition, so the message cannot appear.'
+  description: 'Message condition WS-INFORM-OUTPUT of WS-INFO-MSG (VALUE ''Displaying details of given Account''): when the condition is set the text appears in the information message (INFOMSG). Unused: WS-INFORM-OUTPUT is never set or tested outside its definition, so the message cannot appear.'
   gap_ids:
   - GAP-UNC-013
   id: INV-ACT-006
@@ -1223,7 +1223,7 @@ items:
   source: app/cbl/COACTVWC.cbl:137-138
   status: not-covered
 - activation: always
-  description: COACTVWC moves 'UNEXPECTED DATA SCENARIO' to WS-RETURN-MSG at line(s) 379; the text appears in the screen message (ERRMSG).
+  description: COACTVWC moves 'UNEXPECTED DATA SCENARIO' to WS-RETURN-MSG at line(s) 379; the text appears in the unformatted SEND TEXT screen (@map TEXT, @text).
   gap_ids: []
   id: INV-ACT-016
   kind: recovery
@@ -1344,7 +1344,7 @@ items:
   source: app/cbl/COACTVWC.cbl:460-535
   status: not-covered
 - activation: always
-  description: 'Message condition FOUND-ACCOUNT-DATA of WS-INFO-MSG (VALUE ''Details of selected account shown above''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition FOUND-ACCOUNT-DATA of WS-INFO-MSG (VALUE ''Details of selected account shown above''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-ACT-028
   kind: rule
@@ -1354,7 +1354,7 @@ items:
   source: app/cbl/COACTUPC.cbl:466-467
   status: not-covered
 - activation: always
-  description: 'Message condition PROMPT-FOR-SEARCH-KEYS of WS-INFO-MSG (VALUE ''Enter or update id of account to update''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition PROMPT-FOR-SEARCH-KEYS of WS-INFO-MSG (VALUE ''Enter or update id of account to update''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-ACT-029
   kind: rule
@@ -1364,7 +1364,7 @@ items:
   source: app/cbl/COACTUPC.cbl:468-469
   status: not-covered
 - activation: always
-  description: 'Message condition PROMPT-FOR-CHANGES of WS-INFO-MSG (VALUE ''Update account details presented above.''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition PROMPT-FOR-CHANGES of WS-INFO-MSG (VALUE ''Update account details presented above.''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-ACT-030
   kind: rule
@@ -1374,7 +1374,7 @@ items:
   source: app/cbl/COACTUPC.cbl:470-471
   status: not-covered
 - activation: always
-  description: 'Message condition PROMPT-FOR-CONFIRMATION of WS-INFO-MSG (VALUE ''Changes validated.Press F5 to save''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition PROMPT-FOR-CONFIRMATION of WS-INFO-MSG (VALUE ''Changes validated.Press F5 to save''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-ACT-031
   kind: rule
@@ -1384,7 +1384,7 @@ items:
   source: app/cbl/COACTUPC.cbl:472-473
   status: not-covered
 - activation: always
-  description: 'Message condition CONFIRM-UPDATE-SUCCESS of WS-INFO-MSG (VALUE ''Changes committed to database''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition CONFIRM-UPDATE-SUCCESS of WS-INFO-MSG (VALUE ''Changes committed to database''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-ACT-032
   kind: rule
@@ -1394,7 +1394,7 @@ items:
   source: app/cbl/COACTUPC.cbl:474-475
   status: not-covered
 - activation: always
-  description: 'Message condition INFORM-FAILURE of WS-INFO-MSG (VALUE ''Changes unsuccessful. Please try again''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition INFORM-FAILURE of WS-INFO-MSG (VALUE ''Changes unsuccessful. Please try again''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-ACT-033
   kind: recovery
@@ -2229,7 +2229,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2207-2211
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Current Cycle Credit Limit unless supplied: ERRMSG shows ''Current Cycle Credit Limit must be supplied.'' and the field is flagged (edit routine 1250-EDIT-SIGNED-9V2).'
+  description: 'COACTUPC refuses Current Cycle Credit Limit unless supplied: ERRMSG shows ''Current Cycle Credit Limi must be supplied.'' (the MOVE cuts the 26-character name ''Current Cycle Credit Limit'' to the 25 characters of WS-EDIT-VARIABLE-NAME) and the field is flagged (edit routine 1250-EDIT-SIGNED-9V2).'
   gap_ids: []
   id: INV-ACT-115
   kind: rule
@@ -2239,7 +2239,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2189-2194
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Current Cycle Credit Limit unless valid signed amount: ERRMSG shows ''Current Cycle Credit Limit is not valid'' and the field is flagged (edit routine 1250-EDIT-SIGNED-9V2).'
+  description: 'COACTUPC refuses Current Cycle Credit Limit unless valid signed amount: ERRMSG shows ''Current Cycle Credit Limi is not valid'' (the MOVE cuts the 26-character name ''Current Cycle Credit Limit'' to the 25 characters of WS-EDIT-VARIABLE-NAME) and the field is flagged (edit routine 1250-EDIT-SIGNED-9V2).'
   gap_ids: []
   id: INV-ACT-116
   kind: rule
@@ -2709,7 +2709,7 @@ items:
   source: app/cbl/COACTUPC.cbl:1939-1944
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 1 unless area code supplied: ERRMSG shows ''Phone Number 1: Area code must be supplied.'' and the field is flagged (edit routine EDIT-AREA-CODE).'
+  description: 'COACTUPC refuses Phone Number 1, once any part of it is entered, unless area code supplied: ERRMSG shows ''Phone Number 1: Area code must be supplied.'' and the field is flagged (edit routine EDIT-AREA-CODE). A wholly blank Phone Number 1 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-163
   kind: rule
@@ -2719,7 +2719,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2252-2257
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 1 unless area code a 3-digit number: ERRMSG shows ''Phone Number 1: Area code must be A 3 digit number.'' and the field is flagged (edit routine EDIT-AREA-CODE).'
+  description: 'COACTUPC refuses Phone Number 1, once any part of it is entered, unless area code a 3-digit number: ERRMSG shows ''Phone Number 1: Area code must be A 3 digit number.'' and the field is flagged (edit routine EDIT-AREA-CODE). A wholly blank Phone Number 1 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-164
   kind: rule
@@ -2729,7 +2729,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2270-2275
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 1 unless area code not zero: ERRMSG shows ''Phone Number 1: Area code cannot be zero'' and the field is flagged (edit routine EDIT-AREA-CODE).'
+  description: 'COACTUPC refuses Phone Number 1, once any part of it is entered, unless area code not zero: ERRMSG shows ''Phone Number 1: Area code cannot be zero'' and the field is flagged (edit routine EDIT-AREA-CODE). A wholly blank Phone Number 1 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-165
   kind: rule
@@ -2739,7 +2739,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2284-2289
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 1 unless area code a North America general-purpose code: ERRMSG shows ''Phone Number 1: Not valid North America general purpose area code'' and the field is flagged (edit routine EDIT-AREA-CODE).'
+  description: 'COACTUPC refuses Phone Number 1, once any part of it is entered, unless area code a North America general-purpose code: ERRMSG shows ''Phone Number 1: Not valid North America general purpose area code'' and the field is flagged (edit routine EDIT-AREA-CODE). A wholly blank Phone Number 1 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-166
   kind: rule
@@ -2749,7 +2749,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2304-2309
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 1 unless prefix supplied: ERRMSG shows ''Phone Number 1: Prefix code must be supplied.'' and the field is flagged (edit routine EDIT-US-PHONE-PREFIX).'
+  description: 'COACTUPC refuses Phone Number 1, once any part of it is entered, unless prefix supplied: ERRMSG shows ''Phone Number 1: Prefix code must be supplied.'' and the field is flagged (edit routine EDIT-US-PHONE-PREFIX). A wholly blank Phone Number 1 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-167
   kind: rule
@@ -2759,7 +2759,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2323-2328
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 1 unless prefix a 3-digit number: ERRMSG shows ''Phone Number 1: Prefix code must be A 3 digit number.'' and the field is flagged (edit routine EDIT-US-PHONE-PREFIX).'
+  description: 'COACTUPC refuses Phone Number 1, once any part of it is entered, unless prefix a 3-digit number: ERRMSG shows ''Phone Number 1: Prefix code must be A 3 digit number.'' and the field is flagged (edit routine EDIT-US-PHONE-PREFIX). A wholly blank Phone Number 1 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-168
   kind: rule
@@ -2769,7 +2769,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2341-2346
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 1 unless prefix not zero: ERRMSG shows ''Phone Number 1: Prefix code cannot be zero'' and the field is flagged (edit routine EDIT-US-PHONE-PREFIX).'
+  description: 'COACTUPC refuses Phone Number 1, once any part of it is entered, unless prefix not zero: ERRMSG shows ''Phone Number 1: Prefix code cannot be zero'' and the field is flagged (edit routine EDIT-US-PHONE-PREFIX). A wholly blank Phone Number 1 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-169
   kind: rule
@@ -2779,7 +2779,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2355-2360
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 1 unless line number supplied: ERRMSG shows ''Phone Number 1: Line number code must be supplied.'' and the field is flagged (edit routine EDIT-US-PHONE-LINENUM).'
+  description: 'COACTUPC refuses Phone Number 1, once any part of it is entered, unless line number supplied: ERRMSG shows ''Phone Number 1: Line number code must be supplied.'' and the field is flagged (edit routine EDIT-US-PHONE-LINENUM). A wholly blank Phone Number 1 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-170
   kind: rule
@@ -2789,7 +2789,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2376-2381
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 1 unless line number a 4-digit number: ERRMSG shows ''Phone Number 1: Line number code must be A 4 digit number.'' and the field is flagged (edit routine EDIT-US-PHONE-LINENUM).'
+  description: 'COACTUPC refuses Phone Number 1, once any part of it is entered, unless line number a 4-digit number: ERRMSG shows ''Phone Number 1: Line number code must be A 4 digit number.'' and the field is flagged (edit routine EDIT-US-PHONE-LINENUM). A wholly blank Phone Number 1 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-171
   kind: rule
@@ -2799,7 +2799,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2394-2399
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 1 unless line number not zero: ERRMSG shows ''Phone Number 1: Line number code cannot be zero'' and the field is flagged (edit routine EDIT-US-PHONE-LINENUM).'
+  description: 'COACTUPC refuses Phone Number 1, once any part of it is entered, unless line number not zero: ERRMSG shows ''Phone Number 1: Line number code cannot be zero'' and the field is flagged (edit routine EDIT-US-PHONE-LINENUM). A wholly blank Phone Number 1 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-172
   kind: rule
@@ -2809,7 +2809,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2408-2413
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 2 unless area code supplied: ERRMSG shows ''Phone Number 2: Area code must be supplied.'' and the field is flagged (edit routine EDIT-AREA-CODE).'
+  description: 'COACTUPC refuses Phone Number 2, once any part of it is entered, unless area code supplied: ERRMSG shows ''Phone Number 2: Area code must be supplied.'' and the field is flagged (edit routine EDIT-AREA-CODE). A wholly blank Phone Number 2 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-173
   kind: rule
@@ -2819,7 +2819,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2252-2257
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 2 unless area code a 3-digit number: ERRMSG shows ''Phone Number 2: Area code must be A 3 digit number.'' and the field is flagged (edit routine EDIT-AREA-CODE).'
+  description: 'COACTUPC refuses Phone Number 2, once any part of it is entered, unless area code a 3-digit number: ERRMSG shows ''Phone Number 2: Area code must be A 3 digit number.'' and the field is flagged (edit routine EDIT-AREA-CODE). A wholly blank Phone Number 2 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-174
   kind: rule
@@ -2829,7 +2829,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2270-2275
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 2 unless area code not zero: ERRMSG shows ''Phone Number 2: Area code cannot be zero'' and the field is flagged (edit routine EDIT-AREA-CODE).'
+  description: 'COACTUPC refuses Phone Number 2, once any part of it is entered, unless area code not zero: ERRMSG shows ''Phone Number 2: Area code cannot be zero'' and the field is flagged (edit routine EDIT-AREA-CODE). A wholly blank Phone Number 2 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-175
   kind: rule
@@ -2839,7 +2839,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2284-2289
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 2 unless area code a North America general-purpose code: ERRMSG shows ''Phone Number 2: Not valid North America general purpose area code'' and the field is flagged (edit routine EDIT-AREA-CODE).'
+  description: 'COACTUPC refuses Phone Number 2, once any part of it is entered, unless area code a North America general-purpose code: ERRMSG shows ''Phone Number 2: Not valid North America general purpose area code'' and the field is flagged (edit routine EDIT-AREA-CODE). A wholly blank Phone Number 2 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-176
   kind: rule
@@ -2849,7 +2849,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2304-2309
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 2 unless prefix supplied: ERRMSG shows ''Phone Number 2: Prefix code must be supplied.'' and the field is flagged (edit routine EDIT-US-PHONE-PREFIX).'
+  description: 'COACTUPC refuses Phone Number 2, once any part of it is entered, unless prefix supplied: ERRMSG shows ''Phone Number 2: Prefix code must be supplied.'' and the field is flagged (edit routine EDIT-US-PHONE-PREFIX). A wholly blank Phone Number 2 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-177
   kind: rule
@@ -2859,7 +2859,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2323-2328
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 2 unless prefix a 3-digit number: ERRMSG shows ''Phone Number 2: Prefix code must be A 3 digit number.'' and the field is flagged (edit routine EDIT-US-PHONE-PREFIX).'
+  description: 'COACTUPC refuses Phone Number 2, once any part of it is entered, unless prefix a 3-digit number: ERRMSG shows ''Phone Number 2: Prefix code must be A 3 digit number.'' and the field is flagged (edit routine EDIT-US-PHONE-PREFIX). A wholly blank Phone Number 2 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-178
   kind: rule
@@ -2869,7 +2869,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2341-2346
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 2 unless prefix not zero: ERRMSG shows ''Phone Number 2: Prefix code cannot be zero'' and the field is flagged (edit routine EDIT-US-PHONE-PREFIX).'
+  description: 'COACTUPC refuses Phone Number 2, once any part of it is entered, unless prefix not zero: ERRMSG shows ''Phone Number 2: Prefix code cannot be zero'' and the field is flagged (edit routine EDIT-US-PHONE-PREFIX). A wholly blank Phone Number 2 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-179
   kind: rule
@@ -2879,7 +2879,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2355-2360
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 2 unless line number supplied: ERRMSG shows ''Phone Number 2: Line number code must be supplied.'' and the field is flagged (edit routine EDIT-US-PHONE-LINENUM).'
+  description: 'COACTUPC refuses Phone Number 2, once any part of it is entered, unless line number supplied: ERRMSG shows ''Phone Number 2: Line number code must be supplied.'' and the field is flagged (edit routine EDIT-US-PHONE-LINENUM). A wholly blank Phone Number 2 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-180
   kind: rule
@@ -2889,7 +2889,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2376-2381
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 2 unless line number a 4-digit number: ERRMSG shows ''Phone Number 2: Line number code must be A 4 digit number.'' and the field is flagged (edit routine EDIT-US-PHONE-LINENUM).'
+  description: 'COACTUPC refuses Phone Number 2, once any part of it is entered, unless line number a 4-digit number: ERRMSG shows ''Phone Number 2: Line number code must be A 4 digit number.'' and the field is flagged (edit routine EDIT-US-PHONE-LINENUM). A wholly blank Phone Number 2 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-181
   kind: rule
@@ -2899,7 +2899,7 @@ items:
   source: app/cbl/COACTUPC.cbl:2394-2399
   status: not-covered
 - activation: always
-  description: 'COACTUPC refuses Phone Number 2 unless line number not zero: ERRMSG shows ''Phone Number 2: Line number code cannot be zero'' and the field is flagged (edit routine EDIT-US-PHONE-LINENUM).'
+  description: 'COACTUPC refuses Phone Number 2, once any part of it is entered, unless line number not zero: ERRMSG shows ''Phone Number 2: Line number code cannot be zero'' and the field is flagged (edit routine EDIT-US-PHONE-LINENUM). A wholly blank Phone Number 2 (area code, prefix and line number all blank) is accepted without these edits (1260-EDIT-US-PHONE-NUM, lines 2234-2241).'
   gap_ids: []
   id: INV-ACT-182
   kind: rule
@@ -3082,7 +3082,7 @@ items:
   source: app/bms/COCRDUP.bms:1-172
   status: not-covered
 - activation: always
-  description: 'Message condition WS-INFORM-REC-ACTIONS of WS-INFO-MSG (VALUE ''TYPE S FOR DETAIL, U TO UPDATE ANY RECORD''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition WS-INFORM-REC-ACTIONS of WS-INFO-MSG (VALUE ''TYPE S FOR DETAIL, U TO UPDATE ANY RECORD''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-CRD-007
   kind: rule
@@ -3273,7 +3273,7 @@ items:
   source: app/cbl/COCRDLIC.cbl:678-743
   status: not-covered
 - activation: always
-  description: 'Message condition FOUND-CARDS-FOR-ACCOUNT of WS-INFO-MSG (VALUE ''   Displaying requested details''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition FOUND-CARDS-FOR-ACCOUNT of WS-INFO-MSG (VALUE ''   Displaying requested details''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-CRD-026
   kind: rule
@@ -3283,7 +3283,7 @@ items:
   source: app/cbl/COCRDSLC.cbl:129-130
   status: not-covered
 - activation: always
-  description: 'Message condition WS-PROMPT-FOR-INPUT of WS-INFO-MSG (VALUE ''Please enter Account and Card Number''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition WS-PROMPT-FOR-INPUT of WS-INFO-MSG (VALUE ''Please enter Account and Card Number''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-CRD-027
   kind: rule
@@ -3398,7 +3398,7 @@ items:
   source: app/cbl/COCRDSLC.cbl:157-158
   status: not-covered
 - activation: always
-  description: COCRDSLC moves 'UNEXPECTED DATA SCENARIO' to WS-RETURN-MSG at line(s) 377; the text appears in the screen message (ERRMSG).
+  description: COCRDSLC moves 'UNEXPECTED DATA SCENARIO' to WS-RETURN-MSG at line(s) 377; the text appears in the unformatted SEND TEXT screen (@map TEXT, @text).
   gap_ids: []
   id: INV-CRD-038
   kind: recovery
@@ -3489,7 +3489,7 @@ items:
   source: app/cbl/COCRDSLC.cbl:457-497
   status: not-covered
 - activation: always
-  description: 'Message condition FOUND-CARDS-FOR-ACCOUNT of WS-INFO-MSG (VALUE ''Details of selected card shown above''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition FOUND-CARDS-FOR-ACCOUNT of WS-INFO-MSG (VALUE ''Details of selected card shown above''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-CRD-047
   kind: rule
@@ -3499,7 +3499,7 @@ items:
   source: app/cbl/COCRDUPC.cbl:160-161
   status: not-covered
 - activation: always
-  description: 'Message condition PROMPT-FOR-SEARCH-KEYS of WS-INFO-MSG (VALUE ''Please enter Account and Card Number''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition PROMPT-FOR-SEARCH-KEYS of WS-INFO-MSG (VALUE ''Please enter Account and Card Number''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-CRD-048
   kind: rule
@@ -3509,7 +3509,7 @@ items:
   source: app/cbl/COCRDUPC.cbl:162-163
   status: not-covered
 - activation: always
-  description: 'Message condition PROMPT-FOR-CHANGES of WS-INFO-MSG (VALUE ''Update card details presented above.''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition PROMPT-FOR-CHANGES of WS-INFO-MSG (VALUE ''Update card details presented above.''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-CRD-049
   kind: rule
@@ -3519,7 +3519,7 @@ items:
   source: app/cbl/COCRDUPC.cbl:164-165
   status: not-covered
 - activation: always
-  description: 'Message condition PROMPT-FOR-CONFIRMATION of WS-INFO-MSG (VALUE ''Changes validated.Press F5 to save''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition PROMPT-FOR-CONFIRMATION of WS-INFO-MSG (VALUE ''Changes validated.Press F5 to save''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-CRD-050
   kind: rule
@@ -3529,7 +3529,7 @@ items:
   source: app/cbl/COCRDUPC.cbl:166-167
   status: not-covered
 - activation: always
-  description: 'Message condition CONFIRM-UPDATE-SUCCESS of WS-INFO-MSG (VALUE ''Changes committed to database''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition CONFIRM-UPDATE-SUCCESS of WS-INFO-MSG (VALUE ''Changes committed to database''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-CRD-051
   kind: rule
@@ -3539,7 +3539,7 @@ items:
   source: app/cbl/COCRDUPC.cbl:168-169
   status: not-covered
 - activation: always
-  description: 'Message condition INFORM-FAILURE of WS-INFO-MSG (VALUE ''Changes unsuccessful. Please try again''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition INFORM-FAILURE of WS-INFO-MSG (VALUE ''Changes unsuccessful. Please try again''): when the condition is set the text appears in the information message (INFOMSG).'
   gap_ids: []
   id: INV-CRD-052
   kind: recovery
@@ -5384,14 +5384,14 @@ items:
   source: app/cbl/CBSTM03A.CBL:458-504,675-723
   status: not-covered
 - activation: always
-  description: 'The same statement is written to HTMLFILE as 100-byte HTML lines: header, name and address, account details, a table row per transaction and the total.'
+  description: 'For each card the statement is also written to HTMLFILE as 100-byte HTML lines: the document and table header, ''Statement for Account Number: <account id>'', the bank name and address (''Bank of XYZ'', ''410 Terry Ave N'', ''Seattle WA 99999''), the customer name and three address lines, ''Basic Details'' with the Account ID, Current Balance and FICO Score lines, ''Transaction Summary'' with the Tran ID, Tran Details and Amount headers, a table row per transaction (id, details, amount), and fixed closing lines with ''<h3>End of Statement</h3>''. The HTML statement has no total: the transaction total is written only to STMTFILE.'
   gap_ids: []
   id: INV-RPT-046
   kind: report
   level: unit
   name: CBSTM03A HTML statement
   scenario_ids: []
-  source: app/cbl/CBSTM03A.CBL:506-552,558-669,675-723
+  source: app/cbl/CBSTM03A.CBL:416-456,506-552,558-669,675-723
   status: not-covered
 - activation: conditional
   description: 'CBSTM03A walks the z/OS PSA, TCB and TIOT from address 0 and displays ''Running JCL : <job> Step <step>'' and each DD name with a valid or null UCB; this runs only where page zero holds those control blocks.'
@@ -5406,7 +5406,7 @@ items:
   source: app/cbl/CBSTM03A.CBL:266-294
   status: not-covered
 - activation: always
-  description: The amounts of the card's transactions are summed into WS-TOTAL-AMT, which the statement shows as the total; it is reset for each card.
+  description: The amounts of the card's transactions are summed into WS-TOTAL-AMT, which is reset for each card; the total is shown only on the text statement, as the STMTFILE 'Total EXP:' line, never on the HTML statement.
   gap_ids: []
   id: INV-RPT-048
   kind: calculation
@@ -5976,7 +5976,7 @@ items:
   source: app/cbl/CBCUS01C.cbl:92-116,136-152,161-174
   status: not-covered
 - activation: always
-  description: After the IDCAMS DELETE of a cluster that may not exist, 'IF MAXCC LE 08 THEN SET MAXCC = 0' resets the condition code so the DEFINE and REPRO steps run and the job ends with return code 0; the same statement is in CARDFILE, CREASTMT, CUSTFILE, DEFGDGB, DISCGRP, DUSRSECJ, TCATBALF, TRANBKP, TRANCATG, TRANFILE, TRANTYPE, XREFFILE.
+  description: 'In STEP05 the IDCAMS DELETE of the cluster is followed by ''IF MAXCC LE 08 THEN SET MAXCC = 0'': a DELETE ending with condition code 8 or less (8 when the cluster does not exist) leaves the step with return code 0, while a higher code is kept as the step''s return code. The DEFINE (STEP10) and REPRO (STEP15) steps have no COND and run whatever STEP05 returned; their own return codes decide the job''s outcome, so a final return code 0 is not guaranteed. The same conditional statement is in CARDFILE, CUSTFILE, TRANBKP, TRANFILE, XREFFILE; an unconditional ''SET MAXCC = 0'' is in CREASTMT, DISCGRP, DUSRSECJ, TCATBALF, TRANCATG, TRANTYPE, and ''IF LASTCC=12 THEN SET MAXCC=0'' is in DEFGDGB.'
   gap_ids: []
   id: INV-DAT-040
   kind: recovery
@@ -5996,7 +5996,7 @@ items:
   source: app/jcl/POSTTRAN.jcl:34-38
   status: not-covered
 - activation: always
-  description: The TRANSACT DEFINE step is bypassed when a previous step ended with a return code greater than 4, so a failed backup or delete leaves the cluster undefined.
+  description: 'The TRANSACT DEFINE (STEP10) is bypassed when an earlier step ended with a return code greater than 4. STEP05 deletes the cluster and then its alternate index, each DELETE followed by ''IF MAXCC LE 08 THEN SET MAXCC = 0'', so a DELETE of a missing cluster or alternate index (code 8 or less) becomes 0 and does not bypass the DEFINE. STEP05 has no COND, so it runs even after the REPROC backup (STEP05R) ended with a return code above 4; the DEFINE is then bypassed, and a successful DELETE leaves the cluster undefined. A DELETE ending above 8 keeps its code and bypasses the DEFINE: after a failed cluster DELETE the old cluster can remain in place, after a failed alternate-index DELETE the deleted cluster stays undefined. Whether the cluster exists after the job therefore depends on the DELETE''s outcome.'
   gap_ids: []
   id: INV-DAT-042
   kind: recovery
@@ -6056,14 +6056,14 @@ items:
   source: app/cbl/CSUTLDTC.cbl:103-151
   status: not-covered
 - activation: always
-  description: The 80-byte result is the 4-digit severity, 'Mesg Code:', the message number, the 15-character text, 'TstDate:' with the date and 'Mask used:' with the mask; RETURN-CODE is set to the severity.
+  description: 'The 80-byte result is the 4-digit severity, ''Mesg Code: '', the 4-digit message number, a space, the 15-character text, a space, ''TstDate: '', a 10-byte date field, a space, ''Mask used:'', the 10-byte mask as passed and 4 spaces; RETURN-CODE is set to the severity. The date field does not hold the date: after CEEDAYS the whole WS-DATE-TO-TEST group is moved into it, so it holds the binary Vstring length x''000A'' followed by the first 8 characters of the date passed, and the last two characters of a 10-character date are lost.'
   gap_ids: []
   id: INV-UTL-004
   kind: interface
   level: unit
   name: CSUTLDTC result message layout and RETURN-CODE
   scenario_ids: []
-  source: app/cbl/CSUTLDTC.cbl:42-55,90-102
+  source: app/cbl/CSUTLDTC.cbl:42-55,90-102,122
   status: not-covered
 - activation: always
   description: CSD FILE ACCTDAT on AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS (STATUS ENABLED, ADD YES, UPDATE YES, DELETE YES); covered through the online scenarios that read or update it.

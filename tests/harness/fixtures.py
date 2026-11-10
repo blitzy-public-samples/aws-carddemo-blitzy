@@ -531,7 +531,7 @@ def _fields(value: Any, what: str, record_length: int) -> tuple[DatasetField, ..
     return tuple(fields)
 
 
-def _parse_entry(name: str, entry: Mapping[str, Any]) -> DatasetSpec:
+def _entry_spec(name: str, entry: Mapping[str, Any]) -> DatasetSpec:
     what = f"tests/fixtures/datasets.yaml {name}"
     if not _NAME_RE.fullmatch(name):
         raise FixtureError(f"{what}: logical names match {_NAME_RE.pattern}", name)
@@ -589,6 +589,16 @@ def _parse_entry(name: str, entry: Mapping[str, Any]) -> DatasetSpec:
         gap_ids=gap_ids,
         text_lines=text_lines,
     )
+
+
+def _parse_entry(name: str, entry: Mapping[str, Any]) -> DatasetSpec:
+    """One entry; its field helpers know no entry name, so their errors gain it here."""
+    try:
+        return _entry_spec(name, entry)
+    except FixtureError as exc:
+        if exc.dataset is not None:
+            raise
+        raise FixtureError(str(exc), name, exc.record) from None
 
 
 def _parse_document(document: Any, path: Path) -> dict[str, DatasetSpec]:
@@ -753,9 +763,9 @@ def _pad_lines(lines: Iterable[bytes], record_length: int, what: str, dataset: s
 
 def _split(data: bytes, record_length: int, what: str, dataset: str) -> list[bytes]:
     try:
-        return _codec.split_records(data, record_length)
+        return _codec.split_records(data, record_length, dataset=dataset)
     except _codec.CodecError as exc:
-        raise FixtureError(f"{what}: {exc.reason}", dataset) from None
+        raise FixtureError(f"{what}: {exc.reason}", dataset, exc.record) from None
 
 
 def _decode_source(
@@ -989,13 +999,17 @@ def _encode_record(definition: DatasetSpec, values: Any, base: bytes | None, whe
             f"{where}: {definition.name} has no layout, so its records cannot be encoded",
             definition.name,
         )
-    if _layout_length(definition.layout) != definition.record_length:
+    try:
+        layout_length = _layout_length(definition.layout)
+        layout_keys = _layout_keys(definition.layout)
+    except FixtureError as exc:
+        raise FixtureError(str(exc), definition.name, exc.record) from None
+    if layout_length != definition.record_length:
         raise FixtureError(
-            f"{where}: layout {definition.layout} is {_layout_length(definition.layout)} "
+            f"{where}: layout {definition.layout} is {layout_length} "
             f"bytes, but {definition.name} records are {definition.record_length}",
             definition.name,
         )
-    layout_keys = _layout_keys(definition.layout)
     own_fields = {own.name: own for own in definition.fields}
     layout_values: dict[str, Any] = {}
     overlays: list[tuple[DatasetField, Any]] = []

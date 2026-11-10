@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import decimal
 import hashlib
+import os
 import re
+import stat
 import subprocess
 import sys
 from datetime import date, datetime
@@ -382,10 +384,19 @@ def load_yaml(path: str | PurePath, missing_ok: bool = False) -> Any:
 def write_text(path: str | PurePath, text: str) -> bool:
     """Write ``text`` as UTF-8 with ``\\n`` line endings, creating parent
     directories. An identical file is left untouched, so its mtime stays
-    stable. Returns whether the file was written."""
+    stable. Returns whether the file was written.
+
+    The write is atomic: a symlink is followed to the file it resolves to,
+    the text goes to a new file beside that target, and ``os.replace`` swaps
+    it in, so a concurrent reader sees the old or the new content, never a
+    partial one. An existing target keeps its permission bits; a new one gets
+    the mode the umask allows. The new file is removed when anything fails,
+    and ``OSError`` (a directory in the way, no permission) propagates."""
     if not isinstance(text, str):
         raise TypeError(f"text must be str, not {type(text).__name__}")
-    file_path = Path(path)
+    # Path.resolve raises RuntimeError on a symlink loop; realpath returns the
+    # loop unresolved, so the read below reports it as an OSError.
+    file_path = Path(os.path.realpath(path))
     data = text.encode("utf-8")
     try:
         unchanged = file_path.read_bytes() == data
@@ -394,8 +405,31 @@ def write_text(path: str | PurePath, text: str) -> bool:
     if unchanged:
         return False
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(file_path, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(text)
+    try:
+        mode: int | None = stat.S_IMODE(file_path.stat().st_mode)
+    except FileNotFoundError:
+        mode = None
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    while True:
+        unique = f"{os.getpid()}.{os.urandom(4).hex()}"
+        temp_path = file_path.with_name(f".{file_path.name}.{unique}.tmp")
+        try:
+            descriptor = os.open(temp_path, flags, 0o666)
+            break
+        except FileExistsError:
+            continue
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+        if mode is not None:
+            os.chmod(temp_path, mode)
+        os.replace(temp_path, file_path)
+    except BaseException:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+        raise
     return True
 
 

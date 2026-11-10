@@ -29,6 +29,13 @@ Signs
     zero with the scale kept (``Decimal("0.00")``), because COBOL compares and
     moves it as zero.
 
+Errors
+    ``CodecError`` names the refused field, value and reason and, where they
+    are known, the dataset, layout, 1-based record number, byte columns and
+    qualified field path (``dataset``, ``layout``, ``record``, ``columns``,
+    ``path``). ``encode_record``, ``decode_record`` and ``split_records``
+    take the dataset (and the record number) from their caller.
+
 Every function is pure: the module reads nothing except layouts through
 ``harness.layouts``.
 """
@@ -87,14 +94,85 @@ _NUMERIC_TEXT_RE = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)")
 class CodecError(HarnessError):
     """A value that cannot be encoded, or a call that does not fit the field
     or layout (wrong length, unknown key, unknown type). Invalid *content*
-    found while decoding is never an error: it decodes to ``Invalid``."""
+    found while decoding is never an error: it decodes to ``Invalid``.
 
-    def __init__(self, field: str | None, value: Any, reason: str) -> None:
+    ``field`` (the key the caller used, or the descriptor's label), ``value``
+    and ``reason`` say what was refused and why. The context attributes
+    locate it where it is known, and are ``None`` otherwise: ``dataset`` (the
+    logical dataset the caller named), ``layout`` (the record layout's name),
+    ``record`` (the 1-based record number), ``columns`` (the 1-based,
+    inclusive ``(first, last)`` byte columns within the record) and ``path``
+    (the field's qualified layout path with its subscripts, when the caller
+    named it by another key). The message is ``<field>: <reason> (value
+    <value>)``, followed by the known context in brackets:
+    ``[dataset ACCTDATA, record 3, layout CVACT01Y/ACCOUNT-RECORD, field
+    ACCOUNT-RECORD.ACCT-CURR-BAL, columns 13-24]``; a part equal to
+    ``field`` is not repeated."""
+
+    def __init__(
+        self,
+        field: str | None,
+        value: Any,
+        reason: str,
+        *,
+        dataset: str | None = None,
+        layout: str | None = None,
+        record: int | None = None,
+        columns: tuple[int, int] | None = None,
+        path: str | None = None,
+    ) -> None:
         self.field = field
         self.value = value
         self.reason = reason
+        self.dataset = dataset
+        self.layout = layout
+        self.record = record
+        self.columns = None if columns is None else (int(columns[0]), int(columns[1]))
+        self.path = path
         where = f"{field}: " if field else ""
-        super().__init__(f"{where}{reason} (value {value!r})")
+        parts = [
+            f"{label} {part}"
+            for label, part in (
+                ("dataset", dataset),
+                ("record", record),
+                ("layout", layout),
+                ("field", path),
+            )
+            if part is not None and part != "" and part != field
+        ]
+        if self.columns is not None:
+            parts.append(f"columns {self.columns[0]}-{self.columns[1]}")
+        context = f" [{', '.join(parts)}]" if parts else ""
+        super().__init__(f"{where}{reason} (value {value!r}){context}")
+
+    def with_context(
+        self,
+        *,
+        dataset: str | None = None,
+        layout: str | None = None,
+        record: int | None = None,
+        columns: tuple[int, int] | None = None,
+        path: str | None = None,
+    ) -> "CodecError":
+        """This error with the given context added where it has none: context
+        it already carries is kept, so the location found nearest the fault
+        wins. Returns ``self`` when nothing is added."""
+        given = {
+            "dataset": dataset,
+            "layout": layout,
+            "record": record,
+            "columns": columns,
+            "path": path,
+        }
+        context = {name: getattr(self, name) for name in given}
+        added = {
+            name: part for name, part in given.items() if part is not None and context[name] is None
+        }
+        if not added:
+            return self
+        context.update(added)
+        error = CodecError(self.field, self.value, self.reason, **context)
+        return error.with_traceback(self.__traceback__)
 
 
 @dataclass(frozen=True)
@@ -443,6 +521,39 @@ def _encode(spec: _Spec, value: Any, codec: str) -> bytes:
     return _encode_binary(spec, value)
 
 
+def _holds(spec: _Spec, data: bytes, value: Any, wanted: bytes | None, codec: str) -> bool:
+    """Whether ``data``, bytes of the field, hold ``value``, whose own
+    encoding is ``wanted``. Text holds a value only byte for byte; a number
+    holds it in any representation of the same value (a positive overpunch
+    ``A`` or a plain ``1``, a negative zero ``}`` for zero, packed sign ``F``
+    or ``C``). An ``Invalid`` holds only its own bytes, exactly: it stands for
+    those bytes, not for a value they decode to. ``wanted`` is ``None`` for a
+    value the field cannot encode, which only stored bytes can hold: a binary
+    value beyond its PICTURE's digits."""
+    if isinstance(value, Invalid):
+        return wanted is not None and data == wanted
+    if wanted is not None:
+        if data == wanted:
+            return True
+        try:
+            return _encode(spec, _decode(spec, data, codec), codec) == wanted
+        except CodecError:
+            # The bytes hold a value the field cannot encode, so not this one.
+            return False
+    if spec.type not in NUMERIC_TYPES or isinstance(value, bool):
+        return False
+    if isinstance(value, str):
+        if not _NUMERIC_TEXT_RE.fullmatch(value):
+            return False
+        value = Decimal(value)
+    elif isinstance(value, int):
+        value = Decimal(value)
+    elif not isinstance(value, Decimal) or not value.is_finite():
+        return False
+    decoded = _decode(spec, data, codec)
+    return isinstance(decoded, Decimal) and decoded == value
+
+
 # --------------------------------------------------------------------------
 # Records
 # --------------------------------------------------------------------------
@@ -466,6 +577,16 @@ class _Slot:
             other.indices[: len(self.indices)] == self.indices
         )
 
+    @property
+    def columns(self) -> tuple[int, int]:
+        """The 1-based, inclusive byte columns of the field in the record."""
+        return (self.offset + 1, self.offset + self.spec.length)
+
+    @property
+    def qualified(self) -> str:
+        """The field's path with the subscripts of its table occurrence."""
+        return _subscripted(self.path, self.indices)
+
 
 @dataclass(frozen=True, eq=False)
 class _Plan:
@@ -482,7 +603,10 @@ def resolve_layout(layout: str | Mapping[str, Any]) -> Mapping[str, Any]:
     ``harness.layouts.record`` accepts) or from a layout dict, which must hold
     ``length`` and ``fields``."""
     if isinstance(layout, str):
-        return _layouts.record(layout)
+        try:
+            return _layouts.record(layout)
+        except HarnessError as exc:
+            raise CodecError(None, layout, str(exc), layout=layout) from None
     if not isinstance(layout, Mapping):
         raise CodecError(None, layout, "a layout is a layout name or a record layout dict")
     fields = layout.get("fields")
@@ -551,7 +675,10 @@ def _build_plan(layout: str | Mapping[str, Any]) -> _Plan:
         parent = path.rpartition(".")[0]
         if parent and parent not in dimensions:
             raise CodecError(
-                path, None, f"in layout {label} follows no entry for its group {parent}"
+                path,
+                None,
+                f"in layout {label} follows no entry for its group {parent}",
+                layout=label,
             )
         (children.setdefault(parent, []) if parent else roots).append(entry)
         occurs = entry.get("occurs") or 0
@@ -564,9 +691,14 @@ def _build_plan(layout: str | Mapping[str, Any]) -> _Plan:
     def visit(
         entry: Mapping[str, Any], delta: int, indices: tuple[int, ...], redefining: bool
     ) -> None:
-        spec = _spec(entry)
+        try:
+            spec = _spec(entry)
+        except CodecError as exc:
+            raise exc.with_context(layout=label) from None
         if spec.length is None:
-            raise CodecError(spec.label, entry, f"field of layout {label} has no length")
+            raise CodecError(
+                spec.label, entry, f"field of layout {label} has no length", layout=label
+            )
         key = _key_for(entry, counts)
         redefining = redefining or bool(entry.get("redefines"))
         occurs = entry.get("occurs") or 0
@@ -576,7 +708,14 @@ def _build_plan(layout: str | Mapping[str, Any]) -> _Plan:
             sub_delta = delta + (occurrence - 1) * spec.length if occurrence else delta
             offset = entry["offset"] + sub_delta
             if offset < 0 or offset + spec.length > length:
-                raise CodecError(spec.label, offset, f"lies outside the {length} bytes of {label}")
+                raise CodecError(
+                    spec.label,
+                    offset,
+                    f"lies outside the {length} bytes of {label}",
+                    layout=label,
+                    columns=(offset + 1, offset + spec.length),
+                    path=_subscripted(entry["path"], sub_indices),
+                )
             aliases = {_subscripted(key, sub_indices), _subscripted(entry["path"], sub_indices)}
             slots.append(
                 _Slot(
@@ -599,7 +738,14 @@ def _build_plan(layout: str | Mapping[str, Any]) -> _Plan:
     for slot in slots:
         for alias in slot.aliases:
             if by_key.setdefault(alias, slot) is not slot:
-                raise CodecError(alias, None, f"names two fields of {label}")
+                raise CodecError(
+                    alias,
+                    None,
+                    f"names two fields of {label}",
+                    layout=label,
+                    columns=slot.columns,
+                    path=slot.qualified,
+                )
     return _Plan(label, length, tuple(slots), by_key, tuple(shapes), {})
 
 
@@ -640,19 +786,29 @@ def _default_image(plan: _Plan, encoding: str, codec: str) -> bytes:
     return plan.defaults[encoding]
 
 
-def split_records(data: bytes, record_length: int) -> list[bytes]:
+def split_records(data: bytes, record_length: int, *, dataset: str | None = None) -> list[bytes]:
     """Fixed-length records of ``data``; a partial last record raises
-    ``CodecError``."""
+    ``CodecError`` with its 1-based number as ``record``. ``dataset``, the
+    logical dataset ``data`` holds, goes into every error."""
     if isinstance(record_length, bool) or not isinstance(record_length, int) or record_length <= 0:
-        raise CodecError(None, record_length, "record length must be a positive integer")
+        raise CodecError(
+            None, record_length, "record length must be a positive integer", dataset=dataset
+        )
     if not isinstance(data, (bytes, bytearray, memoryview)):
-        raise CodecError(None, type(data).__name__, "records are split from bytes")
+        raise CodecError(None, type(data).__name__, "records are split from bytes", dataset=dataset)
     data = bytes(data)
-    if len(data) % record_length:
+    partial = len(data) % record_length
+    if partial:
+        whole = len(data) - partial
+        number = whole // record_length + 1
         raise CodecError(
             None,
             len(data),
-            f"{len(data)} bytes are not a whole number of {record_length}-byte records",
+            f"{len(data)} bytes are not a whole number of {record_length}-byte records: "
+            f"record {number} starts at byte offset {whole} and holds {partial} of its "
+            f"{record_length} bytes",
+            dataset=dataset,
+            record=number,
         )
     return [data[start : start + record_length] for start in range(0, len(data), record_length)]
 
@@ -662,6 +818,9 @@ def decode_record(
     layout: str | Mapping[str, Any],
     encoding: str = "ascii",
     leaves_only: bool = True,
+    *,
+    dataset: str | None = None,
+    record: int | None = None,
 ) -> dict[str, str | Decimal | Invalid]:
     """Decode one record into ``{field key: value}`` in declaration order.
 
@@ -669,14 +828,34 @@ def decode_record(
     ``field_key`` describes; each occurrence of an ``OCCURS`` item is its own
     entry, and both views of a REDEFINES are decoded. ``leaves_only=False``
     adds group items, decoded as text. ``raw`` must be exactly one record.
+    ``dataset`` and ``record`` (1-based), where the caller knows them, go
+    into any ``CodecError`` raised.
     """
+    try:
+        return _decode_record(raw, layout, encoding, leaves_only)
+    except CodecError as exc:
+        raise exc.with_context(
+            dataset=dataset, record=record, layout=layout if isinstance(layout, str) else None
+        ) from None
+
+
+def _decode_record(
+    raw: bytes, layout: str | Mapping[str, Any], encoding: str, leaves_only: bool
+) -> dict[str, str | Decimal | Invalid]:
     codec = _codec(encoding)
     plan = _plan(layout)
     if not isinstance(raw, (bytes, bytearray, memoryview)):
-        raise CodecError(plan.label, type(raw).__name__, "a record is decoded from bytes")
+        raise CodecError(
+            plan.label, type(raw).__name__, "a record is decoded from bytes", layout=plan.label
+        )
     raw = bytes(raw)
     if len(raw) != plan.length:
-        raise CodecError(plan.label, len(raw), f"a record of {plan.label} is {plan.length} bytes")
+        raise CodecError(
+            plan.label,
+            len(raw),
+            f"a record of {plan.label} is {plan.length} bytes",
+            layout=plan.label,
+        )
     return {
         slot.key: _decode(slot.spec, raw[slot.offset : slot.offset + slot.spec.length], codec)
         for slot in plan.slots
@@ -689,6 +868,9 @@ def encode_record(
     layout: str | Mapping[str, Any],
     encoding: str = "ascii",
     base: bytes | None = None,
+    *,
+    dataset: str | None = None,
+    record: int | None = None,
 ) -> bytes:
     """Encode decoded field values into one record image.
 
@@ -697,39 +879,76 @@ def encode_record(
     ``values[RAW_KEY]`` (``"@raw"``), a string, then replaces the whole image,
     space-padded to the record length. Every other key is a field key as
     ``decode_record`` reports it, or a field path, with subscripts for table
-    occurrences; each value overlays its field's bytes, groups before the
-    fields inside them, so a ``decode_record`` result encodes back to the
-    record it came from. Unknown keys, two keys for one field, and values of
-    two REDEFINES views that disagree on shared bytes raise ``CodecError``.
+    occurrences; each value overlays its field's bytes in declaration order,
+    groups before the fields inside them.
+
+    Values of overlapping views (REDEFINES, a group and the fields inside it)
+    must describe the same bytes. A view whose value the bytes an earlier view
+    already wrote decode to keeps that representation (text and an
+    ``Invalid`` byte for byte, a number in any representation of its value,
+    such as the overpunch ``0000000000A`` for ``1``), so a ``decode_record``
+    result encodes back to the record it came from. A group and the fields inside it may differ: the
+    inner field wins. Only the given values are compared, never the base or
+    default bytes beneath them. Unknown keys, two keys for one field, and
+    views that contradict each other raise ``CodecError``. ``dataset`` and
+    ``record`` (1-based), where the caller knows them, go into any
+    ``CodecError`` raised.
     """
+    try:
+        return _encode_record(values, layout, encoding, base)
+    except CodecError as exc:
+        raise exc.with_context(
+            dataset=dataset, record=record, layout=layout if isinstance(layout, str) else None
+        ) from None
+
+
+def _encode_record(
+    values: Mapping[str, Any] | None,
+    layout: str | Mapping[str, Any],
+    encoding: str,
+    base: bytes | None,
+) -> bytes:
     codec = _codec(encoding)
     plan = _plan(layout)
     if values is None:
         values = {}
     if not isinstance(values, Mapping):
-        raise CodecError(plan.label, values, "record values must be a mapping of field keys")
+        raise CodecError(
+            plan.label, values, "record values must be a mapping of field keys", layout=plan.label
+        )
     if base is None:
         image = bytearray(_default_image(plan, encoding, codec))
     elif isinstance(base, (bytes, bytearray, memoryview)) and len(base) == plan.length:
         image = bytearray(base)
     else:
-        raise CodecError(plan.label, base, f"a base record of {plan.label} is {plan.length} bytes")
+        raise CodecError(
+            plan.label,
+            base,
+            f"a base record of {plan.label} is {plan.length} bytes",
+            layout=plan.label,
+        )
     if RAW_KEY in values:
         text = values[RAW_KEY]
         if not isinstance(text, str) or len(text) > plan.length:
             raise CodecError(
-                RAW_KEY, text, f"must be a string of at most {plan.length} characters"
+                RAW_KEY,
+                text,
+                f"must be a string of at most {plan.length} characters",
+                layout=plan.label,
             )
         try:
             image = bytearray(text.ljust(plan.length).encode(codec))
         except UnicodeEncodeError:
-            raise CodecError(RAW_KEY, text, f"holds a character {codec} cannot encode") from None
+            raise CodecError(
+                RAW_KEY, text, f"holds a character {codec} cannot encode", layout=plan.label
+            ) from None
     unknown = sorted(str(key) for key in values if key != RAW_KEY and key not in plan.by_key)
     if unknown:
         raise CodecError(
             plan.label,
             unknown,
             f"unknown field key(s) {', '.join(unknown)}; valid keys: {', '.join(plan.shapes)}",
+            layout=plan.label,
         )
     chosen: dict[int, tuple[_Slot, Any, str]] = {}
     order = {id(slot): position for position, slot in enumerate(plan.slots)}
@@ -739,36 +958,108 @@ def encode_record(
         slot = plan.by_key[key]
         position = order[id(slot)]
         if position in chosen:
-            raise CodecError(key, value, f"names the same field as {chosen[position][2]}")
+            raise CodecError(
+                key,
+                value,
+                f"names the same field as {chosen[position][2]}",
+                layout=plan.label,
+                columns=slot.columns,
+                path=slot.qualified,
+            )
         chosen[position] = (slot, value, key)
-    encoded: list[tuple[_Slot, bytes, str]] = []
+    # Each value's own encoding, in declaration order. A value the field cannot
+    # encode keeps its error: bytes an earlier view writes may still hold it.
+    encoded: list[tuple[_Slot, Any, str, bytes | None, CodecError | None]] = []
     for position in sorted(chosen):
         slot, value, key = chosen[position]
         try:
-            encoded.append((slot, _encode(slot.spec, value, codec), key))
+            encoded.append((slot, value, key, _encode(slot.spec, value, codec), None))
         except CodecError as exc:
-            # The descriptor names the field by path; the caller's key also
-            # carries the subscripts of a table occurrence.
-            raise CodecError(key, value, exc.reason) from None
-    # Values for two REDEFINES views of the same bytes must agree there, so a
-    # decode_record result re-encodes as it was decoded and a contradiction is
-    # refused instead of being settled by key order. A group and the fields
-    # inside it may differ: the inner field is applied after the group.
-    for index, (first, first_bytes, first_key) in enumerate(encoded):
-        for second, second_bytes, second_key in encoded[index + 1 :]:
-            start = max(first.offset, second.offset)
-            end = min(first.offset + first.spec.length, second.offset + second.spec.length)
-            if start >= end or first.contains(second) or second.contains(first):
-                continue
-            if (
-                first_bytes[start - first.offset : end - first.offset]
-                != second_bytes[start - second.offset : end - second.offset]
-            ):
-                raise CodecError(
-                    second_key,
-                    values[second_key],
-                    f"contradicts {first_key}, another view of the same bytes",
+            # The caller's key names the field, with the subscripts of a table
+            # occurrence; the layout, columns and qualified path locate it.
+            error = CodecError(
+                key,
+                value,
+                exc.reason,
+                layout=plan.label,
+                columns=slot.columns,
+                path=slot.qualified,
+            )
+            encoded.append((slot, value, key, None, error))
+
+    def holds(slot: _Slot, data: bytes, value: Any, wanted: bytes | None) -> bool:
+        # A group is text over the fields inside it: it holds only its bytes.
+        if slot.leaf:
+            return _holds(slot.spec, data, value, wanted, codec)
+        return data == wanted
+
+    # Values of overlapping views (REDEFINES, a group and the fields inside it)
+    # must describe the same bytes, and a contradiction is refused instead of
+    # being settled by key order. In declaration order, a view whose value the
+    # bytes earlier views wrote already hold keeps that representation and
+    # fills in only the bytes no view wrote, so a decode_record result
+    # re-encodes to the record it came from; any other view writes its own
+    # encoding over its whole field. Only given values are compared, never
+    # the base or default bytes beneath them.
+    written = bytearray(plan.length)  # 1 where a given value wrote the byte
+    writer = [-1] * plan.length  # index in encoded of the view that wrote it last
+    for index, (slot, value, key, wanted, error) in enumerate(encoded):
+        start, end = slot.offset, slot.offset + slot.spec.length
+        if written.find(1, start, end) >= 0:
+            if wanted is None:
+                # Nothing of its own to fill in: every byte must be written.
+                held = written.find(0, start, end) < 0 and holds(
+                    slot, bytes(image[start:end]), value, None
                 )
-    for slot, data, _ in encoded:
-        image[slot.offset : slot.offset + slot.spec.length] = data
+            else:
+                composite = bytes(
+                    image[position] if written[position] else wanted[position - start]
+                    for position in range(start, end)
+                )
+                held = holds(slot, composite, value, wanted)
+            if held:
+                for position in range(start, end):
+                    if not written[position]:
+                        image[position] = wanted[position - start]
+                        written[position] = 1
+                        writer[position] = index
+                continue
+        if wanted is None:
+            raise error
+        image[start:end] = wanted
+        written[start:end] = b"\x01" * (end - start)
+        writer[start:end] = [index] * (end - start)
+    # Every view must still hold its value in the final image. A group may
+    # differ from the fields inside it: the inner field, written after the
+    # group, wins there. A view that no longer holds its value was overwritten
+    # by a later one, whose value contradicts it.
+    for index, (slot, value, key, wanted, _) in enumerate(encoded):
+        start, end = slot.offset, slot.offset + slot.spec.length
+        if slot.leaf:
+            compared = range(start, end)
+            if holds(slot, bytes(image[start:end]), value, wanted):
+                continue
+        else:
+            inner = bytearray(end - start)
+            for other, *_ in encoded[index + 1 :]:
+                if slot.contains(other):
+                    inner[other.offset - start : other.offset - start + other.spec.length] = (
+                        b"\x01" * other.spec.length
+                    )
+            compared = [position for position in range(start, end) if not inner[position - start]]
+            if all(image[position] == wanted[position - start] for position in compared):
+                continue
+        culprit, culprit_value, culprit_key, _, _ = encoded[
+            min(writer[position] for position in compared if writer[position] > index)
+        ]
+        overlap_start = max(start, culprit.offset)
+        overlap_end = min(end, culprit.offset + culprit.spec.length)
+        raise CodecError(
+            culprit_key,
+            culprit_value,
+            f"contradicts {key}, another view of the same bytes",
+            layout=plan.label,
+            columns=(overlap_start + 1, overlap_end),
+            path=culprit.qualified,
+        )
     return bytes(image)

@@ -43,9 +43,9 @@
 # Expected values are derived from the source (no TPE region runs in CI):
 # - ERRMSG is the 38-character 'Current Cycle Credit Limi is not valid' in the
 #   75-byte WS-RETURN-MSG, padded to the 78-byte ERRMSGO
-#   [app/cbl/COACTUPC.cbl:479]. The inventory item describes the untruncated
-#   name; the source cannot produce it, so the truncated text is pinned and
-#   tagged suspected-defect.
+#   [app/cbl/COACTUPC.cbl:479]. The inventory item INV-ACT-116 records the
+#   truncated name too; the truncation is pinned and tagged suspected-defect
+#   (GAP-DEF-018).
 # - INFOMSG is the 40-byte WS-INFO-MSG in the 45-byte INFOMSGO.
 # - Screen fields are compared at their full BMS length, trailing spaces kept;
 #   ACRCYCR holds ABC padded to its 15 positions, and the s3270 capture renders

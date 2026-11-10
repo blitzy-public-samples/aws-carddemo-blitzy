@@ -16,7 +16,8 @@
 # skips the move of record fields into the map [app/cbl/COUSR02C.cbl:166-172].
 # The REWRITE NOTFND branch moves the same text [app/cbl/COUSR02C.cbl:377-382];
 # it is the same inventory item, reached only when the record disappears
-# between the PF5 read and the rewrite.
+# between the read and the rewrite of a PF5 save, or of the same save PF3
+# performs before it returns.
 # TESTU009 is an invented id entered on COUSR02 as the user to look up; nobody
 # signs on with it. The baseline is derived from the source: no TPE region runs
 # in CI.
