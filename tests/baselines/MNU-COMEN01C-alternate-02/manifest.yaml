@@ -1,0 +1,25 @@
+# Derived baseline of MNU-COMEN01C-alternate-02. Only unikix can run the
+# scenario, so expected.yaml is authored from the source and is
+# inferred-not-observed (GAP-INF-003, GAP-INF-012). It names no execution_id or
+# execution_fingerprint and holds no datasets/ until an eligible UniKix run is
+# imported (report.py --import-unikix).
+#
+# source_identity.units are the app/ sources the expected screens are derived
+# from: COMEN01C's option handling and XCTL [app/cbl/COMEN01C.cbl:115-156] with
+# its option table COMEN02Y and title copybook COTTL01Y, COACTUPC's fresh-entry
+# send of COACTUP [app/cbl/COACTUPC.cbl:964-972,2668-2702,2955-2983], and the
+# COMEN01 and COACTUP maps that fix each asserted field's length.
+baseline_version: 1.0.0
+capture_date: '2026-11-10'
+capture_platform: derived
+source_commit: 0c85b6a8f32a96c938accebe34b8a68418657956
+source_identity:
+  commit: 0c85b6a8f32a96c938accebe34b8a68418657956
+  tree: app
+  units:
+    app/bms/COACTUP.bms: 60b261bd2d0c6c851cd78af963ce6c6e14444a9477ad6eb0f80f0e0d4f1f4f23
+    app/bms/COMEN01.bms: f87af09e6f60ab198d5c05817e3007361a6d29ed957322ef25b11c5420c84b4c
+    app/cbl/COACTUPC.cbl: e7a097a02870a13529ab846a2ddd3cf398a243263517ded399bd55a25fb9578f
+    app/cbl/COMEN01C.cbl: ad5e376ac9221b21b8ce47597a5ca17fc1f39dc913793c814c6675e9b046fc09
+    app/cpy/COMEN02Y.cpy: 22b1be06734c9ae91a25c4b544f9a9c4c85ab3f281a3d3bcc0765fb17e585d85
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b

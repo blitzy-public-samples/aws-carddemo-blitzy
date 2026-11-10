@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-10'
+capture_platform: derived
+derived_from: source
+source_commit: 0c85b6a8f32a96c938accebe34b8a68418657956
+source_identity:
+  commit: 0c85b6a8f32a96c938accebe34b8a68418657956
+  tree: app
+  units:
+    app/cbl/COMEN01C.cbl: ad5e376ac9221b21b8ce47597a5ca17fc1f39dc913793c814c6675e9b046fc09
+    app/cpy/COMEN02Y.cpy: 22b1be06734c9ae91a25c4b544f9a9c4c85ab3f281a3d3bcc0765fb17e585d85

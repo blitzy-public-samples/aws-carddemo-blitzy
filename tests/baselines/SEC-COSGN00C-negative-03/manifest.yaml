@@ -1,0 +1,26 @@
+# Manifest of the derived baseline of SEC-COSGN00C-negative-03: only unikix
+# can run the scenario, so expected.yaml was authored from the wrong-password
+# path of app/cbl/COSGN00C.cbl:209-245 (derived_from: source), not captured.
+# It names no execution_id or execution_fingerprint and holds no
+# datasets/*.bin until an eligible UniKix run is imported.
+#
+# source_identity.units are COSGN00C's COPY closure, as harness.results
+# computes it for a program, plus the BMS source of its map COSGN00. DFHAID
+# and DFHBMSCA are CICS-supplied and not in the repository.
+baseline_version: 1.0.0
+capture_date: '2026-11-10'
+capture_platform: derived
+derived_from: source
+source_commit: 0c85b6a8f32a96c938accebe34b8a68418657956
+source_identity:
+  commit: 0c85b6a8f32a96c938accebe34b8a68418657956
+  tree: app
+  units:
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb

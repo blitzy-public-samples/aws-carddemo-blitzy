@@ -1,0 +1,27 @@
+# Manifest of the derived baseline of SEC-COSGN00C-negative-05 (PF5 on the
+# sign-on screen). Only unikix can run the scenario, so expected.yaml is
+# authored from the source and is inferred-not-observed (GAP-INF-002,
+# GAP-INF-012). It names no execution_id or execution_fingerprint and holds no
+# datasets/ until an eligible UniKix run is imported (report.py --import-unikix).
+#
+# source_identity.units are the app/ sources the expected screen is derived
+# from: COSGN00C's WHEN OTHER path and SEND-SIGNON-SCREEN header
+# [app/cbl/COSGN00C.cbl:85-100,145-157,177-204], CCDA-MSG-INVALID-KEY
+# [app/cpy/CSMSG01Y.cpy:20-21], the TITLE01/TITLE02 texts of COTTL01Y, the
+# ERRMSG length of the COSGN00 map, and CSDAT01Y, whose '/' and ':' fillers
+# and 8-byte MM/DD/YY and HH:MM:SS fields give the asserted CURDATE and
+# CURTIME formats [app/cpy/CSDAT01Y.cpy:30-41]. COCOM01Y, CSUSR01Y and the
+# symbolic map shape no asserted value, so they are not listed.
+baseline_version: 1.0.0
+capture_date: '2026-11-10'
+capture_platform: derived
+source_commit: 0c85b6a8f32a96c938accebe34b8a68418657956
+source_identity:
+  commit: 0c85b6a8f32a96c938accebe34b8a68418657956
+  tree: app
+  units:
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
