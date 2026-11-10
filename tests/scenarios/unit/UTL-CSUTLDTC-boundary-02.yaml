@@ -11,11 +11,13 @@
 # Which dates are accepted is decided here by the CEEDAYS stub, which checks the
 # day against the proleptic Gregorian month length (29 days in February of a year
 # divisible by 4 and not by 100, or by 400) and returns x'09CC' for a day outside
-# the month [tests/stubs/ceedays.c:158-172,273-274]. That a real CEEDAYS answers
+# the month, in its is_leap_year and days_in_month and in evaluate's day test
+# [tests/stubs/ceedays.c:161-175,276-278]. That a real CEEDAYS answers
 # the same way is inferred, not observed (GAP-INF-001), hence the tag.
 #
 # DTCIN records are the 80-byte call list DTCDRV reads: date X(10), mask X(10)
-# and 60 spaces [tests/stubs/DTCDRV.cbl:69-80]. They are written at full length
+# and 60 spaces, the DTC-REC record of FD DTC-FILE
+# [tests/stubs/DTCDRV.cbl:95-100]. They are written at full length
 # so that every record is whole whatever padding the builder applies.
 #
 # Each message is the DTCDRV line as captured: the 80-byte result shown with

@@ -19,7 +19,8 @@
 # inferred-not-observed tag, and the date-acceptance item is not listed.
 #
 # The expected message is the DTCDRV line exactly as the driver printed it, 299
-# characters [tests/stubs/DTCDRV.cbl:38-52]: the result as printable text, every
+# characters, as the stdout entry of the driver's Output contract describes
+# [tests/stubs/DTCDRV.cbl:44-56]: the result as printable text, every
 # byte outside x'20'-x'7E' shown as '.', then the same 80 bytes as hex. 'TstDate:'
 # reads '..2022-07-' (hex 000A323032322D30372D) because CSUTLDTC moves the whole
 # Vstring, its binary length x'000A' first, into the 10-byte WS-DATE
@@ -56,7 +57,7 @@ inputs:
   program: CSUTLDTC
   param_files:
     # One DTCIN record: the date in bytes 1-10, the mask in bytes 11-20, spaces
-    # to 80 [tests/stubs/DTCDRV.cbl:75-80].
+    # to 80, the DTC-REC record of FD DTC-FILE [tests/stubs/DTCDRV.cbl:95-100].
     DTCIN:
     - '2022-07-18YYYY-MM-DD'
 expected:

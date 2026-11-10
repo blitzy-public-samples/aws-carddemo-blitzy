@@ -12,12 +12,14 @@
 # The call is the one CORPT00C and COTRN02C make: a valid date with the mask
 # YYYY-MM-DD, so the injected token alone decides the outcome.
 # The DTCDRV line carries the 80-byte result twice, as printable text and as
-# hex [tests/stubs/DTCDRV.cbl:38-52]. Result bytes 46-47 are the binary
+# hex, as the stdout entry of the driver's Output contract describes
+# [tests/stubs/DTCDRV.cbl:44-60]. Result bytes 46-47 are the binary
 # Vstring length x'000A' that MOVE WS-DATE-TO-TEST TO WS-DATE copies ahead of
 # the date text, which is why 'TstDate:' shows '..2022-07-'
 # [app/cbl/CSUTLDTC.cbl:25-31,52,122]; it is pinned as observed. RC=0003 is
 # CSUTLDTC's RETURN-CODE after the call, while DTCDRV itself ends with exit
-# status 0 after the last DTCIN record [tests/stubs/DTCDRV.cbl:129-130,161].
+# status 0 after the last DTCIN record, by the closing MOVE 0 TO RETURN-CODE
+# and STOP RUN of 0000-MAIN [tests/stubs/DTCDRV.cbl:165-166].
 id: UTL-CSUTLDTC-negative-08
 level: unit
 type: negative

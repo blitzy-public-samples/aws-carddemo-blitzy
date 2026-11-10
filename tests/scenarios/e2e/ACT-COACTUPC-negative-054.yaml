@@ -14,9 +14,14 @@
 # reads the 2 bytes after each area: the start of WS-EDIT-DATE-BINARY, which only
 # EDIT-DATE-OF-BIRTH sets, later in the same edit pass, and the spaces that
 # INITIALIZE leaves in WS-SEVERITY [app/cpy/CSUTLDWY.cpy:4-37,58-62]
-# [app/cbl/CSUTLDTC.cbl:83-117]. If a real CEEDAYS refused this date, a UniKix
-# run would show the composed message in ERRMSG; that run replaces this
-# expectation through the baseline import.
+# [app/cbl/CSUTLDTC.cbl:83-117]. Whether a real CEEDAYS refuses this date is
+# settled only by app/'s own CSUTLDTC, called from app/'s CSUTLDPY date edits,
+# observed against a real CEEDAYS (the evidence GAP-INF-001 names). That needs
+# the app/ sources built and run on a UniKix host (GAP-MIS-008). A unikix run
+# executes the UniKix copy instead, whose CSUTLDTC and CSUTLDPY differ
+# (GAP-DOC-021 and GAP-DOC-024 list INV-ACT-112; GAP-DOC-021 also INV-UTL-003),
+# so its record is kept as UniKix-copy behaviour: it verifies neither item and
+# cannot promote or replace this derived baseline.
 #
 # Steps 1-3 reach the fetched account as ACT-COACTUPC-alternate-04 does:
 # USER0001 signs on through CC00, chooses option 2 (Account Update) on COMEN01,
@@ -117,8 +122,8 @@ gap_ids:
 - GAP-INF-001
 - GAP-MIS-010
 # The open uncertain-purpose question of the EDIT-DATE-LE refusal and its
-# composed message, which no known input runs, so the accepting outcome is
-# pinned as observed.
+# composed message, which no known input runs, so the accepting outcome, derived
+# from the source rather than observed, is pinned instead (observed-only).
 - GAP-UNC-017
 # The UniKix copy changes code this scenario passes through: CSUTLDTC's
 # Vstring lengths (021), COACTUPC's amount edits and change detection (022),

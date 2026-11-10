@@ -98,6 +98,9 @@ gap_ids:
 # The UniKix CSUTLDPY drops TRIM from the field name, so its message starts with
 # the 25-byte name and is cut at 75 characters; a unikix run observes the copy.
 - GAP-DOC-024
+# The UniKix COACTUPC comments out the TEST-NUMVAL-C amount checks this path
+# runs, so the amounts on screen 4 may differ on UniKix.
+- GAP-DOC-022
 # Not in the planned gap list: the UniKix COACTUP.bms lacks the unnamed field at
 # row 1, columns 1-9, of the map this scenario asserts.
 - GAP-DOC-025

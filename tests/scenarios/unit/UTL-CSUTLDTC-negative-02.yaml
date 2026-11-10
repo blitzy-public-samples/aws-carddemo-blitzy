@@ -1,6 +1,7 @@
 # An out-of-range month passed to CSUTLDTC with the mask CORPT00C and COTRN02C
 # use. DTCDRV calls CSUTLDTC once with the date 2022-13-01 and the mask
-# YYYY-MM-DD, as one 80-byte DTCIN record [tests/stubs/DTCDRV.cbl:69-80].
+# YYYY-MM-DD, as one 80-byte DTCIN record (DTC-REC of FD DTC-FILE)
+# [tests/stubs/DTCDRV.cbl:95-100].
 # CSUTLDTC passes both as 10-byte Vstrings to CEEDAYS
 # [app/cbl/CSUTLDTC.cbl:105-120]; the stub finds every position numeric and the
 # separators matched, then refuses month 13 with the severity-3 token

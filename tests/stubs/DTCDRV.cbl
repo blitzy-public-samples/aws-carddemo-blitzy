@@ -47,7 +47,8 @@
       *               Neither holds a line-control byte, so every
       *               stdout line is exactly one record.
       *     <rc>      RETURN-CODE after the call, 4 digits: the
-      *               severity CSUTLDTC sets
+      *               severity CSUTLDTC sets, 0 to 9999 (its PIC 9(4)
+      *               WS-SEVERITY-N)
       *     <p>       the 80-byte result, each byte outside x'20' to
       *               x'7E' shown as '.'
       *     <h>       the same 80 bytes as 160 upper-case hex digits
@@ -62,16 +63,20 @@
       *   - stderr, for harness failures only: one line beginning
       *     CARDDEMO-DTCDRV, then exit status 255. DTCIN open, read or
       *     close failed (status=<ss>), CSUTLDTC could not be loaded,
-      *     or a DTCIN record held a line-control byte. That last line
-      *     is, wrapped here:
+      *     a DTCIN record held a line-control byte, or a call left
+      *     RETURN-CODE outside 0 to 9999. Those last two lines are,
+      *     wrapped here:
       *       CARDDEMO-DTCDRV DTCIN record <n> <f> holds line-control
       *       byte x'<hh>'
+      *       CARDDEMO-DTCDRV DTCIN record <n> RETURN-CODE <v> outside
+      *       0-9999
       *     <n> is the 1-based record number in 9 digits, <f> is DATE
-      *     or MASK, and <hh> is the field's first line-control byte
-      *     in 2 upper-case hex digits. The field itself is not shown.
-      *     The records before it keep their stdout lines. The adapter
-      *     treats these as harness errors, never as program
-      *     behaviour.
+      *     or MASK, <hh> is the field's first line-control byte in 2
+      *     upper-case hex digits, and <v> is RETURN-CODE in signed
+      *     decimal without leading zeros. The DATE or MASK field
+      *     itself is not shown. The records before either line keep
+      *     their stdout lines. The adapter treats these as harness
+      *     errors, never as program behaviour.
       *   No clock or environment variable is read here, so the output
       *   depends only on DTCIN and on what CSUTLDTC and CEEDAYS return.
       ******************************************************************
@@ -101,6 +106,8 @@
        01  WS-MASK                     PIC X(10).
        01  WS-RESULT                   PIC X(80).
        01  WS-RC-DISP                  PIC 9(4).
+      *    A RETURN-CODE outside 0-9999, signed, for its diagnostic.
+       01  WS-RC-OUT                   PIC -(10)9.
 
        01  WS-PRINT                    PIC X(80).
        01  WS-HEX                      PIC X(160).
@@ -133,6 +140,7 @@
            IF WS-DTC-STATUS NOT = '00'
                DISPLAY 'CARDDEMO-DTCDRV DTCIN open failed status='
                        WS-DTC-STATUS UPON SYSERR
+               END-DISPLAY
                MOVE 255 TO RETURN-CODE
                STOP RUN
            END-IF
@@ -140,6 +148,7 @@
            PERFORM 1000-READ-DTCIN
            PERFORM UNTIL DTC-EOF
                ADD 1 TO WS-REC-NO
+               END-ADD
                PERFORM 2000-CALL-CSUTLDTC
                PERFORM 1000-READ-DTCIN
            END-PERFORM
@@ -148,6 +157,7 @@
            IF WS-DTC-STATUS NOT = '00'
                DISPLAY 'CARDDEMO-DTCDRV DTCIN close failed status='
                        WS-DTC-STATUS UPON SYSERR
+               END-DISPLAY
                MOVE 255 TO RETURN-CODE
                STOP RUN
            END-IF
@@ -163,6 +173,7 @@
            IF WS-DTC-STATUS NOT = '00' AND WS-DTC-STATUS NOT = '10'
                DISPLAY 'CARDDEMO-DTCDRV DTCIN read failed status='
                        WS-DTC-STATUS UPON SYSERR
+               END-DISPLAY
                PERFORM 9000-CLOSE-AND-FAIL
            END-IF.
 
@@ -189,9 +200,23 @@
                ON EXCEPTION
                    DISPLAY 'CARDDEMO-DTCDRV cannot load CSUTLDTC'
                            UPON SYSERR
+                   END-DISPLAY
                    PERFORM 9000-CLOSE-AND-FAIL
            END-CALL
-           MOVE RETURN-CODE TO WS-RC-DISP
+      *    CSUTLDTC moves its PIC 9(4) severity into RETURN-CODE
+      *    [app/cbl/CSUTLDTC.cbl:44,98], so it is 0 to 9999 and the
+      *    4-digit RC field holds it whole. Any other value is refused
+      *    as a harness failure, never shown truncated or unsigned.
+           IF RETURN-CODE < 0 OR RETURN-CODE > 9999
+               MOVE RETURN-CODE TO WS-RC-OUT
+               DISPLAY 'CARDDEMO-DTCDRV DTCIN record ' WS-REC-NO
+                       ' RETURN-CODE ' FUNCTION TRIM(WS-RC-OUT)
+                       ' outside 0-9999' UPON SYSERR
+               END-DISPLAY
+               PERFORM 9000-CLOSE-AND-FAIL
+           END-IF
+           COMPUTE WS-RC-DISP = RETURN-CODE
+           END-COMPUTE
 
            PERFORM 3000-RENDER-RESULT
 
@@ -199,7 +224,8 @@
                    ' MASK=' WS-MASK
                    ' RC=' WS-RC-DISP
                    ' RESULT=' WS-PRINT
-                   ' HEX=' WS-HEX.
+                   ' HEX=' WS-HEX
+           END-DISPLAY.
 
        2100-CHECK-LINE-BYTES.
       *    A line-control byte in the date or the mask would split the
@@ -209,15 +235,18 @@
            PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > 10
                COMPUTE WS-CHK-VAL =
                        FUNCTION ORD(WS-CHK-FIELD(WS-IDX:1)) - 1
+               END-COMPUTE
                IF LINE-CONTROL-BYTE
                    DIVIDE WS-CHK-VAL BY 16
                        GIVING WS-HI-NIBBLE REMAINDER WS-LO-NIBBLE
+                   END-DIVIDE
                    DISPLAY 'CARDDEMO-DTCDRV DTCIN record ' WS-REC-NO
                            ' ' WS-CHK-NAME
                            ' holds line-control byte x'''
                            WS-HEX-DIGITS(WS-HI-NIBBLE + 1:1)
                            WS-HEX-DIGITS(WS-LO-NIBBLE + 1:1)
                            '''' UPON SYSERR
+                   END-DISPLAY
                    PERFORM 9000-CLOSE-AND-FAIL
                END-IF
            END-PERFORM.
@@ -226,6 +255,7 @@
            PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > 80
                COMPUTE WS-BYTE-VAL =
                        FUNCTION ORD(WS-RESULT(WS-IDX:1)) - 1
+               END-COMPUTE
                IF WS-BYTE-VAL >= 32 AND WS-BYTE-VAL <= 126
                    MOVE WS-RESULT(WS-IDX:1) TO WS-PRINT(WS-IDX:1)
                ELSE
@@ -233,7 +263,9 @@
                END-IF
                DIVIDE WS-BYTE-VAL BY 16
                    GIVING WS-HI-NIBBLE REMAINDER WS-LO-NIBBLE
+               END-DIVIDE
                COMPUTE WS-HEX-POS = WS-IDX * 2 - 1
+               END-COMPUTE
                MOVE WS-HEX-DIGITS(WS-HI-NIBBLE + 1:1)
                  TO WS-HEX(WS-HEX-POS:1)
                MOVE WS-HEX-DIGITS(WS-LO-NIBBLE + 1:1)

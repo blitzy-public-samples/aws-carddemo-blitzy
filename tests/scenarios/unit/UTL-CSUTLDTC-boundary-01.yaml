@@ -15,7 +15,8 @@
 # result layout are CSUTLDTC's own code and run unchanged.
 #
 # Each message is the DTCDRV line exactly as the driver prints it, 299
-# characters [tests/stubs/DTCDRV.cbl:38-52]: the result as printable text, with
+# characters, as the stdout entry of the driver's Output contract describes
+# [tests/stubs/DTCDRV.cbl:44-56]: the result as printable text, with
 # every byte outside x'20'-x'7E' shown as '.', and the same 80 bytes as hex. The
 # result's 'TstDate:' field reads '..1582-10-' (hex 000A31353832...) because
 # CSUTLDTC moves the whole Vstring, its binary length x'000A' first, into the
@@ -52,7 +53,8 @@ inputs:
   program: CSUTLDTC
   param_files:
     # One DTCIN record per call: the date in bytes 1-10, the mask in bytes 11-20,
-    # spaces to 80 [tests/stubs/DTCDRV.cbl:75-80].
+    # spaces to 80, the DTC-REC record of FD DTC-FILE
+    # [tests/stubs/DTCDRV.cbl:95-100].
     DTCIN:
     - '1582-10-15YYYY-MM-DD'
     - '1582-10-14YYYY-MM-DD'

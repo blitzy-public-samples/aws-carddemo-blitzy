@@ -86,6 +86,7 @@
        PROCEDURE DIVISION.
        0000-MAIN.
            ACCEPT WS-CMDLINE FROM COMMAND-LINE
+           END-ACCEPT
            PERFORM 1000-SPLIT-COMMAND-LINE
            PERFORM 2000-CHECK-PROGRAM-NAME
            PERFORM 3000-BUILD-PARM-AREA
@@ -97,6 +98,7 @@
                    DISPLAY 'CARDDEMO-PARMDRV cannot load '
                            FUNCTION TRIM(WS-PROGRAM)
                            UPON SYSERR
+                   END-DISPLAY
                    MOVE 255 TO RETURN-CODE
            END-CALL
 
@@ -116,11 +118,13 @@
            MOVE SPACES TO WS-TEXT
            IF WS-LEADING-SPACES < LENGTH OF WS-CMDLINE
                COMPUTE WS-NAME-START = WS-LEADING-SPACES + 1
+               END-COMPUTE
                INSPECT WS-CMDLINE(WS-NAME-START:)
                    TALLYING WS-NAME-LEN
                    FOR CHARACTERS BEFORE INITIAL SPACE
                COMPUTE WS-TEXT-START =
                        WS-NAME-START + WS-NAME-LEN + 1
+               END-COMPUTE
                IF WS-TEXT-START <= LENGTH OF WS-CMDLINE
                    MOVE WS-CMDLINE(WS-TEXT-START:) TO WS-TEXT
                END-IF
@@ -134,6 +138,7 @@
        2000-CHECK-PROGRAM-NAME.
            IF WS-NAME-LEN = 0
                DISPLAY 'CARDDEMO-PARMDRV no program name' UPON SYSERR
+               END-DISPLAY
                MOVE 255 TO RETURN-CODE
                STOP RUN
            END-IF
@@ -142,6 +147,7 @@
                DISPLAY 'CARDDEMO-PARMDRV program name too long: '
                        WS-CMDLINE(WS-NAME-START:WS-NAME-LEN)
                        UPON SYSERR
+               END-DISPLAY
                MOVE 255 TO RETURN-CODE
                STOP RUN
            END-IF
@@ -161,11 +167,12 @@
                TALLYING WS-TRAILING-SPACES FOR LEADING SPACES
            COMPUTE WS-TEXT-LEN =
                    LENGTH OF WS-TEXT - WS-TRAILING-SPACES
+           END-COMPUTE
 
            IF WS-TEXT-LEN > LENGTH OF PARM-TEXT
                MOVE LENGTH OF PARM-TEXT TO WS-TEXT-LEN
            END-IF
 
            MOVE WS-TEXT-LEN TO PARM-LENGTH
-           MOVE WS-TEXT     TO PARM-TEXT
+           MOVE WS-TEXT(1:LENGTH OF PARM-TEXT) TO PARM-TEXT
            EXIT.

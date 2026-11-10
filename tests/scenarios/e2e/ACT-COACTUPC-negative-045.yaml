@@ -46,9 +46,12 @@
 #   ' : Month must be supplied.', 38 characters, in the 75-byte WS-RETURN-MSG
 #   and the 78-byte ERRMSGO.
 # - RISMON shows '*' and a space: the X(2) RISMONO receives the one-character
-#   literal. The cursor goes to ACSTTUS, because FOUND-ACCOUNT-DATA, set by
-#   every edit pass, is the first WHEN of the cursor EVALUATE
-#   [app/cbl/COACTUPC.cbl:1452,3009-3012]; the cursor is not asserted.
+#   literal. The cursor goes to RISMON: 3000-SEND-MAP runs 3250 before 3300,
+#   so PROMPT-FOR-CHANGES has replaced the FOUND-ACCOUNT-DATA that
+#   1200-EDIT-MAP-INPUTS set in WS-INFO-MSG, and FLG-REISSUE-MONTH-BLANK is
+#   the first WHEN of the cursor EVALUATE that holds, selecting RISMONL
+#   [app/cbl/COACTUPC.cbl:463-471,1452,2654-2657,2964-2965,3009-3012,
+#   3057-3059]; the cursor is not asserted.
 # - Screen fields are compared at their full BMS length, trailing spaces kept.
 #   FKEY05 is dark (ASKIP,DRK) and the s3270 capture renders it as blanks.
 # - The tpe adapter enters a field with EraseEOF before typing, and an empty

@@ -38,11 +38,14 @@
 #   the valid amounts re-edited through +ZZZ,ZZZ,ZZZ.99; 3250-SETUP-INFOMSG
 #   sets PROMPT-FOR-CHANGES and moves WS-RETURN-MSG to ERRMSG; 3300 keeps the
 #   fields editable, CSSETATY turns RISYEAR red (no '*', the field is not
-#   blank), and the cursor stays on ACSTTUS because FOUND-ACCOUNT-DATA, set by
-#   1200-EDIT-MAP-INPUTS, is the first WHEN of the cursor EVALUATE; 3390 makes
-#   F12=Cancel bright, while F5=Save stays dark without a confirmation prompt
-#   [app/cbl/COACTUPC.cbl:1452,2870-2951,2964-2981,2986-3019,3261-3265,
-#   3566-3581] [app/cpy/CSSETATY.cpy].
+#   blank), and the cursor goes to RISYEAR: 3000-SEND-MAP runs 3250 before
+#   3300, so PROMPT-FOR-CHANGES has replaced the FOUND-ACCOUNT-DATA that
+#   1200-EDIT-MAP-INPUTS set in WS-INFO-MSG, and FLG-REISSUE-YEAR-NOT-OK is
+#   the first WHEN of the cursor EVALUATE that holds, selecting RISYEARL (the
+#   cursor is not asserted); 3390 makes F12=Cancel bright, while F5=Save
+#   stays dark without a confirmation prompt
+#   [app/cbl/COACTUPC.cbl:463-471,1452,2654-2657,2870-2951,2964-2981,
+#   2986-3006,3009-3012,3053-3055,3261-3265,3566-3581] [app/cpy/CSSETATY.cpy].
 #
 # Expected values are derived from the source (no TPE region runs in CI):
 # - ERRMSG is 'Reissue Date' (the trimmed X(25) WS-EDIT-VARIABLE-NAME) and

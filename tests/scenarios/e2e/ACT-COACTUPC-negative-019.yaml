@@ -37,8 +37,12 @@
 #   the 78-byte ERRMSGO; INFOMSG is the 39-character prompt in the 45-byte
 #   INFOMSGO. Fields are compared at their full BMS length.
 # - Colour and cursor position are not screen-field values, so the red OPNDAY
-#   and the cursor (placed on ACSTTUS, the first WHEN that holds) are not
-#   asserted.
+#   and the cursor are not asserted. The cursor is placed on OPNDAY:
+#   3000-SEND-MAP runs 3250 before 3300, so PROMPT-FOR-CHANGES has replaced
+#   the FOUND-ACCOUNT-DATA that 1200-EDIT-MAP-INPUTS set in WS-INFO-MSG, and
+#   FLG-OPEN-DAY-NOT-OK is the first WHEN of the cursor EVALUATE that holds,
+#   selecting OPNDAYL [app/cbl/COACTUPC.cbl:463-471,1452,2654-2657,2964-2965,
+#   3009-3031].
 # - A dark field is captured as blanks, hence FKEY05 on screen 4.
 # - CURDATE and CURTIME come from the region clock, hence the matchers and
 #   clock_mode relative.

@@ -38,11 +38,16 @@
 #   +ZZZ,ZZZ,ZZZ.99; 3250-SETUP-INFOMSG sets PROMPT-FOR-CHANGES and moves
 #   WS-RETURN-MSG to ERRMSG; 3300 keeps the fields editable, CSSETATY turns
 #   RISMON and RISDAY red (no '*', neither field is blank) while RISYEAR keeps
-#   its colour, and the cursor goes to ACSTTUS, because FOUND-ACCOUNT-DATA is the
-#   first WHEN of the cursor EVALUATE; 3390 makes F12=Cancel bright, while
-#   F5=Save stays dark without a confirmation prompt
-#   [app/cbl/COACTUPC.cbl:2870-2951,2964-2981,2986-3063,3261-3277,3566-3581]
-#   [app/cpy/CSSETATY.cpy].
+#   its colour, and the cursor goes to RISMON: 3000-SEND-MAP runs 3250 before
+#   3300, so PROMPT-FOR-CHANGES has replaced the FOUND-ACCOUNT-DATA that
+#   1200-EDIT-MAP-INPUTS set in WS-INFO-MSG, and the error's FLG-MONTH-NOT-OK
+#   and FLG-DAY-NOT-OK, kept as WS-EDIT-REISSUE-DATE-FLGS, make
+#   FLG-REISSUE-MONTH-NOT-OK the first WHEN of the cursor EVALUATE that holds,
+#   ahead of the day WHEN, selecting RISMONL (the cursor is not asserted);
+#   3390 makes F12=Cancel bright, while F5=Save stays dark without a
+#   confirmation prompt
+#   [app/cbl/COACTUPC.cbl:463-471,1452,1507,2654-2657,2870-2951,2964-2981,
+#   2986-3063,3261-3277,3566-3581] [app/cpy/CSSETATY.cpy].
 #
 # Expected values are derived from the source (no TPE region runs in CI):
 # - ERRMSG is 'Reissue Date' (the trimmed X(25) WS-EDIT-VARIABLE-NAME) and

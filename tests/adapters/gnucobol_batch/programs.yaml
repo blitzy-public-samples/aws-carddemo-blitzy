@@ -594,7 +594,7 @@ programs:
       mode: module
     dd:
       # The driver's DD, not CSUTLDTC's: the call list of 80-byte records, date X(10),
-      # mask X(10), filler X(60) [tests/stubs/DTCDRV.cbl:69-80]
+      # mask X(10), filler X(60): DTC-REC of FD DTC-FILE [tests/stubs/DTCDRV.cbl:95-100]
       DTCIN:
         access: sequential
         logical: DTCIN
