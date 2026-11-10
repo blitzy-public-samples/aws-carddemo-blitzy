@@ -1,0 +1,208 @@
+id: TRN-COTRN00C-alternate-01
+level: e2e
+type: alternate
+description: >-
+  USER0001, a regular user (SEC-USR-TYPE 'U'), signs on through CC00 and
+  reaches the main menu COMEN01. Option 6 'Transaction List' transfers to
+  COTRN00C with CDEMO-PGM-CONTEXT zero [app/cbl/COMEN01C.cbl:115-156]
+  [app/cpy/COMEN02Y.cpy:55-59]. Entered for the first time, COTRN00C clears its
+  map, sets CDEMO-CT00-PAGE-NUM to 0 and browses TRANSACT from LOW-VALUES; the
+  task's AID is the menu's ENTER, so no record is skipped, the first ten
+  records in key order fill the rows, and the eleventh READNEXT succeeds, so
+  page 1 carries no message and PAGENUM 00000001 (the 9(08) page number moved
+  to the 8-character field) [app/cbl/COTRN00C.cbl:107-116,206-228,279-327,381-445].
+  PF7 on page 1 finds CDEMO-CT00-PAGE-NUM not above 1, so COTRN00C moves 'You
+  are already at the top of the page...' to the message and sends the map
+  without ERASE; it starts no browse [app/cbl/COTRN00C.cbl:117-126,234-252,527-549].
+  The page is resent, not re-read: every named COTRN00 field is defined with
+  FSET [app/bms/COTRN00.bms:34-453], so the PF7 input returns all of them,
+  RECEIVE MAP fills COTRN0AI, and the SEND from the overlaying COTRN0AO writes
+  the rows, the page number and the blank search field back as received,
+  refreshing only the header [app/cbl/COTRN00C.cbl:554-586] and replacing the
+  message. The rows on the screen are therefore those of page 1.
+# Primary item first, then the program, the maps the steps land on, the
+# transaction PF7 runs (COTRN00C returns with TRANSID CT00), the CSD file the
+# list browses, and the online-only copybooks COTRN00C copies. The page-1
+# content is the primary item of another COTRN00C scenario; here it is
+# asserted only as the state PF7 must keep. CVTRA05Y, the TRANSACT record
+# layout, is a batch copybook covered at the unit level.
+inventory_ids:
+- INV-TRN-013
+- INV-TRN-001
+- INV-MNU-003
+- INV-TRN-004
+- INV-CFG-020
+- INV-CFG-007
+- INV-LAY-002
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007
+- GAP-INF-012
+# TRANSACT is a built dataset with no repository data of its own, so it is
+# loaded from the repository's daily transactions (300 records, CVTRA06Y and
+# CVTRA05Y share one 350-byte shape) rather than from a TRANSACT base.
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '6'
+  - aid: PF7
+    '@map': COTRN00
+    fields: {}
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. Each row shows TRAN-ID, the MM/DD/YY of TRAN-ORIG-TS
+# (2022-06-10 for every daily transaction), the first 26 characters of
+# TRAN-DESC and TRAN-AMT edited as +99999999.99. COTRN00C sends page 1 twice in
+# one task, each with ERASE; the screen asserted is the last send.
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN006: '06. Transaction List                    '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN00
+    TRNNAME: CT00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '00000001'
+    TRNIDIN: '                '
+    SEL0001: ' '
+    TRNID01: '0000000000683580'
+    TDATE01: '06/10/22'
+    TDESC01: 'Purchase at Abshire-Lowe  '
+    TAMT001: '+00000504.77'
+    SEL0002: ' '
+    TRNID02: '0000000001774260'
+    TDATE02: '06/10/22'
+    TDESC02: 'Return item at Nitzsche, N'
+    TAMT002: '-00000919.00'
+    SEL0003: ' '
+    TRNID03: '0000000006292564'
+    TDATE03: '06/10/22'
+    TDESC03: 'Purchase at Ernser, Roob a'
+    TAMT003: '+00000067.88'
+    SEL0004: ' '
+    TRNID04: '0000000009101861'
+    TDATE04: '06/10/22'
+    TDESC04: 'Purchase at Guann LLC     '
+    TAMT004: '+00000281.77'
+    SEL0005: ' '
+    TRNID05: '0000000010142252'
+    TDATE05: '06/10/22'
+    TDESC05: 'Purchase at Kertzmann-Scho'
+    TAMT005: '+00000454.66'
+    SEL0006: ' '
+    TRNID06: '0000000010229018'
+    TDATE06: '06/10/22'
+    TDESC06: 'Purchase at Gislason-Medhu'
+    TAMT006: '+00000849.99'
+    SEL0007: ' '
+    TRNID07: '0000000016259484'
+    TDATE07: '06/10/22'
+    TDESC07: 'Return item at Sipes Inc  '
+    TAMT007: '-00000056.77'
+    SEL0008: ' '
+    TRNID08: '0000000017874199'
+    TDATE08: '06/10/22'
+    TDESC08: 'Purchase at Legros Group  '
+    TAMT008: '+00000373.66'
+    SEL0009: ' '
+    TRNID09: '0000000019065428'
+    TDATE09: '06/10/22'
+    TDESC09: 'Return item at Turcotte Gr'
+    TAMT009: '-00000535.88'
+    SEL0010: ' '
+    TRNID10: '0000000021711604'
+    TDATE10: '06/10/22'
+    TDESC10: 'Purchase at Gleason, Shana'
+    TAMT010: '+00000416.11'
+    ERRMSG: '                                                                              '
+  # PF7 on page 1: the same rows, page number and search field as page 1,
+  # with the top-of-page message in place of the blank one.
+  - '@map': COTRN00
+    TRNNAME: CT00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '00000001'
+    TRNIDIN: '                '
+    SEL0001: ' '
+    TRNID01: '0000000000683580'
+    TDATE01: '06/10/22'
+    TDESC01: 'Purchase at Abshire-Lowe  '
+    TAMT001: '+00000504.77'
+    SEL0002: ' '
+    TRNID02: '0000000001774260'
+    TDATE02: '06/10/22'
+    TDESC02: 'Return item at Nitzsche, N'
+    TAMT002: '-00000919.00'
+    SEL0003: ' '
+    TRNID03: '0000000006292564'
+    TDATE03: '06/10/22'
+    TDESC03: 'Purchase at Ernser, Roob a'
+    TAMT003: '+00000067.88'
+    SEL0004: ' '
+    TRNID04: '0000000009101861'
+    TDATE04: '06/10/22'
+    TDESC04: 'Purchase at Guann LLC     '
+    TAMT004: '+00000281.77'
+    SEL0005: ' '
+    TRNID05: '0000000010142252'
+    TDATE05: '06/10/22'
+    TDESC05: 'Purchase at Kertzmann-Scho'
+    TAMT005: '+00000454.66'
+    SEL0006: ' '
+    TRNID06: '0000000010229018'
+    TDATE06: '06/10/22'
+    TDESC06: 'Purchase at Gislason-Medhu'
+    TAMT006: '+00000849.99'
+    SEL0007: ' '
+    TRNID07: '0000000016259484'
+    TDATE07: '06/10/22'
+    TDESC07: 'Return item at Sipes Inc  '
+    TAMT007: '-00000056.77'
+    SEL0008: ' '
+    TRNID08: '0000000017874199'
+    TDATE08: '06/10/22'
+    TDESC08: 'Purchase at Legros Group  '
+    TAMT008: '+00000373.66'
+    SEL0009: ' '
+    TRNID09: '0000000019065428'
+    TDATE09: '06/10/22'
+    TDESC09: 'Return item at Turcotte Gr'
+    TAMT009: '-00000535.88'
+    SEL0010: ' '
+    TRNID10: '0000000021711604'
+    TDATE10: '06/10/22'
+    TDESC10: 'Purchase at Gleason, Shana'
+    TAMT010: '+00000416.11'
+    ERRMSG: 'You are already at the top of the page...                                     '
+  # The ERRMSG value of each step, as the screens show it.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'You are already at the top of the page...                                     '

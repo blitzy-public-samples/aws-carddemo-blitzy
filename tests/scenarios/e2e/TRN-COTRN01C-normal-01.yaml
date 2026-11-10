@@ -1,0 +1,140 @@
+# COTRN01C transaction detail of transaction 0000000000683580, the detail
+# content of PROCESS-ENTER-KEY [app/cbl/COTRN01C.cbl:144-192].
+# Steps 1-2 reach the empty COTRN01 view screen as MNU-COMEN01C-alternate-07
+# does: COMEN01C transfers control with CDEMO-PGM-CONTEXT zero and its own
+# COMMAREA, which is COCOM01Y alone [app/cbl/COMEN01C.cbl:50,147-155].
+# COTRN01C moves it into its longer CARDDEMO-COMMAREA, so CDEMO-CT01-INFO is
+# space-filled, no transaction is selected, and the program sends COTRN1AO at
+# LOW-VALUES with only its header and a blank ERRMSG [app/cbl/COTRN01C.cbl:88-109,213-262].
+# Step 3 runs under CT01, the TRANSID COTRN01C returned with
+# [app/cbl/COTRN01C.cbl:136-139]; CDEMO-PGM-REENTER is now set, so ENTER takes
+# PROCESS-ENTER-KEY. The id is not blank, so TRANSACT is read with UPDATE by
+# TRAN-ID (the CSD file allows it: UPDATE(YES) [app/csd/CARDDEMO.CSD:76-87])
+# and the READ is NORMAL [app/cbl/COTRN01C.cbl:146-174,267-296].
+#
+# Expected values come from record 1 of app/data/ASCII/dailytran.txt, laid out
+# by CVTRA05Y and moved to the symbolic map COTRN01.CPY [app/cbl/COTRN01C.cbl:176-191]:
+# - TRAN-ID, TRAN-CARD-NUM, TRAN-TYPE-CD and TRAN-CAT-CD (PIC 9(04)) fill their
+#   fields exactly.
+# - TRAN-SOURCE X(10) and TRAN-MERCHANT-ZIP X(10) keep their trailing spaces.
+# - TRAN-DESC X(100), TRAN-MERCHANT-NAME X(50) and TRAN-MERCHANT-CITY X(50) are
+#   truncated to the 60-, 30- and 25-byte fields.
+# - TRAN-AMT S9(09)V99, raw 0000005047G (+504.77), is edited through
+#   WS-TRAN-AMT PIC +99999999.99 [app/cbl/COTRN01C.cbl:49] to '+00000504.77'.
+# - TRAN-ORIG-TS X(26) '2022-06-10 19:27:53.000000' keeps its date part in the
+#   10-byte TORIGDT; TRAN-PROC-TS is blank in the daily file, so TPROCDT is.
+# - TRAN-MERCHANT-ID PIC 9(09) shows as 800000000.
+# - TRNIDIN keeps the id as received; ERRMSG is WS-MESSAGE, left at spaces.
+id: TRN-COTRN01C-normal-01
+level: e2e
+type: normal
+description: >-
+  USER0001 signs on, selects main-menu option 7 (Transaction View) and, on the
+  empty COTRN01C view screen (CT01), enters transaction id 0000000000683580.
+  The program reads the record from TRANSACT by id and shows its card number,
+  type and category codes, source, description, edited amount, origination and
+  processing dates and merchant id, name, city and zip, with no error message.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the CSD file COTRN01C reads, and the online-only copybooks it
+# copies. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC, option 7) are
+# verified by the SEC and MNU scenarios, and the batch record copybook CVTRA05Y
+# and the daily data file at the lowest level that executes them.
+inventory_ids:
+- INV-TRN-029  # COTRN01C transaction detail content (report)
+- INV-TRN-002  # COTRN01C program
+- INV-MNU-003  # COMEN01 map, where option 7 is entered
+- INV-TRN-005  # COTRN01 map, the empty and the detail screen
+- INV-CFG-021  # CT01 transaction, which runs the lookup
+- INV-CFG-007  # TRANSACT CSD file: read with UPDATE by transaction id
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COTRN01C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# TRANSACT has no repository data of its own (its fixture source is 'built'),
+# so the schema refuses it as a base; it is built from the repository's daily
+# transactions, whose 350-byte records share the CVTRA05Y shape and hold
+# unique ids.
+preconditions:
+  datasets:
+    TRANSACT: {base: DALYTRAN}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '7'
+  - aid: ENTER
+    '@map': COTRN01
+    fields:
+      TRNIDIN: '0000000000683580'
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. Fields a program leaves at LOW-VALUES show their BMS
+# INITIAL (' ') followed by nulls, captured as spaces. CURDATE and CURTIME
+# come from the region clock, in the MM/DD/YY and HH:MM:SS forms
+# POPULATE-HEADER-INFO builds [app/cbl/COTRN01C.cbl:243-262].
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN007: '07. Transaction View                    '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN01
+    TRNNAME: CT01
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN01C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    TRNIDIN: '                '
+    TRNID: '                '
+    CARDNUM: '                '
+    TTYPCD: '  '
+    TCATCD: '    '
+    TRNSRC: '          '
+    TDESC: '                                                            '
+    TRNAMT: '            '
+    TORIGDT: '          '
+    TPROCDT: '          '
+    MID: '         '
+    MNAME: '                              '
+    MCITY: '                         '
+    MZIP: '          '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN01
+    TRNNAME: CT01
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN01C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    TRNIDIN: '0000000000683580'
+    TRNID: '0000000000683580'
+    CARDNUM: '4859452612877065'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Purchase at Abshire-Lowe                                    '
+    TRNAMT: '+00000504.77'
+    TORIGDT: '2022-06-10'
+    TPROCDT: '          '
+    MID: '800000000'
+    MNAME: 'Abshire-Lowe                  '
+    MCITY: 'North Enoshaven          '
+    MZIP: '72112     '
+    ERRMSG: '                                                                              '

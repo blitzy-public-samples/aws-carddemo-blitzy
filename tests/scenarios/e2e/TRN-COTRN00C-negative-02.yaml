@@ -1,0 +1,148 @@
+# USER0001 opens the transaction list (main menu option 6, CT00) and selects
+# the first row with X, which is not S. COTRN00C is re-entered with ENTER,
+# receives COTRN00 and, in PROCESS-ENTER-KEY, takes the first non-blank
+# selection field: SEL0001 holds X, so the flag is X and the selected
+# transaction is TRNID01, which is FSET and so comes back as 0000000000683580
+# [app/cbl/COTRN00C.cbl:118-121,146-151] [app/bms/COTRN00.bms:153-166].
+# Flag and id are both supplied, but X matches neither S nor s (XCTL to
+# COTRN01C), so WHEN OTHER moves 'Invalid selection. Valid value is S' to
+# WS-MESSAGE without setting the error flag, and no transfer happens
+# [app/cbl/COTRN00C.cbl:183-204].
+# TRNIDIN came back blank, so TRAN-ID restarts at LOW-VALUES, the page number
+# is reset to 0 and PROCESS-PAGE-FORWARD browses from the lowest key: ENTER
+# skips the positioning read, the 10 rows are cleared and refilled, and the
+# page number becomes 1 [app/cbl/COTRN00C.cbl:206-225,279-326]. PAGENUM is
+# the 9(08) page number moved to an X(8) field, so it shows 00000001
+# [app/cbl/COTRN00C.cbl:65,324] [app/cpy-bms/COTRN00.CPY:60]. The screen is
+# sent with ERRMSG = WS-MESSAGE [app/cbl/COTRN00C.cbl:527-540]. SEL0001 still
+# shows X, because COTRN0AO redefines the received COTRN0AI and
+# INITIALIZE-TRAN-DATA clears only the id, date, description and amount
+# fields [app/cbl/COTRN00C.cbl:450-505] [app/cpy-bms/COTRN00.CPY:373].
+#
+# TRANSACT holds the 300 repository daily transactions: after filling the 10
+# rows, PROCESS-PAGE-FORWARD reads an 11th record to decide whether a next page
+# exists. That read finds 0000000025430891, so it does not reach the end of the
+# file, which would replace WS-MESSAGE with 'You have reached the bottom of the
+# page...' before the screen is sent [app/cbl/COTRN00C.cbl:305-313,636-645].
+#
+# Each row shows the record's TRAN-ID, the MM/DD/YY of TRAN-ORIG-TS, the first
+# 26 characters of TRAN-DESC and TRAN-AMT edited as +99999999.99
+# [app/cbl/COTRN00C.cbl:56-57,381-445]. The first entry from the main menu
+# (option 6, CDEMO-PGM-CONTEXT 0) lists the same first page with a blank
+# message [app/cbl/COMEN01C.cbl:146-156] [app/cbl/COTRN00C.cbl:112-116].
+# Expected text values are full field width with their trailing spaces; the
+# clock-derived CURDATE and CURTIME are matchers, so the clock is relative.
+id: TRN-COTRN00C-negative-02
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, opens the transaction list (main menu option 6, CT00) and
+  enters X beside the first transaction. COTRN00C refuses the selection with
+  'Invalid selection. Valid value is S', does not transfer to COTRN01C, and
+  redisplays page 1 of COTRN00 from the lowest transaction id with the X still
+  in SEL0001. TRANSACT holds more than 10 records, so the next-page look-ahead
+  read does not overwrite the message.
+inventory_ids:
+- INV-TRN-011  # COTRN00C message 'Invalid selection. Valid value is S' (rule)
+- INV-TRN-001  # COTRN00C program
+- INV-MNU-003  # COMEN01 map, the screen option 6 is entered on
+- INV-TRN-004  # COTRN00 map, the list the selection is entered on and redisplayed
+- INV-CFG-020  # CT00 transaction, the list's own transaction
+- INV-CFG-007  # TRANSACT CSD file, browsed for the list
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the re-entry flag and selection
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time and the row dates
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # derived TRN end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# TRANSACT is a built dataset with no repository data of its own, so it is
+# loaded from the repository's daily transactions, whose record has the same
+# 350-byte shape [app/cpy/CVTRA06Y.cpy] [app/cpy/CVTRA05Y.cpy].
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+    aid: ENTER
+  - '@map': COMEN01
+    fields:
+      OPTION: '6'
+    aid: ENTER
+  - '@map': COTRN00
+    fields:
+      SEL0001: X
+    aid: ENTER
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COTRN00
+    TRNNAME: 'CT00'
+    PGMNAME: 'COTRN00C'
+    PAGENUM: '00000001'
+    TRNID01: '0000000000683580'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN00
+    TRNNAME: 'CT00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '00000001'
+    TRNIDIN: '                '
+    SEL0001: 'X'
+    TRNID01: '0000000000683580'
+    TDATE01: '06/10/22'
+    TDESC01: 'Purchase at Abshire-Lowe  '
+    TAMT001: '+00000504.77'
+    TRNID02: '0000000001774260'
+    TDATE02: '06/10/22'
+    TDESC02: 'Return item at Nitzsche, N'
+    TAMT002: '-00000919.00'
+    TRNID03: '0000000006292564'
+    TDATE03: '06/10/22'
+    TDESC03: 'Purchase at Ernser, Roob a'
+    TAMT003: '+00000067.88'
+    TRNID04: '0000000009101861'
+    TDATE04: '06/10/22'
+    TDESC04: 'Purchase at Guann LLC     '
+    TAMT004: '+00000281.77'
+    TRNID05: '0000000010142252'
+    TDATE05: '06/10/22'
+    TDESC05: 'Purchase at Kertzmann-Scho'
+    TAMT005: '+00000454.66'
+    TRNID06: '0000000010229018'
+    TDATE06: '06/10/22'
+    TDESC06: 'Purchase at Gislason-Medhu'
+    TAMT006: '+00000849.99'
+    TRNID07: '0000000016259484'
+    TDATE07: '06/10/22'
+    TDESC07: 'Return item at Sipes Inc  '
+    TAMT007: '-00000056.77'
+    TRNID08: '0000000017874199'
+    TDATE08: '06/10/22'
+    TDESC08: 'Purchase at Legros Group  '
+    TAMT008: '+00000373.66'
+    TRNID09: '0000000019065428'
+    TDATE09: '06/10/22'
+    TDESC09: 'Return item at Turcotte Gr'
+    TAMT009: '-00000535.88'
+    TRNID10: '0000000021711604'
+    TDATE10: '06/10/22'
+    TDESC10: 'Purchase at Gleason, Shana'
+    TAMT010: '+00000416.11'
+    ERRMSG: 'Invalid selection. Valid value is S                                           '

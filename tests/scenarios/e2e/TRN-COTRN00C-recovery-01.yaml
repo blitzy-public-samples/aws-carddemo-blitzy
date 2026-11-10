@@ -1,0 +1,175 @@
+# The transaction list is chosen while the region file TRANSACT is out of
+# service.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00, and
+# COSGN00C transfers control to COMEN01C with CDEMO-PGM-CONTEXT 0, whose first
+# entry sends COMEN01 with a blank message and returns with TRANSID CM00
+# [app/cbl/COSGN00C.cbl:209-240] [app/cbl/COMEN01C.cbl:82-110,182-194,212-275].
+# Sign-on reads only USRSEC and the menu reads no file, so the fault, applied
+# after the sign-on step, first acts in step 2.
+#
+# Step 2: option 6 is 'Transaction List', program COTRN00C, so COMEN01C moves
+# 0 to CDEMO-PGM-CONTEXT and transfers control (XCTL) to COTRN00C within the
+# CM00 task [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:55-59].
+# COTRN00C, entered with a COMMAREA but not yet re-entered, sets the reenter
+# flag and moves LOW-VALUES to COTRN0AO, which redefines COTRN0AI. With no row
+# selected and no search id, PROCESS-ENTER-KEY browses from LOW-VALUES through
+# PROCESS-PAGE-FORWARD [app/cbl/COTRN00C.cbl:107-116,146-225,279-281]. The
+# STARTBR on TRANSACT answers neither NORMAL nor NOTFND (DISABLED for a
+# disabled file, NOTOPEN for a closed one), so its WHEN OTHER branch sets the
+# error flag, moves 'Unable to lookup transaction...' to WS-MESSAGE and sends
+# COTRN00 with ERASE [app/cbl/COTRN00C.cbl:591-619,527-540]. With the error
+# flag on, no READNEXT, ENDBR, row population, page-number or search-field move
+# follows [app/cbl/COTRN00C.cbl:227-229,283-328], so no browse is ended that
+# never started, and MAIN-PARA sends the same screen once more before returning
+# with TRANSID CT00 [app/cbl/COTRN00C.cbl:116,138-141].
+#
+# The final screen therefore carries the COTRN00C header (CT00, COTRN00C, the
+# COTTL01Y titles, the run date and time through CSDAT01Y) and the message;
+# every data field of the symbolic map is still LOW-VALUES, so BMS sends no data
+# for it and the field shows its blank INITIAL value or nulls, captured as
+# spaces at the field's full length [app/bms/COTRN00.bms:85-99,153-442]. The
+# DISPLAY of RESP and RESP2 goes to the region log, not to the terminal, and is
+# not asserted. The expected outcome is derived from the source (GAP-INF-007);
+# without a confirmed region file control the runner raises
+# MissingPrerequisite under GAP-MIS-011.
+id: TRN-COTRN00C-recovery-01
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on and chooses main menu option 6 'Transaction List' while the
+  region file TRANSACT is unavailable. COTRN00C's STARTBR on TRANSACT fails with
+  a response other than NORMAL or NOTFND, so the transaction list screen
+  COTRN00 appears with its header, no transaction rows, no page number and the
+  message 'Unable to lookup transaction...'.
+# The recovery message is the primary item, then the program, the map the
+# option is entered on and the map asserted, the transaction that processes the
+# option step and the CSD file the STARTBR fails on, then the online-only
+# copybooks COTRN00C copies. CM00 is listed rather than CT00: XCTL keeps the
+# task under CM00, and the RETURN TRANSID(CT00) schedules a transaction that no
+# step of this scenario enters, so CT00's verification does not depend on it.
+# CVTRA05Y and the data files are left out: their lowest executing level is a
+# batch scenario.
+inventory_ids:
+- INV-TRN-016  # COTRN00C message 'Unable to lookup transaction...' (recovery)
+- INV-TRN-001  # COTRN00C program
+- INV-MNU-003  # COMEN01 map, the main menu option 6 is entered on
+- INV-TRN-004  # COTRN00 map, the screen the failed browse is sent on
+- INV-CFG-018  # CM00 transaction, under which the option step runs COMEN01C and COTRN00C
+- INV-CFG-007  # TRANSACT CSD file, the file the STARTBR fails on
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA whose context 0 selects the first-entry path
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to make TRANSACT unavailable
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user from USRSEC. TRANSACT is built from the
+    # repository's daily transactions (its own source is 'built', so it has no
+    # repository base of its own), so a working browse would find records and
+    # the failure comes from the fault alone.
+    USRSEC: {base: USRSEC}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  # No `after`: no TRANSACT request precedes COTRN00C's STARTBR in step 2. The
+  # schema has no browse operation, so the STARTBR is a read.
+  faults:
+  - target: TRANSACT
+    operation: read
+    condition: unavailable
+# PASSWORD is the README's documented demo password, not a secret: the scenario
+# schema accepts no other sign-on password.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+  - aid: ENTER
+    '@map': COMEN01
+    fields: {OPTION: '6'}
+expected:
+  # Text fields keep their full BMS length with trailing spaces: ERRMSG is 78
+  # characters, the titles and OPTN006 40. CURDATE and CURTIME come from the
+  # region clock, so they are matchers.
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COMEN01C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    OPTN006: '06. Transaction List                    '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN00
+    TRNNAME: CT00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '        '
+    TRNIDIN: '                '
+    SEL0001: ' '
+    TRNID01: '                '
+    TDATE01: '        '
+    TDESC01: '                          '
+    TAMT001: '            '
+    SEL0002: ' '
+    TRNID02: '                '
+    TDATE02: '        '
+    TDESC02: '                          '
+    TAMT002: '            '
+    SEL0003: ' '
+    TRNID03: '                '
+    TDATE03: '        '
+    TDESC03: '                          '
+    TAMT003: '            '
+    SEL0004: ' '
+    TRNID04: '                '
+    TDATE04: '        '
+    TDESC04: '                          '
+    TAMT004: '            '
+    SEL0005: ' '
+    TRNID05: '                '
+    TDATE05: '        '
+    TDESC05: '                          '
+    TAMT005: '            '
+    SEL0006: ' '
+    TRNID06: '                '
+    TDATE06: '        '
+    TDESC06: '                          '
+    TAMT006: '            '
+    SEL0007: ' '
+    TRNID07: '                '
+    TDATE07: '        '
+    TDESC07: '                          '
+    TAMT007: '            '
+    SEL0008: ' '
+    TRNID08: '                '
+    TDATE08: '        '
+    TDESC08: '                          '
+    TAMT008: '            '
+    SEL0009: ' '
+    TRNID09: '                '
+    TDATE09: '        '
+    TDESC09: '                          '
+    TAMT009: '            '
+    SEL0010: ' '
+    TRNID10: '                '
+    TDATE10: '        '
+    TDESC10: '                          '
+    TAMT010: '            '
+    ERRMSG: 'Unable to lookup transaction...                                               '
+  # The ERRMSG of each formatted screen: the menu's blank message, then the
+  # failed browse's message.
+  messages:
+  - '                                                                              '
+  - 'Unable to lookup transaction...                                               '

@@ -1,0 +1,189 @@
+# COCRDUPC accepts a changed card name and asks for confirmation:
+# 'Changes validated.Press F5 to save' (88 PROMPT-FOR-CONFIRMATION of
+# WS-INFO-MSG) [app/cbl/COCRDUPC.cbl:166-167].
+#
+# Step 1: USER0001 signs on through CC00; COSGN00C XCTLs to COMEN01C, which
+# sends the main menu under CM00 [app/cbl/COSGN00C.cbl:221-240]
+# [app/cbl/COMEN01C.cbl:82-90].
+# Step 2: option '5' of COMEN02Y is 'Credit Card Update' (COCRDUPC, type U), so
+# COMEN01C records CM00/COMEN01C as the caller, zeroes CDEMO-PGM-CONTEXT and
+# XCTLs to COCRDUPC [app/cpy/COMEN02Y.cpy:49-53] [app/cbl/COMEN01C.cbl:115-156].
+# Entered from the menu program in CDEMO-PGM-ENTER state, COCRDUPC initializes
+# its own COMMAREA part and sends the empty search screen with
+# PROMPT-FOR-SEARCH-KEYS, then sets CDEMO-PGM-REENTER and CCUP-DETAILS-NOT-FETCHED
+# and returns TRANSID CCUP [app/cbl/COCRDUPC.cbl:388-401,502-511,546-558,
+# 1084-1085,1141-1142].
+# Step 3: under CCUP, ENTER takes WHEN OTHER. Both filters are supplied,
+# numeric and non-zero [app/cbl/COCRDUPC.cbl:641-661,721-800], so
+# 2000-DECIDE-ACTION reads CARDDAT by card number (NORMAL sets
+# FOUND-CARDS-FOR-ACCOUNT) and moves to CCUP-SHOW-DETAILS
+# [app/cbl/COCRDUPC.cbl:954-966,1343-1394]. 9000-READ-DATA upper-cases the
+# embossed name before keeping it as CCUP-OLD-CRDNAME, and 3200 shows the old
+# values [app/cbl/COCRDUPC.cbl:1356-1367,1107-1112]. 3300 makes the name,
+# status, month and year unprotected with MDT on (DFHBMFSE), so the next AID
+# sends them back whether typed or not; EXPDAY is FSET in the map
+# [app/cbl/COCRDUPC.cbl:1181-1190] [app/bms/COCRDUP.bms:107-147].
+# Step 4: the name is replaced by TEST HOLDER and ENTER is pressed. The new
+# card data differs from the old, so 1200-EDIT-MAP-INPUTS sets
+# CCUP-CHANGES-NOT-OK and runs the four edits: the name is letters and spaces
+# only, status Y, month 03 and year 2023 are valid; with no INPUT-ERROR it sets
+# CCUP-CHANGES-OK-NOT-CONFIRMED [app/cbl/COCRDUPC.cbl:668-714,806-944].
+# 2000-DECIDE-ACTION only continues on that state without PF5, so
+# 9200-WRITE-PROCESSING (READ UPDATE and REWRITE) does not run
+# [app/cbl/COCRDUPC.cbl:988-1007]. 3200 shows the new values (CCUP-CHANGES-MADE),
+# 3250 sets PROMPT-FOR-CONFIRMATION, 3300 protects every field and makes FKEYSC
+# bright (DFHBMBRY) [app/cbl/COCRDUPC.cbl:1113-1123,1149-1150,1191-1199,
+# 1315-1317].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Card values come from record 1 of the CARDDATA fixture (line 1 of
+#   app/data/ASCII/carddata.txt): card 0500024453765740, account 00000000050,
+#   CVV 747, name 'Aniya Von', expiry 2023-03-09, status Y.
+# - Screen fields are compared at their full BMS length, trailing spaces kept:
+#   INFOMSG is the 40-byte WS-INFO-MSG, ERRMSG the 75-byte WS-RETURN-MSG,
+#   blank, in the 80-byte field; COMEN01 ERRMSG is 78 bytes
+#   [app/bms/COCRDUP.bms] [app/bms/COMEN01.bms].
+# - The tpe adapter enters a field with EraseEOF before typing and BMS pads
+#   input with blanks, so CRDNAME holds TEST HOLDER padded with spaces. The
+#   value is already upper case, so no translation question arises.
+# - FKEYSC keeps its INITIAL text 'F5=Save F12=Cancel'
+#   [app/bms/COCRDUP.bms:163-167]. It is asserted only on
+#   screen 4, where it is bright; on screens 2 and 3 it is dark (ASKIP,DRK), as
+#   is EXPDAY, and those are not asserted, so the expectation does not rest on
+#   how the capture renders a zero-intensity field.
+# - The UniKix copy rewrites the alphabets-only test of 1230-EDIT-NAME to
+#   CARD-NAME-CHECK = SPACES OR LOW-VALUES (GAP-DOC-023). For a name of letters
+#   and spaces both forms accept it: app/'s FUNCTION LENGTH(FUNCTION TRIM(...))
+#   of an all-space field is 0 under Enterprise COBOL, so GAP-DOC-023 does not
+#   bear on this outcome and is not cited.
+# - CURDATE (mm/dd/yy) and CURTIME (hh:mm:ss) come from the region clock
+#   [app/cbl/COCRDUPC.cbl:1062-1074], hence the matchers and clock_mode relative.
+id: CRD-COCRDUPC-alternate-04
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, chooses main-menu option 5 (Credit Card Update), fetches
+  card 0500024453765740 of account 00000000050, whose details COCRDUPC shows
+  with 'Details of selected card shown above', replaces the name on the card
+  with TEST HOLDER and presses ENTER. Every edit passes, so COCRDUPC shows the
+  changed values, protected, with 'Changes validated.Press F5 to save' and the
+  F5=Save F12=Cancel keys made visible. Nothing is saved before PF5: CARDDATA
+  still holds the fetched record.
+# Primary item first, then the program, the maps asserted, the transaction of
+# steps 3 and 4, the CSD file COCRDUPC reads, and the online-only copybooks it
+# copies. Sign-on and the menu transaction (CC00, CM00, COSGN00, USRSEC) are
+# verified by the SEC and MNU scenarios, the intermediate information messages
+# by their own CRD scenarios, and the batch record copybooks and the data files
+# at the lowest level that executes them.
+inventory_ids:
+- INV-CRD-050  # COCRDUPC message 'Changes validated.Press F5 to save' (rule)
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, where option 5 is entered
+- INV-CRD-006  # COCRDUP map, the search, detail and confirmation screens
+- INV-CFG-015  # CCUP transaction, which runs the fetch and the validation
+- INV-CFG-003  # CARDDAT CSD file: card master read by card number
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and filters
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COCRDUPC
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, CC-CARD-NUM and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    CARDDATA: {base: CARDDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '5'
+  - aid: ENTER
+    '@map': COCRDUP
+    fields:
+      ACCTSID: '00000000050'
+      CARDSID: '0500024453765740'
+  - aid: ENTER
+    '@map': COCRDUP
+    fields:
+      CRDNAME: TEST HOLDER
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN005: '05. Credit Card Update                  '
+    ERRMSG: '                                                                              '
+  # The empty search screen of a fresh entry.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDNAME: '                                                  '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  # The fetched card, editable.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'ANIYA VON                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Details of selected card shown above    '
+    ERRMSG: '                                                                                '
+    FKEYS: 'ENTER=Process F3=Exit'
+  # The validated change, protected, with the confirmation prompt and the save
+  # and cancel keys shown.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'TEST HOLDER                                       '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Changes validated.Press F5 to save      '
+    ERRMSG: '                                                                                '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEYSC: 'F5=Save F12=Cancel'
+  # No PF5 yet, so the card is not rewritten: CARDDATA keeps its 50 records and
+  # card 0500024453765740 is as fetched, its name still Aniya Von.
+  file_state:
+    CARDDATA:
+      count: 50
+      contains:
+      - CARD-NUM: '0500024453765740'
+        CARD-ACCT-ID: '50'
+        CARD-CVV-CD: '747'
+        CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+        CARD-EXPIRAION-DATE: '2023-03-09'
+        CARD-ACTIVE-STATUS: 'Y'

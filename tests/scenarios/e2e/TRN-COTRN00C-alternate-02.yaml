@@ -1,0 +1,198 @@
+id: TRN-COTRN00C-alternate-02
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on through CC00, takes main-menu option 6 to the COTRN00C
+  transaction list [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:55-59],
+  whose first entry browses TRANSACT from LOW-VALUES and shows page 1 of the
+  300 transactions with more to follow, then searches from transaction id
+  0000000996722787, the highest TRANSACT key. STARTBR browses GTEQ by default
+  (the GTEQ option is commented out) and finds that key; the ENTER AID skips no
+  record, so COTRN00C clears the ten rows, lists the one record as row 1, and
+  the next READNEXT returns ENDFILE, which moves 'You have reached the bottom
+  of the page...' to the message and sends the map. The page routine then sets
+  NEXT-PAGE-NO, counts page 1 because a row was listed, ends the browse, blanks
+  the search field and sends the map again with ERASE
+  [app/cbl/COTRN00C.cbl:146-229,279-328,381-396,450-505,591-653]. The flag
+  travels in CDEMO-CT00-INFO, which belongs to CARDDEMO-COMMAREA and is returned
+  with TRANSID CT00; the next task's SET NEXT-PAGE-NO precedes the COMMAREA
+  move, so the returned flag decides it [app/cbl/COTRN00C.cbl:62-70,97-111,
+  138-141]. PF8 then finds NEXT-PAGE-NO, reads no record, and sends 'You are
+  already at the bottom of the page...' without ERASE
+  [app/cbl/COTRN00C.cbl:127-128,257-274,527-549].
+# Primary item first, then the program, the maps the screens land on, the
+# transaction the search and PF8 tasks run under (COTRN00C returns with
+# TRANSID CT00), the CSD file browsed, and the online-only copybooks COTRN00C
+# copies. Sign-on (COSGN00, CC00, USRSEC) and the COMEN01C option belong to the
+# SEC and MNU scenarios, and the list content and 'You have reached the bottom
+# of the page...' to their own TRN-COTRN00C scenarios, so this scenario asserts
+# but does not list them. CVTRA05Y, the TRANSACT record layout, is a batch
+# copybook verified at the unit level.
+inventory_ids:
+- INV-TRN-014
+- INV-TRN-001
+- INV-MNU-003
+- INV-TRN-004
+- INV-CFG-020
+- INV-CFG-007
+- INV-LAY-002
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007
+- GAP-INF-012
+# TRANSACT is built from the repository's 300 daily transactions, whose highest
+# TRAN-ID is 0000000996722787; it is a built dataset with no repository data of
+# its own, so DALYTRAN is its base. USRSEC holds the demo users for sign-on.
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '6'
+  # The search key is all digits, so it sorts the same in ASCII and EBCDIC and
+  # is the last key on either platform.
+  - aid: ENTER
+    '@map': COTRN00
+    fields:
+      TRNIDIN: '0000000996722787'
+  - aid: PF8
+    '@map': COTRN00
+    fields: {}
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. PAGENUM is the PIC 9(8) page counter moved to the
+# PIC X(8) field.
+# Screen 2 is page 1 of the first entry: ten rows and a look-ahead record, so
+# no message. Its content is pinned by the list-content scenario.
+# Screen 3 is the second send of the search task. The ENDFILE send before it
+# differs only in TRNIDIN, which still held the search key. Row 1 is the
+# record 0000000996722787: TRAN-ORIG-TS 2022-06-10 shown as mm/dd/yy, the first
+# 26 characters of TRAN-DESC, and TRAN-AMT +603.22 (overpunch B) edited by
+# PIC +99999999.99 [app/cbl/COTRN00C.cbl:56-57,383-396] [app/cpy/CSDAT01Y.cpy:17-55].
+# Screen 4: every COTRN00 field is defined with FSET [app/bms/COTRN00.bms:34-453],
+# so the PF8 RECEIVE MAP returns the rows, page number and search field on
+# display, and the SEND without ERASE writes them back from the overlaying
+# COTRN0AO with only the header and the message refreshed
+# [app/cbl/COTRN00C.cbl:118,527-586].
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COTRN00
+    TRNNAME: CT00
+    PGMNAME: COTRN00C
+    PAGENUM: '00000001'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN00
+    TRNNAME: CT00
+    PGMNAME: COTRN00C
+    PAGENUM: '00000001'
+    TRNIDIN: '                '
+    TRNID01: '0000000996722787'
+    TDATE01: '06/10/22'
+    TDESC01: 'Purchase at Kilback LLC   '
+    TAMT001: '+00000603.22'
+    TRNID02: '                '
+    TDATE02: '        '
+    TDESC02: '                          '
+    TAMT002: '            '
+    TRNID03: '                '
+    TDATE03: '        '
+    TDESC03: '                          '
+    TAMT003: '            '
+    TRNID04: '                '
+    TDATE04: '        '
+    TDESC04: '                          '
+    TAMT004: '            '
+    TRNID05: '                '
+    TDATE05: '        '
+    TDESC05: '                          '
+    TAMT005: '            '
+    TRNID06: '                '
+    TDATE06: '        '
+    TDESC06: '                          '
+    TAMT006: '            '
+    TRNID07: '                '
+    TDATE07: '        '
+    TDESC07: '                          '
+    TAMT007: '            '
+    TRNID08: '                '
+    TDATE08: '        '
+    TDESC08: '                          '
+    TAMT008: '            '
+    TRNID09: '                '
+    TDATE09: '        '
+    TDESC09: '                          '
+    TAMT009: '            '
+    TRNID10: '                '
+    TDATE10: '        '
+    TDESC10: '                          '
+    TAMT010: '            '
+    ERRMSG: 'You have reached the bottom of the page...                                    '
+  - '@map': COTRN00
+    TRNNAME: CT00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '00000001'
+    TRNIDIN: '                '
+    TRNID01: '0000000996722787'
+    TDATE01: '06/10/22'
+    TDESC01: 'Purchase at Kilback LLC   '
+    TAMT001: '+00000603.22'
+    TRNID02: '                '
+    TDATE02: '        '
+    TDESC02: '                          '
+    TAMT002: '            '
+    TRNID03: '                '
+    TDATE03: '        '
+    TDESC03: '                          '
+    TAMT003: '            '
+    TRNID04: '                '
+    TDATE04: '        '
+    TDESC04: '                          '
+    TAMT004: '            '
+    TRNID05: '                '
+    TDATE05: '        '
+    TDESC05: '                          '
+    TAMT005: '            '
+    TRNID06: '                '
+    TDATE06: '        '
+    TDESC06: '                          '
+    TAMT006: '            '
+    TRNID07: '                '
+    TDATE07: '        '
+    TDESC07: '                          '
+    TAMT007: '            '
+    TRNID08: '                '
+    TDATE08: '        '
+    TDESC08: '                          '
+    TAMT008: '            '
+    TRNID09: '                '
+    TDATE09: '        '
+    TDESC09: '                          '
+    TAMT009: '            '
+    TRNID10: '                '
+    TDATE10: '        '
+    TDESC10: '                          '
+    TAMT010: '            '
+    ERRMSG: 'You are already at the bottom of the page...                                  '
