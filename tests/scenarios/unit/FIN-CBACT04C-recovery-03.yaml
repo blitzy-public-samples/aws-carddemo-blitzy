@@ -1,0 +1,160 @@
+# The write-failure branch of CBACT04C after every file has opened. The first
+# TCATBALF record (account 00000000901, type 01, category 0001, balance
+# 1200.00) is displayed; as the first account it is read from ACCTFILE and,
+# through the alternate key, from XREFFILE, and its disclosure group A000000000
+# gives the non-zero rate 15.00, so 1300-COMPUTE-INTEREST performs
+# 1300-B-WRITE-TX. That first WRITE of the interest record to TRANSACT (the
+# logical SYSTRAN) ends with a status other than 00, so the program displays
+# 'ERROR WRITING TRANSACTION RECORD', 9910-DISPLAY-IO-STATUS shows the status
+# and 9999-ABEND-PROGRAM calls CEE3ABD without parameters; the account rewrite,
+# the closes and the end-of-execution line are never reached
+# [app/cbl/CBACT04C.cbl:181-217,325-348,372-440,462-515,628-648]. No adapter
+# fails a WRITE after a successful OPEN (GAP-MIS-013), so the scenario stays
+# implemented-unexecuted and its expected outcome is derived from the source
+# (GAP-INF-013); nothing is captured for it.
+#
+# The datasets are the synthetic set of FIN-CBACT04C-normal-01: two invented
+# accounts whose ACCT-GROUP-ID is set, their cross-references, three category
+# balances, and the repository DISCGRP. Expected numeric fields are written as
+# the codec decodes them (Decimal text with the field's scale, no leading
+# zeros), text fields at their full width.
+id: FIN-CBACT04C-recovery-03
+level: unit
+type: recovery
+description: >-
+  CBACT04C opens its five files, displays the first category balance of
+  account 00000000901 and computes its interest, and the WRITE of the first
+  interest transaction to SYSTRAN fails with an I/O error: the program displays
+  the write error and the file status and abends through CEE3ABD, with no
+  end-of-execution line and no return code. SYSTRAN holds no record and no
+  account is rewritten.
+# Only the read, write, rewrite or close failure item: this case never executes,
+# so listing the program, the interest-record item, its copybooks or the data
+# files here would block items that the executed CBACT04C scenarios verify (a
+# scenario lists an item only when the item's verification depends on it).
+inventory_ids:
+- INV-FIN-011  # CBACT04C abend on read, write, rewrite or close failure after open
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013  # no adapter injects a failure after a successful open
+- GAP-INF-013  # derived baseline of the post-open fault scenarios
+- GAP-STB-001  # CEE3ABD stub: marker and end of run, no abend code or dump
+- GAP-DEF-001  # CALL 'CEE3ABD' without parameters, pinned as observed
+- GAP-STB-004  # PARMDRV supplies the EXEC PARM linkage
+preconditions:
+  datasets:
+    # Invented accounts: the ids match no repository record and no real person.
+    ACCTDATA:
+      records:
+      - ACCT-ID: '00000000901'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '500.00'
+        ACCT-CREDIT-LIMIT: '5000.00'
+        ACCT-CASH-CREDIT-LIMIT: '1000.00'
+        ACCT-OPEN-DATE: '2020-01-01'
+        ACCT-EXPIRAION-DATE: '2026-01-01'
+        ACCT-REISSUE-DATE: '2026-01-01'
+        ACCT-CURR-CYC-CREDIT: '40.00'
+        ACCT-CURR-CYC-DEBIT: '-15.00'
+        ACCT-ADDR-ZIP: '00000'
+        ACCT-GROUP-ID: 'A000000000'
+      - ACCT-ID: '00000000902'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '800.00'
+        ACCT-CREDIT-LIMIT: '5000.00'
+        ACCT-CASH-CREDIT-LIMIT: '1000.00'
+        ACCT-OPEN-DATE: '2020-01-01'
+        ACCT-EXPIRAION-DATE: '2026-01-01'
+        ACCT-REISSUE-DATE: '2026-01-01'
+        ACCT-CURR-CYC-CREDIT: '40.00'
+        ACCT-CURR-CYC-DEBIT: '-15.00'
+        ACCT-ADDR-ZIP: '00000'
+        ACCT-GROUP-ID: 'A000000000'
+    # Invented card numbers and customers for the two accounts.
+    CARDXREF:
+      records:
+      - XREF-CARD-NUM: '9999000022220901'
+        XREF-CUST-ID: '000000901'
+        XREF-ACCT-ID: '00000000901'
+      - XREF-CARD-NUM: '9999000022220902'
+        XREF-CUST-ID: '000000902'
+        XREF-ACCT-ID: '00000000902'
+    TCATBALF:
+      records:
+      - TRANCAT-ACCT-ID: '00000000901'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '0001'
+        TRAN-CAT-BAL: '1200.00'
+      - TRANCAT-ACCT-ID: '00000000901'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '0002'
+        TRAN-CAT-BAL: '480.00'
+      - TRANCAT-ACCT-ID: '00000000902'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '0001'
+        TRAN-CAT-BAL: '2400.00'
+    # Group A000000000, type 01, category 0001 carries rate 15.00 in the
+    # repository discgrp.txt, so the first category computes interest and
+    # writes its record.
+    DISCGRP:
+      base: DISCGRP
+  parameters:
+    parm: '2022071800'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  # The first WRITE to SYSTRAN, for account 00000000901 category 0001, fails.
+  - target: SYSTRAN
+    operation: write
+    condition: io-error
+inputs:
+  program: CBACT04C
+expected:
+  return_code: null
+  messages:
+  - 'START OF EXECUTION OF PROGRAM CBACT04C'
+  # The main loop's DISPLAY TRAN-CAT-BAL-RECORD: the whole 50-byte first
+  # TCATBALF record, its 22-byte filler included.
+  - '000000009010100010000012000{                      '
+  - 'ERROR WRITING TRANSACTION RECORD'
+  # An io-error is taken as IBM file status 30 (inferred, GAP-INF-013): numeric
+  # and not 9x, so 9910-DISPLAY-IO-STATUS shows it as NNNN0030.
+  - 'FILE STATUS IS: NNNN0030'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'
+  datasets:
+    # TRANSACT is opened OUTPUT and the only WRITE failed.
+    SYSTRAN:
+      count: 0
+  file_state:
+    # 1050-UPDATE-ACCOUNT runs only when the TCATBALF account changes, which the
+    # abend at the first record precedes, so both accounts keep their loaded
+    # balances and cycle fields.
+    ACCTDATA:
+      count: 2
+      contains:
+      - ACCT-ID: '901'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '500.00'
+        ACCT-CREDIT-LIMIT: '5000.00'
+        ACCT-CASH-CREDIT-LIMIT: '1000.00'
+        ACCT-OPEN-DATE: '2020-01-01'
+        ACCT-EXPIRAION-DATE: '2026-01-01'
+        ACCT-REISSUE-DATE: '2026-01-01'
+        ACCT-CURR-CYC-CREDIT: '40.00'
+        ACCT-CURR-CYC-DEBIT: '-15.00'
+        ACCT-ADDR-ZIP: '00000     '
+        ACCT-GROUP-ID: 'A000000000'
+      - ACCT-ID: '902'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '800.00'
+        ACCT-CREDIT-LIMIT: '5000.00'
+        ACCT-CASH-CREDIT-LIMIT: '1000.00'
+        ACCT-OPEN-DATE: '2020-01-01'
+        ACCT-EXPIRAION-DATE: '2026-01-01'
+        ACCT-REISSUE-DATE: '2026-01-01'
+        ACCT-CURR-CYC-CREDIT: '40.00'
+        ACCT-CURR-CYC-DEBIT: '-15.00'
+        ACCT-ADDR-ZIP: '00000     '
+        ACCT-GROUP-ID: 'A000000000'

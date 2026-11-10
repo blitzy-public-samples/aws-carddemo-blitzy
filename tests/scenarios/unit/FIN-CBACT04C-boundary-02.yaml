@@ -1,0 +1,137 @@
+# The rate boundary of the CBACT04C interest calculation: a category whose
+# disclosure rate is zero. For each TCATBAL record CBACT04C reads the rate of
+# (ACCT-GROUP-ID, type, category) and performs 1300-COMPUTE-INTEREST, which
+# computes the interest and writes the transaction, only IF DIS-INT-RATE NOT = 0
+# [app/cbl/CBACT04C.cbl:210-217,462-515]. Account 00000000905 holds only a
+# type 02 / category 0001 balance, whose rate in group A000000000 is 0.00
+# (discgrp.txt record 5); account 00000000906 holds a type 01 / category 0001
+# balance at 15.00 (record 1). So 905 writes nothing and does not consume a
+# TRAN-ID suffix, and 906's record takes the first suffix, 000001.
+#
+# Every account, card and customer id is invented. The synthetic accounts carry
+# their group in ACCT-GROUP-ID, the field CBACT04C reads, unlike the repository
+# accounts, which hold it in ACCT-ADDR-ZIP (GAP-DEF-005); here both lookups hit
+# group A000000000 and neither falls back to DEFAULT. Account fields CBACT04C
+# neither reads nor changes take the codec defaults (spaces, zeros).
+id: FIN-CBACT04C-boundary-02
+level: unit
+type: boundary
+description: >-
+  CBACT04C with PARM 2022071800 posts interest for two invented accounts of
+  disclosure group A000000000. The zero-rate category of account 00000000905
+  computes no interest and writes no SYSTRAN record; the 15.00 rate on
+  account 00000000906's balance of 1200.00 writes the only record, TRAN-ID
+  2022071800000001, for 15.00. Account 905 is rewritten when the TCATBAL
+  account changes, with its balance unchanged and both cycle fields zeroed;
+  906, the last account, is never rewritten.
+inventory_ids:
+- INV-FIN-007  # no interest record at zero rate (rule), the primary item
+- INV-FIN-001  # CBACT04C program
+- INV-FIN-003  # monthly interest TRAN-CAT-BAL * DIS-INT-RATE / 1200 (calculation)
+- INV-FIN-004  # account update on the account change (calculation)
+- INV-FIN-008  # interest transaction record (interface)
+# The five copybooks CBACT04C copies; the run reads and writes every record
+# through them, and the assertions decode SYSTRAN and ACCTDATA with them.
+- INV-LAY-016  # CVACT01Y account record
+- INV-LAY-018  # CVACT03Y card cross-reference record
+- INV-LAY-021  # CVTRA01Y transaction category balance record
+- INV-LAY-022  # CVTRA02Y disclosure group record, which carries the zero rate
+- INV-LAY-025  # CVTRA05Y transaction record
+- INV-DTA-006  # discgrp.txt, the DISCGRP fixture source
+- INV-DTA-017  # EBCDIC disclosure group data file, the fixture's cross-check counterpart
+# Account 906 is left unrewritten (the GAP-DEF-003 behaviour of INV-FIN-004),
+# but that defect is tagged and cited on FIN-CBACT04C-boundary-01, the
+# scenario the test plan gives it; this one pins the zero-rate rule.
+tags: []
+gap_ids:
+- GAP-STB-004  # PARMDRV in place of the z/OS EXEC PARM linkage
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options; defaultbyte 0 gives the x'00' fill
+preconditions:
+  datasets:
+    ACCTDATA:
+      records:
+      - ACCT-ID: '00000000905'
+        ACCT-CURR-BAL: '200.00'
+        ACCT-CURR-CYC-CREDIT: '10.00'
+        ACCT-CURR-CYC-DEBIT: '-3.00'
+        ACCT-GROUP-ID: 'A000000000'
+      - ACCT-ID: '00000000906'
+        ACCT-CURR-BAL: '50.00'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-GROUP-ID: 'A000000000'
+    CARDXREF:
+      records:
+      - XREF-CARD-NUM: '9999000022220905'
+        XREF-CUST-ID: '000000905'
+        XREF-ACCT-ID: '00000000905'
+      - XREF-CARD-NUM: '9999000022220906'
+        XREF-CUST-ID: '000000906'
+        XREF-ACCT-ID: '00000000906'
+    TCATBALF:
+      records:
+      - TRANCAT-ACCT-ID: '00000000905'
+        TRANCAT-TYPE-CD: '02'
+        TRANCAT-CD: '0001'
+        TRAN-CAT-BAL: '500.00'
+      - TRANCAT-ACCT-ID: '00000000906'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '0001'
+        TRAN-CAT-BAL: '1200.00'
+    DISCGRP: {base: DISCGRP}
+  parameters:
+    parm: '2022071800'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBACT04C
+# Expected record fields are decoded values: unsigned numerics carry no leading
+# zeros (ACCT-ID 905, TRAN-CAT-CD 5 for the 0005 the program moves) and amounts
+# keep their scale.
+expected:
+  return_code: 0
+  messages:
+  - 'START OF EXECUTION OF PROGRAM CBACT04C'
+  # DISPLAY TRAN-CAT-BAL-RECORD shows each 50-byte TCATBAL record as read,
+  # the balance overpunch-signed and the filler as 22 spaces
+  # [app/cbl/CBACT04C.cbl:193]; nothing else is displayed, because every
+  # account, cross-reference and disclosure group lookup succeeds.
+  - '000000009050200010000005000{                      '
+  - '000000009060100010000012000{                      '
+  - 'END OF EXECUTION OF PROGRAM CBACT04C'
+  datasets:
+    # One record only: the zero-rate category writes none. 1200.00 * 15.00 / 1200
+    # = 15.00. The description is 'Int. for a/c ' and the account, followed by
+    # the 76 x'00' bytes TRAN-DESC keeps from working storage that is never
+    # initialized [app/cbl/CBACT04C.cbl:485-489].
+    SYSTRAN:
+      records:
+      - TRAN-ID: '2022071800000001'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000906\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '15.00'
+        TRAN-CARD-NUM: '9999000022220906'
+        TRAN-ORIG-TS: '2022-07-06-10.00.00.000000'
+        TRAN-PROC-TS: '2022-07-06-10.00.00.000000'
+  file_state:
+    # 905 is rewritten when the next TCATBAL record belongs to 906: its total
+    # interest is zero, so ACCT-CURR-BAL stays 200.00, and both cycle fields are
+    # set to zero. 906 is the last account: the loop ends at end of file before
+    # its update, so its balance stays 50.00 rather than 65.00
+    # [app/cbl/CBACT04C.cbl:188-222,350-370].
+    ACCTDATA:
+      records:
+      - ACCT-ID: '905'
+        ACCT-CURR-BAL: '200.00'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+      - ACCT-ID: '906'
+        ACCT-CURR-BAL: '50.00'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'

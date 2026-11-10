@@ -1,0 +1,215 @@
+# The interest happy path of CBACT04C with ACCT-GROUP-ID actually set. Every
+# repository account carries its disclosure group in ACCT-ADDR-ZIP and leaves
+# ACCT-GROUP-ID blank, so the repository fixtures only ever reach the DEFAULT
+# fallback (GAP-DEF-005, FIN-CBACT04C-alternate-02). Here two invented accounts
+# name group A000000000, whose repository DISCGRP rates are 15.00 for type 01
+# category 0001 and 25.00 for type 01 categories 0002-0004
+# [app/data/ASCII/discgrp.txt:1-4], so every lookup hits its own group record.
+#
+# For each TCATBALF record CBACT04C displays the whole 50-byte record, reads the
+# account and, by the alternate key XREF-ACCT-ID, the cross-reference when the
+# account changes, reads the rate, and with a non-zero rate computes
+# TRAN-CAT-BAL * DIS-INT-RATE / 1200, adds it to the account's total, writes one
+# SYSTRAN record and performs the empty 1400-COMPUTE-FEES
+# [app/cbl/CBACT04C.cbl:181-232,372-520]:
+#   00000000901/01/0001  1200.00 * 15.00 / 1200 = 15.00
+#   00000000901/01/0002   480.00 * 25.00 / 1200 = 10.00
+#   00000000902/01/0001  2400.00 * 15.00 / 1200 = 30.00
+# The amounts divide exactly; truncation is the case of FIN-CBACT04C-boundary-03.
+# Reaching account 902 rewrites account 901 with the total interest added
+# (500.00 + 25.00) and both cycle fields zeroed [app/cbl/CBACT04C.cbl:194-205,350-370].
+# Account 902 is the last one: the end-of-file ELSE that would rewrite it is
+# unreachable, so it keeps its loaded values (GAP-DEF-003, pinned here as observed
+# and tagged in FIN-CBACT04C-boundary-01).
+#
+# TRAN-DESC is built by STRING 'Int. for a/c ' ACCT-ID into the never-initialized
+# TRAN-RECORD, so its 76 bytes after the account id are the working-storage
+# default of the compile options, x'00' on gnucobol-batch (GAP-UNC-009,
+# GAP-STB-011); they are written below as YAML "\0" escapes.
+#
+# Decoded values follow harness/codec.py: unsigned numeric fields lose their
+# leading zeros (ACCT-ID 00000000901 is '901', TRAN-CAT-CD 0005 is '5'), amounts
+# keep their scale, and text fields keep their trailing spaces. The message lines
+# are the DISPLAY output byte for byte, the 22 filler spaces of each TCATBALF
+# record included. The figures were observed with the cobc options, the PARMDRV
+# linkage and the clock this scenario sets.
+id: FIN-CBACT04C-normal-01
+level: unit
+type: normal
+description: >-
+  CBACT04C, run with PARM 2022071800, computes monthly interest for two invented
+  accounts in disclosure group A000000000: 15.00 and 10.00 for account
+  00000000901 and 30.00 for account 00000000902. It writes three SYSTRAN records
+  with TRAN-ID 2022071800000001 to 2022071800000003, type 01, category 0005,
+  source System, the description 'Int. for a/c <account>' followed by x'00'
+  fill, the card from the cross-reference and the run clock as both timestamps.
+  It rewrites account 00000000901 from 500.00 to 525.00 with both cycle fields
+  zeroed, leaves the last account 00000000902 unchanged, charges no fee, never
+  falls back to the DEFAULT group and ends with return code 0.
+inventory_ids:
+- INV-FIN-003  # CBACT04C monthly interest (calculation)
+- INV-FIN-001  # CBACT04C program
+- INV-FIN-004  # CBACT04C account update (calculation)
+- INV-FIN-005  # CBACT04C fees computation, an empty paragraph with no effect (calculation)
+- INV-FIN-008  # CBACT04C interest transaction record (interface)
+- INV-LAY-021  # CVTRA01Y copybook, the TCATBALF layout
+- INV-LAY-022  # CVTRA02Y copybook, the DISCGRP layout
+- INV-LAY-025  # CVTRA05Y copybook, the SYSTRAN layout
+- INV-LAY-016  # CVACT01Y copybook, the ACCTDATA layout
+- INV-LAY-018  # CVACT03Y copybook, the CARDXREF layout
+- INV-DTA-006  # discgrp.txt, the DISCGRP fixture source
+- INV-DTA-017  # EBCDIC disclosure group file, its cross-check counterpart
+tags:
+- observed-only
+gap_ids:
+- GAP-UNC-007  # 1400-COMPUTE-FEES holds only 'To be implemented'
+- GAP-UNC-009  # x'00' fill after 'Int. for a/c <account>' from uninitialized storage
+- GAP-DEF-003  # the last account is never rewritten
+- GAP-STB-004  # PARMDRV supplies the z/OS PARM linkage
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    # Invented accounts, cards and customers: no id matches a repository record
+    # or a real person. ACCT-ADDR-ZIP holds an invented zip, not a group id.
+    ACCTDATA:
+      records:
+      - ACCT-ID: '901'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '500.00'
+        ACCT-CREDIT-LIMIT: '5000.00'
+        ACCT-CASH-CREDIT-LIMIT: '1000.00'
+        ACCT-OPEN-DATE: '2020-01-01'
+        ACCT-EXPIRAION-DATE: '2026-01-01'
+        ACCT-REISSUE-DATE: '2026-01-01'
+        ACCT-CURR-CYC-CREDIT: '40.00'
+        ACCT-CURR-CYC-DEBIT: '-15.00'
+        ACCT-ADDR-ZIP: '00000'
+        ACCT-GROUP-ID: 'A000000000'
+      - ACCT-ID: '902'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '800.00'
+        ACCT-CREDIT-LIMIT: '5000.00'
+        ACCT-CASH-CREDIT-LIMIT: '1000.00'
+        ACCT-OPEN-DATE: '2020-01-01'
+        ACCT-EXPIRAION-DATE: '2026-01-01'
+        ACCT-REISSUE-DATE: '2026-01-01'
+        ACCT-CURR-CYC-CREDIT: '40.00'
+        ACCT-CURR-CYC-DEBIT: '-15.00'
+        ACCT-ADDR-ZIP: '00000'
+        ACCT-GROUP-ID: 'A000000000'
+    CARDXREF:
+      records:
+      - XREF-CARD-NUM: '9999000022220901'
+        XREF-CUST-ID: '901'
+        XREF-ACCT-ID: '901'
+      - XREF-CARD-NUM: '9999000022220902'
+        XREF-CUST-ID: '902'
+        XREF-ACCT-ID: '902'
+    TCATBALF:
+      records:
+      - TRANCAT-ACCT-ID: '901'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '1'
+        TRAN-CAT-BAL: '1200.00'
+      - TRANCAT-ACCT-ID: '901'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '2'
+        TRAN-CAT-BAL: '480.00'
+      - TRANCAT-ACCT-ID: '902'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '1'
+        TRAN-CAT-BAL: '2400.00'
+    DISCGRP: {base: DISCGRP}
+  parameters:
+    parm: '2022071800'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBACT04C
+expected:
+  return_code: 0
+  # No 'DISCLOSURE GROUP RECORD MISSING' or 'TRY WITH DEFAULT GROUP CODE' line:
+  # every rate is read from group A000000000 itself.
+  messages:
+  - START OF EXECUTION OF PROGRAM CBACT04C
+  - '000000009010100010000012000{                      '
+  - '000000009010100020000004800{                      '
+  - '000000009020100010000024000{                      '
+  - END OF EXECUTION OF PROGRAM CBACT04C
+  datasets:
+    # Written in TCATBALF key order. TRAN-ID is the PARM date followed by a
+    # 6-digit counter; TRAN-CARD-NUM is the card the alternate-key read of
+    # CARDXREF returns for the account.
+    SYSTRAN:
+      count: 3
+      records:
+      - TRAN-ID: '2022071800000001'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000901\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '15.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '9999000022220901'
+        TRAN-ORIG-TS: '2022-07-06-10.00.00.000000'
+        TRAN-PROC-TS: '2022-07-06-10.00.00.000000'
+      - TRAN-ID: '2022071800000002'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000901\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '10.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '9999000022220901'
+        TRAN-ORIG-TS: '2022-07-06-10.00.00.000000'
+        TRAN-PROC-TS: '2022-07-06-10.00.00.000000'
+      - TRAN-ID: '2022071800000003'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000902\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '30.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '9999000022220902'
+        TRAN-ORIG-TS: '2022-07-06-10.00.00.000000'
+        TRAN-PROC-TS: '2022-07-06-10.00.00.000000'
+  file_state:
+    # Account 901 is rewritten when the TCATBALF account changes to 902; account
+    # 902, the last one, is never rewritten and keeps its loaded balance and
+    # cycle fields (GAP-DEF-003).
+    ACCTDATA:
+      count: 2
+      records:
+      - ACCT-ID: '901'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '525.00'
+        ACCT-CREDIT-LIMIT: '5000.00'
+        ACCT-CASH-CREDIT-LIMIT: '1000.00'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-GROUP-ID: 'A000000000'
+      - ACCT-ID: '902'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '800.00'
+        ACCT-CREDIT-LIMIT: '5000.00'
+        ACCT-CASH-CREDIT-LIMIT: '1000.00'
+        ACCT-CURR-CYC-CREDIT: '40.00'
+        ACCT-CURR-CYC-DEBIT: '-15.00'
+        ACCT-GROUP-ID: 'A000000000'

@@ -1,0 +1,123 @@
+# The window boundary of CBTRN03C: the first transaction outside the DATEPARM
+# window ends the report. The window test sits inside the inline PERFORM, and its
+# ELSE branch is NEXT SENTENCE, which passes control to the statement after the
+# next period; that period follows END-PERFORM, so the read loop ends at the
+# first record whose TRAN-PROC-TS(1:10) lies outside the window. The files are
+# then closed and the program ends normally: later records are never read, and
+# neither the end-of-file page total nor the grand total is written
+# [app/cbl/CBTRN03C.cbl:170-217]. The behaviour is pinned as observed, never
+# fixed (GAP-DEF-012).
+#
+# The three records are invented: their TRAN-IDs, merchant and description match
+# no repository transaction. TRAN-CARD-NUM is the repository card of account
+# 00000000001 and customer 000000001 [app/data/ASCII/cardxref.txt:49]; type 01
+# and category 0001 are 'Purchase' and 'Regular Sales Draft'
+# [app/data/ASCII/trantype.txt:1] [app/data/ASCII/trancatg.txt:1]. In file order,
+# 521 was processed on 2022-07-10, inside the window; 522 on 2022-08-01, one day
+# after the end date; 523 on 2022-07-15, inside the window again, so its absence
+# shows that the loop ended at 522 rather than skipping it. TRANSACT-DALY is
+# synthetic, so no dailytran.txt item is listed.
+#
+# The record line of expected.messages is the whole 350-byte TRAN-RECORD as
+# DISPLAY writes it for 521: TRAN-AMT 10.00 as the overpunch-signed 0000000100{,
+# and the FILLER as 20 trailing spaces. Report lines are the full 133-byte
+# records: the four header lines written before the first detail line, then the
+# detail line of 521 [app/cbl/CBTRN03C.cbl:274-290,324-341,361-374]. Trailing
+# spaces are significant in both.
+id: RPT-CBTRN03C-boundary-02
+level: unit
+type: boundary
+description: >-
+  CBTRN03C reads three transactions of one card whose processing dates are
+  2022-07-10, 2022-08-01 and 2022-07-15 against the window 2022-07-01 to
+  2022-07-31. It reports the first, then stops reading at the second, one day
+  after the end date: the in-window third record is not reported, no page or
+  grand total is written, and the program ends with return code 0.
+inventory_ids:
+- INV-RPT-036  # CBTRN03C DATEPARM window (rule)
+- INV-RPT-003  # CBTRN03C program
+- INV-RPT-041  # CBTRN03C end-of-file totals, never written when the window ends the loop
+- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
+- INV-DTA-013  # EBCDIC card cross-reference file, its cross-check counterpart
+- INV-DTA-009  # trantype.txt, the TRANTYPE fixture source
+- INV-DTA-020  # EBCDIC transaction type file, its cross-check counterpart
+- INV-DTA-008  # trancatg.txt, the TRANCATG fixture source
+- INV-DTA-019  # EBCDIC transaction category file, its cross-check counterpart
+tags:
+- suspected-defect
+gap_ids:
+- GAP-DEF-012  # NEXT SENTENCE ends the read loop at the first out-of-window record
+- GAP-MIS-001  # no job or data file creates DATEPARM; it is a parameter here
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    TRANSACT-DALY:
+      records:
+      - TRAN-ID: '9900000000000521'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '10.00'
+        TRAN-MERCHANT-ID: 900000001
+        TRAN-MERCHANT-NAME: Synthetic Test Merchant
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-10 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-10-10.00.00.000000'
+      - TRAN-ID: '9900000000000522'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '20.00'
+        TRAN-MERCHANT-ID: 900000001
+        TRAN-MERCHANT-NAME: Synthetic Test Merchant
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-08-01 09:15:00.000000'
+        TRAN-PROC-TS: '2022-08-01-10.00.00.000000'
+      - TRAN-ID: '9900000000000523'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '30.00'
+        TRAN-MERCHANT-ID: 900000001
+        TRAN-MERCHANT-NAME: Synthetic Test Merchant
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-15 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-15-10.00.00.000000'
+    CARDXREF:
+      base: CARDXREF
+    TRANTYPE:
+      base: TRANTYPE
+    TRANCATG:
+      base: TRANCATG
+  parameters:
+    DATEPARM: '2022-07-01 2022-07-31'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN03C
+expected:
+  return_code: 0
+  datasets:
+    TRANREPT:
+      records:
+      - 'DALYREPT                              Daily Transaction Report                 Date Range: 2022-07-01 to 2022-07-31                  '
+      - '                                                                                                                                     '
+      - 'Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      - '9900000000000521 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     '
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN03C
+  - Reporting from 2022-07-01 to 2022-07-31
+  - '9900000000000521010001POS TERM  Synthetic purchase                                                                                  0000000100{900000001Synthetic Test Merchant                           Testville                                         00000     96802941546036972022-07-10 09:15:00.0000002022-07-10-10.00.00.000000                    '
+  - END OF EXECUTION OF PROGRAM CBTRN03C

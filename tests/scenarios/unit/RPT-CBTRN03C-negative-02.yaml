@@ -1,0 +1,85 @@
+# The transaction-type lookup abend of CBTRN03C: TRAN-TYPE-CD is moved to the
+# TRANTYPE key and the random READ takes INVALID KEY, so the program displays
+# 'INVALID TRANSACTION TYPE : ' with the key, moves 23 to IO-STATUS and abends
+# through 9999-ABEND-PROGRAM [app/cbl/CBTRN03C.cbl:189-190,494-502,626-646].
+# The one input record carries the invented type 08, which app/data holds no
+# record for (trantype.txt lists 01 to 07). Its card, 9680294154603697, is
+# record 49 of cardxref.txt, so the cross-reference lookup before it succeeds
+# and the category lookup after it is never reached [app/cbl/CBTRN03C.cbl:181-195].
+# The processing date 2022-07-05 lies inside the DATEPARM window, so the record
+# is displayed before the lookups: the record line is the whole 350-byte
+# TRAN-RECORD that DISPLAY writes, its trailing spaces included
+# [app/cbl/CBTRN03C.cbl:170-180]. TRANREPT is opened OUTPUT before the loop and
+# the report headers are written only after the lookups, so the report the
+# abend leaves behind holds no line [app/cbl/CBTRN03C.cbl:162,196,274-280].
+id: RPT-CBTRN03C-negative-02
+level: unit
+type: negative
+description: >-
+  CBTRN03C reads one in-window transaction whose type code 08 is absent from the
+  transaction type file: it displays the record, 'INVALID TRANSACTION TYPE : 08'
+  and file status 23, and abends through CEE3ABD before writing any report line.
+inventory_ids:
+- INV-RPT-042
+- INV-RPT-003
+- INV-DTA-003
+- INV-DTA-013
+- INV-DTA-009
+- INV-DTA-020
+- INV-DTA-008
+- INV-DTA-019
+# Untagged by design: GAP-DEF-001 (the parameterless CALL 'CEE3ABD' that ends
+# every CB* abend path) is cited as the gap this abend passes through, as in
+# every CB* abend case; suspected-defect marks the cases that pin a program's
+# own defect.
+tags: []
+gap_ids:
+- GAP-MIS-001
+- GAP-STB-001
+- GAP-DEF-001
+- GAP-STB-010
+- GAP-STB-011
+preconditions:
+  datasets:
+    CARDXREF:
+      base: CARDXREF
+    TRANTYPE:
+      base: TRANTYPE
+    TRANCATG:
+      base: TRANCATG
+    # The sequential TRANFILE input, already in card order (programs.yaml).
+    TRANSACT-DALY:
+      records:
+      - TRAN-ID: '9900000000000581'
+        TRAN-TYPE-CD: '08'
+        TRAN-CAT-CD: '0001'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic unknown transaction type
+        TRAN-AMT: '10.00'
+        TRAN-MERCHANT-ID: '999000581'
+        TRAN-MERCHANT-NAME: Synthetic Merchant 581
+        TRAN-MERCHANT-CITY: Synthetic City
+        TRAN-MERCHANT-ZIP: '99999'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+  parameters:
+    DATEPARM: '2022-07-01 2022-07-31'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN03C
+expected:
+  return_code: null
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN03C
+  - Reporting from 2022-07-01 to 2022-07-31
+  - '9900000000000581080001POS TERM  Synthetic unknown transaction type                                                                  0000000100{999000581Synthetic Merchant 581                            Synthetic City                                    99999     96802941546036972022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - 'INVALID TRANSACTION TYPE : 08'
+  - 'FILE STATUS IS: NNNN0023'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD
+  datasets:
+    TRANREPT:
+      records: []

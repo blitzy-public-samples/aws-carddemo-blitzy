@@ -1,0 +1,174 @@
+# FIN-CBACT04C-recovery-05: CBACT04C computes and writes the interest of every
+# TCATBALF record, then its CLOSE of TCATBALF fails and the run abends through
+# 9000-TCATBALF-CLOSE [app/cbl/CBACT04C.cbl:522-538], 9910-DISPLAY-IO-STATUS
+# [app/cbl/CBACT04C.cbl:635-648] and 9999-ABEND-PROGRAM
+# [app/cbl/CBACT04C.cbl:628-632].
+#
+# Derived, never observed. No adapter injects a close failure after a
+# successful open (GAP-MIS-013), so gnucobol-batch raises MissingPrerequisite
+# and the scenario stays implemented-unexecuted; its baseline is derived from
+# the source (GAP-INF-013) and capture.py refuses to capture it.
+#
+# How the expected outcome was derived:
+# - The datasets are the synthetic set of FIN-CBACT04C-normal-01, so everything
+#   up to the close is that scenario's outcome: the start line and one DISPLAY
+#   TRAN-CAT-BAL-RECORD per TCATBALF record (the whole 50-byte record: key,
+#   TRAN-CAT-BAL as zoned digits with its overpunch sign, 22 blanks of FILLER),
+#   and the three interest records written to SYSTRAN
+#   [app/cbl/CBACT04C.cbl:181-222,462-515]. GnuCOBOL 3.2 shows exactly these
+#   lines and records for the same data without a fault.
+# - The read loop ends at end of file and the end-of-file ELSE that would
+#   rewrite the last account is unreachable, so 9000-TCATBALF-CLOSE is the
+#   first paragraph after the loop [app/cbl/CBACT04C.cbl:188-224] (GAP-DEF-003).
+# - The fault condition io-error is taken as file status 30 (inferred). '30' is
+#   numeric and does not start with '9', so 9910 shows it as NNNN0030.
+# - The CEE3ABD stub ends the run (GAP-STB-001, GAP-DEF-001): the adapter
+#   reports return_code null and appends the stub's marker. The closes of the
+#   other four files and 'END OF EXECUTION OF PROGRAM CBACT04C' are never
+#   reached.
+id: FIN-CBACT04C-recovery-05
+level: unit
+type: recovery
+description: >-
+  Close failure after the interest run: CBACT04C, called with PARM 2022071800,
+  writes the three interest transactions of the synthetic accounts 00000000901
+  and 00000000902, then CLOSE TCATBALF returns a non-zero status, so it displays
+  'ERROR CLOSING TRANSACTION BALANCE FILE', the status as 'FILE STATUS IS:
+  NNNN0030' and 'ABENDING PROGRAM', and abends through CEE3ABD without the
+  end-of-execution line.
+# Only the read-or-close-failure item: this case never executes, so listing the
+# program, its copybooks or the data files here would block items that the
+# executed CBACT04C scenarios verify (a scenario lists an item only when the
+# item's verification depends on it).
+inventory_ids:
+- INV-FIN-011
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013
+- GAP-INF-013
+- GAP-STB-001
+- GAP-DEF-001
+- GAP-STB-004
+preconditions:
+  # The synthetic set of FIN-CBACT04C-normal-01; every id is invented.
+  datasets:
+    ACCTDATA:
+      records:
+      - ACCT-ID: '00000000901'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '500.00'
+        ACCT-CREDIT-LIMIT: '5000.00'
+        ACCT-CASH-CREDIT-LIMIT: '1000.00'
+        ACCT-OPEN-DATE: '2020-01-01'
+        ACCT-EXPIRAION-DATE: '2026-01-01'
+        ACCT-REISSUE-DATE: '2026-01-01'
+        ACCT-CURR-CYC-CREDIT: '40.00'
+        ACCT-CURR-CYC-DEBIT: '-15.00'
+        ACCT-ADDR-ZIP: '00000'
+        ACCT-GROUP-ID: 'A000000000'
+      - ACCT-ID: '00000000902'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '800.00'
+        ACCT-CREDIT-LIMIT: '5000.00'
+        ACCT-CASH-CREDIT-LIMIT: '1000.00'
+        ACCT-OPEN-DATE: '2020-01-01'
+        ACCT-EXPIRAION-DATE: '2026-01-01'
+        ACCT-REISSUE-DATE: '2026-01-01'
+        ACCT-CURR-CYC-CREDIT: '40.00'
+        ACCT-CURR-CYC-DEBIT: '-15.00'
+        ACCT-ADDR-ZIP: '00000'
+        ACCT-GROUP-ID: 'A000000000'
+    CARDXREF:
+      records:
+      - XREF-CARD-NUM: '9999000022220901'
+        XREF-CUST-ID: '000000901'
+        XREF-ACCT-ID: '00000000901'
+      - XREF-CARD-NUM: '9999000022220902'
+        XREF-CUST-ID: '000000902'
+        XREF-ACCT-ID: '00000000902'
+    TCATBALF:
+      records:
+      - TRANCAT-ACCT-ID: '00000000901'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '0001'
+        TRAN-CAT-BAL: '1200.00'
+      - TRANCAT-ACCT-ID: '00000000901'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '0002'
+        TRAN-CAT-BAL: '480.00'
+      - TRANCAT-ACCT-ID: '00000000902'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '0001'
+        TRAN-CAT-BAL: '2400.00'
+    # Group A000000000, type 01: category 0001 at 15.00, category 0002 at 25.00.
+    DISCGRP:
+      base: DISCGRP
+  parameters:
+    parm: '2022071800'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  - target: TCATBALF
+    operation: close
+    condition: io-error
+inputs:
+  program: CBACT04C
+expected:
+  return_code: null
+  messages:
+  - 'START OF EXECUTION OF PROGRAM CBACT04C'
+  - '000000009010100010000012000{                      '
+  - '000000009010100020000004800{                      '
+  - '000000009020100010000024000{                      '
+  - 'ERROR CLOSING TRANSACTION BALANCE FILE'
+  - 'FILE STATUS IS: NNNN0030'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'
+  datasets:
+    # The interest records written before the close, in written order:
+    # TRAN-CAT-BAL x DIS-INT-RATE / 1200 gives 1200.00 x 15.00, 480.00 x 25.00
+    # and 2400.00 x 15.00 over 1200. TRAN-DESC keeps the x'00' bytes that
+    # uninitialized working storage leaves after 'Int. for a/c <account>', as
+    # FIN-CBACT04C-normal-01 pins them (GAP-UNC-009).
+    SYSTRAN:
+      records:
+      - TRAN-ID: '2022071800000001'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000901\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '15.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '9999000022220901'
+        TRAN-ORIG-TS: '2022-07-06-10.00.00.000000'
+        TRAN-PROC-TS: '2022-07-06-10.00.00.000000'
+      - TRAN-ID: '2022071800000002'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000901\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '10.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '9999000022220901'
+        TRAN-ORIG-TS: '2022-07-06-10.00.00.000000'
+        TRAN-PROC-TS: '2022-07-06-10.00.00.000000'
+      - TRAN-ID: '2022071800000003'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000902\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '30.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '9999000022220902'
+        TRAN-ORIG-TS: '2022-07-06-10.00.00.000000'
+        TRAN-PROC-TS: '2022-07-06-10.00.00.000000'

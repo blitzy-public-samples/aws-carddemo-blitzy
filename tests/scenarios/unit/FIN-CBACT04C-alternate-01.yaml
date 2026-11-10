@@ -1,0 +1,129 @@
+# The DEFAULT disclosure-group fallback of CBACT04C. The one account carries the
+# invented group NOGROUP01 in ACCT-GROUP-ID, which no DISCGRP key holds, so the
+# keyed READ of 1200-GET-INTEREST-RATE takes INVALID KEY (status 23): the
+# program displays the two fallback lines, moves 'DEFAULT' to the group of the
+# key and reads again, finding DEFAULT/01/0001 with DIS-INT-RATE 00150{ (15.00)
+# [app/cbl/CBACT04C.cbl:415-460] [app/data/ASCII/discgrp.txt:18]. The interest is
+# 1200.00 * 15.00 / 1200 = 15.00, with no remainder to truncate.
+#
+# The account, card, customer and category balance are synthetic (invented
+# 903 ids that match no record of app/data); DISCGRP is the repository file.
+# The record line after the start line is the whole 50-byte TRAN-CAT-BAL-RECORD
+# that the main loop displays, its 22 trailing filler spaces included
+# [app/cbl/CBACT04C.cbl:193].
+#
+# Expected records are decoded values: numbers as decimal text with their scale
+# (TRAN-CAT-CD 0005 decodes to 5, ACCT-ID 00000000903 to 903), text with its
+# trailing spaces and x'00' bytes kept. TRAN-DESC and the record's FILLER are
+# x'00' after the STRING because TRAN-RECORD is never initialized and GnuCOBOL
+# fills working storage with defaultbyte 0 (GAP-STB-011); both timestamps are
+# the fixed run clock.
+#
+# ACCTDATA is asserted unchanged: the only account is also the last one, and
+# CBACT04C never rewrites the last account [app/cbl/CBACT04C.cbl:188-222]. That
+# behaviour belongs to the account-update item and its GAP-DEF-003, which
+# FIN-CBACT04C-boundary-01 lists and tags; this scenario pins the resulting
+# state without listing that item.
+id: FIN-CBACT04C-alternate-01
+level: unit
+type: alternate
+description: >-
+  CBACT04C finds no disclosure group for the account's group id NOGROUP01,
+  displays 'DISCLOSURE GROUP RECORD MISSING' and 'TRY WITH DEFAULT GROUP CODE'
+  once, takes the 15.00 rate of group DEFAULT for type 01 category 0001, and
+  writes one interest transaction of 15.00 (2022071800000001, type 01, category
+  0005, source System, 'Int. for a/c 00000000903'); the account record stays as
+  loaded and the return code is 0.
+inventory_ids:
+- INV-FIN-006  # CBACT04C DEFAULT disclosure group fallback (rule)
+- INV-FIN-001  # CBACT04C program
+- INV-FIN-003  # CBACT04C monthly interest (calculation)
+- INV-FIN-008  # CBACT04C interest transaction record (interface)
+- INV-DTA-006  # discgrp.txt, the DISCGRP fixture source
+- INV-DTA-017  # EBCDIC disclosure group file, the fixture's cross-check counterpart
+tags: []
+gap_ids:
+- GAP-STB-004  # PARMDRV supplies the z/OS PARM linkage
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    ACCTDATA:
+      records:
+      - ACCT-ID: '00000000903'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '300.00'
+        ACCT-CREDIT-LIMIT: '5000.00'
+        ACCT-CASH-CREDIT-LIMIT: '1000.00'
+        ACCT-OPEN-DATE: '2015-03-01'
+        ACCT-EXPIRAION-DATE: '2027-03-01'
+        ACCT-REISSUE-DATE: '2025-03-01'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: '90210'
+        ACCT-GROUP-ID: NOGROUP01
+    CARDXREF:
+      records:
+      - XREF-CARD-NUM: '9999000022220903'
+        XREF-CUST-ID: '000000903'
+        XREF-ACCT-ID: '00000000903'
+    TCATBALF:
+      records:
+      - TRANCAT-ACCT-ID: '00000000903'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '0001'
+        TRAN-CAT-BAL: '1200.00'
+    # The repository disclosure groups: no NOGROUP01 key, and DEFAULT/01/0001 at 15.00.
+    DISCGRP:
+      base: DISCGRP
+  parameters:
+    parm: '2022071800'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBACT04C
+expected:
+  return_code: 0
+  messages:
+  - START OF EXECUTION OF PROGRAM CBACT04C
+  - '000000009030100010000012000{                      '
+  - DISCLOSURE GROUP RECORD MISSING
+  - TRY WITH DEFAULT GROUP CODE
+  - END OF EXECUTION OF PROGRAM CBACT04C
+  datasets:
+    SYSTRAN:
+      records:
+      - TRAN-ID: '2022071800000001'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        # 'Int. for a/c ' and the account id, then 76 bytes of x'00'.
+        TRAN-DESC: "Int. for a/c 00000000903\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '15.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '  # 50 spaces
+        TRAN-MERCHANT-CITY: '                                                  '  # 50 spaces
+        TRAN-MERCHANT-ZIP: '          '  # 10 spaces
+        TRAN-CARD-NUM: '9999000022220903'
+        TRAN-ORIG-TS: '2022-07-06-10.00.00.000000'
+        TRAN-PROC-TS: '2022-07-06-10.00.00.000000'
+        TRAN-RECORD.FILLER#1: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"  # 20 bytes of x'00'
+  file_state:
+    ACCTDATA:
+      records:
+      - ACCT-ID: '903'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '300.00'
+        ACCT-CREDIT-LIMIT: '5000.00'
+        ACCT-CASH-CREDIT-LIMIT: '1000.00'
+        ACCT-OPEN-DATE: '2015-03-01'
+        ACCT-EXPIRAION-DATE: '2027-03-01'
+        ACCT-REISSUE-DATE: '2025-03-01'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: '90210     '
+        ACCT-GROUP-ID: 'NOGROUP01 '
+        ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '  # 178 spaces

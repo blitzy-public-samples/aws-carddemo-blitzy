@@ -1,0 +1,139 @@
+# The TCATBALF read-failure branch of CBACT04C after all five files have
+# opened: the first READ returns category balance 00000000901/01/0001, which the
+# main loop displays and prices (account and cross-reference found, group
+# A000000000 rate 15.00, so 1300-B-WRITE-TX writes the first interest record);
+# the second READ ends with a status other than 00 or 10, so
+# 1000-TCATBALF-GET-NEXT displays 'ERROR READING TRANSACTION CATEGORY FILE',
+# 9910-DISPLAY-IO-STATUS shows the status and 9999-ABEND-PROGRAM calls CEE3ABD
+# without parameters. The account change that would rewrite account 901 never
+# comes, and the closes and the end-of-execution line are never reached
+# [app/cbl/CBACT04C.cbl:181-222,325-348,415-440,462-515,628-648]. No adapter
+# fails a READ after a successful OPEN (GAP-MIS-013), so the scenario stays
+# implemented-unexecuted and its expected outcome is derived from the source
+# (GAP-INF-013); nothing is captured for it.
+id: FIN-CBACT04C-recovery-02
+level: unit
+type: recovery
+description: >-
+  CBACT04C, called through the PARM driver with INTCALC's PARM, opens its five
+  files, reads, displays and prices the first category balance of the
+  FIN-CBACT04C-normal-01 fixtures, writes its interest transaction, and the
+  second TCATBALF READ fails with an I/O error: the program displays the read
+  error and the file status and abends through CEE3ABD, with no
+  end-of-execution line and no return code.
+# Only the read, write, rewrite or close failure item: this case never executes,
+# so listing the program, the interest items, its copybooks or the DISCGRP data
+# files here would block items that the executed CBACT04C scenarios verify (a
+# scenario lists an item only when the item's verification depends on it).
+inventory_ids:
+- INV-FIN-011
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013
+- GAP-INF-013
+- GAP-STB-001
+- GAP-DEF-001
+- GAP-STB-004
+preconditions:
+  # The synthetic set of FIN-CBACT04C-normal-01; every id is invented. The
+  # accounts carry their disclosure group in ACCT-GROUP-ID, so the first
+  # category finds its rate without the DEFAULT fallback.
+  datasets:
+    TCATBALF:
+      records:
+      - TRANCAT-ACCT-ID: '00000000901'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '0001'
+        TRAN-CAT-BAL: '1200.00'
+      - TRANCAT-ACCT-ID: '00000000901'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '0002'
+        TRAN-CAT-BAL: '480.00'
+      - TRANCAT-ACCT-ID: '00000000902'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '0001'
+        TRAN-CAT-BAL: '2400.00'
+    CARDXREF:
+      records:
+      - XREF-CARD-NUM: '9999000022220901'
+        XREF-CUST-ID: '000000901'
+        XREF-ACCT-ID: '00000000901'
+      - XREF-CARD-NUM: '9999000022220902'
+        XREF-CUST-ID: '000000902'
+        XREF-ACCT-ID: '00000000902'
+    ACCTDATA:
+      records:
+      - ACCT-ID: '00000000901'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '500.00'
+        ACCT-CREDIT-LIMIT: '5000.00'
+        ACCT-CASH-CREDIT-LIMIT: '1000.00'
+        ACCT-OPEN-DATE: '2020-01-01'
+        ACCT-EXPIRAION-DATE: '2026-01-01'
+        ACCT-REISSUE-DATE: '2026-01-01'
+        ACCT-CURR-CYC-CREDIT: '40.00'
+        ACCT-CURR-CYC-DEBIT: '-15.00'
+        ACCT-ADDR-ZIP: '00000'
+        ACCT-GROUP-ID: 'A000000000'
+      - ACCT-ID: '00000000902'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '800.00'
+        ACCT-CREDIT-LIMIT: '5000.00'
+        ACCT-CASH-CREDIT-LIMIT: '1000.00'
+        ACCT-OPEN-DATE: '2020-01-01'
+        ACCT-EXPIRAION-DATE: '2026-01-01'
+        ACCT-REISSUE-DATE: '2026-01-01'
+        ACCT-CURR-CYC-CREDIT: '40.00'
+        ACCT-CURR-CYC-DEBIT: '-15.00'
+        ACCT-ADDR-ZIP: '00000'
+        ACCT-GROUP-ID: 'A000000000'
+    # Group A000000000, type 01, category 0001 has DIS-INT-RATE 15.00
+    # (app/data/ASCII/discgrp.txt record 1).
+    DISCGRP:
+      base: DISCGRP
+  parameters:
+    parm: '2022071800'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  # after: 1 -- the first READ returns record 1, the second fails.
+  - target: TCATBALF
+    operation: read
+    condition: io-error
+    after: 1
+inputs:
+  program: CBACT04C
+expected:
+  return_code: null
+  messages:
+  - 'START OF EXECUTION OF PROGRAM CBACT04C'
+  # The main loop's DISPLAY TRAN-CAT-BAL-RECORD: the whole 50-byte record,
+  # trailing filler included, as GnuCOBOL 3.2 shows it for these fixtures.
+  - '000000009010100010000012000{                      '
+  - 'ERROR READING TRANSACTION CATEGORY FILE'
+  # An io-error is taken as IBM file status 30 (inferred, GAP-INF-013): numeric
+  # and not 9x, so 9910-DISPLAY-IO-STATUS shows it as NNNN0030.
+  - 'FILE STATUS IS: NNNN0030'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'
+  datasets:
+    # The one interest transaction written before the fault: 1200.00 * 15.00 / 1200
+    # for category 0001 of account 901. Text values are full field width, as
+    # decoded. TRAN-DESC ends in the x'00' bytes of never-initialized working
+    # storage (GAP-UNC-009, which FIN-CBACT04C-normal-01 pins).
+    SYSTRAN:
+      records:
+      - TRAN-ID: '2022071800000001'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000901\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '15.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '9999000022220901'
+        TRAN-ORIG-TS: '2022-07-06-10.00.00.000000'
+        TRAN-PROC-TS: '2022-07-06-10.00.00.000000'
