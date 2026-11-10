@@ -1,0 +1,189 @@
+syntax = "proto3";
+
+package cardservicing.carddata.v1;
+
+import "cardservicing/common/v1/common.proto";
+
+option java_multiple_files = true;
+option java_package = "com.example.cardservicing.contract.carddata.v1";
+
+// Serves account records, card-to-account cross-references and per-account category balances
+// (Data Layouts · CVACT01Y, Data Layouts · CVACT03Y, Data Layouts · CVTRA01Y).
+//
+// Stub phase: a stub gRPC server answered by a mock-data provider over the fixture-loaded tables.
+// Replacing it with the real service changes only the target address and the credential source.
+//
+// Identity: the caller's bearer token is forwarded in `authorization` metadata and the service
+// credential travels in `x-api-key`; the stub ignores the key and does not re-authorize.
+service CardDataService {
+  // Returns one account record.
+  //
+  // Example request:
+  //   {"accountId":"00000000001"}
+  //
+  // Example response:
+  //   {"account":{"accountId":"00000000001","activeStatus":"Y","currentBalance":"194.00",
+  //   "creditLimit":"2020.00","cashCreditLimit":"1020.00","openDate":"2014-11-20",
+  //   "expirationDate":"2025-05-20","reissueDate":"2025-05-20","currentCycleCredit":"0.00",
+  //   "currentCycleDebit":"0.00","addressZip":"A000000000"}}
+  //   groupId is omitted because it is blank in the sample; addressZip shows the sample data's
+  //   zip/group-ID position quirk.
+  //
+  // Errors:
+  //   INVALID_ARGUMENT - account_id malformed or all zeros
+  //   UNAUTHENTICATED - forwarded bearer token missing, invalid or expired (the stub does not re-authorize)
+  //   NOT_FOUND - account unknown
+  //   UNAVAILABLE - service unavailable after retries
+  //   DEADLINE_EXCEEDED - request deadline reached
+  //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
+  rpc GetAccount(GetAccountRequest) returns (GetAccountResponse);
+
+  // Returns every card cross-reference record of one account, ordered by card_number ascending.
+  //
+  // Example request:
+  //   {"accountId":"00000000001"}
+  //
+  // Example response:
+  //   {"cardCrossReferences":[{"cardNumber":"9680294154603697","customerId":"000000001","accountId":"00000000001"}]}
+  //
+  // Errors:
+  //   INVALID_ARGUMENT - account_id malformed or all zeros
+  //   UNAUTHENTICATED - forwarded bearer token missing, invalid or expired (the stub does not re-authorize)
+  //   NOT_FOUND - account unknown
+  //   UNAVAILABLE - service unavailable after retries
+  //   DEADLINE_EXCEEDED - request deadline reached
+  //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
+  rpc GetCardCrossReference(GetCardCrossReferenceRequest) returns (GetCardCrossReferenceResponse);
+
+  // Lists one account's category balances ordered by (type_code, category_code) ascending; an
+  // existing account with no balances returns an empty list.
+  //
+  // Example request:
+  //   {"accountId":"00000000001"}
+  //
+  // Example response:
+  //   {"categoryBalances":[{"accountId":"00000000001","typeCode":"01","categoryCode":"0001","balance":"0.00"}]}
+  //
+  // Errors:
+  //   INVALID_ARGUMENT - account_id malformed or all zeros
+  //   UNAUTHENTICATED - forwarded bearer token missing, invalid or expired (the stub does not re-authorize)
+  //   NOT_FOUND - account unknown
+  //   UNAVAILABLE - service unavailable after retries
+  //   DEADLINE_EXCEEDED - request deadline reached
+  //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
+  rpc ListCategoryBalances(ListCategoryBalancesRequest) returns (ListCategoryBalancesResponse);
+}
+
+// Requests one account record by its identifier.
+message GetAccountRequest {
+  // The account identifier: 11 digits, pattern ^[0-9]{11}$, not all zeros
+  // (Data Layouts · CVACT01Y · ACCT-ID; Use Cases · COACTVWC).
+  string account_id = 1;
+}
+
+// Carries the requested account record.
+message GetAccountResponse {
+  // The account record.
+  Account account = 1;
+}
+
+// One account record (Data Layouts · CVACT01Y).
+message Account {
+  // The account identifier: 11 digits, pattern ^[0-9]{11}$
+  // (Data Layouts · CVACT01Y · ACCT-ID 9(11)).
+  string account_id = 1;
+  // The account's active-status flag, for example "Y"; max length 1
+  // (Data Layouts · CVACT01Y · ACCT-ACTIVE-STATUS X(01)).
+  string active_status = 2;
+  // The current balance as a scale-2 decimal string such as "1234.56", pattern ^-?[0-9]+\.[0-9]{2}$
+  // (Data Layouts · CVACT01Y · ACCT-CURR-BAL S9(10)V99).
+  string current_balance = 3;
+  // The credit limit as a scale-2 decimal string, pattern ^-?[0-9]+\.[0-9]{2}$
+  // (Data Layouts · CVACT01Y · ACCT-CREDIT-LIMIT S9(10)V99).
+  string credit_limit = 4;
+  // The cash credit limit as a scale-2 decimal string, pattern ^-?[0-9]+\.[0-9]{2}$
+  // (Data Layouts · CVACT01Y · ACCT-CASH-CREDIT-LIMIT S9(10)V99).
+  string cash_credit_limit = 5;
+  // The date the account was opened, as YYYY-MM-DD
+  // (Data Layouts · CVACT01Y · ACCT-OPEN-DATE X(10)).
+  string open_date = 6;
+  // The account expiration date, as YYYY-MM-DD. It maps from the copybook field spelled
+  // ACCT-EXPIRAION-DATE X(10) in the source (Data Layouts · CVACT01Y · ACCT-EXPIRAION-DATE).
+  string expiration_date = 7;
+  // The account reissue date, as YYYY-MM-DD
+  // (Data Layouts · CVACT01Y · ACCT-REISSUE-DATE X(10)).
+  string reissue_date = 8;
+  // The credits posted in the current cycle as a scale-2 decimal string, pattern ^-?[0-9]+\.[0-9]{2}$
+  // (Data Layouts · CVACT01Y · ACCT-CURR-CYC-CREDIT S9(10)V99).
+  string current_cycle_credit = 9;
+  // The debits posted in the current cycle as a scale-2 decimal string, pattern ^-?[0-9]+\.[0-9]{2}$
+  // (Data Layouts · CVACT01Y · ACCT-CURR-CYC-DEBIT S9(10)V99).
+  string current_cycle_debit = 10;
+  // The account address zip code, read at its copybook offset; max length 10
+  // (Data Layouts · CVACT01Y · ACCT-ADDR-ZIP X(10)).
+  string address_zip = 11;
+  // The account group identifier; max length 10; unset when the source value is blank
+  // (Data Layouts · CVACT01Y · ACCT-GROUP-ID X(10)).
+  optional string group_id = 12;
+}
+
+// Requests every card cross-reference record of one account.
+message GetCardCrossReferenceRequest {
+  // The account identifier: 11 digits, pattern ^[0-9]{11}$, not all zeros
+  // (Data Layouts · CVACT03Y · XREF-ACCT-ID; Use Cases · COACTVWC).
+  string account_id = 1;
+}
+
+// Carries the account's card cross-reference records.
+message GetCardCrossReferenceResponse {
+  // The account's card cross-reference records, ordered by card_number ascending.
+  repeated CardCrossReference card_cross_references = 1;
+}
+
+// One card-to-account cross-reference record (Data Layouts · CVACT03Y).
+message CardCrossReference {
+  // The card number; max length 16 (Data Layouts · CVACT03Y · XREF-CARD-NUM X(16)).
+  string card_number = 1;
+  // The customer identifier: 9 digits, pattern ^[0-9]{9}$
+  // (Data Layouts · CVACT03Y · XREF-CUST-ID 9(09)).
+  string customer_id = 2;
+  // The account the card belongs to: 11 digits, pattern ^[0-9]{11}$
+  // (Data Layouts · CVACT03Y · XREF-ACCT-ID 9(11)).
+  string account_id = 3;
+}
+
+// Requests every category balance of one account.
+message ListCategoryBalancesRequest {
+  // The account identifier: 11 digits, pattern ^[0-9]{11}$, not all zeros
+  // (Data Layouts · CVTRA01Y · TRANCAT-ACCT-ID; Use Cases · COACTVWC).
+  string account_id = 1;
+}
+
+// Carries the account's category balances.
+message ListCategoryBalancesResponse {
+  // The account's category balances, ordered by (type_code, category_code) ascending; empty when
+  // the account has none.
+  repeated CategoryBalance category_balances = 1;
+}
+
+// One category balance (Data Layouts · CVTRA01Y).
+message CategoryBalance {
+  // The account the balance belongs to: 11 digits, pattern ^[0-9]{11}$
+  // (Data Layouts · CVTRA01Y · TRANCAT-ACCT-ID 9(11)).
+  string account_id = 1;
+  // The transaction type code: 2 characters, pattern ^[A-Za-z0-9]{2}$
+  // (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)).
+  string type_code = 2;
+  // The transaction category code: 4 digits, pattern ^[0-9]{4}$
+  // (Data Layouts · CVTRA01Y · TRANCAT-CD 9(04)).
+  string category_code = 3;
+  // The category balance as a scale-2 decimal string such as "1234.56", pattern ^-?[0-9]+\.[0-9]{2}$
+  // (Data Layouts · CVTRA01Y · TRAN-CAT-BAL S9(09)V99).
+  string balance = 4;
+}
+
+// Names the standard error object that every RPC in this service packs, as cardservicing.common.v1.ErrorObject itself, into google.rpc.Status details on a non-OK status; not a request or response type.
+message ErrorDetail {
+  // The standard error object for a non-OK status.
+  cardservicing.common.v1.ErrorObject error = 1;
+}
