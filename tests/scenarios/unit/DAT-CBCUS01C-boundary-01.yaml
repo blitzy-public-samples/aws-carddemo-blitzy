@@ -1,0 +1,38 @@
+# The count boundary of the CBCUS01C customer listing: CUSTDATA exists but holds
+# no record. OPEN INPUT succeeds, the first READ returns status 10 and ends the
+# loop, so no CUSTOMER-RECORD is displayed between the start and end lines, the
+# close succeeds and the run ends normally [app/cbl/CBCUS01C.cbl:71-116,118-152].
+# CUSTDATA is declared with an empty record list rather than left out: leaving
+# it out is the open-failure case (DAT-CBCUS01C-recovery-01). The empty KSDS is
+# a Berkeley DB file created and closed with no record (GAP-STB-010); this is
+# the outcome observed on it. CBCUS01C reads no date; the clock is the suite
+# default.
+id: DAT-CBCUS01C-boundary-01
+level: unit
+type: boundary
+description: >-
+  CBCUS01C reads an empty customer KSDS: it displays the start and end of
+  execution lines with no record lines between them and ends with return code 0.
+inventory_ids:
+- INV-DAT-037
+- INV-DAT-004
+- INV-LAY-020
+tags: []
+gap_ids:
+- GAP-STB-010
+- GAP-STB-011
+preconditions:
+  datasets:
+    CUSTDATA:
+      records: []
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBCUS01C
+expected:
+  return_code: 0
+  messages:
+  - START OF EXECUTION OF PROGRAM CBCUS01C
+  - END OF EXECUTION OF PROGRAM CBCUS01C

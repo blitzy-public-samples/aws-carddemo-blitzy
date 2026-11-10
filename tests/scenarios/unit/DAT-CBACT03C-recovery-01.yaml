@@ -1,0 +1,41 @@
+id: DAT-CBACT03C-recovery-01
+level: unit
+type: recovery
+description: >-
+  The card cross-reference file is absent when CBACT03C opens it INPUT. The
+  program reports the open failure with file status 35 and abends through
+  CEE3ABD before any record is read, so no end-of-execution line is written
+  [app/cbl/CBACT03C.cbl:71-72,118-134,154-158,161-174].
+inventory_ids:
+- INV-DAT-035
+- INV-DAT-003
+# Untagged by design: GAP-DEF-001 (the parameterless CALL 'CEE3ABD' that ends
+# every CB* abend path) is cited as the gap this abend passes through, as in
+# every read-program recovery case; suspected-defect marks the cases that pin
+# a program's own defect.
+tags: []
+gap_ids:
+- GAP-STB-001
+- GAP-DEF-001
+- GAP-STB-010
+- GAP-STB-011
+preconditions:
+  # CARDXREF is deliberately not provided: on gnucobol-batch the open fault
+  # below is produced by leaving the dataset out.
+  datasets: {}
+  parameters:
+    clock_mode: fixed
+  faults:
+  - target: CARDXREF
+    operation: open
+    condition: unavailable
+inputs:
+  program: CBACT03C
+expected:
+  return_code: null
+  messages:
+  - START OF EXECUTION OF PROGRAM CBACT03C
+  - ERROR OPENING XREFFILE
+  - 'FILE STATUS IS: NNNN0035'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD

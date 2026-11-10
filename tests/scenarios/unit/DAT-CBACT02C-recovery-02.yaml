@@ -1,0 +1,50 @@
+# The read-failure branch of CBACT02C after a successful open: CARDFILE opens
+# INPUT, the first READ returns card 0500024453765740 (the lowest key) and the
+# program displays it; the second READ ends with a status other than 00 or 10,
+# so 1000-CARDFILE-GET-NEXT displays 'ERROR READING CARDFILE', 9910 shows the
+# status and 9999-ABEND-PROGRAM calls CEE3ABD [app/cbl/CBACT02C.cbl:92-116,
+# 154-158,161-174]. The io-error condition is taken as file status 30, which
+# 9910 shows as NNNN0030; that value is inferred, not observed.
+# No adapter can fail a READ after a successful OPEN (GAP-MIS-013), so the
+# scenario stays implemented-unexecuted and its expected outcome is derived from
+# the source (GAP-INF-013); nothing is captured for it.
+id: DAT-CBACT02C-recovery-02
+level: unit
+type: recovery
+description: >-
+  CARDFILE opens, the first card record is read and listed, and the second READ
+  fails with an I/O error: CBACT02C displays the read error and the file status
+  and abends through CEE3ABD, with no end-of-execution line and no return code.
+inventory_ids:
+- INV-DAT-033
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013
+- GAP-INF-013
+- GAP-STB-001
+- GAP-DEF-001
+preconditions:
+  datasets:
+    CARDDATA:
+      base: CARDDATA
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  - target: CARDDATA
+    operation: read
+    condition: io-error
+    after: 1
+inputs:
+  program: CBACT02C
+expected:
+  return_code: null
+  messages:
+  - START OF EXECUTION OF PROGRAM CBACT02C
+  # The first CARD-RECORD, displayed as its full 150 bytes, trailing filler included.
+  - '050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           '
+  - ERROR READING CARDFILE
+  - 'FILE STATUS IS: NNNN0030'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD
