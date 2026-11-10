@@ -14,6 +14,8 @@
  *      lists appears in the Dependency Map;
  *   5. every epic README's Dependencies section lists exactly its epic-dependency rows;
  *   6. the edge and pair counts equal the backlog inventory.
+ * Every table row it reads is also held to its header's width: a row with more parsed cells
+ * than its header is reported, because a renderer drops the cells no comparison reads.
  * Prints one line per violation and a final count, then exits 0 when clean, 1 on any
  * violation and 2 on an internal error. A failure is fixed in the artifacts, never by
  * loosening this check.
@@ -36,6 +38,7 @@ import {
   repoRoot,
   sectionByHeading,
   sections,
+  surplusCellRows,
 } from './lib/markdown.mjs';
 
 const CHECK = 'check-dependency-order';
@@ -142,7 +145,8 @@ function parseIdList(value, noneWords) {
 
 /**
  * The single table of a section whose header carries every column in `columns`, with
- * those columns' indexes and the offset that turns its line numbers into plan lines.
+ * those columns' indexes and the offset that turns its line numbers into plan lines. Each
+ * of its rows with more cells than its header is reported at its plan line.
  */
 function findTable(section, columns, label, add) {
   const offset = section.startLine - 1;
@@ -155,6 +159,7 @@ function findTable(section, columns, label, add) {
     add(PLAN, offset + matches[1].line, `"${section.heading}" holds a second ${label} table; only the one at line ${offset + matches[0].line} is read`);
   }
   const table = matches[0];
+  for (const s of surplusCellRows(table, `${label} table`)) add(PLAN, offset + s.line, s.message);
   const col = Object.fromEntries(columns.map((c) => [c, columnOf(table.header, [c])]));
   return { table, col, offset };
 }
@@ -467,6 +472,7 @@ function placeStories(plan, add) {
       const iStory = columnOf(table.header, ['story']);
       const iPosition = columnOf(table.header, POSITION_COLUMNS);
       const iDepends = columnOf(table.header, ['depends on']);
+      for (const s of surplusCellRows(table, `wave ${wave.label} story table`)) add(PLAN, offset + s.line, s.message);
       table.rows.forEach((row, r) => {
         if (isTotalsRow(row)) return;
         const line = offset + table.rowLines[r];
@@ -563,6 +569,7 @@ function indexedEpics(add) {
     return out;
   }
   const iId = columnOf(table.header, ['id']);
+  for (const s of surplusCellRows(table, 'epic index table')) add(EPIC_INDEX, s.line, s.message);
   table.rows.forEach((row, r) => {
     if (isTotalsRow(row)) return;
     const epic = singleEpicId(row[iId]);
@@ -589,9 +596,10 @@ function epicReadmes(backlogFiles, add) {
  * story or an epic other than `epic` (its lines joined, at its first line), and every
  * subheading below the section heading that names one (its heading text, without the `#`
  * markers, at its line); plus the section's body text for the N/A test, which holds such
- * subheadings but no subheading naming neither.
+ * subheadings but no subheading naming neither. Each table row with more cells than its
+ * header is reported against `file` at its README line.
  */
-function dependencyEntries(section, epic) {
+function dependencyEntries(section, epic, file, add) {
   const lines = section.text.split(/\r?\n/);
   const offset = section.startLine - 1;
   const fenced = new Set();
@@ -603,6 +611,7 @@ function dependencyEntries(section, epic) {
   for (const table of parseTables(section.text)) {
     tableLines.add(table.line);
     tableLines.add(table.line + 1);
+    for (const s of surplusCellRows(table, 'Dependencies table')) add(file, offset + s.line, s.message);
     table.rows.forEach((row, r) => {
       tableLines.add(table.rowLines[r]);
       if (!isTotalsRow(row)) entries.push({ line: offset + table.rowLines[r], text: row.join(' | '), cells: row });
@@ -688,7 +697,7 @@ function entryEdgeText(entry) {
 function checkEpicReadme(epic, file, expected, derived, add) {
   const section = singleSection(file, readText(file), 'Dependencies', add);
   if (!section) return;
-  const { entries, body } = dependencyEntries(section, epic);
+  const { entries, body } = dependencyEntries(section, epic, file, add);
   if (expected.size === 0) {
     if (body !== 'N/A') {
       const shown = body.length > 80 ? `${body.slice(0, 77)}...` : body;

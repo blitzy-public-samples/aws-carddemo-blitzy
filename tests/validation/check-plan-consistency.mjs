@@ -71,6 +71,7 @@ import {
   sectionByHeading,
   parseTables,
   isTotalsRow,
+  surplusCellRows,
   resolveLink,
   linkInCell,
   parseLinks,
@@ -184,14 +185,33 @@ function colIndex(table, ...matchers) {
   return -1;
 }
 
+// Tables whose row widths have been checked, so a row is reported once however many blocks read it.
+const widthChecked = new WeakSet();
+
+/**
+ * Reports, once per table of the file at `path`, every row with more cells than its header,
+ * totals rows included, under `what`: a renderer drops those cells, so no reader sees them.
+ */
+function checkRowWidths(path, table, what) {
+  if (widthChecked.has(table)) return;
+  widthChecked.add(table);
+  for (const { line, message } of surplusCellRows(table, what)) fail(path, line, message);
+}
+
 /** Splits a table into body rows and totals rows, each with its document line and row index. */
-function rowsOf(table) {
+function splitRows(table) {
   const body = [];
   const totals = [];
   table.rows.forEach((cells, index) => {
     (isTotalsRow(cells) ? totals : body).push({ cells, line: table.rowLines[index], index });
   });
   return { body, totals };
+}
+
+/** The rows of a table this check reads, after its row widths are checked. */
+function rowsOf(path, table, what) {
+  checkRowWidths(path, table, what);
+  return splitRows(table);
 }
 
 /**
@@ -592,7 +612,7 @@ function compareEpicCells(path, row, c, epic, what) {
  * body sum. Returns { row, values } with the stated totals by key, or null when there is none.
  */
 function checkTotalsRow(path, table, what, specs) {
-  const { body, totals } = rowsOf(table);
+  const { body, totals } = rowsOf(path, table, what);
   if (totals.length === 0) {
     fail(path, table.line, `${what} has no totals row`);
     return null;
@@ -832,7 +852,7 @@ function checkWaveSummary(plan) {
   requireColumns(PLAN, table, what, c, [['name', 'Name'], ['stories', 'Stories'], ['points', 'Points'], ['files', '']]);
 
   const ids = [];
-  for (const row of rowsOf(table).body) {
+  for (const row of rowsOf(PLAN, table, what).body) {
     const cell = norm(row.cells[c.wave]);
     const id = /^(W\d+)\b/.exec(cell)?.[1] ?? cell;
     ids.push(id);
@@ -939,7 +959,7 @@ function checkWaveSection(plan, backlog, summary, id, sec, appearances) {
     ['files', ''],
   ]);
 
-  const { body } = rowsOf(table);
+  const { body } = rowsOf(PLAN, table, what);
   const rows = [];
   body.forEach((row, i) => {
     const pos = has(c.pos) ? cellInt(PLAN, row.line, row.cells[c.pos], `${what} position`) : null;
@@ -995,7 +1015,7 @@ function checkWaveSection(plan, backlog, summary, id, sec, appearances) {
     points: has(c.points) ? sumOrNull(body.map((r) => intStrict(norm(r.cells[c.points])))) : null,
     files: has(c.files) ? sumOrNull(body.map((r) => intStrict(norm(r.cells[c.files])))) : null,
   };
-  if (rowsOf(table).totals.length > 0) {
+  if (rowsOf(PLAN, table, what).totals.length > 0) {
     checkTotalsRow(PLAN, table, what, [
       { key: 'points', idx: c.points },
       { key: 'files', idx: c.files },
@@ -1056,7 +1076,7 @@ function checkTotalsLine(plan, id, sec, table, stated) {
 /** Shared body of the epics-in-scope table and the epic index: one row per epic, totals row. */
 function checkEpicTable(path, table, what, c, backlog) {
   const seen = new Map(); // folder -> row
-  const { body } = rowsOf(table);
+  const { body } = rowsOf(path, table, what);
   for (const row of body) {
     const epic = epicOfRow(path, row, c.epic, what, backlog);
     if (epic === null) continue;
@@ -1171,7 +1191,7 @@ function checkEpicIndex(backlog, planGroupings) {
  */
 function checkExtraTable(path, table, what, c, noun, checkRow) {
   requireColumns(path, table, what, c, [['files', '']]);
-  const { body } = rowsOf(table);
+  const { body } = rowsOf(path, table, what);
   for (const row of body) checkRow(row);
   const specs = [
     { key: 'stories', idx: noun === 'epics' ? c.stories : -1 },
@@ -1217,7 +1237,7 @@ function checkEpicReadmes(backlog) {
     }
     const c = columnsOf(table);
     requireColumns(epic.readme, table, what, c, [['story', 'Story'], ['points', 'Points'], ['files', '']]);
-    for (const row of rowsOf(table).body) checkRow(row, c, what);
+    for (const row of rowsOf(epic.readme, table, what).body) checkRow(row, c, what);
     const totals = checkTotalsRow(epic.readme, table, what, [
       { key: 'points', idx: c.points },
       { key: 'files', idx: c.files },
@@ -1403,7 +1423,7 @@ function checkRepresentedTables(plan, backlog, summaryTable, epicsTable) {
 
   for (const table of plan.tables) {
     if (owned.has(table) || exempt(table)) continue;
-    const { body, totals } = rowsOf(table);
+    const { body, totals } = splitRows(table);
     const head = (c) => norm(table.header[c]);
     const every = (c, re) => body.length > 0 && body.every((r) => re.test(norm(r.cells[c])));
     const linked = epicColumn(table, PLAN);
@@ -1434,6 +1454,7 @@ function checkRepresentedTables(plan, backlog, summaryTable, epicsTable) {
     const points = colIndex(table, COL.points);
     const count = colIndex(table, COL.stories);
     requireColumns(PLAN, table, what, { files }, [['files', '']]);
+    checkRowWidths(PLAN, table, what);
 
     if (kind === 'story') {
       // A linked story column first, then the story-identifier key column, then a Story header.
@@ -1512,7 +1533,7 @@ function checkRepresentedTables(plan, backlog, summaryTable, epicsTable) {
 function fieldGapMap(path, table, what) {
   const lc = colIndex(table, COL.label);
   const sc = colIndex(table, COL.status);
-  const { body } = rowsOf(table);
+  const { body } = rowsOf(path, table, what);
   if (body.length !== FIELD_GAP_LABELS) {
     fail(path, table.line, `${what} has ${body.length} label rows; the Customer Details section has ${FIELD_GAP_LABELS}`);
   }
@@ -1568,7 +1589,7 @@ function checkGapList(plan, backlog) {
     const what = 'gap-list story table';
     const c = { story: storyColumn(storyTable, PLAN, { fallback: true }), files: colIndex(storyTable, COL.files) };
     requireColumns(PLAN, storyTable, what, c, [['story', 'Story'], ['files', '']]);
-    const { body } = rowsOf(storyTable);
+    const { body } = rowsOf(PLAN, storyTable, what);
     const seen = new Set();
     for (const row of body) {
       const story = storyOfRow(PLAN, row, c.story, what, backlog);

@@ -322,7 +322,7 @@ Timeouts, retries and the deadline (upstream call policy, CS-11-003):
 - Retries: at most 2 (`UPSTREAM_MAX_RETRIES`, replaced by Config `upstream_max_retries` once held), with 50 ms then 100 ms backoff, on `UNAVAILABLE` and `DEADLINE_EXCEEDED` only. Any other status, `NOT_FOUND` and `INVALID_ARGUMENT` included, is never retried. A retry starts only if its backoff plus a full 300 ms attempt fits in the remaining budget.
 - Request deadline: 900 ms (`REQUEST_DEADLINE_MS`) from receipt to the cut-off ([deadline boundary](#deadline-boundary)). `REQUEST_DEADLINE_MS` is never a Config key.
 
-Failure injection (CS-11-002): every stub reads `STUB_LATENCY_MS` (delay before answering) and `STUB_FAILURE_RATE` (fraction of calls answered `UNAVAILABLE`), both overridable per stub and per test. Every stub records each call in its request log with the operation, the outcome and the call's duration. The integration suites, the endpoint deadline tests and the end-to-end and performance harnesses read these logs.
+Failure injection (CS-11-002): every stub reads `STUB_LATENCY_MS` (delay before answering) and `STUB_FAILURE_RATE` (fraction of calls answered `UNAVAILABLE`), both overridable per stub and per test. Every stub records each call in its request log with the operation, the outcome, the call's duration and, where the request names an account, that account. The integration suites, the endpoint deadline tests and the end-to-end and performance harnesses read these logs.
 
 Degradation table. Every stage-3 story follows it; the outcome applies when the call fails after retries or is unfinished at the cut-off.
 

@@ -31,6 +31,7 @@ import {
   listFiles,
   sectionByHeading,
   parseTables,
+  surplusCellRows,
   toolBin,
   report,
 } from './lib/markdown.mjs';
@@ -235,7 +236,11 @@ function renderAll(files, violations) {
 // ---------------------------------------------------------------------------------------
 // TRD inputs: component catalogue, security control table, environment variables
 
-/** The first table of a TRD section whose header holds every wanted column, with indexes and header line. */
+/**
+ * The first table of a TRD section whose header holds every wanted column, with indexes and
+ * header line. Each of its rows with more cells than the header is reported, since a renderer
+ * drops the surplus cells and the named-column readers never see them; every row is still returned.
+ */
 function sectionTable(trdText, heading, wanted, violations) {
   const section = sectionByHeading(trdText, heading);
   if (!section) {
@@ -248,6 +253,10 @@ function sectionTable(trdText, heading, wanted, violations) {
     if (cols.every((c) => c >= 0)) {
       const col = Object.fromEntries(wanted.map((w, i) => [w, cols[i]]));
       const rows = table.rows.map((cells, i) => ({ cells, line: section.startLine + table.rowLines[i] - 1 }));
+      const label = /\btable$/i.test(heading) ? heading : `${heading} table`;
+      for (const r of surplusCellRows(table, label)) {
+        violations.push({ path: TRD, line: section.startLine + r.line - 1, message: r.message });
+      }
       return { col, rows, line: section.startLine + table.line - 1 };
     }
   }

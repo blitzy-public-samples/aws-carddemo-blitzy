@@ -189,7 +189,7 @@ Open assumptions:
 | AC2 | Holds | the kept first-page token resumes after the second row |
 | AC3 | Holds | the last two rows leave no further item for a next-page token |
 | AC4 | Holds | a replayed token returns the same page over static data |
-| AC5 | Holds | the token's fingerprint does not cover the added type filter |
+| AC5 | Holds | the requested type filter differs from the filter bound into the token |
 | AC6 | Holds | a malformed token fails at receipt before any upstream call |
 | AC7 | Holds | all six rows fit inside a page of ten |
 | AC8 | Holds | the access guard denies the call before any data read |
@@ -217,7 +217,7 @@ Open assumptions:
 | AC2 | Conditional | holds only once the contract gains a previous-page field |
 | AC3 | Conditional | holds only once the contract gains a previous-page field |
 | AC4 | Breaks | backward travel needs a field the baseline contract lacks |
-| AC5 | Holds | the token's fingerprint does not cover the added type filter |
+| AC5 | Holds | the requested type filter differs from the filter bound into the token |
 | AC6 | Holds | a malformed token fails at receipt before any upstream call |
 | AC7 | Holds | all six rows fit inside a page of ten |
 | AC8 | Holds | the access guard denies the call before any data read |

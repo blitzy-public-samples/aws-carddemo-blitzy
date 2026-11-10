@@ -52,12 +52,14 @@ import {
   pathKind,
   listEntries,
   fencedBlocks,
+  hiddenLines,
   parseHeadings,
   sections,
   sectionByHeading,
   stripBlockquote,
   parseTables,
   isTotalsRow,
+  surplusCellRows,
   parseLinks,
   resolveLink,
   linkInCell,
@@ -214,13 +216,28 @@ const hasSecondSentence = (s) => /[.!?]\s+\S/.test(String(s).replace(ABBREVIATIO
 
 const splitLines = (text) => text.split(/\r?\n/);
 
-/** 1-based line numbers covered by fenced code, opening and closing fences included. */
+/**
+ * 1-based line numbers covered by fenced code, opening and closing fences included; HTML
+ * comment blocks are not in it. The voice scan skips it. Presence and structure scans skip
+ * hiddenLines(text) instead, which covers comment blocks too; the Design and Test Plan text
+ * scans and the epic README's Owner and Status read skip commentLineSet(text) alone.
+ */
 function fenceLineSet(text) {
   const set = new Set();
   for (const block of fencedBlocks(text)) {
     for (let l = block.startLine; l <= block.endLine; l++) set.add(l);
   }
   return set;
+}
+
+/**
+ * 1-based line numbers covered by HTML comment blocks alone, their `<!--` and `-->` lines
+ * included: hiddenLines(text) without the fenceLineSet(text) lines. Their text never renders,
+ * so scans that still read visible fenced code skip these lines.
+ */
+function commentLineSet(text) {
+  const fences = fenceLineSet(text);
+  return new Set([...hiddenLines(text)].filter((l) => !fences.has(l)));
 }
 
 /** The level-2 section whose heading text, whitespace-normalised, equals `name`. */
@@ -409,6 +426,7 @@ function checkEpicIndex(files, epics, epicNames, v) {
     v.push({ path: INDEX_README, line: tables[1].line, message: `epic index holds ${tables.length} tables that link epic READMEs; exactly one index table is allowed` });
   }
   const [table] = tables;
+  for (const s of surplusCellRows(table, 'epic index table')) v.push({ path: INDEX_README, line: s.line, message: s.message });
 
   // Identity columns, located by header text; every column under a required header is compared.
   const columns = (name) => {
@@ -499,11 +517,11 @@ function checkEpicReadme(epic, v) {
 
   const goal = h2Section(text, 'Goal');
   if (goal) {
-    const fences = fenceLineSet(goal.text);
+    const hidden = hiddenLines(goal.text);
     const sentence = normaliseSpace(
       splitLines(goal.text)
         .slice(1)
-        .filter((l, k) => l.trim() !== '' && !fences.has(k + 2))
+        .filter((l, k) => l.trim() !== '' && !hidden.has(k + 2))
         .map((l) => plainText(normaliseLabel(l)))
         .join(' '),
     );
@@ -523,13 +541,14 @@ function checkEpicReadme(epic, v) {
   const EPIC_REF_RE = /(?<![\w-])CS-\d{2}(?![\w-])/g;
   const STORY_EDGE_RE = /(?<![\w-])CS-\d{2}-\d{3}\s*(?:→|->)\s*CS-\d{2}-\d{3}(?![\w-])/;
   const hasText = (s) => /[\p{L}\p{N}]/u.test(plainText(s));
-  // Content lines of one H2 section with document line numbers, blank and fenced lines left
-  // out. A list item gathers its continuation lines: lazy lines straight after it, lines
-  // indented to its content after a gap, and nested items. Other lines are headings or loose.
+  // Content lines of one H2 section with document line numbers, blank lines and the lines of
+  // fenced code and HTML comment blocks left out. A list item gathers its continuation lines:
+  // lazy lines straight after it, lines indented to its content after a gap, and nested
+  // items. Other lines are headings or loose.
   const requestSection = (sectionName) => {
     const section = h2Section(text, sectionName);
     if (!section) return null;
-    const fences = fenceLineSet(section.text);
+    const hidden = hiddenLines(section.text);
     const content = [];
     const items = [];
     let item = null;
@@ -537,7 +556,7 @@ function checkEpicReadme(epic, v) {
     splitLines(section.text).forEach((raw, k) => {
       // Line k + 1 of the section text is document line section.startLine + k; line 1 is the heading.
       if (k === 0) return;
-      if (raw.trim() === '' || fences.has(k + 1)) {
+      if (raw.trim() === '' || hidden.has(k + 1)) {
         afterGap = true;
         return;
       }
@@ -651,6 +670,7 @@ function checkEpicReadme(epic, v) {
     return name;
   }
   const toDoc = (l) => stories.startLine + l - 1;
+  for (const s of surplusCellRows(table, 'Stories table')) v.push({ path: rel, line: toDoc(s.line), message: s.message });
   const storyDir = `${epic.dir}/stories/`;
   const expected = new Set(epic.stories.map((s) => s.rel));
   const linked = new Map();
@@ -687,15 +707,21 @@ function checkEpicReadme(epic, v) {
   }
 
   const tableEnd = toDoc(table.rowLines.length ? table.rowLines[table.rowLines.length - 1] : table.line + 1);
-  const nonBlank = lines.map((l, i) => ({ text: normaliseLabel(l), line: i + 1 })).filter((l) => l.text !== '');
+  // An HTML comment block never renders, so its lines are not read as the README's last
+  // lines; a fenced line renders as code, never as the Owner or Status field.
+  const comments = commentLineSet(text);
+  const fences = fenceLineSet(text);
+  const nonBlank = lines
+    .map((l, i) => ({ text: normaliseLabel(l), line: i + 1 }))
+    .filter((l) => l.text !== '' && !comments.has(l.line));
   const [owner, status] = nonBlank.slice(-2);
   // No input names an epic owner or a workflow state, so both carry TBD: any other owner
   // is one that "Enforce Implementation Plan, Epic and Story Structure — Base" calls invented.
-  const found = (l) => (l ? `; found "${l.text}"` : '');
-  if (!owner || owner.text !== 'Owner: TBD' || owner.line <= tableEnd) {
+  const found = (l) => (l ? `; found "${l.text}"${fences.has(l.line) ? ' inside fenced code' : ''}` : '');
+  if (!owner || owner.text !== 'Owner: TBD' || owner.line <= tableEnd || fences.has(owner.line)) {
     v.push({ path: rel, line: owner?.line, message: `the line before the last non-blank line must be "Owner: TBD", after the Stories table${found(owner)}` });
   }
-  if (!status || status.text !== 'Status: TBD' || status.line <= tableEnd) {
+  if (!status || status.text !== 'Status: TBD' || status.line <= tableEnd || fences.has(status.line)) {
     v.push({ path: rel, line: status?.line, message: `the last non-blank line must be "Status: TBD", after the Stories table${found(status)}` });
   }
   return name;
@@ -746,12 +772,17 @@ function checkSourceBody(story, text, lines, v) {
     }
   }
 
-  // Line k (1-based) of the stripped body is document line offset + k.
+  // Line k (1-based) of the quoted body and of the stripped body is document line offset + k.
+  // Headings, section bounds and the lines of fenced code and HTML comment blocks come from
+  // the quoted body, which keeps each line's quote depth, so a block opened in a nested note
+  // ends with that note. The stripped body, every quote level removed, supplies the text the
+  // statement, label and criterion predicates read, nested notes' criteria included.
   const offset = source.startLine;
-  const body = stripBlockquote(lines.slice(source.startLine, source.endLine).join('\n'));
+  const quotedBody = lines.slice(source.startLine, source.endLine).join('\n');
+  const body = stripBlockquote(quotedBody);
   const bodyLines = splitLines(body);
-  const bodyFences = fenceLineSet(body);
-  const level3 = parseHeadings(body).filter((h) => h.level === 3);
+  const bodyHidden = hiddenLines(quotedBody);
+  const level3 = parseHeadings(quotedBody).filter((h) => h.level === 3);
   let maxIndex = -1;
   const firstSeen = new Set();
   for (const h of level3) {
@@ -773,7 +804,12 @@ function checkSourceBody(story, text, lines, v) {
     if (!firstSeen.has(name)) v.push({ path: rel, line: source.startLine, message: `source body has no "### ${name}" heading` });
   }
 
-  const details = firstSeen.has(BODY_SECTIONS[0]) ? sectionByHeading(body, BODY_SECTIONS[0]) : null;
+  // A section bounded in the quoted body, its text taken from the same lines of the stripped body.
+  const bodySection = (name) => {
+    const s = sectionByHeading(quotedBody, name);
+    return s && { ...s, text: bodyLines.slice(s.startLine - 1, s.endLine).join('\n') };
+  };
+  const details = firstSeen.has(BODY_SECTIONS[0]) ? bodySection(BODY_SECTIONS[0]) : null;
   if (details) {
     const k = splitLines(details.text).findIndex((l, i) => i > 0 && l.trim() !== '');
     const statementLine = k < 0 ? details.startLine : details.startLine + k;
@@ -786,7 +822,7 @@ function checkSourceBody(story, text, lines, v) {
   const labelled = (label) =>
     bodyLines
       .map((l, i) => ({ text: normaliseLabel(l), line: i + 1 }))
-      .filter((l) => !bodyFences.has(l.line) && l.text.startsWith(label));
+      .filter((l) => !bodyHidden.has(l.line) && l.text.startsWith(label));
   const traces = labelled('Trace:');
   if (traces.length !== 1) {
     v.push({ path: rel, line: source.startLine, message: `source body carries ${traces.length} "Trace:" lines; exactly one is required` });
@@ -809,13 +845,13 @@ function checkSourceBody(story, text, lines, v) {
   const access = classification(ACCESS_LABEL, ACCESS_RE);
   const external = classification(EXTERNAL_LABEL, EXTERNAL_RE);
 
-  const acSection = firstSeen.has(BODY_SECTIONS[1]) ? sectionByHeading(body, BODY_SECTIONS[1]) : null;
+  const acSection = firstSeen.has(BODY_SECTIONS[1]) ? bodySection(BODY_SECTIONS[1]) : null;
   if (!acSection) return null;
   const acHeadLine = offset + acSection.startLine;
   const acs = [];
   splitLines(acSection.text).forEach((l, k) => {
     const bodyLine = acSection.startLine + k;
-    if (k === 0 || bodyFences.has(bodyLine)) return;
+    if (k === 0 || bodyHidden.has(bodyLine)) return;
     const m = AC_START_RE.exec(l);
     if (m) acs.push({ num: Number(m[1]), line: offset + bodyLine, text: l });
     else if (acs.length) acs[acs.length - 1].text += `\n${l}`;
@@ -857,6 +893,12 @@ function checkSourceBody(story, text, lines, v) {
 /** Group D: Design links and Test Plan thresholds. */
 function checkDesignAndTestPlan(story, text, v) {
   const rel = story.rel;
+  // HTML comment blocks never render, so the "Contracts: N/A" statement and the Test Plan's
+  // suites and thresholds are read from section text without their lines, as testPlan.text
+  // holds it; visible fenced code still counts. Line k (0-based) of a section text is
+  // document line startLine + k.
+  const comments = commentLineSet(text);
+  const shown = (s) => splitLines(s.text).filter((l, k) => !comments.has(s.startLine + k)).join('\n');
   const design = h2Section(text, '4. Design');
   if (design) {
     const targets = parseLinks(design.text).map((l) => resolveLink(rel, l.target).path);
@@ -867,11 +909,12 @@ function checkDesignAndTestPlan(story, text, v) {
       v.push({ path: rel, line: design.startLine, message: 'Design links no section of docs/data-model.md' });
     }
     const contract = targets.some((t) => t.endsWith('.proto') || (t.startsWith(OPENAPI_DIR) && /\.ya?ml$/.test(t)));
-    if (!contract && !design.text.includes('Contracts: N/A')) {
+    if (!contract && !shown(design).includes('Contracts: N/A')) {
       v.push({ path: rel, line: design.startLine, message: 'Design links no .proto or OpenAPI contract and does not state "Contracts: N/A"' });
     }
   }
-  const testPlan = h2Section(text, '6. Test Plan');
+  const planSection = h2Section(text, '6. Test Plan');
+  const testPlan = planSection && { ...planSection, text: shown(planSection) };
   if (testPlan) {
     const lower = testPlan.text.toLowerCase();
     for (const suite of ['Unit', 'Integration', 'Performance', 'End-to-end']) {
@@ -882,18 +925,24 @@ function checkDesignAndTestPlan(story, text, v) {
   }
 }
 
-/** The first "Option A" or "Option B" named in a block of lines, skipping fenced lines. */
-function firstOptionNamed(lines, firstDocLine, fences) {
+/**
+ * The first "Option A" or "Option B" named in a block of lines, skipping the `hidden` lines
+ * (document line numbers of fenced code and HTML comment blocks).
+ */
+function firstOptionNamed(lines, firstDocLine, hidden) {
   for (let k = 0; k < lines.length; k++) {
-    if (fences.has(firstDocLine + k)) continue;
+    if (hidden.has(firstDocLine + k)) continue;
     const m = OPTION_MENTION_RE.exec(lines[k]);
     if (m) return m[1];
   }
   return null;
 }
 
-/** Group D: two design options, one Recommendation and a framing line naming the same option. */
-function checkImplementationDesign(story, impl, fences, v) {
+/**
+ * Group D: two design options, one Recommendation and a framing line naming the same option;
+ * the framing line and the Recommendation's option are read outside the `hidden` lines.
+ */
+function checkImplementationDesign(story, impl, hidden, v) {
   const rel = story.rel;
   const heads = sectionHeadings(impl).filter((h) => h.level >= 3);
   const options = heads.filter((h) => plainCell(h.text).startsWith('Design Option'));
@@ -914,12 +963,12 @@ function checkImplementationDesign(story, impl, fences, v) {
   let recommended = null;
   if (recommendations.length >= 1) {
     const rec = subsection(impl, heads, recommendations[0]);
-    recommended = firstOptionNamed(splitLines(rec.text).slice(1), rec.startLine + 1, fences);
+    recommended = firstOptionNamed(splitLines(rec.text).slice(1), rec.startLine + 1, hidden);
     if (!recommended) v.push({ path: rel, line: rec.startLine, message: 'Recommendation names no option (Option A or Option B)' });
   }
 
   const implLines = splitLines(impl.text);
-  const k = implLines.findIndex((l, i) => i > 0 && l.trim() !== '' && !fences.has(impl.startLine + i));
+  const k = implLines.findIndex((l, i) => i > 0 && l.trim() !== '' && !hidden.has(impl.startLine + i));
   const framingLine = impl.startLine + Math.max(k, 0);
   const framed = k < 0 ? null : firstOptionNamed([implLines[k]], framingLine, new Set());
   if (!framed) {
@@ -952,23 +1001,113 @@ function checkMermaid(story, text, impl, v) {
   });
 }
 
-/** Group D: per-option settled and open assumptions and an AC verdict table covering every AC. */
-function checkDesignValidation(story, validation, acIds, v) {
+/**
+ * Group D: per option, one disjoint subsection under a heading naming that option alone; settled records under a "Settled"
+ * label line or heading and open lines stating what settles them, outside tables and the `hidden` lines (fenced code
+ * and HTML comment blocks); an AC verdict table with a Why for every AC.
+ */
+function checkDesignValidation(story, validation, acIds, hidden, v) {
+  const OPEN_ARROW = 'Open →';
   const rel = story.rel;
   const heads = sectionHeadings(validation).filter((h) => h.level >= 3);
+  // A heading names an option by the whole words "Option <letter>", so "Option Apple" names none.
+  const named = heads.map((h) => ({
+    head: h,
+    options: [...new Set([...plainCell(h.text).matchAll(/\bOption ([A-Z])\b/g)].map((m) => m[1]))],
+  }));
+  for (const { head, options } of named) {
+    if (options.length > 1) {
+      v.push({ path: rel, line: head.docLine, message: `Design Validation heading "${plainCell(head.text)}" names Options ${options.join(' and ')}; each option needs a heading of its own` });
+    }
+  }
+  const chosen = new Map();
   for (const option of ['A', 'B']) {
-    const matching = heads.filter((h) => plainCell(h.text).includes(`Option ${option}`));
+    const matching = named.filter((n) => n.options.length === 1 && n.options[0] === option);
     if (matching.length !== 1) {
       v.push({ path: rel, line: validation.startLine, message: `Design Validation carries ${matching.length} headings naming Option ${option}; exactly one is required` });
-      if (matching.length === 0) continue;
     }
-    const sub = subsection(validation, heads, matching[0]);
+    if (matching.length > 0) chosen.set(option, matching[0].head);
+  }
+  for (const option of ['A', 'B']) {
+    const head = chosen.get(option);
+    if (!head) continue;
+    const other = option === 'A' ? 'B' : 'A';
+    let sub = subsection(validation, heads, head);
+    // The two subsections are disjoint: one ends before any heading naming the other option.
+    const intruder = named.find((n) => n.options.includes(other) && n.head.docLine > head.docLine && n.head.docLine <= sub.endLine);
+    if (intruder) {
+      v.push({ path: rel, line: intruder.head.docLine, message: `heading "${plainCell(intruder.head.text)}" names Option ${other} but lies inside the Option ${option} subsection; the two options need disjoint subsections` });
+      const end = intruder.head.docLine - 1;
+      sub = { text: splitLines(sub.text).slice(0, end - sub.startLine + 1).join('\n'), startLine: sub.startLine, endLine: end };
+    }
     const where = { path: rel, line: sub.startLine };
-    if (!/\bSettled\b/.test(sub.text)) v.push({ ...where, message: `Option ${option} validation states no settled assumptions` });
-    if (!splitLines(sub.text).some((l) => l.includes('Open →'))) {
+    const subLines = splitLines(sub.text);
+    const subTables = parseTables(sub.text);
+    // Assumption records are prose: lines of fenced code and HTML comment blocks are skipped,
+    // and heading and table lines (header, delimiter and body rows) end a record list. Both
+    // come from the same block model, so a hidden heading or table is skipped, never a
+    // boundary or a record. Indexes k are 0-based in subLines.
+    const subHeads = parseHeadings(sub.text);
+    const boundary = new Set(subHeads.map((h) => h.line - 1));
+    for (const t of subTables) [t.line, t.line + 1, ...t.rowLines].forEach((l) => boundary.add(l - 1));
+    const isHidden = (k) => hidden.has(sub.startLine + k);
+    const prose = (k) => !isHidden(k) && !boundary.has(k);
+    // Case-sensitive, so the lower-case "settled by" of an open assumption never starts a label.
+    const isSettled = (l) => /^Settled\b/.test(normaliseLabel(l));
+    const isOpen = (l) => l.includes(OPEN_ARROW) || /^Open\b/.test(normaliseLabel(l));
+    // A bare list marker is an empty list item, not a record.
+    const recordText = (l) => plainCell(normaliseLabel(l)).replace(/^(?:[-*+]|\d+\.)$/, '');
+    // An unquoted heading below the option heading whose plain text starts with "Settled" is a label
+    // too, keyed by its subLines index; its records follow it under the same rule as a label line's.
+    const settledHeads = new Map(
+      subHeads
+        .filter((h) => !h.quoted && h.line > 1 && !isHidden(h.line - 1) && /^Settled\b/.test(plainCell(h.text)))
+        .map((h) => [h.line - 1, plainCell(h.text)]),
+    );
+
+    const settled = subLines.flatMap((l, k) => ((prose(k) && isSettled(l)) || settledHeads.has(k) ? [k] : []));
+    if (settled.length === 0) v.push({ ...where, message: `Option ${option} validation states no settled assumptions` });
+    for (const k of settled) {
+      const label = settledHeads.get(k) ?? normaliseLabel(subLines[k]);
+      const colon = label.indexOf(':');
+      const records = colon < 0 ? [] : [label.slice(colon + 1)];
+      for (let j = k + 1; j < subLines.length; j++) {
+        if (isHidden(j) || subLines[j].trim() === '') continue;
+        if (boundary.has(j) || isOpen(subLines[j]) || isSettled(subLines[j])) break;
+        records.push(subLines[j]);
+      }
+      if (!records.some((r) => recordText(r) !== '')) {
+        const name = plainCell(colon < 0 ? label : label.slice(0, colon));
+        v.push({ path: rel, line: sub.startLine + k, message: `Option ${option} validation lists no settled assumption under "${name}"` });
+      }
+    }
+
+    const open = subLines.flatMap((l, k) => (prose(k) && l.includes(OPEN_ARROW) ? [k] : []));
+    if (open.length === 0) {
       v.push({ ...where, message: `Option ${option} validation has no open assumption written as "Open → what settles it"` });
     }
-    const tables = parseTables(sub.text).filter(
+    // An open line states the item and what settles it: "<assumption> Open → <what settles it>", or
+    // "Open → <assumption>, settled by <what settles it>" ("settles" and "settled when" alike).
+    const substantive = (s) => /[\p{L}\p{N}]/u.test(s);
+    // The settler is the text after a leading "settles", "settled by" or "settled when".
+    const settler = (s) => s.replace(/^[^\p{L}\p{N}]*settle(?:s|d)?\b[^\p{L}\p{N}]*(?:(?:by|when)\b)?/iu, '');
+    const forms = '"<assumption> Open → <what settles it>" or "Open → <assumption>, settled by <what settles it>"';
+    for (const k of open) {
+      const l = subLines[k];
+      const at = l.indexOf(OPEN_ARROW);
+      const before = plainCell(normaliseLabel(l.slice(0, at)));
+      const after = plainCell(l.slice(at + OPEN_ARROW.length));
+      const settles = substantive(before)
+        ? substantive(settler(after))
+        : [...after.matchAll(/\bsettle(?:s|d)?\b/gi)].some((m) => substantive(after.slice(0, m.index)) && substantive(settler(after.slice(m.index))));
+      if (!substantive(after)) {
+        v.push({ path: rel, line: sub.startLine + k, message: `Option ${option} open assumption names nothing after "Open →"; write ${forms}` });
+      } else if (!settles) {
+        v.push({ path: rel, line: sub.startLine + k, message: `Option ${option} open assumption does not say what settles it; write ${forms}` });
+      }
+    }
+
+    const tables = subTables.filter(
       (t) => t.header.length === 3 && t.header.map((c) => plainCell(c).toLowerCase()).join('|') === 'ac|verdict|why',
     );
     if (tables.length === 0) {
@@ -977,6 +1116,9 @@ function checkDesignValidation(story, validation, acIds, v) {
     }
     const rows = new Map();
     for (const t of tables) {
+      for (const s of surplusCellRows(t, `Option ${option} verdict table`)) {
+        v.push({ path: rel, line: sub.startLine + s.line - 1, message: s.message });
+      }
       t.rows.forEach((row, i) => {
         const line = sub.startLine + t.rowLines[i] - 1;
         const ac = plainCell(row[0]);
@@ -990,6 +1132,7 @@ function checkDesignValidation(story, validation, acIds, v) {
         if (!VERDICTS.has(verdict)) {
           v.push({ path: rel, line, message: `Option ${option} verdict for ${ac} is "${verdict}"; verdicts are Holds, Conditional, At risk or Breaks` });
         }
+        if (plainCell(row[2]) === '') v.push({ path: rel, line, message: `Option ${option} verdict row for ${ac} has an empty Why` });
       });
     }
     if (acIds === null) continue;
@@ -1073,6 +1216,9 @@ function checkMetadata(story, text, ctx, v) {
   const rel = story.rel;
   const section = h2Section(text, 'Metadata');
   if (!section) return;
+  for (const t of parseTables(section.text)) {
+    for (const s of surplusCellRows(t, 'Metadata table')) v.push({ path: rel, line: section.startLine + s.line - 1, message: s.message });
+  }
   const fieldByKey = new Map(METADATA_FIELDS.map((field) => [normaliseSpace(field).toLowerCase(), field]));
   // The first entry of each field is the one read; a repeat is reported at its own line.
   const first = new Map();
@@ -1166,6 +1312,7 @@ function checkStory(story, ctx, v) {
   const text = readText(story.rel);
   const lines = splitLines(text);
   const fences = fenceLineSet(text);
+  const hidden = hiddenLines(text);
 
   checkTitleAndParent(story, lines, ctx, v);
   const h2 = parseHeadings(text).filter((h) => !h.quoted && h.level === 2);
@@ -1179,13 +1326,13 @@ function checkStory(story, ctx, v) {
 
   const impl = h2Section(text, 'Implementation Design');
   if (impl) {
-    checkImplementationDesign(story, impl, fences, v);
+    checkImplementationDesign(story, impl, hidden, v);
     checkVoiceSection(story, impl, fences, v);
   }
   checkMermaid(story, text, impl, v);
   const validation = h2Section(text, 'Design Validation');
   if (validation) {
-    checkDesignValidation(story, validation, acIds, v);
+    checkDesignValidation(story, validation, acIds, hidden, v);
     checkVoiceSection(story, validation, fences, v);
   }
   checkMetadata(story, text, ctx, v);
