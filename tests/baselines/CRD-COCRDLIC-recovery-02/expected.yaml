@@ -1,0 +1,16 @@
+messages:
+- '                                                                              '
+screens:
+- '@map': COMEN01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTN003: '03. Credit Card List                    '
+  PGMNAME: COMEN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CM00
+- '@map': TEXT

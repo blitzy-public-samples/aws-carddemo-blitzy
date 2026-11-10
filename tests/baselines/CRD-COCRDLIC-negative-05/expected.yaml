@@ -1,0 +1,60 @@
+# CRD-COCRDLIC-negative-05: derived from app/cbl/COCRDLIC.cbl:1036-1071 (2220-EDIT-CARD), which refuses the
+# non-numeric card filter; the browse is skipped and the page-1 rows come back from the COMMAREA (lines 229-260, 419-438, 678-745).
+# Authored from the source and the CARDDATA fixture; unobserved until a UniKix run is imported.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER                          '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDLI
+  ERRMSG: '                                                                              '
+  INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+  PGMNAME: COCRDLIC
+  TRNNAME: CCLI
+- '@map': COCRDLI
+  ACCTNO1: '00000000050'
+  ACCTNO2: '00000000027'
+  ACCTNO3: '00000000002'
+  ACCTNO4: '00000000020'
+  ACCTNO5: '00000000012'
+  ACCTNO6: '00000000044'
+  ACCTNO7: '00000000037'
+  ACCTSID: '           '
+  CARDSID: ABCDEFGHIJKLMNOP
+  CRDNUM1: '0500024453765740'
+  CRDNUM2: 0683586198171516
+  CRDNUM3: 0923877193247330
+  CRDNUM4: 0927987108636232
+  CRDNUM5: 0982496213629795
+  CRDNUM6: '1014086565224350'
+  CRDNUM7: '1142167692878931'
+  CRDSEL1: ' '
+  CRDSEL2: ' '
+  CRDSEL3: ' '
+  CRDSEL4: ' '
+  CRDSEL5: ' '
+  CRDSEL6: ' '
+  CRDSEL7: ' '
+  CRDSTS1: Y
+  CRDSTS2: Y
+  CRDSTS3: Y
+  CRDSTS4: Y
+  CRDSTS5: Y
+  CRDSTS6: Y
+  CRDSTS7: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER                          '
+  INFOMSG: '                                             '
+  PAGENO: '1  '
+  PGMNAME: COCRDLIC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCLI

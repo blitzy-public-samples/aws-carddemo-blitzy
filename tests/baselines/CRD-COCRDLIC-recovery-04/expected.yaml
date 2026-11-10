@@ -1,0 +1,62 @@
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDLI
+  PAGENO: '1  '
+  PGMNAME: COCRDLIC
+  TRNNAME: CCLI
+- '@map': COCRDLI
+  CRDNUM1: '1561409106491600'
+  PAGENO: '2  '
+  PGMNAME: COCRDLIC
+  TRNNAME: CCLI
+- '@map': COCRDLI
+  CRDNUM1: '3766281984155154'
+  ERRMSG: '                                                                              '
+  PAGENO: '3  '
+  PGMNAME: COCRDLIC
+  TRNNAME: CCLI
+- '@map': COCRDLI
+  ACCTNO1: '           '
+  ACCTNO2: '           '
+  ACCTNO3: '           '
+  ACCTNO4: '           '
+  ACCTNO5: '           '
+  ACCTNO6: '           '
+  ACCTNO7: '           '
+  ACCTSID: '           '
+  CARDSID: '                '
+  CRDNUM1: '                '
+  CRDNUM2: '                '
+  CRDNUM3: '                '
+  CRDNUM4: '                '
+  CRDNUM5: '                '
+  CRDNUM6: '                '
+  CRDNUM7: '                '
+  CRDSEL1: ' '
+  CRDSEL2: ' '
+  CRDSEL3: ' '
+  CRDSEL4: ' '
+  CRDSEL5: ' '
+  CRDSEL6: ' '
+  CRDSEL7: ' '
+  CRDSTS1: ' '
+  CRDSTS2: ' '
+  CRDSTS3: ' '
+  CRDSTS4: ' '
+  CRDSTS5: ' '
+  CRDSTS6: ' '
+  CRDSTS7: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'File Error: READ     on CARDDAT   returned RESP 000000017 ,RESP2 000000120    '
+  INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+  PAGENO: '2  '
+  PGMNAME: COCRDLIC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCLI

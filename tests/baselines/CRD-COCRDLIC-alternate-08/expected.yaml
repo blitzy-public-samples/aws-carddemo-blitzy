@@ -1,0 +1,91 @@
+# Derived baseline (capture_platform: derived in manifest.yaml) of scenario
+# CRD-COCRDLIC-alternate-08: USER0001 opens the credit card list from main-menu
+# option 3 and enters U against row 2, so COCRDLIC transfers control to the card
+# update program COCRDUPC, which fetches that card and shows it for update.
+# Authored from the source, never captured, so it holds no datasets/. Open until
+# a UniKix run is imported: GAP-INF-006 (derived CRD end-to-end baselines) and
+# GAP-INF-012 (online-only copybooks). Only `report.py --import-unikix
+# <execution_id>` promotes or replaces it; it is never edited to match a run.
+#
+# One screen per step, each the screen the step's AID produces.
+# - Step 1: sign-on routes USER0001 (type U) to COMEN01C, map COMEN01
+#   [app/cbl/COSGN00C.cbl:223-237].
+# - Step 2: option 3 'Credit Card List' XCTLs to COCRDLIC with context 0
+#   [app/cbl/COMEN01C.cbl:146-156] [app/cpy/COMEN02Y.cpy:37-41]. COCRDLIC
+#   browses CARDDAT forward from the lowest key, so row 2 is the second card of
+#   app/data/ASCII/carddata.txt in card-number order: 0683586198171516 of
+#   account 00000000027, status Y. COMMON-RETURN keeps the rows in the COMMAREA
+#   and records COCRDLIC as the program it came from [app/cbl/COCRDLIC.cbl:
+#   336-343,572-582,604-619,1123-1261]. Only that row and the identification
+#   fields are asserted; the list content and its messages are other COCRDLIC
+#   scenarios' items.
+# - Step 3: U in CRDSEL2 comes back as WS-EDIT-SELECT(2); with blank filters and
+#   one action, 2250-EDIT-ARRAY makes I-SELECTED 2 [app/cbl/COCRDLIC.cbl:
+#   951-1121]. ENTER with UPDATE-REQUESTED-ON(2) and CDEMO-FROM-PROGRAM
+#   COCRDLIC moves the row's account and card to CDEMO-ACCT-ID and
+#   CDEMO-CARD-NUM, sets the context to enter and the last mapset to COCRDLI,
+#   and XCTLs to COCRDUPC [app/cbl/COCRDLIC.cbl:545-570]. COCRDUPC takes the
+#   fetch-for-update branch: it sets reenter, READs CARDDAT by the passed card
+#   number, upper-cases CARD-EMBOSSED-NAME in its record area, splits the
+#   expiry, sets CCUP-SHOW-DETAILS and sends COCRDUP
+#   [app/cbl/COCRDUPC.cbl:482-497,1343-1415]. With reenter set, 3200 moves the
+#   passed account (CC-ACCT-ID, 11 digits) and card to ACCTSID and CARDSID and
+#   the fetched name, status, month and year to the detail fields; 3250 sets
+#   'Details of selected card shown above' and moves the blank WS-RETURN-MSG
+#   X(75) to ERRMSG X(80) [app/cbl/COCRDUPC.cbl:1082-1134,1138-1164].
+#   EXPDAY is sent '13' but is a dark field, ATTRB=(DRK,FSET,PROT)
+#   [app/bms/COCRDUP.bms:142-146]: like the scenario, which states it is not
+#   part of the displayed screen, the baseline leaves it unasserted, as the
+#   COCRDLIC baselines leave their dark CRDSTPn fields.
+# Derivation assumption: COCRDLIC passes only CARDDEMO-COMMAREA, but COCRDUPC
+# copies WS-THIS-PROGCOMMAREA from the bytes past that length
+# [app/cbl/COCRDUPC.cbl:396-400], so CCUP-CHANGE-ACTION is undefined here. The
+# outcome assumes it is none of C, L and F; with one of them and the last
+# mapset COCRDLI, COCRDUPC would XCTL straight back to the list
+# [app/cbl/COCRDUPC.cbl:435-476]. The UniKix observation settles this on import
+# (GAP-INF-006). The UniKix copy's COCRDUPC differs functionally only in the
+# name edit (GAP-DOC-023), which this fetch does not reach.
+# Values are whole BMS fields with their trailing spaces: CRDNAME 50, INFOMSG
+# 40 (the 36-byte text padded), ERRMSG 80. CURDATE and CURTIME come from the
+# region clock, which the adapter cannot fix, so they are matchers.
+screens:
+- '@map': 'COMEN01'
+  PGMNAME: 'COMEN01C'
+  TRNNAME: 'CM00'
+- '@map': 'COCRDLI'
+  ACCTNO2: '00000000027'
+  CRDNUM2: '0683586198171516'
+  CRDSTS2: 'Y'
+  PGMNAME: 'COCRDLIC'
+  TRNNAME: 'CCLI'
+- '@map': 'COCRDUP'
+  ACCTSID: '00000000027'
+  CARDSID: '0683586198171516'
+  CRDNAME: 'WARD JONES                                        '
+  CRDSTCD: 'Y'
+  CURDATE: {match: run-date, format: '%m/%d/%y'}
+  CURTIME: {match: run-time}
+  ERRMSG: '                                                                                '
+  EXPMON: '07'
+  EXPYEAR: '2025'
+  INFOMSG: 'Details of selected card shown above    '
+  PGMNAME: 'COCRDUPC'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: 'CCUP'
+# The fetch READs CARDDAT without UPDATE and writes nothing: CARDDATA keeps its
+# 50 records, and the selected card is the fixture record decoded whole
+# (CVACT02Y, FILLER included), its name in its original case, because the
+# INSPECT CONVERTING runs on the program's record area only
+# [app/cbl/COCRDUPC.cbl:1356-1358,1382-1390].
+file_state:
+  CARDDATA:
+    contains:
+    - CARD-ACCT-ID: '27'
+      CARD-ACTIVE-STATUS: 'Y'
+      CARD-CVV-CD: '567'
+      CARD-EMBOSSED-NAME: 'Ward Jones                                        '
+      CARD-EXPIRAION-DATE: '2025-07-13'
+      CARD-NUM: '0683586198171516'
+      CARD-RECORD.FILLER#1: '                                                           '
+    count: 50
