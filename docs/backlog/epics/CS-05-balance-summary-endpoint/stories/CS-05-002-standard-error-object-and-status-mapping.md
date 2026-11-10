@@ -105,11 +105,11 @@ Rationale: one code table read by one HTTP writer and one remote procedure inter
 
 - Topology: one error object shared by both protocols and defined in the shared contract.
 - Naming: codes are the six status names written as text.
-- Addressing: each request gets its trace identifier at receipt on either protocol.
+- Addressing: the trace identifier is the key that ties an error body to its request's log lines on either protocol.
 - Isolation: no token, key or stack trace reaches an error body or a log line.
 - Fallback: failures outside the six codes are an open item.
 - Provisioning: nothing beyond the build.
-- Cut-over: later stories raise typed failures and never build bodies.
+- Cut-over: later stories return every failure as the shared error object with one of the six codes.
 - Failures: unavailable after retries gives 503, and an expired deadline gives 504.
 
 ### Design Option A — central handler and interceptor
@@ -118,7 +118,7 @@ One code table pairs each of the six status names with its HTTP status and its r
 
 How it behaves:
 
-- Later stories raise a typed failure that names one table row, a message and any field at fault.
+- Later stories raise a typed failure that names one table row, a message and any field at fault, and build no error body themselves.
 - The HTTP handler and the filter writer both read the code table and render one error body shape.
 - The interceptor reads the same table, sets the matching remote procedure status and packs one error object into its details.
 - A paging rejection carries exactly one field entry, and that entry names the page token.
@@ -159,7 +159,7 @@ Effort and risk: less shared code in this story and a repeated mapping in every 
 - Option: Option A.
 - Why: one table and one writer make every status identical across protocols and stages.
 - Strongest argument against: a central handler hides endpoint context from messages.
-- Shared items that do not decide the choice: the error object shape, the six codes, the trace identifier and token exclusion.
+- Shared items that do not decide the choice: the error object shape, the six codes, the trace identifier's correlation role and token exclusion.
 - Flip condition: the UI needs endpoint-specific messages that one table cannot express.
 
 ## Design Validation
