@@ -1,0 +1,159 @@
+# Transaction add with the merchant name left blank: one of the empty-field
+# messages of VALIDATE-INPUT-DATA-FIELDS, which tests the data fields in screen
+# order and stops at the first one that is empty.
+#
+# Step 1 signs on as USER0001 through CC00; the type-U user is routed to the
+# main menu COMEN01 [app/cbl/COSGN00C.cbl:230-237].
+# Step 2 enters option 8, 'Transaction Add' (user type U, program COTRN02C)
+# [app/cpy/COMEN02Y.cpy:67-72]; COMEN01C transfers control with the program
+# context reset [app/cbl/COMEN01C.cbl:115-156]. COMEN01C passes only the
+# COCOM01Y COMMAREA, so CDEMO-CT02-TRN-SELECTED is padded with spaces and
+# nothing is pre-filled: COTRN02C sets the re-enter flag, moves LOW-VALUES to
+# COTRN2AO and sends COTRN02 with its CT02 header and a blank ERRMSG
+# [app/cbl/COTRN02C.cbl:115-130,516-571].
+# Step 3 fills COTRN02 by card number with the valid field set of the COTRN02C
+# empty-field series, except that MNAME is erased, and presses ENTER under
+# CT02 with CONFIRM left empty:
+# - VALIDATE-INPUT-KEY-FIELDS: ACTIDIN is blank, so the card branch runs. The
+#   card is numeric, is moved back through WS-CARD-NUM-N (PIC 9(16)) unchanged,
+#   and READ CCXREF by card is NORMAL; XREF-ACCT-ID of record 1 of
+#   app/data/ASCII/cardxref.txt, 00000000050, is moved to ACTIDINI
+#   [app/cbl/COTRN02C.cbl:210-223,609-623].
+# - VALIDATE-INPUT-DATA-FIELDS: the error flag is off, so no field is blanked.
+#   Type CD through Merchant ID are supplied; MNAMEI is LOW-VALUES (the adapter
+#   erases the field and types nothing), so the WHEN at line 300 sets the error
+#   flag, moves 'Merchant Name can NOT be empty...' to WS-MESSAGE, puts the
+#   cursor on MNAME and performs SEND-TRNADD-SCREEN
+#   [app/cbl/COTRN02C.cbl:237-305].
+# - SEND-TRNADD-SCREEN sends COTRN02 with ERASE and ends the task with RETURN
+#   TRANSID CT02 [app/cbl/COTRN02C.cbl:516-534]. Nothing after the empty-field
+#   EVALUATE runs: the amount is not re-edited by NUMVAL-C, CSUTLDTC is not
+#   called, CONFIRM is never examined and ADD-TRANSACTION, the only TRANSACT
+#   access on this path, is never reached [app/cbl/COTRN02C.cbl:169-188,383-466].
+#
+# COTRN2AO redefines COTRN2AI and is not cleared on this path, so the received
+# fields are sent back as entered, with the account id the cross-reference
+# supplied; the erased merchant name and the empty CONFIRM hold LOW-VALUES,
+# which BMS does not send, so they show blank
+# [app/cpy-bms/COTRN02.CPY:17,115-120,145].
+#
+# Expected values are derived from the source; no TPE region runs in CI. Screen
+# values are whole fields at their BMS length with trailing spaces, because
+# comparison never trims: BMS pads each received field with blanks, and ERRMSG
+# is the 80-byte WS-MESSAGE cut to 78. Only CURDATE and CURTIME come from the
+# region clock, hence the matchers and clock_mode relative. The merchant data
+# is invented; the card is a repository card.
+id: TRN-COTRN02C-negative-15
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 8 'Transaction Add' and, on
+  COTRN02, enters repository card 0500024453765740 with type 01, category 0001,
+  POS TERM, 'Test purchase', +00000012.34, dates 2022-07-01, merchant id
+  800000001, Testville 27601 and the merchant name left blank, then presses
+  ENTER. COTRN02C looks up the card in CCXREF, finds the merchant name empty
+  and sends COTRN02 again with the entered fields, account 00000000050 from the
+  cross-reference and 'Merchant Name can NOT be empty...' in ERRMSG; no
+  transaction is written.
+# Primary item first, then the program, the maps the screens assert, the
+# transaction step 3 runs under, the CSD file COTRN02C reads on this path, and
+# the online-only copybooks it copies. Sign-on and the menu option (CC00, CM00,
+# COSGN00, USRSEC) belong to the SEC and MNU scenarios; TRANSACT is not touched
+# by this path, and its unchanged content is asserted only to show that no
+# record was added.
+inventory_ids:
+- INV-TRN-044  # COTRN02C message 'Merchant Name can NOT be empty...' (rule)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the add
+- INV-CFG-004  # CCXREF CSD file: card cross-reference read by card number
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT has no repository data of its own (datasets.yaml source
+    # 'built'), so the schema refuses it as a base; it is built from the 300
+    # repository daily transactions, which share its 350-byte record shape.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN and CONFIRM are left untouched; the empty MNAME value erases the
+  # merchant name field.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: ''
+      MCITY: 'Testville'
+      MZIP: '27601'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    PGMNAME: 'COTRN02C'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: '                              '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: ' '
+    ERRMSG: 'Merchant Name can NOT be empty...                                             '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Merchant Name can NOT be empty...                                             '
+  file_state:
+    # COTRN02C's only TRANSACT change is the WRITE of a new key, so the 300
+    # fixture records, and no added one, are the unchanged file.
+    TRANSACT: {count: 300}

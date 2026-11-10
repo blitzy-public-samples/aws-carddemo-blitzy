@@ -1,0 +1,152 @@
+# Transaction add with a non-numeric category code. USER0001 (user type U)
+# signs on through CC00 and COSGN00C transfers control to the main menu
+# COMEN01C [app/cbl/COSGN00C.cbl:230-237]. Option 8 of COMEN02Y is
+# 'Transaction Add', program COTRN02C [app/cpy/COMEN02Y.cpy:67-72], so
+# COMEN01C transfers control to it with the program context reset
+# [app/cbl/COMEN01C.cbl:115-156]. Entered without the reenter flag and with no
+# transaction selected, COTRN02C moves LOW-VALUES to COTRN2AO and sends the
+# empty COTRN02 with its header, then returns with TRANSID CT02
+# [app/cbl/COTRN02C.cbl:115-130,516-534].
+#
+# Step 3 fills COTRN02 by card number with the valid field set except Category
+# CD 'ABCD', leaves CONFIRM blank, and presses ENTER under CT02. The checks run
+# in the program's order, and the first refusal ends the task, because
+# SEND-TRNADD-SCREEN sends the map and issues RETURN TRANSID CT02
+# [app/cbl/COTRN02C.cbl:516-534]:
+# - VALIDATE-INPUT-KEY-FIELDS: Acct # is blank, so the card branch runs. The
+#   card is numeric and comes back unchanged through WS-CARD-NUM-N (9(16));
+#   READ CCXREF by card is NORMAL, and XREF-ACCT-ID 00000000050 (record 1 of
+#   app/data/ASCII/cardxref.txt) is moved into ACTIDINI
+#   [app/cbl/COTRN02C.cbl:210-223,609-637].
+# - VALIDATE-INPUT-DATA-FIELDS: the error flag is off, so no field is cleared;
+#   every field is supplied, so the empty-field EVALUATE passes
+#   [app/cbl/COTRN02C.cbl:235-320]. In the numeric EVALUATE, Type CD '01' is
+#   numeric and TCATCDI 'ABCD' is NOT NUMERIC: COTRN02C moves 'Category CD
+#   must be Numeric...' to WS-MESSAGE, puts the cursor on TCATCD and sends the
+#   screen [app/cbl/COTRN02C.cbl:322-337].
+# The amount and date edits, the CSUTLDTC calls, the CONFIRM evaluation and
+# ADD-TRANSACTION are never reached, so TRANSACT is neither browsed nor written.
+#
+# COTRN2AO redefines COTRN2AI [app/cpy-bms/COTRN02.CPY:17,145], so the screen
+# sent back echoes what was received:
+# each typed field padded with blanks to its BMS length, ACTIDIN holding the
+# account id from the cross-reference, and TCATCD still holding the refused
+# 'ABCD'. CONFIRM was never typed and stays blank. Screen values are whole
+# fields at their BMS length with trailing spaces kept, because comparison never
+# trims; ERRMSG is WS-MESSAGE (X(80)) cut to ERRMSGO (X(78)). Only CURDATE and
+# CURTIME come from the region clock, so they are matchers and the clock is
+# relative. The baseline is derived from the source: no TPE region runs in CI.
+id: TRN-COTRN02C-negative-19
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and, on
+  COTRN02, enters a transaction for repository card 0500024453765740 with every
+  field valid except Category CD 'ABCD'. COTRN02C refuses it after the card
+  cross-reference lookup and before any TRANSACT access, and shows COTRN02
+  again with the entered values, the account id 00000000050 filled in from the
+  cross-reference, and 'Category CD must be Numeric...' in ERRMSG
+  [app/cbl/COTRN02C.cbl:329-334]. TRANSACT keeps its 300 fixture records.
+# Primary item first, then the program, the maps the screens assert (COMEN01,
+# COTRN02), the transaction step 3 runs under (CT02), the CSD file this path
+# reads (CCXREF, by card number), and the online-only copybooks COTRN02C
+# copies. The TRANSACT CSD file is not listed: this path never opens it, and its
+# unchanged content is asserted through the post-run unload. Sign-on and the
+# menu option (CC00, CM00, COSGN00, USRSEC) are verified by the SEC and MNU
+# scenarios; the batch record copybooks (CVACT03Y, CVTRA05Y) and the data files
+# are verified at the lowest level that executes them.
+inventory_ids:
+- INV-TRN-048  # COTRN02C message 'Category CD must be Numeric...' (rule)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the add
+- INV-CFG-004  # CCXREF CSD file: card cross-reference read by card number
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001.
+    USRSEC: {base: USRSEC}
+    # The region's CCXREF file (and the CXACAIX path): card 0500024453765740
+    # is record 1, for account 00000000050.
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT holds no repository data of its own (datasets.yaml source
+    # 'built'), so it is built from the 300 DALYTRAN records, as for every
+    # online TRN scenario.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '8'}, '@map': COMEN01}
+  # ACTIDIN is left blank, so the card number selects the cross-reference;
+  # CONFIRM is not entered, because the category check refuses the add first.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: 'ABCD'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+    OPTN008: '08. Transaction Add                     '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    PGMNAME: 'COTRN02C'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: 'ABCD'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: ' '
+    ERRMSG: 'Category CD must be Numeric...                                                '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Category CD must be Numeric...                                                '
+  file_state:
+    # No record is written: the add is refused before ADD-TRANSACTION, so the
+    # 300 fixture records remain and none is added.
+    TRANSACT:
+      count: 300

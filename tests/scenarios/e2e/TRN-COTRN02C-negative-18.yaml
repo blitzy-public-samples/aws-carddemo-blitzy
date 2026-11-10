@@ -1,0 +1,130 @@
+# COTRN02C refuses a transaction whose Type CD is not numeric with 'Type CD must
+# be Numeric...' and writes nothing [app/cbl/COTRN02C.cbl:321-327].
+#
+# Steps 1-2 reach the empty Add Transaction screen as TRN-COTRN02C-normal-01
+# does: USER0001 (type U) is routed to COMEN01C, and option 8 transfers control
+# to COTRN02C, which sets the re-enter flag, finds no transaction selected and
+# sends COTRN02 with a blank ERRMSG [app/cbl/COSGN00C.cbl:230-237]
+# [app/cbl/COMEN01C.cbl:115-156] [app/cbl/COTRN02C.cbl:115-130,516-534].
+# Step 3 enters the valid field set of the TRN-COTRN02C scenarios, card number
+# only, except Type CD 'A1', and presses ENTER under CT02:
+# - VALIDATE-INPUT-KEY-FIELDS takes the card branch: the card is numeric, is
+#   moved back through WS-CARD-NUM-N PIC 9(16) unchanged, READ CCXREF by card
+#   is NORMAL, and the account of CARDXREF record 1, 00000000050, is moved to
+#   ACTIDINI [app/cbl/COTRN02C.cbl:196-223,609-623].
+# - No error is set, so VALIDATE-INPUT-DATA-FIELDS keeps the data fields, finds
+#   every one supplied, and then tests Type CD first: 'A1' is NOT NUMERIC, so
+#   the message is moved to WS-MESSAGE, the cursor is set on TTYPCD and
+#   SEND-TRNADD-SCREEN sends COTRN02 with ERASE and returns TRANSID CT02
+#   [app/cbl/COTRN02C.cbl:235-327,516-534]. The amount, date, merchant and
+#   confirm checks and ADD-TRANSACTION are never reached, so TRANSACT is
+#   neither browsed nor written.
+# COTRN2AO redefines COTRN2AI, so the screen sent back carries the received
+# fields as they stand after the key-field edit: ACTIDIN the looked-up account,
+# CARDNIN the card and TTYPCD the refused value. These three fill their fields,
+# so they are exact; the other received fields carry no business outcome and
+# are not asserted. ERRMSG is the 78-byte BMS field, the message followed by
+# spaces. CURDATE and CURTIME come from the region clock, so they are matchers
+# and the clock is relative.
+id: TRN-COTRN02C-negative-18
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and enters
+  the valid transaction for repository card 0500024453765740 except Type CD
+  'A1'. COTRN02C looks the card up in CCXREF, shows account 00000000050,
+  refuses the type with 'Type CD must be Numeric...' on COTRN02 and adds no
+  transaction.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the CSD file this path reads, and the online-only copybooks
+# COTRN02C copies. TRANSACT is not touched on this path, so its CSD file is not
+# listed; its unchanged content is asserted only to show nothing was written.
+# Sign-on and the menu (CC00, CM00, COSGN00, USRSEC, the option-8 navigation)
+# are verified by the SEC and MNU scenarios, and the batch record copybooks and
+# data files at the lowest level that executes them.
+inventory_ids:
+- INV-TRN-047  # COTRN02C message 'Type CD must be Numeric...'
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the add
+- INV-CFG-004  # CCXREF CSD file, read by card number
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# TRANSACT is built from the repository's 300 daily transactions (the same
+# 350-byte shape as TRAN-RECORD): the TRANSACT fixture itself is built and
+# holds no repository data to use as a base. CARDXREF is the region's CCXREF
+# file; USRSEC holds the demo users.
+preconditions:
+  datasets:
+    CARDXREF: {base: CARDXREF}
+    TRANSACT: {base: DALYTRAN}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left blank, so the card number selects the cross-reference.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: 'A1'
+      TCATCD: '0001'
+      TRNSRC: POS TERM
+      TDESC: Test purchase
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: Test Merchant
+      MCITY: Testville
+      MZIP: '27601'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    PGMNAME: COTRN02C
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: 'A1'
+    ERRMSG: 'Type CD must be Numeric...                                                    '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Type CD must be Numeric...                                                    '
+  file_state:
+    # No record is written: the 300 fixture transactions remain.
+    TRANSACT:
+      count: 300

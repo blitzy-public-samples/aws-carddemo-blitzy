@@ -1,0 +1,179 @@
+# A non-numeric Merchant ID on the Add Transaction screen. It is the last
+# check of VALIDATE-INPUT-DATA-FIELDS, so every earlier check, including both
+# CSUTLDTC date validations, passes first; the refusal ends the task before the
+# CONFIRM evaluation, so nothing is written although CONFIRM is Y.
+#
+# Step 1 signs on as USER0001 through CC00; the type-U user is routed to the
+# main menu COMEN01 [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:82-90].
+# Step 2 enters option 8, 'Transaction Add' (user type U, program COTRN02C):
+# COMEN01C transfers control with CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:67-72]. With no
+# transaction selected, COTRN02C sets the re-enter flag, moves LOW-VALUES to
+# COTRN2AO and sends COTRN02 with its CT02 header and a blank ERRMSG
+# [app/cbl/COTRN02C.cbl:115-130,516-571].
+# Step 3 enters the valid field set of TRN-COTRN02C-normal-01 by card number
+# (Acct # left blank), except that Merchant ID holds 'ABC123', and presses
+# ENTER under CT02:
+# - VALIDATE-INPUT-KEY-FIELDS takes the card branch: 0500024453765740 is
+#   numeric, goes back through WS-CARD-NUM-N unchanged, READ CCXREF by card is
+#   NORMAL and XREF-ACCT-ID 00000000050 is moved to Acct #
+#   [app/cbl/COTRN02C.cbl:210-223,609-637].
+# - VALIDATE-INPUT-DATA-FIELDS: WS-ERR-FLG is off, so no field is blanked;
+#   every field is supplied, Type CD 01 and Category CD 0001 are numeric, the
+#   amount has the form +99999999.99 and both dates the form YYYY-MM-DD
+#   [app/cbl/COTRN02C.cbl:235-381]. NUMVAL-C turns +00000012.34 into 12.34 and
+#   WS-TRAN-AMT-E (PIC +99999999.99) edits it back into TRNAMT unchanged
+#   [app/cbl/COTRN02C.cbl:59,383-386]. CSUTLDTC accepts 2022-07-01 with mask
+#   YYYY-MM-DD for both dates (severity 0000), so neither date message is set
+#   [app/cbl/COTRN02C.cbl:389-427].
+# - MIDI, 'ABC123' padded with blanks to 9, IS NOT NUMERIC: WS-ERR-FLG is set,
+#   'Merchant ID must be Numeric...' goes to WS-MESSAGE, the cursor to MID, and
+#   SEND-TRNADD-SCREEN is performed [app/cbl/COTRN02C.cbl:430-436].
+# - SEND-TRNADD-SCREEN rebuilds the header from COTTL01Y and CSDAT01Y, moves
+#   WS-MESSAGE to ERRMSG, sends COTRN02 with ERASE and CURSOR, and issues
+#   RETURN TRANSID(CT02) [app/cbl/COTRN02C.cbl:516-571]. That RETURN ends the
+#   task inside the data check, so the CONFIRM evaluation and ADD-TRANSACTION
+#   never run and TRANSACT is neither browsed nor written
+#   [app/cbl/COTRN02C.cbl:164-188,442-466].
+# - COTRN2AO redefines COTRN2AI, so every entry field is sent back as received,
+#   with Acct # now holding the account looked up from the card.
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# Screen values are whole fields at their BMS length with trailing spaces
+# (BMS pads each received field with blanks). ERRMSG is 78 bytes, the
+# 30-character message followed by spaces from WS-MESSAGE. CURDATE and CURTIME
+# come from the run clock, hence the matchers and clock_mode relative.
+id: TRN-COTRN02C-negative-25
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 8 'Transaction Add' and, on
+  COTRN02, enters a valid transaction for repository card 0500024453765740
+  confirmed with Y, except that the Merchant ID is 'ABC123'. Every other check
+  passes, including both date validations; COTRN02C then sends COTRN02 again
+  with account 00000000050 looked up from the card, the entered values kept and
+  'Merchant ID must be Numeric...' in the message line, and writes no TRANSACT
+  record.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the CSD file COTRN02C reads, and the online-only
+# copybooks it copies. TRANSACT is never opened on this path, so its CSD file
+# is not listed; CSUTLDTC's date acceptance is verified by the date-message
+# scenarios, whose outcome depends on it. The sign-on step's own items
+# (COSGN00, CC00, USRSEC) and the menu transaction (CM00) belong to the SEC
+# and MNU scenarios; the batch record copybooks and the data files are
+# verified at the lowest level that executes them.
+inventory_ids:
+- INV-TRN-054  # COTRN02C message 'Merchant ID must be Numeric...' (rule)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the add
+- INV-CFG-004  # CCXREF CSD file, read by card number
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes step 3 a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # derived TRN end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # CARDXREF is the region's CCXREF file (and the CXACAIX path); USRSEC holds
+    # the demo users. TRANSACT is a built dataset with no repository data of its
+    # own, so its base is the 350-byte DALYTRAN it is built from, as for every
+    # online TRN scenario; it is loaded so that file_state shows it untouched.
+    CARDXREF: {base: CARDXREF}
+    TRANSACT: {base: DALYTRAN}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left blank, so the card number selects the cross-reference.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: 'ABC123'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN008: '08. Transaction Add                     '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    PGMNAME: COTRN02C
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    PGMNAME: COTRN02C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: 'ABC123   '
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: 'Y'
+    ERRMSG: 'Merchant ID must be Numeric...                                                '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Merchant ID must be Numeric...                                                '
+  file_state:
+    # Nothing is written: TRANSACT keeps the 300 fixture records, and the
+    # highest of them, the record an add would read back, is unchanged.
+    TRANSACT:
+      count: 300
+      contains:
+      - TRAN-ID: '0000000996722787'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+        TRAN-AMT: '603.22'
+        TRAN-MERCHANT-ID: '800000000'
+        TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+        TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+        TRAN-MERCHANT-ZIP: '53200-7529'
+        TRAN-CARD-NUM: '3260763612337560'
+        TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+        TRAN-PROC-TS: '                          '

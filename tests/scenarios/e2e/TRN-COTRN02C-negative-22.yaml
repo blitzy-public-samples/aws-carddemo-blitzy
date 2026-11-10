@@ -1,0 +1,157 @@
+# A processing date typed with slashes on the Add Transaction screen is refused
+# by the Proc Date format check, after the key lookup and every earlier field
+# check have passed, and no transaction is added.
+#
+# Steps 1-2 reach the empty Add Transaction screen as TRN-COTRN02C-normal-01
+# does: USER0001 (type U) is routed to COMEN01C, and option 8 transfers control
+# to COTRN02C with the program context reset, so COTRN02C sets the re-enter
+# flag, finds no transaction selected and sends COTRN02 with a blank ERRMSG
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:67-72] [app/cbl/COTRN02C.cbl:115-130,516-534].
+# Step 3 enters the valid field set of the TRN-COTRN02C scenarios, card number
+# only, except TPROCDT 2022/07/01, and presses ENTER under CT02
+# [app/cbl/COTRN02C.cbl:131-135,164-167]:
+# - ACTIDIN is sent back as the blank its FSET and INITIAL=' ' give it, so the
+#   card branch runs: the card is numeric, READ CCXREF by card number is NORMAL
+#   (record 1 of the CARDXREF fixture), and XREF-ACCT-ID 00000000050 replaces
+#   ACTIDINI [app/bms/COTRN02.bms:85-90] [app/cbl/COTRN02C.cbl:210-223,609-637].
+# - Every data field is supplied, Type CD 01 and Category CD 0001 are numeric,
+#   the amount has the sign, eight digits, point and two decimals, and Orig Date
+#   2022-07-01 has the YYYY-MM-DD shape [app/cbl/COTRN02C.cbl:251-366].
+# - Proc Date 2022/07/01 has '/' at position 5 where the check needs '-', so
+#   COTRN02C moves 'Proc Date should be in format YYYY-MM-DD' to WS-MESSAGE,
+#   puts the cursor on TPROCDT and performs SEND-TRNADD-SCREEN
+#   [app/cbl/COTRN02C.cbl:368-381].
+# - SEND-TRNADD-SCREEN rebuilds the header, moves the message to ERRMSG, sends
+#   COTRN2AO with ERASE and ends the task with RETURN TRANSID CT02
+#   [app/cbl/COTRN02C.cbl:516-534,550-571]. CSUTLDTC is never called, the
+#   amount is never edited back, CONFIRM is never evaluated and TRANSACT is
+#   never browsed or written [app/cbl/COTRN02C.cbl:169-188,383-437,442-466].
+# CONFIRM is Y, so the unchanged TRANSACT shows that the format check, not a
+# missing confirmation, stops the add. TRANSACT has no repository data of its
+# own (datasets.yaml source 'built'), so it is built from the 300 repository
+# daily transactions, which share its 350-byte record shape; COTRN02C issues
+# only WRITE on it, so an unchanged record count of 300 means nothing was added.
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - COTRN2AO redefines COTRN2AI, so the entry fields go back as received: BMS
+#   pads each received field with blanks to its length, and ACTIDIN and CARDNIN
+#   carry what the key lookup moved into them. Text values are whole fields at
+#   their BMS length with trailing spaces kept; ERRMSG is 78 bytes of the
+#   80-byte WS-MESSAGE.
+# - The titles are COTTL01Y's [app/cpy/COTTL01Y.cpy:17-22]. CURDATE and CURTIME
+#   come from the region clock through CSDAT01Y, hence the matchers and
+#   clock_mode relative.
+# - The adapter copies the ERRMSG of every step's screen into the message list.
+id: TRN-COTRN02C-negative-22
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and, on
+  COTRN02, enters a confirmed transaction for repository card 0500024453765740
+  with a valid Orig Date 2022-07-01 but Proc Date 2022/07/01. COTRN02C finds
+  the card's account 00000000050, passes the earlier field checks, refuses the
+  processing date with 'Proc Date should be in format YYYY-MM-DD', sends the
+  entered values back and adds no transaction.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the CSD file COTRN02C reads on this path, and the online-only
+# copybooks it copies. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC, the
+# option-8 navigation) are verified by the SEC and MNU scenarios. TRANSACT is
+# not read or written on this path, so its CSD file is not listed; the batch
+# record copybooks and the data files are verified at the lowest level that
+# executes them.
+inventory_ids:
+- INV-TRN-051  # COTRN02C message 'Proc Date should be in format YYYY-MM-DD' (rule)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the entry
+- INV-CFG-004  # CCXREF CSD file, read by card number; its account fills ACTIDIN
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT holds no repository data, so scenarios.py refuses it as its own
+    # base; DALYTRAN is the repository data that shares its record shape.
+    TRANSACT: {base: DALYTRAN}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: POS TERM
+      TDESC: Test purchase
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022/07/01'
+      MID: '800000001'
+      MNAME: Test Merchant
+      MCITY: Testville
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    PGMNAME: COTRN02C
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022/07/01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: 'Y'
+    ERRMSG: 'Proc Date should be in format YYYY-MM-DD                                      '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Proc Date should be in format YYYY-MM-DD                                      '
+  file_state:
+    # The 300 fixture records and nothing added.
+    TRANSACT:
+      count: 300

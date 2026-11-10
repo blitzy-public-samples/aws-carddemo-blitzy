@@ -1,0 +1,160 @@
+# Add Transaction with the origination date left empty: COTRN02C refuses it with
+# 'Orig Date can NOT be empty...' and writes nothing.
+#
+# Steps 1-2 reach the empty Add Transaction screen as TRN-COTRN02C-normal-01
+# does: USER0001 (type U) is routed to COMEN01C, and option 8 transfers control
+# to COTRN02C with the program context reset, so COTRN02C sets the re-enter
+# flag, finds no transaction selected and sends COTRN02 with a blank ERRMSG
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:115-156]
+# [app/cbl/COTRN02C.cbl:115-130,516-534].
+# Step 3 enters the valid field set of the TRN-COTRN02C scenarios, card number
+# only and no CONFIRM, with TORIGDT left empty, and presses ENTER under CT02:
+# - ACTIDIN is blank, so VALIDATE-INPUT-KEY-FIELDS takes the card branch: the
+#   numeric card goes back into CARDNINI through WS-CARD-NUM-N PIC 9(16)
+#   unchanged, READ CCXREF by card is NORMAL (record 1 of the CARDXREF
+#   fixture), and XREF-ACCT-ID 00000000050 is moved to ACTIDINI
+#   [app/cbl/COTRN02C.cbl:210-223,609-637].
+# - No error is flagged, so VALIDATE-INPUT-DATA-FIELDS keeps the entered
+#   fields. Its emptiness checks run in screen order: type, category, source,
+#   description and amount are supplied, so the TORIGDTI = SPACES OR LOW-VALUES
+#   branch moves 'Orig Date can NOT be empty...' to WS-MESSAGE and performs
+#   SEND-TRNADD-SCREEN [app/cbl/COTRN02C.cbl:235-286].
+# - SEND-TRNADD-SCREEN sends COTRN02 and returns TRANSID CT02, so the task ends
+#   there: no later check, no CSUTLDTC call, no TRANSACT browse and no WRITE
+#   [app/cbl/COTRN02C.cbl:516-534].
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - COTRN2AO redefines COTRN2AI, so the fields come back as received, padded
+#   with blanks to their BMS lengths, except the two the card branch rewrote.
+#   TORIGDT stays empty (10 blanks as captured); CONFIRM was never entered.
+# - ERRMSG is the 78-byte ERRMSGO: the 29-character message and 49 spaces
+#   (WS-MESSAGE X(80) moved to X(78)); comparisons never trim.
+# - CURDATE and CURTIME come from the region clock, hence the matchers and
+#   clock_mode relative.
+id: TRN-COTRN02C-negative-12
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and submits
+  COTRN02 for repository card 0500024453765740 with every field of the valid
+  set filled except the origination date. COTRN02C resolves the card's account
+  00000000050, sends COTRN02 again with 'Orig Date can NOT be empty...' in
+  ERRMSG and the entered values kept, and writes no TRANSACT record.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the CSD file this path reads and the online-only
+# copybooks COTRN02C copies. The path never browses or writes TRANSACT, and
+# never reads CXACAIX, so neither CSD file is listed: TRANSACT is asserted
+# unchanged only to show that nothing was added. Sign-on and the menu option
+# are verified by the SEC and MNU scenarios; the batch record copybooks and
+# the data files at the lowest level that executes them.
+inventory_ids:
+- INV-TRN-041  # COTRN02C message 'Orig Date can NOT be empty...' (rule)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the add
+- INV-CFG-004  # CCXREF CSD file, read by card number
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT is built (tests/fixtures/datasets.yaml gives it no repository
+    # source), so it cannot be a base; it is loaded from the 300 daily
+    # transactions, which share its 350-byte TRAN-RECORD shape and unique ids.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left blank, so the card number selects the cross-reference;
+  # the empty value leaves the origination date field empty.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: ''
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    PGMNAME: 'COTRN02C'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '          '
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: ' '
+    ERRMSG: 'Orig Date can NOT be empty...                                                 '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Orig Date can NOT be empty...                                                 '
+  file_state:
+    # Nothing is written: the 300 fixture records remain, and the highest of
+    # them, the record an add would follow, is unchanged.
+    TRANSACT:
+      count: 300
+      contains:
+      - TRAN-ID: '0000000996722787'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+        TRAN-AMT: '603.22'
+        TRAN-MERCHANT-ID: '800000000'
+        TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+        TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+        TRAN-MERCHANT-ZIP: '53200-7529'
+        TRAN-CARD-NUM: '3260763612337560'
+        TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+        TRAN-PROC-TS: '                          '
