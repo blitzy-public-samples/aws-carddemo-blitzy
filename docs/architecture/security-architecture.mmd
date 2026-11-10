@@ -1,9 +1,22 @@
 ---
 title: Card Servicing security architecture
+config:
+  flowchart:
+    rankSpacing: 360
+    nodeSpacing: 75
+    curve: linear
 ---
 flowchart TB
     subgraph AzureSubscription["Azure subscription"]
         subgraph AzureVNet["S1 Internet edge"]
+            subgraph PepSubnet["S3 Private data zone"]
+                PepPostgres["Postgres private endpoint"]
+                PepRedis["Redis private endpoint"]
+                PepKeyVault["Key Vault private endpoint"]
+                AzurePostgres[("S8 Encrypted PostgreSQL")]
+                AzureManagedRedis[("S8 Encrypted Redis")]
+                AzureKeyVault["Azure Key Vault"]
+            end
             subgraph AksSubnet["AKS subnet"]
                 ApiGateway["API gateway"]
                 subgraph AzureAKS["S2 Cluster trust zone"]
@@ -16,14 +29,6 @@ flowchart TB
                     ReferenceDataService["Reference Data stub"]
                     AuthService["Auth stub"]
                 end
-            end
-            subgraph PepSubnet["S3 Private data zone"]
-                PepPostgres["Postgres private endpoint"]
-                PepRedis["Redis private endpoint"]
-                PepKeyVault["Key Vault private endpoint"]
-                AzurePostgres[("S8 Encrypted PostgreSQL")]
-                AzureManagedRedis[("S8 Encrypted Redis")]
-                AzureKeyVault["Azure Key Vault"]
             end
         end
     end
@@ -46,10 +51,6 @@ flowchart TB
     CardServicingService -->|S4 mTLS| ConfigService
     CardServicingService -->|S4 mTLS| ReferenceDataService
 
-    CardServicingService -->|Access check| AccountAccessGuard
-    AccountAccessGuard -->|S5 Token validation| AuthService
-    AccountAccessGuard -->|S6 Account authorization| AuthService
-
     CardServicingService -->|TLS| PepRedis
     FixtureLoader -->|TLS| PepPostgres
     CardDataService -->|TLS| PepPostgres
@@ -58,6 +59,10 @@ flowchart TB
     PepPostgres -->|Private link| AzurePostgres
     PepRedis -->|Private link| AzureManagedRedis
     PepKeyVault -->|Private link| AzureKeyVault
+
+    CardServicingService -->|Access check| AccountAccessGuard
+    AccountAccessGuard -->|S5 Token validation| AuthService
+    AccountAccessGuard -->|S6 Account authorization| AuthService
 
     AzureKeyVault -->|S7 Secrets| CardServicingService
     AzureKeyVault -->|S7 Secrets| FixtureLoader
@@ -81,4 +86,10 @@ flowchart TB
     class AccountAccessGuard,AzureKeyVault,AcmRegularUser,AcmAdminUser,AcmInvalidToken,LegendSecurity security
     class PepPostgres,PepRedis,PepKeyVault,LegendNetworking networking
 
+    style AzureSubscription fill:#ffffff,stroke:#333333
+    style AzureVNet fill:#ffffff,stroke:#333333
+    style AksSubnet fill:#ffffff,stroke:#333333
+    style AzureAKS fill:#ffffff,stroke:#333333
+    style PepSubnet fill:#ffffff,stroke:#333333
+    style Legend fill:#ffffff,stroke:#333333
     Description["Only the API gateway admits north–south traffic, and every service hop inside the cluster uses mTLS. The access guard validates the token and the account entitlement before any data read."]

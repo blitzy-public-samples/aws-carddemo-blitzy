@@ -1,19 +1,23 @@
 ---
 title: Card Servicing logical architecture
+config:
+  flowchart:
+    rankSpacing: 350
+    curve: monotoneX
 ---
 flowchart LR
     CardServicingUi["Deferred account servicing UI"]
     ApiGateway["TLS ingress and routing"]
     CardServicingService["Balance and transaction API"]
-    FixtureLoader["Loads fixture data"]
-    AzurePostgres[("Stub mock-data store")]
+    AuthService["Token and access decisions"]
+    ConfigService["Paging and timeout settings"]
     AzureManagedRedis[("Read-through response cache")]
-    AzureKeyVault["Deployed secret source"]
+    FixtureLoader["Loads fixture data"]
     CardDataService["Account and balance data"]
     TransactionActivityService["Transaction history"]
-    ConfigService["Paging and timeout settings"]
     ReferenceDataService["Type and category descriptions"]
-    AuthService["Token and access decisions"]
+    AzureKeyVault["Deployed secret source"]
+    AzurePostgres[("Stub mock-data store")]
 
     subgraph Legend["Legend"]
         LegendCompute["Compute"]

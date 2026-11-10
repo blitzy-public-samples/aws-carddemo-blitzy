@@ -13,8 +13,8 @@ flowchart TB
                     FixtureLoader["P4 Fixture loader job"]
                     CardDataService["P5 Card Data stub"]
                     TransactionActivityService["P6 Transaction Activity stub"]
-                    ConfigService["P7 Config stub"]
                     ReferenceDataService["P8 Reference Data stub"]
+                    ConfigService["P7 Config stub"]
                     AuthService["P9 Auth stub"]
                 end
             end
@@ -66,4 +66,10 @@ flowchart TB
     class AzureKeyVault,LegendSecurity security
     class PepPostgres,PepRedis,PepKeyVault,LegendNetworking networking
 
+    style AzureSubscription fill:#ffffff,stroke:#333333
+    style AzureVNet fill:#ffffff,stroke:#333333
+    style AksSubnet fill:#ffffff,stroke:#333333
+    style AzureAKS fill:#ffffff,stroke:#333333
+    style PepSubnet fill:#ffffff,stroke:#333333
+    style Legend fill:#ffffff,stroke:#333333
     Description["Card Servicing runs in one AKS cluster behind the API gateway, with the five stubs beside it. PostgreSQL, Redis and Key Vault are reached only through private endpoints."]
