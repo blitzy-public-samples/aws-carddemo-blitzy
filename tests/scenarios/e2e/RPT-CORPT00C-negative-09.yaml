@@ -1,0 +1,138 @@
+# A custom-range report request whose start day is not a valid day.
+# USER0001 signs on through CC00 and reaches the main menu COMEN01; option '9'
+# is 'Transaction Reports', so COMEN01C zeroes CDEMO-PGM-CONTEXT and transfers
+# control with XCTL to CORPT00C [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:74-78]. On that first entry CORPT00C sets
+# CDEMO-PGM-REENTER, clears CORPT0AO to LOW-VALUES and sends CORPT00 with its
+# header and the blank WS-MESSAGE in ERRMSG, returning with TRANSID(CR00)
+# [app/cbl/CORPT00C.cbl:172-181,199-202,556-591,609-628].
+#
+# Step 3 marks CUSTOM and enters the valid range 01/01/2022 to 07/06/2022 with
+# the start day changed to '50', then presses ENTER. CORPT00C receives the map
+# and PROCESS-ENTER-KEY finds MONTHLY and YEARLY blank and CUSTOM marked
+# [app/cbl/CORPT00C.cbl:183-186,208-256]. Every date part is supplied, so the
+# empty checks fall through to WHEN OTHER [app/cbl/CORPT00C.cbl:258-303]. The
+# NUMVAL-C normalization moves each part back through the PIC 99 and PIC 9999
+# work fields, which leaves '01', '50', '2022', '07', '06' and '2022' as they
+# were entered [app/cbl/CORPT00C.cbl:74-75,305-327]. The start month '01' is
+# numeric and not above '12' [app/cbl/CORPT00C.cbl:329-336]; the start day
+# '50' is numeric but compares above '31', so CORPT00C moves 'Start Date - Not
+# a valid Day...' to WS-MESSAGE, sets WS-ERR-FLG, puts the cursor on SDTDD and
+# performs SEND-TRNRPT-SCREEN [app/cbl/CORPT00C.cbl:338-345]. That paragraph
+# sends CORPT00 with ERASE and ends with GO TO RETURN-TO-CICS
+# [app/cbl/CORPT00C.cbl:556-591], so the task ends there: the start-year and
+# end-date checks, the CSUTLDTC calls and SUBMIT-JOB-TO-INTRDR are never
+# reached [app/cbl/CORPT00C.cbl:347-443,462-535], no confirmation is asked and
+# no report job is written to the JOBS queue.
+# The day values 31 and 32 are the custom-date boundaries of
+# RPT-CORPT00C-boundary-04..05; '50' is a plainly invalid day.
+# Priority decision: that nothing is submitted follows from the source path and
+# shows in ERRMSG, which holds the invalid-day message instead of 'Please
+# confirm to print the Custom report...' or 'Custom report submitted for
+# printing ...'; it is not asserted as an empty @TDQ:JOBS. That observation
+# needs the JOBS capture (GAP-MIS-017) and would keep this message item blocked
+# wherever the TPE runs but the capture does not; the queue write is verified
+# by RPT-CORPT00C-normal-01..03.
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - CORPT0AO redefines CORPT0AI [app/cpy-bms/CORPT00.CPY:121], so the received
+#   fields go back as normalized, which here is as entered: CUSTOM 'X' and the
+#   six date parts. MONTHLY and YEARLY come back as their blank INITIAL, sent
+#   as spaces because the fields are FSET, and CONFIRM, which has no INITIAL,
+#   holds nulls that the screen shows as a space [app/bms/CORPT00.bms:80-210].
+# - Text fields are compared at their full BMS length with trailing spaces:
+#   ERRMSG is 78 bytes [app/bms/CORPT00.bms:218-221], the 31-character message
+#   followed by spaces from the 80-byte WS-MESSAGE [app/cbl/CORPT00C.cbl:39].
+# - CURDATE and CURTIME come from the region clock in the mm/dd/yy and
+#   hh:mm:ss forms of CSDAT01Y [app/cbl/CORPT00C.cbl:609-628], hence the
+#   matchers and clock_mode relative.
+id: RPT-CORPT00C-negative-09
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 9 'Transaction Reports' on the main menu
+  and, on CORPT00, marks Custom and enters the range 01/50/2022 to 07/06/2022.
+  CORPT00C refuses the start day 50 with 'Start Date - Not a valid Day...',
+  sends CORPT00 again with the entered values, asks for no confirmation and
+  submits no report.
+# The sign-on step's own items (COSGN00, CC00, USRSEC) and the option-9
+# navigation belong to the SEC and MNU scenarios.
+inventory_ids:
+- INV-RPT-018  # CORPT00C message 'Start Date - Not a valid Day...' (rule)
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, the main menu option 9 is entered on
+- INV-RPT-002  # CORPT00 map, the screen the range is entered on and sent again
+- INV-CFG-019  # CR00 transaction, under which the ENTER is processed
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by CORPT00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; CORPT00C reads no file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # The valid custom range with the start day '01' replaced by '50'.
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      CUSTOM: 'X'
+      SDTMM: '01'
+      SDTDD: '50'
+      SDTYYYY: '2022'
+      EDTMM: '07'
+      EDTDD: '06'
+      EDTYYYY: '2022'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: 'X'
+    SDTMM: '01'
+    SDTDD: '50'
+    SDTYYYY: '2022'
+    EDTMM: '07'
+    EDTDD: '06'
+    EDTYYYY: '2022'
+    CONFIRM: ' '
+    ERRMSG: 'Start Date - Not a valid Day...                                               '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # CORPT00 screen, the invalid-day message after the ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Start Date - Not a valid Day...                                               '
