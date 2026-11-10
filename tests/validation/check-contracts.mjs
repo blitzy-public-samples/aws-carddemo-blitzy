@@ -53,15 +53,26 @@
  * none, parse and hold local `#` references alone. A tool or document held back is one
  * more violation naming why, so neither tool reads a path the checks did not allow.
  *
+ * Hostile content cannot hold the check up. YAML is read under the core schema, so a
+ * tag outside it does not parse, and a document is refused before its data is built
+ * when it holds more than 1 MiB of text, nests deeper than 64 levels, or holds an alias
+ * or an `!include`. One example's schema evaluation stops after a fixed step budget, a
+ * pattern match after 1 s (10 s for all matches of a run), buf after 120 s and Spectral
+ * after 120 s per document; each stop is a violation. The tools run in a process group
+ * of their own, which is killed whole when they are stopped and once more after they
+ * end, and a SIGINT, SIGTERM or SIGHUP while one runs kills it and exits 128 + n.
+ *
  * A failing check is fixed in the contracts, never by weakening this script.
  * Output: one line per distinct violation and a final count (lib/markdown.mjs report).
  * Informational lines read `check-contracts (note): <note>` and are not violations.
  * Exit 0 with no violation, 1 with any, 2 on an internal or setup error, such as no
  * resolvable YAML parser or @stoplight/spectral-rulesets (the count is still printed).
  */
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import {
   repoRoot,
   readText,
@@ -196,6 +207,97 @@ class YamlSyntaxError extends Error {
   }
 }
 
+/** Most characters a YAML document may hold; the largest contract holds about 63 000. */
+const YAML_MAX_CHARS = 1024 * 1024;
+/** Deepest nesting of mappings and sequences a YAML document may hold, its root being level 1. */
+const YAML_MAX_DEPTH = 64;
+
+/**
+ * A YAML document refused before its data is built: longer than YAML_MAX_CHARS, nested
+ * deeper than YAML_MAX_DEPTH, or holding an alias or an `!include`. It is a
+ * YamlSyntaxError, so loadYaml reports it as a violation at its line, never as an
+ * internal error.
+ */
+class YamlLimitError extends YamlSyntaxError {
+  constructor(message, line) {
+    super(message, line);
+    this.name = 'YamlLimitError';
+  }
+}
+
+const YAML_TOO_DEEP = `it nests mappings and sequences deeper than ${YAML_MAX_DEPTH} levels`;
+const YAML_TOO_DEEP_TO_PARSE = 'it nests mappings and sequences too deeply to parse';
+
+/** Refuses a document longer than YAML_MAX_CHARS, before any parser reads it. */
+function refuseLongYaml(text) {
+  if (text.length > YAML_MAX_CHARS) {
+    throw new YamlLimitError(`it holds ${text.length} characters, more than the ${YAML_MAX_CHARS} allowed`, undefined);
+  }
+}
+
+/**
+ * Loads the @stoplight/yaml-ast-parser AST of `text` under `schema` and walks it, without
+ * building any data, in document order and without recursion: throws a YamlLimitError
+ * at the first alias, `!include` or mapping or sequence nested deeper than
+ * YAML_MAX_DEPTH. An alias is refused outright, because @stoplight/yaml copies its
+ * target at every use, so a few nested aliases build millions of nodes from a few
+ * hundred bytes. A stack overflow while loading is refused as nesting too deep to parse.
+ */
+function refuseUnboundedYamlAst(loadAst, schema, Kind, text, lineAt) {
+  let ast;
+  try {
+    ast = loadAst(text, { schema, ignoreDuplicateKeys: true });
+  } catch (err) {
+    if (err instanceof RangeError) throw new YamlLimitError(YAML_TOO_DEEP_TO_PARSE, undefined);
+    throw err;
+  }
+  const lineOf = (node) =>
+    Number.isInteger(node.startPosition) && node.startPosition >= 0 ? lineAt(node.startPosition) : undefined;
+  // [node, nesting level]; children are pushed last-first so they are visited in document order.
+  const stack = ast ? [[ast, 1]] : [];
+  while (stack.length > 0) {
+    const [node, depth] = stack.pop();
+    if (node === null || typeof node !== 'object') continue;
+    if (node.kind === Kind.ANCHOR_REF) {
+      throw new YamlLimitError(`alias *${node.referencesAnchor} is not allowed; write the value out in full`, lineOf(node));
+    }
+    if (node.kind === Kind.INCLUDE_REF) throw new YamlLimitError('an !include tag is not allowed', lineOf(node));
+    if (node.kind === Kind.MAPPING) {
+      // A key/value pair sits at its mapping's child level; the key is visited first.
+      stack.push([node.value, depth], [node.key, depth]);
+      continue;
+    }
+    if (node.kind !== Kind.MAP && node.kind !== Kind.SEQ) continue;
+    if (depth > YAML_MAX_DEPTH) throw new YamlLimitError(YAML_TOO_DEEP, lineOf(node));
+    const children = node.kind === Kind.MAP ? node.mappings : node.items;
+    if (!Array.isArray(children)) continue;
+    for (let i = children.length - 1; i >= 0; i--) stack.push([children[i], depth + 1]);
+  }
+}
+
+/**
+ * Walks data js-yaml built, without recursion, and throws a YamlLimitError when a
+ * mapping or sequence is reached twice (an alias to it, or a cycle) or sits deeper than
+ * YAML_MAX_DEPTH, so every later walker sees an acyclic, unshared tree of bounded depth.
+ */
+function refuseSharedYamlData(root) {
+  const seen = new Set();
+  const stack = [[root, 1]];
+  while (stack.length > 0) {
+    const [node, depth] = stack.pop();
+    if (node === null || typeof node !== 'object') continue;
+    if (seen.has(node)) {
+      throw new YamlLimitError(
+        'an alias repeats a mapping or sequence, or forms a cycle; aliases to mappings and sequences are not allowed',
+        undefined,
+      );
+    }
+    if (depth > YAML_MAX_DEPTH) throw new YamlLimitError(YAML_TOO_DEEP, undefined);
+    seen.add(node);
+    for (const child of Array.isArray(node) ? node : Object.values(node)) stack.push([child, depth + 1]);
+  }
+}
+
 /**
  * Resolves a strict YAML parser from the locked tool tree: @stoplight/yaml (Spectral's
  * own parser), else js-yaml (hoisted by the mermaid toolchain). Never add a YAML package
@@ -208,21 +310,49 @@ class YamlSyntaxError extends Error {
  * yamlLine); @stoplight/yaml provides it from its AST. js-yaml keeps no node positions,
  * so under it `locate` is null and every content violation of a YAML document falls
  * back to file-level output.
+ *
+ * Both parsers load under the YAML core schema (strings, numbers, booleans, null,
+ * mappings and sequences), never a schema that constructs functions, regular
+ * expressions, binary data or dates, so any other tag is a syntax error. Before any
+ * data is built, a YamlLimitError refuses a document longer than YAML_MAX_CHARS, nested
+ * deeper than YAML_MAX_DEPTH or too deeply to parse, holding an `!include`, or holding
+ * an alias (under js-yaml, an alias to a mapping or sequence). The data returned is
+ * therefore an acyclic tree with no shared node and at most YAML_MAX_DEPTH levels.
  */
 function resolveYamlParser() {
   const require = createRequire(new URL('./package.json', import.meta.url));
   try {
     const { parseWithPointers, Kind } = require('@stoplight/yaml');
-    if (typeof parseWithPointers === 'function' && isObject(Kind)) {
+    // The AST loader and core schema of the yaml-ast-parser that @stoplight/yaml itself loads.
+    const stoplightRequire = createRequire(require.resolve('@stoplight/yaml'));
+    const { load: loadAst, Kind: AstKind } = stoplightRequire('@stoplight/yaml-ast-parser');
+    const CORE_SCHEMA = stoplightRequire('@stoplight/yaml-ast-parser/dist/src/schema/core');
+    if (
+      typeof parseWithPointers === 'function' &&
+      isObject(Kind) &&
+      typeof loadAst === 'function' &&
+      isObject(AstKind) &&
+      isObject(CORE_SCHEMA)
+    ) {
       return (text) => {
-        const result = parseWithPointers(text);
+        refuseLongYaml(text);
+        const lineAt = lineLocator(text);
+        refuseUnboundedYamlAst(loadAst, CORE_SCHEMA, AstKind, text, lineAt);
+        let result;
+        try {
+          // An options object without ignoreDuplicateKeys: false makes parseWithPointers
+          // accept duplicate keys silently.
+          result = parseWithPointers(text, { schema: CORE_SCHEMA, ignoreDuplicateKeys: false });
+        } catch (err) {
+          if (err instanceof RangeError) throw new YamlLimitError(YAML_TOO_DEEP_TO_PARSE, undefined);
+          throw err;
+        }
         const diagnostics = Array.isArray(result.diagnostics) ? result.diagnostics : [];
         const error = diagnostics.find((d) => d?.severity === 0);
         if (error) {
           const line = error.range?.start?.line;
           throw new YamlSyntaxError(String(error.message ?? 'syntax error'), Number.isInteger(line) ? line + 1 : undefined);
         }
-        const lineAt = lineLocator(text);
         const locate = result.ast ? (jsonPath) => astKeyLine(result.ast, Kind, jsonPath, lineAt) : null;
         return { data: result.data, locate };
       };
@@ -231,16 +361,25 @@ function resolveYamlParser() {
     // Not resolvable from tests/validation; js-yaml is tried next.
   }
   try {
-    const { load } = require('js-yaml');
-    if (typeof load === 'function') {
+    const { load, CORE_SCHEMA } = require('js-yaml');
+    if (typeof load === 'function' && isObject(CORE_SCHEMA)) {
       return (text) => {
+        refuseLongYaml(text);
+        let data;
         try {
-          return { data: load(text), locate: null };
+          // js-yaml refuses any node, a scalar included, more than maxDepth levels deep;
+          // YAML_MAX_DEPTH + 1 still admits a scalar inside the deepest collection allowed.
+          data = load(text, { schema: CORE_SCHEMA, maxDepth: YAML_MAX_DEPTH + 1 });
         } catch (err) {
+          if (err instanceof RangeError) throw new YamlLimitError(YAML_TOO_DEEP_TO_PARSE, undefined);
           if (err?.name !== 'YAMLException') throw err;
-          const line = err.mark?.line;
-          throw new YamlSyntaxError(String(err.reason ?? err.message), Number.isInteger(line) ? line + 1 : undefined);
+          const mark = err.mark?.line;
+          const line = Number.isInteger(mark) ? mark + 1 : undefined;
+          if (/^nesting exceeded maxDepth\b/.test(String(err.reason))) throw new YamlLimitError(YAML_TOO_DEEP, line);
+          throw new YamlSyntaxError(String(err.reason ?? err.message), line);
         }
+        refuseSharedYamlData(data);
+        return { data, locate: null };
       };
     }
   } catch {
@@ -333,9 +472,168 @@ const yamlDocLine = (doc, key) => (doc !== null && typeof doc === 'object' ? yam
 // Linters
 // ---------------------------------------------------------------------------
 
+/** Longest buf lint, or one Spectral run over one document, may take before it is stopped. */
+const TOOL_TIMEOUT_MS = 120_000;
+/** Most bytes a tool may print on each of stdout and stderr; one more stops it. */
+const TOOL_OUTPUT_MAX_BYTES = 64 * 1024 * 1024;
+/** Longest a buf line or a Spectral finding message may run in a violation. */
+const TOOL_MESSAGE_MAX = 400;
+/** Signals that, while a tool runs, stop its process group and end this check. */
+const TOOL_STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+
+/**
+ * Runs a local tool from the repository root and resolves, as spawnSync would return,
+ * to { status, signal, stdout, stderr, error, timedOut, overflow }: stdout and stderr
+ * decoded as UTF-8, `error` set when the tool could not start or its output could not
+ * be read. `label` names the run in messages, as "buf lint".
+ *
+ * The tool runs detached, as the leader of a process group of its own, so the tool and
+ * every process it starts (buf's node wrapper starts the buf binary) are stopped
+ * together with SIGKILL: after TOOL_TIMEOUT_MS (timedOut), as soon as stdout or stderr
+ * passes TOOL_OUTPUT_MAX_BYTES (overflow; output past the limit is not kept), and once
+ * more after the tool has exited, so no process it left behind outlives the run. While
+ * it runs, SIGINT, SIGTERM or SIGHUP stops the group and ends this check with status
+ * 128 + the signal's number; the handlers are removed when the run ends. Otherwise a
+ * failure to stop the group, other than its being gone already, rejects as an internal
+ * error.
+ *
+ * @param {string} label
+ * @param {string} bin absolute path from toolBin
+ * @param {string[]} args
+ * @returns {Promise<{ status: number | null, signal: string | null, stdout: string, stderr: string,
+ *   error: Error | null, timedOut: boolean, overflow: boolean }>}
+ */
+function runTool(label, bin, args) {
+  return new Promise((resolve, reject) => {
+    const kept = { stdout: [], stderr: [] };
+    const bytes = { stdout: 0, stderr: 0 };
+    const signalHandlers = new Map();
+    let timedOut = false;
+    let overflow = false;
+    let error = null;
+    let settled = false;
+    let timer;
+    let child;
+
+    // SIGKILL to the tool's process group; a group that is already gone is not an error.
+    const stopGroup = () => {
+      if (child?.pid === undefined) return;
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch (err) {
+        if (err?.code !== 'ESRCH') throw err;
+      }
+    };
+    const settle = (finish) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
+      finish();
+    };
+    // Ends the run as an internal error, leaving nothing of the tool that keeps this process alive.
+    const abort = (err) =>
+      settle(() => {
+        child?.stdout?.destroy();
+        child?.stderr?.destroy();
+        child?.unref();
+        reject(err);
+      });
+    // Stops the group before the tool ends by itself. Its output streams are closed too,
+    // so 'close' follows the tool's exit even if a process outside the group holds a pipe.
+    const stopEarly = () => {
+      try {
+        stopGroup();
+      } catch (err) {
+        abort(err);
+        return;
+      }
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
+
+    try {
+      child = spawn(bin, args, { cwd: repoRoot, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (err) {
+      resolve({ status: null, signal: null, stdout: '', stderr: '', error: err, timedOut, overflow });
+      return;
+    }
+
+    for (const signal of TOOL_STOP_SIGNALS) {
+      const handler = () => {
+        let outcome = 'its processes were stopped';
+        try {
+          stopGroup();
+        } catch (err) {
+          outcome = `its processes could not be stopped (${err?.code ?? err})`;
+        }
+        console.error(`${CHECK}: ${signal} received while ${label} ran; ${outcome}`);
+        process.exit(128 + os.constants.signals[signal]);
+      };
+      signalHandlers.set(signal, handler);
+      process.on(signal, handler);
+    }
+    timer = setTimeout(() => {
+      timedOut = true;
+      stopEarly();
+    }, TOOL_TIMEOUT_MS);
+
+    for (const name of ['stdout', 'stderr']) {
+      child[name].on('data', (chunk) => {
+        if (overflow) return;
+        bytes[name] += chunk.length;
+        if (bytes[name] > TOOL_OUTPUT_MAX_BYTES) {
+          overflow = true;
+          stopEarly();
+          return;
+        }
+        kept[name].push(chunk);
+      });
+      child[name].on('error', (err) => {
+        error ??= err;
+      });
+    }
+    child.on('error', (err) => {
+      error ??= err;
+      // A tool that never started has no process to wait for.
+      if (child.pid === undefined) {
+        settle(() => resolve({ status: null, signal: null, stdout: '', stderr: '', error, timedOut, overflow }));
+      }
+    });
+    child.on('close', (status, signal) => {
+      try {
+        stopGroup();
+      } catch (err) {
+        abort(err);
+        return;
+      }
+      settle(() =>
+        resolve({
+          status,
+          signal,
+          stdout: Buffer.concat(kept.stdout).toString('utf8'),
+          stderr: Buffer.concat(kept.stderr).toString('utf8'),
+          error,
+          timedOut,
+          overflow,
+        }),
+      );
+    });
+  });
+}
+
+/** The violation for a tool run that was stopped early, or null when it ended by itself. */
+function stoppedToolMessage(label, res, where = '') {
+  if (res.timedOut) return `${label} did not finish within ${TOOL_TIMEOUT_MS / 1000} s${where} and was stopped`;
+  if (res.overflow) {
+    return `${label} printed more than ${TOOL_OUTPUT_MAX_BYTES / (1024 * 1024)} MiB on stdout or stderr${where} and was stopped`;
+  }
+  return null;
+}
+
 const BUF_FINDING_RE = /^(\S[^:]*\.proto):(\d+)(?::\d+)?:\s*(.*)$/;
 
-function runBuf(violations) {
+async function runBuf(violations) {
   const bin = toolBin('buf');
   if (!bin) {
     violations.push({
@@ -347,21 +645,25 @@ function runBuf(violations) {
   // main runs buf only when no symlink sits on buf.yaml, on a module root or inside one;
   // --disable-symlinks still keeps buf off a link that appears inside a root after that
   // walk, whose target may sit outside the repository or under a CardDemo reference root.
-  const res = spawnSync(bin, ['lint', '--config', BUF_CONFIG, '--disable-symlinks'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  const res = await runTool('buf lint', bin, ['lint', '--config', BUF_CONFIG, '--disable-symlinks']);
   if (res.error) {
     violations.push({ path: BUF_CONFIG, message: `buf lint could not run: ${formatError(res.error)}` });
+    return;
+  }
+  const stopped = stoppedToolMessage('buf lint', res);
+  if (stopped) {
+    violations.push({ path: BUF_CONFIG, message: stopped });
     return;
   }
   const lines = `${res.stdout ?? ''}\n${res.stderr ?? ''}`.split(/\r?\n/).filter((l) => l.trim() !== '');
   for (const line of lines) {
     const m = BUF_FINDING_RE.exec(line.trim());
     const file = m ? repoRelative(m[1]) : null;
-    if (m && file) violations.push({ path: file, line: Number(m[2]), message: `buf: ${relativizeHostPaths(m[3])}` });
-    else violations.push({ path: BUF_CONFIG, message: `buf: ${relativizeHostPaths(line.trim())}` });
+    // Each line is one violation; `unclipped` keeps two lines that clip alike from merging in distinctViolations.
+    const text = relativizeHostPaths(m && file ? m[3] : line.trim());
+    const finding = { message: `buf: ${clipSpectralText(text, TOOL_MESSAGE_MAX)}`, unclipped: `buf: ${text}` };
+    if (m && file) violations.push({ path: file, line: Number(m[2]), ...finding });
+    else violations.push({ path: BUF_CONFIG, ...finding });
   }
   if (res.status !== 0 && lines.length === 0) {
     violations.push({
@@ -506,22 +808,24 @@ const NODE_TRACE_HINT_RE = /^\(Use `node --trace-[a-z-]+(?: [^`]*)?` to show whe
  * Lints each OpenAPI document in `files` with the local Spectral, against .spectral.yaml
  * at the error threshold, and judges stdout, stderr and the exit status separately.
  *
- * Violations, per document: Spectral could not start; stdout is not one decodable
- * findings array (extractJsonArray), whatever the exit status; one or more results are
- * not findings (spectralFindingProblem), reported once with the count and the first;
- * each error-severity finding, at its source line; a signal kill; a non-zero exit with
- * no error finding; stderr holding anything but Node.js runtime warnings, reported once
- * with its first unrecognised lines.
+ * Violations, per document: Spectral could not start; it was stopped (runTool) after
+ * TOOL_TIMEOUT_MS or for printing more than TOOL_OUTPUT_MAX_BYTES, reported alone, its
+ * output not decoded; stdout is not one decodable findings array (extractJsonArray),
+ * whatever the exit status; one or more results are not findings
+ * (spectralFindingProblem), reported once with the count and the first; each
+ * error-severity finding, at its source line, its text clipped to TOOL_MESSAGE_MAX
+ * characters; a signal kill; a non-zero exit with no error finding; stderr holding
+ * anything but Node.js runtime warnings, reported once with its first unrecognised lines.
  *
  * Notes: text printed before the findings array; each distinct Node.js runtime warning,
  * once across all documents and without its process id; the warning, info and hint
  * counts across all documents.
  *
  * @param {string[]} files root-relative OpenAPI document paths
- * @param {{ path: string, line?: number, message: string }[]} violations appended to
+ * @param {{ path: string, line?: number, message: string, unclipped?: string }[]} violations appended to
  * @param {string[]} notes plain informational lines, appended to
  */
-function runSpectral(files, violations, notes) {
+async function runSpectral(files, violations, notes) {
   const bin = toolBin('spectral');
   if (!bin) {
     violations.push({
@@ -534,13 +838,16 @@ function runSpectral(files, violations, notes) {
   const belowError = [0, 0, 0, 0];
   const runtimeNotes = new Set();
   for (const rel of files) {
-    const res = spawnSync(bin, ['lint', rel, '--ruleset', SPECTRAL_RULESET, '--fail-severity=error', '-f', 'json'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-    });
+    const args = ['lint', rel, '--ruleset', SPECTRAL_RULESET, '--fail-severity=error', '-f', 'json'];
+    const res = await runTool(`spectral lint of ${rel}`, bin, args);
     if (res.error) {
       violations.push({ path: rel, message: `spectral lint could not run: ${formatError(res.error)}` });
+      continue;
+    }
+    // Output of a run that was stopped is incomplete, so it is not decoded.
+    const stopped = stoppedToolMessage('spectral lint', res, ' on this document');
+    if (stopped) {
+      violations.push({ path: rel, message: stopped });
       continue;
     }
 
@@ -588,10 +895,13 @@ function runSpectral(files, violations, notes) {
       if (r.severity === 0) {
         errors++;
         const file = typeof r.source === 'string' ? repoRelative(r.source) ?? rel : rel;
+        // Each finding is one violation; `unclipped` keeps two that clip alike from merging in distinctViolations.
+        const text = `spectral ${r.code}: ${relativizeHostPaths(r.message)}`;
         violations.push({
           path: file,
           line: r.range.start.line + 1,
-          message: `spectral ${r.code}: ${relativizeHostPaths(r.message)}`,
+          message: clipSpectralText(text, TOOL_MESSAGE_MAX),
+          unclipped: text,
         });
       } else {
         belowError[r.severity]++;
@@ -943,9 +1253,10 @@ function checkLintConfigs(parseYaml, violations, linked) {
 /**
  * Parses a root-relative YAML file and records its node locations for yamlLine;
  * undefined (with a violation) when it is absent, cannot be read (a directory, no
- * permission and the like) or does not parse. Only a YamlSyntaxError, duplicate keys
- * included, is a parse failure, reported at the line the parser names; any other error
- * the parser throws is an internal error. Callers never pass a path reached through a
+ * permission and the like), does not parse or is refused. Only a YamlSyntaxError,
+ * duplicate keys included, is a parse failure, reported at the line the parser names,
+ * and a YamlLimitError among them prints as "YAML is refused"; any other error the
+ * parser throws is an internal error. Callers never pass a path reached through a
  * symbolic link: main reports the link instead.
  */
 function loadYaml(rel, parseYaml, violations) {
@@ -965,10 +1276,11 @@ function loadYaml(rel, parseYaml, violations) {
     parsed = parseYaml(text);
   } catch (err) {
     if (!(err instanceof YamlSyntaxError)) throw err;
+    const verdict = err instanceof YamlLimitError ? 'YAML is refused' : 'YAML does not parse';
     violations.push({
       path: rel,
       line: Number.isInteger(err.line) ? err.line : undefined,
-      message: `YAML does not parse: ${String(err.message).split('\n')[0]}`,
+      message: `${verdict}: ${String(err.message).split('\n')[0]}`,
     });
     return undefined;
   }
@@ -2184,8 +2496,6 @@ function shown(value) {
   return text.length > 60 ? `${text.slice(0, 57)}...` : text;
 }
 
-const sameJson = (a, b) => canonicalJson(a) === canonicalJson(b);
-
 const compiledPatterns = new Map();
 
 /** A JSON Schema `pattern` compiled as an ECMA-262 Unicode regular expression; null when it does not compile. */
@@ -2202,6 +2512,89 @@ function compilePattern(pattern) {
   return compiledPatterns.get(pattern);
 }
 
+/** Longest one pattern match may run before it is stopped. */
+const PATTERN_TIMEOUT_MS = 1000;
+/** Longest all pattern matches of one run may take together: ten stopped matches spend it. */
+const PATTERN_RUN_BUDGET_MS = 10 * PATTERN_TIMEOUT_MS;
+
+/*
+ * A contract's pattern is matched inside a vm context, because only there can a match
+ * be stopped: a valid pattern such as ^(a+)+$ backtracks for longer than any run can
+ * wait on a short subject, and RegExp has no time limit of its own. One context and one
+ * compiled script serve every match.
+ */
+const patternContext = vm.createContext({ pattern: null, subject: '' });
+const patternScript = new vm.Script('pattern.test(subject)');
+/** Sources of the patterns a match of which was stopped; none of them is run again. */
+const stoppedPatterns = new Set();
+/** Milliseconds this run has spent matching patterns. */
+let patternRunMs = 0;
+
+/**
+ * Matches `subject` against `re`, compiled from `source`, and stops the match after
+ * PATTERN_TIMEOUT_MS, or sooner when the run's PATTERN_RUN_BUDGET_MS runs out. Returns
+ * { matched } or, when no answer was reached, { stopped } naming why: 'timeout' (this
+ * match was stopped, and the pattern is never run again), 'earlier' (a match of this
+ * pattern was stopped before, so it was not run) or 'budget' (the run's matching time
+ * is spent).
+ */
+function matchPattern(re, source, subject) {
+  if (stoppedPatterns.has(source)) return { stopped: 'earlier' };
+  const remaining = PATTERN_RUN_BUDGET_MS - patternRunMs;
+  if (remaining <= 0) return { stopped: 'budget' };
+  const timeout = Math.max(1, Math.min(PATTERN_TIMEOUT_MS, Math.floor(remaining)));
+  patternContext.pattern = re;
+  patternContext.subject = subject;
+  const start = performance.now();
+  try {
+    return { matched: patternScript.runInContext(patternContext, { timeout }) === true };
+  } catch (err) {
+    if (err?.code !== 'ERR_SCRIPT_EXECUTION_TIMEOUT') throw err;
+    // A shortened limit ran out because the run's budget did, not because of this pattern.
+    if (timeout < PATTERN_TIMEOUT_MS) return { stopped: 'budget' };
+    stoppedPatterns.add(source);
+    return { stopped: 'timeout' };
+  } finally {
+    patternRunMs += performance.now() - start;
+    patternContext.pattern = null;
+    patternContext.subject = '';
+  }
+}
+
+/**
+ * The violation text for a match matchPattern stopped: `label` is "pattern" or
+ * "patternProperties pattern", `what` names the subject, `stopped` is matchPattern's reason.
+ */
+function patternStopMessage(label, source, what, stopped) {
+  const limit = `${PATTERN_TIMEOUT_MS / 1000} s`;
+  if (stopped === 'timeout') return `${label} "${source}" did not finish matching ${what} within ${limit}; it is not run again`;
+  if (stopped === 'earlier') {
+    return `${label} "${source}" was not matched against ${what}: it did not finish matching an earlier value within ${limit}`;
+  }
+  const budget = `${PATTERN_RUN_BUDGET_MS / 1000} s`;
+  return `${label} "${source}" was not matched against ${what}: pattern matching has spent its ${budget} for this run`;
+}
+
+/**
+ * Most steps one sample's schema evaluation may take. A step is one visit of
+ * schemaMismatchWithin, one element a visit iterates (a type name, an enum member, a
+ * required name, an object key once and again per patternProperties pattern, or a
+ * uniqueItems item), or SCHEMA_STEP_CHARS characters of text a visit reads or builds
+ * (a string value, an object key, a $ref, canonical JSON for enum, const and
+ * uniqueItems). The contracts' largest sample takes a small fraction of it.
+ */
+const SCHEMA_STEP_BUDGET = 20000;
+const SCHEMA_STEP_CHARS = 1024;
+
+/** Takes `n` steps from `budget`; true once the budget is overspent, so the caller stops. */
+function spendSteps(budget, n) {
+  budget.steps -= n;
+  return budget.steps < 0;
+}
+
+/** Steps for reading or building `text`: one per SCHEMA_STEP_CHARS characters, none for anything but a string. */
+const textSteps = (text) => (typeof text === 'string' ? Math.floor(text.length / SCHEMA_STEP_CHARS) : 0);
+
 /**
  * First place where a JSON value breaks a JSON Schema, as { at, message } with `at` a
  * JSON path from `$`; null when the value conforms. Local `$ref`s resolve against the
@@ -2215,35 +2608,87 @@ function compilePattern(pattern) {
  *
  * `refs` holds the references already followed for this same value, so a reference
  * cycle that never descends into the value is reported instead of recursing forever.
+ *
+ * One sample's evaluation may take SCHEMA_STEP_BUDGET steps (schemaMismatchWithin
+ * counts them). A sample that needs more, such as one whose `$ref`s fan out into a
+ * graph far larger than the document, is reported as stopped at `$`, never judged
+ * conforming. A pattern match stopped for time (matchPattern) leaves the sample
+ * undecided too, and the first such stop is its result.
  */
-function schemaMismatch(doc, schema, value, at = '$', refs = new Set()) {
-  if (schema === undefined || schema === true) return null;
-  if (schema === false) return { at, message: 'no value is allowed here (schema false)' };
-  if (!isObject(schema)) return null;
+function schemaMismatch(doc, schema, value) {
+  const budget = { steps: SCHEMA_STEP_BUDGET, undecided: null };
+  const found = schemaMismatchWithin(doc, schema, value, '$', new Set(), budget);
+  // An anyOf, oneOf or not may have taken a stopped visit or match for an ordinary
+  // mismatch, so a stop decides the result, whatever was returned.
+  if (budget.steps < 0) {
+    return {
+      at: '$',
+      message: `schema evaluation stopped after ${SCHEMA_STEP_BUDGET} steps; the value was not judged against its schema`,
+    };
+  }
+  return budget.undecided ?? found;
+}
+
+/**
+ * schemaMismatch at JSON path `at`, `refs` being the references followed for this
+ * value, taking steps from the sample's `budget` ({ steps, undecided }). Once the
+ * budget is overspent, every visit fails at once and an enclosing anyOf, oneOf or not
+ * stops too, so the remaining work is bounded; schemaMismatch then reports the stop.
+ * A stopped pattern match is recorded as `budget.undecided`, first one kept.
+ */
+function schemaMismatchWithin(doc, schema, value, at, refs, budget) {
   const fail = (message) => ({ at, message });
+  const stopped = () => fail(`schema evaluation stopped after ${SCHEMA_STEP_BUDGET} steps`);
+  const undecided = (message) => {
+    const found = fail(message);
+    budget.undecided ??= found;
+    return found;
+  };
+  if (spendSteps(budget, 1)) return stopped();
+  if (schema === undefined || schema === true) return null;
+  if (schema === false) return fail('no value is allowed here (schema false)');
+  if (!isObject(schema)) return null;
 
   if (typeof schema.$ref === 'string') {
+    if (spendSteps(budget, refs.size + textSteps(schema.$ref))) return stopped();
     if (refs.has(schema.$ref)) return fail(`$ref "${schema.$ref}" is circular`);
     const { value: target, error } = resolvePointer(doc, schema.$ref);
     if (error) return fail(error);
-    const found = schemaMismatch(doc, target, value, at, new Set([...refs, schema.$ref]));
+    const found = schemaMismatchWithin(doc, target, value, at, new Set([...refs, schema.$ref]), budget);
     if (found) return found;
   }
 
   if (schema.type !== undefined) {
     const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+    if (spendSteps(budget, types.length)) return stopped();
     if (!types.some((t) => matchesType(value, t))) {
       return fail(`is ${jsonTypeOf(value)}, expected ${types.join(' or ')}`);
     }
   }
-  if (Array.isArray(schema.enum) && !schema.enum.some((e) => sameJson(e, value))) {
-    return fail(`${shown(value)} is not one of ${shown(schema.enum)}`);
+  if (Array.isArray(schema.enum)) {
+    // The value's canonical JSON is built once, not once per member.
+    const valueJson = canonicalJson(value);
+    if (spendSteps(budget, schema.enum.length + textSteps(valueJson))) return stopped();
+    let member = false;
+    for (const e of schema.enum) {
+      const memberJson = canonicalJson(e);
+      if (spendSteps(budget, textSteps(memberJson))) return stopped();
+      if (memberJson === valueJson) {
+        member = true;
+        break;
+      }
+    }
+    if (!member) return fail(`${shown(value)} is not one of ${shown(schema.enum)}`);
   }
-  if (hasOwn(schema, 'const') && !sameJson(schema.const, value)) {
-    return fail(`${shown(value)} is not the const ${shown(schema.const)}`);
+  if (hasOwn(schema, 'const')) {
+    const constJson = canonicalJson(schema.const);
+    const valueJson = canonicalJson(value);
+    if (spendSteps(budget, textSteps(constJson) + textSteps(valueJson))) return stopped();
+    if (constJson !== valueJson) return fail(`${shown(value)} is not the const ${shown(schema.const)}`);
   }
 
   if (typeof value === 'string') {
+    if (spendSteps(budget, textSteps(value))) return stopped();
     const length = [...value].length;
     if (typeof schema.minLength === 'number' && length < schema.minLength) {
       return fail(`length ${length} is below minLength ${schema.minLength}`);
@@ -2254,7 +2699,9 @@ function schemaMismatch(doc, schema, value, at = '$', refs = new Set()) {
     if (typeof schema.pattern === 'string') {
       const re = compilePattern(schema.pattern);
       if (re === null) return fail(`pattern "${schema.pattern}" is not a valid regular expression`);
-      if (!re.test(value)) return fail(`${shown(value)} does not match pattern "${schema.pattern}"`);
+      const match = matchPattern(re, schema.pattern, value);
+      if (match.stopped) return undecided(patternStopMessage('pattern', schema.pattern, shown(value), match.stopped));
+      if (!match.matched) return fail(`${shown(value)} does not match pattern "${schema.pattern}"`);
     }
   }
 
@@ -2287,72 +2734,92 @@ function schemaMismatch(doc, schema, value, at = '$', refs = new Set()) {
       return fail(`item count ${value.length} is above maxItems ${schema.maxItems}`);
     }
     if (schema.uniqueItems === true) {
+      if (spendSteps(budget, value.length)) return stopped();
       const seen = new Map();
       for (let i = 0; i < value.length; i++) {
         const key = canonicalJson(value[i]);
+        if (spendSteps(budget, textSteps(key))) return stopped();
         if (seen.has(key)) return fail(`items [${seen.get(key)}] and [${i}] are equal, but uniqueItems is true`);
         seen.set(key, i);
       }
     }
     const prefix = Array.isArray(schema.prefixItems) ? schema.prefixItems : [];
     for (let i = 0; i < value.length; i++) {
-      const found = schemaMismatch(doc, i < prefix.length ? prefix[i] : schema.items, value[i], childPath(at, i));
+      const item = i < prefix.length ? prefix[i] : schema.items;
+      const found = schemaMismatchWithin(doc, item, value[i], childPath(at, i), new Set(), budget);
       if (found) return found;
     }
   }
 
   if (isObject(value) && !(value instanceof Date)) {
     const keys = Object.keys(value);
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    const patterns = isObject(schema.patternProperties) ? Object.entries(schema.patternProperties) : [];
+    if (spendSteps(budget, required.length + keys.length * (1 + patterns.length))) return stopped();
     if (typeof schema.minProperties === 'number' && keys.length < schema.minProperties) {
       return fail(`property count ${keys.length} is below minProperties ${schema.minProperties}`);
     }
     if (typeof schema.maxProperties === 'number' && keys.length > schema.maxProperties) {
       return fail(`property count ${keys.length} is above maxProperties ${schema.maxProperties}`);
     }
-    for (const name of Array.isArray(schema.required) ? schema.required : []) {
+    for (const name of required) {
       if (!hasOwn(value, name)) return fail(`required property "${name}" is missing`);
     }
     const properties = isObject(schema.properties) ? schema.properties : {};
-    const patterns = isObject(schema.patternProperties) ? Object.entries(schema.patternProperties) : [];
     for (const key of keys) {
+      if (spendSteps(budget, textSteps(key))) return stopped();
       const keyAt = childPath(at, key);
       let declared = false;
       if (hasOwn(properties, key)) {
         declared = true;
-        const found = schemaMismatch(doc, properties[key], value[key], keyAt);
+        const found = schemaMismatchWithin(doc, properties[key], value[key], keyAt, new Set(), budget);
         if (found) return found;
       }
       for (const [pattern, sub] of patterns) {
         const re = compilePattern(pattern);
         if (re === null) return fail(`patternProperties pattern "${pattern}" is not a valid regular expression`);
-        if (!re.test(key)) continue;
+        const match = matchPattern(re, pattern, key);
+        if (match.stopped) {
+          return undecided(patternStopMessage('patternProperties pattern', pattern, `key ${shown(key)}`, match.stopped));
+        }
+        if (!match.matched) continue;
         declared = true;
-        const found = schemaMismatch(doc, sub, value[key], keyAt);
+        const found = schemaMismatchWithin(doc, sub, value[key], keyAt, new Set(), budget);
         if (found) return found;
       }
       if (!declared && schema.additionalProperties !== undefined) {
         if (schema.additionalProperties === false) {
           return { at: keyAt, message: 'property is not allowed (additionalProperties is false)' };
         }
-        const found = schemaMismatch(doc, schema.additionalProperties, value[key], keyAt);
+        const found = schemaMismatchWithin(doc, schema.additionalProperties, value[key], keyAt, new Set(), budget);
         if (found) return found;
       }
     }
   }
 
   for (const sub of Array.isArray(schema.allOf) ? schema.allOf : []) {
-    const found = schemaMismatch(doc, sub, value, at, refs);
+    const found = schemaMismatchWithin(doc, sub, value, at, refs, budget);
     if (found) return found;
   }
-  if (Array.isArray(schema.anyOf) && !schema.anyOf.some((sub) => schemaMismatch(doc, sub, value, at, refs) === null)) {
-    return fail('matches none of the anyOf schemas');
+  // A subschema stopped by the budget reads as a mismatch here, so each of these stops
+  // as soon as the budget is spent instead of judging the value by it.
+  if (Array.isArray(schema.anyOf)) {
+    const matchedAny = schema.anyOf.some((sub) => schemaMismatchWithin(doc, sub, value, at, refs, budget) === null);
+    if (budget.steps < 0) return stopped();
+    if (!matchedAny) return fail('matches none of the anyOf schemas');
   }
   if (Array.isArray(schema.oneOf)) {
-    const matched = schema.oneOf.filter((sub) => schemaMismatch(doc, sub, value, at, refs) === null).length;
+    let matched = 0;
+    for (const sub of schema.oneOf) {
+      if (schemaMismatchWithin(doc, sub, value, at, refs, budget) === null) matched++;
+      if (budget.steps < 0) return stopped();
+    }
     if (matched !== 1) return fail(`matches ${matched} of the oneOf schemas, expected exactly 1`);
   }
-  if (schema.not !== undefined && schemaMismatch(doc, schema.not, value, at, refs) === null) {
-    return fail('matches the schema under not');
+  if (schema.not !== undefined) {
+    const matchedNot = schemaMismatchWithin(doc, schema.not, value, at, refs, budget) === null;
+    if (budget.steps < 0) return stopped();
+    if (matchedNot) return fail('matches the schema under not');
   }
   return null;
 }
@@ -2523,7 +2990,13 @@ function checkBaselineOperations(doc, iface, violations) {
 // ErrorObject identity
 // ---------------------------------------------------------------------------
 
-/** JSON text with object keys sorted at every depth, so equal schemas compare equal. */
+/**
+ * JSON text with object keys sorted at every depth, so equal schemas compare equal. It
+ * recurses and copies without memo or cycle guard. That relies on what it receives,
+ * values loadYaml returned and this file's own baseline constants, being acyclic trees
+ * with no shared node: resolveYamlParser refuses aliases, cycles and nesting deeper
+ * than YAML_MAX_DEPTH, so its work and depth stay linear in the document.
+ */
 function canonicalJson(value) {
   const sort = (v) => {
     if (Array.isArray(v)) return v.map(sort);
@@ -4073,12 +4546,14 @@ function checkBaselineContracts(protos, typeFiles, docs, violations) {
  * The violations with each (path, line, message) once, first occurrence kept. A YAML
  * syntax error makes @stoplight/yaml (in loadYaml) and Spectral's parser rule report a
  * diagnostic at each column it disturbs, and a violation keeps only the line, so
- * several of one line's diagnostics would print as the same line.
+ * several of one line's diagnostics would print as the same line. A tool finding whose
+ * message was clipped is compared by its `unclipped` text, so distinct findings never
+ * merge.
  */
 function distinctViolations(violations) {
   const seen = new Set();
   return violations.filter((v) => {
-    const key = JSON.stringify([v.path, v.line ?? null, v.message]);
+    const key = JSON.stringify([v.path, v.line ?? null, v.unclipped ?? v.message]);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -4096,6 +4571,13 @@ every RPC and operation carries real, valid examples and the standard error obje
 that ErrorObject is identical across the OpenAPI documents and mirrors common.proto.
 Content violations print as path:line.
 
+YAML is read under the core schema; a document over ${YAML_MAX_CHARS / (1024 * 1024)} MiB, nested deeper than ${YAML_MAX_DEPTH} levels
+or holding an alias or an !include is refused. Each stop is a violation: one example's
+schema evaluation after ${SCHEMA_STEP_BUDGET} steps, a pattern match after ${PATTERN_TIMEOUT_MS / 1000} s (${PATTERN_RUN_BUDGET_MS / 1000} s for all of a run),
+buf lint after ${TOOL_TIMEOUT_MS / 1000} s, Spectral after ${TOOL_TIMEOUT_MS / 1000} s per document, and either tool once it prints
+more than ${TOOL_OUTPUT_MAX_BYTES / (1024 * 1024)} MiB. SIGINT, SIGTERM or SIGHUP while a tool runs kills the tool's process
+group and exits 128 + the signal number.
+
 Runs from any working directory: every path resolves against the repository root.
 Takes no argument other than -h or --help, which prints this text.
 
@@ -4105,12 +4587,13 @@ included. TMPDIR matters to the suite only for check-diagrams: the Chrome that m
 starts there aborts with "Socket path too long" under a long TMPDIR.
 
 Exit status:
-  0  no violation
-  1  one or more violations, one line each, then the count line
-  2  usage, setup or internal error, such as an unknown argument or no YAML parser
+  0        no violation
+  1        one or more violations, one line each, then the count line
+  2        usage, setup or internal error, such as an unknown argument or no YAML parser
+  128 + n  stopped by signal n (SIGHUP, SIGINT or SIGTERM) while buf or Spectral ran
 `;
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const unknown = args.find((arg) => arg !== '-h' && arg !== '--help');
   if (unknown !== undefined) {
@@ -4181,7 +4664,7 @@ function main() {
     setupFailure = configs.setupFailure;
     // A linked configuration is never validated: the link, already listed, is the reason.
     if (bufConfigLink === null && !configs.bufReady) bufBlocked.unshift('this configuration failed validation');
-    if (bufBlocked.length === 0) runBuf(violations);
+    if (bufBlocked.length === 0) await runBuf(violations);
     else violations.push({ path: BUF_CONFIG, message: `buf lint was not run: ${bufBlocked.join('; ')}` });
 
     // Spectral resolves every $ref of a document it lints, so a document reaches it only
@@ -4226,7 +4709,7 @@ function main() {
     if (spectralBlocked.length > 0) {
       violations.push({ path: SPECTRAL_RULESET, message: `spectral lint was not run: ${spectralBlocked.join('; ')}` });
     } else if (lintable.length > 0) {
-      runSpectral(lintable, violations, notes);
+      await runSpectral(lintable, violations, notes);
     }
 
     const docs = new Map();
@@ -4261,7 +4744,7 @@ function main() {
 }
 
 try {
-  main();
+  await main();
 } catch (err) {
   console.error(`${CHECK}: internal error: ${formatError(err)}`);
   process.exitCode = 2;

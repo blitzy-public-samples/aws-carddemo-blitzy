@@ -4,7 +4,17 @@
  * and checks diagram integrity against the component catalogue, the security control table
  * and the environment-variable table of docs/technical-requirements.md:
  *
- * - every file renders to a non-empty SVG;
+ * - before any render, every file passes a preflight: at most 50,000 characters, the pinned
+ *   Mermaid's limit; no resource-bearing syntax (a %%{…}%% directive, an HTML tag other than
+ *   <br>, a Markdown string, @{…} metadata, a CSS url() or @import, a URL, a click, link,
+ *   links, properties or details statement, or a quote or backslash in a style statement);
+ *   frontmatter within its size, nesting and value budgets, with no repeated YAML alias, that
+ *   holds only a title and flowchart or sequence layout settings; and a flowchart or
+ *   sequenceDiagram header. A file that fails is reported and never rendered;
+ * - every file that passes renders to a non-empty SVG, from the text the preflight read, in
+ *   a browser that resolves no host, so a render reaches no network; a puppeteer
+ *   configuration that does not pass that browser argument is reported and renders nothing;
+ * - a flowchart draws at most 500 links, the pinned Mermaid's maxEdges;
  * - the logical (flowchart LR), physical (flowchart TB) and four sequence diagrams
  *   (sequenceDiagram) exist at their fixed paths, and the security view is
  *   security-architecture.mmd (flowchart TB) or its split into
@@ -55,7 +65,15 @@ import { NAMED_CHARACTER_REFERENCES, C1_NUMERIC_REFERENCES } from './lib/html-en
 const CHECK = 'check-diagrams';
 const DIAGRAM_DIR = 'docs/architecture';
 const TRD = 'docs/technical-requirements.md';
+/**
+ * Chrome launch arguments for mmdc. --no-sandbox is required to launch Chrome as root. Renders
+ * are kept off the network by its NO_NETWORK_ARG argument, which resolves no host, IP literals
+ * included, and which renderAll requires before any render; and by the preflight below, which
+ * renders no file that carries a resource.
+ */
 const PUPPETEER_CONFIG = 'tests/validation/puppeteer-config.json';
+/** The Chrome argument PUPPETEER_CONFIG must pass so that the render browser resolves no host. */
+const NO_NETWORK_ARG = '--host-resolver-rules=MAP * ~NOTFOUND';
 /** Launches the chrome-headless-shell build pinned by the locked puppeteer for every render. */
 const BROWSER_LAUNCHER = 'tests/validation/chrome-headless-shell.sh';
 const RENDER_TIMEOUT_MS = 180000;
@@ -64,6 +82,16 @@ const RENDER_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 /** How long a stopped mmdc gets to close its browser before it is killed. */
 const STOP_GRACE_MS = 5000;
+/** The pinned Mermaid's maxTextSize (MAX_TEXTLENGTH): a longer source renders as an error message, not the diagram. */
+const MAX_SOURCE_CHARS = 50000;
+/** The pinned Mermaid's maxEdges: a flowchart with more links fails to render. */
+const MAX_LINKS = 500;
+/** Frontmatter budgets: a title and a few layout settings fit well inside each. */
+const MAX_FRONTMATTER_CHARS = 4096;
+/** Deepest nesting of YAML sequences and mappings; config.flowchart.<setting> needs three levels. */
+const MAX_FRONTMATTER_DEPTH = 8;
+/** Most YAML values (keys' values and sequence items, collections included) the frontmatter may hold. */
+const MAX_FRONTMATTER_VALUES = 256;
 const NODE_BUDGET = 25;
 const LOGICAL = `${DIAGRAM_DIR}/logical-architecture.mmd`;
 const PHYSICAL = `${DIAGRAM_DIR}/physical-deployment.mmd`;
@@ -183,12 +211,43 @@ const ENTITY_OPEN = '\uE010';
 const ENTITY_CLOSE = '\uE011';
 const ENTITY_MARKER_RE = new RegExp(`${ENTITY_OPEN}(\\w+)${ENTITY_CLOSE}`, 'g');
 
+/** One character the `\s` of a JS regular expression matches. */
+const WHITESPACE_RE = /\s/;
+
+/**
+ * Mermaid's `.replace(/<keyword>.*:\S*#.*;/g, (s) => s.slice(0, -1))` in linear time. Each line
+ * between JS line terminators (which `.` and `\S` never cross) that holds the keyword, then a
+ * `:` and a `#` with no whitespace between them, loses its last `;` when that `;` follows the
+ * first such `#`; every other line is unchanged. This equals the regex because its greedy `.*`
+ * ends a match at the line's last `;`, and the line's first keyword occurrence admits every
+ * colon a later one does.
+ */
+function dropColourSemicolon(text, keyword) {
+  return text.replace(/[^\n\r\u2028\u2029]+/g, (line) => {
+    const start = line.indexOf(keyword);
+    if (start < 0) return line;
+    let colon = false;
+    let hash = -1;
+    for (let i = start + keyword.length; i < line.length; i += 1) {
+      const ch = line[i];
+      if (ch === '#' && colon) {
+        hash = i;
+        break;
+      }
+      if (ch === ':') colon = true;
+      else if (WHITESPACE_RE.test(ch)) colon = false;
+    }
+    const semicolon = line.lastIndexOf(';');
+    return hash >= 0 && semicolon > hash ? line.slice(0, semicolon) + line.slice(semicolon + 1) : line;
+  });
+}
+
 /** Mermaid's encodeEntities: drops the `;` closing a style or classDef colour, then marks every `#…;` code. */
 function encodeEntities(text) {
-  return String(text)
-    .replace(/style.*:\S*#.*;/g, (s) => s.slice(0, -1))
-    .replace(/classDef.*:\S*#.*;/g, (s) => s.slice(0, -1))
-    .replace(/#\w+;/g, (s) => `${ENTITY_OPEN}${s.slice(1, -1)}${ENTITY_CLOSE}`);
+  return dropColourSemicolon(dropColourSemicolon(String(text), 'style'), 'classDef').replace(
+    /#\w+;/g,
+    (s) => `${ENTITY_OPEN}${s.slice(1, -1)}${ENTITY_CLOSE}`,
+  );
 }
 
 /**
@@ -328,14 +387,93 @@ function firstLines(buffer, count = 4) {
 }
 
 // ---------------------------------------------------------------------------------------
+// Preflight: what may reach the renderer
+
+/** A Mermaid comment line, which the pinned Mermaid drops before it parses the diagram. */
+const MERMAID_COMMENT_RE = /^\s*%%(?!\{)/;
+/** The start of a classDef, style or linkStyle statement, whose CSS reaches the rendered stylesheet. */
+const STYLE_STATEMENT_RE = /(?:^|;)\s*(?:classDef|style|linkStyle)\s/i;
+
+/**
+ * Constructs through which a render could fetch, link to or style with a resource, each
+ * tested on a source line as written and with its entity codes decoded, so `#40;` or `&#40;`
+ * cannot spell one. Only the %%{…}%% directive is also sought in comment lines: Mermaid reads
+ * directives before it drops comments. A quote or backslash in a style statement could
+ * spell a CSS escape or an image-set() string, so style statements carry neither.
+ */
+const RESOURCE_RULES = [
+  { what: 'a %%{…}%% directive', re: /%%\{/, inComments: true },
+  { what: 'an HTML tag other than <br>', re: /<(?!br\s*\/?>)[a-z/!?]/i },
+  { what: 'a backtick (Markdown string)', re: /`/ },
+  { what: 'an @{…} metadata block (image, icon or shape)', re: /@\{/ },
+  { what: 'a CSS url()', re: /url\s*\(/i },
+  { what: 'a CSS @import', re: /@import/i },
+  { what: 'a scheme:// URL', re: /[a-z0-9+.-]:\/\//i },
+  { what: 'a data:, javascript: or vbscript: URL', re: /\b(?:data|javascript|vbscript):\S/i },
+  {
+    what: 'a click, link, links, properties or details statement',
+    re: /(?:^|;)\s*(?:click|links?|properties|details)\s/i,
+  },
+  {
+    what: 'a backslash or quote in a classDef, style or linkStyle statement',
+    re: { test: (line) => STYLE_STATEMENT_RE.test(line) && /[\\"']/.test(line) },
+  },
+];
+
+/**
+ * Decides, before any render, whether a diagram source may reach the renderer: it fits the
+ * pinned Mermaid's text limit, carries no RESOURCE_RULES construct outside its comment
+ * lines, has frontmatter that decodeFrontmatter accepts, and opens with a flowchart or
+ * sequenceDiagram header. Each rule a file breaks is reported once, at its first line. A
+ * frontmatter error, a missing js-yaml and a missing or unsupported header keep the file
+ * from rendering without a report here: parseDiagram and yamlLoader report them. An
+ * oversized source is reported here alone, since it is not parsed either.
+ */
+function preflight(rel, text, violations) {
+  if (text.length > MAX_SOURCE_CHARS) {
+    const size = `diagram source has ${text.length} characters, over the pinned Mermaid's ${MAX_SOURCE_CHARS}`;
+    violations.push({ path: rel, line: 1, message: `${size}; the file was neither rendered nor parsed` });
+    return false;
+  }
+  // Lines as Mermaid reads them: it turns every CR LF and lone CR into LF first.
+  const lines = text.split(/\r\n?|\n/);
+  const frontmatter = decodeFrontmatter(text, violations);
+  // Frontmatter lines are YAML, never Mermaid comments, so they are always searched in full.
+  const bodyStart = frontmatter ? frontmatter.start : 0;
+  const broken = new Set();
+  for (const [index, line] of lines.entries()) {
+    const comment = index >= bodyStart && MERMAID_COMMENT_RE.test(line);
+    const decoded = decodeCharacterReferences(line.replace(/#(\w+);/g, (_, inner) => markerReference(inner)));
+    for (const rule of RESOURCE_RULES) {
+      if (broken.has(rule) || (comment && !rule.inComments)) continue;
+      if (!rule.re.test(line) && !rule.re.test(decoded)) continue;
+      broken.add(rule);
+      const message = `${rule.what} is not allowed; the file was not rendered`;
+      violations.push({ path: rel, line: index + 1, message });
+    }
+  }
+  const frontmatterAccepted = frontmatter === null || (frontmatter.error === null && frontmatter.title !== undefined);
+  const header = lines
+    .slice(bodyStart)
+    .map((l) => l.trim())
+    .find((t) => t !== '' && !t.startsWith('%%'));
+  const supported = header !== undefined && /^(?:flowchart|graph|sequenceDiagram)\b/.test(header);
+  return broken.size === 0 && frontmatterAccepted && supported;
+}
+
+// ---------------------------------------------------------------------------------------
 // Rendering
 
 /**
- * Renders every diagram with mmdc, one at a time, into a private temporary folder. Renders
+ * Renders every `{ rel, text }` source with mmdc, one at a time, in a private temporary
+ * folder. mmdc reads a copy of the text that preflight passed, written into that folder, so
+ * the renderer never sees a repository file that changed after the check read it. Renders
  * run without blocking the event loop, so SIGINT, SIGTERM or SIGHUP stops the running mmdc,
- * removes the folder and exits with 128 + the signal number.
+ * removes the folder and exits with 128 + the signal number. Nothing renders, and one
+ * violation says why, while the puppeteer configuration does not pass NO_NETWORK_ARG as the
+ * resolver switch Chrome applies.
  */
-async function renderAll(files, violations) {
+async function renderAll(sources, violations) {
   const mmdc = toolBin('mmdc');
   if (!mmdc) {
     violations.push({
@@ -351,6 +489,41 @@ async function renderAll(files, violations) {
       line: 1,
       message: 'puppeteer configuration is missing; no diagram was rendered',
     });
+    return;
+  }
+  // The render browser stays off the network only while the configuration passes NO_NETWORK_ARG.
+  const rejectConfig = (message) =>
+    violations.push({ path: PUPPETEER_CONFIG, line: 1, message: `${message}; no diagram was rendered` });
+  let configJson;
+  try {
+    configJson = JSON.parse(readText(PUPPETEER_CONFIG));
+  } catch (err) {
+    if (!(err instanceof SyntaxError)) throw err;
+    rejectConfig(`puppeteer configuration is not valid JSON (${err.message})`);
+    return;
+  }
+  if (configJson === null || typeof configJson !== 'object' || Array.isArray(configJson)) {
+    rejectConfig('puppeteer configuration is not a JSON object');
+    return;
+  }
+  if (!Array.isArray(configJson.args) || !configJson.args.every((arg) => typeof arg === 'string')) {
+    rejectConfig('puppeteer configuration args is not an array of strings');
+    return;
+  }
+  // Chrome trims each argument, keeps the last value of a repeated switch, written with -- or
+  // -, and reads no switch after a bare --, so NO_NETWORK_ARG holds only as the last such
+  // resolver switch.
+  const switchesEnd = configJson.args.findIndex((arg) => arg.trim() === '--');
+  const resolverRules = (switchesEnd < 0 ? configJson.args : configJson.args.slice(0, switchesEnd)).filter((arg) =>
+    /^--?host-resolver-rules(?:=|$)/.test(arg.trim()),
+  );
+  if (!resolverRules.includes(NO_NETWORK_ARG)) {
+    rejectConfig(`puppeteer configuration does not pass ${NO_NETWORK_ARG}, which keeps renders off the network`);
+    return;
+  }
+  const effective = resolverRules.at(-1);
+  if (effective !== NO_NETWORK_ARG) {
+    rejectConfig(`puppeteer configuration overrides ${NO_NETWORK_ARG} with a later ${effective}`);
     return;
   }
   if (!exists(BROWSER_LAUNCHER)) {
@@ -441,13 +614,17 @@ async function renderAll(files, violations) {
   for (const signal of STOP_SIGNALS) process.on(signal, stop);
   try {
     fs.mkdirSync(workDir);
-    for (const [index, rel] of files.entries()) {
+    for (const [index, { rel, text }] of sources.entries()) {
       // Diagrams in different folders can share a basename; the index gives every input
-      // its own output, so one render's SVG never stands in for another's.
+      // its own copy and output, so one render's SVG never stands in for another's.
+      const input = path.join(tmp, `${index + 1}.mmd`);
+      fs.writeFileSync(input, text, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
       const svg = path.join(tmp, `${index + 1}-${path.basename(rel, '.mmd')}.svg`);
-      const failed = await render(['-p', config, '-i', path.join(repoRoot, rel), '-o', svg]);
+      const failed = await render(['-p', config, '-i', input, '-o', svg]);
       if (failed) {
-        const { err, stderr } = failed;
+        const { err, stderr: raw } = failed;
+        // mmdc names the copy it read; the violation names the repository file instead.
+        const stderr = (Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw ?? '')).split(input).join(rel);
         // err.killed marks a child killed from here: the timeout does that, and stop() exits
         // before a stopped render is classified. An exceeded output bound carries its own
         // code and message instead.
@@ -679,21 +856,97 @@ function yamlLoader(violations) {
     violations.push({
       path: 'tests/validation/package.json',
       line: 1,
-      message: 'js-yaml is not resolvable from tests/validation (run npm ci); frontmatter titles were not decoded',
+      message:
+        'js-yaml is not resolvable from tests/validation (run npm ci); frontmatter was not decoded ' +
+        'and no diagram with frontmatter was rendered',
     });
   }
   return frontmatterYaml;
+}
+
+/** The frontmatter keys a diagram may set, and the Mermaid config sections it may tune. */
+const FRONTMATTER_KEYS = new Set(['title', 'config']);
+const CONFIG_SECTIONS = new Set(['flowchart', 'sequence']);
+/** A layout setting's name, and the only string form its value may take: one plain word. */
+const CONFIG_KEY_RE = /^[A-Za-z][A-Za-z0-9]*$/;
+const CONFIG_STRING_RE = /^[A-Za-z0-9_.-]+$/;
+
+const isMapping = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+/** A frontmatter key as a message shows it: plain names as written, any other key quoted and cut to 40 characters. */
+const showKey = (key) => (CONFIG_KEY_RE.test(key) ? key : JSON.stringify([...key].slice(0, 40).join('')));
+const keyPath = (at, key) => (at === '' ? showKey(key) : `${at}.${showKey(key)}`);
+
+/**
+ * First breach of the frontmatter budgets in a decoded YAML value, or null. The walk is
+ * iterative and visits each sequence or mapping once, so a collection reached a second
+ * time (a YAML alias to it, or a cycle) is reported before anything could expand it, as is
+ * nesting past MAX_FRONTMATTER_DEPTH and a value count past MAX_FRONTMATTER_VALUES.
+ */
+function frontmatterBudgetError(root) {
+  const seen = new Set();
+  const pending = [{ value: root, depth: 0, at: '' }];
+  let values = 0;
+  while (pending.length > 0) {
+    const { value, depth, at } = pending.pop();
+    values += 1;
+    if (values > MAX_FRONTMATTER_VALUES) return `frontmatter holds more than ${MAX_FRONTMATTER_VALUES} values`;
+    if (value === null || typeof value !== 'object') continue;
+    const where = at === '' ? 'frontmatter' : `frontmatter ${at}`;
+    if (seen.has(value)) return `${where} repeats a sequence or mapping (a YAML alias or cycle); write each value out`;
+    seen.add(value);
+    if (depth >= MAX_FRONTMATTER_DEPTH) return `${where} nests more than ${MAX_FRONTMATTER_DEPTH} levels deep`;
+    const children = Array.isArray(value)
+      ? value.map((child, i) => [`${at}[${i}]`, child])
+      : Object.entries(value).map(([key, child]) => [keyPath(at, key), child]);
+    for (const [childAt, child] of children) pending.push({ value: child, depth: depth + 1, at: childAt });
+  }
+  return null;
+}
+
+/**
+ * First reason a decoded frontmatter mapping carries more than a title and layout settings,
+ * or null: a key other than title and config; a config that is not a mapping of flowchart
+ * or sequence sections; or a section entry that is not a plain setting name holding a
+ * finite number, a boolean or one plain word. Everything else Mermaid's config accepts
+ * (themeCSS, fontFamily, securityLevel and the like) can restyle or reach out of a render.
+ */
+function frontmatterShapeError(parsed) {
+  for (const key of Object.keys(parsed)) {
+    if (!FRONTMATTER_KEYS.has(key)) return `frontmatter key ${showKey(key)} is not allowed; only title and config are`;
+  }
+  if (!Object.hasOwn(parsed, 'config')) return null;
+  if (!isMapping(parsed.config)) return 'frontmatter config must be a mapping of flowchart or sequence settings';
+  for (const [section, settings] of Object.entries(parsed.config)) {
+    const at = keyPath('config', section);
+    if (!CONFIG_SECTIONS.has(section)) {
+      return `frontmatter ${at} is not allowed; config holds only flowchart and sequence`;
+    }
+    if (!isMapping(settings)) return `frontmatter ${at} must be a mapping of settings`;
+    for (const [key, value] of Object.entries(settings)) {
+      const setting = `frontmatter ${keyPath(at, key)}`;
+      if (!CONFIG_KEY_RE.test(key)) return `${setting} is not a plain setting name`;
+      const plain =
+        typeof value === 'boolean' ||
+        (typeof value === 'number' && Number.isFinite(value)) ||
+        (typeof value === 'string' && CONFIG_STRING_RE.test(value));
+      if (!plain) return `${setting} must be a finite number, a boolean or one word of letters, digits, _ . or -`;
+    }
+  }
+  return null;
 }
 
 /**
  * Decodes frontmatter as the pinned Mermaid does before rendering: line endings and tag
  * attributes normalised first, the opener's indentation stripped from the body, the body
  * loaded with js-yaml's JSON schema, a non-mapping read as no keys, and the title kept
- * only when truthy, as its string. Returns null when Mermaid sees no frontmatter, else
- * `{ start, title, titleType, error }`: the 0-based line index the diagram body starts
- * at, the title (null when Mermaid shows none, undefined when not decoded), the decoded
- * title's YAML type (string, boolean, number, sequence or mapping; null when the key is
- * absent or null, undefined when not decoded) and a YAML error located at its file line.
+ * only when truthy, as its string. Before Mermaid's reading applies, the body must fit
+ * MAX_FRONTMATTER_CHARS, decode within frontmatterBudgetError's budgets and hold only what
+ * frontmatterShapeError allows; a breach is returned as the error. Returns null when
+ * Mermaid sees no frontmatter, else `{ start, title, titleType, error }`: the 0-based line
+ * index the diagram body starts at, the title (null when Mermaid shows none, undefined when
+ * not decoded), the decoded title's YAML type (string, boolean, number, sequence or
+ * mapping; null when the key is absent or null, undefined when not decoded) and an error
+ * located at its file line, or at the first YAML line when no finer one is known.
  */
 function decodeFrontmatter(text, violations) {
   const cleaned = text
@@ -704,6 +957,10 @@ function decodeFrontmatter(text, violations) {
   const start = m[0].split('\n').length - 1;
   const yamlLine = cleaned.slice(0, m.indices[2][0]).split('\n').length;
   const indent = m[1];
+  const failed = (line, message) => ({ start, title: undefined, titleType: undefined, error: { line, message } });
+  if (m[2].length > MAX_FRONTMATTER_CHARS) {
+    return failed(yamlLine, `frontmatter holds ${m[2].length} characters; at most ${MAX_FRONTMATTER_CHARS} are read`);
+  }
   const yamlText = indent
     ? m[2].split('\n').map((l) => (l.startsWith(indent) ? l.slice(indent.length) : l)).join('\n')
     : m[2];
@@ -713,17 +970,26 @@ function decodeFrontmatter(text, violations) {
   try {
     parsed = yaml.load(yamlText, { schema: yaml.JSON_SCHEMA }) ?? {};
   } catch (err) {
+    // js-yaml descends recursively, so nesting deep enough to exhaust the stack ends here.
+    if (err instanceof RangeError) return failed(yamlLine, 'frontmatter nests too deeply to decode');
     if (err?.name !== 'YAMLException') throw err;
     const line = yamlLine + (Number.isInteger(err.mark?.line) ? err.mark.line : 0);
-    const message = `frontmatter is not valid YAML: ${err.reason || err.message}`;
-    return { start, title: undefined, titleType: undefined, error: { line, message } };
+    return failed(line, `frontmatter is not valid YAML: ${err.reason || err.message}`);
   }
-  if (typeof parsed !== 'object' || Array.isArray(parsed)) parsed = {};
+  const breach = frontmatterBudgetError(parsed);
+  if (breach !== null) return failed(yamlLine, breach);
+  if (!isMapping(parsed)) parsed = {};
+  const shape = frontmatterShapeError(parsed);
+  if (shape !== null) return failed(yamlLine, shape);
   const value = parsed.title ?? null;
-  // The JSON schema yields only strings, booleans, numbers, sequences and mappings.
+  // The JSON schema yields only strings, booleans, numbers, sequences and mappings. The type
+  // is fixed before any coercion, and a sequence or mapping title is never stringified.
   const titleType =
     value === null ? null : Array.isArray(value) ? 'sequence' : typeof value === 'object' ? 'mapping' : typeof value;
-  return { start, title: value ? String(value) : null, titleType, error: null };
+  let title = null;
+  if (titleType === 'string') title = value === '' ? null : value;
+  else if (titleType === 'number' || titleType === 'boolean') title = value ? String(value) : null;
+  return { start, title, titleType, error: null };
 }
 
 /**
@@ -849,8 +1115,13 @@ const TEXT_ARROW_RES = [
   /^(<)?-\.\s*(.+?)\s*(\.->?)/,
 ];
 
-/** A node statement or link chain (`A & B --> C -->|x| D`); returns nodes and links or an error. */
-function parseChain(s) {
+/**
+ * A node statement or link chain (`A & B --> C -->|x| D`); returns nodes and links or an
+ * error. `room` is how many links the statement may add: an arrow whose `&` groups would
+ * take the links past it is not expanded, nor is any arrow after it, while the statement's
+ * nodes are still read, and `overflow` is then true.
+ */
+function parseChain(s, room) {
   let i = 0;
   const skipSpace = () => {
     while (i < s.length && /\s/.test(s[i])) i++;
@@ -883,10 +1154,11 @@ function parseChain(s) {
   if (first.error) return first;
   const nodes = [...first.ids];
   const links = [];
+  let overflow = false;
   let prev = first.ids;
   for (;;) {
     skipSpace();
-    if (i >= s.length) return { nodes, links };
+    if (i >= s.length) return { nodes, links, overflow };
     const rest = s.slice(i);
     let label = null;
     // Arrowheads as Mermaid draws them: at `to` for a `>` end, at `from` for a `<` start with that end.
@@ -915,10 +1187,15 @@ function parseChain(s) {
     const next = parseGroup();
     if (next.error) return next;
     nodes.push(...next.ids);
-    for (const a of prev) {
-      for (const b of next.ids) {
-        const edgeLabel = labelText(label, 'flowchart');
-        links.push({ from: a.id, to: b.id, label: edgeLabel, arrowAtTo, arrowAtFrom, invisible });
+    // An arrow links every node of the group before it to every node of the group after it;
+    // the product is checked before any link is built, so repeated IDs cannot multiply work.
+    if (!overflow && links.length + prev.length * next.ids.length > room) overflow = true;
+    if (!overflow) {
+      const edgeLabel = labelText(label, 'flowchart');
+      for (const a of prev) {
+        for (const b of next.ids) {
+          links.push({ from: a.id, to: b.id, label: edgeLabel, arrowAtTo, arrowAtFrom, invisible });
+        }
       }
     }
     prev = next.ids;
@@ -939,6 +1216,8 @@ function parseFlowchart(rel, statements, violations) {
     statements: [],
   };
   const stack = [];
+  // The links budget is reported once per file, at the statement that first passes it.
+  let linksOverflowed = false;
   const touch = (n, line) => {
     let node = fc.nodes.get(n.id);
     if (!node) {
@@ -997,10 +1276,15 @@ function parseFlowchart(rel, statements, violations) {
     } else if (/^(accTitle|accDescr)\b/.test(text)) {
       fc.statements.push({ kind: 'acc', line });
     } else {
-      const chain = parseChain(text);
+      const chain = parseChain(text, MAX_LINKS - fc.edges.length);
       if (chain.error) {
         violations.push({ path: rel, line, message: `cannot parse flowchart statement: ${chain.error}` });
         continue;
+      }
+      if (chain.overflow && !linksOverflowed) {
+        linksOverflowed = true;
+        const limit = `flowchart draws more than ${MAX_LINKS} links, the pinned Mermaid's maxEdges`;
+        violations.push({ path: rel, line, message: `${limit}; links past that were not read` });
       }
       chain.nodes.forEach((n) => touch(n, line));
       chain.links.forEach((l) => fc.edges.push({ ...l, line }));
@@ -1106,11 +1390,12 @@ function parseSequence(rel, statements, violations) {
 }
 
 /**
- * Parses one .mmd file, with its header line and, for a flowchart, its effective direction;
- * returns null when its type cannot be determined.
+ * Parses the text of one .mmd file, the same text preflight checked and the renderer read,
+ * with its header line and, for a flowchart, its effective direction; returns null when its
+ * type cannot be determined.
  */
-function parseDiagram(rel, violations) {
-  const { title, titleType, body, frontmatterError } = splitSource(readText(rel), violations);
+function parseDiagram(rel, text, violations) {
+  const { title, titleType, body, frontmatterError } = splitSource(text, violations);
   if (frontmatterError) violations.push({ path: rel, ...frontmatterError });
   if (titleType !== undefined && titleType !== null && titleType !== 'string') {
     violations.push({ path: rel, line: 1, message: `frontmatter title: must be a string; found ${titleType}` });
@@ -1611,8 +1896,11 @@ function checkCatalogueDiagrams(files, catalogue, diagrams, violations) {
 async function main() {
   const violations = [];
   const files = listFiles(DIAGRAM_DIR, { exts: ['.mmd'] });
-  // An empty set renders nothing; checkRequiredDiagrams reports every diagram it lacks.
-  if (files.length > 0) await renderAll(files, violations);
+  // Each file is read once: preflight, the renderer and the parsers all see that text.
+  const sources = files.map((rel) => ({ rel, text: readText(rel) }));
+  const renderable = sources.filter(({ rel, text }) => preflight(rel, text, violations));
+  // Nothing renderable renders nothing; checkRequiredDiagrams reports every diagram the set lacks.
+  if (renderable.length > 0) await renderAll(renderable, violations);
 
   let catalogue = new Map();
   let controls = new Map();
@@ -1630,8 +1918,10 @@ async function main() {
   }
 
   const diagrams = new Map();
-  for (const rel of files) {
-    const d = parseDiagram(rel, violations);
+  for (const { rel, text } of sources) {
+    // preflight reported an oversized source, which is neither rendered nor parsed.
+    if (text.length > MAX_SOURCE_CHARS) continue;
+    const d = parseDiagram(rel, text, violations);
     if (d) diagrams.set(rel, d);
   }
   for (const d of diagrams.values()) {
@@ -1659,6 +1949,13 @@ const USAGE = [
   'Renders every docs/architecture/*.mmd with the pinned mmdc and checks it against the',
   'component catalogue, security control table and environment-variable table of',
   'docs/technical-requirements.md.',
+  '',
+  'A preflight runs before any render: a file over 50,000 characters, with resource-bearing',
+  'syntax (directives, HTML, Markdown strings, @{...} metadata, url(), URLs, click or link',
+  'statements), with frontmatter beyond a title and flowchart or sequence layout settings,',
+  'or without a flowchart or sequenceDiagram header is reported and never rendered. The',
+  'render browser resolves no host: puppeteer-config.json must pass',
+  `${NO_NETWORK_ARG}, or no diagram is rendered.`,
   '',
   "Takes no arguments. Run it from the repository root, or from any directory by the script's absolute path.",
   'Exit status: 0 no violation, 1 one or more violations, 2 usage error or internal error.',
