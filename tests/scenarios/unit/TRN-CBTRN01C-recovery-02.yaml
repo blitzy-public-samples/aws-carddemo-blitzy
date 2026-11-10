@@ -31,6 +31,11 @@ gap_ids:
 - GAP-UNC-003
 - GAP-STB-001
 - GAP-DEF-001
+# CBTRN01C opens five indexed files and is compiled with the mapped options on
+# gnucobol-batch, so the case also cites those two stub limitations: every
+# scenario whose program uses a seam cites its stub-limitation entry.
+- GAP-STB-010
+- GAP-STB-011
 preconditions:
   datasets:
     DALYTRAN:
@@ -64,7 +69,7 @@ expected:
   messages:
   - 'START OF EXECUTION OF PROGRAM CBTRN01C'
   # Record 1 of the repository DALYTRAN: the main loop's DISPLAY DALYTRAN-RECORD,
-  # the whole 350-byte record, trailing filler included. It and the four lookup
+  # the whole 350-byte record, trailing filler included. It and the five lookup
   # lines after it are the lines GnuCOBOL 3.2 shows for the first record on the
   # repository fixtures without a fault.
   - '0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              '

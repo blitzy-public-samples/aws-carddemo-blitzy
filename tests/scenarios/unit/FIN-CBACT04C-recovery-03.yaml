@@ -42,6 +42,12 @@ gap_ids:
 - GAP-STB-001  # CEE3ABD stub: marker and end of run, no abend code or dump
 - GAP-DEF-001  # CALL 'CEE3ABD' without parameters, pinned as observed
 - GAP-STB-004  # PARMDRV supplies the EXEC PARM linkage
+# CBACT04C opens four Berkeley DB indexed files (TCATBAL-FILE, XREF-FILE with
+# its alternate key, ACCOUNT-FILE and DISCGRP-FILE) and is compiled with the
+# mapped options on gnucobol-batch, so the case cites those two stub
+# limitations, as every scenario whose program uses a seam does.
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
 preconditions:
   datasets:
     # Invented accounts: the ids match no repository record and no real person.

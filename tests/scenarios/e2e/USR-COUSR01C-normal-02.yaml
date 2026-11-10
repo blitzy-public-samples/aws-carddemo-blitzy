@@ -24,8 +24,9 @@
 # An imported UniKix run pins them in the promoted baseline's raw bytes.
 #
 # USRSEC starts as the 10 fixture users, none of whose ids is TESTU001, so the
-# WRITE answers NORMAL. The file then holds 11 records: the 10 fixture users
-# unchanged, listed in full, and the new record.
+# WRITE answers NORMAL. The file then holds 11 records, listed in key order: the
+# 10 fixture users unchanged, listed in full, and the new record, TESTU001
+# sorting between ADMIN005 and USER0001.
 #
 # On NORMAL, COUSR01C clears the five input fields (the output map redefines the
 # input map) and composes 'User ' SEC-USR-ID ' has been added ...' into the
@@ -109,16 +110,17 @@ expected:
     USRSEC:
       count: 11
       contains:
-      # The 10 fixture users, unchanged.
+      # In SEC-USR-ID key order: the 10 fixture users unchanged, with the new
+      # TESTU001 between ADMIN005 and USER0001.
       - {SEC-USR-ID: ADMIN001, SEC-USR-FNAME: 'MARGARET            ', SEC-USR-LNAME: 'GOLD                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
       - {SEC-USR-ID: ADMIN002, SEC-USR-FNAME: 'RUSSELL             ', SEC-USR-LNAME: 'RUSSELL             ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
       - {SEC-USR-ID: ADMIN003, SEC-USR-FNAME: 'RAYMOND             ', SEC-USR-LNAME: 'WHITMORE            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
       - {SEC-USR-ID: ADMIN004, SEC-USR-FNAME: 'EMMANUEL            ', SEC-USR-LNAME: 'CASGRAIN            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
       - {SEC-USR-ID: ADMIN005, SEC-USR-FNAME: 'GRANVILLE           ', SEC-USR-LNAME: 'LACHAPELLE          ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      # The record COUSR01C writes; SEC-USR-FILLER is left out (see the header).
+      - {SEC-USR-ID: TESTU001, SEC-USR-FNAME: 'TESTADMF            ', SEC-USR-LNAME: 'TESTADML            ', SEC-USR-PWD: TESTPWDA, SEC-USR-TYPE: A}
       - {SEC-USR-ID: USER0001, SEC-USR-FNAME: 'LAWRENCE            ', SEC-USR-LNAME: 'THOMAS              ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
       - {SEC-USR-ID: USER0002, SEC-USR-FNAME: 'AJITH               ', SEC-USR-LNAME: 'KUMAR               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
       - {SEC-USR-ID: USER0003, SEC-USR-FNAME: 'LAURITZ             ', SEC-USR-LNAME: 'ALME                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
       - {SEC-USR-ID: USER0004, SEC-USR-FNAME: 'AVERARDO            ', SEC-USR-LNAME: 'MAZZI               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
       - {SEC-USR-ID: USER0005, SEC-USR-FNAME: 'LEE                 ', SEC-USR-LNAME: 'TING                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
-      # The record COUSR01C writes; SEC-USR-FILLER is left out (see the header).
-      - {SEC-USR-ID: TESTU001, SEC-USR-FNAME: 'TESTADMF            ', SEC-USR-LNAME: 'TESTADML            ', SEC-USR-PWD: TESTPWDA, SEC-USR-TYPE: A}

@@ -38,6 +38,12 @@ gap_ids:
 - GAP-STB-001
 - GAP-DEF-001
 - GAP-STB-004
+# CBACT04C opens four Berkeley DB indexed files (TCATBAL-FILE, XREF-FILE with
+# its alternate key, ACCOUNT-FILE and DISCGRP-FILE) and is compiled with the
+# mapped options on gnucobol-batch, so the case cites those two stub
+# limitations, as every scenario whose program uses a seam does.
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
 preconditions:
   # The synthetic set of FIN-CBACT04C-normal-01 (all ids invented). The REWRITE
   # runs only at an account break, so the set needs a second account after the

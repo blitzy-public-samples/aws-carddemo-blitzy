@@ -24,8 +24,17 @@
 # WS-MESSAGE, puts the cursor on the first name and sends COUSR03 again
 # [app/cbl/COUSR03C.cbl:305-336]. The message says "Update" although the
 # operation is a delete: that is the source's text, pinned as it stands and
-# never corrected (GAP-DEF-011). Only an error on the DELETE reaches this branch:
-# an error on the READ before it ends in 'Unable to lookup User...' instead.
+# never corrected (GAP-DEF-011). This scenario injects the I/O error on the
+# DELETE, after a successful READ UPDATE of the same record in the same task:
+# every READ before it succeeds. A failed READ is a different case, and it does
+# not end the task on 'Unable to lookup User...': DELETE-USER-INFO tests the
+# error flag before PERFORM READ-USER-SEC-FILE and then performs
+# DELETE-USER-SEC-FILE unconditionally [app/cbl/COUSR03C.cbl:188-191]. The
+# READ's WHEN OTHER sets the flag and sends the lookup message
+# [app/cbl/COUSR03C.cbl:293-300], the DELETE runs anyway, and a DELETE that
+# then fails sends 'Unable to Update User...' over the lookup message
+# [app/cbl/COUSR03C.cbl:329-335]. That fall-through is not the case this
+# scenario covers.
 #
 # Expected values are derived from the source (no TPE region runs in CI):
 # - Text values are whole fields at their BMS length with trailing spaces:

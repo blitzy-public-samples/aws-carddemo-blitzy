@@ -39,6 +39,11 @@ gap_ids:
 - GAP-MIS-001  # DATEPARM is supplied as a parameter file
 - GAP-STB-001  # CEE3ABD stub: no abend code, dump or LE condition handling
 - GAP-DEF-001  # the parameterless CALL 'CEE3ABD'
+# CBTRN03C reads its three lookup files as Berkeley DB indexed files and is
+# compiled with the mapped options on gnucobol-batch, so the case cites those
+# two stub limitations, as every scenario whose program uses a seam does.
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
 preconditions:
   datasets:
     # Card 9680294154603697 is account 00000000001 in the repository CARDXREF;

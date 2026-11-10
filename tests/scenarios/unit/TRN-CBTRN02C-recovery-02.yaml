@@ -26,6 +26,11 @@ gap_ids:
 - GAP-INF-013
 - GAP-STB-001
 - GAP-DEF-001
+# CBTRN02C runs on Berkeley DB indexed files and is compiled with the mapped
+# options on gnucobol-batch, so the case cites those two stub limitations, as
+# every scenario whose program uses a seam does.
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS; TRANFILE is recreated by OPEN OUTPUT
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
 preconditions:
   datasets:
     # Two synthetic transactions on card 9680294154603697, which CARDXREF maps to

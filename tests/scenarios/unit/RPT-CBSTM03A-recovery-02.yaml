@@ -29,6 +29,11 @@ gap_ids:
 - GAP-STB-003
 - GAP-STB-001
 - GAP-DEF-001
+# CBSTM03B reads four Berkeley DB indexed files and both units are compiled
+# with the mapped options on gnucobol-batch, so the case cites those two stub
+# limitations, as every scenario whose program uses a seam does.
+- GAP-STB-010
+- GAP-STB-011
 preconditions:
   datasets:
     # Card 9680294154603697 is the repository cross-reference of customer

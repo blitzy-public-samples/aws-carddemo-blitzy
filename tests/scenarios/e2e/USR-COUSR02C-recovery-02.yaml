@@ -24,12 +24,20 @@
 # COUSR2AI, so the fields echo the values just received, the new last name
 # included. The screen holds the last send of the task.
 #
-# Only an I/O error on the REWRITE reaches this branch: the REWRITE follows a
-# successful READ UPDATE of the same record in the same task, so a closed or
-# disabled file would fail that READ first and give 'Unable to lookup User...'
-# instead [app/cbl/COUSR02C.cbl:346-352]. No adapter can inject an online I/O error, so the
-# scenario raises MissingPrerequisite under GAP-MIS-014 and stays
-# implemented-unexecuted until a mechanism exists.
+# This scenario injects the I/O error on the REWRITE, after a successful READ
+# UPDATE of the same record in the same task: every READ before it succeeds.
+# A failed save-path READ is a different case, and it does not end the task on
+# 'Unable to lookup User...': UPDATE-USER-INFO tests the error flag before
+# PERFORM READ-USER-SEC-FILE and not again after it
+# [app/cbl/COUSR02C.cbl:215,217]. The READ's WHEN OTHER sets the flag and sends
+# the lookup message [app/cbl/COUSR02C.cbl:346-352], then the field comparisons
+# run and the REWRITE follows, or 'Please modify to update ...' when no field
+# differs [app/cbl/COUSR02C.cbl:219-234,236-242]; a REWRITE that then fails
+# sends 'Unable to Update User...' over the lookup message
+# [app/cbl/COUSR02C.cbl:383-389]. That fall-through is not the case this
+# scenario covers. No adapter can inject an online I/O error, so the scenario
+# raises MissingPrerequisite under GAP-MIS-014 and stays implemented-unexecuted
+# until a mechanism exists.
 #
 # Expected values are derived from the source (no TPE region runs in CI). Text
 # values keep their full BMS field width with trailing spaces: ERRMSG is the

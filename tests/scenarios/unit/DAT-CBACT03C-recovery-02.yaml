@@ -23,6 +23,11 @@ gap_ids:
 - GAP-INF-013
 - GAP-STB-001
 - GAP-DEF-001
+# CBACT03C reads its indexed XREFFILE and is compiled with the mapped options on
+# gnucobol-batch, so the case cites those two stub limitations, as every
+# scenario whose program uses a seam does.
+- GAP-STB-010
+- GAP-STB-011
 preconditions:
   datasets:
     CARDXREF:
