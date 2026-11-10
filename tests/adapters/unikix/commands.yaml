@@ -1,0 +1,855 @@
+# UniKix command registry of the `unikix` adapter.
+#
+# Every UniKix command the adapter issues is an entry of this file: the adapter issues nothing outside it.
+# tests/adapters/unikix/env.py (CommandSet) is the only reader and the only executor; deploy.py, bpe.py and
+# adapter.py call entries by id. No entry was confirmed against a UniKix release when this file was written:
+# the commands come from the zip's bin/ scripts, the AWS CardDemo-on-UniKix tutorial
+# (https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html) and the legacy Sun MTP guide
+# (https://docs.oracle.com/cd/E19065-01/servers.12k/816-5328-11/cfgstartstop.html).
+#
+# How an entry runs
+# - env.py runs `bash --noprofile --norc -c <command>` with the environment it derived: the test-owned
+#   deployment variables BASE_DIR, PROJECT_ROOT, PR, KIXSYS, KIXDATA, EBMHOME, EBMSYS, JOBLIB, MBM_LOCK_DIR,
+#   PARMFILES, SEQFILES, MIGAPP_DIR and COBCPY, the installation variables UNIKIX, INSTEBM, VCOBOL, KIXLICDIR
+#   and JAVA_HOME, and MBMSUB once batchenv has been sourced. The working directory is `cwd` (expanded by
+#   bash) or, when absent, $PROJECT_ROOT.
+# - Placeholders in {braces} (member, map, job, file, queue, dsn, clock, job_number) are filled by the caller
+#   with shell-quoted values; $VAR is expanded by bash. Commands therefore hold no other braces: write $VAR,
+#   never ${VAR}.
+# - `probe` exits 0 when the command is available. env.py runs every probe once per session.
+# - `command: null` means no public source names a command. Its probe is "false", so every scenario that
+#   depends on the entry is blocked under the entry's `gap`.
+# - `timeout_s` bounds the control action itself; the caller caps it at the time left before the scenario
+#   deadline. Waiting for application work (a job to complete, a screen to unlock) is not bounded here.
+# - `gap` is the open missing-input entry of tests/inventory/gaps.yaml that the entry settles once confirmed.
+#
+# Operators
+# - Correct an entry for the installed release, then set `status: confirmed` only after it has worked, and
+#   commit this file with the run evidence. Every entry ships `unconfirmed`.
+# - clock_set is the only entry whose use additionally requires `status: confirmed`: a fixed-clock scenario
+#   runs on unikix only with a confirmed clock_set.
+#
+# parse
+# - Named Python regexes (re.search, applied to the command's stdout or to the file the notes name), plus
+#   the globs and path templates the notes describe. They hold no literal braces other than the placeholders
+#   their notes name, so a caller may str.format them; write [0-9][0-9], never \d{2}.
+#
+# template
+# - JCL that bpe.py renders with str.format and writes as a member under $PR/jcl/jmvs only, each line padded
+#   to 80 columns; no line exceeds 80 columns with 8-character job names and 44-character DSNs.
+# - `job` is the member. Every other key is a fragment that bpe.py renders once per item and joins, final
+#   newlines removed, into the slot named in the entry's notes. A slot stands alone on its line, and empty
+#   lines are dropped after rendering, so a slot filled with '' leaves nothing behind.
+# - Generated jobs are submitted like any member: bpe_translate, then the entry's own command (the
+#   bpe_submit command), then bpe_sysout polling.
+#
+# Nothing here targets app/, samples/, diagrams/ or the extracted zip, and no command reaches the network.
+schema_version: 1
+entries:
+
+  # ---------------------------------------------------------------------------------------------------------
+  # Build (zip bin/compile, bin/compbms). MIGAPP_DIR is the writable staging copy
+  # <deployment root>/staging/migrated_app, never the read-only zip extraction. COBCPY is
+  # $COBCPY:$MIGAPP_DIR/cpy:$MIGAPP_DIR/cpy-bms:$UNIKIX/copy (bin/compile:19), set by env.py.
+  # ---------------------------------------------------------------------------------------------------------
+  build_kixclt:
+    action: translate a CICS program
+    command: 'kixclt {member}.cl2'
+    cwd: $MIGAPP_DIR/cbl
+    probe: 'command -v kixclt'
+    timeout_s: 300
+    gap: GAP-MIS-008
+    status: unconfirmed
+    source: zip bin/compile:25-31
+    notes: >-
+      Translates the online program {member}.cl2 into {member}.cbl in the staging copy, which build_vcc_online
+      then compiles; deploy.py deletes the translated {member}.cbl afterwards, as bin/compile:63-65 does. The
+      app/ sources themselves are not built on UniKix; the UniKix copy is (GAP-MIS-008).
+
+  build_vcc_online:
+    action: compile a translated online program
+    command: 'vcc -align=8 -dz -ef -cv -dv=0 -dcii -pt2 -ld -aa -ce=cpy:CPY -sp="$COBCPY" {member}.cbl'
+    cwd: $MIGAPP_DIR/cbl
+    probe: 'command -v vcc'
+    timeout_s: 600
+    gap: GAP-MIS-008
+    status: unconfirmed
+    source: zip bin/compile:19-21,26,46 (KIX_VCOBOL_ONLINE_FLAGS)
+    notes: >-
+      Produces {member}.class and {member}.list, which deploy.py moves to $PR/loadlib after deleting
+      {member}.err (bin/compile:52-56). The app/ sources themselves are not built on UniKix (GAP-MIS-008).
+
+  build_vcc_batch:
+    action: compile a batch program
+    command: 'vcc -align=8 -dz -cax -cv -dcii -dv=0 -ef -pt2 -ld -aa -ce=cpy:CPY -sp="$COBCPY" {member}.cbl'
+    cwd: $MIGAPP_DIR/cbl
+    probe: 'command -v vcc'
+    timeout_s: 600
+    gap: GAP-MIS-008
+    status: unconfirmed
+    source: zip bin/compile:19-20,33,46 (BTCH_COBOL_COMPILE_FLAGS)
+    notes: >-
+      Compiles the 10 CB* programs, CSUTLDTC and SDSF of the copy; outputs are moved as for
+      build_vcc_online. The app/ sources themselves are not built on UniKix (GAP-MIS-008).
+
+  build_kixbms:
+    action: compile a BMS map
+    command: 'kixbms {map}.bms'
+    cwd: $MIGAPP_DIR/bms
+    probe: 'command -v kixbms'
+    timeout_s: 300
+    gap: GAP-MIS-008
+    status: unconfirmed
+    source: zip bin/compbms:28-47
+    notes: >-
+      Produces {map}.map, which deploy.py moves to $PR/maps (bin/compbms:38-44). The copy's maps differ from
+      app/bms for COACTUP and COACTVW (GAP-DOC-025).
+
+  # ---------------------------------------------------------------------------------------------------------
+  # TPE region and 3270 listener of the test-owned deployment ($KIXSYS = $PROJECT_ROOT/kixsys).
+  # ---------------------------------------------------------------------------------------------------------
+  region_create:
+    action: create the TPE region
+    command: 'kixregion createRegion "$KIXSYS" "$JAVA_HOME" "$KIXLICDIR"'
+    probe: 'command -v kixregion'
+    timeout_s: 600
+    gap: GAP-MIS-003
+    status: unconfirmed
+    source: https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
+    notes: >-
+      Creates the region directory $KIXSYS inside the deployment root. The zip holds no region-creation
+      command; argument order as given by the AWS tutorial.
+
+  region_create_script:
+    action: create the region's environment scripts
+    command: 'kixregion createScript "$KIXSYS"'
+    probe: 'command -v kixregion'
+    timeout_s: 120
+    gap: GAP-MIS-003
+    status: unconfirmed
+    source: https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
+    notes: >-
+      Expected to create $KIXSYS/bin/userenv, which region_install sources and env.py merges into the
+      captured environment; env.py then checks that KIXSYS, KIXDATA and EBMHOME still lie inside the
+      deployment root.
+
+  region_install:
+    action: install the region resource lists
+    command: '. "$KIXSYS/bin/userenv" && kixinstall2'
+    probe: 'command -v kixinstall2 || test -x "$UNIKIX/bin/kixinstall2"'
+    timeout_s: 600
+    gap: GAP-MIS-003
+    status: unconfirmed
+    source: https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
+    notes: >-
+      Installs the catlg/tpe resource lists that deploy.py copied into $KIXSYS (pct, fct, ppt, dct, sit, vct,
+      mct, CATALOG). The region's CSD resources come from these lists, never from CBADMCDJ, whose DFHCSDUP
+      step targets z/OS datasets (GAP-MIS-016).
+
+  region_start:
+    action: start the TPE region
+    command: 'kixregion start "$KIXSYS"'
+    probe: 'command -v kixregion'
+    timeout_s: 300
+    gap: GAP-MIS-004
+    status: unconfirmed
+    source: https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
+    notes: >-
+      Starts the region of this deployment only. The legacy Sun MTP equivalent is kixstart. Also the
+      fallback that reopens every region file when region file control is unavailable (GAP-MIS-011).
+
+  region_stop:
+    action: stop the TPE region
+    command: 'kixstop'
+    probe: 'command -v kixstop'
+    timeout_s: 300
+    gap: GAP-MIS-004
+    status: unconfirmed
+    source: https://docs.oracle.com/cd/E19065-01/servers.12k/816-5328-11/cfgstartstop.html
+    notes: >-
+      Legacy Sun MTP command; the current release's equivalent is unknown. It must stop the region named by
+      $KIXSYS and nothing else. Used when quiescence or the reset cannot be confirmed, and as the fallback
+      that closes every region file when region file control is unavailable.
+
+  region_quiesce_query:
+    action: confirm that the region has no active task
+    command: null
+    probe: 'false'
+    timeout_s: 60
+    gap: GAP-MIS-004
+    status: unconfirmed
+    source: none; neither the zip, the AWS tutorial nor the Sun MTP guide names a task query
+    parse:
+      active: '(?im)^[ \t]*(?P<task>[A-Z0-9@#$]+)[ \t].*\bACTIVE\b'
+    notes: >-
+      Must print nothing and exit 0 when the region has no active task; every stdout line that parse.active
+      matches is an active task. While it is unavailable the adapter stops and restarts the region before a
+      scenario instead.
+
+  listener_start:
+    action: start the TN3270 listener
+    command: 'unikixtnemux'
+    probe: 'command -v unikixtnemux'
+    timeout_s: 60
+    gap: GAP-MIS-005
+    status: unconfirmed
+    source: https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
+    notes: >-
+      The TN3270 listener of the region; legacy default port 2001, the AWS examples use 15440 and 4444.
+      Whether region_start already starts it, and whether it detaches, are unconfirmed; the command must
+      return once the listener accepts connections on loopback.
+
+  listener_port:
+    action: read the listener port from the region configuration
+    command: 'grep -E ''^[[:space:]]*TNServer[^=[:space:]]*ListenPort'' "$KIXSYS/unikixrc.cfg"'
+    probe: 'test -r "$KIXSYS/unikixrc.cfg"'
+    timeout_s: 10
+    gap: GAP-MIS-005
+    status: unconfirmed
+    source: https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
+    parse:
+      port: 'ListenPort\s*[=:]?\s*(?P<port>[0-9]+)'
+    notes: >-
+      The port must equal the port of CARDDEMO_TN3270_ADDR, which is loopback only; otherwise the online
+      scenarios are blocked under GAP-MIS-005.
+
+  # ---------------------------------------------------------------------------------------------------------
+  # BPE node, subsystem sys1 and job submission ($EBMHOME = <deployment root>/bpenode).
+  # ---------------------------------------------------------------------------------------------------------
+  bpe_node_create:
+    action: create the BPE node
+    command: null
+    probe: 'false'
+    timeout_s: 300
+    gap: GAP-MIS-006
+    status: unconfirmed
+    source: none; the zip's bin/create_project only creates the empty bpenode directory
+    notes: >-
+      Must create the BPE node at $EBMHOME, the deployment root's bpenode, with subsystem $EBMSYS (sys1), and
+      yield $EBMHOME/batchenv. No public source names the command, so deployment stops here as blocked
+      until an operator supplies it.
+
+  bpe_catalog_import:
+    action: import the BPE catalog
+    command: null
+    probe: 'false'
+    timeout_s: 300
+    gap: GAP-MIS-007
+    status: unconfirmed
+    source: none; the zip ships catlg/bpe/BPECAT.*.csv without an import command
+    notes: >-
+      Must import $MIGAPP_DIR/catlg/bpe/BPECAT.cluster.csv, BPECAT.gdg_base.csv and BPECAT.nonvsam.csv from
+      the staging copy into the node's catalog, so the copy's DSNs, clusters and GDG bases resolve.
+
+  bpe_start:
+    action: start BPE
+    command: 'bam start'
+    probe: 'command -v bam'
+    timeout_s: 300
+    gap: GAP-MIS-004
+    status: unconfirmed
+    source: https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
+    notes: >-
+      Starts the batch manager of the node at $EBMHOME. Unconfirmed whether it needs batchenv sourced first;
+      env.py sources it into the captured environment once the node exists.
+
+  bpe_stop:
+    action: stop BPE
+    command: null
+    probe: 'false'
+    timeout_s: 300
+    gap: GAP-MIS-004
+    status: unconfirmed
+    source: none; no public source names the stop command
+    notes: >-
+      Must stop the batch manager of this node only. Called best effort when the session closes.
+
+  bpe_env:
+    action: source the BPE batch environment
+    command: '. "$EBMHOME/batchenv" sys1'
+    probe: 'test -r "$EBMHOME/batchenv"'
+    timeout_s: 30
+    gap: GAP-MIS-006
+    status: unconfirmed
+    source: zip bin/carddemo.env:42-48; https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
+    notes: >-
+      env.py sources this file into the captured environment after deployment (source_runtime_scripts) and
+      reads MBMSUB from the result; this entry checks that it sources cleanly.
+
+  bpe_system:
+    action: start the BPE subsystem
+    command: 'ebmsys -t'
+    probe: 'command -v ebmsys'
+    timeout_s: 120
+    gap: GAP-MIS-006
+    status: unconfirmed
+    source: https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
+    notes: >-
+      Run after bpe_start for subsystem $EBMSYS, as the AWS tutorial does; what -t selects is unconfirmed.
+
+  bpe_translate:
+    action: translate a JCL member for BPE
+    command: 'mvstrans {job}'
+    cwd: $PR/jcl/jmvs
+    probe: 'command -v mvstrans'
+    timeout_s: 300
+    gap: GAP-MIS-006
+    status: unconfirmed
+    source: https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
+    notes: >-
+      {job} is the member name under $PR/jcl/jmvs (a copy member, or one bpe.py generated). The tutorial runs
+      mvstrans before BPESUB; its argument form is unconfirmed.
+
+  bpe_submit:
+    action: submit a job to BPE
+    command: &bpe_submit_command 'cd "$MBMSUB" && BPESUB {job}'
+    probe: &bpe_submit_probe 'test -n "$MBMSUB" && command -v BPESUB'
+    timeout_s: 120
+    gap: GAP-MIS-006
+    status: unconfirmed
+    source: https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
+    parse:
+      job_number: &bpe_job_number_regex '(?i)\bjob\s*(?:number|no\.?|id)?\s*[:=]?\s*(?P<job_number>[0-9]+)'
+    notes: >-
+      Submits the translated member {job} and returns once BPE has accepted it; parse.job_number reads the
+      BPE job number from stdout. Legacy Sun MTP alternative: subjob $JOB -t j. The dataset and catalog
+      entries submit their generated jobs with this same command and parse.
+
+  bpe_sysout:
+    action: list job output
+    command: 'ls -1 "$PROJECT_ROOT/sysoutdir"'
+    probe: 'test -d "$PROJECT_ROOT/sysoutdir"'
+    timeout_s: 30
+    gap: GAP-MIS-006
+    status: unconfirmed
+    source: https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
+    parse:
+      job_dir: '(?m)^(?P<entry>(?:[^\n]*[^0-9\n])?0*{job_number}(?:[^0-9\n][^\n]*)?)$'
+      completed: '(?im)\b(?:job\s+(?:ended|completed|terminated)|end\s+of\s+job)\b'
+      step_rc: '(?im)\bstep\s*(?:name)?\s*[:=]?\s*(?P<step>[A-Z@#$][A-Z0-9@#$]*(?:\.[A-Z@#$][A-Z0-9@#$]*)?)\b.*?\b(?:rc|cond(?:ition)?\s*code|return\s*code)\s*[:=]?\s*(?P<rc>[0-9]+)\b'
+      step_abend: '(?im)\bstep\s*(?:name)?\s*[:=]?\s*(?P<step>[A-Z@#$][A-Z0-9@#$]*(?:\.[A-Z@#$][A-Z0-9@#$]*)?)\b.*?\babend(?:ed)?\b\s*(?:code)?\s*[:=]?\s*(?P<code>[SU]?[0-9A-F]+)\b'
+      display_files: '*SYSOUT*'
+      start_date: '(?i)\bstart(?:ed)?\b.*?(?P<date>[0-9][0-9][0-9][0-9][-/.][0-9][0-9][-/.][0-9][0-9])'
+    notes: >-
+      Completion, job number and step return codes are read from $PROJECT_ROOT/sysoutdir. job_dir matches the
+      stdout line naming the directory or file of job {job_number}; completed, step_rc, step_abend and
+      start_date are searched in that job's sysout files, display_files is the glob of the program SYSOUT DD
+      files whose lines are the DISPLAY output, and start_date gives the BPE job start date recorded as the
+      run date. The sysout format is unconfirmed, so every regex is operator-adjustable.
+
+  bpe_cancel:
+    action: cancel an unfinished job
+    command: null
+    probe: 'false'
+    timeout_s: 120
+    gap: GAP-MIS-006
+    status: unconfirmed
+    source: none; no public source names a cancel command
+    notes: >-
+      Must cancel BPE job {job_number} of this node. Used after a timeout or failure, before quiescence is
+      confirmed again.
+
+  bpe_active_jobs:
+    action: list unfinished jobs
+    command: null
+    probe: 'false'
+    timeout_s: 60
+    gap: GAP-MIS-004
+    status: unconfirmed
+    source: none; no public source names a job query
+    parse:
+      job: '(?im)^[ \t]*(?P<job_number>[0-9]+)[ \t]+(?P<name>[A-Z@#$][A-Z0-9@#$]*)'
+    notes: >-
+      Must list the unfinished BPE jobs of this node, one per line as parse.job reads them; empty output
+      means none, which is half of the quiescence check.
+
+  # ---------------------------------------------------------------------------------------------------------
+  # Datasets and catalog. Each entry submits a job that bpe.py generates from its template, through
+  # bpe_translate and this entry's command (the bpe_submit command), and polls it through bpe_sysout. Every
+  # job runs only while the region files are closed. Test datasets are CDTEST.STAGE.{qualifier} and
+  # CDTEST.UNLOAD.{qualifier}, the qualifier coming from resources.yaml.
+  # ---------------------------------------------------------------------------------------------------------
+  dataset_define_staging:
+    action: catalogue the test staging and unload datasets
+    command: *bpe_submit_command
+    probe: *bpe_submit_probe
+    timeout_s: 120
+    gap: GAP-MIS-007
+    status: unconfirmed
+    source: zip migrated_app/jcl/MFCATLG1 STEP01
+    parse:
+      job_number: *bpe_job_number_regex
+      path: '$SEQFILES/{dsn}'
+    template:
+      job: |
+        //{job} JOB 'CARDDEMO TEST DEFINE',CLASS=A,MSGCLASS=0
+        //*-------------------------------------------------------------------*
+        //* GENERATED BY THE UNIKIX ADAPTER: CATALOGUE THE TEST DATASETS
+        //*-------------------------------------------------------------------*
+        //STEP01   EXEC PGM=IEFBR14
+        //SYSOUT   DD  SYSOUT=*
+        {dd_statements}
+      dd: |
+        //{ddname} DD  DSN={dsn},
+        //             DISP=(NEW,CATLG,DELETE),
+        //             DCB=(RECFM=FB,LRECL={lrecl},DSORG=PS)
+    notes: >-
+      Run once after deployment. {dd_statements} receives one dd fragment per dataset ({ddname} unique within
+      the step, {lrecl} the record length): every CDTEST.STAGE.* and CDTEST.UNLOAD.* dataset, and
+      AWS.M2.CARDDEMO.DATEPARM with LRECL 80, which no job or data file creates (GAP-MIS-001). parse.path is
+      the path template (bash variables, then str.format) of the file where a catalogued dataset {dsn} lands,
+      as BPECAT.nonvsam.csv records for the copy's own datasets.
+
+  dataset_load:
+    action: delete, define and load a cluster
+    command: *bpe_submit_command
+    probe: *bpe_submit_probe
+    timeout_s: 120
+    gap: GAP-MIS-007
+    status: unconfirmed
+    source: zip migrated_app/jcl/ACCTFILE STEP05-STEP15; migrated_app/jcl/CARDFILE STEP05, STEP40-STEP60
+    parse:
+      job_number: *bpe_job_number_regex
+    template:
+      job: |
+        //{job} JOB 'CARDDEMO TEST LOAD',CLASS=A,MSGCLASS=0
+        //* *******************************************************************
+        //* GENERATED BY THE UNIKIX ADAPTER: DELETE, DEFINE AND LOAD A CLUSTER
+        //* *******************************************************************
+        //STEP05 EXEC PGM=IDCAMS
+        //SYSPRINT DD   SYSOUT=*
+        //SYSIN    DD   *
+           DELETE {cluster_dsn} -
+                  CLUSTER
+           IF MAXCC LE 08 THEN SET MAXCC = 0
+        {aix_delete_statements}
+        /*
+        //STEP10 EXEC PGM=IDCAMS
+        //SYSPRINT DD   SYSOUT=*
+        //SYSIN    DD   *
+        {define_statements}
+        /*
+        //STEP15 EXEC PGM=IDCAMS
+        //SYSPRINT DD   SYSOUT=*
+        //FILEIN   DD DISP=SHR,
+        //         DSN=CDTEST.STAGE.{qualifier}
+        //FILEOUT  DD DISP=SHR,
+        //         DSN={cluster_dsn}
+        //SYSIN    DD   *
+           REPRO INFILE(FILEIN) OUTFILE(FILEOUT)
+        /*
+        {aix_step}
+      aix_delete: &aix_delete_fragment |2
+           DELETE {aix_dsn} -
+                  ALTERNATEINDEX
+           IF MAXCC LE 08 THEN SET MAXCC = 0
+      aix_step: &aix_step_fragment |
+        //STEP20 EXEC PGM=IDCAMS
+        //SYSPRINT DD   SYSOUT=*
+        //SYSIN    DD   *
+        {aix_statements}
+        /*
+    notes: >-
+      Slots: {cluster_dsn} and {qualifier} of the cluster; {define_statements}, the DEFINE CLUSTER statements
+      copied verbatim from the cluster's load model member in resources.yaml; {aix_delete_statements}, one
+      aix_delete fragment per alternate index ({aix_dsn}); {aix_step}, the aix_step fragment for a cluster
+      with alternate indexes, whose {aix_statements} are the member's DEFINE ALTERNATEINDEX, DEFINE PATH and
+      BLDINDEX statements, and '' otherwise. The copy's SDSF steps are never included. Step return codes
+      above 4 after the MAXCC reset mean the load failed.
+
+  dataset_empty:
+    action: delete and define an empty cluster
+    command: *bpe_submit_command
+    probe: *bpe_submit_probe
+    timeout_s: 120
+    gap: GAP-MIS-007
+    status: unconfirmed
+    source: zip migrated_app/jcl/ACCTFILE STEP05-STEP10; migrated_app/jcl/CARDFILE STEP05, STEP40-STEP50
+    parse:
+      job_number: *bpe_job_number_regex
+    template:
+      job: |
+        //{job} JOB 'CARDDEMO TEST EMPTY',CLASS=A,MSGCLASS=0
+        //* *******************************************************************
+        //* GENERATED BY THE UNIKIX ADAPTER: DELETE AND DEFINE AN EMPTY CLUSTER
+        //* *******************************************************************
+        //STEP05 EXEC PGM=IDCAMS
+        //SYSPRINT DD   SYSOUT=*
+        //SYSIN    DD   *
+           DELETE {cluster_dsn} -
+                  CLUSTER
+           IF MAXCC LE 08 THEN SET MAXCC = 0
+        {aix_delete_statements}
+        /*
+        //STEP10 EXEC PGM=IDCAMS
+        //SYSPRINT DD   SYSOUT=*
+        //SYSIN    DD   *
+        {define_statements}
+        /*
+        {aix_step}
+      aix_delete: *aix_delete_fragment
+      aix_step: *aix_step_fragment
+    notes: >-
+      The dataset_load job without its REPRO step. Slots as for dataset_load, except that {aix_statements}
+      holds only the DEFINE ALTERNATEINDEX and DEFINE PATH statements: no BLDINDEX runs over an empty base.
+      Used for every cluster a scenario's preconditions do not name.
+
+  dataset_delete:
+    action: delete datasets
+    command: *bpe_submit_command
+    probe: *bpe_submit_probe
+    timeout_s: 120
+    gap: GAP-MIS-007
+    status: unconfirmed
+    source: zip migrated_app/jcl/ACCTFILE STEP05; migrated_app/jcl/TRANBKP STEP05
+    parse:
+      job_number: *bpe_job_number_regex
+    template:
+      job: |
+        //{job} JOB 'CARDDEMO TEST DELETE',CLASS=A,MSGCLASS=0
+        //* *******************************************************************
+        //* GENERATED BY THE UNIKIX ADAPTER: DELETE DATASETS
+        //* *******************************************************************
+        //STEP05 EXEC PGM=IDCAMS
+        //SYSPRINT DD   SYSOUT=*
+        //SYSIN    DD   *
+        {delete_statements}
+        /*
+      delete: &delete_fragment |2
+           DELETE {dsn} -
+                  {entry_type}
+           IF MAXCC LE 08 THEN SET MAXCC = 0
+    notes: >-
+      Leaves a dataset out for a batch open fault with condition unavailable. {delete_statements} receives one
+      delete fragment per catalog entry, {entry_type} being CLUSTER, ALTERNATEINDEX, PATH, NONVSAM or
+      GENERATIONDATAGROUP; a cluster with alternate indexes is deleted with its ALTERNATEINDEX entries, as
+      the copy's TRANBKP does.
+
+  dataset_unload:
+    action: unload a dataset to its unload file
+    command: *bpe_submit_command
+    probe: *bpe_submit_probe
+    timeout_s: 120
+    gap: GAP-MIS-007
+    status: unconfirmed
+    source: zip migrated_app/proc/REPROC, migrated_app/ctl/REPROCT, migrated_app/jcl/TRANBKP STEP05R
+    parse:
+      job_number: *bpe_job_number_regex
+      path: '$SEQFILES/{dsn}'
+    template:
+      job: |
+        //{job} JOB 'CARDDEMO TEST UNLOAD',CLASS=A,MSGCLASS=0
+        //* *******************************************************************
+        //* GENERATED BY THE UNIKIX ADAPTER: UNLOAD A DATASET THROUGH REPROC
+        //* *******************************************************************
+        //JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')
+        //STEP01 EXEC PROC=REPROC,
+        //            CNTLLIB='AWS.M2.CARDDEMO.CNTL'
+        //PRC001.FILEIN  DD DISP=SHR,
+        //        DSN={source_dsn}
+        //PRC001.FILEOUT DD DISP=OLD,
+        //        DSN=CDTEST.UNLOAD.{qualifier}
+    notes: >-
+      {source_dsn} is the cluster DSN (records in primary-key order), a non-VSAM DSN, {base}(0) for the newest
+      generation of a GDG, or an AIX PATH DSN, which gives alternate-key order. The unload lands in the file
+      parse.path gives for {dsn} = CDTEST.UNLOAD.{qualifier}.
+
+  # The generation job is a template of its own so that every JCL the adapter submits is kept in this file;
+  # bpe.py creates GDG preconditions (for example TRANSACT-BKUP and SYSTRAN for COMBTRAN) through it.
+  dataset_create_generation:
+    action: create a new generation of a GDG from staged records
+    command: *bpe_submit_command
+    probe: *bpe_submit_probe
+    timeout_s: 120
+    gap: GAP-MIS-007
+    status: unconfirmed
+    source: zip migrated_app/jcl/TRANBKP STEP05R, migrated_app/proc/REPROC, migrated_app/ctl/REPROCT
+    parse:
+      job_number: *bpe_job_number_regex
+    template:
+      job: |
+        //{job} JOB 'CARDDEMO TEST GENERATION',CLASS=A,MSGCLASS=0
+        //* *******************************************************************
+        //* GENERATED BY THE UNIKIX ADAPTER: NEW GDG GENERATION THROUGH REPROC
+        //* *******************************************************************
+        //JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')
+        //STEP01 EXEC PROC=REPROC,
+        //            CNTLLIB='AWS.M2.CARDDEMO.CNTL'
+        //PRC001.FILEIN  DD DISP=SHR,
+        //        DSN=CDTEST.STAGE.{qualifier}
+        //PRC001.FILEOUT DD DISP=(NEW,CATLG,DELETE),
+        //        DCB=(LRECL={lrecl},RECFM=FB),
+        //        DSN={base}(+1)
+    notes: >-
+      {base} is the GDG base DSN, {lrecl} its record length and {qualifier} the staging qualifier of the
+      records bpe.py wrote. A precondition GDG dataset is created as a new generation (+1), so the job under
+      test reads it as (0).
+
+  catalog_list:
+    action: list the CardDemo catalog
+    command: *bpe_submit_command
+    probe: *bpe_submit_probe
+    timeout_s: 120
+    gap: GAP-MIS-007
+    status: unconfirmed
+    source: app/catlg/LISTCAT.txt:1-5 (the LISTCAT command and its output format)
+    parse:
+      job_number: *bpe_job_number_regex
+      listing_files: '*SYSPRINT*'
+      entry: '(?m)^[ 01-]?(?P<type>CLUSTER|DATA|INDEX|AIX|PATH|GDG|NONVSAM)(?: BASE)? -+ (?P<name>[A-Z0-9@#$][A-Z0-9@#$.-]*)'
+      generation: '\.(?P<generation>G[0-9][0-9][0-9][0-9]V[0-9][0-9])$'
+    template:
+      job: |
+        //{job} JOB 'CARDDEMO TEST LISTCAT',CLASS=A,MSGCLASS=0
+        //* *******************************************************************
+        //* GENERATED BY THE UNIKIX ADAPTER: LIST THE CARDDEMO CATALOG
+        //* *******************************************************************
+        //STEP01 EXEC PGM=IDCAMS
+        //SYSPRINT DD   SYSOUT=*
+        //SYSIN    DD   *
+            LISTCAT LEVEL(AWS.M2.CARDDEMO)  -
+                    ALL
+        /*
+    notes: >-
+      listing_files is the glob of the job's SYSPRINT files in its sysout directory. parse.entry reads one
+      top-level catalog entry per line (a GDG BASE entry reports type GDG; the indented associations are not
+      matched), and parse.generation finds the generation number in an entry name. Produces @CATALOG and the
+      post-deployment snapshot.
+
+  catalog_reset:
+    action: restore the catalog to the post-deployment snapshot
+    command: null
+    probe: 'false'
+    timeout_s: 600
+    gap: GAP-MIS-007
+    status: unconfirmed
+    source: none; no public source names a catalog restore. Fallback modeled on the copy's jcl/DEFGDGB
+    template:
+      job: |
+        //{job} JOB 'CARDDEMO TEST RESET',CLASS=A,MSGCLASS=0
+        //* *******************************************************************
+        //* GENERATED BY THE UNIKIX ADAPTER: RESTORE THE CATALOG SNAPSHOT
+        //* *******************************************************************
+        //STEP05 EXEC PGM=IDCAMS
+        //SYSPRINT DD   SYSOUT=*
+        //SYSIN    DD   *
+        {delete_statements}
+        {define_gdg_statements}
+        /*
+      delete: *delete_fragment
+      define_gdg: |2
+           DEFINE GENERATIONDATAGROUP -
+           (NAME({base}) -
+            LIMIT({limit}) -
+            SCRATCH -
+           )
+           IF LASTCC=12 THEN SET MAXCC=0
+    notes: >-
+      Must restore the catalog and the GDG generations to the snapshot taken after deployment. While the
+      command is unavailable, bpe.py submits the template instead, through bpe_submit: one delete fragment for
+      every AWS.M2.CARDDEMO name the snapshot lacks (GDG generations first) and one define_gdg fragment for
+      every snapshot GDG base that is missing ({limit} 5, as in BPECAT.gdg_base.csv), then lists the catalog
+      again; any remaining difference means the reset is not confirmed.
+
+  # ---------------------------------------------------------------------------------------------------------
+  # Region files, TDQ JOBS, JOBS capture and clock. SDSF.cbl in the copy only displays
+  # 'DUMMY PROGRAM FOR SDSF' (GAP-DOC-031), so CLOSEFIL, OPENFIL and the SDSF steps of CARDFILE, CUSTFILE and
+  # TRANFILE are never used for region control; these entries are the CEMT equivalents the adapter needs.
+  # ---------------------------------------------------------------------------------------------------------
+  region_file_close:
+    action: close a region file
+    command: null
+    probe: 'false'
+    timeout_s: 60
+    gap: GAP-MIS-011
+    status: unconfirmed
+    source: none; no public source names a CEMT SET FILE equivalent
+    notes: >-
+      Must close region file {file} (an fct.lst name), as CEMT SET FIL({file}) CLO does. Fallback while
+      unavailable: region_stop.
+
+  region_file_open:
+    action: open a region file
+    command: null
+    probe: 'false'
+    timeout_s: 60
+    gap: GAP-MIS-011
+    status: unconfirmed
+    source: none; no public source names a CEMT SET FILE equivalent
+    notes: >-
+      Must open region file {file}, as CEMT SET FIL({file}) OPE does. Fallback while unavailable:
+      region_start.
+
+  region_file_disable:
+    action: disable a region file
+    command: null
+    probe: 'false'
+    timeout_s: 60
+    gap: GAP-MIS-011
+    status: unconfirmed
+    source: none; no public source names a CEMT SET FILE equivalent
+    notes: >-
+      Must disable region file {file}, as CEMT SET FIL({file}) DIS does. Applied between steps for the online
+      cases with condition unavailable; without it they stay implemented-unexecuted.
+
+  region_file_enable:
+    action: enable a region file
+    command: null
+    probe: 'false'
+    timeout_s: 60
+    gap: GAP-MIS-011
+    status: unconfirmed
+    source: none; no public source names a CEMT SET FILE equivalent
+    notes: >-
+      Must enable region file {file}, as CEMT SET FIL({file}) ENA does. Part of the reset before every
+      scenario.
+
+  region_file_inquire:
+    action: inquire the region files
+    command: null
+    probe: 'false'
+    timeout_s: 60
+    gap: GAP-MIS-011
+    status: unconfirmed
+    source: none; no public source names a CEMT INQUIRE FILE equivalent
+    parse:
+      file: '(?im)\bFil\(\s*(?P<name>[A-Z0-9@#$]+)\s*\).*?\b(?P<open>Ope|Clo)[a-z]*\b.*?\b(?P<enabled>Ena|Dis|Une)[a-z]*\b'
+    notes: >-
+      Must print one line per region file, which parse.file reads, as CEMT INQUIRE FILE shows it
+      (Fil(ACCTDAT ) Vsa Ope Ena ...). Values compare case-insensitively: open Ope means open and Clo closed;
+      enabled Ena means enabled, Dis or Une disabled. Produces @REGION-FILES for the 14 fct.lst files.
+
+  tdq_empty:
+    action: empty a transient data queue
+    command: null
+    probe: 'false'
+    timeout_s: 60
+    gap: GAP-MIS-011
+    status: unconfirmed
+    source: none; no public source names a TDQ control command
+    notes: >-
+      Must remove every record of queue {queue}, which is JOBS (dct.lst: ED,JOBS,,,,JOB           ,80,Y,O).
+      Part of the reset before every scenario; fallback while unavailable: a region restart.
+
+  tdq_enable:
+    action: enable a transient data queue
+    command: null
+    probe: 'false'
+    timeout_s: 60
+    gap: GAP-MIS-011
+    status: unconfirmed
+    source: none; no public source names a TDQ control command
+    notes: >-
+      Must enable queue {queue} (JOBS), as CEMT SET TDQ({queue}) ENA does. Part of the reset before every
+      scenario.
+
+  tdq_disable:
+    action: disable a transient data queue
+    command: null
+    probe: 'false'
+    timeout_s: 60
+    gap: GAP-MIS-011
+    status: unconfirmed
+    source: none; no public source names a TDQ control command
+    notes: >-
+      Must disable queue {queue} (JOBS), as CEMT SET TDQ({queue}) DIS does, for the online case 'Unable to
+      Write TDQ (JOBS)...'; without it that case stays implemented-unexecuted.
+
+  jobs_capture:
+    action: capture the jobs the region submitted through JOBS
+    command: null
+    probe: 'false'
+    timeout_s: 60
+    gap: GAP-MIS-017
+    status: unconfirmed
+    source: none; no public source names a way to read the jobs a region submits
+    parse:
+      job: '(?im)^[ \t]*(?P<job_number>[0-9]+)[ \t]+(?P<name>[A-Z@#$][A-Z0-9@#$]*)[ \t]+(?P<submitted>[0-9]+[-/.][0-9]+[-/.][0-9]+[ T][0-9:.]+)'
+    notes: >-
+      Must list the jobs BPE received from the region, one per line as parse.job reads them (job number, job
+      name, submission time), and, given {job_number}, print that job's JCL as submitted. The adapter selects
+      job TRNRPT00 submitted between the first and last step and stores its 80-byte records as @TDQ:JOBS.
+
+  clock_set:
+    action: set the UniKix clock
+    command: null
+    probe: 'false'
+    timeout_s: 60
+    gap: GAP-MIS-015
+    status: unconfirmed
+    source: none; no public source names a way to set the UniKix clock
+    notes: >-
+      Would set the date and time seen by the region and BPE jobs to {clock}. Used only when confirmed;
+      until then every scenario with clock_mode fixed (BAT-CHAIN-normal-01 among them) is blocked on unikix.
+
+  # ---------------------------------------------------------------------------------------------------------
+  # Version probes, recorded verbatim in environment.yaml. Installation paths as in zip bin/carddemo.env.
+  # The flag forms are unconfirmed; a failing probe or command is recorded as text, never raised.
+  # ---------------------------------------------------------------------------------------------------------
+  version_tpe:
+    action: record the TPE installation
+    command: 'ls -1 "$UNIKIX" && (kixregion -version 2>&1 || true)'
+    probe: 'test -d "$UNIKIX"'
+    timeout_s: 30
+    gap: GAP-MIS-009
+    status: unconfirmed
+    source: zip bin/carddemo.env:14 (UNIKIX=/opt/software/TPE)
+    notes: >-
+      Lists the TPE installation directory and asks kixregion for its version; the flag form is
+      unconfirmed and the output is recorded verbatim.
+
+  version_bpe:
+    action: record the BPE installation
+    command: 'ls -1 "$INSTEBM"'
+    probe: 'test -d "$INSTEBM"'
+    timeout_s: 30
+    gap: GAP-MIS-009
+    status: unconfirmed
+    source: zip bin/carddemo.env:20 (INSTEBM=/opt/software/BPE/INSTEBM)
+    notes: >-
+      No version command is known; the directory listing is recorded verbatim.
+
+  version_vcobol:
+    action: record the Visual COBOL installation
+    command: '(cob -V 2>&1 || vcc -V 2>&1 || ls -1 "$VCOBOL")'
+    probe: 'test -d "$VCOBOL"'
+    timeout_s: 30
+    gap: GAP-MIS-009
+    status: unconfirmed
+    source: zip bin/carddemo.env:27 (VCOBOL=/opt/software/COBOL)
+    notes: >-
+      Tries the compiler version flags, then falls back to the directory listing; the flag forms are
+      unconfirmed and the output is recorded verbatim.
+
+  version_java:
+    action: record the Java runtime
+    command: '"$JAVA_HOME/bin/java" -version 2>&1'
+    probe: 'test -x "$JAVA_HOME/bin/java"'
+    timeout_s: 30
+    gap: GAP-MIS-009
+    status: unconfirmed
+    source: zip bin/carddemo.env:32 (JAVA_HOME from /etc/alternatives/java)
+    notes: >-
+      The output is recorded verbatim.
+
+  version_licence:
+    action: record the UniKix licence directory
+    command: 'ls -l "$KIXLICDIR"'
+    probe: 'test -d "$KIXLICDIR"'
+    timeout_s: 30
+    gap: GAP-MIS-009
+    status: unconfirmed
+    source: zip bin/carddemo.env:11 (KIXLICDIR=/opt/unikix)
+    notes: >-
+      Records file names, sizes and dates only, never the licence contents; the output is recorded verbatim.
+
+  version_s3270:
+    action: record the s3270 version
+    command: 's3270 -v 2>&1'
+    probe: 'command -v s3270'
+    timeout_s: 30
+    gap: GAP-MIS-009
+    status: unconfirmed
+    source: s3270 command-line option -v (prints the version; checked with s3270 4.3ga10)
+    notes: >-
+      The operator host needs s3270 4.x for the online scenarios; the output is recorded verbatim.

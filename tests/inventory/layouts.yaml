@@ -7049,6 +7049,7 @@ records:
     datasets:
     - '@TDQ:JOBS'
     - DATEPARM
+    - DTCIN
     - STMTFILE
     fields:
     - digits: null

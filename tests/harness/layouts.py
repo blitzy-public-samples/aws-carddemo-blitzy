@@ -130,7 +130,7 @@ LAYOUT_CLUSTER = {
 # logical datasets and observations that use it.
 TEXT_LAYOUTS = {
     40: ("TCATBALF-REPT",),
-    80: ("@TDQ:JOBS", "DATEPARM", "STMTFILE"),
+    80: ("@TDQ:JOBS", "DATEPARM", "DTCIN", "STMTFILE"),
     100: ("HTMLFILE",),
     133: ("TRANREPT",),
 }

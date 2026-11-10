@@ -1,0 +1,827 @@
+# Logical dataset definitions of the CardDemo characterization suite.
+#
+# Purpose
+#   Every logical dataset name that scenarios use (preconditions.datasets,
+#   expected.datasets, expected.file_state) is defined here, once. The adapter
+#   mapping files map these names to their platform: gnucobol_batch/programs.yaml
+#   and jobs.yaml (each dd entry's `logical`) and unikix/resources.yaml. The
+#   harness (harness/fixtures.py) builds fixtures, runs the EBCDIC cross-check
+#   and encodes synthetic records from these entries; the loader and unloader
+#   generator of gnucobol_batch/build.py takes keys and alternate keys from here.
+#   This file holds no data: fixtures are built at run time from app/data into
+#   the scenario's working directory, and synthetic records live inline in the
+#   scenarios. Nothing under app/ is copied or changed.
+#
+# Conventions
+#   - Byte offsets (key, alternate_keys, fields) are 0-based.
+#   - registered_mismatches.record and .columns are 1-based and inclusive;
+#     columns are written "a-b".
+#   - Names are logical: upper case, ^[A-Z][A-Z0-9-]*$. DSNs, ddnames and hosts
+#     appear only inside description text.
+#   - layout is a record key of tests/inventory/layouts.yaml (<COPYBOOK>/<01-NAME>,
+#     CBTRN02C/REJECT-RECORD or TEXT/<n>) and is never null, because records are
+#     encoded and decoded only through that file. fields, where present, names the
+#     structure inside the layout for builders and readers (the composition of
+#     DALYREJS, the fields of the TEXT/80 inputs DATEPARM and DTCIN) and agrees
+#     with it byte for byte. text_lines marks report outputs compared as text
+#     lines; line_layouts is informational.
+#   - region_files are the CICS FILE names (app/csd/CARDDEMO.CSD and the UniKix
+#     copy's fct.lst) that give primary-key access to the dataset; an alternate
+#     index path's region file is the alternate key's `path`.
+#   - data_items are the app/data files the records derive from, so a scenario can
+#     list both the ASCII and the EBCDIC data-file item.
+#
+# Building rules (harness/fixtures.py)
+#   - ascii source: strip the newline from each line and right-pad it with spaces
+#     to record_length. A longer line is an error.
+#   - cp037 source: split it at record_length, decode each record as cp037 and
+#     materialize the result as ASCII bytes (x'00' stays x'00').
+#   - Cross-check: split the counterpart at record_length (the instream form takes
+#     the given JCL lines, each padded with spaces to record_length), decode it,
+#     and compare record by record. A difference is registered when its record
+#     number matches an entry and every differing column falls inside that entry's
+#     columns. Any other difference fails the scenario with reason `error`, naming
+#     the record and columns, and needs a new GAP-DOC entry before it can pass.
+#   - Fixture bytes are the verified ASCII bytes, the encoding both GnuCOBOL and
+#     the UniKix copy's seqfiles use. Sequential files are written fixed-length
+#     with no separators. KSDS entries are loaded by key, creating the alternate
+#     keys listed here; whether a program's SELECT declares them (and with or
+#     without DUPLICATES) is the business of programs.yaml.
+#   - Indexed outputs are compared in primary-key order, sequential outputs in
+#     written order.
+#
+# -PS twins
+#   A twin (derive_from: <parent>) is the sequential .PS dataset a load job reads
+#   or writes. It holds the same records as its parent, in source order, and
+#   repeats the parent's source, encoding, record_length, record_count, layout,
+#   data_items and gap_ids. The cross-check runs once, for the owning entry, and
+#   never again for a twin, so exactly two mismatches are found: ACCTDATA record
+#   49 (GAP-DOC-012) and DISCGRP record 34 (GAP-DOC-013).
+
+schema_version: 1
+
+datasets:
+
+# --------------------------------------------------------------------------
+# Repository-derived datasets
+# --------------------------------------------------------------------------
+
+- name: ACCTDATA
+  description: >-
+    Account master KSDS loaded by the ACCTFILE job, KEYS(11 0) and RECORDSIZE(300 300)
+    [app/jcl/ACCTFILE.jcl:36-41] [app/catlg/LISTCAT.txt:59-60]. Record 49 ACCT-ADDR-ZIP
+    (columns 103-112) is A000000000 in ASCII and ZEROAPR in EBCDIC (GAP-DOC-012).
+    Every record carries its disclosure group id in ACCT-ADDR-ZIP and leaves
+    ACCT-GROUP-ID (columns 113-122) blank [app/cpy/CVACT01Y.cpy:15-16] (GAP-DEF-005).
+  source: app/data/ASCII/acctdata.txt
+  encoding: ascii
+  record_length: 300
+  record_count: 50
+  organization: ksds
+  key: {offset: 0, length: 11}
+  alternate_keys: []
+  layout: CVACT01Y/ACCOUNT-RECORD
+  cross_check: {source: app/data/EBCDIC/AWS.M2.CARDDEMO.ACCTDATA.PS, encoding: cp037}
+  registered_mismatches:
+  - {record: 49, columns: "103-112", gap_id: GAP-DOC-012}
+  data_items:
+  - app/data/ASCII/acctdata.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.ACCTDATA.PS
+  region_files: [ACCTDAT]
+  gap_ids: [GAP-DOC-012, GAP-DEF-005]
+
+- name: CARDDATA
+  description: >-
+    Card master KSDS loaded by the CARDFILE job, KEYS(16 0) and RECORDSIZE(150 150)
+    [app/jcl/CARDFILE.jcl:50-55] [app/catlg/LISTCAT.txt:202-203]. The non-unique
+    alternate index on CARD-ACCT-ID, KEYS(11 16) NONUNIQUEKEY, is reached through the
+    path CARDAIX [app/jcl/CARDFILE.jcl:83-102] [app/catlg/LISTCAT.txt:281-283]
+    [app/csd/CARDDEMO.CSD:13-14].
+  source: app/data/ASCII/carddata.txt
+  encoding: ascii
+  record_length: 150
+  record_count: 50
+  organization: ksds
+  key: {offset: 0, length: 16}
+  alternate_keys:
+  - {name: CARD-ACCT-ID, offset: 16, length: 11, duplicates: true, path: CARDAIX}
+  layout: CVACT02Y/CARD-RECORD
+  cross_check: {source: app/data/EBCDIC/AWS.M2.CARDDEMO.CARDDATA.PS, encoding: cp037}
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/carddata.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.CARDDATA.PS
+  region_files: [CARDDAT]
+  gap_ids: []
+
+- name: CARDXREF
+  description: >-
+    Card cross-reference KSDS loaded by the XREFFILE job, KEYS(16 0) and RECORDSIZE(50 50)
+    [app/jcl/XREFFILE.jcl:39-44] [app/catlg/LISTCAT.txt:403-404]; the non-unique
+    alternate index on XREF-ACCT-ID, KEYS(11,25), is reached through the path CXACAIX
+    [app/jcl/XREFFILE.jcl:72-92] [app/catlg/LISTCAT.txt:482-486] [app/csd/CARDDEMO.CSD:63-65].
+    cardxref.txt lines are 36 characters with the trailing spaces trimmed and are padded
+    to 50 (GAP-DOC-010). Record 1 is card 0500024453765740, customer 000000050, account
+    00000000050, which scenarios rely on.
+  source: app/data/ASCII/cardxref.txt
+  encoding: ascii
+  record_length: 50
+  record_count: 50
+  organization: ksds
+  key: {offset: 0, length: 16}
+  alternate_keys:
+  - {name: XREF-ACCT-ID, offset: 25, length: 11, duplicates: true, path: CXACAIX}
+  layout: CVACT03Y/CARD-XREF-RECORD
+  cross_check: {source: app/data/EBCDIC/AWS.M2.CARDDEMO.CARDXREF.PS, encoding: cp037}
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/cardxref.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.CARDXREF.PS
+  region_files: [CCXREF]
+  gap_ids: [GAP-DOC-010]
+
+- name: CUSTDATA
+  description: >-
+    Customer master KSDS loaded by the CUSTFILE job, KEYS(9 0) and RECORDSIZE(500 500)
+    [app/jcl/CUSTFILE.jcl:46-51] [app/catlg/LISTCAT.txt:632-633].
+  source: app/data/ASCII/custdata.txt
+  encoding: ascii
+  record_length: 500
+  record_count: 50
+  organization: ksds
+  key: {offset: 0, length: 9}
+  alternate_keys: []
+  layout: CVCUS01Y/CUSTOMER-RECORD
+  cross_check: {source: app/data/EBCDIC/AWS.M2.CARDDEMO.CUSTDATA.PS, encoding: cp037}
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/custdata.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.CUSTDATA.PS
+  region_files: [CUSTDAT]
+  gap_ids: []
+
+- name: DISCGRP
+  description: >-
+    Disclosure group KSDS loaded by the DISCGRP job, KEYS(16 0) and RECORDSIZE(50 50)
+    [app/jcl/DISCGRP.jcl:36-41] [app/catlg/LISTCAT.txt:896-897]. Record 34 is the DEFAULT
+    group, type 07, category 0001, whose DIS-INT-RATE (columns 17-22) is 00000{ (0.00) in
+    ASCII and 00150{ (15.00) in EBCDIC [app/cpy/CVTRA02Y.cpy:4-9]; only columns 19-20
+    differ, and the registered range is the whole field (GAP-DOC-013).
+  source: app/data/ASCII/discgrp.txt
+  encoding: ascii
+  record_length: 50
+  record_count: 51
+  organization: ksds
+  key: {offset: 0, length: 16}
+  alternate_keys: []
+  layout: CVTRA02Y/DIS-GROUP-RECORD
+  cross_check: {source: app/data/EBCDIC/AWS.M2.CARDDEMO.DISCGRP.PS, encoding: cp037}
+  registered_mismatches:
+  - {record: 34, columns: "17-22", gap_id: GAP-DOC-013}
+  data_items:
+  - app/data/ASCII/discgrp.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.DISCGRP.PS
+  region_files: [DISCGRP]
+  gap_ids: [GAP-DOC-013]
+
+- name: TCATBALF
+  description: >-
+    Transaction category balance KSDS loaded by the TCATBALF job, KEYS(17 0) and
+    RECORDSIZE(50 50) [app/jcl/TCATBALF.jcl:36-41] [app/catlg/LISTCAT.txt:1371-1372].
+  source: app/data/ASCII/tcatbal.txt
+  encoding: ascii
+  record_length: 50
+  record_count: 50
+  organization: ksds
+  key: {offset: 0, length: 17}
+  alternate_keys: []
+  layout: CVTRA01Y/TRAN-CAT-BAL-RECORD
+  cross_check: {source: app/data/EBCDIC/AWS.M2.CARDDEMO.TCATBALF.PS, encoding: cp037}
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/tcatbal.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.TCATBALF.PS
+  region_files: [TCATBALF]
+  gap_ids: []
+
+- name: TRANCATG
+  description: >-
+    Transaction category KSDS loaded by the TRANCATG job, KEYS(6 0) and RECORDSIZE(60 60)
+    [app/jcl/TRANCATG.jcl:36-41] [app/catlg/LISTCAT.txt:1475-1476]. Its key is the 2-byte
+    type plus the 4-digit category, not the bytes 1-2 the tech-spec test-data table gives
+    (GAP-DOC-010).
+  source: app/data/ASCII/trancatg.txt
+  encoding: ascii
+  record_length: 60
+  record_count: 18
+  organization: ksds
+  key: {offset: 0, length: 6}
+  alternate_keys: []
+  layout: CVTRA04Y/TRAN-CAT-RECORD
+  cross_check: {source: app/data/EBCDIC/AWS.M2.CARDDEMO.TRANCATG.PS, encoding: cp037}
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/trancatg.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.TRANCATG.PS
+  region_files: [TRANCATG]
+  gap_ids: [GAP-DOC-010]
+
+- name: TRANTYPE
+  description: >-
+    Transaction type KSDS loaded by the TRANTYPE job, KEYS(2 0) and RECORDSIZE(60 60)
+    [app/jcl/TRANTYPE.jcl:36-41] [app/catlg/LISTCAT.txt:3779-3780].
+  source: app/data/ASCII/trantype.txt
+  encoding: ascii
+  record_length: 60
+  record_count: 7
+  organization: ksds
+  key: {offset: 0, length: 2}
+  alternate_keys: []
+  layout: CVTRA03Y/TRAN-TYPE-RECORD
+  cross_check: {source: app/data/EBCDIC/AWS.M2.CARDDEMO.TRANTYPE.PS, encoding: cp037}
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/trantype.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.TRANTYPE.PS
+  region_files: [TRANTYPE]
+  gap_ids: []
+
+- name: DALYTRAN
+  description: >-
+    The 300 daily transactions, 6 for each of 50 cards, that POSTTRAN posts through the
+    DALYTRAN ddname, DSN AWS.M2.CARDDEMO.DALYTRAN.PS [app/jcl/POSTTRAN.jcl:30-31]
+    [app/cbl/CBTRN02C.cbl:29-32,66-69]. The records are fixed 350 bytes, not the variable
+    length the tech-spec test-data table states (GAP-DOC-010).
+  source: app/data/ASCII/dailytran.txt
+  encoding: ascii
+  record_length: 350
+  record_count: 300
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVTRA06Y/DALYTRAN-RECORD
+  cross_check: {source: app/data/EBCDIC/AWS.M2.CARDDEMO.DALYTRAN.PS, encoding: cp037}
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/dailytran.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.DALYTRAN.PS
+  region_files: []
+  gap_ids: [GAP-DOC-010]
+
+- name: USRSEC
+  description: >-
+    User security KSDS that DUSRSECJ defines with KEYS(8,0) and RECORDSIZE(80,80) and loads
+    from its in-stream data [app/jcl/DUSRSECJ.jcl:32-88] [app/catlg/LISTCAT.txt:3883-3884].
+    It holds 10 users, ADMIN001-ADMIN005 (type A) and USER0001-USER0005 (type U), all with
+    password PASSWORD, where the tech spec names two (GAP-DOC-010, GAP-DOC-018). The cp037
+    records equal the in-stream SYSUT1 lines padded with spaces to 80 [app/jcl/DUSRSECJ.jcl:34-45].
+  source: app/data/EBCDIC/AWS.M2.CARDDEMO.USRSEC.PS
+  encoding: cp037
+  record_length: 80
+  record_count: 10
+  organization: ksds
+  key: {offset: 0, length: 8}
+  alternate_keys: []
+  layout: CSUSR01Y/SEC-USER-DATA
+  cross_check: {source: app/jcl/DUSRSECJ.jcl, encoding: ascii, form: instream, lines: "35-44"}
+  registered_mismatches: []
+  data_items:
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.USRSEC.PS
+  region_files: [USRSEC]
+  gap_ids: [GAP-DOC-010, GAP-DOC-018]
+
+- name: TRANSACT-INIT
+  description: >-
+    The seed record the TRANFILE job REPROs into the empty TRANSACT KSDS, DSN
+    AWS.M2.CARDDEMO.DALYTRAN.PS.INIT [app/jcl/TRANFILE.jcl:67-74]. It is not x'00'
+    throughout: bytes 0-341 are x'00' and bytes 342-349 are x'F0F0F0F0F0F1F0F0', cp037
+    for 00000100, inside the TRAN-RECORD FILLER at offsets 330-349 [app/cpy/CVTRA05Y.cpy:18]
+    (GAP-DOC-018). The fixture keeps the decoded bytes: 342 NULs, then the ASCII text 00000100.
+  source: app/data/EBCDIC/AWS.M2.CARDDEMO.DALYTRAN.PS.INIT
+  encoding: cp037
+  record_length: 350
+  record_count: 1
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVTRA05Y/TRAN-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items:
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.DALYTRAN.PS.INIT
+  region_files: []
+  gap_ids: [GAP-DOC-018]
+
+# --------------------------------------------------------------------------
+# Sequential -PS twins of the repository-derived KSDS entries
+# --------------------------------------------------------------------------
+
+- name: ACCTDATA-PS
+  description: >-
+    The sequential AWS.M2.CARDDEMO.ACCTDATA.PS that ACCTFILE STEP15 REPROs into the
+    ACCTDATA KSDS [app/jcl/ACCTFILE.jcl:54-61].
+  source: app/data/ASCII/acctdata.txt
+  derive_from: ACCTDATA
+  encoding: ascii
+  record_length: 300
+  record_count: 50
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVACT01Y/ACCOUNT-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/acctdata.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.ACCTDATA.PS
+  region_files: []
+  gap_ids: [GAP-DOC-012, GAP-DEF-005]
+
+- name: CARDDATA-PS
+  description: >-
+    The sequential AWS.M2.CARDDEMO.CARDDATA.PS that CARDFILE STEP15 REPROs into the
+    CARDDATA KSDS [app/jcl/CARDFILE.jcl:68-75].
+  source: app/data/ASCII/carddata.txt
+  derive_from: CARDDATA
+  encoding: ascii
+  record_length: 150
+  record_count: 50
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVACT02Y/CARD-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/carddata.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.CARDDATA.PS
+  region_files: []
+  gap_ids: []
+
+- name: CARDXREF-PS
+  description: >-
+    The sequential AWS.M2.CARDDEMO.CARDXREF.PS that XREFFILE STEP15 REPROs into the
+    CARDXREF KSDS [app/jcl/XREFFILE.jcl:57-64].
+  source: app/data/ASCII/cardxref.txt
+  derive_from: CARDXREF
+  encoding: ascii
+  record_length: 50
+  record_count: 50
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVACT03Y/CARD-XREF-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/cardxref.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.CARDXREF.PS
+  region_files: []
+  gap_ids: [GAP-DOC-010]
+
+- name: CUSTDATA-PS
+  description: >-
+    The sequential AWS.M2.CARDDEMO.CUSTDATA.PS that CUSTFILE STEP15 REPROs into the
+    CUSTDATA KSDS [app/jcl/CUSTFILE.jcl:64-71].
+  source: app/data/ASCII/custdata.txt
+  derive_from: CUSTDATA
+  encoding: ascii
+  record_length: 500
+  record_count: 50
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVCUS01Y/CUSTOMER-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/custdata.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.CUSTDATA.PS
+  region_files: []
+  gap_ids: []
+
+- name: DISCGRP-PS
+  description: >-
+    The sequential AWS.M2.CARDDEMO.DISCGRP.PS that DISCGRP STEP15 REPROs into the
+    DISCGRP KSDS [app/jcl/DISCGRP.jcl:54-61].
+  source: app/data/ASCII/discgrp.txt
+  derive_from: DISCGRP
+  encoding: ascii
+  record_length: 50
+  record_count: 51
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVTRA02Y/DIS-GROUP-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/discgrp.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.DISCGRP.PS
+  region_files: []
+  gap_ids: [GAP-DOC-013]
+
+- name: TCATBALF-PS
+  description: >-
+    The sequential AWS.M2.CARDDEMO.TCATBALF.PS that TCATBALF STEP15 REPROs into the
+    TCATBALF KSDS [app/jcl/TCATBALF.jcl:54-61].
+  source: app/data/ASCII/tcatbal.txt
+  derive_from: TCATBALF
+  encoding: ascii
+  record_length: 50
+  record_count: 50
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVTRA01Y/TRAN-CAT-BAL-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/tcatbal.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.TCATBALF.PS
+  region_files: []
+  gap_ids: []
+
+- name: TRANCATG-PS
+  description: >-
+    The sequential AWS.M2.CARDDEMO.TRANCATG.PS that TRANCATG STEP15 REPROs into the
+    TRANCATG KSDS [app/jcl/TRANCATG.jcl:54-61].
+  source: app/data/ASCII/trancatg.txt
+  derive_from: TRANCATG
+  encoding: ascii
+  record_length: 60
+  record_count: 18
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVTRA04Y/TRAN-CAT-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/trancatg.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.TRANCATG.PS
+  region_files: []
+  gap_ids: [GAP-DOC-010]
+
+- name: TRANTYPE-PS
+  description: >-
+    The sequential AWS.M2.CARDDEMO.TRANTYPE.PS that TRANTYPE STEP15 REPROs into the
+    TRANTYPE KSDS [app/jcl/TRANTYPE.jcl:54-61].
+  source: app/data/ASCII/trantype.txt
+  derive_from: TRANTYPE
+  encoding: ascii
+  record_length: 60
+  record_count: 7
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVTRA03Y/TRAN-TYPE-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items:
+  - app/data/ASCII/trantype.txt
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.TRANTYPE.PS
+  region_files: []
+  gap_ids: []
+
+- name: USRSEC-PS
+  description: >-
+    The sequential AWS.M2.CARDDEMO.USRSEC.PS that DUSRSECJ STEP01 (IEBGENER) writes from
+    its in-stream data and STEP03 REPROs into the USRSEC KSDS [app/jcl/DUSRSECJ.jcl:32-49,80-88].
+  source: app/data/EBCDIC/AWS.M2.CARDDEMO.USRSEC.PS
+  derive_from: USRSEC
+  encoding: cp037
+  record_length: 80
+  record_count: 10
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CSUSR01Y/SEC-USER-DATA
+  cross_check: none
+  registered_mismatches: []
+  data_items:
+  - app/data/EBCDIC/AWS.M2.CARDDEMO.USRSEC.PS
+  region_files: []
+  gap_ids: [GAP-DOC-010, GAP-DOC-018]
+
+# --------------------------------------------------------------------------
+# Built and output datasets: scenario records or the programs and jobs
+# produce their content
+# --------------------------------------------------------------------------
+
+- name: TRANSACT
+  description: >-
+    The posted-transaction KSDS, KEYS(16 0) and RECORDSIZE(350 350), with the non-unique
+    alternate index on TRAN-PROC-TS, KEYS(26 304) [app/jcl/TRANFILE.jcl:49-54,82-101]
+    [app/jcl/TRANIDX.jcl:25-44] [app/catlg/LISTCAT.txt:3593-3594,3674-3676]. CBTRN02C opens
+    it OUTPUT, which on GnuCOBOL recreates the file and drops what was loaded
+    [app/cbl/CBTRN02C.cbl:34-38,256] (GAP-STB-010). The path's region file TRANSAIX exists
+    only in the UniKix fct.lst
+    [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/catlg/tpe/fct.lst:11]
+    (GAP-DOC-030).
+  source: built
+  encoding: ascii
+  record_length: 350
+  organization: ksds
+  key: {offset: 0, length: 16}
+  alternate_keys:
+  - {name: TRAN-PROC-TS, offset: 304, length: 26, duplicates: true, path: TRANSAIX}
+  layout: CVTRA05Y/TRAN-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: [TRANSACT]
+  gap_ids: [GAP-STB-010]
+
+- name: TRXFL
+  description: >-
+    The statement work KSDS keyed by card number plus transaction id, KEYS(32 0) and
+    RECORDSIZE(350 350), that CREASTMT DELDEF01 defines and STEP020 REPROs from TRXFL-SEQ
+    [app/jcl/CREASTMT.JCL:22-39,56-61]; CBSTM03B reads it as TRNXFILE
+    [app/cbl/CBSTM03B.CBL:31-35] [app/jcl/CREASTMT.JCL:83]. The UniKix copy rewrites the
+    sort and adds FCTNAME(TRXFL) (GAP-DOC-026).
+  source: built
+  encoding: ascii
+  record_length: 350
+  organization: ksds
+  key: {offset: 0, length: 32}
+  alternate_keys: []
+  layout: COSTM01/TRNX-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: [TRXFL]
+  gap_ids: [GAP-STB-006, GAP-DOC-026]
+
+- name: TRXFL-SEQ
+  description: >-
+    The CREASTMT STEP010 SORT output AWS.M2.CARDDEMO.TRXFL.SEQ, LRECL=350
+    [app/jcl/CREASTMT.JCL:44-55]. OUTREC FIELDS=(1:263,16,17:1,262,279:279,50) builds 328
+    bytes, padded with spaces to 350, so the last 2 bytes of TRNX-PROC-TS and the 20-byte
+    FILLER are spaces [app/cpy/COSTM01.CPY:20-36] (GAP-STB-006).
+  source: built
+  encoding: ascii
+  record_length: 350
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: COSTM01/TRNX-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: []
+  gap_ids: [GAP-STB-006]
+
+# DALYREJS has no copybook; its layout is the REJECT-RECORD that layouts.yaml composes
+# from CBTRN02C's working storage, and fields restate that composition with the same names.
+- name: DALYREJS
+  description: >-
+    The POSTTRAN DALYREJS(+1) generation, RECFM=F and LRECL=430 [app/jcl/POSTTRAN.jcl:34-38]:
+    each record is the rejected daily transaction followed by the 4-digit reason and its
+    76-byte description, as CBTRN02C builds REJECT-RECORD and writes it from FD-REJS-RECORD
+    [app/cbl/CBTRN02C.cbl:46-49,81-84,176-182,446-451].
+  source: built
+  encoding: ascii
+  record_length: 430
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CBTRN02C/REJECT-RECORD
+  fields:
+  - {name: REJECT-TRAN-DATA, offset: 0, length: 350, layout: CVTRA06Y/DALYTRAN-RECORD}
+  - {name: WS-VALIDATION-FAIL-REASON, offset: 350, length: 4, type: zoned}
+  - {name: WS-VALIDATION-FAIL-REASON-DESC, offset: 354, length: 76, type: alphanumeric}
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: []
+  gap_ids: []
+
+- name: SYSTRAN
+  description: >-
+    The interest transactions CBACT04C writes through its TRANSACT ddname, INTCALC
+    SYSTRAN(+1), RECFM=F and LRECL=350 [app/jcl/INTCALC.jcl:37-41]
+    [app/cbl/CBACT04C.cbl:53-56,309]; COMBTRAN reads SYSTRAN(0) [app/jcl/COMBTRAN.jcl:25-26].
+  source: built
+  encoding: ascii
+  record_length: 350
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVTRA05Y/TRAN-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: []
+  gap_ids: []
+
+- name: TRANSACT-BKUP
+  description: >-
+    TRANSACT.BKUP(+1), the sequential unload of the TRANSACT KSDS that REPROC writes in
+    TRANBKP and TRANREPT [app/jcl/TRANBKP.jcl:23-33] [app/jcl/TRANREPT.jcl:23-33]
+    [app/proc/REPROC.prc:21-28]; COMBTRAN reads BKUP(0) [app/jcl/COMBTRAN.jcl:23-24] and
+    TRANREPT sorts BKUP(+1) [app/jcl/TRANREPT.jcl:38-39].
+  source: built
+  encoding: ascii
+  record_length: 350
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVTRA05Y/TRAN-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: []
+  gap_ids: []
+
+- name: TRANSACT-COMBINED
+  description: >-
+    The COMBTRAN SORTOUT TRANSACT.COMBINED(+1): TRANSACT.BKUP(0) and SYSTRAN(0) sorted on
+    TRAN-ID with DCB=(*.SORTIN), which STEP10 REPROs into the TRANSACT KSDS
+    [app/jcl/COMBTRAN.jcl:22-48]. The UniKix copy writes it with DCB=(LRECL=350,RECFM=FB)
+    instead (GAP-DOC-029).
+  source: built
+  encoding: ascii
+  record_length: 350
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVTRA05Y/TRAN-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: []
+  gap_ids: [GAP-DOC-029]
+
+- name: TRANSACT-DALY
+  description: >-
+    The TRANREPT STEP05R sort output TRANSACT.DALY(+1): the records whose TRAN-PROC-DT
+    (columns 305-314) lies in the INCLUDE window, sorted by TRAN-CARD-NUM
+    [app/jcl/TRANREPT.jcl:37-55]. It is the sequential TRANFILE input of CBTRN03C
+    [app/jcl/TRANREPT.jcl:65-66] [app/cbl/CBTRN03C.cbl:29-31,61-65], and CBTRN03C unit
+    scenarios supply it already sorted by card (GAP-STB-006; the UniKix sort differs,
+    GAP-DOC-027).
+  source: built
+  encoding: ascii
+  record_length: 350
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVTRA05Y/TRAN-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: []
+  gap_ids: [GAP-STB-006, GAP-DOC-027]
+
+- name: TRANREPT
+  description: >-
+    The 133-byte CBTRN03C report, TRANREPT(+1) [app/jcl/TRANREPT.jcl:76-80]
+    [app/cbl/CBTRN03C.cbl:51-53,84-85], whose line shapes are the CVTRA07Y records. Its page
+    breaks, account totals and end-of-file totals are pinned as observed (GAP-DEF-012).
+  source: built
+  encoding: ascii
+  record_length: 133
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: TEXT/133
+  text_lines: true
+  line_layouts:
+  - CVTRA07Y/REPORT-NAME-HEADER
+  - CVTRA07Y/TRANSACTION-HEADER-1
+  - CVTRA07Y/TRANSACTION-HEADER-2
+  - CVTRA07Y/TRANSACTION-DETAIL-REPORT
+  - CVTRA07Y/REPORT-PAGE-TOTALS
+  - CVTRA07Y/REPORT-ACCOUNT-TOTALS
+  - CVTRA07Y/REPORT-GRAND-TOTALS
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: []
+  gap_ids: [GAP-DEF-012]
+
+- name: DATEPARM
+  description: >-
+    One 80-byte record, YYYY-MM-DD YYYY-MM-DD padded with spaces, that CBTRN03C reads into
+    WS-DATEPARM-RECORD [app/cbl/CBTRN03C.cbl:55-57,87-88,122-125]; it is built from
+    preconditions.parameters.DATEPARM, because no job or data file creates
+    AWS.M2.CARDDEMO.DATEPARM [app/jcl/TRANREPT.jcl:73-74] (GAP-MIS-001). CORPT00C writes
+    the same shape in-stream [app/cbl/CORPT00C.cbl:116-121].
+  source: built
+  encoding: ascii
+  record_length: 80
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: TEXT/80
+  fields:
+  - {name: START-DATE, offset: 0, length: 10, type: alphanumeric}
+  - {name: END-DATE, offset: 11, length: 10, type: alphanumeric}
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: []
+  gap_ids: [GAP-MIS-001]
+
+- name: STMTFILE
+  description: >-
+    The 80-byte text statements CBSTM03A writes [app/cbl/CBSTM03A.CBL:39,44-45], CREASTMT
+    AWS.M2.CARDDEMO.STATEMNT.PS [app/jcl/CREASTMT.JCL:87-91]. CBSTM03A runs on
+    gnucobol-batch only with the page-zero control-block shim (GAP-STB-003).
+  source: built
+  encoding: ascii
+  record_length: 80
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: TEXT/80
+  text_lines: true
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: []
+  gap_ids: [GAP-STB-003]
+
+- name: HTMLFILE
+  description: >-
+    The 100-byte HTML statements CBSTM03A writes [app/cbl/CBSTM03A.CBL:40,46-47], CREASTMT
+    AWS.M2.CARDDEMO.STATEMNT.HTML [app/jcl/CREASTMT.JCL:92-96]. CBSTM03A runs on
+    gnucobol-batch only with the page-zero control-block shim (GAP-STB-003).
+  source: built
+  encoding: ascii
+  record_length: 100
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: TEXT/100
+  text_lines: true
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: []
+  gap_ids: [GAP-STB-003]
+
+- name: TCATBALF-BKUP
+  description: >-
+    PRTCATBL TCATBALF.BKUP(+1), the REPROC unload of the TCATBALF KSDS, LRECL=50
+    [app/jcl/PRTCATBL.jcl:29-39].
+  source: built
+  encoding: ascii
+  record_length: 50
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: CVTRA01Y/TRAN-CAT-BAL-RECORD
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: []
+  gap_ids: []
+
+- name: TCATBALF-REPT
+  description: >-
+    The PRTCATBL STEP10R listing TCATBALF.REPT, LRECL=40: TCATBALF.BKUP(+1) sorted on
+    account, type and category, with TRAN-CAT-BAL edited as TTTTTTTTT.TT
+    [app/jcl/PRTCATBL.jcl:43-63]. Its OUTREC (11+1+2+1+4+1+12+9) totals 41 bytes against
+    LRECL=40; how that is handled belongs to the SORT replacement (GAP-STB-006).
+  source: built
+  encoding: ascii
+  record_length: 40
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: TEXT/40
+  text_lines: true
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: []
+  gap_ids: [GAP-STB-006]
+
+- name: DTCIN
+  description: >-
+    The DTCDRV call list, one 80-byte record per CSUTLDTC call: the date and the mask as
+    CSUTLDTC receives LS-DATE X(10) and LS-DATE-FORMAT X(10) [app/cbl/CSUTLDTC.cbl:83-88],
+    then spaces; the mask YYYYMMDD is padded with spaces to 10. It is the input contract
+    tests/stubs/DTCDRV.cbl reads (GAP-STB-004).
+  source: built
+  encoding: ascii
+  record_length: 80
+  organization: sequential
+  key: null
+  alternate_keys: []
+  layout: TEXT/80
+  fields:
+  - {name: DATE, offset: 0, length: 10, type: alphanumeric}
+  - {name: MASK, offset: 10, length: 10, type: alphanumeric}
+  cross_check: none
+  registered_mismatches: []
+  data_items: []
+  region_files: []
+  gap_ids: [GAP-STB-004]
+
+excluded_data_files:
+- path: app/data/EBCDIC/AWS.M2.CARDDEMO.ACCDATA.PS
+  reason: "unused: no job names its DSN; byte-identical to AWS.M2.CARDDEMO.ACCTDATA.PS"
+  gap_ids: [GAP-UNC-002, GAP-DOC-018]
