@@ -1,0 +1,277 @@
+# COACTUPC account update: the Open Date day erased on the Update Account
+# screen is refused with 'Open Date : Day must be supplied.' by EDIT-DAY of the
+# procedure copybook CSUTLDPY [app/cpy/CSUTLDPY.cpy:150-168].
+#
+# Step 1: USER0001 signs on through CC00; COSGN00C routes the type 'U' user to
+# the main menu COMEN01 [app/cbl/COSGN00C.cbl:221-237].
+# Step 2: option '2' is 'Account Update' of COMEN02Y, so COMEN01C XCTLs to
+# COACTUPC with CDEMO-PGM-CONTEXT zero [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:31-35]. COACTUPC takes its fresh-entry path and sends
+# COACTUP with the search-key prompt [app/cbl/COACTUPC.cbl:964-973,2955-2961].
+# Step 3: ENTER with ACCTSID 00000000001. 9000-READ-ACCT reads CXACAIX (card
+# 9680294154603697, customer 000000001), ACCTDAT and CUSTDAT, sets
+# ACUP-SHOW-DETAILS and 3202-SHOW-ORIGINAL-VALUES fills the map; 3320 gives each
+# input field an attribute with MDT on, so every field comes back on the next
+# AID [app/cbl/COACTUPC.cbl:2568-2580,2787-2865,3441-3562,3608-3884].
+# Step 4: ENTER with OPNDAY erased (the adapter's EraseEOF leaves it empty).
+# 1100-RECEIVE-MAP moves LOW-VALUES to ACUP-NEW-OPEN-DAY for a blank day, and
+# 1205-COMPARE-OLD-NEW finds ACUP-NEW-OPEN-DATE '201411' plus LOW-VALUES unlike
+# the fetched '20141120', so ACUP-CHANGES-NOT-OK is set and the field edits run
+# in screen order [app/cbl/COACTUPC.cbl:1142-1163,1460-1482,1681-1705]:
+# - Account Status 'Y' passes 1220-EDIT-YESNO.
+# - Open Date: EDIT-YEAR-CCYY accepts 2014 and EDIT-MONTH accepts 11; EDIT-DAY
+#   finds WS-EDIT-DATE-DD equal to LOW-VALUES, sets INPUT-ERROR and
+#   FLG-DAY-BLANK and, WS-RETURN-MSG being still blank, STRINGs
+#   TRIM('Open Date') and ' : Day must be supplied.' into WS-RETURN-MSG
+#   [app/cpy/CSUTLDPY.cpy:25-168]. EDIT-DAY-MONTH-YEAR then sees the date flags
+#   not valid and leaves through EDIT-DATE-CCYYMMDD-EXIT, so no CSUTLDTC call is
+#   made for this date [app/cpy/CSUTLDPY.cpy:209-279].
+# - Every later edit passes for the invented customer, and none can replace
+#   the message, because each STRING is guarded by WS-RETURN-MSG-OFF.
+# 2000-DECIDE-ACTION continues for ACUP-CHANGES-NOT-OK; 3203-SHOW-UPDATED-VALUES
+# echoes the received values (the valid amounts edited again as
+# +ZZZ,ZZZ,ZZZ.99); 3250 sets PROMPT-FOR-CHANGES and moves WS-RETURN-MSG to
+# ERRMSG; CSSETATY for OPEN-DAY turns the field red and, the flag being BLANK on
+# a re-entry, moves '*' into it; 3390 brightens F12=Cancel because changes were
+# made [app/cbl/COACTUPC.cbl:2596-2597,2870-2981,3225-3229,3566-3584]
+# [app/cpy/CSSETATY.cpy:17-27]. No READ UPDATE or REWRITE runs on this path.
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - Text values are whole fields at their BMS length with trailing spaces:
+#   ERRMSG is the 75-byte WS-RETURN-MSG in the 78-byte field, INFOMSG the
+#   40-byte WS-INFO-MSG in the 45-byte field, OPNDAY the 2-byte '* '.
+# - The header is 3100-SCREEN-INIT's: the COTTL01Y titles, CAUP, COACTUPC and
+#   CURDATE mm/dd/yy and CURTIME hh:mm:ss of the run clock through CSDAT01Y,
+#   hence the matchers and clock_mode relative [app/cbl/COACTUPC.cbl:2668-2692].
+# - AADDGRP shows ACCT-GROUP-ID, blank in every repository account
+#   (GAP-DEF-005); the blank received field becomes LOW-VALUES, which 3203
+#   sends as nulls, shown as spaces [app/cbl/COACTUPC.cbl:1213-1218,2921].
+# - FKEY05 keeps its ASKIP,DRK map attribute, which the screen capture renders
+#   as blanks.
+id: ACT-COACTUPC-negative-018
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 2 'Account Update', fetches
+  account 00000000001 on the COACTUP screen, erases the day of the Open Date
+  and presses ENTER. COACTUPC refuses the change with 'Open Date : Day must be
+  supplied.', marks the day field with '*', echoes the other values as
+  received, keeps the 'Update account details presented above.' prompt and
+  shows F12=Cancel; ACCTDAT and CUSTDAT are not updated.
+# Primary item first, then the program, the maps the steps enter on and land
+# on, the transaction the fetch and the edit run under, the CSD files the fetch
+# reads and the online-only copybooks COACTUPC copies. The sign-on items (CC00,
+# COSGN00, COSGN00C, USRSEC) are verified by the SEC-COSGN00C scenarios; the
+# batch record copybooks and the data files at the lowest level that runs them.
+inventory_ids:
+- INV-ACT-076  # COACTUPC Open Date: day supplied (EDIT-DAY of CSUTLDPY)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, the main menu option 2 is entered on
+- INV-ACT-004  # COACTUP map, the update screen of steps 2-4
+- INV-CFG-009  # CAUP transaction, under which the fetch and the refused edit run
+- INV-CFG-006  # CXACAIX CSD file, the account-to-card path the fetch reads
+- INV-CFG-001  # ACCTDAT CSD file, read by the fetch and left unchanged
+- INV-CFG-005  # CUSTDAT CSD file, read by the fetch and left unchanged
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the fetched values between steps
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COACTUPC
+- INV-LAY-007  # CSLKPCDY copybook, the phone, state and state/zip tables of the later edits
+- INV-LAY-009  # CSMSG02Y copybook, the abend variables
+- INV-LAY-010  # CSSETATY copybook, the '*' and red attribute of the refused day
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping that turns ENTER into CCARD-AID-ENTER
+- INV-LAY-013  # CSUTLDPY copybook, EDIT-DAY and its composed message
+- INV-LAY-014  # CSUTLDWY copybook, WS-EDIT-DATE-DD and the date flags
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+# GAP-DOC-024: the UniKix copy of CSUTLDPY drops FUNCTION TRIM from the field
+#   name of this message, so a UniKix run never verifies the item while that
+#   entry is open.
+# Not in the planned gap list, cited because the deployed UniKix copy differs
+# from app/ on the parts this scenario asserts:
+# GAP-DOC-022: the UniKix COACTUPC drops the TEST-NUMVAL-C checks and TRIM from
+#   the amount edits and change detection the step-4 echo passes through.
+# GAP-DOC-025: the UniKix COACTUP.bms drops the unnamed field at row 1, columns
+#   1-9, beside the asserted TRNNAME.
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-024
+- GAP-DOC-022
+- GAP-DOC-025
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001.
+    USRSEC: {base: USRSEC}
+    # Account 00000000001 as in the repository: open date 2014-11-20.
+    ACCTDATA: {base: ACCTDATA}
+    # Record 49 maps account 00000000001 to card 9680294154603697 and customer
+    # 000000001; CXACAIX is its alternate-index path.
+    CARDXREF: {base: CARDXREF}
+    # Customer 000000001 replaced by invented values that pass every COACTUPC
+    # edit after the Open Date, so the day edit is the only one refused: the
+    # repository record fails the Phone Number 2 area code, the state/zip
+    # combination and the FICO range.
+    CUSTDATA:
+      base: CUSTDATA
+      records:
+      - CUST-ID: '000000001'
+        CUST-FIRST-NAME: Testfirst
+        CUST-MIDDLE-NAME: Testmiddle
+        CUST-LAST-NAME: Testlast
+        CUST-ADDR-LINE-1: 100 Test Street
+        CUST-ADDR-LINE-2: Suite 1
+        CUST-ADDR-LINE-3: Raleigh
+        CUST-ADDR-STATE-CD: NC
+        CUST-ADDR-COUNTRY-CD: USA
+        CUST-ADDR-ZIP: '27601'
+        CUST-PHONE-NUM-1: '(919)555-0101'
+        CUST-PHONE-NUM-2: '(919)555-0102'
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: TESTGOVT0001
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'
+  parameters:
+    clock_mode: relative
+  faults: []
+# Sign-on uses the demo user and the documented demo password, which is not a
+# secret.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000001'}
+    '@map': COACTUP
+  # The day of the Open Date erased; every other field goes back as sent.
+  - aid: ENTER
+    fields: {OPNDAY: ''}
+    '@map': COACTUP
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  # The fetched account and customer, with the open date 2014-11-20.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '00000000001'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACSTNUM: '000000001'
+    ACSFNAM: 'Testfirst                '
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: '                                                                              '
+  # The received values echoed, the day marked '*', and the message.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '* '
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: 'Open Date : Day must be supplied.                                             '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: '       '
+    FKEY12: 'F12=Cancel'
+  # One ERRMSG value per step: blank on the menu, the fresh and the fetched
+  # update screens, the day message after the refused ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - '                                                                              '
+  - 'Open Date : Day must be supplied.                                             '
+  file_state:
+    # Nothing is rewritten: account 00000000001 keeps its open date and
+    # customer 000000001 the values loaded, and each dataset keeps its 50
+    # records.
+    ACCTDATA:
+      count: 50
+      contains:
+      - {ACCT-ID: '1', ACCT-ACTIVE-STATUS: 'Y', ACCT-CURR-BAL: '194.00', ACCT-CREDIT-LIMIT: '2020.00',
+         ACCT-CASH-CREDIT-LIMIT: '1020.00', ACCT-OPEN-DATE: '2014-11-20', ACCT-EXPIRAION-DATE: '2025-05-20',
+         ACCT-REISSUE-DATE: '2025-05-20', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00',
+         ACCT-ADDR-ZIP: A000000000, ACCT-GROUP-ID: '          '}
+    CUSTDATA:
+      count: 50
+      contains:
+      - CUST-ID: '1'
+        CUST-FIRST-NAME: 'Testfirst                '
+        CUST-MIDDLE-NAME: 'Testmiddle               '
+        CUST-LAST-NAME: 'Testlast                 '
+        CUST-ADDR-LINE-1: '100 Test Street                                   '
+        CUST-ADDR-LINE-2: 'Suite 1                                           '
+        CUST-ADDR-LINE-3: 'Raleigh                                           '
+        CUST-ADDR-STATE-CD: 'NC'
+        CUST-ADDR-COUNTRY-CD: 'USA'
+        CUST-ADDR-ZIP: '27601     '
+        CUST-PHONE-NUM-1: '(919)555-0101  '
+        CUST-PHONE-NUM-2: '(919)555-0102  '
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'
