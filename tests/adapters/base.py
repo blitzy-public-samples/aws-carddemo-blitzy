@@ -602,4 +602,3 @@ class Adapter(abc.ABC):
         """Release session-wide resources. Called once at session end; the
         base adapter holds none."""
         return None
-
