@@ -644,14 +644,17 @@ entries:
         //STEP01 EXEC PGM=IDCAMS
         //SYSPRINT DD   SYSOUT=*
         //SYSIN    DD   *
-            LISTCAT LEVEL(AWS.M2.CARDDEMO)  -
+            LISTCAT LEVEL(AWS)  -
                     ALL
         /*
     notes: >-
       listing_files is the glob of the job's SYSPRINT files in its sysout directory. parse.entry reads one
       top-level catalog entry per line (a GDG BASE entry reports type GDG; the indented associations are not
       matched), and parse.generation finds the generation number in an entry name. Produces @CATALOG and the
-      post-deployment snapshot.
+      post-deployment snapshot. The level is AWS rather than the AWS.M2.CARDDEMO of app/catlg/LISTCAT.txt
+      because DEFCUST deletes AWS.CCDA.CUSTDATA.CLUSTER and defines AWS.CUSTDATA.CLUSTER (GAP-DEF-009), which
+      @CATALOG must show and the reset must remove; the test-owned node catalogues no other AWS names, and
+      bpe.py leaves the CDTEST test datasets out.
 
   catalog_reset:
     action: restore the catalog to the post-deployment snapshot
@@ -684,7 +687,7 @@ entries:
     notes: >-
       Must restore the catalog and the GDG generations to the snapshot taken after deployment. While the
       command is unavailable, bpe.py submits the template instead, through bpe_submit: one delete fragment for
-      every AWS.M2.CARDDEMO name the snapshot lacks (GDG generations first) and one define_gdg fragment for
+      every catalog_list entry the snapshot lacks (GDG generations first) and one define_gdg fragment for
       every snapshot GDG base that is missing ({limit} 5, as in BPECAT.gdg_base.csv), then lists the catalog
       again; any remaining difference means the reset is not confirmed.
 
