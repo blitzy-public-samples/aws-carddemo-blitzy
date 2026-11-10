@@ -1,0 +1,161 @@
+# COBIL00C refuses a bill payment at the zero edge of its balance check: the
+# test is ACCT-CURR-BAL <= ZEROS, so a balance of exactly 0.00 gives 'You have
+# nothing to pay...' [app/cbl/COBIL00C.cbl:197-206]. BIL-COBIL00C-boundary-02
+# (0.01, paid) and -03 (-0.01, refused) are the other two values of the edge.
+# Account 00000000001 is the first record of app/data/ASCII/acctdata.txt; only
+# its current balance is invented (0.00 in place of 194.00).
+#
+# Step 1 signs on as USER0001 on COSGN00 (transaction CC00); the type-U user is
+# routed to COMEN01C, which sends the main menu COMEN01 headed CM00/COMEN01C
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:36-37,82-90].
+# Step 2 enters option 10 on COMEN01: 'Bill Payment', user type U, program
+# COBIL00C [app/cpy/COMEN02Y.cpy:79-84]. COMEN01C resets the program context
+# and transfers control to COBIL00C [app/cbl/COMEN01C.cbl:115-156]. Entered
+# without CDEMO-PGM-REENTER and with no transaction selected (the COMMAREA
+# COMEN01C passes ends before CDEMO-CB00-INFO, so the move pads it with
+# spaces), COBIL00C sets the re-enter flag, moves LOW-VALUES to COBIL0AO and
+# sends COBIL00 with its header: CB00, COBIL00C, the COTTL01Y titles and the
+# run date and time through CSDAT01Y; WS-MESSAGE is spaces, so ERRMSG is blank
+# [app/cbl/COBIL00C.cbl:101-122,289-338].
+# Step 3 enters the account id with CONFIRM left blank and presses ENTER under
+# CB00:
+# - The account id is supplied, and a blank CONFIRM (spaces or LOW-VALUES)
+#   performs READ-ACCTDAT-FILE: READ ACCTDAT UPDATE by ACCT-ID is NORMAL
+#   [app/cbl/COBIL00C.cbl:154-191,343-372].
+# - ACCT-CURR-BAL goes through WS-CURR-BAL (PIC +9999999999.99) into CURBAL,
+#   so a zero balance shows as +0000000000.00 [app/cbl/COBIL00C.cbl:56,193-194].
+# - ACCT-CURR-BAL <= ZEROS holds at 0.00, so ERR-FLG is set, WS-MESSAGE gets
+#   'You have nothing to pay...' and COBIL00 is sent again with the received
+#   account id and the balance [app/cbl/COBIL00C.cbl:197-206,289-301].
+# - ERR-FLG skips the payment block: no CXACAIX read, no TRANSACT browse or
+#   WRITE, no ACCTDAT REWRITE; RETURN TRANSID CB00 ends the task and releases
+#   the READ UPDATE [app/cbl/COBIL00C.cbl:146-149,208-244].
+#
+# Expected text values are whole fields at their BMS or record length, trailing
+# spaces included. Fields COBIL00C leaves at LOW-VALUES carry no data and show
+# as blanks. Only the screen CURDATE and CURTIME come from the region clock, so
+# they are matchers and the clock is relative.
+id: BIL-COBIL00C-boundary-01
+level: e2e
+type: boundary
+description: >-
+  USER0001 signs on, chooses main-menu option 10 (Bill Payment) and, on
+  COBIL00, enters account 00000000001, whose current balance is set to 0.00,
+  without confirming. COBIL00C reads the account, shows the balance as
+  +0000000000.00 and refuses with 'You have nothing to pay...', because a
+  balance of zero or less leaves nothing to pay; ACCTDATA and TRANSACT stay
+  unchanged.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the CSD file COBIL00C reads, and the online-only
+# copybooks it copies. The refusal touches neither CXACAIX nor TRANSACT, so
+# those CSD files are not listed. Sign-on and the menu option (CC00, CM00,
+# COSGN00, USRSEC) are verified by the SEC and MNU scenarios; the batch record
+# copybooks (CVACT01Y, CVACT03Y, CVTRA05Y) and the data files are verified at
+# the lowest level that executes them.
+inventory_ids:
+- INV-BIL-006  # COBIL00C message 'You have nothing to pay...' (ACCT-CURR-BAL <= ZEROS)
+- INV-BIL-001  # COBIL00C program
+- INV-MNU-003  # COMEN01 map, where option 10 is entered
+- INV-BIL-002  # COBIL00 map, the bill-payment screen of steps 2 and 3
+- INV-CFG-012  # CB00 transaction, under which COBIL00C receives the account id
+- INV-CFG-001  # ACCTDAT CSD file: account read for update
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COBIL00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-008  # BIL end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    # Account 00000000001 from the fixture with its current balance invented as
+    # 0.00; every other field keeps the repository record's value.
+    ACCTDATA:
+      base: ACCTDATA
+      records:
+      - {ACCT-ID: '00000000001', ACCT-CURR-BAL: '0.00'}
+    # The region's CCXREF file and the CXACAIX path a confirmed payment reads.
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT holds no repository data of its own (it is built), so it is
+    # loaded from the repository's 300 daily transactions, the same 350-byte
+    # TRAN-RECORD shape keyed by TRAN-ID, as in the other online scenarios
+    # that browse it; the refusal leaves all 300 in place.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '10'
+  # CONFIRM is left blank, so COBIL00C only looks the account up.
+  - aid: ENTER
+    '@map': COBIL00
+    fields:
+      ACTIDIN: '00000000001'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COBIL00
+    TRNNAME: 'CB00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COBIL00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CURBAL: '              '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: 'CB00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COBIL00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000001'
+    CURBAL: '+0000000000.00'
+    CONFIRM: ' '
+    ERRMSG: 'You have nothing to pay...                                                    '
+  # The ERRMSG of each step: the menu and the empty bill-payment screen carry
+  # none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'You have nothing to pay...                                                    '
+  file_state:
+    # No REWRITE: ACCTDATA keeps its 50 records, and account 00000000001 the
+    # precondition balance 0.00 with its repository fields. Values are in
+    # decoded form.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '0.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: 'A000000000'
+        ACCT-GROUP-ID: '          '
+    # No WRITE: TRANSACT keeps exactly the 300 records it was loaded with.
+    TRANSACT:
+      count: 300

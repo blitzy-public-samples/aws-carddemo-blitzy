@@ -1,0 +1,127 @@
+# PF3 on the CORPT00 Transaction Reports screen returns to the COMEN01C main menu.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00 and
+# COSGN00C XCTLs to COMEN01C, which sends the main menu and returns TRANSID
+# CM00 [app/cbl/COSGN00C.cbl:221-240] [app/cbl/COMEN01C.cbl:82-90,107-110].
+# Step 2: option '9' of the COMEN02Y table is 'Transaction Reports', user type
+# U, program CORPT00C, so COMEN01C moves CM00 and COMEN01C to CDEMO-FROM-TRANID
+# and CDEMO-FROM-PROGRAM, zeroes CDEMO-PGM-CONTEXT and XCTLs to CORPT00C
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:74-78]. With the context
+# zero, CORPT00C takes its first-entry path: it sets CDEMO-PGM-REENTER, moves
+# LOW-VALUES to CORPT0AO, puts the cursor on MONTHLY and sends CORPT00 with its
+# own CR00 and CORPT00C header and WS-MESSAGE (spaces) in ERRMSG, then returns
+# with TRANSID CR00 and the COMMAREA [app/cbl/CORPT00C.cbl:37-38,163-181,
+# 556-591,609-628].
+# Step 3: PF3 with nothing typed. CR00 starts CORPT00C with the re-entered
+# COMMAREA, so it receives the map and takes the DFHPF3 branch: it moves the
+# literal 'COMEN01C' to CDEMO-TO-PROGRAM (the target is fixed: the caller in
+# CDEMO-FROM-PROGRAM is not consulted), and RETURN-TO-PREV-SCREEN records
+# CR00/CORPT00C as the caller, zeroes CDEMO-PGM-CONTEXT and XCTLs to COMEN01C
+# with the COMMAREA [app/cbl/CORPT00C.cbl:182-189,540-551]. No report is
+# selected and nothing is written to the JOBS queue on this path.
+# COMEN01C, entered with a COMMAREA whose context is zero, takes its first-entry
+# path: it clears its output map and sends the main menu afresh with its own
+# CM00 and COMEN01C header, the ten COMEN02Y options built as '<nn>. <name>' in
+# 40-character fields and WS-MESSAGE still spaces in ERRMSG
+# [app/cbl/COMEN01C.cbl:36-37,77-90,182-277] [app/cpy/COMEN02Y.cpy:21-84].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values are whole fields at their BMS length with trailing spaces kept:
+#   ERRMSG 78 on both CORPT00 and COMEN01, the titles and options 40
+#   [app/bms/CORPT00.bms] [app/bms/COMEN01.bms]; the titles are COTTL01Y's
+#   [app/cpy/COTTL01Y.cpy:17-22].
+# - CURDATE (mm/dd/yy) and CURTIME (hh:mm:ss, an 8-character field on both
+#   maps) come from the region clock through CSDAT01Y, hence the matchers and
+#   clock_mode relative.
+# - The adapter copies the ERRMSG of every step's screen into the message list,
+#   so the three blank ERRMSG values are the expected messages.
+# - The empty report-selection fields of screen 2 are not asserted: the
+#   first-entry content belongs to the other CORPT00C scenarios, and this one
+#   pins the PF3 return.
+id: RPT-CORPT00C-alternate-02
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, chooses main menu option 9 'Transaction Reports' and lands
+  on the CORPT00C report-selection screen (CR00) with no message, then presses
+  PF3 without selecting a report. CORPT00C transfers control to COMEN01C, which
+  shows the main menu (CM00) with its ten options and no message.
+# Primary item first, then the program, the maps asserted, the transaction PF3
+# is processed under, and the online-only copybooks CORPT00C copies (its
+# CVTRA05Y record copybook is batch-covered and not used on this path). The
+# sign-on step and the option step only establish the session: CC00, CM00,
+# COSGN00, COSGN00C, COMEN01C, COMEN02Y and USRSEC are verified by the
+# SEC-COSGN00C and MNU-COMEN01C scenarios, so they are not listed here. Neither
+# the first entry nor the PF3 branch issues a file or queue command, so no CSD
+# file and no TDQ is listed.
+inventory_ids:
+- INV-RPT-030  # CORPT00C PF3 return (navigation rule)
+- INV-RPT-001  # CORPT00C program
+- INV-RPT-002  # CORPT00 map, the screen PF3 is pressed on
+- INV-MNU-003  # COMEN01 map, the screen the XCTL lands on
+- INV-CFG-019  # CR00 transaction, under which PF3 is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA passed on the XCTL to COMEN01C
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # report submission (RPT) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001 from USRSEC. Nothing else on
+    # this path reads a file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '9'}
+    '@map': COMEN01
+  - aid: PF3
+    fields: {}
+    '@map': CORPT00
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN001: '01. Account View                        '
+    OPTN002: '02. Account Update                      '
+    OPTN003: '03. Credit Card List                    '
+    OPTN004: '04. Credit Card View                    '
+    OPTN005: '05. Credit Card Update                  '
+    OPTN006: '06. Transaction List                    '
+    OPTN007: '07. Transaction View                    '
+    OPTN008: '08. Transaction Add                     '
+    OPTN009: '09. Transaction Reports                 '
+    OPTN010: '10. Bill Payment                        '
+    ERRMSG: '                                                                              '
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - '                                                                              '

@@ -1,0 +1,179 @@
+# COBIL00C cannot record a confirmed bill payment when the WRITE of the payment
+# transaction to TRANSACT fails with an I/O error, yet the account balance is
+# still paid off.
+#
+# Step 1: USER0001 signs on through CC00; COSGN00C routes the type 'U' user to
+# COMEN01C, which sends the main menu COMEN01 headed CM00/COMEN01C
+# [app/cbl/COSGN00C.cbl:221-239] [app/cbl/COMEN01C.cbl:82-90].
+# Step 2: option '10' is 'Bill Payment', user type U, program COBIL00C, within
+# the 10 options of COMEN02Y [app/cpy/COMEN02Y.cpy:21,80-84]. COMEN01C resets
+# the program context and transfers control (XCTL) to COBIL00C
+# [app/cbl/COMEN01C.cbl:115-156]. Entered without CDEMO-PGM-REENTER and with no
+# transaction selected (the COMMAREA COMEN01C passes ends before
+# CDEMO-CB00-INFO, so the move pads it with spaces), COBIL00C sets the re-enter
+# flag, moves LOW-VALUES to COBIL0AO and sends COBIL00 with its header and a
+# blank message [app/cbl/COBIL00C.cbl:107-122,289-338].
+# Step 3: ENTER with Acct ID 00000000001 and CONFIRM Y, under CB00:
+# - READ ACCTDAT with UPDATE is NORMAL, and the balance 194.00 is edited
+#   through WS-CURR-BAL (PIC +9999999999.99) into CURBAL as +0000000194.00
+#   [app/cbl/COBIL00C.cbl:170-194,343-372]. The balance is above zero, so the
+#   payment proceeds [app/cbl/COBIL00C.cbl:197-206].
+# - READ CXACAIX by account is NORMAL (card 9680294154603697); STARTBR
+#   TRANSACT at HIGH-VALUES and READPREV return the highest key,
+#   0000000996722787, and the payment record is built with TRAN-ID
+#   0000000996722788 and TRAN-AMT 194.00 [app/cbl/COBIL00C.cbl:210-232,408-505].
+# - The WRITE answers neither NORMAL nor DUPKEY/DUPREC, so WHEN OTHER DISPLAYs
+#   RESP and RESP2 to the region log (not asserted), sets the error flag, moves
+#   'Unable to Add Bill pay Transaction...' to WS-MESSAGE, puts the cursor on
+#   ACTIDIN and sends COBIL00 [app/cbl/COBIL00C.cbl:510-547].
+# - No RETURN follows that SEND, and the pay block tests no flag after the
+#   WRITE: COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT leaves 0.00, and
+#   UPDATE-ACCTDAT-FILE REWRITEs the record the READ UPDATE still holds, which
+#   is NORMAL and sets no message [app/cbl/COBIL00C.cbl:233-235,377-403].
+# - SEND-BILLPAY-SCREEN runs once more with WS-MESSAGE unchanged, and the task
+#   ends with RETURN TRANSID CB00 [app/cbl/COBIL00C.cbl:242,146-149]. Every
+#   command is coded with RESP, so no abend backs the task out: the normal end
+#   of task commits the REWRITE.
+# COBIL0AO redefines COBIL0AI, so the final screen echoes the account id and
+# CONFIRM just received and the CURBAL moved before the payment. The screen
+# holds the last send of the task.
+#
+# Finding: the account ends with a zero balance while TRANSACT holds no
+# payment transaction for the 194.00, and the screen reports the payment as
+# failed. It is pinned as derived. No GAP-DEF entry of the register covers it,
+# so the scenario carries no suspected-defect tag, which needs one; the finding
+# lives in this description only.
+#
+# No adapter can inject an online I/O error, so the scenario raises
+# MissingPrerequisite under GAP-MIS-014 and stays implemented-unexecuted until
+# a mechanism exists.
+#
+# Expected values are derived from the source (no TPE region runs in CI). Text
+# values keep their full BMS field width with trailing spaces: ERRMSG is the
+# first 78 bytes of the 80-byte WS-MESSAGE. CURDATE and CURTIME come from the
+# run clock, hence the matchers and clock_mode relative.
+id: BIL-COBIL00C-recovery-05
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, chooses main-menu option 10 (Bill Payment) and confirms
+  the payment of account 00000000001's balance of 194.00 with CONFIRM Y while
+  the WRITE of the payment transaction to TRANSACT fails with an I/O error.
+  COBIL00C shows 'Unable to Add Bill pay Transaction...' on COBIL00 with the
+  entered account id, CONFIRM and the old balance kept, and TRANSACT keeps its
+  300 records. Because the pay block subtracts the amount and REWRITEs the
+  account whatever the WRITE answered, account 00000000001 is committed with a
+  balance of 0.00. Finding: the balance is paid off with no payment
+  transaction recorded, while the screen reports the payment as failed.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the CSD files COBIL00C reads, browses, writes and
+# rewrites, and the online-only copybooks it copies. Sign-on and the menu
+# option (CC00, CM00, COSGN00, USRSEC) are verified by the SEC and MNU
+# scenarios; the batch record copybooks (CVACT01Y, CVACT03Y, CVTRA05Y) and the
+# data files are verified at the lowest level that executes them.
+inventory_ids:
+- INV-BIL-016  # COBIL00C message 'Unable to Add Bill pay Transaction...' (recovery)
+- INV-BIL-001  # COBIL00C program
+- INV-MNU-003  # COMEN01 map, where option 10 is entered
+- INV-BIL-002  # COBIL00 map, the bill payment screen of steps 2 and 3
+- INV-CFG-012  # CB00 transaction, under which COBIL00C receives the payment
+- INV-CFG-001  # ACCTDAT CSD file: read for update and rewritten
+- INV-CFG-006  # CXACAIX CSD file: cross-reference read by account id
+- INV-CFG-007  # TRANSACT CSD file: browsed backwards and the target of the failing WRITE
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COBIL00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-008  # bill payment (BIL) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-014  # no mechanism to return an I/O error from a region file operation
+# TRANSACT is built from the repository's 300 daily transactions (the same
+# 350-byte shape as TRAN-RECORD), keyed by TRAN-ID, so the backward browse
+# finds 0000000996722787 as the highest key. CARDXREF is the region's CCXREF
+# file and the CXACAIX path; USRSEC holds the demo users.
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  # No `after`: the WRITE of step 3 is the only TRANSACT write of the
+  # scenario, and the browse and every read before it succeed.
+  faults:
+  - target: TRANSACT
+    operation: write
+    condition: io-error
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '10'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACTIDIN: '00000000001', CONFIRM: 'Y'}
+    '@map': COBIL00
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: CB00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COBIL00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CURBAL: '              '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: CB00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COBIL00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000001'
+    CURBAL: '+0000000194.00'
+    CONFIRM: 'Y'
+    ERRMSG: 'Unable to Add Bill pay Transaction...                                         '
+  # The ERRMSG value of each step: blank on the menu and on the first COBIL00
+  # send, then the failure message.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Unable to Add Bill pay Transaction...                                         '
+  file_state:
+    # The failed WRITE adds nothing: the 300 fixture records stand alone, and
+    # no record 0000000996722788 exists.
+    TRANSACT:
+      count: 300
+    # Account 00000000001 as rewritten after the failed WRITE: ACCT-CURR-BAL
+    # reduced by the 194.00 payment amount to 0.00, every other field as
+    # loaded; the other 49 accounts are untouched.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '0.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: 'A000000000'
+        ACCT-GROUP-ID: '          '

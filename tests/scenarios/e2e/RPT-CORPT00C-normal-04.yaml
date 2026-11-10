@@ -1,0 +1,100 @@
+# CORPT00C submits the yearly report confirmed with a lowercase 'y' and shows
+# the composed '<WS-REPORT-NAME> report submitted for printing ...' message
+# [app/cbl/CORPT00C.cbl:445-456].
+# Steps 1-2 reach the empty CORPT00 screen as MNU-COMEN01C-alternate-09 does:
+# COMEN01C transfers control with CDEMO-PGM-CONTEXT zero, so CORPT00C takes its
+# first-entry path and sends CORPT0AO at LOW-VALUES with a blank ERRMSG
+# [app/cbl/CORPT00C.cbl:172-181,556-580].
+# Step 3 runs under CR00, the TRANSID CORPT00C returned with
+# [app/cbl/CORPT00C.cbl:199-202,585-591]; CDEMO-PGM-REENTER is now set, so
+# ENTER takes PROCESS-ENTER-KEY. MONTHLY is left empty and YEARLY holds 'X', so
+# WS-REPORT-NAME becomes 'Yearly' and SUBMIT-JOB-TO-INTRDR runs
+# [app/cbl/CORPT00C.cbl:212-255]. CONFIRM is not blank, and 'y' is the second
+# value of WHEN CONFIRMI = 'Y' OR 'y', so the job lines are written to JOBS
+# [app/cbl/CORPT00C.cbl:464-510]. With no error flag set, INITIALIZE-ALL-FIELDS
+# sets every input field and WS-MESSAGE to spaces, ERRMSG turns green, and
+# STRING 'Yearly' DELIMITED BY SPACE with ' report submitted for printing ...'
+# builds the message, which is sent with ERASE [app/cbl/CORPT00C.cbl:445-454,633-646].
+# The JOBS records themselves are not asserted: RPT-CORPT00C-normal-01..03
+# verify the TDQ write through @TDQ:JOBS, so this scenario needs no JOBS
+# capture (GAP-MIS-017).
+id: RPT-CORPT00C-normal-04
+level: e2e
+type: normal
+description: >-
+  USER0001 signs on, selects main-menu option 9 (Transaction Reports) and, on
+  the CORPT00 screen (CR00), marks the yearly report and confirms with a
+  lowercase 'y'. CORPT00C submits the report job, clears every input field and
+  shows 'Yearly report submitted for printing ...'.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, and the online-only copybooks CORPT00C copies. Sign-on and the
+# menu (CC00, CM00, COSGN00, USRSEC, option 9) are verified by the SEC and MNU
+# scenarios, and the TDQ write by RPT-CORPT00C-normal-01..03.
+inventory_ids:
+- INV-RPT-026  # CORPT00C message '<WS-REPORT-NAME> report submitted for printing ...' (rule)
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, where option 9 is entered
+- INV-RPT-002  # CORPT00 map, the empty and the submitted screen
+- INV-CFG-019  # CR00 transaction, which runs the submission
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      YEARLY: 'X'
+      CONFIRM: 'y'
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. INITIALIZE gives the PIC X input fields spaces, which
+# are sent and captured as spaces. CURDATE and CURTIME come from the region
+# clock, in the MM/DD/YY and HH:MM:SS forms POPULATE-HEADER-INFO builds
+# [app/cbl/CORPT00C.cbl:609-628].
+expected:
+  screens:
+  - '@map': COMEN01
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: ' '
+    SDTMM: '  '
+    SDTDD: '  '
+    SDTYYYY: '    '
+    EDTMM: '  '
+    EDTDD: '  '
+    EDTYYYY: '    '
+    CONFIRM: ' '
+    ERRMSG: 'Yearly report submitted for printing ...                                      '
