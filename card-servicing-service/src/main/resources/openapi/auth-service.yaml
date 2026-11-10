@@ -36,7 +36,8 @@ paths:
       description: >-
         HTTP/JSON form of the gRPC method cardservicing.auth.v1.AuthService/ValidateToken.
         Returns the subject and roles carried by a valid bearer token.
-        A missing or empty token returns 400; an invalid, expired or malformed token returns 401.
+        A missing or empty token, or one longer than 8,192 characters, returns 400 before the token is validated;
+        an invalid, expired or malformed token returns 401.
         The token travels in the request body so it never appears in a URL, and it is never logged.
       requestBody:
         required: true
@@ -63,7 +64,7 @@ paths:
                     roles:
                       - 'REGULAR'
         '400':
-          description: The token is missing or empty (INVALID_ARGUMENT).
+          description: The token is missing, empty or longer than 8,192 characters (INVALID_ARGUMENT).
           content:
             application/json:
               schema:
@@ -77,6 +78,14 @@ paths:
                     details:
                       - field: token
                         description: must be present and non-empty
+                tokenTooLong:
+                  value:
+                    code: INVALID_ARGUMENT
+                    message: Token must be at most 8,192 characters
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details:
+                      - field: token
+                        description: must be at most 8,192 characters
         '401':
           description: The token is invalid, expired or malformed (UNAUTHENTICATED).
           content:
@@ -239,7 +248,7 @@ components:
         token:
           type: string
           minLength: 1
-          description: Bearer token to validate, opaque; a missing or empty value returns 400; never logged.
+          description: Bearer token to validate, opaque, with no restriction on its characters; a missing or empty value, or one longer than 8,192 characters, returns 400; never logged or echoed in an error.
     ValidateTokenResponse:
       type: object
       description: Response for ValidateToken, carrying the subject and roles of a valid token.

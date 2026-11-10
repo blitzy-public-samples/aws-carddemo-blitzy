@@ -139,91 +139,80 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A — opaque pass-through of the upstream page token, read at receipt by the shared page-token codec.
+Recommended: Option A — opaque token pass-through.
 
-Rationale: the transaction source owns the cursor, so one token format, checked at receipt and read at the source, keeps the service out of the paging logic and keeps the contract rule that an absent next-page token ends the list.
+Rationale: the transaction source owns the cursor, so the service passes its token through.
 
-- Rejected: Option B, the service wraps the upstream token in its own token, leaving two token formats to keep in step.
+- Rejected: Option B, a service-wrapped token that leaves two token formats to keep in step.
 
 ```mermaid
 sequenceDiagram
-    participant C as Caller
-    participant S as Service
+    participant Caller
+    participant Service
     participant G as Access guard
-    participant K as Cache
+    participant Cache
     participant T as Transaction source
-    C->>S: list request with page token
-    S->>G: check access to the account
-    G-->>S: access allowed
-    S->>K: look up the page entry
-    K-->>S: miss
-    S->>T: one list call with the page token unchanged
-    T-->>S: page and next token
-    Note over S: cut-off fixes the outcome
-    S-->>C: page with a next-page token only when more items exist
+    Caller->>Service: list request with page token
+    Service->>G: check account access
+    G-->>Service: access allowed
+    Service->>Cache: look up the page
+    Cache-->>Service: miss
+    Service->>T: one list call, token unchanged
+    T-->>Service: page and next token
+    Note over Service: cut-off fixes the outcome
+    Service-->>Caller: page, next-page token only if more exist
 ```
 
 ### Shared by both options
 
-- Topology: one list call per request through the transaction client, after the access guard allows, with no new component.
-- Naming: each item keeps the source field meanings, with the description and the origin time standing for the description and date columns of the legacy list screen.
-- Addressing: the account path scopes every call, and the filters and the effective page size travel with it.
-- Isolation: nothing is read before access is allowed, and cache keys carry no caller identity.
-- Fallback: none for the list, so a failure after the retry rules is final and no held page is served.
-- Provisioning: no new infrastructure, setting or store connection.
-- Cut-over: the real transaction source replaces the stub behind the same client, by target address and credential source only.
-- Failures: an unavailable status after the retry rules gives 503, an exhausted deadline gives 504, an unknown account gives the not-found status, a rejected page token gives the bad-request status and an upstream refusal of the forwarded token gives the unauthenticated status, each failure closing the request with one completion line that carries its status.
+- Topology: after the access guard, one list call per request through the transaction client, with no prefetch.
+- Naming: item fields keep their source meanings.
+- Addressing: each call carries the account, filters and page size.
+- Isolation: nothing is read before access, and cache keys hold no caller identity.
+- Fallback: none, so a failure after retries is final.
+- Provisioning: no new component, setting or store connection.
+- Cut-over: the real source replaces the stub by target address and credential source.
+- Failures: each failure (unavailable, exhausted deadline, unknown account, rejected page token, refused forwarded token) keeps its status and closes the request with one completion line.
 
-### Design Option A — opaque pass-through of the upstream page token
+### Design Option A — opaque token pass-through
 
-The service hands the caller's page token to the transaction source exactly as received and hands the source's next-page token back exactly as returned. Receipt validation reads the same token through the shared page-token codec, so a token bound to another account or filter set never reaches an upstream call. An empty token from the source ends the list as an absent next-page token.
+The service passes the page token byte for byte both ways. The shared page-token codec checks it against the account and filters at receipt.
 
 How it behaves:
 
-- A first page carries an empty page token, and a later page carries the token the previous page returned.
-- The service never decodes, rewrites or wraps a token.
-- An empty token from the source becomes an absent next-page token.
-- Items arrive newest processed first, ties broken by transaction identifier descending, and the service keeps that order.
-- A fresh cached page answers with no remote call, and a miss makes one list call under the retry rules.
-- A token the source rejects ends the request with the bad-request status naming the page token.
-- Every successful page reports fresh data, with the as-of time of the read or of the fresh cache entry.
+- Later pages replay the token the previous page returned.
+- An empty source token becomes an absent next-page token.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Token passed through unchanged (vs re-encoded by the service) | one token format end to end | receipt validation depends on the source token format |
-| 2 | End of list as an absent next-page token (vs an end marker) | the contract rule holds on both protocols | a client must read absence as the end |
-| 3 | One list call per request (vs a prefetch of the next page) | the stage budget keeps one full attempt | each next page costs its own call |
-| 4 | Upstream order kept (vs a re-sort in the service) | no second ordering rule | the service relies on the source order |
+| 1 | Token passed through (vs re-encoded) | one token format | receipt validation depends on the source format |
+| 2 | Absent token ends the list (vs an end marker) | the contract end-of-list rule holds | clients read absence as the end |
 
-Effort and risk: one service, one result record and one test class, with the risk in a source token format that the shared codec cannot read.
+Effort and risk: one service, one result record and one test class, at risk from a token format the codec cannot read.
 
-### Design Option B — the service wraps the upstream token
+### Design Option B — service-wrapped token
 
-The service issues its own page token that carries the upstream token inside it, and unwraps it before each list call. Receipt validation checks only the outer token, so the inner token stays opaque to the service. The end of the list stays an absent next-page token.
+The service wraps the upstream token in its own and unwraps it before each call. Receipt validation checks only the outer token.
 
 How it differs:
 
-- The page token the caller sends differs from the token the source receives.
-- The next-page token the caller gets differs from the token the source returned.
-- Receipt validation reads only the service's own format.
+- Caller and source see different tokens.
 - Each token format needs its own version rule.
-- The end of the list and the item order match Option A.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Token re-encoded by the service (vs passed through) | receipt validation never depends on the source format | two token formats to keep in step |
-| 2 | Inner token checked only at the source (vs at receipt as well) | the service needs no knowledge of the source format | a foreign inner token reaches an upstream call |
-| 3 | One list call per request (vs a prefetch of the next page) | the stage budget keeps one full attempt | each next page costs its own call |
+| 1 | Token wrapped (vs passed through) | receipt validation ignores the source format | two formats to keep in step |
+| 2 | Inner token checked at the source only (vs at receipt too) | the service needs no source format knowledge | a foreign inner token reaches the source |
 
-Effort and risk: one more token format with its own version rule, at risk where a wrapped token outlives a change to the source format.
+Effort and risk: one more token format, at risk when the source format changes.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: the transaction source owns the cursor, so passing its token through keeps one token format and the contract end-of-list rule.
-- Strongest argument against: receipt validation depends on the upstream token format.
-- Shared items that do not decide the choice: one list call after the access check, no stale fallback, the retry rules, cache keys free of caller identity and the outcome mapping.
-- Flip condition: the real transaction source issues tokens the shared codec cannot read.
+- Why: it keeps one token format end to end.
+- Strongest argument against: receipt validation depends on the source token format.
+- Shared items that do not decide the choice: one list call, no stale fallback and the outcome mapping.
+- Flip condition: the real source issues tokens the codec cannot read.
 
 ## Design Validation
 
@@ -231,67 +220,61 @@ Effort and risk: one more token format with its own version rule, at risk where 
 
 Settled assumptions:
 
-- The transaction source orders each page newest processed first, then by transaction identifier descending.
-- List pages carry no stale fallback, so every successful page reports fresh data.
-- The transaction source answers the not-found status for an account with no cross-reference record.
-- The transaction client reads through the cache and raises each final status through the standard error mapping.
-- The access guard allows access before the service runs, under the one request deadline.
-- The transaction client turns an upstream refusal of the forwarded token into the unauthenticated status with no retry.
-- Receipt validation checks the page token shape, version and fingerprint before the access guard runs.
+- The source orders pages newest processed first, ties by transaction identifier descending.
+- List pages have no stale fallback.
+- The source answers not found for an account with no cross-reference record.
+- The access guard decides first, under the one request deadline.
+- The client reads through the cache and maps each final status, a refused forwarded token to unauthenticated with no retry.
 
 Open assumptions:
 
-- Open → filtered-page latency on the long synthetic history, settled by the transaction list performance scenario.
-- Open → whether the real transaction source keeps the stub token format, settled at the real-service cut-over.
+- Open → filtered-page latency on long histories, settled by the transaction list performance scenario.
+- Open → whether the real source keeps the stub token format, settled at cut-over.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the access guard rejects the account before any read |
-| AC2 | Holds | the source applies both filters, with its item order kept by the service |
-| AC3 | Holds | the service returns every source item unchanged |
-| AC4 | Holds | the caller's token and the effective page size reach the source unchanged |
-| AC5 | Holds | the source token returns to the caller unchanged |
-| AC6 | Holds | the not-found status ends the request after one attempt |
-| AC7 | Holds | the list makes no reference-data call and an empty page stays empty |
-| AC8 | Holds | each typed failure of the read keeps its status and its details |
-| AC9 | Holds | the call policy cuts each attempt to the time left |
-| AC10 | Holds | the call policy retries only the two retryable statuses after the fit check |
+| AC1 | Holds | no read precedes the access check |
+| AC2 | Holds | the service keeps the filtered source order |
+| AC3 | Holds | every source item passes unchanged |
+| AC4 | Holds | the token and page size pass unchanged |
+| AC5 | Holds | the source token returns unchanged |
+| AC6 | Holds | a not-found answer ends the request after one attempt |
+| AC7 | Holds | each empty source page reaches the caller with no reference-data call |
+| AC8 | Holds | each typed failure keeps its status and details |
+| AC9 | Holds | each attempt is cut to the time left |
+| AC10 | Holds | retries cover only the two retryable statuses within the budget |
 | AC11 | Holds | the list has no stale path |
-| AC12 | Holds | a fail-closed guard and the residual-budget rule bound every access-check and list outcome |
-| AC13 | Holds | the background refresh never blocks the request |
-| AC14 | Holds | the shared resolver reports fresh data with the read or entry time |
+| AC12 | Holds | the fail-closed guard and residual-budget rule bound every outcome |
+| AC13 | Holds | the configuration refresh never blocks the request |
+| AC14 | Holds | every successful page reports fresh data with the read or entry time |
 
 ### Option B
 
 Settled assumptions:
 
-- The transaction source orders each page newest processed first, then by transaction identifier descending.
-- List pages carry no stale fallback, so every successful page reports fresh data.
-- The transaction source answers the not-found status for an account with no cross-reference record.
-- The access guard allows access before the service runs, under the one request deadline.
-- The transaction client turns an upstream refusal of the forwarded token into the unauthenticated status with no retry.
+- All five Option A assumptions hold.
 
 Open assumptions:
 
-- Open → the version rule of the outer token, settled by the page-token codec story.
-- Open → filtered-page latency on the long synthetic history, settled by the transaction list performance scenario.
+- Open → the outer token's version rule, settled by the page-token codec story.
+- Open → filtered-page latency, settled by the transaction list performance scenario.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the access guard rejects the account before any read |
-| AC2 | Holds | the source applies both filters, with its item order kept by the service |
-| AC3 | Holds | the service returns every source item unchanged |
-| AC4 | Breaks | the source receives the unwrapped inner token rather than the caller's token |
-| AC5 | Breaks | the caller receives the wrapped token rather than the source token |
-| AC6 | Holds | the not-found status ends the request after one attempt |
-| AC7 | Holds | the list makes no reference-data call and an empty page stays empty |
-| AC8 | Holds | each typed failure of the read keeps its status and its details |
-| AC9 | Holds | the call policy cuts each attempt to the time left |
-| AC10 | Holds | the call policy retries only the two retryable statuses after the fit check |
+| AC1 | Holds | no read precedes the access check |
+| AC2 | Holds | the service keeps the filtered source order |
+| AC3 | Holds | every source item passes unchanged |
+| AC4 | Breaks | the source gets the inner token, not the caller's |
+| AC5 | Breaks | the caller gets the wrapped token, not the source's |
+| AC6 | Holds | a not-found answer ends the request after one attempt |
+| AC7 | Holds | each empty source page reaches the caller with no reference-data call |
+| AC8 | Holds | each typed failure keeps its status and details |
+| AC9 | Holds | each attempt is cut to the time left |
+| AC10 | Holds | retries cover only the two retryable statuses within the budget |
 | AC11 | Holds | the list has no stale path |
-| AC12 | Holds | a fail-closed guard and the residual-budget rule bound every access-check and list outcome |
-| AC13 | Holds | the background refresh never blocks the request |
-| AC14 | Holds | the shared resolver reports fresh data with the read or entry time |
+| AC12 | Holds | the fail-closed guard and residual-budget rule bound every outcome |
+| AC13 | Holds | the configuration refresh never blocks the request |
+| AC14 | Holds | every successful page reports fresh data with the read or entry time |
 
 ## Metadata
 

@@ -28,7 +28,7 @@ service AuthService {
   // The example token is an illustrative fixture value, not a secret.
   //
   // Errors:
-  //   INVALID_ARGUMENT - token missing
+  //   INVALID_ARGUMENT - token missing, or longer than 8,192 characters
   //   UNAUTHENTICATED - token invalid, expired or malformed
   //   UNAVAILABLE - service unavailable after retries
   //   DEADLINE_EXCEEDED - request deadline reached
@@ -52,13 +52,13 @@ service AuthService {
   rpc AuthorizeAccountAccess(AuthorizeAccountAccessRequest) returns (AuthorizeAccountAccessResponse);
 }
 
-// Request for ValidateToken.
+// Request for ValidateToken: the caller's opaque bearer token to validate, at most 8,192 characters; the token is never logged.
 message ValidateTokenRequest {
-  // Bearer token to validate, opaque; required, an empty value returns INVALID_ARGUMENT; never logged.
+  // Bearer token to validate, opaque, with no restriction on its characters; required, at most 8,192 characters; an empty value, or one longer than 8,192 characters, returns INVALID_ARGUMENT before the token is validated; never logged or echoed in an error.
   string token = 1;
 }
 
-// Response for ValidateToken.
+// Response for ValidateToken, returned only when the token is valid: the subject and roles that token carries.
 message ValidateTokenResponse {
   // Authenticated user identifier, 1-64 characters; fixture subjects are the 8-character CardDemo user IDs (Data Layouts · CSUSR01Y · SEC-USR-ID, X(08)).
   string subject = 1;
@@ -66,7 +66,7 @@ message ValidateTokenResponse {
   repeated string roles = 2;
 }
 
-// Request for AuthorizeAccountAccess.
+// Request for AuthorizeAccountAccess: the subject ValidateToken returned, paired with the account the request targets, for one entitlement decision.
 message AuthorizeAccountAccessRequest {
   // Subject as returned by ValidateToken, 1-64 characters.
   string subject = 1;
@@ -74,7 +74,7 @@ message AuthorizeAccountAccessRequest {
   string account_id = 2;
 }
 
-// Response for AuthorizeAccountAccess.
+// Response for AuthorizeAccountAccess: the entitlement decision; allowed=false is an OK response, not an error, which the Card Servicing service maps to PERMISSION_DENIED (403).
 message AuthorizeAccountAccessResponse {
   // True when the account is within the subject's entitlements; false is still an OK response.
   bool allowed = 1;

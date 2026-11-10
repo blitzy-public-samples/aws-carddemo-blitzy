@@ -144,72 +144,66 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A — thin HTTP and remote procedure adapters over one shared retrieval call and one shared response mapper.
+Recommended: Option A — thin HTTP and remote procedure adapters over one shared retrieval call and response mapper.
 
-Rationale: one retrieval result rendered by one mapper is the only way both interfaces return the same balances, the same data status and the same rule for a missing description.
+Rationale: only one retrieval result rendered by one mapper gives both interfaces the same balances, data status and missing-description rule.
 
-- Rejected: Option B, a separate retrieval and mapping path per interface, because it gives two code paths to keep in step with one contract.
+- Rejected: Option B, a retrieval and mapping path per interface, because two paths must track one contract.
 
 ### Shared by both options
 
-- Topology: an HTTP controller and a remote procedure method in the one service process, each behind the receipt stage and the access guard.
-- Naming: operation and field names follow each contract in its own casing, camel case on the HTTP interface and lower case with underscores on the remote procedure interface.
-- Addressing: an HTTP path carrying the account number with an optional type code query, and a remote procedure request carrying the same two fields.
-- Isolation: caller identity comes only from the bearer token the guard validated, and an inbound service key is ignored.
-- Fallback: a stale or partial result is returned with its data status, and the status header always equals the body's data status.
-- Provisioning: no new port, process or setting, because the existing remote procedure server and web layer host both adapters.
-- Cut-over: the deferred interface binds to the contracts, and swapping a stub for its real service changes nothing in either adapter.
+- Topology: an HTTP controller and a remote procedure method in one service, behind the receipt stage and guard.
+- Naming: operation and field names follow each contract in its own casing.
+- Addressing: the account number and optional type code, in the HTTP path and query or the remote procedure request.
+- Isolation: identity comes only from the guard-validated bearer token, and an inbound service key is ignored.
+- Fallback: a stale or partial result returns with its data status, which the status header repeats.
+- Provisioning: no new port, process or setting, since existing servers host both adapters.
+- Cut-over: the deferred interface binds to the contracts, and a stub swap changes neither adapter.
 - Failures: one error mapping serves both interfaces, with the trace number issued at receipt.
 
 ### Design Option A — thin adapters over one retrieval and one mapper
 
-The HTTP controller and the remote procedure method each take the account number, the optional type code, the caller's token and the request deadline, and make one call to the shared category balance retrieval. Each then runs the known-type check of the validation story on the type list and category list results that result carries, and renders it through the one response mapper of the retrieval story. The mapper renders a missing description as a present null value on the HTTP interface and as an unset field on the remote procedure interface. Failures leave the adapters as typed failures for the shared error handler and interceptor.
+Each adapter passes the account number, optional type code, token and deadline to one shared retrieval call. It runs the validation story's known-type check on both list results, then renders through the retrieval story's one mapper, which shows a missing description as a present null over HTTP and an unset field over the remote procedure interface.
 
 How it behaves:
 
-- A request rejected at receipt or by the guard never reaches either adapter.
-- After the retrieval returns, the known-type check runs before rendering, and an unknown type code ends the request with a bad-request rejection and no balance.
-- Each adapter fixes the outcome at the cut-off right after the known-type check, and rendering follows the cut-off.
-- The HTTP controller copies the data status from the rendered body into the status header.
-- The HTTP body keeps a present null description whatever the default serializer setting.
-- The remote procedure method returns the message rendering of the same result, with each missing description left unset.
-- Neither adapter reads the cache or any upstream, so a cold request makes exactly one call per upstream read.
+- An unknown type code ends in a bad-request rejection with no balance.
+- Each adapter marks the cut-off once, right after the known-type check.
+- The HTTP body keeps a present null whatever the serializer default.
+- Neither adapter reads the cache or an upstream, so a cold request makes one call per upstream read.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One shared response mapper (vs one mapper per adapter) | both interfaces follow one null rule | the mapper knows both renderings |
-| 2 | Status header taken from the body's status value (vs computed separately) | header and body cannot disagree | the header waits for body rendering |
-| 3 | Errors raised to the shared handler and interceptor (vs mapped inside each adapter) | one error shape across both interfaces | adapters cannot tailor messages |
-| 4 | Known-type check called by the adapter between retrieval and rendering (vs inside the retrieval) | the retrieval stays free of validation rules | each adapter repeats one call in the same order |
+| 1 | One shared response mapper (vs one per adapter) | one null rule for both interfaces | the mapper knows both renderings |
+| 2 | Status header copied from the body status (vs computed separately) | header and body cannot disagree | the header waits for rendering |
+| 3 | Errors raised to the shared handler and interceptor (vs mapped per adapter) | one error shape on both interfaces | adapters cannot tailor messages |
+| 4 | Known-type check called by the adapter between retrieval and rendering (vs inside the retrieval) | the retrieval stays free of validation rules | both adapters repeat one call in order |
 
-Effort and risk: one new controller, one added method and two test classes, with the risk in a serializer setting that drops the present null.
+Effort and risk: one controller, one added method and two test classes, with risk in a serializer setting dropping the present null.
 
 ### Design Option B — separate retrieval and mapping per interface
 
-Each interface owns its own path: the HTTP controller and the remote procedure method each launch the balance, category and type reads, apply the filter and the order, resolve the data status and build their own response. Both still sit behind the receipt stage and the access guard, and both use the standard error object.
+Each adapter launches its own balance, category and type reads, applies the filter and order, resolves the data status and builds its own response. Both keep the shared receipt stage, guard and standard error object.
 
 How it differs:
 
-- Each adapter launches its own balance, category and type reads.
-- Each adapter applies the filter, the order and the data status rule itself.
-- Each adapter decides how to show a missing description.
 - A change to the category balance fields lands in two places.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Each interface reads and maps its own result (vs one shared path) | each interface tunes its own reads | balances can diverge between interfaces |
+| 1 | Each interface reads and maps its own result (vs one shared path) | each interface tunes its reads | balances can diverge between interfaces |
 | 2 | Missing description decided in each adapter (vs one mapper) | handling native to each interface | empty text can replace absence |
 | 3 | Data status resolved in each adapter (vs the shared resolver) | local control of the status | two copies of the precedence rule |
 
-Effort and risk: two full read and render paths and their tests, with high risk because the two interfaces can return different balances for the same account.
+Effort and risk: two full read and render paths and their tests, with high risk of different balances per interface.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: one retrieval and one null rule serve both interfaces, so both return equal balances and an equal data status.
+- Why: one retrieval and one null rule give both interfaces equal balances and data status.
 - Strongest argument against: a defect in the shared path breaks both interfaces at once.
-- Shared items that do not decide the choice: the contracts, the access guard, the error mapping and the request deadline started at receipt.
-- Flip conditions: requirements that give the two interfaces different fields or behaviour.
+- Shared items that do not decide the choice: the contracts, the access guard, the error mapping and the request deadline.
+- Flip conditions: requirements giving the two interfaces different fields or behaviour.
 
 ## Design Validation
 
@@ -217,67 +211,65 @@ Effort and risk: two full read and render paths and their tests, with high risk 
 
 Settled assumptions:
 
-- Both contracts carry the same fields, with a present null on the HTTP interface and an unset field on the remote procedure interface.
-- The shared error handler and interceptor exist and render every failure with the receipt trace number.
-- The receipt stage starts the deadline and runs validation, and the guard runs before either adapter.
-- The retrieval returns one result per request, carrying the type list and the category list it read.
+- Both contracts carry the same fields, each with its own null form.
+- The shared handler and interceptor render each failure with the receipt trace number.
+- The receipt stage starts the deadline and validates, and the guard runs before either adapter.
+- The retrieval returns one result per request with both list results.
 
 Open assumptions:
 
-- Open → the remote procedure class from the balance summary endpoint story exists before this story starts, settled by wave position order.
-- Open → the generated message tracks presence for the optional descriptions, settled by the scaffold build of the contracts.
+- Open → the balance summary endpoints story's remote procedure class exists first, settled by wave order.
+- Open → the generated message tracks description presence, settled by the contracts' scaffold build.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the one mapper renders the fixture balance and its labels |
-| AC2 | Holds | both renderings come from one retrieval result |
+| AC1 | Holds | the mapper renders the fixture values |
+| AC2 | Holds | both renderings share one result |
 | AC3 | Holds | the header copies the body status |
-| AC4 | Conditional | the unset form relies on the generated message tracking presence |
-| AC5 | Holds | the receipt stage rejects malformed input before any network call |
-| AC6 | Holds | the adapter runs the known-type check before rendering |
-| AC7 | Holds | the guard rejects a missing or bad token before either adapter |
-| AC8 | Holds | the adapters run only after the guard allows |
-| AC9 | Holds | the not-found status passes unchanged to the error mapping |
-| AC10 | Holds | every failure passes to the shared handler and interceptor |
-| AC11 | Holds | the guard fails closed before any data read |
-| AC12 | Holds | the call policy and fallbacks sit inside the shared clients |
-| AC13 | Conditional | it rests on the call policy's remaining-budget rule |
-| AC14 | Holds | the configuration refresh never sits on the request path |
-| AC15 | Holds | the adapters make no reads of their own |
-| AC16 | Holds | the adapter hands both list results to the known-type check |
+| AC4 | Conditional | the unset form needs generated presence tracking |
+| AC5 | Holds | the receipt stage rejects bad input first |
+| AC6 | Holds | the known-type check runs before rendering |
+| AC7 | Holds | the guard rejects a missing or bad token first |
+| AC8 | Holds | the adapters follow the guard |
+| AC9 | Holds | the not-found failure reaches the error mapping |
+| AC10 | Holds | every failure reaches the shared error mapping |
+| AC11 | Holds | the guard fails closed first |
+| AC12 | Holds | the shared clients hold call policy and fallbacks |
+| AC13 | Conditional | it rests on the remaining-budget rule |
+| AC14 | Holds | configuration refresh stays off the request path |
+| AC15 | Holds | the adapters make no reads |
+| AC16 | Holds | the check receives both list results |
 
 ### Validation of Option B
 
 Settled assumptions:
 
-- Both contracts carry the same fields, with a present null on the HTTP interface and an unset field on the remote procedure interface.
-- The shared error handler and interceptor exist and render every failure with the receipt trace number.
-- The receipt stage starts the deadline and runs validation, and the guard runs before either adapter.
+- The Option A assumptions on contracts, error handling and the receipt stage hold.
 
 Open assumptions:
 
-- Open → the remote procedure class from the balance summary endpoint story exists before this story starts, settled by wave position order.
-- Open → the generated message tracks presence for the optional descriptions, settled by the scaffold build of the contracts.
-- Open → whether the two read paths share cache entries, settled by measuring both paths on the test stack.
+- Open → the balance summary endpoints story's remote procedure class exists first, settled by wave order.
+- Open → the generated message tracks description presence, settled by the contracts' scaffold build.
+- Open → whether both read paths share cache entries, settled by measuring them on the test stack.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the HTTP path reads and labels the fixture balance |
-| AC2 | At risk | balances can diverge between the two read paths |
-| AC3 | At risk | the header and the body status come from separate logic |
-| AC4 | At risk | empty text can slip in for an absent description |
-| AC5 | Holds | the receipt stage is shared by both options |
-| AC6 | Conditional | each path must repeat the known-type check in the same order |
-| AC7 | Holds | the guard is shared by both options |
-| AC8 | Holds | both paths run only after the guard allows |
-| AC9 | Holds | both paths pass the not-found status to the error mapping |
-| AC10 | Holds | both paths use the shared error mapping |
-| AC11 | Holds | the guard fails closed before either path |
-| AC12 | Holds | the call policy and fallbacks sit inside the shared clients |
-| AC13 | Conditional | it rests on the call policy's remaining-budget rule |
-| AC14 | Holds | the configuration refresh never sits on the request path |
-| AC15 | Breaks | each adapter makes its own reads by design |
-| AC16 | Conditional | each path must hand both list results to the known-type check |
+| AC1 | Holds | the HTTP path labels the fixture balance |
+| AC2 | At risk | balances can diverge between paths |
+| AC3 | At risk | header and body status use separate logic |
+| AC4 | At risk | empty text can replace absence |
+| AC5 | Holds | the receipt stage is shared |
+| AC6 | Conditional | each path must repeat the check in order |
+| AC7 | Holds | the guard is shared |
+| AC8 | Holds | both paths follow the guard |
+| AC9 | Holds | both paths pass not-found to the error mapping |
+| AC10 | Holds | both use the shared error mapping |
+| AC11 | Holds | the guard fails closed first |
+| AC12 | Holds | the shared clients hold call policy and fallbacks |
+| AC13 | Conditional | it rests on the remaining-budget rule |
+| AC14 | Holds | configuration refresh stays off the request path |
+| AC15 | Breaks | each adapter makes its own reads |
+| AC16 | Conditional | each path must hand both lists to the check |
 
 ## Metadata
 

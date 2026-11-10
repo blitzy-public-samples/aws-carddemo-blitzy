@@ -92,11 +92,11 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — step two chains on the type code that step one returns and hands its own first category row to step three.
+Recommended: Design Option A — step two filters by the type code that step one returned.
 
-Rationale: a flow step that opens the category rows behind the type row step one received, as the deferred user interface will, proves the summary-to-category link along the real request path and gives the next step the category it drills into.
+Rationale: drilling from step one's type row, as the user interface will, proves the summary-to-category link on the real request path.
 
-- Rejected: Design Option B, a fixed purchase type code written into the step — the step then passes even when the balance summary no longer leads to the category view, so the drill-down link stays unproven.
+- Rejected: Design Option B, a fixed purchase type code, which leaves that link unproven.
 
 ```mermaid
 sequenceDiagram
@@ -114,65 +114,60 @@ sequenceDiagram
 
 ### Shared by both options
 
-- Topology: the step runs on the build host and reaches the service and the five stubs through the end-to-end client over the stack's published host ports.
-- Naming: the step is the second of one ordered flow shared by the four interactions, and it is named for the category balance view.
-- Addressing: the service and stub log addresses come from the end-to-end harness, the allowed calls read the first sample account as the first regular fixture user, and the denial call uses the eleventh sample account.
-- Isolation: the step reads only sample accounts, so the synthetic volume in its own number range never changes an expected value, and the rejected calls run first while the client closes each call's log window only once the stub logs have settled, so no background configuration refresh falls inside their log windows.
-- Fallback: the step has no fallback path, so an unexpected status, a missing field or a missing log entry fails the step and, through the category-row hand-off, every later step.
-- Provisioning: the continuous integration gate starts the stack before the suite and stops it afterwards, and the shared loader seeds the sample set the step reads.
-- Cut-over: the deferred user interface later sends the same requests in place of the end-to-end client, and the real services replace the stubs by address and credential alone, with the step rerun unchanged.
-- Failures: failure injection stays off on the stack, and degraded or failed upstream outcomes are proven under injection by the category balance retrieval story and the integration suites.
+- Topology: the end-to-end client on the build host reaches the service and five stubs over published ports.
+- Naming: step two of the one ordered flow, named for the category balance view.
+- Addressing: the end-to-end harness supplies service and stub log addresses; allowed calls use the first sample account as the first regular fixture user, the denial call the eleventh.
+- Isolation: only sample accounts are read, never the synthetic volume; calls run one at a time, rejected ones first and the unknown code next, and log windows close only once stub logs settle.
+- Fallback: none; any unexpected status, field or log entry fails this and every later step.
+- Provisioning: the continuous integration gate starts and stops the stack; the shared loader seeds the sample set.
+- Cut-over: the user interface later sends these requests, and real services replace stubs by address and credential alone, with the step unchanged.
+- Failures: failure injection stays off; the category balance retrieval story and integration suites prove degraded and failed upstream outcomes under injection.
 
 ### Design Option A — type code chained from step one
 
-The step reads the type code that step one stored from the first type row of the balance summary and sends it as the category filter. It sends the three rejected calls first, then the unknown-code call, then the filtered and unfiltered allowed calls, one at a time. It checks each answer by field, status, code and field detail, reads the new stub log entries of each call, and stores the first category row for the transaction list step.
+The step filters by the type code that step one stored. It checks each answer and its stub log entries, then hands its first category row to step three, the transaction list.
 
 How it behaves:
 
-- A failed step one stops the step before its first call, with a message naming step one.
-- The filtered answer must hold one row with the purchase type code, the regular sales draft category code, both descriptions and a zero balance.
-- The unfiltered answer must hold the same single row, because the sample account holds one category balance.
-- The data-status header and the data status in the body must both read fresh, and the read time is checked by its form.
-- The malformed type code must show no upstream call, the expired token must show token validation alone, and the denial call must show the two authentication operations and no data read.
-- The unknown type code must show the one transaction-category read that decides the code is unknown together with the type list from step one.
-- Every call passes the client's deadline check on cut-off time and client latency, and no call reports a retried operation.
+- A failed step one stops the step before any call, naming step one.
+- Both allowed answers must hold only the sample row, field by field, fresh, with a well-formed read time.
+- The malformed code must show no upstream call, the expired token only token validation, the denial only the two authentication operations.
+- The unknown code must show one category read.
+- No call may exceed the cut-off or latency limit, or retry.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Type code taken from step one (vs a fixed value) | the step proves the drill-down link | step two cannot run alone |
-| 2 | Single sample row checked field by field (vs a row count only) | a changed value fails the step | the step is tied to the sample data |
-| 3 | Rejected calls sent before the allowed calls (vs the order of the criteria) | no background refresh falls into a rejection's log window | the call order must stay fixed |
-| 4 | Client timing beside the logged cut-off time (vs the server log alone) | network time is covered | the harness must expose the completion log line |
-| 5 | First category row kept for the next step (vs the next step choosing its own filter) | the transaction list step drills from a returned row | a failed step two stops the later steps |
+| 1 | Type code from step one (vs a fixed code) | proves the drill-down link | step two cannot run alone |
+| 2 | Field-by-field row check (vs a row count) | catches a changed value | ties the step to sample data |
+| 3 | Rejected calls first (vs criteria order) | keeps refreshes out of rejected calls' windows | the call order must stay fixed |
+| 4 | Client timing plus logged cut-off (vs the server log alone) | covers network time | needs the completion log line |
+| 5 | First category row handed on (vs step three's own filter) | step three drills from a returned row | a failed step two stops later steps |
 
-Effort and risk: small effort in one existing file, with step-order coupling inside the flow as the main risk.
+Effort and risk: small, in one file; step-order coupling is the main risk.
 
 ### Design Option B — fixed purchase type code
 
-The step writes the purchase type code into its filtered call instead of reading it from step one. Call order, field checks, stub log checks and the category-row hand-off match Option A. The step can run without step one, but it no longer proves that the balance summary leads to the category view.
+The step writes the purchase type code into its filtered call. All else matches Option A.
 
 How it differs:
 
-- The filtered call always sends the purchase type code, whatever step one returned.
-- A broken type-code hand-off from step one goes unnoticed, so the summary-to-category link stays unproven.
-- The step runs alone, so a failed step one no longer stops it.
-- A change to the sample type code needs a matching edit in two steps.
+- The step runs without step one.
+- A broken hand-off from step one goes unnoticed.
+- A sample type change needs edits in two steps.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Fixed purchase type code (vs the code from step one) | the step runs without step one | the drill-down link goes unchecked |
-| 2 | Single sample row checked field by field (vs a row count only) | a changed value fails the step | the step is tied to the sample data |
-| 3 | Client timing beside the logged cut-off time (vs the server log alone) | network time is covered | the harness must expose the completion log line |
+| 1 | Fixed purchase code (vs step one's code) | the step runs alone | the drill-down link goes unchecked |
 
-Effort and risk: small effort in one existing file, at risk on the hand-off criterion, which a fixed code cannot meet.
+Effort and risk: small, in one file; the hand-off criterion breaks.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: it drills from the row the balance summary returned, as the deferred user interface will, and meets the hand-off criterion that Option B cannot.
-- Strongest argument against: step two depends on step one, so a failure in the balance summary hides every category-balance check behind it.
-- Shared items that do not decide the choice: the end-to-end client, the default fixture identity, the denial account, the call order, the stub log checks, the deadline check and the category-row hand-off.
-- Flip conditions: the harness being unable to carry step one's answer to later steps, or the flow steps having to run in isolation.
+- Why: it alone proves the drill-down link and meets the hand-off criterion.
+- Strongest argument against: step two depends on step one, so a summary failure hides every category check.
+- Shared items that do not decide the choice: the eight shared topics, the stub log and deadline checks and the category-row hand-off.
+- Flip conditions: the harness cannot carry step one's answer forward, or flow steps must run alone.
 
 ## Design Validation
 
@@ -180,59 +175,55 @@ Effort and risk: small effort in one existing file, at risk on the hand-off crit
 
 Settled assumptions:
 
-- The category-balance sample record gives the first sample account one balance, with the purchase type code, the regular sales draft category code and a zero balance.
-- The transaction-type and transaction-category seed data fix the two descriptions.
-- The first regular fixture user is entitled to the first ten sample accounts, and the eleventh sample account exists outside that range.
-- The reference data on the stack reads fresh, because every stub answers with failure injection off.
-- The flow empties the cache before step one, and step one reads no transaction categories.
-- A rejected call reads no cache entry and launches no configuration refresh.
-- The end-to-end client closes each call's log window only once the stub logs have settled, so step one's configuration refresh is listed with step one.
+- The first account's one sample balance is zero, of purchase type, in the regular sales draft category.
+- The type and category seed data fix both descriptions.
+- The first regular fixture user is entitled to the first ten sample accounts, not the eleventh.
+- With failure injection off, every stub answers fresh.
+- The cache is emptied before step one, which reads no transaction categories.
+- Rejected calls read no cache and start no configuration refresh, and step one's refresh stays in its own settled log window.
 
 Open assumptions:
 
-- Step one's type code kept for later steps Open → the hand-off of the balance summary step, confirmed when the first stack run reaches step two.
-- Completion log line with the cut-off time Open → the completion log reader of the end-to-end harness story, confirmed on the first stack run.
+- Step one's type code kept for later steps Open → step one's hand-off on the first stack run.
+- Completion log line with the cut-off time Open → the end-to-end harness's completion log reader.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | each category-balance field is checked by name against the sample record |
-| AC2 | Conditional | the balance summary step must keep its type code for later steps |
-| AC3 | Holds | the sample account holds one category balance |
-| AC4 | Holds | the first transaction-category read decides the code is unknown together with the type list from step one |
-| AC5 | Holds | the settled log windows keep step one's configuration refresh out of the call's window |
-| AC6 | Holds | the access guard denies the call before any data read |
-| AC7 | Holds | token validation fails ahead of the authorization and data stages |
-| AC8 | Conditional | the harness must expose the completion log line with the cut-off time |
-| AC9 | Holds | with failure injection off each upstream operation runs once |
-| AC10 | Holds | with failure injection off every read answers fresh |
+| AC1 | Holds | every field matches the sample row |
+| AC2 | Conditional | step one must keep its type code |
+| AC3 | Holds | the sample account holds one balance |
+| AC4 | Holds | the first category read finds no such code |
+| AC5 | Holds | settled log windows exclude step one's refresh |
+| AC6 | Holds | the guard denies before any data read |
+| AC7 | Holds | token validation fails before authorization |
+| AC8 | Conditional | the harness must expose the completion log line |
+| AC9 | Holds | with injection off each operation runs once |
+| AC10 | Holds | with injection off every read is fresh |
 
 ### Option B
 
 Settled assumptions:
 
-- The category-balance sample record gives the first sample account one balance, with the purchase type code, the regular sales draft category code and a zero balance.
-- The transaction-type and transaction-category seed data fix the two descriptions.
-- The first regular fixture user is entitled to the first ten sample accounts, and the eleventh sample account exists outside that range.
-- The purchase type code written in the step equals the type of the sample account's one balance.
-- The end-to-end client closes each call's log window only once the stub logs have settled, so step one's configuration refresh is listed with step one.
+- Option A's settled assumptions hold.
+- The written purchase code equals the sample balance's type.
 
 Open assumptions:
 
-- Sample type row unchanged Open → the category-balance fixture load report on each stack start.
-- Completion log line with the cut-off time Open → the completion log reader of the end-to-end harness story, confirmed on the first stack run.
+- Sample type row unchanged Open → the category-balance load report on each stack start.
+- Completion log line with the cut-off time Open → the end-to-end harness's completion log reader.
 
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Holds | the fixed code matches the sample row |
 | AC2 | Breaks | the fixed code is never read from step one |
-| AC3 | Holds | the sample account holds one category balance |
-| AC4 | Holds | the first transaction-category read decides the code is unknown together with the type list from step one |
-| AC5 | Holds | the settled log windows keep step one's configuration refresh out of the call's window |
-| AC6 | Holds | the access guard denies the call before any data read |
-| AC7 | Holds | token validation fails ahead of the authorization and data stages |
-| AC8 | Conditional | the harness must expose the completion log line with the cut-off time |
-| AC9 | Holds | with failure injection off each upstream operation runs once |
-| AC10 | Holds | with failure injection off every read answers fresh |
+| AC3 | Holds | as for Option A |
+| AC4 | Holds | as for Option A |
+| AC5 | Holds | as for Option A |
+| AC6 | Holds | as for Option A |
+| AC7 | Holds | as for Option A |
+| AC8 | Conditional | the harness must expose the completion log line |
+| AC9 | Holds | as for Option A |
+| AC10 | Holds | as for Option A |
 
 ## Metadata
 

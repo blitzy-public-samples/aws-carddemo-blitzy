@@ -40,6 +40,8 @@ Parent epic: [CS-01 Account Balance Summary View](../README.md)
 >
 >     SCOPE-QUESTION (Resolved): What ties each call's status, data status and latency to the user and target that sent it, and how does a scenario check what an answer holds? The result carries one immutable call record per call, `LoadRunner.CallRecord`, holding the user number (1–10), the regular identity the user runs as, the call index (1 to the calls per user, 1–100 under the task's shape), the target the call was sent for, the request path it sent with its query values, the status, the `X-Data-Status` value (empty when the answer carries none) and the latency in microseconds. Each virtual user keeps its own records, and the runner joins them once every user has finished, ordered by user number and then call index, whatever order the calls completed in. A scenario's per-response check receives, for each 200 answer, the call's target and the full response body as text. The runner calls it on the user's thread after the latency mark, so checking stays outside the measured latency, and the user's next call starts as soon as the check returns. A check that rejects an answer, by returning a reason or by throwing, fails the scenario with an `AssertionError` naming the scenario, the user number, the call index, the request path and the reason, never a token value. The runner keeps no response body once its check has returned, so a run holds 1,000 records and no bodies, and a scenario without a check runs as before.
 >
+>     SCOPE-QUESTION (Resolved): What may a failure carry, when the check receives the full 200 body and a returned reason or a thrown exception, a parse failure on a malformed body included, can quote body text or a card number? Call metadata and one fixed failure kind only, superseding "and the reason" in the note above. The `AssertionError` for a rejected answer carries one of two fixed failure kinds, `check rejected answer` for a check that returns a reason and `check threw` for a check that throws anything, an `AssertionError` or a parse failure on a malformed body included, plus the scenario name, the user number, the call index and the request path. The runner discards the returned reason and the thrown object unread, so neither becomes the failure's message, its cause or a suppressed exception, and neither reaches standard output or a report file. Every other failure and line the runner produces, the load-shape, entitlement, system-property, status, stub request-log and settle failures and the report lines included, likewise carries no response or stub request-log body text, card number, bearer token value or API key in its message or along its cause chain; it names its condition only with metadata, the scenario, identity, user number, call index, target account, request path, status, stub name, `sequence` number or property name that the sections above state. The check itself, its place outside the measured latency, and the timing, stub figures and report figures are unchanged. CS-04-002's check is the consumer, and its stated message, naming the scenario, the user number, the call index and the request path, still holds.
+>
 > - `tests/performance/src/main/java/com/example/cardservicing/performance/PercentileCalculator.java` (create): exact nearest-rank percentiles. For n sorted samples, percentile p is the sample at 1-based rank ⌈p × n / 100⌉. It serves both the call latencies and the stub durations, and an empty sample set raises `IllegalArgumentException`.
 > - `tests/performance/src/main/java/com/example/cardservicing/performance/PerformanceReportWriter.java` (create): writes each scenario's report lines (AC5) to standard output, which `performanceTest` shows in the task output, and to `card-servicing-service/build/reports/performance/<scenario name>.txt`, one file per scenario named after it. Latencies and durations are printed in milliseconds with three decimals.
 > - `tests/performance/src/test/java/com/example/cardservicing/performance/PerformanceHarnessTest.java` (create): untagged unit cases run by `test`. They cover the percentile calculator, and run the runner and the report writer against the JDK `com.sun.net.httpserver` server on a loopback port, standing in for the service and the five stub log routes, with a report folder under the test's temporary directory.
@@ -86,6 +88,8 @@ Parent epic: [CS-01 Account Balance Summary View](../README.md)
 >
 > SCOPE-QUESTION (Resolved): Which unit cases prove the call records and the per-response check resolved beneath the entry-point bullet? Four cases against the loopback server. First, a 10 × 100 shared run against a server that answers each target whose account ends in an odd digit 50 ms late with `X-Data-Status` `STALE`, and every other target at once with `FRESH`, so calls complete out of send order: the result holds 1,000 call records ordered by user number, then call index, each record's target and request path are those its user sent at that call index, and `STALE` stands on exactly the records whose account ends in an odd digit, each of them with a latency of at least 50 ms. Second, a 10 × 100 run whose lists alternate unfiltered targets and targets carrying a `typeCode` value, grouped by whether a record's target carries the filter, gives 500 records in each group, and each record's request path carries `typeCode` exactly when its target does. Third, a 10 × 100 split run with 200 distinct targets per identity and a check that compares an identifier in each body with its target's identifier, against a server that answers entry 137 of `USER0002`'s list, user 4's call 37, with another identifier, fails the scenario with a message naming the scenario, user number 4, call index 37 and that call's request path and carrying no token value, while the same run with every identifier matching passes. Fourth, in a 10 × 100 run against a server that answers at once, a check that blocks for 300 ms on each user's first answer leaves every recorded latency below 300 ms.
 >
+> SCOPE-QUESTION (Resolved): Which unit case proves that a failure carries no answer content? A fifth case against the loopback server, the third case's 10 × 100 split run with 200 distinct targets per identity, whose 200 answer to entry 137 of `USER0002`'s list, user 4's call 37, carries four markers: a fixed body marker word, a synthetic sixteen-digit card-number marker the test assembles at run time, a marker shaped like a bearer token and a marker shaped like an API key. Every other answer carries a well-formed body that each check accepts. The scenario runs once per check: a check that returns a reason quoting the markers; one that throws an unchecked exception whose message quotes them; one that throws an `AssertionError` whose message quotes them; and one that parses each body with the Jackson parser Spring Boot already brings and lets its parse failure propagate, where that call's answer body is malformed JSON holding the markers. Each run fails the scenario with an `AssertionError` carrying the matching fixed failure kind, `check rejected answer` for the returning check and `check threw` for the three throwing ones, the scenario name, user number 4, call index 37 and that call's request path, with no cause and no suppressed exception, and no marker and no fixture token value appears in that message, along its cause chain, in the captured standard output or in any file under the report folder. The third case stands as stated, its message naming the same scenario, user number, call index and request path.
+>
 > - AC7: A scenario may declare, per stub operation, a p99 duration limit and a no-`DEADLINE_EXCEEDED`-retry condition, and CS-03-003 sets a 150 ms limit and the condition on `cardservicing.transactionactivity.v1.TransactionActivityService/ListTransactions`. Evaluated on supplied entries, a p99 of 150 ms passes the 150 ms limit and one of 151 ms fails it. The condition fails the scenario when any entry of that operation carries outcome `CANCELLED` or `DEADLINE_EXCEEDED` or lasts 300 ms or more, the marks an attempt leaves when the service abandons it at its per-attempt timeout. A declared limit or condition on an operation with no entry in the scenario's window fails the scenario, so no condition passes without evidence.
 > - AC8: Every run keeps the stack defaults with failure injection off, `STUB_LATENCY_MS` 0 and `STUB_FAILURE_RATE` 0 on each stub (CS-01-001), and the service runs the upstream call policy with these values: each attempt times out at the lesser of 300 ms (`UPSTREAM_TIMEOUT_MS`) and the remaining budget, and at most two retries (`UPSTREAM_MAX_RETRIES`) follow, after 50 ms then 100 ms backoff, on `UNAVAILABLE` or `DEADLINE_EXCEEDED` only, each starting only when its backoff plus a full 300 ms attempt fits before the 900 ms (`REQUEST_DEADLINE_MS`) cut-off. The runner sends each call once and never retries, so the percentiles measure the service's own policy: against the loopback server, a call answered 503 is recorded once and fails the scenario. Injected-failure outcomes, Auth failing closed with 401, 503 or 504, Card Data degrading to `STALE` or failing with 503 or 504, Reference Data degrading to `PARTIAL`, Transaction Activity failing hard with 503 or 504, and Config leaving the request unaffected, are excluded from the percentiles. They are proven by a logged `cutoffMs` ≤ 900 and a client-measured response below 1,000 ms in the integration suites CS-09-006, CS-10-007, CS-11-007, CS-12-005 and CS-13-004 and in the endpoint deadline criteria of CS-05-005, CS-06-002, CS-07-002 and CS-08-002.
 >   > SCOPE-QUESTION (Resolved): AC8's list gives Transaction Activity one fail-hard outcome, while the runner also drives the transaction detail scenario (CS-04-002), and the degradation table in [TRD — Resilience](../../../../technical-requirements.md#resilience) sets the outcome per call. `ListTransactions` fails hard with 503 or 504, and a page is never served stale. `GetTransaction` serves a usable cached transaction, one within its 300 s max stale age (CS-10-006), as `STALE`, otherwise 503 or 504. Card Data's cross-reference read `GetCardCrossReference` gives 503 or 504 even when the transaction came from cache. These injected outcomes stay outside the percentiles, which still cover only the 200 responses of runs with failure injection off, and no scenario injects a failure.
@@ -120,7 +124,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit — Applies — the untagged `PerformanceHarnessTest` cases cover the nearest-rank percentiles, the load-shape, entitlement and property checks, the shared and split target walks and the split-list checks, the request loop and its concurrency bounds, the call records under out-of-order completion and their grouping by target, the per-response check and its exclusion from the latency, the stub log split and per-operation figures, the report and the threshold and per-operation conditions, against a JDK `com.sun.net.httpserver` loopback server. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass, with ≥80% line coverage per module.
+- Unit — Applies — the untagged `PerformanceHarnessTest` cases cover the nearest-rank percentiles, the load-shape, entitlement and property checks, the shared and split target walks and the split-list checks, the request loop and its concurrency bounds, the call records under out-of-order completion and their grouping by target, the per-response check and its exclusion from the latency, the content-free failure message of a returning, throwing or parse-failing check, the stub log split and per-operation figures, the report and the threshold and per-operation conditions, against a JDK `com.sun.net.httpserver` loopback server. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass, with ≥80% line coverage per module.
 - Integration — Not applicable — the story adds no stub client. Command `./gradlew :card-servicing-service:integrationTest`; one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance — Applies — this story builds the suite's runner and its CI stage, and the scenarios arrive with CS-01-005, CS-02-002, CS-03-003 and CS-04-002. Commands `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`; p50/p95/p99 below 1,000 ms over successful requests with failure injection off, at 10 users × 100 sequential calls, 100,000 category balances and 1,000,000 transactions; injected failures proven by a logged `cutoffMs` ≤ 900 and a client-measured response below 1,000 ms in the suites AC8 names.
 - End-to-end — Not applicable — CS-01-002 owns the suite. Commands `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:e2eTest`, then `docker compose -f tests/docker-compose.yml down`; the four-step flow for account `00000000001` returns the expected fixture values and each stub's request log shows at least one call.
@@ -131,79 +135,73 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — a fixed pool of virtual users with exact percentiles taken from sorted samples.
+Recommended: Design Option A — a fixed pool of virtual users with exact sorted-sample percentiles.
 
-Rationale: one runner that every scenario story reuses, driving the stack as ten concurrent users would and reading each stub request log beside the timings, proves the one-second threshold per endpoint and gives the per-call stub figures the transaction filter test needs in one report.
+Rationale: one shared runner proves the one-second threshold per endpoint, with stub figures, in one report.
 
-- Rejected: Design Option B, fixed-width latency buckets — bucket edges lose the exact value at the one-second threshold.
-- Rejected: an external load-testing tool — it adds a dependency the pinned dependency table does not list.
+- Rejected: Design Option B, fixed-width latency buckets — buckets lose the exact threshold value.
+- Rejected: an external load-testing tool — it adds an unpinned dependency.
 
 ### Shared by both options
 
-- Topology: the runner runs on the build host and reaches the service and the five stubs through the stack's published host ports.
-- Naming: each scenario carries one name, and its output lines and its report file carry that name.
-- Addressing: the build hands the runner the service address, the five stub log addresses, the load shape and the report folder, and a missing value stops the run before its first request.
-- Isolation: each virtual user calls only accounts entitled to its regular fixture identity, and scenarios run one after another with each stub log window opening and closing on settled logs, so each window belongs to one scenario.
-- Fallback: the runner has no fallback path, so a failed call, an unreadable stub request log or a missed threshold fails the scenario.
-- Provisioning: the continuous integration gate starts the stack before the run and stops it afterwards, a failed run included.
-- Cut-over: the real services replace the stubs by address and credential alone, and the runner keeps its timing and thresholds unchanged.
-- Failures: injected failures stay out of the percentile run and are proven by the integration suites and the endpoint deadline tests.
+- Topology: the build-host runner reaches the service and five stubs through published ports.
+- Naming: each scenario's name labels its output and report.
+- Addressing: the build passes every required address, the load shape and the report folder.
+- Isolation: users call only entitled accounts, and scenarios run one at a time.
+- Fallback: none, so any failed call, failed log read or missed threshold fails the scenario.
+- Provisioning: the continuous integration gate starts and stops the stack, even after a failure.
+- Cut-over: real services replace stubs by address and credential alone.
+- Failures: other suites prove injected failures, and no failure, output or report carries answer content, card numbers, tokens or keys.
 
 ### Design Option A — fixed pool of virtual users with exact sorted-sample percentiles
 
-Ten worker threads, one per virtual user, start together and each send their calls one after another through the Java runtime's built-in HTTP client. Every successful call's latency is kept, and the median, 95th and 99th percentile are read from the sorted samples by nearest rank. The same calculation turns the stub request log durations into a 99th percentile per stub operation.
+Ten threads, one per virtual user, start together and send sequential calls through the built-in Java HTTP client. Nearest rank over the kept samples gives exact percentiles.
 
 How it behaves:
 
-- Two virtual users share each regular fixture identity and by default both walk its whole target list, while a scenario that asks for split targets gives each user one half of that list.
-- Every call is timed from send to the last byte of the answer body.
-- Each call leaves one record of its user, call position, target, status, data status header and time, and the records come back in user and call order.
-- A scenario may pass an answer check, which reads each successful answer after its timing stops, and a rejected answer fails the scenario with that call named.
-- The median, 95th and 99th percentile are the samples at the nearest-rank positions of the sorted latencies.
-- A scenario fails when any of the three reaches one second or any answer is not a success.
-- Stub request log entries recorded between the scenario's start and end are grouped by operation into a count, a 99th percentile duration and a retry count.
-- A scenario may set a duration limit and a no-timeout-retry condition per stub operation, and a breach of either fails it.
-- Each scenario writes its report to the task output and to one report file.
+- Two users share each identity's target list, or take one half each.
+- Each call is timed to its last answer byte and recorded.
+- An optional untimed answer check's failure names the call and a fixed failure kind, never answer content.
+- A percentile of one second or more, a failed answer or a breached stub limit fails the scenario.
+- Stub log entries give per-operation counts, 99th percentile durations and retries.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Exact sorted samples (vs latency buckets) | the value at the threshold is exact | every sample stays in memory until the scenario ends |
-| 2 | One worker thread per virtual user (vs an open arrival rate) | the call count per user is fixed | the arrival rate follows the service's speed |
-| 3 | One client per virtual user (vs one shared client) | each user keeps its own connections | the build host holds ten connection pools |
-| 4 | Entitlements read from the authentication fixture file (vs a copied account list) | the stub's file stays the single entitlement source | the runner depends on that file's layout |
-| 5 | Scenarios run one at a time (vs scenarios in parallel) | each stub log window belongs to one scenario | the run lasts as long as all scenarios together |
-| 6 | Halves of one identity list on request (vs a separate list per user) | each scenario keeps one target list per identity | a split list must hold an even count |
-| 7 | An answer check per call (vs answer bodies held in the result) | the result holds one record per call and no answer body | each check runs between two calls of its user |
+| 1 | Exact sorted samples (vs latency buckets) | the threshold value is exact | every sample stays in memory throughout the scenario |
+| 2 | One thread per user (vs an open arrival rate) | each user's call count is fixed | the arrival rate follows service speed |
+| 3 | One client per user (vs a shared client) | each user keeps its connections | the host holds ten connection pools |
+| 4 | The stub's identity file (vs a copied list) | one entitlement source remains | the runner depends on that file's layout |
+| 5 | Scenarios one at a time (vs in parallel) | stub log windows never overlap | run time adds up across scenarios |
+| 6 | Halves of one list (vs per-user lists) | each identity keeps one list | a split list needs an even count |
+| 7 | A per-call answer check (vs kept bodies) | the result holds no answer body | each check runs between two calls |
 
-Effort and risk: medium effort across six files, with shared runner capacity inflating the percentiles as the main risk.
+Effort and risk: medium, six files, at risk from shared runner capacity.
 
 ### Design Option B — histogram buckets
 
-The same ten virtual users send the same calls, but each latency lands in a fixed-width bucket of one millisecond up to a ceiling instead of being kept. The percentiles are read from the cumulative bucket counts, and stub durations use the same buckets. Everything else matches Option A.
+Each latency of the same calls lands in a one-millisecond bucket below a ceiling. Percentiles come from cumulative counts, and everything else matches Option A.
 
 How it differs:
 
-- Memory stays flat whatever the call count.
-- A percentile is reported as a bucket edge, so the value at the threshold carries the bucket width as error.
-- A latency above the top bucket lands in an overflow bucket with no exact value.
-- The bucket width and ceiling become settings that every scenario shares.
+- A percentile is a bucket edge, carrying the bucket width as error.
+- A latency above the ceiling has no exact value.
 - Stub duration limits are judged against bucket edges.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Fixed-width buckets (vs exact sorted samples) | memory stays flat as calls grow | the threshold value loses its exactness |
+| 1 | Fixed-width buckets (vs exact sorted samples) | memory usage remains constant across call counts | the threshold value loses its exactness |
 | 2 | One-millisecond width (vs coarser buckets) | the error stays within one millisecond | a fine width needs many buckets |
-| 3 | Overflow bucket above the ceiling (vs a growing bucket set) | the bucket set stays fixed | slow outliers lose their exact value |
+| 3 | Overflow above the ceiling (vs a growing bucket set) | the bucket set stays fixed | slow outliers lose their exact value |
 
-Effort and risk: medium effort across six files, at risk on the exact nearest-rank values the unit test fixes.
+Effort and risk: medium, six files, at risk on the unit test's exact values.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: a thousand samples per scenario are small enough to sort, and exact values decide a pass or a fail at the one-second threshold.
-- Strongest argument against: every sample of a scenario is held in memory until the scenario ends.
-- Shared items that do not decide the choice: the published host ports, the stub request log reading, the identity mapping, the target split, the call records, the answer check, the load shape, the report per scenario and the stack start and stop in the continuous integration gate.
-- Flip conditions: call counts far beyond the planning baseline, or runs long enough that holding every sample strains the build host.
+- Why: a thousand samples per scenario are small enough to sort, and exact values decide the verdict.
+- Strongest argument against: every sample stays in memory throughout the scenario.
+- Shared items that do not decide the choice: the eight shared concerns, identity mapping, target split, call records and answer check.
+- Flip conditions: call counts or run lengths large enough to strain build host memory.
 
 ## Design Validation
 
@@ -211,55 +209,52 @@ Effort and risk: medium effort across six files, at risk on the exact nearest-ra
 
 Settled assumptions:
 
-- Each stub in container mode serves its stub request log on its published web port, with numbered entries in receipt order and a duration on every entry.
-- The stack runs with failure injection off, so every call reaches the service and its stubs unaltered.
-- Five regular fixture identities each hold ten sample accounts and a two-thousand-account synthetic slice.
-- The synthetic volume is loaded before the stack reports ready.
-- Ten worker threads and their connections fit on one build host.
+- Each stub serves a numbered, timed log on its published port.
+- Failure injection is off.
+- Five fixture identities each hold ten sample and two thousand synthetic accounts, loaded before readiness.
+- Ten threads and their connections fit one build host.
 
 Open assumptions:
 
-- Runner capacity on the shared continuous integration host Open → repeated runs on that host compared against a run on an idle machine.
-- Per-call durations in container-hosted stub logs Open → the duration field of the stub hosting story, read on the first stack run.
-- Stub log outcome of a service-side attempt timeout Open → the cancelled outcome the stub hosting story records for an expired call.
+- Shared build host capacity Open → repeated runs there against an idle machine.
+- Container stub log durations Open → the first stack run's duration fields.
+- Stub log outcome of a service-side timeout Open → the stub hosting story's cancelled outcome.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | every call goes through the Java runtime's built-in HTTP client |
-| AC2 | Holds | the identity mapping gives each virtual user the shared list or its own half |
-| AC3 | Holds | the load shape, entitlement and split-list checks run before the first request |
-| AC4 | Holds | nearest rank over sorted samples yields the exact expected values |
-| AC5 | Conditional | the stub request log route must answer on each published port |
-| AC6 | Holds | the threshold check compares exact values against one second, with each failed or rejected call named from its user's own records |
-| AC7 | Conditional | a service-side attempt timeout must show in the stub log as a cancelled entry |
-| AC8 | Holds | the run keeps the stack defaults with failure injection off |
-| AC9 | Holds | the performance stage fills its reserved slot |
+| AC1 | Holds | the built-in HTTP client sends every call |
+| AC2 | Holds | each user gets its list or half |
+| AC3 | Holds | every pre-run check precedes any request |
+| AC4 | Holds | nearest rank over sorted samples is exact |
+| AC5 | Conditional | each stub port must serve its log |
+| AC6 | Holds | exact values and metadata-only messages decide every failure |
+| AC7 | Conditional | a service-side timeout must appear as a cancelled entry |
+| AC8 | Holds | failure injection stays off |
+| AC9 | Holds | the stage fills its reserved slot |
 
 ### Option B
 
 Settled assumptions:
 
-- Each stub in container mode serves its stub request log on its published web port, with numbered entries in receipt order and a duration on every entry.
-- The bucket width and ceiling are fixed before the first scenario runs.
-- Success-path latencies fall below the bucket ceiling.
+- Stub logs, failure injection and identities match Option A.
+- Bucket width and ceiling are fixed in advance, above every success-path latency.
 
 Open assumptions:
 
-- Bucket error at the threshold Open → a comparison of bucket edges against exact values on one recorded run.
-- Runner capacity on the shared continuous integration host Open → repeated runs on that host compared against a run on an idle machine.
-- Per-call durations in container-hosted stub logs Open → the duration field of the stub hosting story, read on the first stack run.
+- Bucket error at the threshold Open → one run comparing bucket edges with exact values.
+- Runner capacity and stub log durations Open → the checks Option A names.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | every call goes through the Java runtime's built-in HTTP client |
+| AC1 | Holds | the client matches Option A |
 | AC2 | Holds | the identity mapping matches Option A |
-| AC3 | Holds | the load shape, entitlement and split-list checks run before the first request |
-| AC4 | Breaks | bucket edges cannot yield the exact nearest-rank values the unit test fixes |
-| AC5 | Conditional | the stub request log route must answer on each published port |
-| AC6 | At risk | a bucket edge can place a sub-second value at one second |
-| AC7 | At risk | the duration limit is judged against a bucket edge |
-| AC8 | Holds | the run keeps the stack defaults with failure injection off |
-| AC9 | Holds | the performance stage fills its reserved slot |
+| AC3 | Holds | the pre-run checks match Option A |
+| AC4 | Breaks | bucket edges cannot yield the unit test's exact nearest-rank values |
+| AC5 | Conditional | each stub port must serve its log |
+| AC6 | At risk | bucket edges can push sub-second values to one second |
+| AC7 | At risk | duration limits are judged against bucket edges |
+| AC8 | Holds | failure injection stays off |
+| AC9 | Holds | the stage matches Option A |
 
 ## Metadata
 

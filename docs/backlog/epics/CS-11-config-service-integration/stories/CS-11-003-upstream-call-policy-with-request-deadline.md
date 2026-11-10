@@ -139,88 +139,85 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — one policy wrapper that sets each attempt deadline from the request budget.
+Recommended: Design Option A — one budget-aware call policy.
 
-Rationale: one wrapper owned by the service decides every attempt deadline and every retry from the time left in the request, so each upstream call fits inside the one-second answer.
+Rationale: the policy decides each attempt deadline and retry from the time left in the request.
 
-- Rejected: Option B, the channel's built-in retry configuration, because it cannot apply the rule that a retry starts only when a full attempt fits the remaining budget.
+- Rejected: Option B, the channel's built-in retry rules, which cannot refuse a retry without room for a full attempt.
 
 ```mermaid
 sequenceDiagram
     participant Caller as Client
     participant Policy as Call policy
     participant Upstream as Upstream service
-    Note over Caller,Upstream: The call starts with 500 ms left in the request budget
-    Caller->>Policy: Upstream call with the request deadline
-    Policy->>Upstream: First attempt with a 300 ms deadline
+    Note over Caller,Upstream: 500 ms left in the budget
+    Caller->>Policy: Call with the request deadline
+    Policy->>Upstream: First attempt, 300 ms deadline
     Upstream-->>Policy: Unavailable status at once
-    Policy->>Policy: Wait 50 ms as 50 plus 300 ms fits in 500 ms
-    Policy->>Upstream: Second attempt with a 300 ms deadline
+    Policy->>Policy: 50 plus 300 ms fits, wait 50 ms
+    Policy->>Upstream: Second attempt, 300 ms deadline
     Upstream-->>Policy: No answer within 300 ms
-    Policy->>Policy: Fit check fails as 100 plus 300 ms exceeds 150 ms left
-    Policy-->>Caller: Deadline-exceeded status before the cut-off
+    Policy->>Policy: 100 plus 300 ms exceeds 150 ms left
+    Policy-->>Caller: Deadline-exceeded status
 ```
 
 Shared by both options:
 
-- Topology: one call policy shared by all five upstream clients, with one request deadline per request.
-- Naming: outcomes are named by their remote procedure status, such as the unavailable status and the deadline-exceeded status.
-- Addressing: each client keeps its own remote procedure channel and target address.
-- Isolation: one request's budget never extends another's, and the concurrent reads of one request share its budget.
-- Fallback: the caller's row of the degradation table decides what a failure becomes.
-- Provisioning: the timeout setting, retry cap and deadline setting come from the configuration-properties story.
-- Cut-over: the configuration snapshot later supplies the timeout setting and retry cap in place of the built-in values.
-- Failures: the last status reaches the caller unchanged, and the request deadline writes one completion line with the cut-off time.
+- Topology: one call policy serves all five upstream clients.
+- Naming: outcomes keep their remote procedure status names.
+- Addressing: each client keeps its own channel and target address.
+- Isolation: concurrent reads of one request share its budget, never another request's.
+- Fallback: the caller's degradation row decides what a failure becomes.
+- Provisioning: the configuration-properties story supplies the timeout setting, retry cap and deadline setting.
+- Cut-over: the configuration snapshot later supplies the timeout setting and retry cap.
+- Failures: the last status reaches the caller unchanged, and one completion line logs the trace identifier, outcome and cut-off time.
 
 ### Design Option A
 
-One call policy wraps every upstream call a client makes. Before each attempt it reads the time left in the request and gives the attempt the lesser of the timeout setting and that time. After an unavailable or deadline-exceeded status it waits 50 ms before the first retry and 100 ms before each later one, and starts the retry only when the wait plus a full attempt fits in the time left.
+One call policy wraps every upstream call and gives each attempt the lesser of the timeout setting and the time left. After an unavailable or deadline-exceeded status it waits 50 ms before the first retry and 100 ms before each later one. A retry starts only when the wait plus a full attempt fits the time left.
 
 How it behaves:
 
-- With the full 900 ms budget an attempt gets 300 ms, and with 120 ms left it gets 120 ms.
-- A not-found, invalid-argument, unauthenticated or permission-denied status returns after one attempt.
-- The retry cap limits a call to three attempts whenever both fit checks pass, as when failures return at once or after 100 ms each, and attempts that each time out at 300 ms limit it to two.
-- A call that starts with no time left makes no attempt and returns the deadline-exceeded status.
-- The policy stops waiting when an attempt's own deadline passes, so an upstream that ignores the deadline still ends on time.
-- The request deadline takes one record of the four settings from the settings provider at receipt, and every call of that request reads the timeout setting and retry cap from that record, so a change published during the request reaches only later requests.
-- The request deadline records the cut-off when the caller fixes the outcome or when the budget runs out, and writes one completion line with the trace identifier, the outcome and the cut-off time.
+- Every other status returns after one attempt.
+- At a retry cap of 2, immediate failures get three attempts and 300 ms timeouts get two on the full budget.
+- A call with no time left returns the deadline-exceeded status without an attempt.
+- The policy cancels an attempt at its deadline, even against an upstream that ignores it.
+- Every call reads the timeout setting and retry cap from the request deadline's one capture of the settings provider at receipt.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Attempt deadline cut to the time left in the request (vs a fixed attempt limit) | no attempt outlives the request budget | every attempt computes its own deadline |
-| 2 | Retry decided by the policy with a fit check (vs the channel's built-in rules) | a retry starts only when a full attempt fits | retry logic is written and tested here |
-| 3 | Fixed waits of 50 ms and 100 ms (vs a random wait) | tests can assert exact retry start times | retries from many callers start in step |
-| 4 | Settings captured once at receipt and carried by the request deadline (vs a read of the settings provider on every call) | one request never mixes two sets of settings | a new value reaches only requests that start after it |
+| 1 | Attempt deadline cut to the time left (vs a fixed attempt limit) | no attempt outlives the request budget | every attempt computes its own deadline |
+| 2 | Policy fit check before each retry (vs the channel's built-in rules) | every retry needs room for a full attempt | the retry logic needs its own tests |
+| 3 | Fixed 50 ms and 100 ms waits (vs a random wait) | tests assert exact retry start times | retries from many callers start in step |
+| 4 | One settings capture per request at receipt (vs a provider read per call) | one request never mixes two sets of settings | new values affect only later requests |
 
-Effort and risk: one policy, one request deadline, one settings provider and four test classes, with the risk in retry timing that drifts on a loaded runner.
+Effort and risk: seven files, with the risk in real-clock timing on a loaded runner.
 
 ### Design Option B
 
-Each client declares the channel's built-in retry rules once, when its channel is built: at most three attempts, a fixed 300 ms limit on each attempt, retry on the unavailable and deadline-exceeded statuses, and a backoff starting at 50 ms. The call policy only sets the whole call's deadline to the time left in the request and leaves the attempts to the channel.
+Each client builds its channel with fixed built-in retry rules: three attempts at most, 300 ms per attempt, retry on the unavailable and deadline-exceeded statuses, and a backoff from 50 ms. The call policy only sets the whole call's deadline to the time left.
 
 How it differs:
 
-- The channel waits a random time up to each backoff value, so retry start times vary from run to run.
-- The channel retries while any time is left, with no check that a full attempt fits.
-- A late retry runs with less than a full attempt, cut short by the whole call's deadline.
-- The retry rules are fixed when the channel is built, so a new retry cap or timeout setting from the configuration snapshot needs a new channel.
+- The channel waits a random time up to each backoff value.
+- The channel retries while time is left, even with less than a full attempt.
+- A new retry cap or timeout setting needs a rebuilt channel.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
 | 1 | Fixed attempt limit in the channel rules (vs an attempt deadline cut to the time left) | one rule per channel | the limit ignores a changed timeout setting |
-| 2 | Retry decided by the channel's built-in rules (vs a policy fit check) | no retry logic to write | a retry can start with no room for a full attempt |
-| 3 | Random wait up to each backoff value (vs fixed waits of 50 ms and 100 ms) | retries from many callers spread out | retry start times vary from run to run |
+| 2 | Channel-decided retry (vs a policy fit check) | no retry logic to write | a retry can start without room for a full attempt |
+| 3 | Random wait up to each backoff value (vs fixed waits) | retries from many callers spread out | retry start times vary between runs |
 
-Effort and risk: less code in this story but channel rules declared in five clients, with the risk in retries that start without room for a full attempt.
+Effort and risk: less policy code but channel rules in five clients, with the risk in short late retries.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: only a wrapper that reads the time left before each attempt can cut each attempt to the budget and refuse a retry that would not fit.
-- Strongest argument against: hand-written retry logic must be tested for every status and every timing boundary.
-- Shared items that do not decide the choice: the request deadline and its completion line, the status mapping from the error-object story, the callers' degradation rows and the settings from the configuration-properties story.
-- Flip condition: a channel retry feature that cuts each attempt to the time left, checks that a full attempt fits before each retry and waits fixed times.
+- Why: only the policy's own fit check and fixed waits meet the retry-timing criteria.
+- Strongest argument against: hand-written retry logic needs tests for every status and timing boundary.
+- Shared items that do not decide the choice: the request deadline, its completion line, the status mapping and the degradation rows.
+- Flip condition: a channel retry feature with per-attempt cuts to the time left, a fit check and fixed waits.
 
 ## Design Validation
 
@@ -228,57 +225,55 @@ Effort and risk: less code in this story but channel rules declared in five clie
 
 Settled assumptions:
 
-- The timeout setting is 300 ms, the retry cap is 2 and the deadline setting is 900 ms while no configuration snapshot is held.
+- With no configuration snapshot, the timeout setting is 300 ms, the retry cap 2 and the deadline setting 900 ms.
 - The deadline setting never comes from the configuration service.
-- The error-object story maps the unavailable status to 503 and the deadline-exceeded status to 504, each with the receipt trace identifier.
-- Each endpoint story starts one request deadline at receipt from the settings provider and passes it to every upstream call of that request.
+- The error-object story maps the unavailable status to 503 and the deadline-exceeded status to 504 with the trace identifier.
+- Each endpoint story starts the request deadline at receipt.
 
 Open assumptions:
 
 - Open → the first external integration suite settles timing on a real channel.
-- Open → the configuration client story settles the timeout setting and retry cap the configuration service supplies.
+- Open → the configuration client story settles the configured timeout setting and retry cap.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the policy cuts each attempt to the lesser of the timeout setting and the time left |
+| AC1 | Holds | each attempt takes the lesser of the timeout setting and the time left |
 | AC2 | Holds | the fixed waits run on the test clock |
 | AC3 | Holds | the policy counts attempts against the retry cap |
 | AC4 | Holds | only two statuses enter the retry path |
-| AC5 | Holds | the fit check compares the wait plus a full attempt with the time left |
-| AC6 | Conditional | the real-clock case depends on thread scheduling on the test runner |
+| AC5 | Holds | the fit check needs 350 ms for a first retry |
+| AC6 | Conditional | the real-clock case depends on runner thread scheduling |
 | AC7 | Holds | the fit check refuses a retry with 320 ms left |
 | AC8 | Holds | the policy makes no attempt with no time left |
-| AC9 | Holds | the policy returns the last status with no substitute value |
-| AC10 | Holds | the request deadline writes one line and never reads call metadata |
-| AC11 | Holds | each call reads the settings its request captured once from the settings provider at receipt |
+| AC9 | Holds | the policy never substitutes a value |
+| AC10 | Holds | the request deadline writes one line free of call metadata |
+| AC11 | Holds | each call uses its request's one settings capture |
 
 ### Option B validation
 
 Settled assumptions:
 
-- The timeout setting is 300 ms, the retry cap is 2 and the deadline setting is 900 ms while no configuration snapshot is held.
-- The deadline setting never comes from the configuration service.
-- The error-object story maps the unavailable status to 503 and the deadline-exceeded status to 504, each with the receipt trace identifier.
-- The channel's built-in retry waits a random time up to each backoff value.
+- The first three settled assumptions of Option A hold.
+- The channel's built-in backoff wait is random.
 
 Open assumptions:
 
 - Open → the first external integration suite settles timing on a real channel.
-- Open → a channel library release settles whether built-in retry can cut each attempt to the time left.
+- Open → a channel library release settles per-attempt cuts in built-in retry.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | At risk | the attempt limit is fixed in the channel rules rather than read from the timeout setting |
-| AC2 | Breaks | the channel waits a random time up to each backoff value |
-| AC3 | At risk | the fixed channel rules keep three attempts under a zero retry cap until the channel is rebuilt |
+| AC1 | At risk | the channel's fixed attempt limit ignores the timeout setting |
+| AC2 | Breaks | the channel randomizes each wait |
+| AC3 | At risk | a zero retry cap still yields three attempts without a channel rebuild |
 | AC4 | Holds | the channel retries only the listed statuses |
-| AC5 | Breaks | the channel retries with no check that a full attempt fits |
-| AC6 | Breaks | a third attempt starts with less than a full attempt left |
-| AC7 | Breaks | the channel retries the immediate unavailable status with 320 ms left |
-| AC8 | Holds | a whole-call deadline with no time left fails before any attempt |
+| AC5 | Breaks | the channel retries with no full-attempt fit check |
+| AC6 | Breaks | a third attempt starts short of a full attempt |
+| AC7 | Breaks | the channel retries with 320 ms left |
+| AC8 | Holds | a whole-call deadline with no time left allows no attempt |
 | AC9 | Holds | the channel returns the last status unchanged |
-| AC10 | Holds | the request deadline writes the completion line in both options |
-| AC11 | At risk | the channel rules ignore the settings a later request captures until the channel is rebuilt |
+| AC10 | Holds | both options share the completion line |
+| AC11 | At risk | the fixed channel rules ignore newly captured settings without a rebuild |
 
 ## Metadata
 

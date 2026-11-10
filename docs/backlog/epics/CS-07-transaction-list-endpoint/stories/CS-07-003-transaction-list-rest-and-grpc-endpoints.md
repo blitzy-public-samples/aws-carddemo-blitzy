@@ -129,75 +129,64 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A — thin HTTP and remote procedure adapters over one validated request and one retrieval call.
+Recommended: Option A — thin HTTP and remote procedure adapters over one retrieval call.
 
-Rationale: one page result rendered twice is the only way both interfaces return the same items, the same next-page token and the same data status for one request.
+Rationale: one page result rendered twice gives both interfaces equal items, tokens and data status.
 
-- Rejected: Option B, a separate retrieval path per protocol, because it duplicates the outcome mapping.
+- Rejected: Option B, a retrieval path per protocol, because it duplicates the outcome mapping.
 
 ### Shared by both options
 
-- Topology: an HTTP controller and a remote procedure method in the one service process, each behind the receipt stage and the access guard.
-- Naming: field names follow the interface descriptions, in camel case on the HTTP interface and in lower case with underscores on the remote procedure interface.
-- Addressing: one account path per request on both interfaces, with the filters, the page size and the page token in the query or in the request message.
-- Isolation: neither interface opens a store or cache connection of its own, and caller identity comes only from the bearer token the guard validated.
-- Fallback: none for the list, so a failed read ends the request with an error and never with a held page.
-- Provisioning: no new infrastructure, port or setting, because the existing web layer and remote procedure server host both adapters.
-- Cut-over: the deferred UI binds to the HTTP interface without change, and swapping a stub for its real service changes nothing in either adapter.
-- Failures: one status mapping rendered on both interfaces, with the trace identifier issued at receipt.
+- Topology: an HTTP controller and a remote procedure method behind the receipt stage and access guard.
+- Naming: contract field names, camel case on HTTP and underscored on remote procedure calls.
+- Addressing: one account path per request, plus filters, page size and page token.
+- Isolation: no adapter-owned store or cache connection, and identity only from the validated bearer token.
+- Fallback: none, so a failed read ends in an error, never a held page.
+- Provisioning: none, as the existing servers host both adapters.
+- Cut-over: the deferred UI binds to HTTP, and a stub swap changes neither adapter.
+- Failures: one status mapping for both interfaces.
 
 ### Design Option A — thin adapters over one retrieval call
 
-The HTTP controller and the remote procedure method each read the request's accepted values once from the transaction list rule set, with no second check and with the configuration values the request captured at receipt, and pass them as separate values in one call to the shared transaction list retrieval. Each renders the one page result in its own interface form. The two renderings differ only at the end of the list: an omitted next-page token on the HTTP interface and empty text on the remote procedure interface. Failures leave the adapters as typed failures for the shared error handler and interceptor.
+Each adapter reads the request's accepted values once, with no second check, and passes them as separate values in one retrieval call. Each renders the one page result in its own form.
 
 How it behaves:
 
-- A request rejected at receipt or by the guard never reaches either adapter.
-- Neither adapter runs the receipt checks a second time.
-- An unset page size on either interface takes the configured default page size from the captured configuration values.
-- The HTTP controller copies the data status from the rendered body into the data status header.
-- The HTTP body leaves out an absent next-page token whatever the default serializer setting.
-- The remote procedure method sends empty text as the next-page token on the last page.
-- A present next-page token reaches the caller on both interfaces exactly as the transaction source returned it.
-- Neither adapter reads the cache or any upstream, so a cold request makes exactly one list call.
-- Neither adapter marks the cut-off, because the retrieval fixes the outcome.
+- An unset page size takes the default captured at receipt.
+- A present next-page token passes through unchanged.
+- At the list end the HTTP body omits the token whatever the serializer default, and the remote procedure reply carries empty text.
+- Neither adapter reads the cache or an upstream or marks the cut-off, so a cold request makes one list call.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One shared retrieval call (vs a retrieval path per interface) | both interfaces render one page result | a retrieval defect reaches both interfaces at once |
-| 2 | End of list as an omitted token on the HTTP interface and empty text on the remote procedure interface (vs one shared end marker) | each interface keeps its contract form | each adapter translates absence in its own way |
-| 3 | Data status header copied from the body (vs computed separately) | header and body cannot disagree | the header waits for body rendering |
-| 4 | Rendering inside each adapter (vs a shared response mapper) | no extra component for a flat page | two renderings of one result to keep in step |
+| 1 | One shared retrieval call (vs a path per interface) | both interfaces render one page | a retrieval defect reaches both |
+| 2 | Data status header copied from the body (vs computed separately) | header and body cannot disagree | the header waits for the body |
+| 3 | Rendering inside each adapter (vs a shared response mapper) | no extra component | two renderings to keep in step |
 
-Effort and risk: one new controller, one added method and two test classes, with the risk in a serializer setting that writes an absent next-page token as a null value.
+Effort and risk: one new controller, one added method and two test classes, at risk from a serializer writing a null token.
 
 ### Design Option B — separate retrieval path per interface
 
-Each interface owns its own path: the HTTP controller and the remote procedure method each call the transaction client, map the not-found, invalid-token, empty and fail-hard outcomes, resolve the data status and build their own response. Both still sit behind the receipt stage and the access guard, and both use the standard error object.
+Each interface owns a full read and render path. Both still use the receipt stage and the guard.
 
 How it differs:
 
-- Each adapter makes its own list call through the transaction client.
-- Each adapter maps the not-found, invalid-token, empty and fail-hard outcomes itself.
-- Each adapter resolves the data status and the as-of time itself.
-- Each adapter marks the cut-off and completes the request deadline itself.
-- A change to the list outcomes lands in two places.
+- Each adapter calls the transaction client, maps the not-found, invalid-token, empty and fail-hard outcomes, resolves the data status and marks the cut-off.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | A retrieval path per interface (vs one shared call) | each interface tunes its own read | pages can diverge between interfaces |
-| 2 | Outcome mapping in each adapter (vs inside the shared retrieval) | each interface owns its failures | two copies of the outcome rules |
-| 3 | End of list decided in each adapter from its own read (vs one page result) | handling native to each interface | one interface can drift from its contract |
+| 1 | A read path per interface (vs one shared call) | each interface tunes its own read | pages can diverge |
+| 2 | Outcome mapping in each adapter (vs in the retrieval) | each interface owns its failures | two copies of the outcome rules |
 
-Effort and risk: two full read and render paths with their tests, at high risk because the two interfaces can return different pages for one account.
+Effort and risk: two full read and render paths with tests, at high risk of divergent pages.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: one page result serves both interfaces, so both return equal items, an equal next-page token and an equal data status.
-- Strongest argument against: the adapters must still translate the two absence forms of the end of the list, and a slip there shows on one interface only.
-- Shared items that do not decide the choice: the contracts, the receipt stage, the access guard, the error mapping and the request deadline started at receipt.
-- Flip condition: the two interfaces need different page semantics, such as different page sizes or orderings.
+- Why: one page result keeps both interfaces equal.
+- Strongest argument against: a slip in translating the two end-of-list forms shows on one interface only.
+- Shared items that do not decide the choice: the contracts, receipt stage, guard, error mapping and deadline.
+- Flip condition: the interfaces need different page sizes or orderings.
 
 ## Design Validation
 
@@ -205,66 +194,60 @@ Effort and risk: two full read and render paths with their tests, at high risk b
 
 Settled assumptions:
 
-- Both contracts carry the same page fields, with an omitted next-page token on the HTTP interface and empty text on the remote procedure interface at the end of the list.
-- An unset page size on the remote procedure interface means the configured default page size, as its interface description states.
-- The shared error handler and interceptor render every failure with the trace identifier issued at receipt.
-- The receipt stage starts the deadline and validates the request, and the guard runs before either adapter.
-- The retrieval returns one page result per request and fixes its outcome at the cut-off.
-- The retrieval takes the account number, the filters, the page size and the page token as separate values, and the receipt stage checks each request once.
-- The page-token codec has no random part, so one cursor, account and filter set always give one token.
+- Both contracts carry the same page fields, and an unset remote procedure page size means the configured default.
+- The receipt stage starts the deadline and checks each request once, ahead of the guard.
+- The shared error mapping renders every failure with the receipt trace identifier.
+- The retrieval returns one page result, fixed at the cut-off.
+- The page-token codec has no random part, so both protocols return an equal token.
 
 Open assumptions:
 
-- Open → the remote procedure class from the balance summary endpoint story exists before this story starts, settled by wave position order.
-- Open → the default serializer setting leaves an absent next-page token out of the body, settled by the schema check of the controller test.
+- Open → the balance summary endpoint story's remote procedure class exists before this story starts, settled by wave position order.
+- Open → the serializer omits an absent token, settled by the controller test's schema check.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the controller renders the one page result in contract form |
-| AC2 | Holds | both renderings come from one retrieval result |
-| AC3 | Conditional | the omission relies on the serializer leaving out an absent token |
-| AC4 | Holds | the next-page token passes through unchanged on both interfaces |
-| AC5 | Holds | the header copies the body's data status |
-| AC6 | Holds | the rule set supplies the configured default page size to both adapters |
-| AC7 | Holds | every failure passes to the shared handler and interceptor |
-| AC8 | Holds | the adapters run only after the guard allows |
-| AC9 | Holds | the call policy sits inside the shared transaction client |
-| AC10 | Conditional | it rests on the call policy's remaining-budget rule |
-| AC11 | Holds | the guard fails closed before either adapter |
-| AC12 | Holds | the configuration refresh never sits on the request path |
-| AC13 | Holds | the adapters make no reads of their own |
+| AC1 | Holds | the controller renders the contract form |
+| AC2 | Holds | both renderings share one result |
+| AC3 | Conditional | the omission relies on the serializer |
+| AC4 | Holds | the token passes through unchanged |
+| AC5 | Holds | the header copies the body |
+| AC6 | Holds | both adapters take the captured default |
+| AC7 | Holds | failures reach the shared error mapping |
+| AC8 | Holds | the guard rejects ahead of either adapter |
+| AC9 | Holds | the shared client applies the call policy |
+| AC10 | Conditional | it rests on the remaining-budget rule |
+| AC11 | Holds | the guard fails closed first |
+| AC12 | Holds | configuration refresh stays off the request path |
+| AC13 | Holds | the adapters read nothing themselves |
 
 ### Validation of Option B
 
 Settled assumptions:
 
-- Both contracts carry the same page fields, with an omitted next-page token on the HTTP interface and empty text on the remote procedure interface at the end of the list.
-- An unset page size on the remote procedure interface means the configured default page size, as its interface description states.
-- The shared error handler and interceptor render every failure with the trace identifier issued at receipt.
-- The receipt stage starts the deadline and validates the request, and the guard runs before either adapter.
-- The receipt stage checks each request once, and neither read path runs those checks a second time.
+- The Option A assumptions on the contracts, unset page size, error mapping and receipt stage hold.
 
 Open assumptions:
 
-- Open → the remote procedure class from the balance summary endpoint story exists before this story starts, settled by wave position order.
-- Open → whether both read paths hand back the source token unchanged, settled by paired token assertions on both interfaces.
-- Open → whether the two read paths share cache entries, settled by measuring both paths on the test stack.
+- Open → the same remote procedure class exists first, settled by wave position order.
+- Open → whether both paths return the source token unchanged, settled by paired token assertions.
+- Open → whether the paths share cache entries, settled by measurement on the test stack.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the HTTP path reads and renders the fixture page |
-| AC2 | At risk | pages can diverge between the two read paths |
-| AC3 | At risk | each path decides the end of the list on its own |
-| AC4 | At risk | the two paths can hand back different tokens |
-| AC5 | Conditional | the HTTP path must copy its own body status into the header |
-| AC6 | Holds | both paths take the default page size from the shared rule set |
-| AC7 | Conditional | each path must raise the same typed failures |
-| AC8 | Holds | both paths run only after the guard allows |
-| AC9 | Holds | the call policy sits inside the shared transaction client |
+| AC1 | Holds | the HTTP path renders the fixture page |
+| AC2 | At risk | pages can diverge between paths |
+| AC3 | At risk | each path decides the list end alone |
+| AC4 | At risk | the paths can return different tokens |
+| AC5 | Conditional | the HTTP path must copy its body status into the header |
+| AC6 | Holds | both paths share the rule set default |
+| AC7 | Conditional | each path must raise the same failures |
+| AC8 | Holds | the guard rejects ahead of either path |
+| AC9 | Holds | the shared client applies the call policy |
 | AC10 | Conditional | each path must mark the cut-off within the remaining budget |
-| AC11 | Holds | the guard fails closed before either path |
-| AC12 | Holds | the configuration refresh never sits on the request path |
-| AC13 | Holds | each path still makes one list call per request |
+| AC11 | Holds | the guard fails closed first |
+| AC12 | Holds | configuration refresh stays off the request path |
+| AC13 | Holds | each path makes one list call |
 
 ## Metadata
 

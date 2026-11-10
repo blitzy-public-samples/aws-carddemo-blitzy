@@ -103,71 +103,64 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — card-to-account lookup held in memory from the loaded cross-references.
+Recommended: Design Option A — in-memory card lookup.
 
-Rationale: resolving each card's account before insert lets the fixture loader count an unknown card as skipped and write every other row complete, with its account, in one pass.
+Rationale: resolving accounts before insert keeps rows complete and unknown cards counted.
 
-- Rejected: Design Option B, a post-load update that fills the account column from the cross-reference records — rows would enter the table before their account is known, which the schema's never-empty account column refuses.
+- Rejected: Design Option B, a post-load account update, which the schema refuses.
 
 ### Shared by both options
 
-- Topology: the fixture loader writes once at stack start into the relational store, outside the request path.
-- Naming: the load report entry carries the name of the transaction table.
-- Addressing: each row is keyed by its transaction identifier, and its account column ties it to its account.
-- Isolation: one load transaction for the entity, with the load report entry written after commit.
-- Fallback: a row whose parent link names no loaded row is skipped and counted, never repaired, and only after it passes every record check.
-- Provisioning: the sample daily transaction file is copied into the service module, so the delivery repository never reads the mainframe source application's folders.
-- Cut-over: the real transaction activity service carries its own data, so the loader retires with the stubs.
-- Failures: the first malformed line, with its file and line number named, or a failed write or commit rolls back the entity with no rows and no report entry, keeps the entities committed earlier, starts no later loader and ends the job with a non-zero status.
+- Topology: one load at stack start into the relational store, outside the request path.
+- Naming: the report entry names the transaction table.
+- Addressing: rows are keyed by transaction identifier and carry their account.
+- Isolation: one load transaction, its report entry written after commit.
+- Fallback: a valid row naming no loaded card or category is skipped and counted, never repaired.
+- Provisioning: the sample file is copied into the service module, never read from the mainframe source.
+- Cut-over: the loader retires with the stubs, since the real service owns its data.
+- Failures: a malformed line, named by file and line number, or a failed write or commit rolls back only this entity, starts no later loader and fails the job.
 
-### Design Option A — card-to-account lookup held in memory from the loaded cross-references
+### Design Option A — in-memory card lookup
 
-Before reading the first transaction line, the fixture loader builds a lookup from card number to account out of the cross-reference records that the card data fixture load story has committed. Each line is checked in full against its record layout and read at its record positions, its signed amount is decoded from the trailing sign character, and both timestamps are read as universal time. Only a line that passes every check meets the lookup, and one whose card is missing from it, or whose type and category pair names no category row, is skipped and counted before insert. Every other row is written complete, with its account.
+The loader first builds a lookup of each committed card's account, fifty for the sample. Only a line passing every record check meets it, so unknown cards are caught before insert. Every other row is written with its account.
 
 How it behaves:
 
-- The lookup holds one entry per loaded card, fifty for the sample.
-- A line that fails a record check stops the load before the lookup, so a malformed category, a blank card number or a blank original timestamp is never counted as skipped.
-- A blank processed timestamp takes the original timestamp, and the row counts as derived.
-- A non-blank processed timestamp is kept and does not count as derived.
-- Every inserted row carries its account, so the rule that the account column is never empty holds from the first insert.
-- The load report entry holds the loaded, skipped and derived counts once the load transaction commits.
-- Rows that share a processed timestamp, as every sample row does, take their listing order from the transaction identifier.
+- A blank processed timestamp takes the original timestamp and counts as derived, and a non-blank one is kept uncounted.
+- Rows with equal processed timestamps, as in the sample, list by transaction identifier.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Account taken from an in-memory card lookup (vs a post-load update) | the account is known before insert | memory grows with card count |
-| 2 | Skip decided before insert (vs letting the foreign key reject the row) | the load continues with an exact skip count | the loader repeats the key rules |
-| 3 | Blank processed timestamp derived from the original (vs left empty) | listings order deterministically | the stored row hides the blank source value |
-| 4 | Record checks before the lookup (vs skipping any row the lookup misses) | a malformed row fails instead of hiding in the skip count | one bad sample byte stops the whole load |
+| 1 | In-memory card lookup (vs post-load update) | account known before insert | memory grows with cards |
+| 2 | Skip before insert (vs foreign-key rejection) | load continues with exact counts | loader repeats key rules |
+| 3 | Derived processed timestamp (vs left empty) | listings order deterministically | stored row hides the blank |
+| 4 | Checks before lookup (vs skipping every miss) | malformed rows fail rather than skip | one bad byte stops the load |
 
 Effort and risk: moderate effort, low risk with fifty sample cards.
 
-### Design Option B — post-load update of the account column
+### Design Option B — post-load account update
 
-Rows load with an empty account column, and one set-based update fills it from the cross-reference records after the last line. The decoding, timestamp and type and category rules are the same as in Option A. Rows whose card the update cannot match are removed afterwards and counted as skipped. The schema story's table refuses both steps, because its account column is never empty and each row must name a loaded account, card and category.
+Rows load without an account, then one update fills it from the cross-references. Unmatched rows are removed and counted as skipped.
 
 How it differs:
 
-- The account column must accept empty values during the load, which the schema story's never-empty account column refuses, so the first insert fails.
-- Unknown cards are found only by the update.
-- Skip counting needs an unknown card's row in the table until it is removed, which the table's link to the card's cross-reference record refuses at insert.
-- The load report counts wait for the update before the entry is written.
+- The first insert fails, as the account column is never empty.
+- Report counts wait for the update.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Account filled by one update after the load (vs an in-memory card lookup) | no lookup is held in memory | the never-empty account column refuses every such insert |
-| 2 | Unknown cards found by the update (vs a check before insert) | one pass over the cross-reference records | the card link refuses an unknown card's row at insert |
+| 1 | Account filled after load (vs in-memory lookup) | no lookup in memory | the schema refuses each insert |
+| 2 | Unknown cards found by update (vs pre-insert check) | one pass over the cross-references | the card link refuses them at insert |
 
-Effort and risk: small effort, but the load breaks at its first insert under the unchanged schema.
+Effort and risk: small effort, but the load breaks under the unchanged schema.
 
 ### Recommendation
 
 - Option: Design Option A
-- Why: unknown cards are counted before any row reaches the table, and every insert meets the schema's account and card rules.
-- Strongest argument against: the lookup grows with card count at synthetic volume.
-- Shared items that do not decide the choice: the decoding rules, the timestamp rules, the record checks and the load report.
-- Flip conditions: a card count beyond the loader's memory together with a schema that admits a row before its account is known, where a staged update wins.
+- Why: every insert meets the schema, with unknown cards counted first.
+- Strongest argument against: the lookup grows with synthetic card volume.
+- Shared items that do not decide the choice: decoding, timestamps, record checks and the load report.
+- Flip conditions: more cards than memory holds and a schema accepting rows without an account.
 
 ## Design Validation
 
@@ -175,63 +168,56 @@ Effort and risk: small effort, but the load breaks at its first insert under the
 
 Settled assumptions:
 
-- All 300 sample transactions name one of the 50 loaded cards, so every card reference resolves through the cross-reference records.
-- The sample holds zero foreign-key violations.
-- The processed timestamp is blank in every sample row.
-- The cross-reference records commit before the transaction load starts.
-- Every sample row passes every record check.
+- All 300 sample rows name cards committed before this load and break no foreign key.
+- Every sample row passes every check and has a blank processed timestamp.
 
 Open assumptions:
 
-- Whether real feeds carry non-blank processed timestamps in the hyphen-and-dot form Open → the first real feed sample from the data owner.
+- Whether real feeds carry non-blank hyphen-and-dot processed timestamps Open → a real feed sample.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | every sample row resolves with a derived processed timestamp |
-| AC2 | Holds | each sample card belongs to one account with six transactions |
-| AC3 | Holds | the loader reads every field at its record position |
-| AC4 | Holds | the trailing sign character carries the sign and the last digit |
-| AC5 | Holds | the loader core reads both timestamp forms as universal time |
-| AC6 | Holds | only a blank processed timestamp takes the original timestamp |
-| AC7 | Holds | the lookup misses the unknown card before insert |
-| AC8 | Holds | the category check runs before insert |
-| AC9 | Holds | the lookup gives every row the account of its card |
-| AC10 | Holds | the parser accepts only the full record and the end of the processed timestamp |
-| AC11 | Holds | the layout and the row check reject each bad field before the lookup |
-| AC12 | Holds | the layout names the transaction identifier as its key |
-| AC13 | Holds | the record checks run before the lookup can skip the row |
-| AC14 | Holds | the loader core rolls back the entity and stops every later loader |
+| AC1 | Holds | every row resolves with a derived timestamp |
+| AC2 | Holds | each card's account holds six transactions |
+| AC3 | Holds | fields are read by position |
+| AC4 | Holds | the last amount character carries sign and digit |
+| AC5 | Holds | both forms parse as universal time |
+| AC6 | Holds | only blank processed timestamps are derived |
+| AC7 | Holds | the lookup misses the card before insert |
+| AC8 | Holds | the category check precedes insert |
+| AC9 | Holds | the lookup supplies each card's account |
+| AC10 | Holds | only 350 or 330 bytes pass |
+| AC11 | Holds | the layout and row check reject each change |
+| AC12 | Holds | the layout keys on transaction identifier |
+| AC13 | Holds | checks run before any skip |
+| AC14 | Holds | the loader core rolls back and stops later loaders |
 
 ### Option B
 
 Settled assumptions:
 
-- All 300 sample transactions name one of the 50 loaded cards, so every card reference resolves through the cross-reference records.
-- The sample holds zero foreign-key violations.
-- The processed timestamp is blank in every sample row.
-- Every sample row passes every record check.
-- The schema story fixes the account column as never empty and links each row to its account, its card's cross-reference record and its category.
+- The schema requires a loaded account, card and category on every row.
 
 Open assumptions:
 
-- Whether real feeds carry non-blank processed timestamps in the hyphen-and-dot form Open → the first real feed sample from the data owner.
+- Whether real feeds carry non-blank hyphen-and-dot processed timestamps Open → a real feed sample.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Breaks | the first insert with an empty account fails and rolls back the load |
-| AC2 | Breaks | no row is stored once the first insert fails |
-| AC3 | Breaks | no row is stored once the first insert fails |
-| AC4 | Breaks | no decoded amount is stored once the first insert fails |
-| AC5 | Holds | the loader core reads both timestamp forms as universal time |
-| AC6 | Breaks | no derived timestamp reaches a stored row or a committed report entry |
-| AC7 | Breaks | the card link rejects the unknown card at insert instead of a counted skip |
-| AC8 | Breaks | the category skip never reaches a committed report entry once an insert fails |
-| AC9 | Breaks | no row is stored to carry the account of its card |
-| AC10 | Breaks | the 330-byte line never reaches a stored row because the first insert fails |
-| AC11 | Conditional | the error names the malformed line only if no earlier insert has already failed |
-| AC12 | Conditional | the error names the repeated identifier only if no earlier insert has already failed |
-| AC13 | Conditional | the row fails as malformed only if no earlier insert has already failed |
-| AC14 | Holds | the loader core rolls back the entity and stops every later loader |
+| AC1 | Breaks | the first insert fails the load |
+| AC2 | Breaks | no row is stored |
+| AC3 | Breaks | no row is stored |
+| AC4 | Breaks | no amount is stored |
+| AC5 | Holds | both forms parse as universal time |
+| AC6 | Breaks | no derived timestamp is stored or reported |
+| AC7 | Breaks | the card link refuses the row uncounted |
+| AC8 | Breaks | the category skip is never committed |
+| AC9 | Breaks | no stored row carries an account |
+| AC10 | Breaks | the 330-byte row is never stored |
+| AC11 | Conditional | it holds only if no earlier insert failed |
+| AC12 | Conditional | it holds only if no earlier insert failed |
+| AC13 | Conditional | it holds only if no earlier insert failed |
+| AC14 | Holds | the loader core rolls back and stops later loaders |
 
 ## Metadata
 

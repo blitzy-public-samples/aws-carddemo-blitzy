@@ -82,74 +82,69 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — each virtual user interleaves its identity's sample accounts with accounts spread across its synthetic slice.
+Recommended: Design Option A — sample and synthetic accounts interleaved per virtual user.
 
-Rationale: one scenario on the shared runner that reads both the sample accounts the account view shows and synthetic accounts drawn from the planning-baseline volume proves the one-second threshold for the balance summary on warm and cold reads in one run, with no change to the runner.
+Rationale: one shared-runner run measures warm sample reads and cold synthetic reads.
 
-- Rejected: Design Option B, synthetic accounts only — it leaves the sample accounts the account view reads unmeasured.
+- Rejected: Design Option B, synthetic accounts only — the account view's sample accounts go unmeasured.
 
 ### Shared by both options
 
-- Topology: the shared runner on the build host reaches the service and the five stubs through the stack's published host ports.
-- Naming: the scenario is named after the balance summary of the account view, and its output lines and its report file carry that name.
-- Addressing: each call names one account number in the request path, and the build hands the runner the service address and the five stub log addresses.
-- Isolation: each virtual user reads only accounts entitled to its regular fixture identity, and the scenario runs alone so its stub log window holds only its own calls.
-- Fallback: the scenario has no fallback path, so a non-success answer, a failed denial check or a missed threshold fails it.
-- Provisioning: the stack loads the sample set and the synthetic volume before it reports ready, and the scenario brings no data of its own.
-- Cut-over: real services replace the stubs by address and credential alone, and the scenario keeps its targets and thresholds while the real entitlements match the fixture ranges.
-- Failures: injected failures stay out of the scenario and are proven by the endpoint assembly story and the integration suites, and the permission-denied check runs once outside the measured calls.
+- Topology: the runner on the build host calls the service and five stubs.
+- Naming: the scenario and its report carry the balance summary name.
+- Addressing: each call names one account, and the build supplies every address.
+- Isolation: each virtual user reads only its identity's entitled accounts, and the scenario runs alone.
+- Fallback: none, so any failed answer, failed denial check or missed threshold fails the scenario.
+- Provisioning: the stack loads all test data before it reports ready.
+- Cut-over: real services replace the stubs by address and credential alone, while entitlements match the fixture ranges.
+- Failures: the assembly story and integration suites prove injected failures.
 
 ### Design Option A — sample and synthetic accounts interleaved per virtual user
 
-Each regular fixture identity gets one list of one hundred targets that alternates its ten sample accounts with fifty accounts spread evenly across its synthetic slice. Both virtual users of that identity walk the list once, in order. Before the measured calls start, the scenario requests one account outside the first identity's entitlements and checks for the permission-denied status and an empty card data log window.
+Each regular fixture identity gets a list of one hundred targets alternating its ten sample accounts, each read five times, with fifty accounts spread across its synthetic slice. Both its virtual users walk the list once, in order.
 
 How it behaves:
 
-- Half of each virtual user's calls read the sample accounts the account view shows, each sample account five times.
-- The other half read fifty distinct synthetic accounts, each with ten category balances, spread across the slice at an even stride.
-- Each sample account takes the cold path on its first read and is served from the cache on its repeats within the fresh period.
-- Each synthetic account takes the cold path on whichever read reaches it first, and the identity's other virtual user finds it warm only when that read has already filled the entry.
-- The permission-denied check runs before the runner opens its stub log window, so its authentication calls stay out of the report.
-- The report gives the median, 95th and 99th percentile, the maximum, the call count, the success count per data-status header value and the stub figures for the five upstream operations.
+- Every account is cold on its first read and warm on later reads once that read fills the cache entry.
+- Before the stub log window opens, one unentitled request must be denied with no card data read.
+- The report gives percentiles, maximum, call count, per-status success counts and stub figures of five upstream operations.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Interleaved sample and synthetic accounts (vs synthetic accounts only) | the accounts the account view reads are measured | repeated sample reads lower the measured latency |
-| 2 | Fifty synthetic accounts spread across the slice (vs the first fifty of the slice) | the reads span the whole slice | the list needs a stride rule |
-| 3 | One hundred targets walked once per virtual user (vs a longer list cycled) | the list length follows the load shape | a larger call count repeats the list |
-| 4 | Denial check outside the measured calls (vs a denied target inside the load) | every measured call stays a success | the denial is proven once per run only |
-| 5 | Targets written in the scenario (vs read from the stack at run time) | the scenario reads plainly against the fixture ranges | a change to the ranges needs a matching scenario change |
+| 1 | Interleaved accounts (vs synthetic accounts only) | the account view's sample accounts are measured | repeated sample reads lower the latency |
+| 2 | Fifty accounts across the slice (vs the first fifty) | the reads span the slice | the list needs a stride rule |
+| 3 | One hundred targets walked once (vs a list cycled) | the list follows the load shape | more calls repeat the list |
+| 4 | Denial check outside measured calls (vs inside) | every measured call succeeds | the denial is proven once per run |
+| 5 | Targets written in the scenario (vs read at run time) | targets read plainly against fixture ranges | a range change needs a scenario change |
 
-Effort and risk: small effort in one file, with warm sample reads understating cold-path latency as the main risk.
+Effort and risk: small, one file, with warm sample reads understating cold-path latency.
 
 ### Design Option B — synthetic accounts only
 
-Each regular fixture identity gets one list of one hundred distinct synthetic accounts spread across its slice at twice the density of Option A. The sample accounts are left out of the measured calls. The denial check, the report and the thresholds match Option A.
+Each regular fixture identity gets one hundred distinct synthetic accounts at a stride of twenty. The denial check, report and thresholds match Option A.
 
 How it differs:
 
-- Every call of a virtual user reads a different account, and both virtual users of an identity start together on the same list, so neither has a fixed lead.
-- Each account takes the cold path on whichever read reaches it first, the other virtual user finds it warm only when that read has already filled the entry, and two reads that miss at the same moment both go upstream.
-- The share of warm reads is observed from the card data call count in the report, not guaranteed.
-- The measured latency sits nearer the cold path than in Option A.
-- The sample accounts the account view reads, with their legacy record values, are never measured.
-- The scenario reads only the synthetic range that the stack's data partition gives the performance suite.
+- Sample accounts and their legacy record values go unmeasured.
+- Every call reads a new account, with both virtual users of an identity starting together.
+- Simultaneous misses on one account both go upstream, so the warm-read share is observed, not guaranteed.
+- Measured latency sits nearer the cold path than in Option A.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Synthetic accounts only (vs interleaved sample and synthetic accounts) | cold reads dominate the measurement | the accounts the account view reads go unmeasured |
-| 2 | One hundred distinct accounts per identity (vs fifty with repeats) | no account repeats within one virtual user | the list spans twice as many synthetic accounts |
-| 3 | A stride of twenty across the slice (vs the first hundred of the slice) | the reads span the whole slice | the list needs a stride rule |
+| 1 | Synthetic accounts only (vs interleaved accounts) | cold reads dominate the measurement | the account view's sample accounts go unmeasured |
+| 2 | One hundred distinct accounts (vs fifty with repeats) | no account repeats per virtual user | the list spans twice as many accounts |
+| 3 | A stride of twenty (vs the first hundred) | the reads span the slice | the list needs a stride rule |
 
-Effort and risk: small effort in one file, breaking the criterion that measures the sample accounts.
+Effort and risk: small, one file, breaking the sample-account criterion.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: it measures the accounts the account view shows beside cold synthetic reads, on the shared runner and in one file.
-- Strongest argument against: warm cache entries for the ten sample accounts lower the measured latency.
-- Shared items that do not decide the choice: the shared runner, the load shape, the identity mapping, the permission-denied check, the report, the thresholds, failure injection off and the stack start and stop.
-- Flip conditions: the product owner requiring a cold-cache measurement, or a run whose percentiles pass only because of warm sample reads.
+- Why: it measures sample accounts beside cold synthetic reads.
+- Strongest argument against: warm sample cache entries lower the measured latency.
+- Shared items that do not decide the choice: the runner, load shape, identity mapping, denial check, report, thresholds and stack start, stop and defaults.
+- Flip conditions: the product owner requiring a cold-cache measurement, or percentiles passing only on warm reads.
 
 ## Design Validation
 
@@ -157,50 +152,47 @@ Effort and risk: small effort in one file, breaking the criterion that measures 
 
 Settled assumptions:
 
-- Each regular fixture identity holds ten sample accounts in account-number order and a two-thousand-account synthetic slice.
-- The first regular fixture identity's sample range ends at the tenth sample account, so the eleventh lies outside it.
+- Each regular identity holds ten ordered sample accounts and a two-thousand-account synthetic slice.
+- The first identity's sample range ends before the eleventh sample account.
 - Each synthetic account carries ten category balances.
-- The stack runs with failure injection off and loads the synthetic volume before it reports ready.
-- The shared runner holds the load shape, the percentiles, the thresholds and the report.
+- The stack starts with failure injection off and all test data loaded.
+- The shared runner holds the load shape, percentiles, thresholds and report.
 
 Open assumptions:
 
-- Runner capacity on the shared continuous integration host Open → repeated runs on that host compared against a run on an idle machine.
-- Share of warm reads among the measured calls Open → the card data call count in the first report compared with the thousand measured calls.
+- Runner capacity on the shared continuous integration host Open → repeated runs there against an idle machine.
+- Warm-read share of the measured calls Open → the first report's card data call count.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | each identity's list alternates its sample accounts with its synthetic accounts |
-| AC2 | Conditional | shared runner capacity must leave the percentiles below one second |
-| AC3 | Holds | with failure injection off every upstream read answers on the success path |
-| AC4 | Holds | the scenario sets no stub override on the stack defaults |
+| AC1 | Holds | each list alternates sample and synthetic accounts |
+| AC2 | Conditional | runner capacity must keep percentiles below one second |
+| AC3 | Holds | upstream reads succeed with failure injection off |
+| AC4 | Holds | the stack defaults run with no stub override |
 | AC5 | Holds | the access guard denies the request before any card data read |
-| AC6 | Holds | the shared runner reports the run figures and the stub figures per operation |
-| AC7 | Holds | the degraded outcomes are proven by the assembly story and the integration suites |
+| AC6 | Holds | the runner reports run and per-operation stub figures |
+| AC7 | Holds | the assembly story and integration suites prove degraded outcomes |
 
 ### Option B
 
 Settled assumptions:
 
-- Each regular fixture identity holds a two-thousand-account synthetic slice.
-- Each synthetic account carries ten category balances.
-- The stack runs with failure injection off and loads the synthetic volume before it reports ready.
+- The slice, balance and stack assumptions of Option A hold.
 
 Open assumptions:
 
-- Runner capacity on the shared continuous integration host Open → repeated runs on that host compared against a run on an idle machine.
-- Cold-path latency at one hundred distinct accounts per identity Open → the first report's percentiles compared with a run of Option A.
-- Share of warm reads among the measured calls Open → the card data call count in the first report compared with the thousand measured calls.
+- Runner capacity and warm-read share Open → the Option A comparisons.
+- Cold-path latency at one hundred distinct accounts Open → first-report percentiles against an Option A run.
 
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Breaks | the lists omit the sample accounts |
-| AC2 | At risk | more cold reads push the percentiles toward one second |
-| AC3 | Holds | with failure injection off every upstream read answers on the success path |
-| AC4 | Holds | the scenario sets no stub override on the stack defaults |
+| AC2 | At risk | more cold reads push percentiles toward one second |
+| AC3 | Holds | upstream reads succeed with failure injection off |
+| AC4 | Holds | the stack defaults run with no stub override |
 | AC5 | Holds | the denial check matches Option A |
-| AC6 | Holds | the shared runner reports the run figures and the stub figures per operation |
-| AC7 | Holds | the degraded outcomes are proven by the assembly story and the integration suites |
+| AC6 | Holds | the runner reports run and per-operation stub figures |
+| AC7 | Holds | the assembly story and integration suites prove degraded outcomes |
 
 ## Metadata
 

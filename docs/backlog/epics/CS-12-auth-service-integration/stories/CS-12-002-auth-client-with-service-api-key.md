@@ -45,6 +45,7 @@ Parent epic: [CS-12 Auth Service Integration](../README.md)
 > Rules:
 >
 > - `UNAUTHENTICATED` from either call, and `INVALID_ARGUMENT` from `ValidateToken`, which the contract names for a missing token, become `UNAUTHENTICATED` (401).
+>   > SCOPE-QUESTION (Resolved): The contract also names `INVALID_ARGUMENT` from `ValidateToken` for a token longer than 8,192 characters. That answer maps the same way, to `UNAUTHENTICATED` (401) after exactly one attempt, so the mapping above is unchanged and the 3 files touched stand.
 > - `UNAVAILABLE` after the last permitted retry, and any other non-OK status, `INVALID_ARGUMENT` from `AuthorizeAccountAccess` included, become `UNAVAILABLE` (503), because the TRD degradation table allows the Auth calls no outcome other than 401, 403, 503 or 504.
 > - `DEADLINE_EXCEEDED`, or a budget exhausted before or during the call, becomes `DEADLINE_EXCEEDED` (504).
 > - Only `UNAVAILABLE` and `DEADLINE_EXCEEDED` are retried, by the call policy, so `UNAUTHENTICATED` and `INVALID_ARGUMENT` get exactly one attempt.
@@ -162,7 +163,7 @@ How it behaves:
 - Both credentials ride on every token check and every access question, and no call site can skip them.
 - An empty service key is still sent as an empty header, so the stub phase runs with no secret.
 - The unauthenticated status and the invalid-argument status return after one attempt, and only the unavailable and deadline-exceeded statuses retry.
-- An invalid-argument answer to a token check means a missing token and maps to 401, and any other unexpected status maps to 503.
+- An invalid-argument answer to a token check means a missing or over-long token and maps to 401, and any other unexpected status maps to 503.
 - A denial comes back as an ordinary answer for the access guard story to turn into 403.
 - The trace identifier issued at receipt reaches every failure through the standard error object.
 - Neither credential value reaches a log line, and before it builds its channel the client fits the transport with a header-logging guard that stays in place for the life of the process, a later application start included.

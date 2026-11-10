@@ -133,7 +133,7 @@ How it behaves:
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Framework vault source (vs own startup fetcher) | no story code handles a secret value | vault-double testing depends on what the framework accepts |
+| 1 | Framework vault source (vs own startup fetcher) | no story code handles a secret value | vault-double testing depends on the framework's accepted addresses and credentials |
 | 2 | Switch on vault address presence (vs a separate on-off flag) | one value turns the source on | an empty address silently means local mode |
 | 3 | Fail startup on an unreadable vault (vs start with empty secrets) | a broken vault never yields a service on empty credentials | a vault outage blocks every new pod |
 | 4 | Version from the managed bill of materials (vs a pinned literal) | the starter moves with its bill of materials | the version shows only in the resolved dependency report |
@@ -153,7 +153,7 @@ How it differs:
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Own startup fetcher (vs framework vault source) | full control of retry, order and logging | the story owns code that handles secret values |
+| 1 | Own startup fetcher (vs framework vault source) | full control of retry, order and logging | the story owns secret-handling code |
 | 2 | Own check of the vault address (vs framework skip of an empty address) | the switch is explicit in story code | the check repeats framework behaviour |
 | 3 | Fetch at an early startup hook (vs the framework's environment stage) | the client is built with any test option | a component created earlier sees empty secrets |
 
@@ -188,7 +188,7 @@ Open assumptions:
 |---|---|---|
 | AC1 | Conditional | the framework skip of an empty address awaits the first startup test |
 | AC2 | Conditional | the framework client must accept the vault double |
-| AC3 | Holds | the framework aborts startup when its first vault read fails |
+| AC3 | Holds | the framework's first failed vault read aborts startup |
 | AC4 | Holds | the managed bill of materials sets the starter version |
 | AC5 | Holds | the test builds the double's secret values at runtime |
 | AC6 | Holds | no story code handles a secret value |
@@ -211,7 +211,7 @@ Open assumptions:
 | AC1 | Holds | the fetcher does nothing without a vault address |
 | AC2 | Holds | the fetcher builds its own client against the double |
 | AC3 | Holds | the fetcher stops startup with the vault host in its message |
-| AC4 | Holds | the fetcher uses the client the managed starter brings |
+| AC4 | Holds | the fetcher uses the managed starter's vault client |
 | AC5 | Holds | the test builds the double's secret values at runtime |
 | AC6 | At risk | the fetcher's own log lines can leak a value |
 

@@ -150,105 +150,93 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A — concurrent balance, category and type reads, with filtering, ordering and description matching inside the service.
+Recommended: Option A — three concurrent reads, with filter, order and labels applied in the service.
 
-Rationale: the card data list operation returns every balance of an account, so a filter, an order and labels applied in the service need no contract change and keep one cache entry per account.
+Rationale: the card data list operation returns every balance of an account, so filtering, ordering and labelling need no contract change.
 
-- Rejected: Option B, pushing the type code filter to the card data source, because the baseline list operation of the card data contract carries no type code field.
+- Rejected: Option B, a type code filter at the card data source, which the baseline list operation lacks.
 
 ```mermaid
 sequenceDiagram
-    participant E as Category endpoint
-    participant S as Category retrieval
-    participant K as Shared cache
-    participant C as Card data service
-    participant R as Reference data service
-    E->>S: retrieve after the guard allows access
+    participant E as Endpoint
+    participant S as Retrieval
+    participant C as Card data
+    participant R as Reference data
+    E->>S: retrieve after the guard allows
     par balances
-        S->>K: balance entry of the account
-        S->>C: balance read on miss or stale entry
+        S->>C: balances, cache first
     and categories
-        S->>K: category list entry
-        S->>R: category read on miss or stale entry
+        S->>R: categories, cache first
     and types
-        S->>K: type list entry
-        S->>R: type read on miss or stale entry
+        S->>R: types, cache first
     end
-    alt unknown account, or balance read failed with no usable stale entry
+    alt unknown account, or balances failed with no usable stale entry
         Note over S: cut-off fixes the not-found, unavailable or deadline error
-        S-->>E: the error for the standard error mapping
+        S-->>E: the error for the standard mapping
     else balances read or served stale
-        S->>S: filter by type code, order and label
-        S-->>E: balances with data status, as-of time and both lists
-        E->>E: known type check on the type and category lists
-        Note over E,S: cut-off fixes fresh, stale, partial or error
-        E->>E: render, or end with the bad-request rejection
+        S->>S: filter, order and label
+        S-->>E: result with both lists
+        E->>E: known type check on both lists
+        Note over E,S: cut-off fixes the outcome
+        E->>E: render, or reject as bad request
     end
 ```
 
 ### Shared by both options
 
-- Topology: the retrieval runs in the service after the access guard allows, and reads the balances through the card data client and the category and type lists through the reference data client, all three side by side.
-- Naming: each balance is keyed by its type code and category code as in the category balance record, and the data status values are fresh, stale and partial.
-- Addressing: the account number comes from the request path, and the optional type code narrows the list.
+- Topology: after the guard allows, the service reads balances, categories and types side by side.
+- Naming: type code and category code key each balance, and status is fresh, stale or partial.
+- Addressing: the path names the account, and an optional type code narrows the list.
 - Isolation: nothing is read before access is allowed, and cache entries carry no caller identity.
-- Fallback: balances fall back to a stale entry within the five-minute maximum stale age, and an unusable list leaves its descriptions absent with a partial status.
-- Labels: category descriptions come from the category list and type descriptions from the type list, because a category carries no type description.
+- Fallback: balances use a stale entry within the five-minute maximum age; an unusable category list leaves both descriptions absent, an unusable type list only the type ones, each with partial status.
+- Labels: the category list gives category descriptions and the type list type descriptions, as a category carries no type description.
 - Provisioning: no new store, cache region or setting.
-- Cut-over: swapping the stubs for real services changes only the target address and the credential source.
-- Failures: the unavailable status after retries gives 503, the deadline-exceeded status at the cut-off gives 504, and the not-found status passes through as 404.
+- Cut-over: swapping a stub for its real service changes only the address and credential source.
+- Failures: not-found gives 404 ahead of every other outcome, unavailable after retries 503, and deadline exceeded at the cut-off 504.
 
 ### Design Option A — filter, order and labels inside the service
 
-The retrieval launches the balance read, the category list read and the type list read together as soon as access is allowed, and waits until the last one ends or the request budget runs out. The card data client returns every balance of the account from one account-wide cache entry, and the retrieval keeps the balances of the requested type code, orders them by type code and category code, and labels each one from the two lists. One shared resolver then sets the data status and the as-of time.
+The retrieval waits for the three concurrent reads or the budget's end, then filters, orders and labels the balances. The shared resolver sets the data status and as-of time.
 
 How it behaves:
 
-- A request without a type code returns every balance of the account, and a request with one keeps only that type.
-- The order is type code and then category code, whatever order the source returned.
-- An unusable category list leaves both descriptions absent on every balance and marks the result partial.
-- An unusable type list leaves only the type descriptions absent and marks the result partial.
-- An unknown account ends the request with the not-found status, whatever the list reads return.
-- The type list result and the category list result travel with the balances to the unknown type check of the validation story.
-- The retrieval fixes the outcome itself only for its own not-found, unavailable and deadline errors, and on every other result the endpoint fixes it right after the known type check, before rendering.
-- The response mapper renders an absent description as a null value on the HTTP interface and as an unset field on the remote procedure interface.
+- With a type code only its balances stay, and without one every balance stays.
+- Order is type code then category code, whatever the source order.
+- An absent description renders as null over HTTP and unset over the remote procedure interface.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Three reads launched together (vs one after another) | each read keeps one full attempt on a cold path | three calls are in flight per request |
-| 2 | Type code filter applied in the service (vs at the card data source) | the card data contract stays unchanged | every filtered request carries the whole account list |
-| 3 | One account-wide balance entry serving every filter (vs one entry per type code) | one entry per account is refreshed and expired | a filtered request still loads every balance |
-| 4 | Order fixed by the service (vs trusting the source order) | the response order holds for any source | every request pays for a sort |
+| 1 | Three reads together (vs in sequence) | a full attempt each on a cold path | three calls in flight |
+| 2 | Filter in the service (vs at the source) | no contract change | the whole list for every filter |
+| 3 | One account-wide entry (vs one per type code) | one entry per account to refresh | every balance loaded per filter |
+| 4 | Order fixed in the service (vs source order) | the order holds for any source | a sort per request |
 
-Effort and risk: one retrieval component, one response mapper and one test class, with the risk in a slow balance read that uses the whole residual budget.
+Effort and risk: a retrieval component, a mapper and a test class, with the risk in a slow balance read using the residual budget.
 
 ### Design Option B — type code filter at the card data source
 
-The card data list operation gains an optional type code, the card data stub applies it, and the card data client caches one entry per account and type code. The retrieval still reads the two lists beside the balance read and labels each balance, but it no longer filters. Ordering and status resolution stay in the service.
+The card data list operation gains an optional type code that the stub applies. The retrieval still orders, labels and resolves status but stops filtering.
 
 How it differs:
 
-- The card data contract gains a filter field that its baseline list operation lacks.
-- The card data epic owner must accept the contract extension before this story can start.
-- Each type code of an account gets its own cache entry beside the unfiltered one.
-- A filtered request carries only the matching balances.
-- A stale fallback for one type code cannot use the unfiltered entry of the same account.
+- The card data epic owner must accept the contract extension before this story starts.
+- A stale fallback for one type code cannot use the account's unfiltered entry.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Type code filter applied by the card data source (vs in the service) | a filtered request carries only matching balances | the contract extension falls outside this epic |
-| 2 | One cache entry per account and type code (vs one per account) | each entry holds only one filter's balances | an account holds up to eight entries |
-| 3 | Three reads launched together (vs one after another) | each read keeps one full attempt on a cold path | three calls are in flight per request |
+| 1 | Filter at the source (vs in the service) | only matching balances travel | an extension outside this epic |
+| 2 | Entry per account and type code (vs per account) | each entry holds one filter's balances | up to eight entries per account |
+| 3 | Three reads together (vs in sequence) | a full attempt each on a cold path | three calls in flight |
 
-Effort and risk: the same three files plus a contract, stub and client change in the card data epic, with the risk in an extension the card data epic owner has not accepted.
+Effort and risk: three files plus a card data contract, stub and client change, with the risk in an unaccepted extension.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: the baseline card data contract stays unchanged, and one cache entry per account serves every filter.
-- Strongest argument against: every filtered request carries the whole account list from the source or the cache.
-- Shared items that do not decide the choice: the guard order, the degradation outcomes, the status precedence, the ordering, the label sources and the three concurrent reads.
-- Flip conditions: accounts approaching 1,000 category balances, or a source-side type filter adopted by the requirements author.
+- Why: no contract change, and one cache entry per account serves every filter.
+- Strongest argument against: every filtered request carries the whole account list.
+- Shared items that do not decide the choice: guard order, degradation, status precedence, ordering, label sources and concurrent reads.
+- Flip conditions: accounts nearing 1,000 category balances, or a source-side type filter adopted by the requirements author.
 
 ## Design Validation
 
@@ -256,64 +244,60 @@ Effort and risk: the same three files plus a contract, stub and client change in
 
 Settled assumptions:
 
-- The sample data holds one category balance per account at most, and the synthetic volume holds ten.
-- The card data list operation carries no type code filter.
-- The reference lists come from a long-lived cache with a one-hour fresh lifetime.
-- A transaction category carries no type description, so type labels need the type list.
+- Sample data holds at most one balance per account, and synthetic volume ten.
+- Reference lists are cached with a one-hour fresh lifetime.
 - The shared resolver ranks partial over stale over fresh and takes the oldest read time.
-- The receipt stage starts the request deadline before validation on every validated route, so the guard and the retrieval share it.
+- The deadline starts at receipt, so the guard and the retrieval share it.
 
 Open assumptions:
 
-- Open → a cold path with two slow sign-in checks leaves one data attempt and no retry, settled by this story's deadline tests.
+- Open → two slow sign-in checks on a cold path leave one data attempt and no retry, settled by this story's deadline tests.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | fresh reads of the fixture account give one labelled balance |
-| AC2 | Holds | the service sorts and filters any source order |
-| AC3 | Holds | a known type with no balance leaves an empty list |
-| AC4 | Holds | the retrieval runs only after the access decision |
-| AC5 | Holds | the not-found status ends the request ahead of every other outcome |
-| AC6 | Holds | the call policy cuts each attempt to the lesser of the timeout and the budget left |
-| AC7 | Holds | the call policy retries only the two retryable statuses within the budget |
-| AC8 | Holds | each client serves a stale entry within its maximum age |
-| AC9 | Holds | a balance read with no usable entry ends in its final status |
-| AC10 | Holds | an unusable list leaves descriptions absent with the filter still applied |
-| AC11 | Conditional | the cold-path case depends on the sign-in time leaving one full attempt |
-| AC12 | Holds | the configuration refresh never sits on the request path |
-| AC13 | Holds | every failure passes through the standard error object with the receipt trace number |
-| AC14 | Holds | three reads launched together end within one attempt time |
+| AC1 | Holds | fresh reads label one balance |
+| AC2 | Holds | the service filters and sorts |
+| AC3 | Holds | no match gives an empty list |
+| AC4 | Holds | reads follow the access decision |
+| AC5 | Holds | not-found comes first |
+| AC6 | Holds | the call policy caps each attempt |
+| AC7 | Holds | only two statuses are retried |
+| AC8 | Holds | clients serve stale entries within maximum age |
+| AC9 | Holds | no usable entry gives the final status |
+| AC10 | Holds | the filter applies with descriptions absent |
+| AC11 | Conditional | the cold path needs one full attempt after sign-in |
+| AC12 | Holds | configuration stays off the request path |
+| AC13 | Holds | every failure uses the standard error object |
+| AC14 | Holds | concurrent reads take one attempt time |
 | AC15 | Holds | each list labels its own description |
 
 ### Option B
 
 Settled assumptions:
 
-- The sample data holds one category balance per account at most, and the synthetic volume holds ten.
-- The reference lists come from a long-lived cache with a one-hour fresh lifetime.
-- A transaction category carries no type description, so type labels need the type list.
-- The card data list operation carries no type code filter today.
+- Sample volume and reference caching are as in Option A.
+- The card data list operation has no type code filter today.
 
 Open assumptions:
 
 - Open → a contract extension accepted by the card data epic owner, settled by contract review.
-- Open → a cold path with two slow sign-in checks leaves one data attempt and no retry, settled by this story's deadline tests.
+- Open → two slow sign-in checks on a cold path leave one data attempt and no retry, settled by this story's deadline tests.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the source answers the type filter with the one fixture balance |
-| AC2 | Conditional | the filtered half relies on the stub honouring the new filter field |
-| AC3 | Holds | the source returns an empty list for a known type with no balance |
-| AC4 | Holds | the retrieval still runs only after the access decision |
-| AC5 | Holds | the source still answers the not-found status for an unknown account |
-| AC6 | Holds | the same call policy cuts each attempt |
+| AC1 | Holds | the source filters to one balance |
+| AC2 | Conditional | the filtered half needs the stub's new field |
+| AC3 | Holds | the source returns an empty list |
+| AC4 | Holds | reads still follow the access decision |
+| AC5 | Holds | the source still answers not-found |
+| AC6 | Holds | the same call policy applies |
 | AC7 | Holds | the same retry rule applies |
-| AC8 | At risk | filtered requests no longer read the named unfiltered stale entry |
-| AC9 | Holds | a balance read with no usable entry still ends in its final status |
-| AC10 | Conditional | the partial filter case relies on the extended source contract |
-| AC11 | Conditional | the cold-path case depends on the sign-in time leaving one full attempt |
-| AC12 | Holds | the configuration refresh never sits on the request path |
-| AC13 | Holds | the same error object carries the receipt trace number |
+| AC8 | At risk | filtered requests skip the named unfiltered stale entry |
+| AC9 | Holds | no usable entry gives the final status |
+| AC10 | Conditional | the partial filter case needs the extended contract |
+| AC11 | Conditional | the cold path needs one full attempt after sign-in |
+| AC12 | Holds | configuration stays off the request path |
+| AC13 | Holds | the same error object applies |
 | AC14 | Holds | the three reads still run together |
 | AC15 | Holds | labelling does not change |
 

@@ -119,74 +119,68 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A — a syntactic type code rule in the shared validator ahead of the access guard, plus a reference check after the concurrent reads.
+Recommended: Option A — a type code shape rule at receipt, plus a known-type check after the concurrent reads.
 
-Rationale: the shape check costs no network call, and the known-type check reuses the type list and the category list the request already reads beside the balances, so neither adds a step to the critical path.
+Rationale: the shape check costs no network call, and the known-type check reuses lists the request already reads.
 
-- Rejected: Option B, a reference lookup before the balance read, adds a serialized upstream call to the critical path.
+- Rejected: Option B, a reference lookup before the balance read, adds a serial upstream call.
 
 ### Shared by both options
 
-- Topology: validation runs inside the service process, with no new component and no network hop of its own.
-- Naming: the type code is the two-character code of the category balance record, and each error detail names the offending field as the HTTP interface description names it.
-- Addressing: the account number comes from the request path and the type code from the query, or both from the remote procedure request message.
-- Isolation: validation reads no account data, and the known-type check reads only the type list and category list results handed to it.
-- Fallback: an unusable type list or category list skips the unknown-type check, the type code filter still applies and the result is marked partial.
-- Provisioning: no new infrastructure and no new setting.
-- Cut-over: an unknown type changes from an empty list to a rejection only while both reference lists are usable, and nothing changes when real services replace the stubs.
-- Failures: every rejection is the standard error object with an invalid-argument status and the trace number issued at receipt.
+- Topology: validation runs inside the service with no network hop.
+- Naming: the type code is the two-character category balance code, and error details use HTTP field names.
+- Addressing: the account number comes from the path, the type code from the query, or both from the remote procedure request.
+- Isolation: validation reads no account data, only the two list results.
+- Fallback: an unusable type or category list skips the known-type check, and the filter still applies to a partial result.
+- Provisioning: no new infrastructure or setting.
+- Cut-over: an unknown type code turns from an empty list into a rejection only while both lists are usable, and replacing the stubs changes nothing.
+- Failures: every rejection is an invalid-argument standard error object with the receipt trace number.
 
-### Design Option A — shape check at receipt, known-type check after the reads
+### Design Option A — known-type check after the reads
 
-The shared validator gains a two-character type code rule and a category balance route entry that points at a category balance rule set, which the receipt stage applies before the access guard. After the guard allows access, the category balance read, the category list read and the type list read run side by side, and the known-type check reads the two list results once all three finish. A type code that the type list does not hold and no transaction category carries then ends the request with a bad-request rejection while both lists are usable, and the balances already read are dropped.
+The shared validator gains the type code rule and a category balance route entry, applied at receipt before the access guard. After the guard, the balance and both list reads run side by side. While both lists are usable, fresh or within their maximum stale age, a type code that the type list lacks and no category carries is then rejected and the balances read are dropped.
 
 How it behaves:
 
-- A type code of one or three characters, or a present but empty value, is rejected at receipt with one field entry naming the type code.
-- A malformed or all-zero account number is rejected at receipt with the account view screen text.
-- With both values malformed, one rejection carries two field entries, account number first.
-- A request rejected at receipt stops before the guard, so no Auth, Config, cache or data call follows.
-- After the reads, a type code that the type list does not hold and no transaction category carries is rejected while both lists are fresh or within their maximum stale age.
-- A stored type that no transaction category carries passes the known-type check, and the request continues to an empty list.
-- When either list is unusable, the known-type check reports itself skipped and the request continues to the filter.
-- A request with no type code passes both checks unchanged.
+- One or three characters, or an empty value, fail the type code rule with one field entry.
+- A malformed or all-zero account number fails with the account view screen text, and two bad fields give one rejection with two entries, account number first.
+- A receipt rejection makes no Auth, Config, cache or data call.
+- A stored type with no category passes to an empty list.
+- A request without a type code passes both checks.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Shape check at receipt ahead of the guard (vs after the guard) | malformed input never reaches the Auth service | the receipt stage order must stay explicit |
-| 2 | Known-type check reusing the concurrent type list and category list reads (vs a separate lookup) | no extra upstream call on the request path | a rejected request still pays for a balance read |
-| 3 | Skip the known-type check when either reference list is unusable (vs reject the request) | balances stay available during a Reference Data outage | an unknown type code yields an empty partial list during the outage |
-| 4 | Type code rule held once in the shared validator (vs a copy in the category rule set) | one change point when the interface description changes | one shared rule table that every endpoint edits |
+| 1 | Shape check at receipt (vs after the guard) | malformed input never reaches the Auth service | stage order must stay explicit |
+| 2 | Known-type check on the concurrent reads (vs a separate lookup) | no extra upstream call | a rejected request still pays a balance read |
+| 3 | Skip when either list is unusable (vs reject) | balances survive a Reference Data outage | an unknown code yields an empty partial list |
+| 4 | Type code rule in the shared validator (vs a copy) | one change point | every endpoint edits one shared table |
 
-Effort and risk: one rule and one route entry in the shared validator, one rule set with two checks and one test class, with the risk in a usability signal that cannot tell a stale usable list from an unusable one.
+Effort and risk: one rule, one route entry, one two-check rule set and one test class, with the risk in a stale usable list read as unusable.
 
 ### Design Option B — known-type check before the balance read
 
-The receipt stage and the shape rule stay as in Option A, but the known-type check moves ahead of the balance read. After the guard allows access, the service first reads the type list and the category list, rejects an unknown type code, and only then reads the category balances. The reference list reads and the balance read therefore run one after the other rather than side by side.
+The receipt stage and shape rule match Option A. After the guard, the service reads both lists, rejects an unknown type code, and only then reads the balances.
 
 How it differs:
 
-- The type list and category list reads become their own step between the guard and the balance read.
-- A rejected unknown type code costs no balance read.
-- A valid request waits for two upstream reads in sequence inside the same deadline.
-- On a cold path with two full Auth attempts, the balance read finds less than one full attempt of the deadline left.
-- The category balance request no longer follows the single concurrent data stage of the request path.
+- A valid request waits for two serial upstream reads inside the same deadline.
+- On a cold path with two full Auth attempts, the balance read has less than one full attempt left.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Reference list reads before the balance read (vs concurrent reads) | an unknown type code never triggers a balance read | a second serial upstream call on every request |
-| 2 | Known-type check on its own early results (vs the shared concurrent reads) | the check needs no balance result | the request path departs from the fixed stage order |
-| 3 | Skip on unusable reference data (vs reject the request) | balances stay available during a Reference Data outage | the skipped check has already spent its wait on the list read |
+| 1 | Reference reads before the balance read (vs concurrent reads) | an unknown code never triggers a balance read | a serial upstream call on every request |
+| 2 | Check on its own early results (vs the shared reads) | no balance result needed | the path departs from the single concurrent data stage |
+| 3 | Skip on unusable reference data (vs reject) | balances survive a Reference Data outage | the skip comes after the list wait |
 
-Effort and risk: the same rule set and a reordered data stage in the retrieval story, with the risk in valid requests running out of deadline on a cold path.
+Effort and risk: the same rule set plus a reordered data stage in the retrieval story, with the risk in a deadline overrun on a cold path.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: one concurrent data stage keeps the balance read and the reference reads inside the 900 millisecond deadline, and the shape check keeps malformed input away from every network call.
-- Strongest argument against: a request with an unknown type code still pays for a balance read that is then discarded.
-- Shared items that do not decide the choice: the two-character type code rule, the receipt stage ahead of the guard, the two-list known-type rule, the skip rule on an unusable reference list, the standard error object and the receipt trace number.
-- Flip conditions: a reference copy held in memory with no network call, which makes an early known-type check free, or a deadline budget that holds two serial data reads on a cold path.
+- Why: one concurrent data stage keeps every read inside the 900 millisecond deadline, and the shape check keeps malformed input off the network.
+- Strongest argument against: an unknown type code still pays for a discarded balance read.
+- Shared items that do not decide the choice: the type code rule, receipt stage, two-list rule, skip rule and error object.
+- Flip conditions: an in-memory reference copy, or a deadline that holds two serial data reads on a cold path.
 
 ## Design Validation
 
@@ -194,59 +188,55 @@ Effort and risk: the same rule set and a reordered data stage in the retrieval s
 
 Settled assumptions:
 
-- A stored type code is held by the type reference list even when no category carries it.
-- The receipt stage runs on both the HTTP and the remote procedure interface, ahead of the access guard.
-- The HTTP interface description declares exactly two characters of any kind for the type code.
-- The reference data client returns one result per list, each stating whether the list is usable and whether it holds a type code.
-- The account number rule and the receipt stage come from the shared validator story.
-- The category balance type labels come from the type list and the category labels from the category list, as the retrieval story settles, because a category carries no type description.
-- The retrieval hands on the type list result beside the category list result to the known-type check, as the retrieval story settles.
+- The type list holds every stored type code, including one no category carries.
+- The shared validator story supplies the account number rule and the receipt stage on both interfaces.
+- The HTTP interface description allows exactly two characters of any kind.
+- The reference data client reports, per list, usability and whether it holds a type code.
+- The retrieval story reads the type list for labels and hands both list results to the check.
 
 Open assumptions:
 
-- Open → the reference data client's usability signal distinguishes a list within its maximum stale age from an unusable one, settled by that story's unit tests.
+- Open → the usability signal tells a stale usable list from an unusable one, settled by the reference data client story's unit tests.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | a well-formed pair passes the receipt stage to the guard |
-| AC2 | Holds | the two-character rule rejects one, three and zero characters |
-| AC3 | Holds | the shared account number rule rejects each malformed value with the screen text |
-| AC4 | Holds | the receipt stage ends the request before any network call or cache read |
-| AC5 | Conditional | the rejection relies on a stale list within its maximum age counting as usable |
-| AC6 | Holds | both type codes are held by the type list and carried by categories |
-| AC7 | Holds | an unusable list makes the check report itself skipped |
-| AC8 | Holds | every rejection passes through the standard error object with the receipt trace number |
-| AC9 | Holds | the rule set checks both fields before raising one failure |
-| AC10 | Holds | the type list answer makes a type with no category known |
-| AC11 | Holds | an unusable type list makes the check report itself skipped |
+| AC1 | Holds | a well-formed pair reaches the guard |
+| AC2 | Holds | the rule rejects each wrong length |
+| AC3 | Holds | the shared rule rejects each malformed value |
+| AC4 | Holds | the receipt stage precedes every call and cache read |
+| AC5 | Conditional | the rejection relies on a stale list counting as usable |
+| AC6 | Holds | both lists hold both codes |
+| AC7 | Holds | an unusable category list makes the check skip |
+| AC8 | Holds | the standard error object carries the receipt trace number |
+| AC9 | Holds | both fields are checked before one failure |
+| AC10 | Holds | the type list knows a type with no category |
+| AC11 | Holds | an unusable type list makes the check skip |
 
 ### Option B
 
 Settled assumptions:
 
-- A stored type code is held by the type reference list even when no category carries it.
-- The receipt stage runs on both the HTTP and the remote procedure interface, ahead of the access guard.
-- The HTTP interface description declares exactly two characters of any kind for the type code.
+- The Option A assumptions on the type list, receipt stage and type code rule hold.
 - The deadline leaves room for one full data attempt after two full Auth attempts on a cold path.
 
 Open assumptions:
 
-- Open → the reference data client's usability signal distinguishes a list within its maximum stale age from an unusable one, settled by that story's unit tests.
+- Open → the usability signal assumption of Option A, settled by the same unit tests.
 - Open → whether two serial data reads fit the cold-path budget, settled by the category balance service-level scenario.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the receipt stage is the same as in Option A |
-| AC2 | Holds | the same two-character rule runs at receipt |
-| AC3 | Holds | the same account number rule runs at receipt |
-| AC4 | Holds | the receipt stage still ends the request before any network call |
-| AC5 | Conditional | the early rejection relies on a stale list within its maximum age counting as usable |
-| AC6 | At risk | a valid type code waits for two serial reads that can exhaust the deadline |
-| AC7 | Holds | an unusable list still makes the check report itself skipped |
-| AC8 | Holds | every rejection passes through the standard error object with the receipt trace number |
-| AC9 | Holds | the same rule set checks both fields at receipt |
-| AC10 | Holds | the early check reads the same type list answer |
-| AC11 | Holds | an unusable type list still makes the check report itself skipped |
+| AC1 | Holds | the receipt stage is as in Option A |
+| AC2 | Holds | the same type code rule applies |
+| AC3 | Holds | the same account number rule applies |
+| AC4 | Holds | the receipt stage still precedes every call |
+| AC5 | Conditional | the early rejection relies on a stale list counting as usable |
+| AC6 | At risk | two serial reads can exhaust the deadline for a valid code |
+| AC7 | Holds | an unusable list still makes the check skip |
+| AC8 | Holds | the same error object carries the trace number |
+| AC9 | Holds | the same rule set checks both fields |
+| AC10 | Holds | the early check reads the same type list |
+| AC11 | Holds | an unusable type list still makes the check skip |
 
 ## Metadata
 

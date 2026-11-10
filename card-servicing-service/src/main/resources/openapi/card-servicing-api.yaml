@@ -21,10 +21,10 @@ info:
 
 
     Deadline - the service fixes each request's outcome (full result, degraded
-    result or error) at a cut-off 900 ms after receipt and leaves 100 ms for
-    serialization and network. Each upstream attempt times out after 300 ms, or
-    sooner when less of the deadline remains, and is retried at most twice,
-    after 50 ms and then 100 ms of backoff, only on UNAVAILABLE or
+    result or error) at a cut-off no later than 900 ms after receipt and leaves
+    100 ms for serialization and network. Each upstream attempt times out after
+    300 ms, or sooner when less of the deadline remains, and is retried at most
+    twice, after 50 ms and then 100 ms of backoff, only on UNAVAILABLE or
     DEADLINE_EXCEEDED and only while a full attempt still fits the deadline.
 
 

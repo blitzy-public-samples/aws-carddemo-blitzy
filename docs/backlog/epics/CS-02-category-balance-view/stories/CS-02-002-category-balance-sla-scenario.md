@@ -100,76 +100,70 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — each virtual user alternates unfiltered and type-filtered calls over distinct synthetic accounts.
+Recommended: Design Option A — each virtual user alternates unfiltered and type-filtered calls.
 
-Rationale: one scenario on the shared runner that sends both request shapes of the category balance view, the full list of an account and the list narrowed to one transaction type, proves the one-second threshold for each shape and for the mix in one run of a thousand calls, with no change to the runner.
+Rationale: one run of a thousand calls on the unchanged shared runner proves the one-second threshold for both request shapes of the category balance view.
 
-- Rejected: Design Option B, unfiltered calls only — it leaves the type-filtered request shape unmeasured.
+- Rejected: Design Option B, unfiltered calls only, leaving the type-filtered shape unmeasured.
 
 ### Shared by both options
 
-- Topology: one Compose stack holds the service, the five stubs, the store and the cache, and the shared runner on the build host reaches them through the stack's published host ports.
-- Naming: the scenario is named for the category balance view, and its output lines and its report file carry that name.
-- Addressing: each call names one account number in the request path, and the build hands the runner the service address and the five stub log addresses.
-- Isolation: measured calls read only accounts of the calling identity's synthetic slice, at offsets whose category balances no other scenario reads, and the denial calls name sample accounts outside each caller's range, so the sample accounts the end-to-end flow reads are never read here.
-- Fallback: the scenario has no fallback path, so any non-success status, a failed precheck or a missed threshold fails the run.
-- Provisioning: the stack's loader generates the synthetic volume at stack start, before the stack reports ready, and the scenario brings no data of its own.
-- Cut-over: the same scenario reruns against the real services after the swap, which changes only addresses and credentials, while the real entitlements match the fixture ranges.
-- Failures: failure injection stays off, and injected failures are proven by the category balance retrieval story and the integration suites.
+- Topology: the shared runner reaches the Compose stack's service, five stubs, store and cache through published ports.
+- Naming: the scenario, its output lines and report carry the view's name.
+- Addressing: each call names one account in its path, and the build supplies the service and stub log addresses.
+- Isolation: measured calls read only the caller's synthetic slice, at offsets no other scenario reads, and denial calls name sample accounts outside the caller's range, so the end-to-end flow's accounts are never read.
+- Fallback: none, so any failed status, precheck or threshold fails the run.
+- Provisioning: the loader generates the synthetic volume before the stack reports ready.
+- Cut-over: the swap changes only addresses and credentials, so the scenario reruns unchanged while real entitlements match the fixture ranges.
+- Failures: injection stays off, as the category balance retrieval story and integration suites prove injected failures.
 
-### Design Option A — unfiltered and type-filtered calls alternated per virtual user
+### Design Option A — alternated call shapes
 
-Each regular fixture identity gets one list of one hundred distinct synthetic accounts spread across its slice, with every second entry narrowed to the first, second or third transaction type in turn. Both virtual users of that identity walk the list once, in order. The runner judges the combined set, and the scenario then splits the calls by shape and holds each shape to the same one-second threshold.
+Each regular identity gets a hundred distinct accounts from its synthetic slice, every second one narrowed to the first, second or third transaction type in turn. Both of its virtual users walk that list once in order, and the scenario holds each shape to the runner's threshold.
 
 How it behaves:
 
-- Half of each virtual user's calls return all ten balances of an account.
-- The other half return the five, three or two balances of the first, second or third transaction type.
-- Each account takes the cold path on whichever read reaches it first, and the identity's other virtual user finds it warm only when that read has already filled the entry.
-- Transaction type and category descriptions come from the cache after their first read in the run.
-- Four content probes on one account outside the lists confirm the balance count of each shape before measurement.
-- The loader log confirms the planning-baseline volume before the first request.
-- The completion log and the stub request logs give the deadline and retry evidence for the measured window.
-- The scenario splits the calls by shape through the target each call record names, never through the order the calls complete in.
-- One permission-denied call per identity runs after the measured window.
+- Unfiltered calls return ten balances, filtered calls the five, three or two of their type.
+- Each account is cold until its first read fills its cache entry.
+- Type and category descriptions are cached after first read.
+- Four content probes on an unlisted account first confirm each shape's balance count.
+- The loader log confirms the volume first, and completion and stub logs give deadline and retry evidence.
+- Each call record's target, not completion order, sets its shape.
+- One denial call per identity follows the measured window.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Alternate unfiltered and type-filtered calls (vs unfiltered calls only) | both request shapes are measured | each shape gets half the sample |
-| 2 | Percentiles per shape and combined (vs combined only) | a slow shape shows on its own | the report grows by two lines |
-| 3 | Accounts from the synthetic range only (vs sample accounts too) | the reads run at planning volume | the run depends on volume generation |
-| 4 | Accounts at offsets no other scenario reads (vs the first hundred of each slice) | no other scenario warms the measured entries | the list needs a stride rule |
-| 5 | The three transaction types in turn (vs one type only) | every filter selectivity of the volume is measured | each type gets a third of the filtered sample |
-| 6 | Denial calls after the measured window (vs denied targets inside the load) | the percentiles stay over successful requests | the denial adds calls after measurement |
+| 1 | Alternated shapes (vs unfiltered calls only) | both shapes are measured | each shape gets half the calls |
+| 2 | Per-shape and combined percentiles (vs combined only) | a slow shape shows alone | two more report lines |
+| 3 | Synthetic accounts only (vs sample accounts too) | reads run at planning volume | the run needs generated volume |
+| 4 | Offsets no other scenario reads (vs each slice's first hundred) | no other scenario warms them | the list needs a stride rule |
+| 5 | Three types in turn (vs one type) | every filter selectivity is measured | each type gets a third of filtered calls |
+| 6 | Denial calls after the window (vs inside the load) | percentiles stay over successful requests | extra calls follow measurement |
 
-Effort and risk: small effort in one file, with runner capacity on the shared host inflating the per-shape percentiles as the main risk.
+Effort and risk: small, one file, with shared-host runner capacity the main risk to per-shape percentiles.
 
 ### Design Option B — unfiltered calls only
 
-Each regular fixture identity gets one list of one hundred distinct synthetic accounts at the same offsets, all requested without a type filter. The runner judges the single shape on its own. The volume check, the denial calls and the completion log and stub log checks match Option A, and the content probe reads the unfiltered list only.
+Each regular identity requests Option A's hundred accounts unfiltered. The runner judges the one shape, and every other check matches Option A except that the content probe reads only the full list.
 
 How it differs:
 
-- Every call returns all ten balances of an account.
-- The type-filtered request shape is never measured.
-- The report carries the runner's lines only, with no shape split.
-- The scenario needs no pairing of call records with targets.
-- The one measured shape rests on a thousand calls instead of five hundred.
+- Every call returns all ten balances.
+- Its one shape rests on a thousand calls.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Unfiltered calls only (vs alternated shapes) | the full list is measured on every call | the filtered shape goes unmeasured |
-| 2 | Combined percentiles only (vs per shape and combined) | the report stays at the runner's lines | a slow filtered shape stays hidden |
-| 3 | Accounts at offsets no other scenario reads (vs the first hundred of each slice) | no other scenario warms the measured entries | the list needs a stride rule |
+| 1 | Unfiltered calls only (vs alternated shapes) | every call measures the full list | the filtered shape goes unmeasured |
+| 2 | Combined percentiles only (vs per shape and combined) | the report keeps the runner's lines | a slow filtered shape stays hidden |
 
-Effort and risk: smaller effort in one file, breaking the criteria that measure the filtered shape.
+Effort and risk: smaller, one file, breaking the filtered-shape criteria.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: it measures both request shapes the category balance view sends, on the shared runner, in one run of a thousand calls and one file.
-- Strongest argument against: the filtered share dilutes the unfiltered and combined percentile samples, so each shape rests on five hundred calls.
-- Shared items that do not decide the choice: the shared runner, the load shape, the identity mapping, the stride rule, the volume check, the permission-denied calls, the completion log check, the thresholds, failure injection off and the stack start and stop.
+- Why: it measures both shapes the view sends, in one file.
+- Strongest argument against: each shape rests on five hundred of the thousand calls.
+- Shared items that do not decide the choice: the runner, load shape, stride rule, volume and log checks, denial calls and thresholds.
 - Flip conditions: the interface never sends the type filter.
 
 ## Design Validation
@@ -178,54 +172,51 @@ Effort and risk: smaller effort in one file, breaking the criteria that measure 
 
 Settled assumptions:
 
-- Each synthetic account carries ten category balances, five of the first transaction type, three of the second and two of the third, as the category balance volume story fixes.
-- Each regular fixture identity holds a two-thousand-account synthetic slice, and every listed account lies inside it.
-- The service applies the type filter to one account-wide cache entry, so a filtered call reads the same upstream list as an unfiltered one.
-- No other scenario reads the category balances of the listed accounts.
-- The stack runs with failure injection off on its defaults and loads the synthetic volume before it reports ready.
-- The shared runner holds the load shape, the combined percentiles, the thresholds and the report.
-- Each call record of the shared runner's result names the user, the call position and the target the call was sent for.
+- The category balance volume story gives each synthetic account ten balances, split five, three and two over the first three types.
+- Each identity's two-thousand-account slice holds every listed account, which no other scenario reads.
+- The service applies the type filter to one account-wide cache entry.
+- Failure injection is off, and the volume loads before the stack reports ready.
+- The shared runner holds the load shape, combined percentiles, thresholds and report.
+- Each call record names the user, call position and target.
 
 Open assumptions:
 
-- Runner capacity on the shared continuous integration host Open → repeated runs on that host compared against a run on an idle machine.
+- Runner capacity on the shared continuous integration host Open → repeated runs there compared with one idle-machine run.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | each identity's list holds one hundred distinct accounts of its slice |
-| AC2 | Holds | every second entry carries one of the three transaction types the volume gives each account |
-| AC3 | Conditional | the shared host capacity stays unproven until the first run |
-| AC4 | Holds | with failure injection off every upstream read answers on the success path |
-| AC5 | Holds | the loader log carries one load report line per entity |
-| AC6 | Holds | the access guard denies the request before any card data or reference data read |
+| AC1 | Holds | each list holds a hundred distinct slice accounts |
+| AC2 | Holds | every second entry names a type each account holds |
+| AC3 | Conditional | shared-host capacity is unproven until the first run |
+| AC4 | Holds | with injection off every upstream read succeeds |
+| AC5 | Holds | the loader log reports each entity's load |
+| AC6 | Holds | the guard denies before any card or reference data read |
 | AC7 | Holds | success-path stub calls end well inside the per-attempt limit |
-| AC8 | Holds | an attempt that never fails triggers no retry |
-| AC9 | Holds | fresh upstream reads and fresh cached descriptions give the fresh status |
-| AC10 | Holds | the target on each call record places every call in its shape line |
+| AC8 | Holds | attempts that never fail trigger no retry |
+| AC9 | Holds | fresh reads and cached descriptions give the fresh status |
+| AC10 | Holds | each record's target picks its shape line |
 
 ### Option B
 
 Settled assumptions:
 
-- Each synthetic account carries ten category balances.
-- Each regular fixture identity holds a two-thousand-account synthetic slice, and every listed account lies inside it.
-- The stack runs with failure injection off on its defaults and loads the synthetic volume before it reports ready.
+- Option A's volume, slice and stack assumptions.
 
 Open assumptions:
 
-- Runner capacity on the shared continuous integration host Open → repeated runs on that host compared against a run on an idle machine.
+- Runner capacity on the shared continuous integration host Open → repeated runs there compared with one idle-machine run.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | each identity's list holds one hundred distinct accounts of its slice |
+| AC1 | Holds | as under Option A |
 | AC2 | Breaks | no measured call carries a type filter |
 | AC3 | Breaks | no filtered percentile exists |
-| AC4 | Holds | with failure injection off every upstream read answers on the success path |
-| AC5 | Holds | the volume check matches Option A |
-| AC6 | Holds | the denial calls match Option A |
-| AC7 | Holds | success-path stub calls end well inside the per-attempt limit |
-| AC8 | Holds | an attempt that never fails triggers no retry |
-| AC9 | Holds | fresh upstream reads and fresh cached descriptions give the fresh status |
+| AC4 | Holds | as under Option A |
+| AC5 | Holds | as under Option A |
+| AC6 | Holds | as under Option A |
+| AC7 | Holds | as under Option A |
+| AC8 | Holds | as under Option A |
+| AC9 | Holds | as under Option A |
 | AC10 | Breaks | the report carries no per-shape lines |
 
 ## Metadata

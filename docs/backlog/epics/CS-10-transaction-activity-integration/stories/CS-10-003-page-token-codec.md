@@ -80,70 +80,65 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — versioned compact encoding with a keyed fingerprint.
+Recommended: Design Option A — keyed fingerprint.
 
-Rationale: a keyed fingerprint binds each page token to the account and filters it was issued for, so a replayed or altered token is refused before any read.
+Rationale: a keyed fingerprint binds each token to the account and filters it was issued for.
 
-- Rejected: Design Option B, a plain encoded cursor with no fingerprint — a token from one account or filter would silently page another list.
+- Rejected: Design Option B, a plain encoded cursor — a token from one account or filter would page another list.
 
 ### Shared by both options
 
-- Topology: one codec, used by the listing stub to issue and read tokens and by the transaction list validation to check them before any upstream call.
-- Naming: a version marker leads every token, and version 1 is the only accepted value.
-- Addressing: the cursor holds the last returned row's processed timestamp at microsecond precision and its transaction identifier, written after the version marker at fixed positions with no separator or length field.
-- Isolation: the token carries no caller identity, credential or entitlement, so per-account authorization, never the token, decides which account a caller may read.
-- Fallback: any decode failure yields the invalid-argument status, never a silent restart from page one, and an absent or empty token means the first page.
-- Provisioning: nothing is provisioned, because the codec adds no environment setting.
-- Cut-over: the real service issues and reads tokens in the same version 1 form this codec writes, so the swap changes only the target address and the credential source and leaves the codec unchanged.
-- Failures: a malformed value, a value outside its exact encoded form and a foreign version each yield the same field-level error entry naming the page token.
+- Topology: one codec, issuing and reading tokens for the listing stub and checking them for the transaction list validation before any upstream call.
+- Naming: a version marker leads every token, and only version 1 passes.
+- Addressing: the cursor, the last row's microsecond-precision processed timestamp and transaction identifier, follows the version marker at fixed positions with no separator or length field.
+- Isolation: the token carries no caller identity, credential or entitlement, so per-account authorization alone decides account access.
+- Fallback: an absent or empty token means the first page, and an undecodable one is refused, never silently restarted from page one.
+- Provisioning: nothing, because the codec adds no environment setting.
+- Cut-over: the real service uses the same version 1 form, so the swap changes only the target address and credential source.
+- Failures: a malformed value, an inexact encoding and a foreign version each raise one invalid-argument error naming the page token field.
 
-### Design Option A — versioned compact encoding with a keyed fingerprint
+### Design Option A — keyed fingerprint
 
-Each token carries the version marker, the cursor of the last returned row and a keyed digest computed over the version, the cursor, the account and both filters. The digest follows the transaction identifier as its raw 32 bytes, so the payload is at most 124 bytes and its URL-safe encoding without padding at most 166 characters, the bound the page-token contracts state. Decoding recomputes the digest from the presented account and filters and rejects the token on any difference.
+Each token ends with a raw 32-byte keyed digest of the version, cursor, account and both filters. Its payload of at most 124 bytes encodes to at most 166 URL-safe characters, the page-token contract bound.
 
 How it behaves:
 
-- Issuing writes the version marker, the timestamp, the transaction identifier and the raw 32-byte keyed digest in that order, then encodes the bytes in the URL-safe alphabet.
 - Reading accepts only the exact encoded form, so an altered unused trailing bit still fails.
-- Reading checks the version marker before the digest, and only version 1 passes.
-- Reading recomputes the digest from the presented account and filters, and any difference rejects the token.
-- An absent filter enters the digest as a marker no filter value can take, so a missing filter never matches a present one.
-- Every rejection raises the invalid-argument status with one field-level error entry naming the page token.
+- Reading checks the version, then recomputes the digest from the presented account and filters, raising the same field-level error on any difference.
+- An absent filter enters the digest as a marker no filter value can take.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Keyed fingerprint over account and filters (vs a plain digest) | a token edited without the built-in key fails the consistency check | changing the key invalidates live tokens |
-| 2 | Digest that also covers the version and cursor (vs the account and filters alone) | an altered cursor fails the check | every decode recomputes the digest over the whole token |
-| 3 | Version marker first (vs unversioned) | the format can change without ambiguity | one extra byte per token |
-| 4 | URL-safe alphabet without padding (vs the standard alphabet) | safe in a query string without escaping | differs from the default encoder |
+| 1 | Keyed fingerprint (vs a plain digest) | edits without the built-in key fail | a key change invalidates live tokens |
+| 2 | Digest also over version and cursor (vs account and filters alone) | an altered cursor fails | each decode hashes the whole token |
+| 3 | Version marker first (vs unversioned) | unambiguous format changes | one extra byte |
+| 4 | URL-safe alphabet without padding (vs standard) | no query-string escaping | a non-default encoder |
 
-Effort and risk: small effort in one codec and its tests, low risk.
+Effort and risk: small, one codec and its tests, low risk.
 
 ### Design Option B — plain encoded cursor
 
-The token encodes the version marker and the cursor only, in the same URL-safe alphabet. Decoding checks the version and returns the cursor with no binding to the account or filters.
+The token holds only the version marker and the cursor. Decoding checks the version and returns the cursor.
 
 How it differs:
 
-- No fingerprint is written or checked.
-- A token replayed on another account or filter decodes and pages the wrong list.
-- Tampering that still decodes to a valid cursor goes unnoticed.
+- A replayed token pages the wrong list, and a tampered one that still decodes goes unnoticed.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Version and cursor only (vs a fingerprinted token) | the shortest token | a replayed token pages another list |
-| 2 | Version marker first (vs unversioned) | the format can change without ambiguity | one extra byte per token |
-| 3 | URL-safe alphabet without padding (vs the standard alphabet) | safe in a query string without escaping | differs from the default encoder |
+| 1 | Version and cursor only (vs a fingerprint) | the shortest token | a replayed token pages another list |
+| 2 | Version marker first (vs unversioned) | unambiguous format changes | one extra byte |
+| 3 | URL-safe alphabet without padding (vs standard) | no query-string escaping | a non-default encoder |
 
-Effort and risk: smallest effort, high risk of cross-list paging.
+Effort and risk: smallest, high risk of cross-list paging.
 
 ### Recommendation
 
 - Option: Design Option A
-- Why: a token presented against another account or filter is rejected before any read.
-- Strongest argument against: the built-in key is the same in every environment, so the fingerprint resists tampering but not a reader of the source.
-- Shared items that do not decide the choice: the cursor content and its fixed positions, the version marker, the URL-safe alphabet and the error rendering.
-- Flip conditions: a revision of the token contract that drops the account and filter binding, which a swap to the real service never makes.
+- Why: a token presented with another account or filter fails before any read.
+- Strongest argument against: one built-in key serves every environment, so a reader of the source defeats the fingerprint.
+- Shared items that do not decide the choice: the cursor layout, version marker, URL-safe alphabet and error rendering.
+- Flip conditions: a token contract revision dropping the account and filter binding.
 
 ## Design Validation
 
@@ -151,49 +146,49 @@ Effort and risk: smallest effort, high risk of cross-list paging.
 
 Settled assumptions:
 
-- The error mapping renders a field-level error entry for the invalid-argument status.
-- No new environment variable is allowed, so the key is built into the codec.
+- The error mapping renders a field-level entry for the invalid-argument status.
+- No new environment variable is allowed, so the key is built in.
 - The platform runtime provides the keyed digest, so no library is added.
-- The real service honours the version 1 form and the account and filter binding the contract states, keyed with the same built-in key, so the swap changes only the target address and the credential source.
+- The real service binds tokens the same way, with the same built-in key.
 
 Open assumptions:
 
-- Whether a key change between releases may refuse the earlier tokens a caller keeps for backward paging Open → the deferred UI run's paging design.
+- Whether a key change may refuse earlier tokens kept for backward paging Open → the deferred UI run's paging design.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the cursor round-trips through the version check and the digest check |
-| AC2 | Holds | the digest and the exact-form check cover every character |
+| AC1 | Holds | the cursor round-trips through both checks |
+| AC2 | Holds | the digest and exact-form checks cover every character |
 | AC3 | Holds | the account enters the digest |
-| AC4 | Holds | the type filter and its absence enter the digest as distinct values |
-| AC5 | Holds | an absent category filter differs from every category value in the digest |
-| AC6 | Holds | the version check rejects any marker other than 1 |
-| AC7 | Holds | a value outside the URL-safe alphabet fails to decode |
-| AC8 | Holds | the encoder writes at most 124 bytes as at most 166 URL-safe characters without padding |
-| AC9 | Holds | the key is a constant inside the codec |
+| AC4 | Holds | the type filter and its absence enter the digest distinctly |
+| AC5 | Holds | an absent category filter differs from every category value |
+| AC6 | Holds | only version 1 passes |
+| AC7 | Holds | a value outside the alphabet fails to decode |
+| AC8 | Holds | at most 124 bytes encode to at most 166 URL-safe characters |
+| AC9 | Holds | the key is a codec constant |
 
 ### Option B
 
 Settled assumptions:
 
-- The error mapping renders a field-level error entry for the invalid-argument status.
+- The error mapping renders a field-level entry for the invalid-argument status.
 - No new environment variable is allowed.
 
 Open assumptions:
 
-- Whether the token contract drops the account and filter binding it now states Open → a revision of the transaction activity contract.
+- Whether the token contract drops its account and filter binding Open → a transaction activity contract revision.
 
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Holds | the cursor round-trips through the version check |
-| AC2 | Breaks | a single changed character within the cursor can decode to another valid cursor |
-| AC3 | Breaks | the token carries no account binding |
-| AC4 | Breaks | the token carries no type filter binding |
-| AC5 | Breaks | the token carries no category filter binding |
-| AC6 | Holds | the version check rejects any marker other than 1 |
-| AC7 | Holds | a value outside the URL-safe alphabet fails to decode |
-| AC8 | Breaks | the worst-case token carries 92 bytes in 123 characters instead of the required 124 bytes in exactly 166 characters |
-| AC9 | Breaks | the codec has no fingerprint and therefore no built-in fingerprint key |
+| AC2 | Breaks | a changed cursor character can yield another valid cursor |
+| AC3 | Breaks | nothing binds the account |
+| AC4 | Breaks | nothing binds the type filter |
+| AC5 | Breaks | nothing binds the category filter |
+| AC6 | Holds | only version 1 passes |
+| AC7 | Holds | a value outside the alphabet fails to decode |
+| AC8 | Breaks | the worst case encodes 92 bytes to 123 characters, not 124 bytes to exactly 166 |
+| AC9 | Breaks | no fingerprint means no built-in key |
 
 ## Metadata
 

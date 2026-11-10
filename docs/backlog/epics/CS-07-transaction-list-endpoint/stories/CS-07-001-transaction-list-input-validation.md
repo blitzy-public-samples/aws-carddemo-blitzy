@@ -104,72 +104,63 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A — a shared parameter validator reading the configured page bounds from the in-memory configuration snapshot.
+Recommended: Option A — page bounds from the in-memory configuration snapshot.
 
-Rationale: one receipt rule set checks every list parameter against the interface description and the configured page bounds before any authentication call, cache read or upstream call, and a configured maximum takes effect with no deploy.
+Rationale: one receipt rule set stops bad list requests before any outside call, and configured bounds take a new maximum with no deploy.
 
-- Rejected: Option B, fixed page bounds taken only from the interface description, ignores the configured maximum.
+- Rejected: Option B, fixed interface bounds, ignores the configured maximum.
 
 ### Shared by both options
 
-- Topology: the checks run inside the service at receipt, ahead of the access guard, with no new component.
-- Naming: each error detail names the request parameter as the HTTP interface description names it.
-- Addressing: one account path per request, with the filters, the page size and the page token in the query or in the remote procedure request message.
-- Isolation: no check makes a network call or reads the cache.
-- Fallback: the built-in defaults of twenty and one hundred apply when no configuration snapshot is held.
-- Provisioning: no new infrastructure and no new setting.
-- Cut-over: the checks ship with the service with no data change, and nothing changes when real services replace the stubs.
-- Failures: a bad-request status with one detail per failing field, the message of the first failing field and the trace identifier issued at receipt.
+- Topology: the checks run in the service at receipt on both interfaces, ahead of the access guard.
+- Naming: error details use the interface description's parameter names.
+- Addressing: one account path per request, with the filters, page size and page token in the query or remote procedure message.
+- Isolation: no check calls the network or reads the cache.
+- Fallback: built-in defaults of twenty and one hundred apply when no snapshot is held.
+- Provisioning: no new infrastructure or setting.
+- Cut-over: the checks ship with the service with no data change, and replacing the stubs changes nothing.
+- Failures: a bad-request status with one detail per failing field and the receipt trace identifier.
 
-### Design Option A — page bounds from the configuration snapshot
+### Design Option A — configured page bounds
 
-The shared validator gains a category code rule, a page size rule and a page token shape rule, each copied from the interface description, and a transaction list route entry for both protocols. That entry points at a transaction list rule set, which the receipt stage runs before the access guard. The rule set takes the default and maximum page size from the configuration values the request captured at receipt, and it decodes a non-empty page token with the page-token codec against the presented account and filters.
+The shared validator gains category code, page size and token shape rules from the interface description and a route entry for a new transaction list rule set. That rule set reads the page bounds from the configuration captured at receipt.
 
 How it behaves:
 
-- A request with no page size uses the configured default page size, which is twenty until a configuration is held.
-- A page size outside one to one hundred, or above the configured maximum, is rejected with one detail naming the page size.
-- An empty or missing page token means the first page and is never decoded.
-- A page token of the wrong length or alphabet, one that does not decode, one of another version or one bound to another account or filter set is rejected with one detail naming the page token.
-- The page token is decoded only after the account number and both filters pass.
-- A malformed category code, type code or account number is rejected with one detail naming that field.
-- A rejected request stops before the guard, so no Auth, Config, cache or data call follows.
-- After the guard allows a request that passed, the endpoint adapters read its accepted values once, with no second check, and pass them to the retrieval as separate values: the account number, the filters, the effective page size and the unchanged page token.
+- A missing page size takes the captured default, and a size outside one to one hundred or above the captured maximum is rejected.
+- An empty or missing token means the first page, and a non-empty token is decoded only after the account number and both filters pass.
+- After the guard allows the request, the endpoint adapters read its accepted values once, with no second check, and pass them to the retrieval as separate values.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Page bounds from the configuration values captured at receipt (vs fixed bounds) | a configured maximum applies with no deploy | a stale snapshot may admit a page size a newer configuration rejects |
-| 2 | Token fingerprint checked at receipt (vs at the transaction source) | a replayed token never reaches an upstream call | the service and the source must read one token format |
-| 3 | Rules added to the shared validator (vs endpoint-local rules) | one change point for each parameter rule | every endpoint edits one shared rule table |
-| 4 | Token decoded only after the account number and filters pass (vs always) | each rejection names the field at fault | a bad token surfaces only once the other fields are fixed |
+| 1 | Configured page bounds captured at receipt (vs fixed bounds) | a configured maximum applies with no deploy | a stale snapshot may admit a page size over a newer maximum |
+| 2 | Token fingerprint checked at receipt (vs at the transaction source) | a replayed token reaches no upstream call | service and source must both read one token format |
+| 3 | Rules in the shared validator (vs endpoint-local rules) | one change point per rule | every endpoint edits one shared rule table |
+| 4 | Token decoded after a valid account number and filters (vs always) | each rejection names the field at fault | a mismatched token goes unreported beside a bad account number or filter |
 
-Effort and risk: three rules and one route entry in the shared validator, one rule set and one test class, with the risk in a stale snapshot maximum admitting a page size a newer configuration rejects.
+Effort and risk: three validator rules, a route entry, a rule set and a test class, risking a stale snapshot maximum.
 
-### Design Option B — fixed page bounds from the interface description
+### Design Option B — fixed page bounds
 
-The receipt stage, the parameter rules and the page token check stay as in Option A, but the page bounds are constants copied from the interface description. The default page size is always twenty and the maximum is always one hundred. The rule set never reads the configuration snapshot.
+Option B keeps the Option A checks but fixes the page bounds at the interface values of twenty and one hundred. It never reads the configuration snapshot.
 
 How it differs:
 
-- A configured default page size other than twenty never applies to the list.
-- A configured maximum below one hundred is ignored, so a larger page reaches the transaction source.
-- The rule set holds no configuration values, so it has no tie to the configuration snapshot.
-- The page token, filter and account number checks behave as in Option A.
+- A configured default or maximum never applies, so pages above a lower configured maximum reach the transaction source.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Fixed page bounds from the interface description (vs configured bounds) | no tie to the configuration snapshot | a configured maximum never limits a page |
-| 2 | Fixed default page size of twenty (vs configured default) | the default never changes between requests | a configured default never applies |
-| 3 | Token fingerprint checked at receipt (vs at the transaction source) | a replayed token never reaches an upstream call | the service and the source must read one token format |
+| 1 | Fixed bounds from the interface description (vs configured bounds) | no tie to the configuration snapshot | a configured maximum never limits a page |
+| 2 | Fixed default of twenty (vs configured default) | the default never changes between requests | a configured default never applies |
 
-Effort and risk: the same rules with two constants in place of the configuration read, with the risk in pages larger than the configured maximum reaching the transaction source.
+Effort and risk: two constants replace the configuration read, risking pages above the configured maximum.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: only configured page bounds let the configuration owner tighten the page size with no deploy, and the read stays in memory with no network call.
-- Strongest argument against: a stale snapshot maximum may admit a page size that a newer configuration would reject.
-- Shared items that do not decide the choice: no network call at receipt, the page token check, the parameter rules and the error details.
+- Why: only configured bounds let the configuration owner tighten the page size with no deploy.
+- Strongest argument against: a stale snapshot may admit a page size over a newer maximum.
+- Shared items that do not decide the choice: the receipt checks, the token check and the error details.
 - Flip condition: page bounds never vary by configuration.
 
 ## Design Validation
@@ -178,56 +169,52 @@ Effort and risk: the same rules with two constants in place of the configuration
 
 Settled assumptions:
 
-- The HTTP interface description declares four digits for the category code, one to one hundred for the page size and at most one hundred sixty-six URL-safe characters for the page token.
-- The configuration client story accepts a configured maximum only from one to one hundred and a default no larger than that maximum.
-- The page-token codec binds a token to the account and both filters but not to the page size.
-- The receipt stage runs on both the HTTP and the remote procedure interface, ahead of the access guard.
-- The account number rule comes from the shared validator story and the type code rule from the category balance input validation story.
-- The balance summary endpoint story, which precedes this one in wave order, makes the receipt stage start the request deadline, with its one configuration capture, before this rule set runs, on every route the shared validator declares, this one included.
+- The interface description sets the three new parameter rules.
+- The configuration client story accepts a maximum of one to one hundred and a default no larger.
+- The page-token codec binds a token to the account and filters, not the page size.
+- The balance summary endpoint story makes the receipt stage start the request deadline with its one configuration capture before this rule set runs.
+- The account number and type code rules come from the shared validator and category balance input validation stories.
 
 Open assumptions:
 
-- Open → whether the UI shows the server message text or its own, settled by the deferred UI run.
+- Open → whether the UI shows the server message, settled by the deferred UI run.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | each page size within the built-in bounds passes and is kept |
-| AC2 | Holds | the captured default page size fills a missing page size |
-| AC3 | Holds | the integer rule of one to one hundred rejects each value |
-| AC4 | Holds | the captured maximum rejects sixty and admits fifty |
-| AC5 | Holds | the codec accepts a token replayed with its own account and filters |
-| AC6 | Holds | the shape rule and the codec reject each altered, foreign or old token |
+| AC1 | Holds | each page size within the built-in bounds passes unchanged |
+| AC2 | Holds | the captured default applies |
+| AC3 | Holds | the integer rule rejects each value |
+| AC4 | Holds | the captured maximum of fifty applies |
+| AC5 | Holds | the codec accepts matching replays |
+| AC6 | Holds | shape and codec checks reject each token |
 | AC7 | Holds | each field rule rejects its malformed value |
-| AC8 | Holds | the rule set reads only the in-memory capture the receipt stage takes |
-| AC9 | Holds | every rejection passes through the standard error object with the receipt trace identifier |
-| AC10 | Holds | the rule set checks every field before it raises one failure |
+| AC8 | Holds | only the in-memory capture is read |
+| AC9 | Holds | the standard error object carries the receipt trace identifier |
+| AC10 | Holds | the rule set checks every field before raising one failure |
 
 ### Option B
 
 Settled assumptions:
 
-- The HTTP interface description declares four digits for the category code, one to one hundred for the page size and at most one hundred sixty-six URL-safe characters for the page token.
-- The page-token codec binds a token to the account and both filters but not to the page size.
-- The receipt stage runs on both the HTTP and the remote procedure interface, ahead of the access guard.
-- The account number rule comes from the shared validator story and the type code rule from the category balance input validation story.
+- The Option A assumptions other than the configuration client limits hold.
 
 Open assumptions:
 
-- Open → whether the configuration owner ever sets page bounds other than the interface bounds, settled by the Requirements Analysis author.
-- Open → whether the UI shows the server message text or its own, settled by the deferred UI run.
+- Open → whether the configuration owner ever sets other page bounds, settled by the Requirements Analysis author.
+- Open → whether the UI shows the server message, settled by the deferred UI run.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the fixed bounds equal the built-in defaults |
-| AC2 | Breaks | a held default of thirty gives way to the fixed twenty |
-| AC3 | Holds | the same integer rule rejects each value |
-| AC4 | Breaks | a page size of sixty passes the fixed maximum of one hundred |
-| AC5 | Holds | the same codec check accepts the replayed token |
-| AC6 | Holds | the same shape rule and codec reject each token |
-| AC7 | Holds | the same field rules run at receipt |
-| AC8 | Holds | the rule set reads no configuration and calls nothing |
-| AC9 | Holds | every rejection passes through the standard error object with the receipt trace identifier |
-| AC10 | Holds | the same rule set checks every field before it raises one failure |
+| AC1 | Holds | fixed bounds equal the built-in defaults |
+| AC2 | Breaks | the fixed twenty overrides a held default of thirty |
+| AC3 | Holds | the same integer rule applies |
+| AC4 | Breaks | a page size of sixty passes the fixed maximum |
+| AC5 | Holds | the same codec check applies |
+| AC6 | Holds | the same token checks apply |
+| AC7 | Holds | the same field rules apply |
+| AC8 | Holds | the rule set reads no configuration |
+| AC9 | Holds | the same error object applies |
+| AC10 | Holds | the same rule set checks every field |
 
 ## Metadata
 

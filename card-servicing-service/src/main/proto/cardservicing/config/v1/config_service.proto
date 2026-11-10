@@ -21,7 +21,7 @@ service ConfigService {
   //   {"values":{"default_page_size":"20","max_page_size":"100","upstream_timeout_ms":"300","upstream_max_retries":"2"}}
   //
   // Errors:
-  //   INVALID_ARGUMENT - no keys requested, or a requested key name is empty; the details entry names keys
+  //   INVALID_ARGUMENT - no keys requested, more than 32 keys requested, or a requested key name empty or longer than 64 characters; the details entry names keys
   //   UNAUTHENTICATED - forwarded bearer token missing, invalid or expired (the stub does not re-authorize)
   //   UNAVAILABLE - service unavailable after retries
   //   DEADLINE_EXCEEDED - request deadline reached
@@ -29,13 +29,13 @@ service ConfigService {
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
 }
 
-// Request for GetConfig.
+// Request for GetConfig: a selection of 1-32 non-empty configuration key names, each at most 64 characters.
 message GetConfigRequest {
-  // Configuration keys to read, at least one, and every key name non-empty; an empty key name, alone or beside other keys, returns INVALID_ARGUMENT. Baseline keys: default_page_size, max_page_size, upstream_timeout_ms, upstream_max_retries. REQUEST_DEADLINE_MS is never a Config key.
+  // Configuration keys to read, at least one and at most 32 keys, a repeated key name counting each time it is listed, every key name 1-64 characters; no keys, more than 32 keys, or a key name that is empty or longer than 64 characters, alone or beside other keys, returns INVALID_ARGUMENT before any lookup. Unknown keys within these limits are absent from the result, not an error. Baseline keys: default_page_size, max_page_size, upstream_timeout_ms, upstream_max_retries. REQUEST_DEADLINE_MS is never a Config key.
   repeated string keys = 1;
 }
 
-// Response for GetConfig.
+// Response for GetConfig: the values of the requested keys that are known; an unknown key is omitted rather than reported as an error.
 message GetConfigResponse {
   // Values of the known requested keys as decimal strings; unknown keys are absent. Baseline values: default_page_size 20, max_page_size 100 (upper bound for page size), upstream_timeout_ms 300 (per-attempt timeout in milliseconds), upstream_max_retries 2.
   map<string, string> values = 1;

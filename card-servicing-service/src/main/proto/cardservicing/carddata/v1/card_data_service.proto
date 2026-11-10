@@ -83,7 +83,7 @@ message GetAccountRequest {
 
 // Carries the requested account record.
 message GetAccountResponse {
-  // The account record.
+  // The requested account record, always present on success; an unknown account returns NOT_FOUND instead of an empty record.
   Account account = 1;
 }
 

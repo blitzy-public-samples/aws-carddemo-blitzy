@@ -158,7 +158,7 @@ How it behaves:
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
 | 1 | One record with nested groups (vs one value per consumer) | every default lives in one place | every new group edits one shared record |
-| 2 | Checks once at startup (vs checks at first use) | a bad value never reaches a request | startup fails for a setting a run never uses |
+| 2 | Checks once at startup (vs checks at first use) | a bad value never reaches a request | startup fails even for a setting unused by the run |
 | 3 | Mask in the printed form of the record (vs masking at each log line) | one rule covers every secret | a new secret must join the masked set |
 
 Effort and risk: one settings record, one defaults file and two test classes, with the risk in a default that drifts from the environment-variable table.
@@ -210,7 +210,7 @@ Open assumptions:
 |---|---|---|
 | AC1 | Holds | one defaults file declares all 14 settings |
 | AC2 | Holds | each variable fills only its own setting |
-| AC3 | Holds | the framework names each setting it cannot convert |
+| AC3 | Holds | the framework names each unconvertible setting |
 | AC4 | Holds | the record checks the failure-rate range at startup |
 | AC5 | Holds | the record checks every lower bound and the port range at startup |
 | AC6 | Holds | the printed record masks every set secret |
@@ -231,13 +231,13 @@ Open assumptions:
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Conditional | the 14 defaults agree only while every consumer repeats the same value |
+| AC1 | Conditional | agreement of the 14 defaults depends on identical values at every consumer |
 | AC2 | Holds | each consumer reads its own variable |
 | AC3 | At risk | a value read on first use fails during a request instead of at startup |
 | AC4 | At risk | the stub must check its own failure-rate range |
 | AC5 | At risk | each consumer must check its own bounds |
 | AC6 | At risk | each secret is masked separately at each log line |
-| AC7 | Holds | the scan does not depend on how settings are read |
+| AC7 | Holds | the scan is independent of the settings-reading approach |
 
 ## Metadata
 

@@ -218,7 +218,7 @@ Settled assumptions:
 
 - The cache rules fix a 300-second maximum stale age, and this story fixes a 60-second freshness window for both entries.
 - The retry cap is two, with waits of 50 ms and then 100 ms.
-- The request deadline is measured to the cut-off, 900 ms after receipt.
+- The request deadline runs from receipt to a cut-off no later than 900 ms after receipt.
 - Card cross-references are never cached.
 - The transport writes header values only through its frame logger, which a process-wide guard silences below the information level.
 
@@ -252,7 +252,7 @@ Settled assumptions:
 
 - The cache rules fix a 300-second maximum stale age, and this story fixes a 60-second freshness window for both entries.
 - The retry cap is two, with waits of 50 ms and then 100 ms.
-- The request deadline is measured to the cut-off, 900 ms after receipt.
+- The request deadline runs from receipt to a cut-off no later than 900 ms after receipt.
 - Card cross-references are never cached.
 
 Open assumptions:

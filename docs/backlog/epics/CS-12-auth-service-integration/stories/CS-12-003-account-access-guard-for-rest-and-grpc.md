@@ -148,97 +148,91 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — one access guard shared by an HTTP request filter and a remote procedure server interceptor, placed right after the parameter check.
+Recommended: Design Option A — one access guard shared by the HTTP filter and remote procedure interceptor.
 
-Rationale: one guard in the request chain ahead of every account endpoint makes the order of checks a property of the chain rather than of each endpoint, so no account read can start before an allow.
+Rationale: one guard in the request chain fixes the check order ahead of every account read.
 
-- Rejected: Option B, checks inside each endpoint, because four copies of the same order of checks can drift apart.
-- Rejected: an authorization step at the API gateway, because the gateway sees no entitlements and the remote procedure path would bypass it.
+- Rejected: Option B, checks inside each endpoint, because four copies of the order can drift.
+- Rejected: authorization at the API gateway, which sees no entitlements and misses remote procedure calls.
 
 ```mermaid
 sequenceDiagram
     participant Caller
     participant Check as Parameter check
     participant Guard as Access guard
-    participant Auth as Auth service
-    participant Settings as Settings provider
+    participant Auth
+    participant Settings
     participant Data as Account data
-    Caller->>Check: account request with bearer token
-    Check->>Guard: parameters valid
+    Caller->>Check: request with token
+    Check->>Guard: valid request
     Guard->>Auth: validate token
-    Auth-->>Guard: subject and roles
-    Guard->>Auth: authorize account for subject
-    alt access denied
-        Auth-->>Guard: not allowed
-        Guard-->>Caller: permission-denied status
-    else access allowed
-        Auth-->>Guard: allowed
+    Auth-->>Guard: subject
+    Guard->>Auth: authorize account
+    alt not allowed
+        Guard-->>Caller: permission denied
+    else allowed
         Guard->>Settings: access-allowed notification
-        Guard->>Data: endpoint reads account data
+        Guard->>Data: endpoint reads data
     end
 ```
 
 Shared by both options:
 
-- Topology: the guard runs inside the service, with one token check and one account question to the Auth service per request.
-- Naming: rejections use the unauthenticated and permission-denied statuses of the standard error object, and the access log names each outcome.
-- Addressing: the account checked is taken only from the request path or the request message, the same value the parameter check accepted.
-- Isolation: no account data and no cache entry is read before an allow.
-- Fallback: none, because the guard fails closed and the Auth service has no degraded answer.
-- Provisioning: one access-log line per decision carries the subject, the account, the outcome and the trace identifier.
-- Cut-over: the real Auth service replaces the stub by a change of address and credential source only.
-- Failures: every rejection returns 401, 403, 503 or 504 with the trace identifier issued at receipt, and the cut-off falls at or before 900 ms.
+- Topology: inside the service, one token check and one account question to Auth per request.
+- Naming: standard error object statuses, with each outcome named in the access log.
+- Addressing: the account checked is the path or message value the parameter check accepted.
+- Isolation: no account or cache read before an allow.
+- Fallback: none, as Auth has no degraded answer and access fails closed.
+- Provisioning: one access-log line per decision with subject, account, outcome and trace identifier.
+- Cut-over: the real Auth service changes only address and credential source.
+- Failures: 401, 403, 503 or 504 with the receipt trace identifier, cut off within 900 ms.
 
 ### Design Option A
 
-One protocol-neutral guard decides every request on an account path. A thin HTTP request filter and a thin remote procedure server interceptor hand it the bearer token and the account identifier, each placed right after the slot of the parameter check. On an allow the guard sends the single access-allowed notification and binds the subject to the request, and on any other answer it ends the request with the standard error object.
+An HTTP filter and a remote procedure interceptor, right after the parameter check slot, hand every account request to one protocol-neutral guard. An allow sends the access-allowed notification once and binds the subject. Any other answer ends the request with the standard error object.
 
 How it behaves:
 
-- The filter and the interceptor sit after the parameter check slot, so a malformed request never reaches the Auth service.
-- The guard validates the token first and asks about the account only for a validated subject.
-- A denial, an unavailable Auth service or a spent deadline ends the request before the endpoint runs.
-- The access-allowed notification is sent once per allowed request and never on a rejection.
-- The subject from the token check is bound to the request, and identity supplied by the caller is ignored.
-- The remote procedure interceptor holds the request message until the decision and runs the Auth calls away from the transport thread.
-- Each decision writes one access-log line with no token and no service key header value.
+- The guard asks about the account only for a validated subject, ignoring caller-supplied identity.
+- A denial, Auth outage or spent deadline ends the request ahead of the endpoint.
+- The interceptor holds the message until the decision, with Auth calls off the transport thread.
+- Access-log lines carry no token or service key.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One shared guard (vs per-endpoint checks) | every endpoint gets the same order of checks | one defect affects all four endpoints |
-| 2 | Filter slot after the parameter check (vs first in the chain) | malformed requests never reach the Auth service | the slot order must be held by registration |
-| 3 | Access-allowed notification from the guard (vs from each endpoint) | the notification fires exactly once per allow | the guard depends on the settings provider |
-| 4 | Access log in the guard (vs in each endpoint) | each decision is logged once with one field set | the log shows no endpoint outcome after the allow |
+| 1 | One shared guard (vs per-endpoint checks) | one check order for every endpoint | one defect reaches all four endpoints |
+| 2 | Slot after the parameter check (vs first in the chain) | malformed requests never reach Auth | registration must hold the slot order |
+| 3 | Notification from the guard (vs each endpoint) | one notification per allow | the guard depends on the settings provider |
+| 4 | Access log in the guard (vs each endpoint) | one uniform line per decision | no endpoint outcome after the allow |
 
-Effort and risk: one guard, one filter, one interceptor and three test classes, with the risk in the order of the request chain.
+Effort and risk: one guard, filter and interceptor plus three test classes, with the risk in chain order.
 
 ### Design Option B
 
-Each of the four endpoints calls the parameter check, the token check and the account question itself before its own data reads. No filter or interceptor sits in the request chain, and each endpoint sends its own access-allowed notification and writes its own access-log line. The Auth calls and the error object stay the same as in Option A.
+Each endpoint runs the parameter check, token check and account question itself before its data reads. Auth calls and the error object match Option A.
 
 How it differs:
 
-- Each endpoint repeats the order of checks on both protocols, eight call sites in all.
-- An endpoint that skips or reorders a step can read account data before an allow.
-- Each endpoint sends the access-allowed notification itself.
-- Four endpoints write access-log lines, whose fields can drift apart.
-- A new endpoint must copy the checks by hand.
+- The order of checks repeats at all eight endpoint call sites.
+- A skipped or reordered step can read data before an allow.
+- Each endpoint owns its notification and access-log line.
+- A new endpoint copies the checks by hand.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Checks inside each endpoint (vs one shared guard) | each endpoint can tailor its own rule | four copies of the order can drift |
-| 2 | Notification from each endpoint (vs from the guard) | the notification sits beside the data read | a missed call leaves the configuration unrefreshed |
-| 3 | Access log in each endpoint (vs in the guard) | the log line can carry endpoint detail | four log writers can drift apart |
+| 1 | Checks inside each endpoint (vs one shared guard) | a rule tailored per endpoint | four copies of the order can drift |
+| 2 | Notification from each endpoint (vs the guard) | the notification beside the data read | a missed call leaves configuration unrefreshed |
+| 3 | Access log in each endpoint (vs the guard) | endpoint detail in the log line | four log writers can drift apart |
 
-Effort and risk: no filter or interceptor but eight repeated check blocks, with the risk in one endpoint that reads data before its check.
+Effort and risk: eight check blocks and no filter or interceptor, with the risk in a data read ahead of its check.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: one guard in the request chain makes the order of checks, the single notification and the single log line hold for every endpoint at once.
-- Strongest argument against: one ordering mistake in the filter chain exposes every endpoint at once.
-- Shared items that do not decide the choice: the Auth client with its timeout, retries and cut-off, the error object statuses, the fail-closed outcomes, the trace identifier and the address-only cut-over.
-- Flip conditions: endpoints need different authorization rules per operation, or an endpoint must authorize on a value that only its own data read reveals.
+- Why: one guard fixes the check order, the notification and the log line for every endpoint.
+- Strongest argument against: one chain ordering mistake exposes every endpoint.
+- Shared items that do not decide the choice: the Auth client, error statuses, fail-closed outcomes, trace identifier and address-only cut-over.
+- Flip conditions: per-operation authorization rules, or authorization on a value only an endpoint's data read reveals.
 
 ## Design Validation
 
@@ -246,62 +240,63 @@ Effort and risk: no filter or interceptor but eight repeated check blocks, with 
 
 Settled assumptions:
 
-- The Auth client story fails closed and maps every Auth failure to the unauthenticated, unavailable or deadline-exceeded status.
-- The error object story supplies the statuses, the filter error writer and the trace identifier issued at receipt.
-- The parameter check runs first in the request chain, ahead of the guard.
-- The fixture tokens and entitlements are fixed by the Auth stub story.
-- The endpoints hand on only the token the guard binds on an allow, without its scheme, and each client adds the scheme once.
+- The Auth client story fails closed.
+- The error object story supplies the statuses, filter error writer and receipt trace identifier.
+- The parameter check runs first.
+- The Auth stub story fixes the fixture tokens and entitlements.
+- Endpoints hand on only the guard-bound token, without its scheme.
 
 Open assumptions:
 
-- Open → the validation story's order test settles that the request-parameter validator fills the slot ahead of the guard filter and interceptor.
-- Open → the interceptor unit suite settles that the account identifier is read from the remote procedure message before any Auth call.
+- Open → the validation story's order test settles the parameter check slot ahead of the guard.
+- Open → the interceptor suite settles reading the account from the message before any Auth call.
 - Open → the Auth integration suite settles retry and cut-off timing on a loaded runner.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | a denial ends the request before the endpoint runs |
-| AC2 | Holds | an allow binds the validated subject and passes the request on |
-| AC3 | Holds | a missing or non-bearer credential is rejected before any Auth call |
-| AC4 | Holds | a rejected token ends the request before the account question |
-| AC5 | Holds | the subject comes only from the token check |
-| AC6 | Conditional | the parameter check must fill the slot ahead of the guard |
-| AC7 | Holds | only the guard sends the notification and only after an allow |
-| AC8 | Holds | the Auth client applies the call policy with the request deadline |
-| AC9 | Conditional | the real-clock case depends on thread scheduling on the runner |
-| AC10 | Conditional | the real-clock case depends on thread scheduling on the runner |
-| AC11 | Holds | an unavailable Auth service ends the request with no data read |
-| AC12 | Holds | every rejection passes through the error object with the receipt trace identifier |
-| AC13 | Holds | the guard writes one line per decision and never a credential |
+| AC1 | Holds | a denial prevents endpoint execution |
+| AC2 | Holds | an allow binds the validated subject |
+| AC3 | Holds | credential checks precede any Auth call |
+| AC4 | Holds | a rejected token skips the account question |
+| AC5 | Holds | identity comes only from the token |
+| AC6 | Conditional | the parameter check must precede the guard |
+| AC7 | Holds | the guard notifies only after an allow |
+| AC8 | Holds | the Auth client applies the deadline-bound call policy |
+| AC9 | Conditional | real-clock timing depends on the runner |
+| AC10 | Conditional | real-clock timing depends on the runner |
+| AC11 | Holds | an Auth outage blocks data reads |
+| AC12 | Holds | rejections carry the receipt trace identifier |
+| AC13 | Holds | one credential-free log line per decision |
 
 ### Validation of Option B
 
 Settled assumptions:
 
-- The Auth client story fails closed and maps every Auth failure to the unauthenticated, unavailable or deadline-exceeded status.
-- The error object story supplies the statuses and the trace identifier issued at receipt.
-- The fixture tokens and entitlements are fixed by the Auth stub story.
+- The Auth client story fails closed.
+- The error object story supplies the statuses and receipt trace identifier.
+- The Auth stub story fixes the fixture tokens and entitlements.
 
 Open assumptions:
 
-- Open → a review of all eight call sites settles that each runs the parameter check, the token check and the account question in that order.
-- Open → a test per endpoint settles that each sends the notification once and only after an allow.
+- Open → a review of the eight call sites settles their check order and identity source.
+- Open → a test per endpoint settles one notification, only after an allow.
+- Open → the Auth integration suite settles retry and cut-off timing on a loaded runner.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | At risk | each endpoint must repeat the check before its data read |
-| AC2 | Holds | an allow lets the endpoint continue with the validated subject |
-| AC3 | Conditional | each endpoint must reject a missing credential before any Auth call |
-| AC4 | Holds | the Auth client rejects the token before the account question |
-| AC5 | Conditional | each endpoint must ignore identity supplied by the caller |
-| AC6 | At risk | the order of checks is set per endpoint |
-| AC7 | Conditional | each endpoint must send the single notification |
-| AC8 | Holds | the Auth client applies the call policy with the request deadline |
-| AC9 | Conditional | the real-clock case depends on thread scheduling on the runner |
-| AC10 | Conditional | the real-clock case depends on thread scheduling on the runner |
-| AC11 | Conditional | each endpoint must stop before its data read on an unavailable Auth service |
-| AC12 | Holds | the error object carries the receipt trace identifier on every path |
-| AC13 | At risk | four log writers can each miss a field or log a credential |
+| AC1 | At risk | each endpoint must check before reading |
+| AC2 | Holds | an allow passes on the validated subject |
+| AC3 | Conditional | each endpoint must reject missing credentials first |
+| AC4 | Holds | the Auth client rejects the token first |
+| AC5 | Conditional | each endpoint must ignore caller-supplied identity |
+| AC6 | At risk | each endpoint sets its own check order |
+| AC7 | Conditional | each endpoint must notify once |
+| AC8 | Holds | the Auth client applies the deadline-bound call policy |
+| AC9 | Conditional | real-clock timing depends on the runner |
+| AC10 | Conditional | real-clock timing depends on the runner |
+| AC11 | Conditional | each endpoint must stop before reading on an Auth outage |
+| AC12 | Holds | the error object carries the receipt trace identifier |
+| AC13 | At risk | four log writers can drop fields or leak credentials |
 
 ## Metadata
 

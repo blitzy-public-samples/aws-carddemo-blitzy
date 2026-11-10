@@ -120,71 +120,71 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — one suite that drives the guard through a minimal test-only account endpoint behind a stand-in parameter check.
+Recommended: Design Option A — the suite drives the guard through a test-only account endpoint.
 
-Rationale: the guard, the Auth client, the Auth stub and the configuration snapshot all exist in this wave, while the production endpoints do not, so a test-only endpoint proves the fail-closed path now rather than a wave later.
+Rationale: only the production endpoints are missing in this wave, so a test-only endpoint proves the fail-closed path a wave earlier.
 
-- Rejected: Design Option B, the suite driving each production endpoint, because those endpoints arrive in the next wave.
-- Rejected: runs on the shared end-to-end container stack, because per-test failure overrides do not apply there.
+- Rejected: Design Option B, the production endpoints, due in the next wave.
+- Rejected: runs on the shared end-to-end container stack, which takes no per-test overrides.
 
 Shared by both options:
 
-- Topology: the service and the stubs run in one test runtime, with the relational store and the cache in throwaway containers.
-- Naming: one suite per external epic carries the integration tag, so only the integration task runs it.
-- Addressing: the stubs listen on loopback ports that the test harness reports, bound into the service settings before the application context starts.
-- Isolation: per-test failure overrides, fresh request logs, an emptied cache and a new application context for every test.
-- Fallback: none, because the Auth path fails closed and has no degraded answer.
-- Provisioning: the shared container base starts the relational store and the cache once per test runtime.
-- Cut-over: the suite stays on the Auth stub and its fixture tokens, because its cases rely on injected failures and stub request logs that a real Auth service does not offer, while the service itself moves to the real Auth service by a change of client address and credential source only.
-- Failures: unavailable answers, injected latency and deadline exhaustion, each asserted through the stub request logs and the cut-off time.
+- Topology: service and stubs in one test runtime, relational store and cache in throwaway containers.
+- Naming: one integration-tagged suite per external epic, run by the integration task alone.
+- Addressing: harness-reported stub loopback ports bound into the service settings before startup.
+- Isolation: every test gets its own overrides, fresh request logs, an emptied cache and a new application context.
+- Fallback: none, since the Auth path fails closed.
+- Provisioning: the shared container base starts store and cache once per test runtime.
+- Cut-over: the suite stays on the Auth stub and its fixture tokens for failure injection and request logs, while the service switches to the real one by address and credential source.
+- Failures: unavailable answers, injected latency and deadline exhaustion, asserted through stub request logs and cut-off times.
 
 ### Design Option A
 
-One suite sends real HTTP requests to a minimal account endpoint that exists only in the test configuration. A stand-in parameter check rejects a malformed account number ahead of the guard, and the endpoint reads its data from the probe stub through the cache only after an allow. The suite reads the stub request logs, the cache contents and the completion line of each request to prove what was called, what was read and when the cut-off fell.
+One suite sends real HTTP requests to a test-only account endpoint that reads probe stub data through the cache. A stand-in parameter check rejects malformed account numbers ahead of the guard.
 
 How it behaves:
 
-- Each test sets the latency or the failure share of one stub, sends one or more requests and reads the logs that the stubs and the service wrote.
-- A denied or failed request leaves the probe stub log and the cache untouched, and an allowed request leaves one probe call and one cache entry as the positive control.
-- A configuration entry seeded past its fresh period makes the first allowed request launch one background refresh, while rejected requests launch none.
-- A slow configuration service delays only the background refresh, never the response.
-- The suite scans every captured log line for fixture tokens and for the service key.
+- Each test sets one stub's latency or failure share, then reads stub logs, the cache and each completion line's cut-off.
+- Denied or failed requests leave the probe log and cache untouched; an allowed one leaves one probe call and one cache entry.
+- A stale seeded configuration entry makes the first allowed request, never a rejected one, launch one background refresh.
+- A slow configuration service delays that refresh, never the response.
+- All captured logs are scanned for fixture tokens and the service key.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Test-only account endpoint (vs the production endpoints) | the suite runs in this wave with no endpoint story | its order of checks can differ from production |
-| 2 | Probe stub as the data source (vs the card data stub) | it needs no story later in the wave | the no-read proof covers a stand-in rather than account data |
-| 3 | Stale configuration entry seeded in the cache (vs a controlled clock) | the timing cases keep the real clock | the snapshot starts from built-in values rather than from an expired held set |
-| 4 | Per-test failure overrides (vs one fixed failure profile) | each case sets its own latency and failure share | each case waits for its own delayed calls |
+| 1 | Test-only account endpoint (vs production endpoints) | the suite runs in this wave | its check order can differ from production |
+| 2 | Probe stub as data source (vs the card data stub) | it needs no later story | the no-read proof covers stand-in data only |
+| 3 | Seeded stale configuration entry (vs a controlled clock) | timing cases keep the real clock | the snapshot starts from built-in values rather than an expired held set |
+| 4 | Per-test failure overrides (vs one fixed failure profile) | each case sets its own profile | each case waits out its own delayed calls |
 
-Effort and risk: one suite class and one test configuration, with the risk in timing bounds on a loaded runner.
+Effort and risk: one suite and one test configuration, with the risk in timing bounds on a loaded runner.
 
 ### Design Option B
 
-The suite sends its requests to the four production endpoints on the account path instead of a test-only endpoint. The production parameter check replaces the stand-in, and the card data stub replaces the probe stub as the data source. The cases, the logs read and the stub overrides stay the same as in Option A.
+The suite targets the four production account endpoints. The production parameter check replaces the stand-in, and the card data stub replaces the probe stub.
 
 How it differs:
 
-- The suite cannot run until the card data stub lands later in this wave and the endpoint stories land in the next wave.
-- Every case runs once per endpoint, four times the cases of Option A.
-- The production parameter check proves the real order of checks ahead of the guard.
-- The no-read proof covers real account data in the cache and the card data stub.
+- The suite waits for this wave's card data stub and the next wave's endpoint stories.
+- Every case runs four times, once per endpoint.
+- The real check order ahead of the guard is proven.
+- The no-read proof covers real account data.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
 | 1 | Production endpoints (vs a test-only endpoint) | the real order of checks is proven | the suite waits a wave for the endpoints |
-| 2 | Card data stub as the data source (vs the probe stub) | the no-read proof covers real account data | the suite depends on the card data stories |
+| 2 | Card data stub as data source (vs the probe stub) | the no-read proof covers real account data | the suite depends on the card data stories |
 | 3 | Every case on all four endpoints (vs one endpoint) | each account path is covered | the run time grows fourfold |
 
-Effort and risk: no test configuration but four endpoint variants of every case, with the risk in a wave of delay before the Auth path is proven.
+Effort and risk: no test configuration but four variants of every case, risking a one-wave delay to the Auth proof.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: it proves the fail-closed path, the timeout, the retry cap, the cut-off and the configuration launch point in the same wave as the guard.
-- Strongest argument against: the stand-in parameter check can differ from the order that the production endpoints use.
-- Shared items that do not decide the choice: the in-runtime stubs, the throwaway containers, the per-test overrides, the request-log assertions and a cut-over that keeps the suite on the stubs.
-- Flip conditions: the endpoint stories landing in the same wave as this suite, or the production parameter check differing from the stand-in in a way the endpoint order tests cannot catch.
+- Why: it proves the fail-closed path, timeout, retry cap, cut-off and configuration launch point in the guard's wave.
+- Strongest argument against: the stand-in check order can differ from production.
+- Shared items that do not decide the choice: in-runtime stubs, throwaway containers, per-test overrides, request-log assertions and the cut-over.
+- Flip conditions: the endpoint stories landing in this suite's wave, or a stand-in difference the endpoint order tests cannot catch.
 
 ## Design Validation
 
@@ -192,56 +192,51 @@ Effort and risk: no test configuration but four endpoint variants of every case,
 
 Settled assumptions:
 
-- The guard, the Auth client, the Auth stub, the configuration snapshot, the test harness and the probe stub exist from earlier stories in this wave.
-- The shared container base and the integration stage exist from the configuration integration suite story.
-- The guard story places the parameter check slot ahead of the guard and calls the access-allowed hook only after an allow.
-- The fixture tokens and entitlements are fixed by the Auth stub story.
+- Earlier stories supply the guard, Auth client, Auth stub with its fixture tokens and entitlements, configuration snapshot, harness, probe stub, container base and integration stage.
+- The guard story puts the parameter check slot ahead of the guard and calls the access-allowed hook only after an allow.
 
 Open assumptions:
 
-- Open → the endpoint validation stories' order tests settle that the stand-in parameter check matches the production order.
-- Open → the configuration client story's tests settle that a seeded stale configuration entry leads the background refresh to one configuration read.
-- Open → the first pull-request run settles that the work ahead of the first Auth attempt stays below 250 ms on the runner.
-- Open → the first pull-request run settles that, in the authorization deadline case, the work between the end of the hold and the account question adds under 100 ms to the injected delay on the runner.
+- Open → the endpoint validation stories' order tests settle that the stand-in matches production order.
+- Open → the configuration client story's tests settle that a seeded stale entry leads to one configuration read.
+- Open → the first pull-request run settles that work ahead of the first Auth attempt stays below 250 ms and post-hold work before the account question adds under 100 ms to the injected delay.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the call policy retries an unavailable answer at most twice |
-| AC2 | Conditional | the two-attempt count assumes under 250 ms of work ahead of the first attempt |
-| AC3 | Holds | the guard rejection precedes any read through the cache or the probe stub |
-| AC4 | Conditional | the seeded stale entry must lead the refresh to one configuration read |
-| AC5 | Conditional | the under-1,000 ms response depends on thread scheduling on the runner |
-| AC6 | Conditional | the under-1,000 ms response depends on thread scheduling on the runner |
-| AC7 | Conditional | the response and authorization timing bounds depend on thread scheduling on the runner |
-| AC8 | Holds | every Auth failure ends in an error status through the standard error object |
-| AC9 | Holds | the guard, the client and the stub never write a credential |
-| AC10 | Holds | the integration tag routes the suite to the integration task alone |
+| AC1 | Holds | the call policy caps retries at two |
+| AC2 | Conditional | the two-attempt count assumes under 250 ms of pre-attempt work |
+| AC3 | Holds | the guard rejection precedes any cache or probe stub read |
+| AC4 | Conditional | the seeded stale entry must yield one configuration read |
+| AC5 | Conditional | the response bound depends on runner thread scheduling |
+| AC6 | Conditional | the response bound depends on runner thread scheduling |
+| AC7 | Conditional | the response and authorization bounds depend on runner thread scheduling |
+| AC8 | Holds | every Auth failure returns the standard error object |
+| AC9 | Holds | the guard, client and stub never write a credential |
+| AC10 | Holds | the integration tag confines the suite to the integration task |
 
 ### Validation of Option B
 
 Settled assumptions:
 
-- The guard, the Auth client, the Auth stub, the configuration snapshot and the test harness exist from earlier stories in this wave.
-- The shared container base and the integration stage exist from the configuration integration suite story.
-- The fixture tokens and entitlements are fixed by the Auth stub story.
+- Earlier stories supply Option A's parts, less the probe stub.
 
 Open assumptions:
 
-- Open → the endpoint stories settle when the four production endpoints and their parameter check exist.
-- Open → the card data stub story settles when the card data stub can serve as the data source.
+- Open → the endpoint stories settle when the production endpoints and their parameter check exist.
+- Open → the card data stub story settles when that stub can serve as data source.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Conditional | the guard rejects on the path family ahead of the missing endpoints |
-| AC2 | Conditional | the guard rejects on the path family ahead of the missing endpoints |
+| AC1 | Conditional | the guard rejects ahead of the missing endpoints |
+| AC2 | Conditional | the guard rejects ahead of the missing endpoints |
 | AC3 | Conditional | no endpoint reads account data in this wave |
 | AC4 | Breaks | the production parameter check lands in the next wave |
-| AC5 | Breaks | no production endpoint returns a 200 in this wave |
-| AC6 | Breaks | no production endpoint returns a 200 in this wave |
-| AC7 | Breaks | the production parameter check offers no hold ahead of the guard for the authorization deadline case |
-| AC8 | Conditional | only the guard rejections can be observed in this wave |
-| AC9 | Conditional | the scan covers only the guard rejections of this wave |
-| AC10 | Holds | the integration tag routes the suite to the integration task alone |
+| AC5 | Breaks | no production endpoint answers 200 in this wave |
+| AC6 | Breaks | no production endpoint answers 200 in this wave |
+| AC7 | Breaks | the production check offers no pre-guard hold |
+| AC8 | Conditional | only guard rejections are observable in this wave |
+| AC9 | Conditional | the scan covers only this wave's guard rejections |
+| AC10 | Holds | the integration tag confines the suite to the integration task |
 
 ## Metadata
 

@@ -89,69 +89,64 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — account column with a composite keyset index.
+Recommended: Design Option A — account column with a keyset index.
 
-Rationale: copying each transaction's account onto its row lets one composite keyset index serve every unfiltered newest-first page as a single seek, whatever the total volume; a filtered page still scans that one account's history, and the transaction list performance scenario measures it against the filter trigger.
+Rationale: the account on each row lets one keyset index answer every unfiltered page in one seek; a filtered page scans the account's history, which the transaction list performance scenario measures against the filter trigger.
 
-- Rejected: Design Option B, the card-number index with a sort on every page — page cost grows with each account's history.
-- Rejected: a join through the cross-reference record on every page — the same ordering problem, ranked second among the transaction-to-account access alternatives.
+- Rejected: Design Option B, the card-number index with a per-page sort — page cost grows with account history.
+- Rejected: a per-page join through the cross-reference record — the same ordering problem, ranked second for transaction-to-account access.
 
 ### Shared by both options
 
-- Topology: one table in the relational store, written only by the fixture loader and read only by the transaction activity stub.
-- Naming: the table name avoids the reserved word for a database transaction, and the columns follow the field order of the mainframe transaction record.
-- Addressing: the transaction identifier is the primary key and serves the single-transaction lookup.
-- Isolation: the card servicing service never connects to the store and reaches transactions only through the transaction activity stub.
-- Fallback: none at schema level, because the fixture loader skips and counts a row whose parent is missing before it reaches the table.
-- Provisioning: the script runs after the reference, account and cross-reference tables, and each statement is skipped when its object already exists.
-- Cut-over: the real transaction activity service replaces the stub by a change of target address and credential source alone, and ownership of this table after that swap stays an open question in the plan's recommendations.
-- Failures: a key violation rejects the insert and leaves every stored row untouched.
+- Topology: one relational table that only the fixture loader writes and only the transaction activity stub reads.
+- Naming: the table name avoids a reserved database word, and columns keep the mainframe field order.
+- Addressing: the transaction identifier is the primary key, serving the single-transaction lookup.
+- Isolation: the card servicing service reads transactions only through the stub.
+- Fallback: none in the schema, because the fixture loader skips and counts rows lacking a parent.
+- Provisioning: the script runs after the tables it links to and skips existing objects.
+- Cut-over: swapping in the real service changes only the target address and credential source.
+- Failures: a key violation rejects the insert and leaves stored rows untouched.
 
-### Design Option A — account column with a composite keyset index
+### Design Option A — account column with a keyset index
 
-Each transaction row carries the account of its card, copied from the cross-reference record when the fixture loader writes the row. A composite keyset index orders one account's rows by processed timestamp, newest first, and then by transaction identifier, newest first. An unfiltered page is one seek to the account and the last returned position, followed by a read of page size plus one entries. The baseline card-number index stays for the card link.
+Each row carries its card's account, copied from the cross-reference record at load. A composite keyset index orders an account's rows newest first by processed timestamp, then transaction identifier. An unfiltered page seeks to the last returned position and reads page size plus one entries in order.
 
 How it behaves:
 
-- The store refuses a row whose account, card, or type and category pair has no parent row.
-- A page seeks to the account and the last returned position, then reads entries in index order with no sort.
-- Rows that share a processed timestamp, as every sample row does, take their order from the transaction identifier.
-- The one entry read past the page size tells the listing stub whether a further page exists.
-- The card-number index serves the card link and any lookup by card.
+- The store refuses a row naming an account it does not hold.
+- The entry past the page size shows whether a further page exists.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Account column copied from the cross-reference record at load (vs a join on every page) | one index seek per unfiltered page | about twelve extra bytes per row |
-| 2 | Processed timestamp then transaction identifier, both descending, as index order (vs the timestamp alone) | a stable order when timestamps repeat | wider index entries |
-| 3 | Card-number index kept (vs dropped) | the baseline card lookup stays | extra index upkeep during the load |
+| 1 | Account copied onto each row at load (vs a per-page join) | one seek per unfiltered page | about twelve extra bytes per row |
+| 2 | Transaction identifier after processed timestamp (vs timestamp alone) | a stable order when timestamps repeat, as in every sample row | wider index entries |
+| 3 | Card-number index kept (vs dropped) | card links and lookups stay indexed | extra upkeep during the load |
 
 Effort and risk: small effort, low risk while the iteration has no writes.
 
-### Design Option B — card-number index with a sort on every page
+### Design Option B — card-number index with a per-page sort
 
-The table keeps only the baseline columns and the baseline card-number index. A page query gathers the account's cards from the cross-reference records, reads every matching transaction through the card-number index and sorts the matches newest first on each request.
+The table keeps only the baseline columns and card-number index. Each page looks up the account's cards, reads their transactions through that index and sorts them newest first.
 
 How it differs:
 
-- No account column exists, so the store enforces no account key on the row.
-- Every page sorts the account's matching rows before it cuts the page.
-- Page cost grows with the account's history, not with the page size.
-- The cursor still holds the processed timestamp and the transaction identifier, but each page repeats the sort.
+- No account column exists, so the store enforces no account key.
+- The cursor keeps the last returned position, but every page repeats the sort.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
 | 1 | Card-number index only (vs an added account column) | no copied value to keep in step | every page sorts the account's history |
-| 2 | Cards gathered from the cross-reference records per request (vs the account stored on the row) | the card link stays the only path to the account | an extra lookup on every page |
+| 2 | Cards looked up per page (vs the account on the row) | the card stays the only account path | an extra lookup per page |
 
 Effort and risk: small effort, high latency risk at the one-million-row baseline.
 
 ### Recommendation
 
 - Option: Design Option A
-- Why: an unfiltered page reads page size plus one index entries whatever the total volume.
-- Strongest argument against: the copied account column can drift from the cross-reference record once writes arrive.
-- Shared items that do not decide the choice: the table, its primary key, its card and category foreign keys and the card-number index.
-- Flip conditions: cards moving between accounts, or writes in a later iteration without a rule that keeps the account column in step.
+- Why: an unfiltered page costs one seek whatever the total volume.
+- Strongest argument against: the copied account can drift from the cross-reference record once writes arrive.
+- Shared items that do not decide the choice: the table, primary key, card and category foreign keys and card-number index.
+- Flip conditions: cards changing accounts, or later writes with no rule keeping the account in step.
 
 ## Design Validation
 
@@ -159,51 +154,49 @@ Effort and risk: small effort, high latency risk at the one-million-row baseline
 
 Settled assumptions:
 
-- No write operation exists this iteration beyond the fixture loader.
+- The fixture loader is this iteration's only writer.
 - Each sample card belongs to exactly one account.
-- The reference and cross-reference tables exist before this script runs.
-- The schema step applies the scripts in name order before each load.
+- Scripts run in name order before each load.
 
 Open assumptions:
 
-- Whether a later iteration adds writes that change a card's account Open → the Requirements Analysis author fixes the write scope.
-- Whether the container-backed catalog checks run before the listing stub relies on the keyset index Open → the integration suite story.
-- Who owns this table once the real transaction activity service replaces the stub Open → the data store ownership decision recorded in the plan's recommendations.
+- Whether later writes move a card's account Open → the Requirements Analysis write scope.
+- Whether real-database checks precede the listing stub's reliance on the keyset index Open → the integration suite story.
+- Table ownership after the stub's replacement Open → the plan's data store ownership decision.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the script copies every definition from the data model and skips what already exists |
-| AC2 | Holds | the store enforces the account foreign key |
-| AC3 | Holds | the store enforces the card foreign key |
-| AC4 | Holds | the store enforces the type and category foreign key |
-| AC5 | Holds | the script declares the keyset index in that column order and direction |
+| AC1 | Holds | the script copies the data model and skips what exists |
+| AC2 | Holds | the account foreign key rejects it |
+| AC3 | Holds | the card foreign key rejects it |
+| AC4 | Holds | the type and category foreign key rejects it |
+| AC5 | Holds | the script declares that exact index |
 | AC6 | Holds | the script keeps the card-number index and adds no other |
-| AC7 | Holds | the entity maps the amount at scale 2 and both timestamps at microsecond precision |
-| AC8 | Holds | the transaction identifier is the primary key |
+| AC7 | Holds | the entity maps a scale-2 amount and microsecond timestamps |
+| AC8 | Holds | the primary key rejects the duplicate |
 
 ### Option B
 
 Settled assumptions:
 
-- No write operation exists this iteration beyond the fixture loader.
 - Each sample card belongs to exactly one account.
 - The cross-reference records give every account its cards.
 
 Open assumptions:
 
-- Whether a page sort stays within the per-attempt timeout on the large-history account Open → the transaction list performance scenario.
-- Who owns this table once the real transaction activity service replaces the stub Open → the data store ownership decision recorded in the plan's recommendations.
+- Whether the sort fits the per-attempt timeout on the large-history account Open → the transaction list performance scenario.
+- Table ownership after the stub's replacement Open → the plan's data store ownership decision.
 
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Breaks | the table has no account column |
 | AC2 | Breaks | no account key exists to violate |
-| AC3 | Holds | the store enforces the card foreign key |
-| AC4 | Holds | the store enforces the type and category foreign key |
+| AC3 | Holds | the card foreign key rejects it |
+| AC4 | Holds | the type and category foreign key rejects it |
 | AC5 | Breaks | no composite keyset index exists |
-| AC6 | Holds | the card-number index is the only index beyond the primary key |
-| AC7 | Conditional | the round trip holds only for the fields the table keeps |
-| AC8 | Holds | the transaction identifier is the primary key |
+| AC6 | Holds | the card-number index is the only extra index |
+| AC7 | Conditional | the round trip holds only for kept fields |
+| AC8 | Holds | the primary key rejects the duplicate |
 
 ## Metadata
 

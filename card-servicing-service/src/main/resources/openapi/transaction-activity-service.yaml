@@ -47,8 +47,7 @@ paths:
         token encodes version 1 and a fingerprint of accountId and the filters,
         and a token that does not decode, or whose fingerprint differs from this
         request, returns 400 with a pageToken detail. A pageSize outside 1-100
-        returns 400. An account with no card cross-reference record returns 404,
-        an addition to the stub baseline taken from the common status mapping.
+        returns 400. An account with no card cross-reference record returns 404.
         An existing account with no matching transaction, including a
         well-formed but unknown filter, returns 200 with an empty transactions
         array. Sources are Use Cases · COTRN00C and Data Layouts · CVTRA05Y.
@@ -521,7 +520,9 @@ components:
           maxLength: 166
     GetTransactionResponse:
       type: object
-      description: The transaction returned by GetTransaction.
+      description: >-
+        The one transaction whose transactionId equals the requested ID. An
+        unknown transactionId returns 404 rather than an empty response.
       required: [transaction]
       additionalProperties: false
       properties:

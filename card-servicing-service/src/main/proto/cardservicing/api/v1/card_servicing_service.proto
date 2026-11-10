@@ -25,11 +25,12 @@ option java_package = "com.example.cardservicing.contract.api.v1";
 // x-api-key is ignored, and a caller never supplies subject, roles or
 // entitlements.
 //
-// Deadline: each request's outcome is fixed at a cut-off 900 ms after receipt,
-// leaving 100 ms for serialization and network. Each upstream attempt times out
-// after 300 ms, or sooner when less of the deadline remains, and is retried at
-// most twice, after 50 ms and then 100 ms of backoff, only on UNAVAILABLE or
-// DEADLINE_EXCEEDED and only while a full attempt still fits the deadline.
+// Deadline: each request's outcome is fixed at a cut-off no later than 900 ms
+// after receipt, leaving 100 ms for serialization and network. Each upstream
+// attempt times out after 300 ms, or sooner when less of the deadline remains,
+// and is retried at most twice, after 50 ms and then 100 ms of backoff, only on
+// UNAVAILABLE or DEADLINE_EXCEEDED and only while a full attempt still fits the
+// deadline.
 service CardServicingService {
   // Returns the balance summary of one account: balances, credit limits, dates,
   // status and one balance per transaction-type group (Use Cases · COACTVWC).

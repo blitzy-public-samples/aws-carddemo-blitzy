@@ -128,7 +128,9 @@ message GetTransactionRequest {
   string transaction_id = 1;
 }
 
-// Response for GetTransaction.
+// Response for GetTransaction: the one transaction whose ID matches the
+// request. An unknown transaction ID returns NOT_FOUND rather than an empty
+// response.
 message GetTransactionResponse {
   // The transaction whose transaction_id equals the request's.
   Transaction transaction = 1;

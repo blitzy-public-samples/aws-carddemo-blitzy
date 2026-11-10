@@ -154,75 +154,69 @@ Completed during implementation.
 
 Recommended: Design Option A — an explicit read-through wrapper with an entry envelope.
 
-Rationale: one wrapper that stores each answer with its cache time can decide on every call whether an entry is fresh, stale or too old, which the stale fallback needs.
+Rationale: a stored cache time lets one wrapper tell fresh, stale and too-old entries apart.
 
-- Rejected: Option B, framework cache annotations on client methods, because they carry no stale fallback and no cache time.
+- Rejected: Option B, framework cache annotations, which carry no stale fallback or cache time.
 
 Shared by both options:
 
-- Topology: one shared cache, reached by the service only through this component and never by a stub.
-- Naming: every key is a versioned prefix, then the family name, then the resource identifiers.
-- Addressing: the cache connection settings from the configuration-properties story supply host, port, password and the cache encryption flag.
-- Isolation: keys never carry caller identity, and callers read the cache only after the access guard allows access.
-- Fallback: an upstream failure that no cached entry covers reaches the caller with its status unchanged, so the degradation table decides the outcome.
-- Provisioning: each client story supplies the fresh period and the max stale age of its own key families.
-- Cut-over: moving to the managed deployed cache changes only the connection settings and the encryption flag.
-- Failures: a failed upstream read is never written to the cache, and the shared connection gives up on any cache command after its fixed 50 ms limit.
+- Topology: one shared cache, reached only through this component, never by a stub.
+- Naming: a versioned prefix, family name and resource identifiers form each key.
+- Addressing: the cache connection settings supply host, port, password and the encryption flag.
+- Isolation: keys carry no caller identity, and the access guard precedes every cache read.
+- Fallback: an upstream failure with no usable entry reaches the caller unchanged.
+- Provisioning: each client story supplies its families' fresh period and max stale age.
+- Cut-over: the managed deployed cache needs only new connection settings.
+- Failures: no failed upstream read is cached, and the connection caps every cache command at 50 ms.
 
 ### Design Option A
 
-An explicit wrapper sits between each client and its upstream read. Each entry is stored as an envelope holding the answer and its cache time, and the wrapper compares the entry's age with the family's fresh period and max stale age on every call. The wrapper calls the upstream read at most once per call, and on an unavailable or deadline-exceeded status it returns a usable stale entry with the stale flag. Every cache command waits at most a fixed 50 ms limit or the time the caller has left, whichever is less.
+An explicit wrapper stores each upstream answer with its cache time and checks entry age against the family's fresh period and max stale age. Cache commands wait at most 50 ms, capped by the caller's time left.
 
 How it behaves:
 
-- An entry younger than its fresh period is returned at once with no upstream read.
-- A missing or stale entry triggers one upstream read, and a successful answer is written back with a new cache time.
-- The shared cache drops each entry when it reaches its family's max stale age, so a stale entry stays readable for fallback until then.
-- An unavailable or deadline-exceeded status returns a usable stale entry with the stale flag, otherwise the status passes through unchanged.
-- A not-found status, an invalid-argument status or any other status passes through and never falls back.
-- A failed cache read or an unreadable entry counts as a miss, so a cache outage never fails a request, and a failed write-back is logged without the cached answer.
-- Each cache command waits at most 50 ms or the time the caller has left, whichever is less, and no command is sent once no time is left.
-- A cache that stops answering counts as a miss once that wait ends, and a write-back abandoned at its wait is logged without the cached answer while the read still returns.
-- The cache connection opens on a thread of the wrapper's own, so no caller waits for it beyond its wait limit.
-- A family with no stale window never serves a stale entry, and a family with no stale limit is kept with no expiry.
+- A fresh entry returns with no upstream read.
+- A miss or stale entry triggers one upstream read whose answer is stored until the max stale age.
+- Only an unavailable or deadline-exceeded status falls back to a usable stale entry, flagged stale.
+- Failed or unanswered cache reads and unreadable entries count as misses, and failed write-backs are logged without the answer.
+- The cache connection opens on its own thread.
+- A family with no stale window never serves stale, and one with no stale limit never expires.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Freshness decided from the stored cache time (vs one expiry only) | fresh and stale entries are told apart on every call | each entry carries a cache time beside its answer |
-| 2 | Stale fallback inside the wrapper (vs fallback in each client) | every client gets one fallback rule | the wrapper must know which statuses allow fallback |
-| 3 | Cache outage handled as a miss (vs surfacing the cache error) | a cache outage never fails a request | an outage sends every read upstream |
-| 4 | A 50 ms wait on each cache command cut to the caller's time left (vs the client library's 60-second default) | a stalled cache never holds a request or the configuration refresh past its budget | a cache answer slower than 50 ms counts as a miss |
+| 1 | Freshness from the stored cache time (vs one expiry only) | fresh and stale entries are told apart | each entry carries a cache time |
+| 2 | Stale fallback in the wrapper (vs fallback in each client) | every client gets one fallback rule | the wrapper holds the fallback status list |
+| 3 | Cache outage as a miss (vs surfacing the error) | an outage never fails a request | an outage sends every read upstream |
+| 4 | 50 ms command wait capped by time left (vs the client library's 60-second default) | a stalled cache never overruns a caller's budget | a slower answer counts as a miss |
 
-Effort and risk: one wrapper, one envelope, one connection setup and three test classes, with the risk in a cache slower than its 50 ms wait limit sending every read upstream.
+Effort and risk: one wrapper, envelope, connection setup and three test classes, with the risk in a slow cache sending reads upstream.
 
 ### Design Option B
 
-The framework's declarative caching wraps each client method, keyed by the method arguments, with one expiry period per cache name. The framework stores the answer alone and lets the shared cache expire it. No stale state exists, because an entry is either present and served or absent and fetched.
+Framework caching annotations wrap each client method, keyed by its arguments. Each cache name has one expiry, and answers are stored alone.
 
 How it differs:
 
-- An entry is served until it expires, so a fresh entry and a stale one cannot be told apart.
-- An upstream outage after expiry returns the error with no stale fallback.
-- Keeping an entry past its fresh period means serving it as fresh, never with the stale flag.
-- Cache errors reach the caller by default unless a custom error handler is added.
-- Annotations cannot receive the time the caller has left, so each cache command waits up to the connection's full 50 ms limit whatever the request has left, and opening the connection holds the caller up to the 900 ms connect limit.
-- Keys come from method arguments, so caller identity in an argument reaches the key unless each client excludes it.
+- An entry is served as fresh until it expires, and an outage after expiry returns the error.
+- Cache errors reach the caller without a custom error handler.
+- Annotations cannot receive the caller's time left, so cache commands take up to 50 ms and a connection opening up to 900 ms.
+- Caller identity in a method argument reaches the key unless each client excludes it.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One expiry period per cache name (vs fresh period and max stale age) | no envelope to store | no stale flag and no cache time |
-| 2 | Declarative caching on client methods (vs an explicit wrapper call) | each client adds one marker per method | fallback on upstream failure needs code in every client |
-| 3 | Framework default cache error handling (vs a miss on outage) | no custom error handling to write | a cache outage fails the request |
+| 1 | One expiry per cache name (vs fresh period and max stale age) | no envelope to store | no stale flag and no cache time |
+| 2 | Annotations on client methods (vs explicit wrapper calls) | one marker per client method | fallback needs code in every client |
+| 3 | Framework error handling (vs a miss on outage) | no custom error handler | a cache outage fails the request |
 
-Effort and risk: the least code up front, with the risk in the stale fallback and the cache time that the degradation table needs and this option cannot give.
+Effort and risk: the least code, with the risk in the missing stale fallback and cache time.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: only an envelope with a cache time lets one wrapper serve fresh entries, flag stale ones and fall back during an outage, which the degradation table requires.
-- Strongest argument against: each client must call the wrapper explicitly around its upstream read, so a client that skips the call bypasses the cache.
-- Shared items that do not decide the choice: the key naming, the connection settings with their 50 ms command limit, the encryption flag, caller isolation, the per-family values each client supplies and the unchanged status of an upstream failure that no entry covers.
-- Flip condition: a framework cache that exposes each entry's age and falls back to an expired entry on upstream failure.
+- Why: only a stored cache time lets one wrapper serve fresh entries, flag stale ones and fall back.
+- Strongest argument against: a client that skips the explicit wrapper call bypasses the cache.
+- Shared items that do not decide the choice: key naming, caller isolation, connection settings and per-family periods.
+- Flip condition: a framework cache exposing entry age and serving expired entries on upstream failure.
 
 ## Design Validation
 
@@ -230,62 +224,58 @@ Effort and risk: the least code up front, with the risk in the stale fallback an
 
 Settled assumptions:
 
-- The cache rules fix that every entry carries its cache time and that a cache failure counts as a miss.
-- Account and category-balance entries keep a 300-second max stale age, the configuration snapshot mirror keeps no stale limit, and a transaction-list page is served only while fresh.
-- The upstream read each client supplies is already wrapped in the upstream call policy.
+- The cache rules require a cache time per entry and a miss per cache failure.
+- Max stale ages: 300 seconds for account and category-balance entries, the fresh period for transaction-list pages, and none for the configuration snapshot mirror.
+- Each upstream read arrives wrapped in the upstream call policy.
 - Card cross-references are never cached.
-- Every caller can report the time it has left, from its request budget or from the configuration refresh budget.
+- Every caller can report its time left.
 
 Open assumptions:
 
-- Open → the client stories settle each family's fresh period and every max stale age the cache rules leave to them.
-- Open → the Config integration suite settles that expiry and transport encryption behave the same against a real cache container.
-- Open → the Config integration suite settles that, on a cache container paused after connecting, the configuration refresh applies its values no sooner than the mirror read's full wait and the abandoned mirror write ends with the wait-expiry failure.
-- Open → the first performance run settles that a healthy cache answers inside the 50 ms wait limit under load.
+- Open → the client stories settle the per-family values the cache rules leave open.
+- Open → the Config integration suite settles expiry and encryption on a real cache container, and the refresh delay and abandoned mirror write on a paused one.
+- Open → the first performance run settles that a healthy cache answers within 50 ms under load.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the stored cache time marks the entry fresh with no upstream read |
-| AC2 | Holds | a miss runs one upstream read and writes an envelope that expires at the max stale age |
-| AC3 | Holds | a stale entry triggers one read and a rewrite with the new cache time |
-| AC4 | Holds | the wrapper returns a usable stale entry on an unavailable or deadline-exceeded status |
-| AC5 | Holds | with no usable entry the wrapper passes the status through unchanged |
+| AC1 | Holds | a fresh entry skips the upstream read |
+| AC2 | Holds | a miss stores one upstream answer with expiry at the max stale age |
+| AC3 | Holds | a stale entry triggers one read and a renewed envelope |
+| AC4 | Holds | either fallback status yields a usable stale entry |
+| AC5 | Holds | with no usable entry the status passes through unchanged |
 | AC6 | Holds | only the unavailable and deadline-exceeded statuses allow fallback |
-| AC7 | Holds | every failed or unanswered cache command ends within its wait limit as a miss or a logged write-back |
-| AC8 | Holds | keys are built only from the prefix, the family name and resource identifiers |
-| AC9 | Holds | the connection setup turns encryption on only with the flag and carries the 50 ms command limit |
-| AC10 | Holds | the wrapper calls the supplied read once and times only its own cache commands |
-| AC11 | Holds | the wrapper makes no further call after a deadline-exceeded status and never waits past the time left |
-| AC12 | Holds | the family's max stale age, equal to the fresh period or absent, decides the stale window |
-| AC13 | Holds | the envelope stores the cache time ahead of the answer and reads both back |
+| AC7 | Holds | each failed or unanswered command ends within its wait as a miss or logged write-back |
+| AC8 | Holds | keys hold only the prefix, family name and identifiers |
+| AC9 | Holds | the connection setup applies the encryption flag, address, password and both time limits |
+| AC10 | Holds | the supplied read gets exactly one untimed call |
+| AC11 | Holds | the wrapper adds no call after a deadline-exceeded status and no wait past the time left |
+| AC12 | Holds | the max stale age, equal to the fresh period or absent, sets the stale window |
+| AC13 | Holds | the envelope round trip keeps the answer and cache time |
 
 ### Option B validation
 
 Settled assumptions:
 
-- The cache rules fix that every entry carries its cache time and that a cache failure counts as a miss.
-- The upstream read each client supplies is already wrapped in the upstream call policy.
-- Card cross-references are never cached.
-- The connection setup carries the same 50 ms command limit as in Option A.
+- Option A's cache-rule, call-policy and cross-reference assumptions hold, with the same connection setup.
 
 Open assumptions:
 
-- Open → a custom cache error handler settles whether a cache outage stays a miss.
-- Open → a key rule in each client settles that no caller identity reaches a key.
+- Open → a custom error handler settles whether a cache outage stays a miss.
+- Open → a key rule in each client settles that keys carry no caller identity.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Conditional | a hit skips the upstream read but carries no cache time |
-| AC2 | Conditional | a miss runs one upstream read but stores no cache time |
-| AC3 | Conditional | an expired entry is fetched again without any stale state |
+| AC1 | Conditional | a hit returns the answer without its cache time |
+| AC2 | Conditional | a miss stores the answer without its cache time |
+| AC3 | Conditional | an expired entry is fetched again without stale state |
 | AC4 | Breaks | the option has no stale fallback |
-| AC5 | Conditional | the upstream status passes through only while the cache itself answers without error |
+| AC5 | Conditional | status pass-through depends on error-free cache access |
 | AC6 | Holds | a failed method call is neither cached nor replaced |
-| AC7 | At risk | a cache error or a command ended at the 50 ms limit reaches the caller by default |
-| AC8 | Conditional | keys follow method arguments unless each client sets a key rule |
-| AC9 | Holds | the connection setup and its 50 ms command limit are the same in both options |
-| AC10 | Holds | the framework calls the client method once per miss and adds no timer or retry to it |
-| AC11 | Conditional | a cache wait blind to the time left can spend up to 50 ms of the 100 ms after the cut-off |
+| AC7 | At risk | cache errors and expired waits reach the caller by default |
+| AC8 | Conditional | key safety depends on a per-client key rule |
+| AC9 | Holds | the connection setup matches Option A |
+| AC10 | Holds | the framework makes one untimed method call per miss |
+| AC11 | Conditional | a wait blind to the time left can spend 50 ms of the 100 ms after the cut-off |
 | AC12 | Breaks | one expiry period cannot express fallback at any age |
 | AC13 | Breaks | the option stores no envelope to read back |
 
