@@ -1,0 +1,34 @@
+messages:
+- '                                                                              '
+- '                                                                              '
+- '"X" is not a valid value to confirm...                                        '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: X
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: ' '
+  EDTDD: '  '
+  EDTMM: '  '
+  EDTYYYY: '    '
+  ERRMSG: '"X" is not a valid value to confirm...                                        '
+  MONTHLY: X
+  PGMNAME: CORPT00C
+  SDTDD: '  '
+  SDTMM: '  '
+  SDTYYYY: '    '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

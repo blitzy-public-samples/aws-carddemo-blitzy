@@ -1,0 +1,70 @@
+# Derived baseline (capture_platform: derived) of scenario
+# RPT-CORPT00C-negative-14, authored from the source because no TPE region runs
+# in CI; only `report.py --import-unikix` replaces it, from imported UniKix
+# evidence, and it is never edited by hand to match a run.
+#
+# USER0001 signs on and takes main-menu option 9 (Transaction Reports) to
+# CORPT00C [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:74-78]. On first entry CORPT00C moves LOW-VALUES to
+# CORPT0AO and sends CORPT00 with a blank ERRMSG
+# [app/cbl/CORPT00C.cbl:169-181,556-591]. Step 3 marks Custom and enters
+# 02/30/2022 to 07/06/2022:
+# - every date part is supplied, and NUMVAL-C leaves '02', '30', '2022', '07',
+#   '06' and '2022' numeric and in range, so no field edit refuses them
+#   [app/cbl/CORPT00C.cbl:256-379];
+# - CSUTLDTC is called with 2022-02-30 and the mask YYYY-MM-DD; the inferred
+#   CEEDAYS feedback is 09CC (FC-BAD-DATE-VALUE), returned as severity 0003
+#   and message 2508 'Datevalue error', which is neither '0000' nor the
+#   tolerated '2513', so 'Start Date - Not a valid date...' is sent
+#   [app/cbl/CORPT00C.cbl:388-406] [app/cbl/CSUTLDTC.cbl:20-157];
+# - SEND-TRNRPT-SCREEN goes to RETURN-TO-CICS, so the end date is never
+#   checked and nothing is written to JOBS [app/cbl/CORPT00C.cbl:556-591].
+#   The scenario does not assert the empty @TDQ:JOBS (it needs GAP-MIS-017),
+#   so this baseline holds no file_state.
+# The scenario carries inferred-not-observed: GAP-INF-009 (derived RPT
+# end-to-end baselines), GAP-INF-012 (online-only copybooks), GAP-INF-001
+# (which dates CEEDAYS refuses) and GAP-MIS-010 (whether UniKix supplies
+# CEEDAYS). The UniKix copy's CSUTLDTC passes trimmed date lengths to CEEDAYS
+# (GAP-DOC-021), so a UniKix record of this outcome is UniKix-copy behaviour
+# and never verifies the app/ CSUTLDTC date-acceptance item.
+#
+# One screen per step, each the screen shown after the step's AID; messages
+# holds each step's ERRMSG. Text is the whole BMS field with trailing spaces
+# kept; ERRMSG is the 80-byte WS-MESSAGE in the 78-byte ERRMSGO. CORPT0AO
+# redefines CORPT0AI, so step 3 shows the entered values back. CURDATE and
+# CURTIME come from the region clock, which UniKix cannot fix, hence the
+# matchers.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Start Date - Not a valid date...                                              '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: X
+  EDTDD: '06'
+  EDTMM: '07'
+  EDTYYYY: '2022'
+  ERRMSG: 'Start Date - Not a valid date...                                              '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '30'
+  SDTMM: '02'
+  SDTYYYY: '2022'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

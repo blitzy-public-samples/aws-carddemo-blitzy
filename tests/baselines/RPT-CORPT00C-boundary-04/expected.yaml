@@ -1,0 +1,61 @@
+# Derived from source (capture_platform: derived), never observed: no TPE
+# region runs in CI. Open under GAP-INF-009 (derived RPT end-to-end baselines),
+# GAP-INF-012 (online-only copybooks), GAP-INF-001 (CEEDAYS known only through
+# the stub) and GAP-MIS-010 (whether UniKix supplies CEEDAYS).
+# Steps 1-2: USER0001 signs on through CC00, COSGN00C XCTLs the type-U user to
+# COMEN01C, and option 9 transfers to CORPT00C, whose first entry sends
+# CORPT00 from LOW-VALUES with the blank WS-MESSAGE in ERRMSG
+# [app/cbl/COSGN00C.cbl:225-240] [app/cbl/COMEN01C.cbl:75-110,115-156]
+# [app/cpy/COMEN02Y.cpy:74-78] [app/cbl/CORPT00C.cbl:165-181,556-591].
+# Step 3: CUSTOM 'X' with 01/31/2022 to 12/31/2022 and CONFIRM empty. The
+# CUSTOM branch finds no date part empty, NUMVAL-C writes each part back as
+# its own digits, and SDTDDI '31' is numeric and not greater than '31', so the
+# start-day message is not set; CSUTLDTC accepts both dates with mask
+# YYYY-MM-DD (severity 0000) [app/cbl/CORPT00C.cbl:256-426]. WS-REPORT-NAME
+# becomes 'Custom' and SUBMIT-JOB-TO-INTRDR STRINGs 'Please confirm to print
+# the Custom report...' (44 characters), sets WS-ERR-FLG and resends CORPT00,
+# whose GO TO RETURN-TO-CICS ends the task before any WRITEQ TD to JOBS
+# [app/cbl/CORPT00C.cbl:429-436,462-474,556-591].
+# CORPT0AO redefines CORPT0AI, so the received values go back as entered;
+# MONTHLY and YEARLY show their blank INITIAL and CONFIRM, with no INITIAL,
+# shows its nulls as a space [app/cpy-bms/CORPT00.CPY:121]
+# [app/bms/CORPT00.bms:80-221]. Values are whole at their BMS width with
+# trailing spaces kept (ERRMSG 78, TITLE01/TITLE02 40) [app/cpy/COTTL01Y.cpy:
+# 17-22], because screens and messages compare exactly; messages holds each
+# step's ERRMSG as captured. CURDATE and CURTIME come from the region clock,
+# so they are matchers. Only report.py --import-unikix replaces this with an
+# observed outcome.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Please confirm to print the Custom report...                                  '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: X
+  EDTDD: '31'
+  EDTMM: '12'
+  EDTYYYY: '2022'
+  ERRMSG: 'Please confirm to print the Custom report...                                  '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '31'
+  SDTMM: '01'
+  SDTYYYY: '2022'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

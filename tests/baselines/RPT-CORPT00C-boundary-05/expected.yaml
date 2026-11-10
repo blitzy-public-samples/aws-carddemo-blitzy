@@ -1,0 +1,64 @@
+# Derived baseline of scenario RPT-CORPT00C-boundary-05 (capture_platform
+# derived, tag inferred-not-observed): USER0001 signs on, takes main-menu
+# option 9 (Transaction Reports) and asks CORPT00 for a custom report from
+# 01/32/2022 to 12/31/2022 without confirming. Authored from the source,
+# never captured:
+# - step 1: COSGN00C XCTLs a type-U user to COMEN01C [app/cbl/COSGN00C.cbl:
+#   230-240], whose first entry sends COMEN01 headed CM00/COMEN01C with a
+#   blank ERRMSG [app/cbl/COMEN01C.cbl:36-38,75-90];
+# - step 2: option 9 is CORPT00C [app/cpy/COMEN02Y.cpy:74-78]; its first
+#   entry moves LOW-VALUES to CORPT0AO and sends CORPT00 headed CR00/CORPT00C
+#   with the blank WS-MESSAGE in ERRMSG [app/cbl/CORPT00C.cbl:163-181,556-580];
+# - step 3: CUSTOM is marked and all six date parts are supplied, so no
+#   empty-field check holds; NUMVAL-C through WS-NUM-99/WS-NUM-9999 leaves
+#   '01', '32', '2022', '12', '31', '2022' as entered; the start month passes,
+#   and the day check compares the field as text, '32' > '31', so
+#   'Start Date - Not a valid Day...' goes to WS-MESSAGE and
+#   SEND-TRNRPT-SCREEN sends CORPT00 with ERASE and ends the task
+#   [app/cbl/CORPT00C.cbl:256-345,556-591]. The year checks, the CSUTLDTC
+#   calls and SUBMIT-JOB-TO-INTRDR are never reached: no JOBS record.
+# Values are whole BMS fields of app/bms/CORPT00.bms with trailing spaces
+# kept: CORPT0AO redefines CORPT0AI [app/cpy-bms/CORPT00.CPY:121], so the
+# received fields come back as normalized; MONTHLY and YEARLY return their
+# blank INITIAL, and CONFIRM, which has none, shows its nulls as a space.
+# ERRMSG is the X(80) WS-MESSAGE in the 78-byte ERRMSGO. CURDATE (mm/dd/yy)
+# and CURTIME come from the region clock, which cannot be fixed
+# (GAP-MIS-015), so they are matchers. messages holds each step's ERRMSG in
+# step order.
+# Open under GAP-INF-009 (derived RPT end-to-end baselines) and GAP-INF-012
+# (online-only copybooks). Only `report.py --import-unikix` promotes this
+# baseline; it is never edited by hand to match a run.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Start Date - Not a valid Day...                                               '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: X
+  EDTDD: '31'
+  EDTMM: '12'
+  EDTYYYY: '2022'
+  ERRMSG: 'Start Date - Not a valid Day...                                               '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '32'
+  SDTMM: '01'
+  SDTYYYY: '2022'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '
