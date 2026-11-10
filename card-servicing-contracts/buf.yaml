@@ -1,0 +1,15 @@
+# Lint configuration for both Card Servicing proto trees: the shared types in
+# card-servicing-contracts and the six service contracts in card-servicing-service.
+# Run from the repository root: buf lint --config card-servicing-contracts/buf.yaml
+# Module paths are repository-root-relative on purpose: buf resolves them against
+# the working directory and rejects a module path that climbs above it.
+version: v2
+modules:
+  - path: card-servicing-contracts/src/main/proto
+  - path: card-servicing-service/src/main/proto
+lint:
+  # COMMENTS makes every service, RPC, message, field, oneof, enum and enum
+  # value carry a description, which STANDARD alone does not require.
+  use:
+    - STANDARD
+    - COMMENTS
