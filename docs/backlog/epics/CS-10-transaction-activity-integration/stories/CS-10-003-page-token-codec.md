@@ -88,10 +88,10 @@ Rationale: a keyed fingerprint binds each page token to the account and filters 
 - Topology: one codec, used by the listing stub to issue and read tokens and by the transaction list validation to check them before any upstream call.
 - Naming: a version marker leads every token, and version 1 is the only accepted value.
 - Addressing: the cursor holds the last returned row's processed timestamp at microsecond precision and its transaction identifier.
-- Isolation: the token carries no caller identity, credential or entitlement.
+- Isolation: the token carries no caller identity, credential or entitlement, so per-account authorization, never the token, decides which account a caller may read.
 - Fallback: any decode failure yields the invalid-argument status, never a silent restart from page one, and an absent or empty token means the first page.
 - Provisioning: nothing is provisioned, because the codec adds no environment setting.
-- Cut-over: a real service issuing its own tokens needs a new version marker decided at the swap.
+- Cut-over: the real service issues and reads tokens in the same version 1 form this codec writes, so the swap changes only the target address and the credential source and leaves the codec unchanged.
 - Failures: a malformed value, a value outside its exact encoded form and a foreign version each yield the same field-level error entry naming the page token.
 
 ### Design Option A — versioned compact encoding with a keyed fingerprint
@@ -109,7 +109,7 @@ How it behaves:
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Keyed fingerprint over account and filters (vs a plain digest) | a caller cannot forge a matching token | changing the key invalidates live tokens |
+| 1 | Keyed fingerprint over account and filters (vs a plain digest) | a token edited without the built-in key fails the consistency check | changing the key invalidates live tokens |
 | 2 | Digest that also covers the version and cursor (vs the account and filters alone) | an altered cursor fails the check | every decode recomputes the digest over the whole token |
 | 3 | Version marker first (vs unversioned) | the format can change without ambiguity | one extra byte per token |
 | 4 | URL-safe alphabet without padding (vs the standard alphabet) | safe in a query string without escaping | differs from the default encoder |
@@ -140,7 +140,7 @@ Effort and risk: smallest effort, high risk of cross-list paging.
 - Why: a token presented against another account or filter is rejected before any read.
 - Strongest argument against: the built-in key is the same in every environment, so the fingerprint resists tampering but not a reader of the source.
 - Shared items that do not decide the choice: the cursor content, the version marker, the URL-safe alphabet and the error rendering.
-- Flip conditions: the real service issuing and verifying its own tokens, where pass-through of an opaque value is enough.
+- Flip conditions: a revision of the token contract that drops the account and filter binding, which a swap to the real service never makes.
 
 ## Design Validation
 
@@ -151,10 +151,11 @@ Settled assumptions:
 - The error mapping renders a field-level error entry for the invalid-argument status.
 - No new environment variable is allowed, so the key is built into the codec.
 - The platform runtime provides the keyed digest, so no library is added.
+- The real service honours the version 1 form and the account and filter binding the contract states, keyed with the same built-in key, so the swap changes only the target address and the credential source.
 
 Open assumptions:
 
-- Whether the real service accepts tokens issued by this codec Open → the swap to the real transaction activity service.
+- Whether a key change between releases may refuse the earlier tokens a caller keeps for backward paging Open → the deferred UI run's paging design.
 
 | AC | Verdict | Why |
 |---|---|---|
@@ -177,7 +178,7 @@ Settled assumptions:
 
 Open assumptions:
 
-- Whether the real service accepts tokens issued by this codec Open → the swap to the real transaction activity service.
+- Whether the token contract drops the account and filter binding it now states Open → a revision of the transaction activity contract.
 
 | AC | Verdict | Why |
 |---|---|---|
