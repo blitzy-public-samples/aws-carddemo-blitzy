@@ -1,0 +1,75 @@
+id: MNU-COMEN01C-negative-02
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on and reaches the main menu, then presses PF5, which the menu
+  does not handle. COMEN01C receives the map, and its EVALUATE EIBAID falls to
+  WHEN OTHER: it sets the error flag, moves CCDA-MSG-INVALID-KEY ('Invalid key
+  pressed. Please see below...', app/cpy/CSMSG01Y.cpy) to WS-MESSAGE and sends
+  the menu again with ERASE, so the header, the ten options of the COMEN02Y
+  table and the message in ERRMSG are shown, and the task returns with
+  TRANSID CM00 [app/cbl/COMEN01C.cbl:75-110,182-207,212-277]. The expected
+  outcome is derived from the source and has not been observed.
+inventory_ids:
+- INV-MNU-005
+- INV-MNU-001
+- INV-MNU-003
+- INV-CFG-018
+- INV-LAY-002
+- INV-LAY-003
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003
+- GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+    '@map': COSGN00
+  - aid: PF5
+    fields: {}
+    '@map': COMEN01
+# Screen values are whole fields at their BMS length, trailing spaces kept,
+# because captured fields and messages are compared exactly: ERRMSG is the
+# 80-character WS-MESSAGE cut to the 78-character ERRMSGO, OPTN001-OPTN010 are
+# the 40-character WS-MENU-OPT-TXT, and CURTIME is the 8-character hh:mm:ss.
+# messages holds the ERRMSG value of each step: blank on the menu COSGN00C
+# transfers to, then the invalid-key message.
+expected:
+  screens:
+  - '@map': COMEN01
+  - '@map': COMEN01
+    TRNNAME: CM00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COMEN01C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    OPTN001: '01. Account View                        '
+    OPTN002: '02. Account Update                      '
+    OPTN003: '03. Credit Card List                    '
+    OPTN004: '04. Credit Card View                    '
+    OPTN005: '05. Credit Card Update                  '
+    OPTN006: '06. Transaction List                    '
+    OPTN007: '07. Transaction View                    '
+    OPTN008: '08. Transaction Add                     '
+    OPTN009: '09. Transaction Reports                 '
+    OPTN010: '10. Bill Payment                        '
+    ERRMSG: 'Invalid key pressed. Please see below...                                      '
+  messages:
+  - '                                                                              '
+  - 'Invalid key pressed. Please see below...                                      '
