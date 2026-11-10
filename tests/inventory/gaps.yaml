@@ -224,6 +224,15 @@ gaps:
   status: open
   unknown: For a selection other than U or D, the WHEN OTHER branch of COUSR00C's PROCESS-ENTER-KEY moves 'Invalid selection. Valid values are U and D' to WS-MESSAGE without setting the error flag [app/cbl/COUSR00C.cbl:210-215], and PROCESS-ENTER-KEY then browses again through PROCESS-PAGE-FORWARD [app/cbl/COUSR00C.cbl:227-228]. When at most ten users lie at or after the browse start, the page loop or the look-ahead READNEXT gets ENDFILE [app/cbl/COUSR00C.cbl:300-316], whose branch moves 'You have reached the bottom of the page...' to WS-MESSAGE and sends the list [app/cbl/COUSR00C.cbl:634-640], so the invalid-selection text never reaches the screen. USR-COUSR00C-negative-02 needs an 11th user to show it. Whether the message is meant to give way to the bottom-of-page message is unknown.
 - affected_inventory_ids:
+  - INV-CRD-018
+  - INV-CRD-019
+  category: suspected-defect
+  gap_id: GAP-DEF-022
+  needed: The owner's confirmation of intent. The behaviour is pinned as derived and never fixed under app/. The unikix outcome of CRD-COCRDLIC-recovery-03, once GAP-MIS-011 gives a confirmed region file control, would show whether the region abends at the ENDBR.
+  resolving_evidence: null
+  status: open
+  unknown: 'COCRDLIC ends both of its CARDDAT browses with an ENDBR that has no RESP option, whatever the STARTBR before it answered, and never tests the STARTBR response it captures [app/cbl/COCRDLIC.cbl:1129-1136,1258-1259,1273-1280,1374-1377]. When CARDDAT is disabled or closed, the STARTBR fails (DISABLED or NOTOPEN), so the first READNEXT of 9000-READ-FORWARD or the first READPREV of 9100-READ-BACKWARDS answers INVREQ, no browse having started, and its WHEN OTHER branch composes ''File Error: READ on CARDDAT returned RESP <resp>,RESP2 <resp2>'' in WS-ERROR-MSG [app/cbl/COCRDLIC.cbl:1246-1254,1308-1317]. The ENDBR that follows matches no successful STARTBR; on CICS it raises INVREQ (RESP2 35), whose default action abends the task (AEIP) before the caller''s 1000-SEND-MAP runs (for example [app/cbl/COCRDLIC.cbl:493-496,509-512]), so the composed message never reaches ERRMSG and the RETURN TRANSID(CCLI) never runs. Whether the region raises INVREQ there is unknown; CRD-COCRDLIC-recovery-03 pins the abend as derived.'
+- affected_inventory_ids:
   - INV-CFG-017
   - INV-CRD-080
   category: doc-conflict
