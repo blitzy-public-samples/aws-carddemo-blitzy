@@ -1,0 +1,62 @@
+# Direct entry of CU00 without signing on. Started from a cleared screen,
+# COUSR00C finds EIBCALEN = 0, moves 'COSGN00C' to CDEMO-TO-PROGRAM and
+# transfers control (XCTL) to it with the COMMAREA of COCOM01Y
+# [app/cbl/COUSR00C.cbl:98-112,506-517]. COSGN00C therefore runs with
+# EIBCALEN > 0 and the ENTER that started CU00: it receives map COSGN0A and,
+# with no password entered, sends the sign-on screen again without reading
+# USRSEC, then returns with TRANSID CC00. The step's ENTER on that screen, with
+# no field entered, takes the same path under CC00
+# [app/cbl/COSGN00C.cbl:80-102,108-157]. Either way the screen is
+# map COSGN00 headed by COSGN00C's own transaction and program name
+# [app/cbl/COSGN00C.cbl:36-37,177-184].
+#
+# Only the map and the header that identifies its program are asserted. ERRMSG
+# depends on how the region's BMS maps the unformatted input of the cleared
+# screen (the transaction id CU00) into COSGN0AI, which COSGN00C does not test
+# (RESP is captured, never checked), so it is left to the observed baseline.
+# USRSEC is never read on this path. It is loaded so the region holds its
+# usual user file, and its CSD file item is therefore not listed. No asserted
+# value depends on the clock; clock_mode is relative because unikix cannot fix
+# it (GAP-MIS-015).
+id: USR-COUSR00C-alternate-09
+level: e2e
+type: alternate
+description: >-
+  Transaction CU00 is entered on a cleared screen with no COMMAREA, so no user
+  has signed on. COUSR00C does not show its user list: it transfers control to
+  COSGN00C, and the terminal shows the sign-on map COSGN00 with transaction
+  CC00 and program COSGN00C in its header.
+inventory_ids:
+- INV-USR-020  # COUSR00C entry without COMMAREA returns to sign-on (rule)
+- INV-USR-001  # COUSR00C program
+- INV-SEC-002  # COSGN00 map, the screen the XCTL lands on
+- INV-CFG-023  # CU00 transaction, which starts COUSR00C
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA passed on the XCTL
+- INV-LAY-005  # COTTL01Y copybook, copied by COUSR00C
+- INV-LAY-006  # CSDAT01Y copybook, copied by COUSR00C
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # the USR end-to-end baselines are derived, never observed
+- GAP-INF-012  # the online-only copybooks are covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  # A first step is started from a cleared screen: its '@map' is the map the
+  # transaction id leads to, here the sign-on map COSGN00C sends after the XCTL.
+  - transid: CU00
+    '@map': COSGN00
+    aid: ENTER
+    fields: {}
+expected:
+  screens:
+  - '@map': COSGN00
+    TRNNAME: CC00
+    PGMNAME: COSGN00C

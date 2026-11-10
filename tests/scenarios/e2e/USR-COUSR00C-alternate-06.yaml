@@ -1,0 +1,70 @@
+# PF3 on the user list returns to the admin menu.
+# ADMIN001 signs on and reaches COADM01C; option 1 'User List (Security)'
+# transfers control to COUSR00C with the program context reset, so COUSR00C
+# lists USRSEC and sends COUSR00 under its own CU00, then returns with
+# TRANSID CU00 [app/cbl/COUSR00C.cbl:36-37,113-118,141-144,568-569]. PF3 there
+# moves the fixed name COADM01C (not CDEMO-FROM-PROGRAM) to CDEMO-TO-PROGRAM,
+# and RETURN-TO-PREV-SCREEN sets the from-transaction CU00, the from-program
+# COUSR00C and a zero program context before the XCTL with the COMMAREA
+# [app/cbl/COUSR00C.cbl:125-127,506-518]. Because the context is zero, COADM01C
+# takes its first-entry path: it clears its output map and sends COADM01 with
+# its own CA00 and COADM01C and WS-MESSAGE still spaces, so ERRMSG is blank
+# [app/cbl/COADM01C.cbl:77-90,172-184,208-209]. The user list content is the
+# item of the COUSR00C content scenario, so screen 2 asserts identification only.
+id: USR-COUSR00C-alternate-06
+level: e2e
+type: alternate
+description: >-
+  ADMIN001 signs on, chooses option 1 on the admin menu to reach the COUSR00C
+  user list (CU00), and presses PF3; COUSR00C transfers control to COADM01C,
+  which sends the admin menu COADM01 afresh under CA00 with no message.
+inventory_ids:
+- INV-USR-017  # COUSR00C PF3 return (rule)
+- INV-USR-001  # COUSR00C program
+- INV-USR-005  # COUSR00 map, the input map of the PF3 step
+- INV-MNU-004  # COADM01 map, the screen PF3 lands on
+- INV-CFG-023  # CU00 transaction, under which the PF3 step runs
+- INV-CFG-008  # USRSEC CSD file, read for sign-on and the user list
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA passed on the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # derived USR end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields:
+      USERID: ADMIN001
+      PASSWD: PASSWORD
+    '@map': COSGN00
+  - aid: ENTER
+    fields:
+      OPTION: '1'
+    '@map': COADM01
+  - aid: PF3
+    fields: {}
+    '@map': COUSR00
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+  - '@map': COUSR00
+    TRNNAME: CU00
+    PGMNAME: COUSR00C
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    ERRMSG: '                                                                              '

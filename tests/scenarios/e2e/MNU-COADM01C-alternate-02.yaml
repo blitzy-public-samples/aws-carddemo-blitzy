@@ -1,0 +1,80 @@
+# USER0001 enters transaction CA00 directly, the tech spec's "USER0001
+# accessing CA00" -> "No access - Admin Only" seed (GAP-DOC-019). The
+# repository has no user-type check in COADM01C: a transaction started from a
+# cleared screen runs it with EIBCALEN = 0, so it moves 'COSGN00C' to
+# CDEMO-FROM-PROGRAM and XCTLs, without a COMMAREA, to CDEMO-TO-PROGRAM, a
+# working-storage field with no VALUE clause that the low-values or spaces test
+# turns into 'COSGN00C' [app/cbl/COADM01C.cbl:82-84,160-167]
+# [app/cpy/COCOM01Y.cpy:24]. COSGN00C, entered with EIBCALEN = 0,
+# sends a fresh sign-on screen and returns with TRANSID CC00 and its COMMAREA
+# [app/cbl/COSGN00C.cbl:80-83,98-102]. The COMEN01C admin-only guard is
+# unreachable (all COMEN02Y options are user type 'U'), so 'No access - Admin
+# Only option... ' appears on no screen.
+#
+# Step 1 signs on as USER0001 (USRSEC record type 'U' [app/jcl/DUSRSECJ.jcl:40]);
+# COSGN00C XCTLs to COMEN01C with CDEMO-PGM-CONTEXT zero, so the main menu is
+# sent with a blank message [app/cbl/COSGN00C.cbl:223-239]
+# [app/cbl/COMEN01C.cbl:86-90,182-194].
+#
+# Every value is derived from the source (inferred-not-observed): no TPE region
+# runs in CI. Field values are the full BMS field widths, trailing spaces kept,
+# as the screen capture reads them.
+id: MNU-COADM01C-alternate-02
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on and reaches the main menu (COMEN01), then enters CA00
+  directly. COADM01C runs without a COMMAREA and checks no user type: it returns
+  to the COSGN00C sign-on screen, and 'No access - Admin Only option...' never
+  appears. ENTER on that blank sign-on screen is answered by CC00 with 'Please
+  enter User ID ...', showing the screen is COSGN00C's own.
+inventory_ids:
+- INV-MNU-029  # COADM01C entry without COMMAREA returns to sign-on
+- INV-MNU-002  # COADM01C program
+- INV-MNU-003  # COMEN01 map, asserted on screen 1
+- INV-SEC-002  # COSGN00 map, asserted on screen 2
+- INV-CFG-011  # transaction CA00
+- INV-LAY-001  # COADM02Y copybook
+- INV-LAY-002  # COCOM01Y copybook: CDEMO-TO-PROGRAM, CDEMO-USER-TYPE
+- INV-LAY-005  # COTTL01Y copybook
+- INV-LAY-006  # CSDAT01Y copybook
+- INV-LAY-008  # CSMSG01Y copybook
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003  # menu (MNU) e2e baselines are derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-019  # tech spec's admin-only refusal against the repository's return to sign-on
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    '@map': COSGN00
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    aid: ENTER
+  # '@map' names the input screen the adapter identifies after starting the
+  # transaction (Clear, CA00, Enter): the sign-on screen COADM01C returns to.
+  # Naming the menu left by step 1 instead would make the adapter stop at the
+  # identification mismatch rather than press the step's AID. The AID is then
+  # pressed on that screen with no field entered.
+  - transid: CA00
+    '@map': COSGN00
+    fields: {}
+    aid: ENTER
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COSGN00
+    TRNNAME: CC00
+    PGMNAME: COSGN00C
+    # COSGN00C, re-entered by CC00 with its COMMAREA, finds USERID blank
+    # [app/cbl/COSGN00C.cbl:85-87,108-122]; never the admin-only refusal.
+    ERRMSG: 'Please enter User ID ...                                                      '
