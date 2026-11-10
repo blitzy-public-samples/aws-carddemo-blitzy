@@ -1,0 +1,92 @@
+# ENTER on the account view with no account number. USER0001 signs on through
+# CC00 and COSGN00C transfers control to the main menu COMEN01C
+# [app/cbl/COSGN00C.cbl:221-240]; option 1 'Account View' XCTLs to COACTVWC with
+# the program context reset [app/cbl/COMEN01C.cbl:117-155]. On that first entry
+# COACTVWC takes the CDEMO-PGM-ENTER path: it sends COACTVW with the account
+# filter blank (ACCTSIDO low-values), the INFOMSG prompt and no error, marks the
+# COMMAREA for reentry and returns TRANSID CAVW, reading no file
+# [app/cbl/COACTVWC.cbl:353-360,460-535,577-591].
+# Step 3 erases ACCTSID and presses ENTER. On reentry 2200-EDIT-MAP-INPUTS finds
+# the filter empty, and 2210-EDIT-ACCOUNT sets INPUT-ERROR, FLG-ACCTFILTER-BLANK
+# and 'Account number not provided'; the cross-field edit then sets
+# NO-SEARCH-CRITERIA-RECEIVED because the filter is blank, which overwrites that
+# text, so 'No input received' is the message the screen shows
+# [app/cbl/COACTVWC.cbl:622-662]. INPUT-ERROR skips 9000-READ-ACCT, so no
+# CXACAIX, ACCTDAT or CUSTDAT read is issued although the fixtures hold the
+# repository accounts, and COACTVW is sent again [app/cbl/COACTVWC.cbl:361-367].
+# Because the filter is blank on a reentry, 1300-SETUP-SCREEN-ATTRS writes '*' in
+# ACCTSID [app/cbl/COACTVWC.cbl:561-565]; INFOMSG keeps the prompt, since
+# WS-INFO-MSG starts blank on every task [app/cbl/COACTVWC.cbl:268-269,528-534].
+# Screen fields are compared at their full BMS length, trailing spaces included:
+# ERRMSG is the 75-byte WS-RETURN-MSG in the 78-byte field, INFOMSG the 40-byte
+# WS-INFO-MSG in 45 bytes, ACCTSID 11 bytes; positions the program leaves as
+# low-values read back as spaces. CURDATE and CURTIME come from the region clock,
+# so they are matchers. ACCTSID carries VALIDN=(MUSTFILL)
+# [app/bms/COACTVW.bms:84-90]; the expectation assumes the terminal does not
+# enforce that field validation, so the ENTER reaches the program (GAP-INF-005).
+# The UniKix copy of COACTVW.bms lacks the unnamed field at row 1, columns 1-9
+# (GAP-DOC-025), which no assertion here reads.
+id: ACT-COACTVWC-negative-02
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 1 (Account View) on the main menu and, on
+  the COACTVWC account view screen, presses ENTER with the account number
+  field empty. COACTVWC reads no file and sends the account view screen again
+  with '*' in the account number field, the prompt 'Enter or update id of
+  account to display' and 'No input received' in the message line.
+inventory_ids:
+- INV-ACT-009  # COACTVWC message 'No input received' (rule)
+- INV-ACT-001  # COACTVWC program
+- INV-MNU-003  # COMEN01 map, the main menu the sign-on lands on
+- INV-ACT-003  # COACTVW map
+- INV-CFG-010  # CAVW transaction, the TRANSID COACTVWC returns with and the ENTER runs under
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA whose reenter flag routes the ENTER to the edits
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COACTVWC
+- INV-LAY-009  # CSMSG02Y copybook, the abend data COACTVWC copies
+- INV-LAY-011  # CSSTRPFY copybook, YYYY-STORE-PFKEY mapping ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y copybook, CCARD-AID and the CC-ACCT-ID filter
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+    CARDXREF: {base: CARDXREF}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '1'}, '@map': COMEN01}
+  - {aid: ENTER, fields: {ACCTSID: ''}, '@map': COACTVW}
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    ACCTSID: '*          '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: 'No input received                                                             '

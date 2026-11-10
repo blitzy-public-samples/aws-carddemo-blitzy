@@ -1,0 +1,118 @@
+# Account view of an account the card cross-reference does not hold.
+# USER0001 signs on (CC00) and reaches the COMEN01C main menu; option '1' is
+# 'Account View' and COMEN01C XCTLs to COACTVWC with CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:117-155]. Called from COMEN01C and not re-entered,
+# COACTVWC sends COACTVW with its account-id prompt and a blank message, and
+# returns TRANSID CAVW with CDEMO-PGM-REENTER set
+# [app/cbl/COACTVWC.cbl:282-286,353-360,577-591].
+#
+# The third step enters account 99999999999. It is numeric and not zero, so
+# 2210-EDIT-ACCOUNT accepts it and 9000-READ-ACCT reads CXACAIX by account id
+# [app/cbl/COACTVWC.cbl:649-681,687-735]. No CARDXREF record carries that
+# XREF-ACCT-ID (the fixture accounts run 00000000001-00000000050), so the READ
+# returns NOTFND: AAP 0.4.3 reaches notfnd by leaving the record out of the
+# preconditions, and no fault is declared. COACTVWC then composes the message
+# into WS-RETURN-MSG X(75), stops before ACCTDAT and CUSTDAT, and sends COACTVW
+# again [app/cbl/COACTVWC.cbl:741-758,697-699,416-425].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - ERROR-RESP and ERROR-RESP2 are X(10) receiving the S9(9) COMP RESP and
+#   RESP2, so each holds 9 unsigned digits and a space: RESP is DFHRESP(NOTFND)
+#   = 13, giving '000000013 ' [app/cbl/COACTVWC.cbl:40-43,98-103,745-746].
+# - The STRING parts are 8 + 11 + 13 + 23 + 10 + 6 + 10 = 81 characters, so
+#   STRING stops when the 75-character WS-RETURN-MSG is full: only the first 4
+#   digits of ERROR-RESP2 fit, and they are '0000' for any RESP2 below 100000,
+#   which includes the 80 CICS returns for a READ NOTFND. ERRMSGO X(78) then
+#   receives the 75 characters and 3 spaces. A GnuCOBOL run of the same MOVEs and
+#   STRING under the suite's compile options produced exactly this text.
+# - ACCTSID echoes CC-ACCT-ID; WS-INFO-MSG stays blank, so INFOMSG is the prompt
+#   'Enter or update id of account to display' padded to 45
+#   [app/cbl/COACTVWC.cbl:460-534]. FOUND-ACCT-IN-MASTER and
+#   FOUND-CUST-IN-MASTER stay unset, so the account and customer fields keep the
+#   LOW-VALUES of 1100-SCREEN-INIT and show blank (they have no BMS INITIAL).
+# - Values are compared at full BMS width with trailing spaces; CURDATE and
+#   CURTIME come from the region clock, hence matchers. messages holds the ERRMSG
+#   of each step, as tests/adapters/unikix/tpe.py captures it.
+id: ACT-COACTVWC-negative-06
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 1 'Account View' and asks
+  COACTVWC for account 99999999999, which no card cross-reference record
+  holds. The CXACAIX read returns NOTFND, and COACTVW comes back with the
+  account id kept, no account or customer details, and ERRMSG
+  'Account:99999999999 not found in Cross ref file.  Resp:000000013  Reas:0000',
+  the composed message cut to the 75 characters of WS-RETURN-MSG.
+inventory_ids:
+- INV-ACT-018  # COACTVWC message 'Account:<id> not found in Cross ref file.  Resp:<ERROR-RESP> Reas:<ERROR-RESP2>'
+- INV-ACT-001  # COACTVWC program
+- INV-MNU-003  # COMEN01 map, where option 1 is entered
+- INV-ACT-003  # COACTVW map, the account view screen
+- INV-CFG-010  # CAVW transaction, under which the account id is processed
+- INV-CFG-006  # CXACAIX CSD file, the alternate-index path read by account id
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying CDEMO-ACCT-ID and the program context
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COACTVWC
+- INV-LAY-009  # CSMSG02Y, the abend data COACTVWC copies
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps the ENTER AID
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, the account filter echoed in ACCTSID
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # account view and update (ACT) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-025  # the UniKix COACTVW.bms drops the unnamed field at row 1, columns 1-9
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    # The repository cross-reference holds no record for account 99999999999.
+    CARDXREF: {base: CARDXREF}
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  # PASSWORD is the documented demo password of the README, not a secret.
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+  - aid: ENTER
+    '@map': COMEN01
+    fields: {OPTION: '1'}
+  - aid: ENTER
+    '@map': COACTVW
+    fields: {ACCTSID: '99999999999'}
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '99999999999'
+    ACSTTUS: ' '
+    ACURBAL: '               '
+    ACRDLIM: '               '
+    ACSTNUM: '         '
+    ACSFNAM: '                         '
+    ACSLNAM: '                         '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: 'Account:99999999999 not found in Cross ref file.  Resp:000000013  Reas:0000   '
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Account:99999999999 not found in Cross ref file.  Resp:000000013  Reas:0000   '

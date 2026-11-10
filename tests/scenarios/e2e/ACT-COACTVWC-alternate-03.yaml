@@ -1,0 +1,124 @@
+# Transaction CAVW entered directly from a cleared screen, with no sign-on.
+# A transaction started this way runs COACTVWC with EIBCALEN = 0, so it
+# initializes CARDDEMO-COMMAREA (CDEMO-PGM-CONTEXT 0, CDEMO-PGM-ENTER) instead of
+# returning to sign-on as eleven of the online programs do, and sends its own
+# account view screen with the prompt 'Enter or update id of account to display'
+# and no error, reading no file [app/cbl/COACTVWC.cbl:282-286,353-360,431-464,527-534].
+# 1400-SEND-SCREEN sets CDEMO-PGM-REENTER and the task returns with TRANSID CAVW
+# and a 2000-byte COMMAREA [app/cbl/COACTVWC.cbl:394-406,577-591]. Whether direct
+# entry without sign-on is intended is the open question of GAP-UNC-010, so the
+# behaviour is pinned as the source shows it (observed-only).
+#
+# The step's '@map' names the input screen the adapter identifies after starting
+# the transaction (Clear, CAVW, Enter): COACTVW. Had COACTVWC returned to the
+# sign-on screen, that screen would be identified instead, driving would stop
+# there, and screen 1 would not match. The direct-entry screen itself is never
+# captured, because every step presses an AID; screen 1 is the result of ENTER
+# pressed on it with no field entered.
+#
+# That ENTER re-enters COACTVWC with its own COMMAREA: CDEMO-FROM-PROGRAM is
+# blank, not COMEN01C, so the COMMAREA is kept and CDEMO-PGM-REENTER selects
+# 2000-PROCESS-INPUTS [app/cbl/COACTVWC.cbl:282-292,361-373]. The account id
+# arrives empty, so 2210-EDIT-ACCOUNT sets INPUT-ERROR and FLG-ACCTFILTER-BLANK
+# with 'Account number not provided', which the cross-field edit at once replaces
+# with 'No input received' (NO-SEARCH-CRITERIA-RECEIVED)
+# [app/cbl/COACTVWC.cbl:596-664]. The map is resent: the account id shows '*'
+# because the filter is blank on a re-entry, no account or customer was read so
+# every detail field stays at LOW-VALUES, and the empty info message brings the
+# prompt back [app/cbl/COACTVWC.cbl:460-574]. The program still asks for no
+# sign-on and shows no account data.
+#
+# Every value is derived from the source (inferred-not-observed): no TPE region
+# runs in CI. Screen fields are compared at their full BMS length, trailing spaces
+# kept; fields left at LOW-VALUES read as spaces. CURDATE and CURTIME come from
+# the region clock, so they are matchers. The UniKix copy of COACTVW.bms lacks the
+# unnamed LENGTH=9 field at row 1, columns 1-9, beside TRNNAME
+# [app/bms/COACTVW.bms:363-364] (GAP-DOC-025).
+id: ACT-COACTVWC-alternate-03
+level: e2e
+type: alternate
+description: >-
+  CAVW is entered directly, with no sign-on and no COMMAREA. COACTVWC starts a
+  fresh COMMAREA and shows its own account view screen (COACTVW) rather than the
+  sign-on screen. ENTER on that screen with no account id is handled by COACTVWC
+  itself: the screen is resent with 'No input received', '*' in the account id,
+  the prompt 'Enter or update id of account to display' and every account and
+  customer field blank.
+# Primary item first, then the program, the map asserted, the transaction both
+# tasks run, and the online-only copybooks COACTVWC copies. The prompt and the
+# 'No input received' message are the primary items of other COACTVWC scenarios;
+# here they are asserted only as the screen the direct-entry path leads to. No
+# file is read, so no CSD file is listed; USRSEC is loaded only as the region's
+# usual sign-on data, which this scenario never uses.
+inventory_ids:
+- INV-ACT-026  # COACTVWC entry without COMMAREA starts without sign-on
+- INV-ACT-001  # COACTVWC program
+- INV-ACT-003  # COACTVW map
+- INV-CFG-010  # transaction CAVW
+- INV-LAY-002  # COCOM01Y: CARDDEMO-COMMAREA, CDEMO-PGM-CONTEXT
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COACTVWC
+- INV-LAY-009  # CSMSG02Y, the abend variables COACTVWC copies
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps EIBAID to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CCARD-AID flags and CC-ACCT-ID
+tags:
+- inferred-not-observed
+- observed-only
+gap_ids:
+- GAP-INF-005  # account (ACT) e2e baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-UNC-010  # direct entry without sign-on: intended or not
+- GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CAVW
+    '@map': COACTVW
+    fields: {}
+    aid: ENTER
+expected:
+  screens:
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '*          '
+    ACSTTUS: ' '
+    ADTOPEN: '          '
+    ACRDLIM: '               '
+    AEXPDT: '          '
+    ACSHLIM: '               '
+    AREISDT: '          '
+    ACURBAL: '               '
+    ACRCYCR: '               '
+    AADDGRP: '          '
+    ACRCYDB: '               '
+    ACSTNUM: '         '
+    ACSTSSN: '            '
+    ACSTDOB: '          '
+    ACSTFCO: '   '
+    ACSFNAM: '                         '
+    ACSMNAM: '                         '
+    ACSLNAM: '                         '
+    ACSADL1: '                                                  '
+    ACSSTTE: '  '
+    ACSADL2: '                                                  '
+    ACSZIPC: '     '
+    ACSCITY: '                                                  '
+    ACSCTRY: '   '
+    ACSPHN1: '             '
+    ACSGOVT: '                    '
+    ACSPHN2: '             '
+    ACSEFTC: '          '
+    ACSPFLG: ' '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: 'No input received                                                             '

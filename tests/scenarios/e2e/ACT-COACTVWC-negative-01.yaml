@@ -1,0 +1,127 @@
+# The account view refuses a blank account id. USER0001 (type U in the USRSEC
+# fixture) signs on through CC00 and reaches the main menu, whose option 1 makes
+# COMEN01C XCTL to COACTVWC with CDEMO-PGM-CONTEXT 0 [app/cbl/COMEN01C.cbl:117-155].
+# That first entry takes the CDEMO-PGM-ENTER path, sends COACTVW with the prompt
+# 'Enter or update id of account to display' and no error, sets
+# CDEMO-PGM-REENTER and returns TRANSID CAVW [app/cbl/COACTVWC.cbl:353-360,
+# 394-407,460-537,577-591].
+#
+# ENTER with ACCTSID erased then re-enters CAVW. ACCTSID is FSET, so it comes
+# back modified and empty; RECEIVE MAP leaves ACCTSIDI as LOW-VALUES, which
+# 2200-EDIT-MAP-INPUTS moves to CC-ACCT-ID [app/cbl/COACTVWC.cbl:361-367,543,
+# 610-633]. 2210-EDIT-ACCOUNT finds the id blank, sets INPUT-ERROR and
+# FLG-ACCTFILTER-BLANK and, since WS-RETURN-MSG is still off from the start of
+# the task, sets WS-PROMPT-FOR-ACCT 'Account number not provided'
+# [app/cbl/COACTVWC.cbl:121-122,278,649-662]. Back in 2200, the cross-field
+# edit sets NO-SEARCH-CRITERIA-RECEIVED for the same blank filter without any
+# condition, so WS-RETURN-MSG becomes 'No input received' before anything is
+# sent [app/cbl/COACTVWC.cbl:123-124,639-642].
+# The 'Account number not provided' text therefore never reaches the screen.
+# This scenario is the primary case of that message item and pins what the
+# screen shows instead: ERRMSG 'No input received'. Whether the overwritten
+# prompt has any purpose is the open uncertain-purpose question of GAP-UNC-013,
+# hence the observed-only tag. INV-ACT-009, the 'No input received' item, is not
+# listed: its own scenario verifies it.
+#
+# INPUT-ERROR skips 9000-READ-ACCT, so no file is read and the account and
+# customer fields stay LOW-VALUES, shown blank. 1300-SETUP-SCREEN-ATTRS marks the
+# blank filter of a re-entry with '*' in ACCTSID. WS-INFO-MSG is blank, so
+# INFOMSG shows the prompt again [app/cbl/COACTVWC.cbl:364-367,465-471,528-534,
+# 561-565].
+# The ACCTDATA, CUSTDATA and CARDXREF fixtures are loaded so that the refusal
+# cannot come from absent data.
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included: ERRMSG is 78 characters (the 75-byte WS-RETURN-MSG padded),
+# INFOMSG 45, ACCTSID 11. CURDATE and CURTIME come from the region clock, so
+# they are matchers. The UniKix copy of COACTVW.bms lacks the unnamed field at
+# row 1, columns 1-9, beside TRNNAME (GAP-DOC-025). The baseline is derived
+# from the source: no TPE region runs in CI.
+id: ACT-COACTVWC-negative-01
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 1 'Account View' on the main menu and
+  presses ENTER on the COACTVWC account view screen (CAVW) with the account id
+  left blank. 2210-EDIT-ACCOUNT sets 'Account number not provided', but the
+  cross-field edit of 2200-EDIT-MAP-INPUTS replaces it with 'No input
+  received', which is the message COACTVW shows. ACCTSID is marked '*', the
+  prompt 'Enter or update id of account to display' stays in INFOMSG, and no
+  account or customer data is shown.
+inventory_ids:
+- INV-ACT-008  # COACTVWC message 'Account number not provided' (rule), overwritten before display
+- INV-ACT-001  # COACTVWC program
+- INV-MNU-003  # COMEN01 map, the menu option 1 is entered on
+- INV-ACT-003  # COACTVW map, sent on entry and again with the refusal
+- INV-CFG-010  # CAVW transaction, under which the blank id is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose CDEMO-PGM-REENTER makes ENTER a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COACTVWC
+- INV-LAY-009  # CSMSG02Y, copied by COACTVWC (abend data area)
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CCARD-AID, CC-ACCT-ID and CCARD-ERROR-MSG
+tags:
+- inferred-not-observed
+- observed-only
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-UNC-013  # the 'Account number not provided' text is set but never shown
+- GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+    CARDXREF: {base: CARDXREF}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '1'
+  - aid: ENTER
+    '@map': COACTVW
+    fields:
+      ACCTSID: ''
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN001: '01. Account View                        '
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '*          '
+    ACSTTUS: ' '
+    ACURBAL: '               '
+    ACSTNUM: '         '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: 'No input received                                                             '
+  # One ERRMSG value per step: blank on the menu and on the first account view,
+  # then the cross-field refusal of the blank id.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'No input received                                                             '
