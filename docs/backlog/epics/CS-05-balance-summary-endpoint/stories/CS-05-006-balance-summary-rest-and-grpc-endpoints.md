@@ -70,6 +70,9 @@ Parent epic: [CS-05 Balance Summary Endpoint](../README.md)
 >   - Reference Data failure: `PARTIAL`.
 >   - Config failure: `dataStatus` unchanged from the AC1 value `FRESH`, with the Config stub failing every call.
 >   - Auth failure: 401 for `fixture-token-expired`, 503 with the Auth stub failing every call, and 504 with an Auth stub latency of 2,000 ms.
+>
+> SCOPE-QUESTION (Resolved): AC9 states its cut-off bound as `cutoffMs` at most 900 without a unit. The bound is the 900 ms request deadline (`REQUEST_DEADLINE_MS`), measured from receipt to the cut-off, so AC9 requires the cut-off of every request it names to fall at or before 900 ms after receipt.
+>
 > - AC10: On both protocols, a request carrying `x-api-key` but no bearer token returns 401 `UNAUTHENTICATED`, and the Auth stub request log holds zero entries. An inbound `x-api-key` never grants access.
 > - AC11: A cold request on either protocol produces exactly one `GetAccount`, one `ListCategoryBalances` and one `ListTransactionTypes` call in the stub request logs, no `GetCardCrossReference` call, and zero Transaction Activity entries. This shows that the adapters make no reads of their own.
 > - AC12: On both protocols, the Stage 0 hook starts exactly one request deadline per request, at receipt and ahead of validation. The deadline the account access guard and the assembly receive is the one the hook attached, and each request writes exactly one completion line carrying the receipt `traceId`. The AC6 400 case marks the cut-off at the rejection, and its completion line carries outcome `error` with status 400.

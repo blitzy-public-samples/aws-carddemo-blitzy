@@ -78,6 +78,9 @@ Parent epic: [CS-06 Category Balances Endpoint](../README.md)
 >   - With the Card Data stub failing every call, the request degrades to 200 `STALE` with the AC3 entry aged 120 s, within the 300 s max stale age, and fails hard with 503 `UNAVAILABLE` with no entry, each after exactly 3 `ListCategoryBalances` attempts.
 >   - With the Reference Data stub failing every call and no reference entry within the 86,400 s max stale age, the request degrades to 200 `PARTIAL` with the one `01`/`0001` balance "0.00".
 > - AC13: Deadline: for every degraded 200, 503 and 504 of AC11 and AC12, on both protocols, the logged `cutoffMs` is at most 900 (`REQUEST_DEADLINE_MS`), the completion line carries the outcome and the receipt `traceId`, and the client-measured response arrives below 1,000 ms.
+>
+> SCOPE-QUESTION (Resolved): AC13 states its cut-off bound as `cutoffMs` at most 900 without a unit. The bound is the 900 ms request deadline (`REQUEST_DEADLINE_MS`), measured from receipt to the cut-off, so AC13 requires the cut-off of every request it names to fall at or before 900 ms after receipt.
+>
 > - AC14: Config: with the Config stub failing every call, and separately with a 2,000 ms Config stub latency and a stale configuration snapshot, the AC1 request on REST and the AC2 request on gRPC return the AC1 values with `dataStatus` `FRESH`, and REST returns `X-Data-Status: FRESH`. Each has a logged `cutoffMs` of at most 900 and a client-measured response below 1,000 ms.
 > - AC15: On a cold cache with no injected failure, one AC1 request on REST, and separately one AC2 request on gRPC, produces exactly one `ListCategoryBalances` call in the Card Data stub request log, exactly one `ListTransactionCategories` and one `ListTransactionTypes` call in the Reference Data stub request log, no `GetAccount` or `GetCardCrossReference` call and zero Transaction Activity entries. This shows that the adapters make no reads of their own.
 >

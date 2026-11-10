@@ -55,6 +55,9 @@ Parent epic: [CS-04 Transaction Detail Drill-Down](../README.md)
 > - AC6: Outside the percentile set, each regular fixture identity makes one call for an account outside its entitlements (e.g. `USER0001` → `10000002001`). Each such call returns 403 with `code` `PERMISSION_DENIED`, and the Transaction Activity and Card Data stub request logs gain no entry for it, so no account data is read from upstream before access is allowed. The cache side is proven by CS-12-003.
 > - AC7: Over the measured window, the Transaction Activity and Card Data stub request logs record zero `UNAVAILABLE` or `DEADLINE_EXCEEDED` outcomes. No attempt therefore reached the per-attempt timeout (the lesser of 300 ms `UPSTREAM_TIMEOUT_MS` and the remaining budget), and no retry occurred (cap two, `UPSTREAM_MAX_RETRIES`, 50 ms then 100 ms backoff). Injected-failure timeouts and retries are proven by CS-08-002 and the integration suites.
 > - AC8: Every measured call's completion log line records `cutoffMs` at most 900 (`REQUEST_DEADLINE_MS`, receipt to cut-off), and the p99 client-measured response is below 1,000 ms.
+>
+> SCOPE-QUESTION (Resolved): AC8 states its cut-off bound as `cutoffMs` at most 900 without a unit. The bound is the 900 ms request deadline (`REQUEST_DEADLINE_MS`), measured from receipt to the cut-off, so AC8 requires the cut-off of every request it names to fall at or before 900 ms after receipt.
+>
 > - AC9: Degradation and fail-hard outcomes follow the TRD degradation table:
 >   - Auth fails closed with 401, 503 or 504.
 >   - Transaction-detail and cross-reference failures return 503 or 504.
