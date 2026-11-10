@@ -1,0 +1,83 @@
+# Derived baseline of scenario TRN-COTRN02C-boundary-02 (capture_platform
+# derived, tag inferred-not-observed): the negative extreme of the Add
+# Transaction amount format, '-99999999.99', is accepted. Authored from the
+# source, never captured; only `report.py --import-unikix` promotes it, and it
+# is never edited by hand to match a run.
+# - Step 1: USER0001 (type U) is routed to COMEN01C, which sends COMEN01
+#   headed CM00/COMEN01C with option 8 built as '08. Transaction Add' and a
+#   blank ERRMSG [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:236-276]
+#   [app/cpy/COMEN02Y.cpy:67-72].
+# - Step 2: option 8 transfers control to COTRN02C, whose first entry sends
+#   COTRN02 from a cleared map with a blank ERRMSG
+#   [app/cbl/COTRN02C.cbl:115-130,516-571].
+# - Step 3: the card branch reads CCXREF by card 0500024453765740 and moves
+#   XREF-ACCT-ID 00000000050 (app/data/ASCII/cardxref.txt record 1) to ACTIDIN
+#   [app/cbl/COTRN02C.cbl:210-223]. '-99999999.99' holds '-', '99999999', '.'
+#   and '99', so no WHEN of the amount check is true and 'Amount should be in
+#   format -99999999.99' is not set [app/cbl/COTRN02C.cbl:339-351]. NUMVAL-C
+#   into PIC S9(9)V99 and the edit through PIC +99999999.99 give back
+#   '-99999999.99' [app/cbl/COTRN02C.cbl:58-59,383-386]; the dates pass
+#   CSUTLDTC with mask YYYY-MM-DD (inferred, GAP-INF-001) and MID is numeric
+#   [389-436]. The blank CONFIRM gives 'Confirm to add this transaction...'
+#   (WS-MESSAGE X(80) into the 78-byte ERRMSGO) and SEND-TRNADD-SCREEN echoes
+#   the received fields [164-188,516-534]. ADD-TRANSACTION is not performed,
+#   so TRANSACT keeps its 300 fixture records and its highest key.
+# One screen per step, each the screen shown after the step's AID; messages
+# holds each step's ERRMSG. Text is full BMS field width with trailing spaces
+# kept. CURDATE and CURTIME come from the region clock, so they are matchers.
+file_state:
+  TRANSACT:
+    contains:
+    - TRAN-AMT: '603.22'
+      TRAN-CARD-NUM: '3260763612337560'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+      TRAN-ID: 0000000996722787
+      TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+      TRAN-MERCHANT-ID: '800000000'
+      TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+      TRAN-MERCHANT-ZIP: 53200-7529
+      TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+      TRAN-PROC-TS: '                          '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    count: 300
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Confirm to add this transaction...                                            '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN008: '08. Transaction Add                     '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TRNNAME: CT02
+- '@map': COTRN02
+  ACTIDIN: '00000000050'
+  CARDNIN: '0500024453765740'
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Confirm to add this transaction...                                            '
+  MCITY: 'Testville                '
+  MID: '800000001'
+  MNAME: 'Test Merchant                 '
+  MZIP: '27601     '
+  PGMNAME: COTRN02C
+  TCATCD: '0001'
+  TDESC: 'Test purchase                                               '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-07-01'
+  TPROCDT: '2022-07-01'
+  TRNAMT: '-99999999.99'
+  TRNNAME: CT02
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'
