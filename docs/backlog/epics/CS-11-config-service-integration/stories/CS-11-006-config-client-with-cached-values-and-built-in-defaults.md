@@ -177,7 +177,7 @@ sequenceDiagram
             Config-->>Snapshot: Four values, or a failure status
             Snapshot->>Cache: Write the mirror entry on success
         end
-        Snapshot->>Snapshot: Apply valid values, or keep the held values
+        Snapshot->>Snapshot: Apply valid values,<br/>or keep the held values
     end
 ```
 
