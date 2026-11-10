@@ -174,23 +174,11 @@ expected:
   - 'Transaction added successfully.  Your Tran ID is 0000000996722788.            '
   file_state:
     # The 300 fixture records plus the one written. The highest fixture record,
-    # the one the browse read, is unchanged.
+    # the one the browse read, is unchanged. contains is an ordered subsequence,
+    # so the entries follow TRANSACT's primary-key order (TRAN-ID ascending).
     TRANSACT:
       count: 301
       contains:
-      - TRAN-ID: '0000000996722788'
-        TRAN-TYPE-CD: '02'
-        TRAN-CAT-CD: '2'
-        TRAN-SOURCE: 'OPERATOR  '
-        TRAN-DESC: 'Test write via account                                                                              '
-        TRAN-AMT: '-5.00'
-        TRAN-MERCHANT-ID: '800000001'
-        TRAN-MERCHANT-NAME: 'Test Merchant                                     '
-        TRAN-MERCHANT-CITY: 'Test City                                         '
-        TRAN-MERCHANT-ZIP: '10001     '
-        TRAN-CARD-NUM: '9680294154603697'
-        TRAN-ORIG-TS: '2022-07-01                '
-        TRAN-PROC-TS: '2022-07-01                '
       - TRAN-ID: '0000000996722787'
         TRAN-TYPE-CD: '01'
         TRAN-CAT-CD: '1'
@@ -204,3 +192,16 @@ expected:
         TRAN-CARD-NUM: '3260763612337560'
         TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
         TRAN-PROC-TS: '                          '
+      - TRAN-ID: '0000000996722788'
+        TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '2'
+        TRAN-SOURCE: 'OPERATOR  '
+        TRAN-DESC: 'Test write via account                                                                              '
+        TRAN-AMT: '-5.00'
+        TRAN-MERCHANT-ID: '800000001'
+        TRAN-MERCHANT-NAME: 'Test Merchant                                     '
+        TRAN-MERCHANT-CITY: 'Test City                                         '
+        TRAN-MERCHANT-ZIP: '10001     '
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-01                '
+        TRAN-PROC-TS: '2022-07-01                '
