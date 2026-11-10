@@ -56,6 +56,9 @@ Parent epic: [CS-05 Balance Summary Endpoint](../README.md)
 > - AC5: Each request receives its `traceId` at receipt as a 32-character lower-case hexadecimal value, the form of the contract example `4bf92f3577b34da6a3ce929d0e0e4736`. 1,000 sequential requests yield 1,000 distinct values, and the `traceId` in an error body equals the value on that request's log lines.
 > - AC6: `code` is a JSON string in REST and a proto `string` in gRPC, and no error body carries a numeric code.
 > - AC7: No error body or log line contains the bearer token, the `x-api-key` value or a stack trace.
+>
+> SCOPE-QUESTION (Resolved): AC7 excludes credentials and stack traces but not the error text itself. A public `message` and every `details` `description` are fixed approved wording, never text from an exception, its cause, an upstream status description or upstream error details. Each code-table row carries its contract-example default: `INVALID_ARGUMENT` "Request parameters are invalid", `UNAUTHENTICATED` "Token missing, invalid or expired", `PERMISSION_DENIED` "Caller not entitled to the account", `NOT_FOUND` "Account not found", `UNAVAILABLE` "Upstream unavailable", `DEADLINE_EXCEEDED` "Request deadline exceeded". A raising story replaces it only with fixed wording it states, such as "Transaction not found", and a field `description` is that story's fixed rule text. The writer and the interceptor render only approved text, the row's status and the receipt `traceId`, and the `google.rpc.Status` message carries the same approved `message`. The cause is logged server-side with that `traceId`, with no stack trace, token or key. `ApiErrorHandlerTest` raises, from a controller and from a request filter through the shared writer, a typed failure whose cause holds `cannot read /opt/cardservicing/private/config.yml` and `ERROR: relation "account" does not exist`; `GrpcErrorInterceptorTest` raises it from an RPC, plus an upstream `UNAVAILABLE` whose status description holds both markers. Each asserts that the body, the packed `ErrorObject` and the status description hold neither marker, only the row's approved `message`, status, receipt `traceId` and approved `details` descriptions. The credential and stack-trace exclusions, the six statuses, the `ErrorObject` shape and the 7 files stand.
+>
 > - AC8: A failure raised in a request filter ahead of any controller returns the same status and `ErrorObject` body as the same failure raised in a controller.
 >
 > ### 3. Dependencies
@@ -80,7 +83,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is ≥80% per module. Cases: one per code-table row on each protocol, schema validation of the error body, a filter-raised failure, `traceId` uniqueness and log presence, and token absence.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is ≥80% per module. Cases: one per code-table row on each protocol, schema validation of the error body, a filter-raised failure, `traceId` uniqueness and log presence, token absence, and internal-path and SQL diagnostic text absent from REST bodies, packed details and the remote status.
 - Integration: Not applicable — this story calls no upstream service. Threshold when it applies: `./gradlew :card-servicing-service:integrationTest` passes, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS`, and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Not applicable — no endpoint ships here, and error paths sit outside the success-path percentiles. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -106,7 +109,7 @@ Rationale: one code table read by one HTTP writer and one remote procedure inter
 - Topology: one error object shared by both protocols and defined in the shared contract.
 - Naming: codes are the six status names written as text.
 - Addressing: the trace identifier is the key that ties an error body to its request's log lines on either protocol.
-- Isolation: no token, key or stack trace reaches an error body or a log line.
+- Isolation: no token, key or stack trace reaches an error body or a log line, and error messages come only from approved fixed wording.
 - Fallback: failures outside the six codes are an open item.
 - Provisioning: nothing beyond the build.
 - Cut-over: later stories return every failure as the shared error object with one of the six codes.
@@ -123,7 +126,7 @@ How it behaves:
 - The interceptor reads the same table, sets the matching remote procedure status and packs one error object into its details.
 - A paging rejection carries exactly one field entry, and that entry names the page token.
 - The trace identifier enters the logging context at receipt, so success and error log lines of one request share it.
-- The writer drops stack traces and copies no request header, so no token or key reaches a body or a log line.
+- The writer and the interceptor take each message from the code table or the raising story's fixed wording, never from exception or upstream text, and they drop stack traces and copy no request header.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
@@ -185,7 +188,7 @@ Open assumptions:
 | AC4 | Holds | the interceptor packs the same object the HTTP writer renders |
 | AC5 | Holds | the identifier is issued at receipt and placed in the logging context |
 | AC6 | Holds | the table stores each code as text |
-| AC7 | Holds | the writer drops stack traces and copies no request header |
+| AC7 | Holds | the writer and the interceptor render only approved wording without stack traces or request headers |
 | AC8 | Holds | filters and controllers share one writer |
 
 ### Validation of Option B
@@ -209,7 +212,7 @@ Open assumptions:
 | AC4 | At risk | details packing is repeated in each method |
 | AC5 | Breaks | early rejections carry no trace identifier |
 | AC6 | Holds | each copy can write the code as text |
-| AC7 | Holds | each copy can drop stack traces and request headers |
+| AC7 | At risk | each copy must hold its own approved wording |
 | AC8 | Breaks | filter bodies differ from controller bodies |
 
 ## Metadata

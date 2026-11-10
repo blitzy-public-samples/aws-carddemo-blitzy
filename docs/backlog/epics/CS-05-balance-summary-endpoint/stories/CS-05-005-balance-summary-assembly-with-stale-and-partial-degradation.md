@@ -130,30 +130,26 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A — a concurrent fan-out of the three reads under one request deadline.
+Recommended: Option A — a concurrent fan-out of the three reads under one deadline.
 
-Rationale: only reads launched together leave each read one full attempt inside the budget that remains after the two authentication calls.
+Rationale: only reads launched together each get one full attempt after the two authentication calls.
 
-- Rejected: Option B, sequential reads, because three attempts in a row exceed the residual budget on a cold path.
-- Rejected: a single combined upstream operation, because the contract baseline lists none.
+- Rejected: Option B, sequential reads, which overrun the cold-path budget.
+- Rejected: a single combined upstream operation, absent from the contract baseline.
 
 ```mermaid
 sequenceDiagram
     participant Endpoint as Balance endpoint
     participant Assembly as Balance assembly
-    participant Cache as Shared cache
-    participant Cards as Card data service
-    participant Types as Reference data service
+    participant Cards as Card data client
+    participant Types as Reference data client
     Endpoint->>Assembly: assemble after access allowed
     par account
-        Assembly->>Cache: account entry
-        Assembly->>Cards: account read on miss or stale entry
+        Assembly->>Cards: account read, cache first
     and balances
-        Assembly->>Cache: balance entry
-        Assembly->>Cards: balance read on miss or stale entry
+        Assembly->>Cards: balance read, cache first
     and types
-        Assembly->>Cache: type entry
-        Assembly->>Types: type read on miss or stale entry
+        Assembly->>Types: type read, cache first
     end
     Note over Assembly: cut-off fixes fresh, stale, partial or error
     Assembly-->>Endpoint: summary with data status
@@ -161,65 +157,61 @@ sequenceDiagram
 
 ### Shared by both options
 
-- Topology: the assembly runs in the service after the access guard allows, and reads through the card data and reference data clients.
-- Naming: the data status values are fresh, stale and partial.
+- Topology: after the access guard allows, the assembly reads through the card data and reference data clients.
+- Naming: the data status is fresh, stale or partial.
 - Addressing: the account number comes from the validated request.
-- Isolation: nothing is read before access is allowed, and cache keys carry no caller identity.
-- Fallback: account and balance reads fall back to a stale cache entry, and the type read falls back to no descriptions.
-- Provisioning: in-process loopback stubs serve the unit tests, and containers serve the test stack.
-- Cut-over: real services replace the stubs through the client address and credential source only.
-- Failures: unavailable gives 503, an expired deadline gives 504, and an unknown account gives 404.
+- Isolation: nothing is read before the allow, and cache keys carry no caller identity.
+- Fallback: account and balance reads fall back to a stale entry, and the type read to no descriptions.
+- Provisioning: loopback stubs serve unit tests, and containers serve the test stack.
+- Cut-over: real services replace the stubs by client address and credential source only.
+- Failures: unavailable gives 503, an expired deadline 504 and an unknown account 404.
 
 ### Design Option A — concurrent fan-out under one deadline
 
-The assembly launches the account read, the balance read and the type read together as soon as access is allowed, and waits for all three until the last one ends or the request budget runs out. Each client serves a fresh cache entry, calls its upstream on a miss or a stale entry, and falls back to a stale entry or to no descriptions when that upstream fails. At the cut-off the assembly fixes one outcome, and one shared resolver sets the data status and the as-of time.
+The assembly launches the account, balance and type reads together once access is allowed. It waits for the last read or the end of the budget, then fixes one outcome at the cut-off.
 
 How it behaves:
 
-- Each read keeps the whole residual budget for one full attempt.
-- An unknown account ends the request with the not-found status, whatever the other reads return.
-- A failed account or balance read with no usable stale entry ends the request with the unavailable or deadline status.
-- A failed or unfinished type read leaves every description absent and marks the summary partial.
-- The balances are summed per type and labelled with the type description by type code.
-- The resolver ranks partial over stale over fresh and takes the oldest read time among the sources used.
-- The assembly marks the cut-off once and writes one completion line with the outcome.
+- An unknown account outranks every other outcome.
+- An unfinished or failed type read marks the summary partial.
+- Balances are summed per type and labelled with the type description.
+- The as-of time is the oldest read time among the sources used.
+- One completion line records the single cut-off and its outcome.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Three reads launched together (vs one after another) | each read keeps one full attempt on a cold path | three calls in flight per request |
-| 2 | One request deadline for all reads (vs a budget per read) | one cut-off decides every outcome | one slow read can use the whole residual budget |
-| 3 | One shared status resolver with partial over stale over fresh (vs logic per endpoint) | one precedence rule for four endpoints | a shared change point |
-| 4 | Absent description rather than empty text (vs empty text) | partial results stay distinguishable | each protocol renders absence differently |
-| 5 | Unknown account ends the request (vs a summary without account fields) | no summary for an unknown account | the other two reads are discarded |
+| 1 | Reads launched together (vs in sequence) | a full attempt each on a cold path | three calls in flight per request |
+| 2 | One deadline for all reads (vs a budget per read) | one cut-off decides every outcome | one slow read can use the whole budget |
+| 3 | One shared resolver ranking partial over stale over fresh (vs logic per endpoint) | one precedence rule for four endpoints | a shared change point |
+| 4 | Absent description (vs empty text) | partial results stay distinguishable | each protocol renders absence differently |
+| 5 | Unknown account ends the request (vs a summary lacking account fields) | no summary for an unknown account | the other two reads are discarded |
 
-Effort and risk: one assembly component, one result shape, one shared resolver and two test suites, with the risk in a slow read that uses the whole residual budget.
+Effort and risk: one assembly component, result shape and shared resolver with two test suites, with the risk in one slow read using the whole budget.
 
 ### Design Option B — sequential reads
 
-The assembly reads the account first, then the balances, then the types, and each read starts only after the previous one ends. Each read holds a fixed share of the request budget, and a hard failure stops the sequence. The same result shape and the same resolver build the summary.
+The assembly reads the account, then the balances, then the types, each inside a fixed budget share. The same result shape and resolver build the summary.
 
 How it differs:
 
-- Each read waits for the previous read to end.
-- A fixed share of the budget bounds each read, so time one read leaves unused is lost to the next.
-- A hard failure on the account read stops the sequence before the balance and type reads start.
-- On a cold path the second and third reads find less than one full attempt of budget left.
+- A hard account failure stops the sequence before the other reads start.
+- On a cold path the later reads get less than one full attempt.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Account read, then balances, then types (vs together) | simpler control flow | three attempts exceed the cold-path budget |
-| 2 | Stop after the first hard failure (vs reading all three) | fewer calls on failure | later stale fallbacks never run |
+| 1 | Account, then balances, then types (vs together) | simpler control flow | three attempts exceed the cold-path budget |
+| 2 | Stop at the first hard failure (vs reading all three) | fewer calls on failure | later stale fallbacks never run |
 | 3 | A fixed budget per read (vs one deadline) | each read has a known share | unused budget is lost |
 
-Effort and risk: the same components with simpler control flow, with high risk because three reads in a row do not fit the residual budget on a cold path.
+Effort and risk: the same components with simpler control flow, with high risk from overrunning the cold-path budget.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: only concurrent reads fit the residual budget after two sequential authentication calls.
+- Why: only concurrent reads fit the cold-path budget.
 - Strongest argument against: three calls in flight per request raise upstream load.
-- Shared items that do not decide the choice: the degradation table, the status precedence, the access-first rule and the cache rules.
-- Flip conditions: the real services cap concurrent calls per caller, or a Requirements Analysis rule makes the account read gate the other two.
+- Shared items that do not decide the choice: the degradation table, status precedence, access-first rule and cache rules.
+- Flip conditions: the real services cap concurrent calls per caller, or Requirements Analysis makes the account read gate the other two.
 
 ## Design Validation
 
@@ -227,65 +219,61 @@ Effort and risk: the same components with simpler control flow, with high risk b
 
 Settled assumptions:
 
-- The cold-path stage budget leaves one data attempt after two authentication attempts.
+- The cold-path budget leaves one data attempt after two authentication attempts.
 - The clients apply each read's degrade rule.
 - Cache entries carry their write time.
-- Foreign keys keep every balance type present in reference data.
-- Each source degrades on its own, so a stale account entry may stand beside fresh balances and the summary is then marked stale.
+- Foreign keys keep every balance type in reference data.
+- Each source degrades on its own, so a stale account entry beside fresh reads marks the summary stale.
 
 Open assumptions:
 
-- Open → the load of two concurrent calls on the real card data service and one on the real reference data service, settled when the real services replace the stubs.
+- Open → the load of two concurrent card data calls and one reference data call, settled once real services replace the stubs.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | three healthy reads give the full summary with the earliest read time |
-| AC2 | Holds | the assembly runs only after the guard allows |
-| AC3 | Holds | the three reads overlap in time |
-| AC4 | Holds | fresh entries answer every read without an upstream call |
-| AC5 | Holds | the card data client serves stale entries after its upstream fails |
+| AC1 | Holds | healthy reads give the full summary |
+| AC2 | Holds | the assembly runs only after the allow |
+| AC3 | Holds | the reads overlap in time |
+| AC4 | Holds | fresh entries answer every read |
+| AC5 | Holds | the card data client serves stale entries |
 | AC6 | Holds | no usable entry leaves the final upstream status |
-| AC7 | Holds | the reference data client returns no descriptions after its upstream fails |
-| AC8 | Holds | the shared resolver applies one precedence rule |
-| AC9 | Holds | the not-found status outranks every other outcome |
-| AC10 | Holds | the call policy cuts each attempt to the residual budget |
-| AC11 | Holds | the call policy applies the retry cap and the fit rule |
-| AC12 | Conditional | it rests on the call policy cutting each attempt to the residual budget |
-| AC13 | Holds | the guard fails closed before any data read |
-| AC14 | Holds | the configuration refresh never joins the data reads |
-| AC15 | Holds | an empty balance list gives an empty group list |
+| AC7 | Holds | the reference data client returns no descriptions |
+| AC8 | Holds | one resolver applies one precedence rule |
+| AC9 | Holds | not-found outranks every other outcome |
+| AC10 | Holds | the call policy cuts attempts to the remaining budget |
+| AC11 | Holds | the call policy applies the retry cap and fit rule |
+| AC12 | Conditional | it rests on the call policy cutting attempts to the remaining budget |
+| AC13 | Holds | the guard fails closed before any read |
+| AC14 | Holds | configuration refresh never joins the data reads |
+| AC15 | Holds | an empty balance list gives empty groups |
 
 ### Validation of Option B
 
 Settled assumptions:
 
-- The cold-path stage budget leaves one data attempt after two authentication attempts.
-- The clients apply each read's degrade rule.
-- Cache entries carry their write time.
-- Foreign keys keep every balance type present in reference data.
-- Each source degrades on its own, so a stale account entry may stand beside fresh balances and the summary is then marked stale.
+- The five settled for Option A hold: cold-path budget, client degrade rules, cache write times, foreign keys and independent degradation.
 
 Open assumptions:
 
-- Open → the share of the budget each read receives, settled by measuring the three reads on the test stack.
+- Open → each read's budget share, settled by measurement on the test stack.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | three healthy reads in a row give the full summary |
-| AC2 | Holds | the assembly runs only after the guard allows |
+| AC1 | Holds | healthy reads in a row give the full summary |
+| AC2 | Holds | the assembly runs only after the allow |
 | AC3 | Breaks | sequential calls take at least 600 milliseconds |
-| AC4 | Holds | fresh entries answer every read without an upstream call |
+| AC4 | Holds | fresh entries answer every read |
 | AC5 | At risk | later fallbacks may miss the cut-off |
 | AC6 | Holds | no usable entry leaves the final upstream status |
 | AC7 | At risk | the type read runs last and may miss the cut-off |
-| AC8 | Holds | the shared resolver applies one precedence rule |
-| AC9 | Holds | the account read runs first and ends the sequence |
-| AC10 | At risk | a fixed share cuts attempts below the full attempt time |
-| AC11 | At risk | retries do not fit inside a fixed share |
+| AC8 | Holds | one resolver applies one precedence rule |
+| AC9 | Holds | the first account read ends the sequence |
+| AC10 | At risk | a fixed share cuts attempts below full length |
+| AC11 | At risk | retries do not fit a fixed share |
 | AC12 | At risk | three reads in a row strain the deadline |
-| AC13 | Holds | the guard fails closed before any data read |
-| AC14 | Holds | the configuration refresh never joins the data reads |
-| AC15 | Holds | an empty balance list gives an empty group list |
+| AC13 | Holds | the guard fails closed before any read |
+| AC14 | Holds | configuration refresh never joins the data reads |
+| AC15 | Holds | an empty balance list gives empty groups |
 
 ## Metadata
 
