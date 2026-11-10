@@ -1,0 +1,38 @@
+# Derived from source, never captured; inferred-not-observed (GAP-INF-003,
+# GAP-INF-012) and promoted only by import of a UniKix run. Step 1: USER0001
+# signs on and COMEN01C sends a fresh COMEN01 [app/cbl/COMEN01C.cbl:86-90,
+# 182-194,236-277]. Step 2: PF3 makes COMEN01C XCTL to COSGN00C without a
+# COMMAREA, so COSGN00C sends a fresh, empty sign-on screen with no message
+# [app/cbl/COMEN01C.cbl:92-98,170-177] [app/cbl/COSGN00C.cbl:75-83,145-157].
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN001: '01. Account View                        '
+  OPTN002: '02. Account Update                      '
+  OPTN003: '03. Credit Card List                    '
+  OPTN004: '04. Credit Card View                    '
+  OPTN005: '05. Credit Card Update                  '
+  OPTN006: '06. Transaction List                    '
+  OPTN007: '07. Transaction View                    '
+  OPTN008: '08. Transaction Add                     '
+  OPTN009: '09. Transaction Reports                 '
+  OPTN010: '10. Bill Payment                        '
+  OPTN011: '                                        '
+  OPTN012: '                                        '
+  PGMNAME: COMEN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CM00
+- '@map': COSGN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S '
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: COSGN00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CC00
+  USERID: '        '

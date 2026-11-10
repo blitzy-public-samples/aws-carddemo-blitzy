@@ -1,0 +1,12 @@
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN002: '02. Account Update                      '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP

@@ -1,0 +1,24 @@
+# Derived from the source, not observed: CC00 with user id NOSUCHID, which
+# USRSEC does not hold, so the READ answers NOTFND (RESP 13) and COSGN00C sends
+# COSGN00 again with 'User not found. Try again ...' [app/cbl/COSGN00C.cbl:209-257].
+# Holds exactly the keys and values the scenario's expected names. Screen
+# values are whole fields at their BMS length with trailing spaces kept:
+# ERRMSG is the 80-byte WS-MESSAGE cut to the 78-byte ERRMSGO, and CURTIME's
+# 9-byte field takes the 8-byte hh:mm:ss, so its format ends in a space.
+# CURDATE and CURTIME come from the region clock, so they are strftime
+# matchers judged against the run date.
+messages:
+- 'User not found. Try again ...                                                 '
+screens:
+- '@map': COSGN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S '
+    match: run-time
+  ERRMSG: 'User not found. Try again ...                                                 '
+  PGMNAME: COSGN00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CC00

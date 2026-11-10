@@ -1,0 +1,6 @@
+screens:
+- '@map': COMEN01
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00

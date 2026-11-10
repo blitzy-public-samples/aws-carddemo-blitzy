@@ -1,0 +1,10 @@
+# Derived from source: USER0001 reaches the main menu, and option 6 makes
+# COMEN01C transfer to COTRN00C, which sends its list map with its own header
+# [app/cbl/COMEN01C.cbl:115-156] [app/cbl/COTRN00C.cbl:107-116,567-586].
+# Each step asserts exactly the fields the scenario names: the menu step by
+# its map alone, the landing step by its map, transaction and program name.
+screens:
+- '@map': 'COMEN01'
+- '@map': 'COTRN00'
+  PGMNAME: 'COTRN00C'
+  TRNNAME: 'CT00'
