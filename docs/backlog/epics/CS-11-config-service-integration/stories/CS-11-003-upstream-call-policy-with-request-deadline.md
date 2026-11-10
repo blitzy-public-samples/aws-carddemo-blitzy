@@ -23,6 +23,9 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 > - `card-servicing-service/src/main/java/com/example/cardservicing/integration/support/UpstreamCallPolicy.java`:
 >   - Wraps each upstream gRPC call made for a request and takes that request's `RequestDeadline`.
 >   - Reads the per-attempt timeout and the retry cap from `UpstreamSettings` at the start of every call.
+>
+> > SCOPE-QUESTION (Resolved): The values come through `UpstreamSettings`, but from the request rather than from a live read: at the start of every call the policy reads the timeout and the retry cap from the `UpstreamSettings.Capture` that the request's `RequestDeadline` took once at receipt, and it never calls the provider itself. Every call of one request, the guard's Auth calls and the concurrent stage-3 reads included, therefore uses one published set of values, and a provider change during the request reaches only requests started after it. The policy still holds no per-request state, and this story gains no file, dependency edge or environment variable, so the 7 files touched stand.
+>
 >   - Sets each attempt's gRPC call deadline to the lesser of the timeout and the remaining budget. It also bounds its own wait for the attempt's result to the same value and cancels the attempt when that wait expires, so an attempt whose upstream ignores its deadline still ends on time with `DEADLINE_EXCEEDED`.
 >   - Retries only on `UNAVAILABLE` or `DEADLINE_EXCEEDED`, at most the retry cap times, waiting 50 ms before the first retry and 100 ms before each later one. A retry starts only if its backoff plus a full attempt at the timeout fits in the remaining budget (backoff + timeout ≤ remaining).
 >   - Makes no attempt when the remaining budget is 0 ms or less, and returns `DEADLINE_EXCEEDED`.
@@ -32,11 +35,17 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 > - `card-servicing-service/src/main/java/com/example/cardservicing/integration/support/RequestDeadline.java`:
 >   - Started once per request at receipt with `REQUEST_DEADLINE_MS` (900 ms) from the CS-11-001 properties, never from Config.
 >   - Reports the remaining budget to every upstream call of that request, concurrent calls included.
+>
+> > SCOPE-QUESTION (Resolved): Starting the deadline also fixes the request's settings. The start receives the `UpstreamSettings` provider, calls its `capture()` exactly once at receipt and holds the returned immutable `UpstreamSettings.Capture` for the life of the request. It reports that capture through `settings()` to every upstream call of the request, concurrent calls included, and to the request's Stage 0 page-size validation and transaction-list default, so a refresh published during the request changes only later requests. The 900 ms budget still comes from `REQUEST_DEADLINE_MS` and is never part of the capture, and a background refresh's own deadline takes its own capture at launch.
+>
 >   - Records the cut-off, the moment the service stops waiting for upstream calls and fixes the outcome, when its caller marks it or when the budget runs out, whichever comes first. A later mark leaves the recorded cut-off unchanged, so `cutoffMs` never exceeds `REQUEST_DEADLINE_MS`.
 >   - On completion writes exactly one structured log line carrying `traceId` (from the logging context CS-05-002 fills at receipt), the outcome (`full`, `degraded` or `error`, with the response status) and `cutoffMs`, the time from receipt to the cut-off. It never writes a bearer token, an `x-api-key` value or any other call metadata.
 > - `card-servicing-service/src/main/java/com/example/cardservicing/integration/support/UpstreamSettings.java`:
 >   - The settings provider for the timeout and the retry cap. It starts on the built-in defaults, the CS-11-001 bound values of `UPSTREAM_TIMEOUT_MS` (300) and `UPSTREAM_MAX_RETRIES` (2).
 >   - Carries the `accessAllowed(token)` hook, a no-op in this story. CS-11-006 backs the provider with `ConfigSnapshot` and implements the hook, so the policy and its callers change no dependency.
+>
+> > SCOPE-QUESTION (Resolved): The provider exposes its values through one `capture()` method and no separate getter, so no reader can combine values of two published records. `capture()` returns the immutable nested record `UpstreamSettings.Capture` of the four values the configuration snapshot later supplies: the default page size, the maximum page size, the per-attempt timeout and the retry cap. The built-in provider's capture holds `default_page_size` 20 and `max_page_size` 100 as constants and the bound `UPSTREAM_TIMEOUT_MS` (300) and `UPSTREAM_MAX_RETRIES` (2). The `accessAllowed(token)` hook stays a no-op, and CS-11-006 returns its held record from `capture()`, so the policy and its callers still change no dependency.
+>
 > - `card-servicing-service/src/test/java/com/example/cardservicing/integration/support/UpstreamCallPolicyTest.java` covers the attempt timeout, the backoff, the retry cap, the retry-fit rule and the non-retryable statuses.
 > - `card-servicing-service/src/test/java/com/example/cardservicing/integration/support/RequestDeadlineTest.java` covers the cut-off, `cutoffMs` and the completion log line.
 > - `card-servicing-service/src/test/java/com/example/cardservicing/integration/support/UpstreamSettingsTest.java` covers the defaults, an override and the no-op hook.
@@ -81,6 +90,8 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 > - AC10: Completion log line: each completed request writes exactly one line carrying `traceId`, outcome and `cutoffMs`, and a second completion call writes no line. On the test clock an outcome fixed 650 ms after receipt logs `cutoffMs` 650, and a request still waiting when the 900 ms budget runs out logs `cutoffMs` 900. With a bearer token and an `x-api-key` value in the call metadata, neither value appears in any line the policy or deadline writes.
 > - AC11: `UpstreamSettings` starts on 300 and 2, and on 250 when `UPSTREAM_TIMEOUT_MS=250`, with a no-op `accessAllowed(token)` hook: calling the hook records zero upstream calls and starts no thread or scheduled task. A test provider returning 200 and 1 makes the policy use a 200 ms attempt deadline and at most 1 retry, so replacing the provider (CS-11-006) needs no change to the policy.
 >
+> > SCOPE-QUESTION (Resolved): The criterion also covers the request-local capture. The built-in provider's capture holds 20, 100, 300 and 2, and 20, 100, 250 and 2 with `UPSTREAM_TIMEOUT_MS=250`. Refresh during a request, in `UpstreamCallPolicyTest`: with a counting test provider whose capture changes from 300 and 2 to 200 and 1 between two calls of one request, the second call of that request, to an upstream answering `UNAVAILABLE` at once, still uses a 300 ms attempt deadline and up to 2 retries and receives exactly 3 attempts. The same call in a request whose `RequestDeadline` starts after the change uses a 200 ms attempt deadline and at most 1 retry and receives exactly 2 attempts, and the provider records exactly one `capture()` call per request.
+>
 > ### 3. Dependencies
 >
 > - CS-11-001 — timeout, retry and deadline settings.
@@ -108,7 +119,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. Cases: the attempt deadline at the full budget and at 120 ms remaining, the 50 ms and 100 ms backoff on the test clock, the retry cap at 2 and at 0, each non-retryable status, the 340 ms and 350 ms fit boundary, the 2,000 ms latency case on the real clock, the cold-path 320 ms case, the call with no budget left, status pass-through, the completion log line with its cut-off values and secret absence, and the settings provider with its no-op hook.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. Cases: the attempt deadline at the full budget and at 120 ms remaining, the 50 ms and 100 ms backoff on the test clock, the retry cap at 2 and at 0, each non-retryable status, the 340 ms and 350 ms fit boundary, the 2,000 ms latency case on the real clock, the cold-path 320 ms case, the call with no budget left, status pass-through, the completion log line with its cut-off values and secret absence, the settings provider with its no-op hook and its built-in capture of 20, 100, 300 and 2, and a provider change between two calls of one request, which leaves that request on the settings it captured at receipt while the next request uses the new ones.
 - Integration: Applies — through the five external integration suites CS-09-006, CS-10-007, CS-11-007, CS-12-005 and CS-13-004, which exercise this policy on a real gRPC channel; this story adds no integration test of its own. Command `./gradlew :card-servicing-service:integrationTest`; all pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Not applicable — this story ships no endpoint; it applies to balance-retrieval and drill-down stories. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -166,7 +177,7 @@ How it behaves:
 - The retry cap limits a call to three attempts when failures return at once, and attempts that each time out at 300 ms limit it to two.
 - A call that starts with no time left makes no attempt and returns the deadline-exceeded status.
 - The policy stops waiting when an attempt's own deadline passes, so an upstream that ignores the deadline still ends on time.
-- The policy reads the timeout setting and retry cap from the settings provider on every call.
+- The request deadline takes one record of the four settings from the settings provider at receipt, and every call of that request reads the timeout setting and retry cap from that record, so a change published during the request reaches only later requests.
 - The request deadline records the cut-off when the caller fixes the outcome or when the budget runs out, and writes one completion line with the trace identifier, the outcome and the cut-off time.
 
 | No. | Decision (vs rejected) | Pro | Con |
@@ -174,6 +185,7 @@ How it behaves:
 | 1 | Attempt deadline cut to the time left in the request (vs a fixed attempt limit) | no attempt outlives the request budget | every attempt computes its own deadline |
 | 2 | Retry decided by the policy with a fit check (vs the channel's built-in rules) | a retry starts only when a full attempt fits | retry logic is written and tested here |
 | 3 | Fixed waits of 50 ms and 100 ms (vs a random wait) | tests can assert exact retry start times | retries from many callers start in step |
+| 4 | Settings captured once at receipt and carried by the request deadline (vs a read of the settings provider on every call) | one request never mixes two sets of settings | a new value reaches only requests that start after it |
 
 Effort and risk: one policy, one request deadline, one settings provider and four test classes, with the risk in retry timing that drifts on a loaded runner.
 
@@ -213,7 +225,7 @@ Settled assumptions:
 - The timeout setting is 300 ms, the retry cap is 2 and the deadline setting is 900 ms while no configuration snapshot is held.
 - The deadline setting never comes from the configuration service.
 - The error-object story maps the unavailable status to 503 and the deadline-exceeded status to 504, each with the receipt trace identifier.
-- Each endpoint story starts one request deadline at receipt and passes it to every upstream call of that request.
+- Each endpoint story starts one request deadline at receipt from the settings provider and passes it to every upstream call of that request.
 
 Open assumptions:
 
@@ -232,7 +244,7 @@ Open assumptions:
 | AC8 | Holds | the policy makes no attempt with no time left |
 | AC9 | Holds | the policy returns the last status with no substitute value |
 | AC10 | Holds | the request deadline writes one line and never reads call metadata |
-| AC11 | Holds | the policy reads only the settings provider |
+| AC11 | Holds | each call reads the settings its request captured once from the settings provider at receipt |
 
 ### Option B validation
 
@@ -260,7 +272,7 @@ Open assumptions:
 | AC8 | Holds | a whole-call deadline with no time left fails before any attempt |
 | AC9 | Holds | the channel returns the last status unchanged |
 | AC10 | Holds | the request deadline writes the completion line in both options |
-| AC11 | At risk | the channel rules ignore a replaced settings provider until the channel is rebuilt |
+| AC11 | At risk | the channel rules ignore the settings a later request captures until the channel is rebuilt |
 
 ## Metadata
 

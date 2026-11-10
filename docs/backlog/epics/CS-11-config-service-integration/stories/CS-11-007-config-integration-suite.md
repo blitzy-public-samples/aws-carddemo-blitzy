@@ -74,7 +74,13 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 > - AC5: Deadline: with a per-test latency override of 2,000 ms on stub `config` and 100 ms on stub `probe`, a test request runs on a cold snapshot. It starts its 900 ms request deadline (`RequestDeadline`, `REQUEST_DEADLINE_MS`) at receipt, calls `accessAllowed(token)`, makes one probe call through the call policy and marks its cut-off. Its completion line logs `cutoffMs` ≤ 900, the test caller receives the outcome below 1,000 ms measured from receipt, and the outcome equals that of the same run with the Config latency at 0. The refresh records exactly 2 `GetConfig` entries once each 2,000 ms delay has elapsed, and logs its failure with status `DEADLINE_EXCEEDED`.
 > - AC6: Mirror write in real Redis: after a refresh against the Config stub on an empty cache, the Redis container holds exactly one key, `cs:v1:config`, and `TTL cs:v1:config` returns -1 (no stale limit). Its value decodes as the CS-11-004 entry envelope, an 8-byte big-endian `cachedAt` in microseconds since the epoch followed by a UTF-8 JSON object. The `cachedAt` lies between the refresh launch and its applied log line, and the object holds exactly `default_page_size` "20", `max_page_size` "100", `upstream_timeout_ms` "300" and `upstream_max_retries` "2". Neither the key nor the value contains the test bearer token, the snapshot reports its values as fresh, and the applied log line names `GetConfig` as their source.
 > - AC7: Mirror read from real Redis: before the first refresh, the test writes an entry under `cs:v1:config` into the Redis container, encoded the same way, with `cachedAt` 100 s before the current time and the values "10", "50", "250" and "1". The first refresh applies those values with 0 `GetConfig` entries, and receipt reads return 10, 50, 250 and 1. The settings provider then hands the call policy a 250 ms timeout and 1 retry, so the next probe call through the policy at a probe failure rate of 1.0 records exactly 2 entries in the probe's request log.
+>
+> > SCOPE-QUESTION (Resolved): The next probe call is a call of a new test request whose `RequestDeadline` starts after the refresh has applied those values, because each request keeps the four values its deadline captured from the settings provider at receipt (CS-11-003, CS-11-006).
+>
 > - AC8: Redis down: in the nested class, with the dedicated Redis container stopped before the context's first Redis command, a refresh treats the refused connection as a miss. It records exactly 1 `GetConfig` entry with outcome `OK`, the snapshot reports the four values as fresh, and the failed mirror write is logged without the values. No exception reaches the caller of `accessAllowed(token)` or of a receipt read, and the two shared containers keep running with unchanged container IDs.
+>
+> > SCOPE-QUESTION (Resolved): A refused initial connection alone does not prove an outage after connection, so the nested class also holds a paused-cache case, ordered with `@Order` before the stopped-container case. On a cold snapshot it sends one `PING` through the service's Redis connection, which opens that connection, then pauses the dedicated container through the Testcontainers Docker client (`pauseContainerCmd`) and calls `accessAllowed(token)`. The refresh records exactly 1 `GetConfig` entry with outcome `OK`, its applied log line arrives within the 5 s wait and names `GetConfig` as the source, the snapshot reports the four values as fresh, and the abandoned mirror write is logged with its failure class and without the values. No exception reaches the caller of `accessAllowed(token)` or of a receipt read. The case unpauses the container when it ends, so the stopped-container case still finds it running, and the two shared containers keep running with unchanged container IDs.
+>
 > - AC9: Task separation: `./gradlew :card-servicing-service:integrationTest` runs `ConfigIntegrationTest` and only classes carrying the `integration` tag. `./gradlew :card-servicing-service:test` runs none of them: its report under `card-servicing-service/build/test-results/test/` lists zero `integration`-tagged classes, `ConfigIntegrationTest` included.
 > - AC10: CI stage: on every pull request, `.github/workflows/ci.yml` runs the Integration stage with `./gradlew :card-servicing-service:integrationTest` after Unit and before Validation, in the fixed order Unit → Integration → Performance → End-to-end → Validation. The stage needs Unit, and Validation needs Integration. A pull request with one failing integration test fails the gate and skips Validation.
 > - AC11: With no Docker daemon reachable (`DOCKER_HOST` set to `tcp://127.0.0.1:1`), `./gradlew :card-servicing-service:integrationTest` exits non-zero. Its report records the Config suite as failed with zero skipped tests, and the failure message names the image whose container start failed, so the gate never passes on skipped integration suites.
@@ -106,7 +112,7 @@ Completed during implementation.
 ## 6. Test Plan
 
 - Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. This story adds no unit test: the `test` task stays green with the `integration`-tagged Config suite excluded, and the shared container base and the suite sit in test sources outside the coverage count.
-- Integration: Applies. Command `./gradlew :card-servicing-service:integrationTest`; all pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap. This story adds the Config suite and the stage: the stub exception (AC2), latency above `UPSTREAM_TIMEOUT_MS` (AC3), the `UPSTREAM_MAX_RETRIES` cap (AC4), the deadline (AC5), the real mirror (AC6, AC7) and the Redis outage (AC8), against Testcontainers `postgres:16.6` and `redis:7.4.2` with the stubs on loopback ports inside the test JVM.
+- Integration: Applies. Command `./gradlew :card-servicing-service:integrationTest`; all pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap. This story adds the Config suite and the stage: the stub exception (AC2), latency above `UPSTREAM_TIMEOUT_MS` (AC3), the `UPSTREAM_MAX_RETRIES` cap (AC4), the deadline (AC5), the real mirror (AC6, AC7) and the Redis outage (AC8), both the refused initial connection and the cache paused after its connection has opened, which proves the cache's 50 ms wait limit, against Testcontainers `postgres:16.6` and `redis:7.4.2` with the stubs on loopback ports inside the test JVM.
 - Performance: Not applicable — the Config refresh runs off every request path and no request waits for it; it applies to balance-retrieval and drill-down stories. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
   - Pass: p50, p95 and p99 below 1,000 ms over successful requests, with failure injection off, at 10 users × 100 sequential calls, 100,000 category balances and 1,000,000 transactions.
@@ -195,25 +201,25 @@ Settled assumptions:
 - The test harness clears the request logs before each test and the per-test overrides after each test.
 - A stub call whose client deadline expires during an injected delay is logged as cancelled.
 - The read-through cache treats a refused cache connection as a miss.
+- The read-through cache ends each wait on an unanswered command at 50 ms or the refresh's time left, so an outage after connection costs a refresh at most 50 ms on the mirror read.
 - The mirror entry holds the four values with their cache time and no expiry.
 
 Open assumptions:
 
 - Open → the first pull-request run settles that the runner offers a container runtime to test code.
-- Open → the first pull-request run settles that the mirror read and the channel setup take at most 250 ms on the runner.
+- Open → the first pull-request run settles that the channel setup takes at most 200 ms on the runner, with the mirror read held to the cache's 50 ms wait limit.
 - Open → the technical requirements settle the refresh budget, which this suite takes from the configuration-client story as 900 ms from launch.
-- Open → the read-through cache story settles a cache command timeout that keeps an outage after connection inside the refresh budget.
 
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Holds | the base starts each container in one static step per test JVM |
 | AC2 | Holds | the snapshot keeps its held values on every failed refresh |
-| AC3 | Conditional | the two-attempt count assumes a mirror read of at most 250 ms |
-| AC4 | Conditional | the three-attempt count assumes a mirror read of at most 450 ms |
+| AC3 | Conditional | the two-attempt count assumes a channel setup of at most 200 ms beside a mirror read capped at 50 ms |
+| AC4 | Conditional | the three-attempt count assumes a channel setup of at most 400 ms beside a mirror read capped at 50 ms |
 | AC5 | Conditional | the under-1,000 ms response depends on thread scheduling on the runner |
 | AC6 | Holds | a successful refresh writes the mirror entry through the real cache |
 | AC7 | Holds | the refresh reads the mirror entry before any configuration read |
-| AC8 | Holds | a refused cache connection counts as a miss |
+| AC8 | Holds | a refused connection or an unanswered command counts as a miss within the cache's wait limit |
 | AC9 | Holds | the integration tag routes the suite to the integration task alone |
 | AC10 | Holds | the integration stage fills its reserved slot after the unit stage |
 | AC11 | Holds | the base reports a start failure instead of skipping |
@@ -225,22 +231,23 @@ Settled assumptions:
 - The scaffold story's integration task runs only suites carrying the integration tag, and its unit task excludes them.
 - The shared container stack can start its relational store and cache without the other services.
 - The test harness keeps the stubs inside the test JVM.
+- The read-through cache ends each wait on an unanswered command at 50 ms or the refresh's time left.
 
 Open assumptions:
 
 - Open → the stack owners settle that one fixed port set stays free on every runner.
-- Open → the first pull-request run settles that the mirror read and the channel setup take at most 250 ms on the runner.
+- Open → the first pull-request run settles that the channel setup takes at most 200 ms on the runner, with the mirror read held to the cache's 50 ms wait limit.
 
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Breaks | no base in the test JVM starts or reuses the containers |
 | AC2 | Holds | the snapshot keeps its held values on every failed refresh |
-| AC3 | Conditional | the two-attempt count assumes a mirror read of at most 250 ms |
-| AC4 | Conditional | the three-attempt count assumes a mirror read of at most 450 ms |
+| AC3 | Conditional | the two-attempt count assumes a channel setup of at most 200 ms beside a mirror read capped at 50 ms |
+| AC4 | Conditional | the three-attempt count assumes a channel setup of at most 400 ms beside a mirror read capped at 50 ms |
 | AC5 | Conditional | the under-1,000 ms response depends on thread scheduling on the runner |
 | AC6 | Holds | a successful refresh writes the mirror entry through the stack cache |
 | AC7 | Holds | the refresh reads the seeded mirror entry before any configuration read |
-| AC8 | At risk | stopping the stack cache affects every other suite of the run |
+| AC8 | At risk | stopping or pausing the stack cache affects every other suite of the run |
 | AC9 | Holds | the integration tag routes the suite to the integration task alone |
 | AC10 | Conditional | the stage passes only with the stack steps placed ahead of the task |
 | AC11 | Conditional | a missing container runtime fails the stack step instead of the suite |
