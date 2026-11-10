@@ -1,0 +1,78 @@
+# Derived baseline of scenario USR-COUSR01C-negative-03: ADMIN001 adds a user
+# on COUSR01 with the last name left empty. Authored from the source, never
+# captured: app/cbl/COSGN00C.cbl:230-237 and app/cbl/COADM01C.cbl:136-145 (the
+# type-A route and option 2), app/cbl/COUSR01C.cbl:73-129,153-160,184-233 (the
+# first-entry send, the FNAME-then-LNAME checks, the skipped WRITE and the
+# header), app/bms/COUSR01.bms, app/cpy/COTTL01Y.cpy, and the USRSEC fixture
+# app/data/EBCDIC/AWS.M2.CARDDEMO.USRSEC.PS. Open until a UniKix run is
+# imported: GAP-INF-004 and GAP-INF-012.
+# One screen per step, each the screen shown after the step's AID; values are
+# full BMS field width with trailing spaces kept, and PASSWD (DRK) is not
+# asserted. ERRMSG is the 29-character message padded to the 78 bytes of
+# ERRMSGO. No record is written, so file_state lists the 10 fixture users in
+# key order. Its records name the user id, names and type; SEC-USR-PWD is left
+# out so that no credential value is written into a baseline, and
+# SEC-USR-FILLER carries no business data.
+file_state:
+  USRSEC:
+  - SEC-USR-FNAME: 'MARGARET            '
+    SEC-USR-ID: ADMIN001
+    SEC-USR-LNAME: 'GOLD                '
+    SEC-USR-TYPE: A
+  - SEC-USR-FNAME: 'RUSSELL             '
+    SEC-USR-ID: ADMIN002
+    SEC-USR-LNAME: 'RUSSELL             '
+    SEC-USR-TYPE: A
+  - SEC-USR-FNAME: 'RAYMOND             '
+    SEC-USR-ID: ADMIN003
+    SEC-USR-LNAME: 'WHITMORE            '
+    SEC-USR-TYPE: A
+  - SEC-USR-FNAME: 'EMMANUEL            '
+    SEC-USR-ID: ADMIN004
+    SEC-USR-LNAME: 'CASGRAIN            '
+    SEC-USR-TYPE: A
+  - SEC-USR-FNAME: 'GRANVILLE           '
+    SEC-USR-ID: ADMIN005
+    SEC-USR-LNAME: 'LACHAPELLE          '
+    SEC-USR-TYPE: A
+  - SEC-USR-FNAME: 'LAWRENCE            '
+    SEC-USR-ID: USER0001
+    SEC-USR-LNAME: 'THOMAS              '
+    SEC-USR-TYPE: U
+  - SEC-USR-FNAME: 'AJITH               '
+    SEC-USR-ID: USER0002
+    SEC-USR-LNAME: 'KUMAR               '
+    SEC-USR-TYPE: U
+  - SEC-USR-FNAME: 'LAURITZ             '
+    SEC-USR-ID: USER0003
+    SEC-USR-LNAME: 'ALME                '
+    SEC-USR-TYPE: U
+  - SEC-USR-FNAME: 'AVERARDO            '
+    SEC-USR-ID: USER0004
+    SEC-USR-LNAME: 'MAZZI               '
+    SEC-USR-TYPE: U
+  - SEC-USR-FNAME: 'LEE                 '
+    SEC-USR-ID: USER0005
+    SEC-USR-LNAME: 'TING                '
+    SEC-USR-TYPE: U
+screens:
+- '@map': COADM01
+- '@map': COUSR01
+  ERRMSG: '                                                                              '
+  PGMNAME: COUSR01C
+  TRNNAME: CU01
+- '@map': COUSR01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Last Name can NOT be empty...                                                 '
+  FNAME: 'TESTFIRST           '
+  LNAME: '                    '
+  PGMNAME: COUSR01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU01
+  USERID: TESTU001
+  USRTYPE: U

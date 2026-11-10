@@ -1,0 +1,93 @@
+# Derived baseline, authored from the source and never observed: ENTER on
+# COUSR01 with First Name, Last Name, User ID and User Type filled but no
+# Password re-sends COUSR01 with 'Password can NOT be empty...' and skips the
+# USRSEC WRITE [app/cbl/COUSR01C.cbl:136-141,153-160,184-196]. Field values
+# are full BMS width with trailing spaces; only CURDATE and CURTIME, from the
+# region clock, are matchers.
+# file_state.USRSEC is the 10 fixture users exactly, in key order, so it also
+# shows TESTU001 was not added. SEC-USR-PWD 'PASSWORD' is the documented demo
+# password of the fixture data [README.md:157-158], not a secret: replacing it
+# would make the unchanged file fail the comparison.
+file_state:
+  USRSEC:
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'MARGARET            '
+    SEC-USR-ID: ADMIN001
+    SEC-USR-LNAME: 'GOLD                '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'RUSSELL             '
+    SEC-USR-ID: ADMIN002
+    SEC-USR-LNAME: 'RUSSELL             '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'RAYMOND             '
+    SEC-USR-ID: ADMIN003
+    SEC-USR-LNAME: 'WHITMORE            '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'EMMANUEL            '
+    SEC-USR-ID: ADMIN004
+    SEC-USR-LNAME: 'CASGRAIN            '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'GRANVILLE           '
+    SEC-USR-ID: ADMIN005
+    SEC-USR-LNAME: 'LACHAPELLE          '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'LAWRENCE            '
+    SEC-USR-ID: USER0001
+    SEC-USR-LNAME: 'THOMAS              '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'AJITH               '
+    SEC-USR-ID: USER0002
+    SEC-USR-LNAME: 'KUMAR               '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'LAURITZ             '
+    SEC-USR-ID: USER0003
+    SEC-USR-LNAME: 'ALME                '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'AVERARDO            '
+    SEC-USR-ID: USER0004
+    SEC-USR-LNAME: 'MAZZI               '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'LEE                 '
+    SEC-USR-ID: USER0005
+    SEC-USR-LNAME: 'TING                '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+screens:
+- '@map': COADM01
+- '@map': COUSR01
+  ERRMSG: '                                                                              '
+  PGMNAME: COUSR01C
+  TRNNAME: CU01
+- '@map': COUSR01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Password can NOT be empty...                                                  '
+  FNAME: 'TESTFIRST           '
+  LNAME: 'TESTLAST            '
+  PGMNAME: COUSR01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU01
+  USERID: TESTU001
+  USRTYPE: U

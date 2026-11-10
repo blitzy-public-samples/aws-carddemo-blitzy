@@ -1,0 +1,129 @@
+# Derived baseline of scenario USR-COUSR02C-alternate-01 (capture_platform:
+# derived): ADMIN001 fetches the invented user TESTU002 on the COUSR02 update
+# screen and presses PF5 without changing a field. Authored from the source,
+# never captured: app/cbl/COUSR02C.cbl:122-123,177-245 (PF5 finds every value
+# equal to the record, leaves USR-MODIFIED-NO set, issues no REWRITE and sends
+# 'Please modify to update ...') and app/cbl/COUSR02C.cbl:266-353 (the send,
+# header and USRSEC read for update), with app/bms/COUSR02.bms and
+# app/cbl/COADM01C.cbl for the menu path. Open until a UniKix run is imported:
+# GAP-INF-004 (derived USR end-to-end baselines) and GAP-INF-012 (online-only
+# copybooks).
+# One screen per step, the one shown after the step's AID; values are full BMS
+# field width with their trailing spaces, and PASSWD (dark) is not asserted.
+# The PF5 task sends COUSR02 twice with ERASE: first 'Press PF5 key to save
+# your updates ...' from READ-USER-SEC-FILE [app/cbl/COUSR02C.cbl:336-339],
+# then 'Please modify to update ...' [app/cbl/COUSR02C.cbl:236-243]. The last
+# screen pins the final send; an imported UniKix run showing otherwise
+# replaces it with a MAJOR bump.
+# file_state: USRSEC unchanged, the ten fixture users and TESTU002 in key order.
+file_state:
+  USRSEC:
+    records:
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'MARGARET            '
+      SEC-USR-ID: ADMIN001
+      SEC-USR-LNAME: 'GOLD                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'RUSSELL             '
+      SEC-USR-ID: ADMIN002
+      SEC-USR-LNAME: 'RUSSELL             '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'RAYMOND             '
+      SEC-USR-ID: ADMIN003
+      SEC-USR-LNAME: 'WHITMORE            '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'EMMANUEL            '
+      SEC-USR-ID: ADMIN004
+      SEC-USR-LNAME: 'CASGRAIN            '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'GRANVILLE           '
+      SEC-USR-ID: ADMIN005
+      SEC-USR-LNAME: 'LACHAPELLE          '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'TESTFIRST           '
+      SEC-USR-ID: TESTU002
+      SEC-USR-LNAME: 'TESTLAST            '
+      SEC-USR-PWD: TESTPWD2
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LAWRENCE            '
+      SEC-USR-ID: USER0001
+      SEC-USR-LNAME: 'THOMAS              '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'AJITH               '
+      SEC-USR-ID: USER0002
+      SEC-USR-LNAME: 'KUMAR               '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LAURITZ             '
+      SEC-USR-ID: USER0003
+      SEC-USR-LNAME: 'ALME                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'AVERARDO            '
+      SEC-USR-ID: USER0004
+      SEC-USR-LNAME: 'MAZZI               '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LEE                 '
+      SEC-USR-ID: USER0005
+      SEC-USR-LNAME: 'TING                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+screens:
+- '@map': COADM01
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  FNAME: '                    '
+  LNAME: '                    '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: '        '
+  USRTYPE: ' '
+- '@map': COUSR02
+  ERRMSG: 'Press PF5 key to save your updates ...                                        '
+  FNAME: 'TESTFIRST           '
+  LNAME: 'TESTLAST            '
+  PGMNAME: COUSR02C
+  TRNNAME: CU02
+  USRIDIN: TESTU002
+  USRTYPE: U
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Please modify to update ...                                                   '
+  FNAME: 'TESTFIRST           '
+  LNAME: 'TESTLAST            '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: TESTU002
+  USRTYPE: U

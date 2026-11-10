@@ -1,0 +1,26 @@
+# Derived from source (capture_platform: derived), never observed: CU01 entered
+# directly, without a COMMAREA. COUSR01C finds EIBCALEN = 0 and XCTLs to
+# COSGN00C with a COMMAREA [app/cbl/COUSR01C.cbl:78-80,165-178], so COSGN00C
+# takes the ENTER as an empty sign-on attempt and sends map COSGN00 with
+# 'Please enter User ID ...'; the add-user map COUSR01 is never sent
+# [app/cbl/COSGN00C.cbl:80-88,108-122,145-157,177-196]. ERRMSG is the inferred
+# MAPFAIL outcome of the unformatted 'CU01' input, open under GAP-INF-004.
+# Fields are at their full BMS width with trailing spaces kept (ERRMSG 78,
+# TITLE01/TITLE02 40, USERID 8), because screens and messages compare exactly.
+# CURDATE and CURTIME come from the region clock, so they are matchers.
+messages:
+- 'Please enter User ID ...                                                      '
+screens:
+- '@map': COSGN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S '
+    match: run-time
+  ERRMSG: 'Please enter User ID ...                                                      '
+  PGMNAME: COSGN00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CC00
+  USERID: '        '

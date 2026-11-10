@@ -1,0 +1,122 @@
+# Derived baseline of scenario USR-COUSR01C-normal-01: ADMIN001 signs on,
+# takes admin option 2 and adds user TESTU001 on COUSR01 (transaction CU01).
+# TESTU001 is invented data: it is written to USRSEC and never signs on.
+# Authored from the source, never captured:
+# - app/cbl/COSGN00C.cbl:230-237 with app/bms/COSGN00.bms (type A -> COADM01C);
+# - app/cbl/COADM01C.cbl:115-146 with app/cpy/COADM02Y.cpy:29-32 and
+#   app/bms/COADM01.bms (option 2 'User Add (Security)' -> COUSR01C, context 0);
+# - app/cbl/COUSR01C.cbl:83-87 (first entry: LOW-VALUES map, blank ERRMSG),
+#   115-160 (every field supplied, moved to SEC-USER-DATA), 184-196 and
+#   214-233 (header from app/cpy/COTTL01Y.cpy and app/cpy/CSDAT01Y.cpy),
+#   238-259 (WRITE, then 'User ' SEC-USR-ID ' has been added ...'), 287-295
+#   (input fields reset to spaces), with app/bms/COUSR01.bms;
+# - app/cpy/CSUSR01Y.cpy:17-23 for the USRSEC record, and the USRSEC fixture
+#   app/data/EBCDIC/AWS.M2.CARDDEMO.USRSEC.PS decoded as cp037 for the 10 users
+#   that stay unchanged.
+# Open under GAP-INF-004 (derived USR end-to-end baselines) and GAP-INF-012
+# (online-only copybooks). Only `report.py --import-unikix` promotes it, from
+# imported UniKix evidence; it is never edited by hand to match a run.
+# One screen per step, each the screen shown after the step's AID; messages
+# holds each step's ERRMSG. Text is full BMS field width with trailing spaces.
+# USRSEC is listed in primary-key order, TESTU001 after ADMIN005.
+# SEC-USR-FILLER is deliberately not asserted, as in the scenario: COUSR01C
+# never sets it, so TESTU001's filler is whatever the platform puts in working
+# storage without VALUE, which no source fixes.
+file_state:
+  USRSEC:
+    records:
+    - SEC-USR-FNAME: 'MARGARET            '
+      SEC-USR-ID: 'ADMIN001'
+      SEC-USR-LNAME: 'GOLD                '
+      SEC-USR-PWD: 'PASSWORD'
+      SEC-USR-TYPE: 'A'
+    - SEC-USR-FNAME: 'RUSSELL             '
+      SEC-USR-ID: 'ADMIN002'
+      SEC-USR-LNAME: 'RUSSELL             '
+      SEC-USR-PWD: 'PASSWORD'
+      SEC-USR-TYPE: 'A'
+    - SEC-USR-FNAME: 'RAYMOND             '
+      SEC-USR-ID: 'ADMIN003'
+      SEC-USR-LNAME: 'WHITMORE            '
+      SEC-USR-PWD: 'PASSWORD'
+      SEC-USR-TYPE: 'A'
+    - SEC-USR-FNAME: 'EMMANUEL            '
+      SEC-USR-ID: 'ADMIN004'
+      SEC-USR-LNAME: 'CASGRAIN            '
+      SEC-USR-PWD: 'PASSWORD'
+      SEC-USR-TYPE: 'A'
+    - SEC-USR-FNAME: 'GRANVILLE           '
+      SEC-USR-ID: 'ADMIN005'
+      SEC-USR-LNAME: 'LACHAPELLE          '
+      SEC-USR-PWD: 'PASSWORD'
+      SEC-USR-TYPE: 'A'
+    - SEC-USR-FNAME: 'TESTFIRST           '
+      SEC-USR-ID: 'TESTU001'
+      SEC-USR-LNAME: 'TESTLAST            '
+      SEC-USR-PWD: 'TESTPWD1'
+      SEC-USR-TYPE: 'U'
+    - SEC-USR-FNAME: 'LAWRENCE            '
+      SEC-USR-ID: 'USER0001'
+      SEC-USR-LNAME: 'THOMAS              '
+      SEC-USR-PWD: 'PASSWORD'
+      SEC-USR-TYPE: 'U'
+    - SEC-USR-FNAME: 'AJITH               '
+      SEC-USR-ID: 'USER0002'
+      SEC-USR-LNAME: 'KUMAR               '
+      SEC-USR-PWD: 'PASSWORD'
+      SEC-USR-TYPE: 'U'
+    - SEC-USR-FNAME: 'LAURITZ             '
+      SEC-USR-ID: 'USER0003'
+      SEC-USR-LNAME: 'ALME                '
+      SEC-USR-PWD: 'PASSWORD'
+      SEC-USR-TYPE: 'U'
+    - SEC-USR-FNAME: 'AVERARDO            '
+      SEC-USR-ID: 'USER0004'
+      SEC-USR-LNAME: 'MAZZI               '
+      SEC-USR-PWD: 'PASSWORD'
+      SEC-USR-TYPE: 'U'
+    - SEC-USR-FNAME: 'LEE                 '
+      SEC-USR-ID: 'USER0005'
+      SEC-USR-LNAME: 'TING                '
+      SEC-USR-PWD: 'PASSWORD'
+      SEC-USR-TYPE: 'U'
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'User TESTU001 has been added ...                                              '
+screens:
+- '@map': 'COADM01'
+  PGMNAME: 'COADM01C'
+  TRNNAME: 'CA00'
+- '@map': 'COUSR01'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: 'run-date'
+  CURTIME:
+    match: 'run-time'
+  ERRMSG: '                                                                              '
+  FNAME: '                    '
+  LNAME: '                    '
+  PASSWD: '        '
+  PGMNAME: 'COUSR01C'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: 'CU01'
+  USERID: '        '
+  USRTYPE: ' '
+- '@map': 'COUSR01'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: 'run-date'
+  CURTIME:
+    match: 'run-time'
+  ERRMSG: 'User TESTU001 has been added ...                                              '
+  FNAME: '                    '
+  LNAME: '                    '
+  PASSWD: '        '
+  PGMNAME: 'COUSR01C'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: 'CU01'
+  USERID: '        '
+  USRTYPE: ' '

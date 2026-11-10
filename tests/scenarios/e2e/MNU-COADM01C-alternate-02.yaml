@@ -11,10 +11,24 @@
 # unreachable (all COMEN02Y options are user type 'U'), so 'No access - Admin
 # Only option... ' appears on no screen.
 #
-# Step 1 signs on as USER0001 (USRSEC record type 'U' [app/jcl/DUSRSECJ.jcl:40]);
-# COSGN00C XCTLs to COMEN01C with CDEMO-PGM-CONTEXT zero, so the main menu is
-# sent with a blank message [app/cbl/COSGN00C.cbl:223-239]
-# [app/cbl/COMEN01C.cbl:86-90,182-194].
+# A typed transaction id starts only on a terminal with no pending
+# transaction. Every CardDemo screen task ends with RETURN TRANSID, and the
+# next input from that terminal, CLEAR included, starts the pending
+# transaction instead of the one typed. The adapter starts a transaction with
+# Clear, the id and Enter, so typing CA00 on the main menu would only restart
+# CM00. The steps therefore end USER0001's session before CA00 is entered:
+# 1. USER0001 signs on (USRSEC record type 'U' [app/jcl/DUSRSECJ.jcl:40]).
+#    COSGN00C XCTLs to COMEN01C with CDEMO-PGM-CONTEXT zero, which sends the
+#    main menu with a blank message and returns with TRANSID CM00
+#    [app/cbl/COSGN00C.cbl:223-239] [app/cbl/COMEN01C.cbl:86-90,107-110].
+# 2. PF3 on the menu starts CM00: COMEN01C moves 'COSGN00C' to
+#    CDEMO-TO-PROGRAM and XCTLs to it without a COMMAREA, so COSGN00C sends a
+#    fresh sign-on screen and returns with TRANSID CC00
+#    [app/cbl/COMEN01C.cbl:96-98,170-177] [app/cbl/COSGN00C.cbl:80-83,98-102].
+# 3. PF3 on the sign-on screen starts CC00 with its COMMAREA: COSGN00C sends
+#    'Thank you for using CardDemo application...' as plain text and returns
+#    with no TRANSID, which ends the session [app/cbl/COSGN00C.cbl:85-90,162-172].
+# 4. Clear, CA00 and Enter now start CA00, which returns to sign-on as above.
 #
 # Every value is derived from the source (inferred-not-observed): no TPE region
 # runs in CI. Field values are the full BMS field widths, trailing spaces kept,
@@ -23,16 +37,20 @@ id: MNU-COADM01C-alternate-02
 level: e2e
 type: alternate
 description: >-
-  USER0001 signs on and reaches the main menu (COMEN01), then enters CA00
-  directly. COADM01C runs without a COMMAREA and checks no user type: it returns
-  to the COSGN00C sign-on screen, and 'No access - Admin Only option...' never
-  appears. ENTER on that blank sign-on screen is answered by CC00 with 'Please
-  enter User ID ...', showing the screen is COSGN00C's own.
+  USER0001 signs on and reaches the main menu (COMEN01), leaves it with PF3 for
+  the sign-on screen and ends the session there with PF3, then enters CA00
+  directly. COADM01C runs without a COMMAREA and checks no user type: it
+  returns to the COSGN00C sign-on screen, and 'No access - Admin Only
+  option...' never appears. ENTER on that blank sign-on screen is answered by
+  CC00 with 'Please enter User ID ...', showing the screen is COSGN00C's own.
+# COMEN01C's PF3 return and COSGN00C's farewell are only the way to a terminal
+# with no pending transaction; their own scenarios verify them, so they are not
+# listed.
 inventory_ids:
 - INV-MNU-029  # COADM01C entry without COMMAREA returns to sign-on
 - INV-MNU-002  # COADM01C program
 - INV-MNU-003  # COMEN01 map, asserted on screen 1
-- INV-SEC-002  # COSGN00 map, asserted on screen 2
+- INV-SEC-002  # COSGN00 map, asserted on screens 2 and 4
 - INV-CFG-011  # transaction CA00
 - INV-LAY-001  # COADM02Y copybook
 - INV-LAY-002  # COCOM01Y copybook: CDEMO-TO-PROGRAM, CDEMO-USER-TYPE
@@ -57,11 +75,17 @@ inputs:
     '@map': COSGN00
     fields: {USERID: USER0001, PASSWD: PASSWORD}
     aid: ENTER
+  - '@map': COMEN01
+    fields: {}
+    aid: PF3
+  - '@map': COSGN00
+    fields: {}
+    aid: PF3
   # '@map' names the input screen the adapter identifies after starting the
   # transaction (Clear, CA00, Enter): the sign-on screen COADM01C returns to.
-  # Naming the menu left by step 1 instead would make the adapter stop at the
-  # identification mismatch rather than press the step's AID. The AID is then
-  # pressed on that screen with no field entered.
+  # Naming any other map would make the adapter stop at the identification
+  # mismatch rather than press the step's AID. The AID is then pressed on that
+  # screen with no field entered.
   - transid: CA00
     '@map': COSGN00
     fields: {}
@@ -75,6 +99,43 @@ expected:
   - '@map': COSGN00
     TRNNAME: CC00
     PGMNAME: COSGN00C
+    USERID: '        '
+    ERRMSG: '                                                                              '
+  # SEND TEXT: the 80 sent bytes from row 1, column 1, after ERASE, and blanks
+  # elsewhere, as the 24 rows of 80 characters joined by line breaks that
+  # adapters/base.py screen_text gives. Each source line below is one row:
+  # '\ ' keeps a row's leading blank and '\n\' ends the row.
+  - '@map': TEXT
+    '@text': "Thank you for using CardDemo application...                                     \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                "
+  - '@map': COSGN00
+    TRNNAME: CC00
+    PGMNAME: COSGN00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    USERID: '        '
     # COSGN00C, re-entered by CC00 with its COMMAREA, finds USERID blank
     # [app/cbl/COSGN00C.cbl:85-87,108-122]; never the admin-only refusal.
     ERRMSG: 'Please enter User ID ...                                                      '

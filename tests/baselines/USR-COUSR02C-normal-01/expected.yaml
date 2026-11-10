@@ -1,0 +1,74 @@
+# Derived baseline of scenario USR-COUSR02C-normal-01: ADMIN001 signs on,
+# takes admin option 3, fetches the invented user TESTU002 on COUSR02 and saves
+# the last name changed to TESTCHANGED with PF5. Authored from the source,
+# never captured: app/cbl/COUSR02C.cbl:84-105,140-380 with app/bms/COUSR02.bms,
+# app/cbl/COADM01C.cbl:115-145 (option '3' right-justified to 03, XCTL to
+# COUSR02C) and app/cbl/COSGN00C.cbl:225-237 (type A routed to COADM01C).
+# Open until a UniKix run is imported: GAP-INF-004 (derived USR end-to-end
+# baselines) and GAP-INF-012 (online-only copybooks).
+# One screen per step, each the one shown after the step's AID:
+# 1. the admin menu COADM01, asserted by its header only;
+# 2. COUSR02 on first entry: the padded COMMAREA selects no user, COUSR2AO is
+#    LOW-VALUES and the capture shows nulls as spaces;
+# 3. the fetch: the record's names and type with 'Press PF5 key to save your
+#    updates ...';
+# 4. the save: only LNAME differs, so the REWRITE runs and the composed
+#    'User TESTU002 has been updated ...' is sent; the fields echo the input
+#    received, because COUSR2AO redefines COUSR2AI and nothing reloads them.
+# Values are whole BMS fields with their trailing spaces. LNAME is erased to
+# end of field before TESTCHANGED is typed, so no part of TESTLAST remains.
+# PASSWD holds TESTPWD2 but is ATTRB=(DRK,FSET,UNPROT), and the screen capture
+# shows a zero-intensity field as blanks. CURDATE and CURTIME come from the run
+# clock, which UniKix cannot fix, hence the matchers.
+screens:
+- '@map': COADM01
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  FNAME: '                    '
+  LNAME: '                    '
+  PASSWD: '        '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: '        '
+  USRTYPE: ' '
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Press PF5 key to save your updates ...                                        '
+  FNAME: 'TESTFIRST           '
+  LNAME: 'TESTLAST            '
+  PASSWD: '        '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: TESTU002
+  USRTYPE: U
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'User TESTU002 has been updated ...                                            '
+  FNAME: 'TESTFIRST           '
+  LNAME: 'TESTCHANGED         '
+  PASSWD: '        '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: TESTU002
+  USRTYPE: U

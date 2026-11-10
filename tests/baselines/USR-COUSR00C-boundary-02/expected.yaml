@@ -1,0 +1,137 @@
+# Derived baseline of scenario USR-COUSR00C-boundary-02: with 11 users in
+# USRSEC, ADMIN001 signs on, opens the user list from the admin menu and pages
+# forward once. Authored from the source, never captured:
+# app/cbl/COSGN00C.cbl (the type-A route to COADM01C), app/cbl/COADM01C.cbl
+# with app/cpy/COADM02Y.cpy (option 1 transfers to COUSR00C), and
+# app/cbl/COUSR00C.cbl:97-330,562-640 with app/bms/COUSR00.bms and
+# app/cpy/COTTL01Y.cpy (the browse, the paging and the screen header). Open
+# until a UniKix run is imported: GAP-INF-004 (derived USR end-to-end
+# baselines) and GAP-INF-012 (online-only copybooks).
+# One screen per step, the one shown after the step's AID: COADM01 after
+# sign-on, COUSR00 page 1 after option 1, COUSR00 page 2 after PF8.
+# Key order of the 11 users: the invented TESTU003 sorts sixth, between
+# ADMIN005 and USER0001, so page 1 ends at USER0004 and the eleventh key,
+# the fixture user USER0005, is alone on page 2.
+# Page 1 carries no message: the eleventh READNEXT finds a record
+# (COUSR00C.cbl:308-316). On page 2 the ENDFILE branch sends the map once
+# mid-task, still showing the received page number, and the paragraph sends
+# it again with PAGENUM '00000002' (COUSR00C.cbl:317-329,634-640); both sends
+# erase. This baseline pins that final send, so a capture of the intermediate
+# screen is an adapter timing issue, not a behavior change.
+# Values are full BMS field width with their trailing spaces; CURDATE and
+# CURTIME are run-clock matchers. messages holds each step's ERRMSG.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'You have reached the bottom of the page...                                    '
+screens:
+- '@map': 'COADM01'
+  ERRMSG: '                                                                              '
+  PGMNAME: 'COADM01C'
+  TRNNAME: 'CA00'
+- '@map': 'COUSR00'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: 'run-date'
+  CURTIME:
+    match: 'run-time'
+  ERRMSG: '                                                                              '
+  FNAME01: 'MARGARET            '
+  FNAME02: 'RUSSELL             '
+  FNAME03: 'RAYMOND             '
+  FNAME04: 'EMMANUEL            '
+  FNAME05: 'GRANVILLE           '
+  FNAME06: 'TESTFIRST           '
+  FNAME07: 'LAWRENCE            '
+  FNAME08: 'AJITH               '
+  FNAME09: 'LAURITZ             '
+  FNAME10: 'AVERARDO            '
+  LNAME01: 'GOLD                '
+  LNAME02: 'RUSSELL             '
+  LNAME03: 'WHITMORE            '
+  LNAME04: 'CASGRAIN            '
+  LNAME05: 'LACHAPELLE          '
+  LNAME06: 'TESTLAST            '
+  LNAME07: 'THOMAS              '
+  LNAME08: 'KUMAR               '
+  LNAME09: 'ALME                '
+  LNAME10: 'MAZZI               '
+  PAGENUM: '00000001'
+  PGMNAME: 'COUSR00C'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: 'CU00'
+  USRID01: 'ADMIN001'
+  USRID02: 'ADMIN002'
+  USRID03: 'ADMIN003'
+  USRID04: 'ADMIN004'
+  USRID05: 'ADMIN005'
+  USRID06: 'TESTU003'
+  USRID07: 'USER0001'
+  USRID08: 'USER0002'
+  USRID09: 'USER0003'
+  USRID10: 'USER0004'
+  USRIDIN: '        '
+  UTYPE01: 'A'
+  UTYPE02: 'A'
+  UTYPE03: 'A'
+  UTYPE04: 'A'
+  UTYPE05: 'A'
+  UTYPE06: 'U'
+  UTYPE07: 'U'
+  UTYPE08: 'U'
+  UTYPE09: 'U'
+  UTYPE10: 'U'
+- '@map': 'COUSR00'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: 'run-date'
+  CURTIME:
+    match: 'run-time'
+  ERRMSG: 'You have reached the bottom of the page...                                    '
+  FNAME01: 'LEE                 '
+  FNAME02: '                    '
+  FNAME03: '                    '
+  FNAME04: '                    '
+  FNAME05: '                    '
+  FNAME06: '                    '
+  FNAME07: '                    '
+  FNAME08: '                    '
+  FNAME09: '                    '
+  FNAME10: '                    '
+  LNAME01: 'TING                '
+  LNAME02: '                    '
+  LNAME03: '                    '
+  LNAME04: '                    '
+  LNAME05: '                    '
+  LNAME06: '                    '
+  LNAME07: '                    '
+  LNAME08: '                    '
+  LNAME09: '                    '
+  LNAME10: '                    '
+  PAGENUM: '00000002'
+  PGMNAME: 'COUSR00C'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: 'CU00'
+  USRID01: 'USER0005'
+  USRID02: '        '
+  USRID03: '        '
+  USRID04: '        '
+  USRID05: '        '
+  USRID06: '        '
+  USRID07: '        '
+  USRID08: '        '
+  USRID09: '        '
+  USRID10: '        '
+  USRIDIN: '        '
+  UTYPE01: 'U'
+  UTYPE02: ' '
+  UTYPE03: ' '
+  UTYPE04: ' '
+  UTYPE05: ' '
+  UTYPE06: ' '
+  UTYPE07: ' '
+  UTYPE08: ' '
+  UTYPE09: ' '
+  UTYPE10: ' '

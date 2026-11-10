@@ -1,0 +1,50 @@
+# Derived baseline of scenario USR-COUSR02C-alternate-02: ADMIN001 signs on,
+# takes admin option 3 to COUSR02C and fetches user USER0003 for update.
+# Authored from the source, never captured: app/cbl/COADM01C.cbl:115-152 (the
+# XCTL to COUSR02C), app/cbl/COUSR02C.cbl:84-105 (the first-entry send of a
+# cleared COUSR02) and app/cbl/COUSR02C.cbl:143-172,320-353 (READ UPDATE of
+# USRSEC, the 'Press PF5 ...' send, then the send of the record's fields, the
+# screen left standing). FNAME, LNAME and USRTYPE are the USRSEC fixture
+# record USER0003. Open until a UniKix run is imported: GAP-INF-004 (derived
+# USR end-to-end baselines) and GAP-INF-012 (online-only copybooks).
+# One screen per step; values are full BMS field width with their trailing
+# spaces. PASSWD is asserted, as the scenario asserts it: the field is dark
+# (ATTRB=(DRK,FSET,UNPROT), app/bms/COUSR02.bms:130-134) and the s3270 screen
+# capture shows a dark field as blanks, so it reads 8 spaces and the
+# password never appears.
+screens:
+- '@map': COADM01
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  FNAME: '                    '
+  LNAME: '                    '
+  PASSWD: '        '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: '        '
+  USRTYPE: ' '
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Press PF5 key to save your updates ...                                        '
+  FNAME: 'LAURITZ             '
+  LNAME: 'ALME                '
+  PASSWD: '        '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: USER0003
+  USRTYPE: U
