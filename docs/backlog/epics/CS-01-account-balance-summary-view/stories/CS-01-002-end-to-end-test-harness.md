@@ -114,79 +114,71 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — a small typed wrapper over the Java runtime's built-in HTTP client.
+Recommended: Design Option A, a typed wrapper over the built-in HTTP client.
 
-Rationale: a test client that speaks the web interface the deferred user interface will use, and reads the stub request logs and the service's completion log lines beside each answer, lets every flow step check the answer, the upstream calls behind it and the cut-off in one place.
+Rationale: one client checks each answer, its stub log entries and completion line.
 
-- Rejected: Design Option B, a client generated from the HTTP interface description — it adds a code generator that the dependency table does not list.
-- Rejected: a browser-driven test — no user interface exists this iteration.
+- Rejected: Design Option B — no code generator is pinned.
+- Rejected: a browser-driven test — no user interface exists yet.
 
 ### Shared by both options
 
-- Topology: the tests run on the build host and reach the service and the five stubs through the stack's published host ports.
-- Naming: each stub log is read under the stub's stack name, and an answer naming another stub fails the step.
-- Addressing: the build hands the suite the service address, the five stub log addresses and the stack file location, and a missing address stops the suite before its first step.
-- Isolation: each call runs as the first regular fixture user unless the step names another fixture identity, each step reads only the log entries recorded since it began, calls run one at a time so each answer pairs with one completion log line, and each call's log window closes only once every stub log has settled, so background work lands with the call that started it.
-- Fallback: the client has no fallback path, so a missing stub log, a missing completion log line or an unreadable error body fails the step instead of being skipped.
-- Provisioning: the continuous integration gate starts the stack before the suite and stops it afterwards, a failed run included.
-- Cut-over: a real user interface replaces the client and not the steps, and the real services replace the stubs by address and credential alone.
-- Failures: each error answer surfaces as a typed error, and stale, partial, unavailable and timed-out outcomes reach the step unchanged.
+- Topology: tests use the stack's published ports.
+- Naming: logs are read by stub name; mismatches fail.
+- Addressing: the build passes every address and the stack file.
+- Isolation: serial calls, as the default fixture user unless a step names another.
+- Fallback: none; a missing log, line or error body fails.
+- Provisioning: the gate starts and always stops the stack.
+- Cut-over: a real interface replaces the client; real services swap in by address and credential.
+- Failures: typed errors, reported retries and unchanged degraded outcomes.
 
 ### Design Option A — the Java runtime's built-in HTTP client with a small typed wrapper
 
-A hand-written wrapper sends each call through the Java runtime's built-in HTTP client and reads the answer with the JSON reader that the service's web layer already carries. It turns every error answer into one typed error built from the standard error object, and pairs every answer with the stub log entries and the completion log line it produced. The same wrapper is the suite base that every flow step registers.
+A hand-written wrapper sends calls through the built-in client and parses answers with the existing JSON reader. It is also every flow step's suite base.
 
 How it behaves:
 
-- Each call measures latency from send to the last byte of the answer body.
-- A success answer exposes the data-status header beside the body's data status, and a mismatch fails the step.
-- An error answer becomes a typed error carrying status, code, message, trace identifier and field details, and a code that does not match its status fails the step.
-- Before each call the wrapper notes the latest entry number of every stub log, and once the logs have settled after the answer it returns only the newer entries.
-- The logs count as settled one second or more after the answer, once each stub log lists every call that stub reports having received.
-- A whole stub log can be read on demand, earlier entries included.
-- An operation that appears more than once among one call's entries is reported as a retried call.
-- An error answer finds its completion log line by trace identifier, and a success answer takes the one new line written since the call was sent.
-- Every call fails its step when the cut-off came after 900 ms or the answer took 1,000 ms or more.
-- The completion log source is swappable, so the unit test feeds lines without a running stack.
+- Latency spans send to the last body byte.
+- Per-call split: a call owns log entries above its send-time mark.
+- Settled window: closes after at least one second, once every log lists each numbered call.
+- Completion-line pairing: errors by trace identifier, successes by the one new line.
+- Deadline check: a cut-off above 900 ms or latency of 1,000 ms or more fails.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Hand-written wrapper (vs generated client) | no generator joins the build | the field mapping is kept by hand |
-| 2 | Service log read through the stack tool (vs a log route on the service) | the service gains no test-only route | the build host needs the stack tool |
-| 3 | Success answers paired with the one new completion line (vs a trace header on every answer) | the interface contract stays unchanged | calls must run one at a time |
-| 4 | Stub entries split by entry number (vs by clock time) | clock skew between containers cannot move the split | a stub restart resets the numbering |
-| 5 | Deadline check inside the client (vs one check per flow step) | no flow step can skip the deadline boundary | a step cannot relax the check for one call |
-| 6 | Log windows closed after the logs settle (vs closed at the answer) | a background refresh lands with the call that started it | each call adds a wait of one second or more |
+| 1 | Hand-written wrapper (vs generated client) | the build gains no generator | the mapping stays manual |
+| 2 | Stack-tool log read (vs a service log route) | the service stays unchanged | the host needs the stack tool |
+| 3 | Success pairing by new completion line (vs a trace header) | the contract stays unchanged | calls must run serially |
+| 4 | Split by entry number (vs by clock time) | clock skew cannot move the split | a stub restart resets numbering |
+| 5 | Deadline check in the client (vs per step) | no step can skip it | no step can relax it |
+| 6 | Log windows closed at log settlement (vs closed at the answer) | a background refresh stays in its originating call window | each call waits at least one second |
 
-Effort and risk: small effort across four files, with drift between the hand-written mapping and the interface contract as the main risk.
+Effort and risk: small, four files; the risk is mapping drift.
 
 ### Design Option B — a client generated from the HTTP interface description
 
-A code generator reads the HTTP interface description at build time and emits typed request and answer classes, and a thin layer adds the stub log reader, the completion log reader and the deadline check. Error answers map to the generated error type. Everything else matches Option A.
+A code generator builds typed classes from the interface description. A thin layer adds the rest of Option A.
 
 How it differs:
 
-- Request and answer types follow the interface description, so a contract change shows up as a build failure.
-- The build gains a generator plugin and its runtime library, neither of which the dependency table lists.
-- Descriptions that are either text or null depend on how the generator handles such fields.
-- The generated client brings its own transport unless it is set to use the Java runtime's built-in client.
-- Latency is measured around the generated call, so it includes the generated decoding.
+- Contract changes fail the build.
+- Null descriptions, transport and latency follow generated code.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Generated client (vs hand-written wrapper) | contract drift breaks the build | it adds a generator absent from the dependency table |
-| 2 | Generated error type (vs hand-written typed error) | error fields follow the contract | the status-to-code pairing still needs hand-written checks |
-| 3 | Service log read through the stack tool (vs a log route on the service) | the service gains no test-only route | the build host needs the stack tool |
+| 1 | Generated client (vs hand-written wrapper) | contract drift breaks the build | no generator is pinned |
+| 2 | Generated error type (vs hand-written typed error) | error fields follow the contract | status-to-code pairing stays manual |
+| 3 | Stack-tool log read (vs a service log route) | the service stays unchanged | the host needs the stack tool |
 
-Effort and risk: medium effort across five files, at risk on the dependency table, which names no generator.
+Effort and risk: medium, five files; the risk is the dependency table.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: it needs nothing outside the pinned dependency table and keeps the client small enough that each flow step reads plainly.
-- Strongest argument against: the hand-written mapping can drift from the interface contract with no build failure to flag it.
-- Shared items that do not decide the choice: the published host ports, the stub log route, the completion log reader, the per-step entry split, the default fixture identity and the stack start and stop in the continuous integration gate.
-- Flip conditions: a code generator joining the dependency table, or the interface contract growing past what the flow steps read.
+- Why: it adds no unpinned dependency.
+- Strongest argument against: silent drift between the mapping and the contract.
+- Shared items that do not decide the choice: the shared block, log readers, entry split and deadline check.
+- Flip conditions: a pinned generator, or a contract outgrowing the steps' reads.
 
 ## Design Validation
 
@@ -194,57 +186,49 @@ Effort and risk: medium effort across five files, at risk on the dependency tabl
 
 Settled assumptions:
 
-- Each stub in container mode serves its request log on its published web port, with numbered entries in receipt order.
-- The service writes exactly one completion log line per request, carrying the trace identifier, the outcome and the cut-off time.
-- Each stub numbers its calls one by one from one in receipt order, lists each entry once its call closes and also reports the latest number it has given out.
-- Every attempt of a background configuration refresh starts within the refresh's own 900 ms deadline, which starts before the answer of the call that launched it.
-- Every error answer carries the standard error object with a trace identifier.
-- The flow steps send one call at a time.
-- The stack publishes the service and every stub on fixed host ports.
-- The build hands the suite the absolute location of the stack file, so the service log command reads the same file from the module directory the tests run in.
-- The JSON reader already sits on the service's test classpath.
+- Each stub numbers calls on receipt, lists each on close and reports its latest number.
+- Error answers and each request's one completion line, with its cut-off, carry the trace identifier.
+- Each refresh attempt starts inside its 900 ms deadline, begun before the launching answer.
 
 Open assumptions:
 
-- Completion log line format Open → the line the upstream call policy story writes, read by this parser.
-- Request-log reads for container-hosted stubs Open → the web route of the stub hosting story on each published port.
-- Delay between an answer and its completion log line Open → the two-second wait, measured on the first stack run.
+- Completion line format Open → the upstream call policy story's line.
+- Stub log reads Open → the stub hosting story's route per port.
+- Answer-to-line delay Open → the first stack run measures the two-second wait.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the wrapper sets the default token and times every call |
-| AC2 | Conditional | the stub log route must answer on each published port |
-| AC3 | Holds | the malformed fixture token fails at the authentication stage before any data read |
-| AC4 | Holds | the wrapper maps every listed status to one typed error |
-| AC5 | Conditional | the completion log line format must match the parser |
-| AC6 | Holds | the build routes the tagged suite to its own task |
+| AC1 | Holds | the wrapper adds the default token and timing |
+| AC2 | Conditional | stub ports must serve the logs |
+| AC3 | Holds | authentication rejects the malformed token first |
+| AC4 | Holds | each listed status maps to a typed error |
+| AC5 | Conditional | the parser must match the line format |
+| AC6 | Holds | a dedicated task runs the tagged suite |
 | AC7 | Holds | the end-to-end stage fills its reserved slot |
-| AC8 | Holds | the wrapper reports repeated operations and passes outcomes through unchanged |
+| AC8 | Holds | the wrapper reports retries beside unchanged outcomes |
 
 ### Option B
 
 Settled assumptions:
 
-- Each stub in container mode serves its request log on its published web port, with numbered entries in receipt order.
-- The service writes exactly one completion log line per request, carrying the trace identifier, the outcome and the cut-off time.
-- The HTTP interface description covers every answer the flow steps read.
+- Option A's log assumptions hold; the interface description covers every read answer.
 
 Open assumptions:
 
-- Generator choice Open → a pinned generator added to the dependency table.
-- Handling of descriptions that are either text or null Open → a trial generation against the interface description.
-- Completion log line format Open → the line the upstream call policy story writes, read by this parser.
+- Generator choice Open → a pinned dependency table entry.
+- Null description handling Open → a trial generation.
+- Completion line format Open → as under Option A.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | a request hook adds the default token and times every call |
-| AC2 | Conditional | the stub log route must answer on each published port |
-| AC3 | Holds | the malformed fixture token fails at the authentication stage before any data read |
-| AC4 | Conditional | the generated error type must carry every field of the standard error object |
-| AC5 | Conditional | the completion log line format must match the parser |
-| AC6 | At risk | the generator plugin changes the build that the tagged tasks share |
+| AC1 | Holds | a request hook adds the default token and timing |
+| AC2 | Conditional | stub ports must serve the logs |
+| AC3 | Holds | authentication rejects the malformed token first |
+| AC4 | Conditional | the generated error type needs every field |
+| AC5 | Conditional | the parser must match the line format |
+| AC6 | At risk | the generator plugin changes the shared tagged-test build |
 | AC7 | Holds | the end-to-end stage fills its reserved slot |
-| AC8 | At risk | generated decoding of null descriptions can hide a partial answer |
+| AC8 | At risk | generated null decoding can hide a partial answer |
 
 ## Metadata
 

@@ -124,80 +124,70 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — one run per filter shape, timed both end to end and at the stub.
+Recommended: Design Option A — one run per filter shape, timed end to end and at the stub.
 
-Rationale: the indexing decision turns on what a sparse filter costs on the large-history account, so each shape needs its own percentiles over the large-history calls alone and its own stub duration check over reads the cache has not answered.
+Rationale: the indexing decision turns on each filter shape's cost on the large-history account.
 
-- Rejected: Design Option B, one mixed run cycling the four large-history shapes — blended percentiles hide the sparse-filter cost.
-- Rejected: the whole run's percentiles as the large-history figures — four in five calls sit on hundred-transaction accounts.
-- Rejected: all ten virtual users on the large-history account — the runner checks entitlements, and only the first regular fixture user holds that account.
-- Rejected: repeating the first page — the page cache answers a repeat for one minute and leaves the stub unmeasured.
+- Rejected: Design Option B, one mixed large-history run — blending hides the sparse-filter cost.
+- Rejected: whole-run percentiles as large-history figures — four in five calls hit other accounts.
+- Rejected: all ten virtual users on the large-history account — only one identity holds it.
+- Rejected: repeating the first page — cached repeats leave the stub unmeasured.
 
 ### Shared by both options
 
-- Topology: the performance runner on the build host calls the service in the shared test stack, loaded with the full synthetic volume, and the service reaches the stubs, the store and the cache behind it.
-- Naming: each run is named for its shape, and its report file carries that name.
-- Addressing: the large-history account, the hundred-transaction accounts and the empty-history accounts sit in disjoint ranges above the sample accounts, and each virtual user calls only accounts its regular fixture identity holds.
-- Isolation: failure injection stays off, no other suite runs on the stack, and no two runs share an account and filter pair.
-- Fallback: none, so a non-success answer, a failed walk or a missed limit fails the run.
-- Provisioning: the performance stage starts the stack and waits for the volume load before the first call.
-- Cut-over: the same runs repeat unchanged once the filter-leading indexes land.
-- Failures: the report names the failing run, its percentiles and the stub call count behind each.
+- Topology: the runner calls the service, and the service its stubs, store and cache.
+- Naming: each run and its report carry the shape's name.
+- Addressing: the large-history, hundred-transaction and empty-history accounts sit in disjoint ranges above the sample accounts, and each virtual user calls only its identity's accounts.
+- Isolation: no failure injection, no other suite, and no account and filter pair shared by two runs.
+- Fallback: none, so a non-success answer, failed walk or missed limit fails the run.
+- Provisioning: the stage starts the stack and awaits the volume load.
+- Cut-over: the runs repeat unchanged once the filter-leading indexes land.
+- Failures: the report names the failing run, its percentiles and stub call count.
 
 ### Design Option A — one run per filter shape
 
-Six runs follow one another: the four large-history shapes, then the hundred-transaction group and the empty-history group, each with its own percentiles and stub figures. In the large-history runs the first regular fixture user's two virtual users walk deep pages by next-page token, or spread the single-page sparse refund filter over page sizes, so no measured call reuses a page the walk cached. The other four identities run the same filter on their own hundred-transaction accounts, which keeps ten virtual users concurrent. The large-history calls get their own percentiles from the per-call targets and their stub durations from the stub request log entries that name the large-history account.
+Six runs follow an unmeasured denial call: four large-history shapes, then the hundred-transaction and empty-history groups. In a large-history run the first regular fixture user's two virtual users call the large-history account, the other four identities their own hundred-transaction accounts. An unmeasured walk at the largest page size checks every item against the filter and collects next-page tokens, and measured calls use smaller page sizes, so none repeats a walked page.
 
 How it behaves:
 
-- One unmeasured denial call with the second regular fixture user's token precedes the first run.
-- An unmeasured walk at the largest page size collects the next-page tokens of each multi-page large-history shape and checks every item against the filter.
-- The deep-page shapes measure at the default page size and the sparse shapes at page sizes below the largest, so no measured call repeats a page the walk cached.
-- The two virtual users of the first regular fixture user share one target list and the sparse lists hold eighty pages for a hundred calls, so a page repeated within one minute is a cache hit that adds no stub call.
-- Each sparse refund filter call that misses the cache scans the whole large-history account, the worst case the indexing decision names.
-- Each large-history run takes its stub sample from the stub request log entries that name the large-history account, so the other identities' reads stay out of it.
-- Every run checks its 50th, 95th and 99th percentile against one second, and a large-history run also checks those of its large-history calls alone against one second and the 99th percentile of its large-history stub reads against half the attempt timeout.
-- A large-history run fails when its large-history sample is not the full two hundred calls, when its large-history stub sample is shorter than the distinct measured pages or longer than the large-history calls, or when a stub read in its window names no account.
-- The empty-history run proves that an empty list also answers within one second.
+- Both large-history virtual users share a target list, so repeats within a minute hit the cache.
+- Beside the whole-run thresholds, a large-history run holds its two hundred large-history calls' 50th, 95th and 99th percentiles below one second, failing on any other sample size.
+- Its stub gate holds the 99th percentile of the large-history account's stub reads within half the attempt timeout, failing on fewer reads than distinct measured pages, more than its large-history calls, or any read naming no account.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One run per filter shape (vs one mixed run) | isolates the sparse-filter cost | four runs instead of one |
-| 2 | Stub call duration from the stub request log (vs end-to-end time alone) | measures the index trigger directly | depends on stub log timing |
-| 3 | Virtual users walk pages by next-page token (vs repeating the first page) | reaches pages the walk has not cached | the walk adds unmeasured calls before each run |
-| 4 | Denial pre-flight before measuring (vs no access check) | proves the guard under volume | adds one unmeasured call |
-| 5 | Large-history stub reads picked by the account on each log entry (vs cached pages for the other identities) | no other account's read can enter the stub sample | needs the account on each stub log entry |
-| 6 | Large-history calls gated on their own (vs the whole run) | each shape's percentiles describe the large-history account | needs the target of each call in the run result |
+| 1 | One run per shape (vs one mixed run) | isolates sparse-filter cost | four runs instead of one |
+| 2 | Stub log timing (vs end-to-end only) | measures the index trigger | depends on log accuracy |
+| 3 | Pages by next-page token (vs repeating the first page) | reaches uncached pages | adds an unmeasured walk |
+| 4 | Denial pre-flight (vs no access check) | proves the guard under volume | adds one unmeasured call |
+| 5 | Stub sample by account (vs caching other identities' pages) | excludes other accounts' reads | needs each log entry's account |
+| 6 | Large-history calls gated alone (vs the whole run) | figures describe the large-history account | needs each call's target |
 
-Effort and risk: small effort in one scenario file, with cache hits between the two virtual users that share a fixture identity as the main risk.
+Effort and risk: small, one scenario file, with cache hits as the main risk.
 
 ### Design Option B — one mixed large-history run
 
-One mixed run cycles the four large-history shapes through the first regular fixture user's calls, and the hundred-transaction and empty-history groups keep their own runs. The walk, the page-size spread and the denial call match Option A. The stage holds three runs instead of six.
+One run cycles all four large-history shapes, leaving three runs. Everything else matches Option A.
 
 How it differs:
 
-- One set of percentiles covers all four large-history shapes.
-- Each sparse refund filter supplies a quarter of the large-history calls, so its tail can sit below the 99th percentile.
-- One stub duration limit applies to the mixed stub request log.
-- A breach cannot name the shape behind it.
-- The stage spends less time on large-history runs.
+- Each sparse filter is a quarter of the large-history calls, so its tail can hide below the 99th percentile.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One mixed large-history run (vs one run per shape) | shorter performance stage | blends the shape percentiles |
-| 2 | One stub duration limit over the mixed log (vs one limit per shape) | one condition to maintain | a sparse breach can hide among fast calls |
-| 3 | Shapes cycled call by call (vs shapes in separate windows) | each shape meets the same load | no shape gets its own window |
+| 1 | One mixed run (vs one run per shape) | shorter performance stage | blends the shape percentiles |
+| 2 | One stub limit (vs one per shape) | one condition to maintain | a breach cannot name its shape |
+| 3 | Shapes interleaved (vs separate windows) | every shape meets one load | no per-shape window |
 
-Effort and risk: small effort in one scenario file, at risk on every per-shape criterion because no shape gets its own figures.
+Effort and risk: small, one scenario file, at risk on every per-shape criterion.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: each shape gets its own percentiles and its own trigger check, so a breach names the filter that needs the filter-leading indexes.
+- Why: per-shape figures let a breach name the filter needing the filter-leading indexes.
 - Strongest argument against: four large-history runs lengthen the performance stage.
-- Shared items that do not decide the choice: the stack, the synthetic volume, the thresholds, the denial pre-flight, the page walk and the report fields.
-- Flip conditions: the stub request log cannot time each call, the filter-leading indexes land before the first measurement, the run result cannot name the target of each call, or the stub request log cannot name the account of each call.
+- Shared items that do not decide the choice: the stack, volume, thresholds, walk, denial call and report fields.
+- Flip conditions: the stub log cannot time calls or name accounts, the run result cannot name targets, or the indexes land before measurement.
 
 ## Design Validation
 
@@ -206,61 +196,56 @@ Effort and risk: small effort in one scenario file, at risk on every per-shape c
 Settled assumptions:
 
 - The synthetic volume matches the sample row shape.
-- The large-history account holds one hundred thousand rows, twenty of them on the sparse refund filter.
-- The refund type has only one category in the reference data.
-- Failure injection stays off for every run.
-- The first regular fixture user holds the large-history account and the hundred-transaction accounts it calls, and the fifth holds the empty-history accounts.
-- A next-page token stays valid at another page size, because it binds only the account and the filters.
-- The run result pairs each call with the target it was sent for, so the large-history calls form their own sample.
-- Each stub request log entry names the account of its request, so the large-history reads form their own stub sample.
-- Each distinct measured page misses the cache at its first call, because the walk reads only at the largest page size.
+- The large-history account holds one hundred thousand rows, twenty of them refunds, whose type has one category.
+- Only the fifth identity holds empty-history accounts.
+- A next-page token binds only the account and filters, holding at any page size.
+- The run result names each call's target, and each stub log entry its account.
+- Each distinct measured page misses the cache at its first call.
 
 Open assumptions:
 
-- Whether repeated pages within one minute leave a large-history stub sample near its floor Open → the first large-history runs, whose sample-size check fails a stub sample below the distinct measured pages.
+- Whether repeats leave a stub sample near its floor Open → the first large-history runs' sample-size check.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the large-history calls get their own percentiles over the walked pages |
-| AC2 | Holds | the type-only run's large-history calls get their own percentiles |
-| AC3 | Holds | the category-only run's large-history calls get their own percentiles over the walked pages |
-| AC4 | Holds | the both-filter run's large-history calls get their own percentiles |
-| AC5 | Holds | each identity calls its own hundred-transaction accounts |
-| AC6 | Holds | the empty-history run keeps its own window |
-| AC7 | Holds | failure injection stays off in every run |
-| AC8 | Holds | each stub request log window belongs to one run |
-| AC9 | Holds | each filtered run's stub sample holds only large-history reads |
-| AC10 | Conditional | the rerun applies only once the filter-leading indexes exist |
-| AC11 | Holds | the denial call precedes the first run |
-| AC12 | Holds | the service call policy runs unchanged under the stack defaults |
+| AC1 | Holds | the unfiltered run is gated alone |
+| AC2 | Holds | the type-only run is gated alone |
+| AC3 | Holds | the category-only run is gated alone |
+| AC4 | Holds | the both-filter run is gated alone |
+| AC5 | Holds | each identity calls its own accounts |
+| AC6 | Holds | the empty-history run has its own window |
+| AC7 | Holds | failure injection stays off |
+| AC8 | Holds | one run per stub log window |
+| AC9 | Holds | stub samples hold only large-history reads |
+| AC10 | Conditional | the rerun awaits the filter-leading indexes |
+| AC11 | Holds | the denial call runs first |
+| AC12 | Holds | the call policy is unchanged at stack defaults |
 
 ### Option B
 
 Settled assumptions:
 
-- The synthetic volume matches the sample row shape.
-- The large-history account holds one hundred thousand rows, twenty of them on the sparse refund filter.
-- Failure injection stays off for every run.
-- The four large-history shapes share one stub request log window.
+- Option A's volume and refund assumptions hold.
+- The four large-history shapes share one stub log window.
 
 Open assumptions:
 
-- Whether shape-level stub times can be separated from a mixed log Open → the performance harness story's report fields.
+- Whether a mixed log yields per-shape stub times Open → the performance harness story's report fields.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Breaks | blended percentiles hide the unfiltered shape |
-| AC2 | Breaks | blended percentiles hide the type-only shape |
-| AC3 | Breaks | blended percentiles hide the category-only shape |
-| AC4 | Breaks | blended percentiles hide the both-filter shape |
-| AC5 | Holds | the hundred-transaction run keeps its own window |
+| AC1 | Breaks | blending hides the unfiltered shape |
+| AC2 | Breaks | blending hides the type-only shape |
+| AC3 | Breaks | blending hides the category-only shape |
+| AC4 | Breaks | blending hides the both-filter shape |
+| AC5 | Holds | each identity calls its own accounts |
 | AC6 | Holds | the empty-history run keeps its own window |
-| AC7 | Holds | failure injection stays off in every run |
+| AC7 | Holds | failure injection stays off |
 | AC8 | Holds | the retry check needs no per-shape split |
 | AC9 | Breaks | the trigger needs per-shape stub percentiles |
 | AC10 | Breaks | the rerun needs per-shape results |
-| AC11 | Holds | the denial call precedes the first run |
-| AC12 | Holds | the service call policy runs unchanged under the stack defaults |
+| AC11 | Holds | the denial call runs first |
+| AC12 | Holds | the call policy is unchanged at stack defaults |
 
 ## Metadata
 

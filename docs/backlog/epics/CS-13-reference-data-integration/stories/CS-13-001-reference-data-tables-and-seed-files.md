@@ -33,6 +33,7 @@ Parent epic: [CS-13 Reference Data Integration](../README.md)
 >     > SCOPE-QUESTION (Resolved): The row checks above give a rejected seed row only a skipped count, while `docs/data-model.md` § Fixture rules requires each rejected seed row to be logged with its seed file, its position in that file and the failed check, apart from a foreign-key skip. Resolution: for each row a row check rejects, `ReferenceDataFixtureLoader` writes one WARN log line `Seed row rejected: file=<seed file> row=<n> check=<check>`. The seed file is `transaction-types.yaml` or `transaction-categories.yaml`, `<n>` is the row's 1-based position in that file's row list, and `<check>` is the first check the row fails, taken in the order `type-code`, `category-code`, `description`, `duplicate-key`. A category skipped by the CS-09-001 foreign-key skip writes no such line, so for each entity the skipped count less its rejection lines equals its foreign-key skips. The loaded, skipped and derived-timestamp counts below stay unchanged.
 >   - The category loader's parent-key check uses the CS-09-001 foreign-key skip: a category whose type code names no `transaction_type` row is skipped and counted.
 >   - Writes replace each row by its code key with `insert … on conflict … do update`, changing a stored row only when its description differs, and never delete a row.
+>     > SCOPE-QUESTION (Resolved): The write above names no way of passing seed values to the store, while the row checks admit a quote, a semicolon or a comment marker in a type code and in a description. Resolution: each entity's write is one fixed statement text, held as a constant in `ReferenceDataFixtureLoader` with positional `?` placeholders, and that entity's row writer passes every seed value of the row, its type code, its category code where the entity has one and its description, as a bound parameter of `JdbcTemplate.update(String, Object...)` over the CS-09-001 store connection. Spring JDBC's `JdbcTemplate` comes with the Spring Data JPA dependency that CS-09-001 adds, so `card-servicing-service/build.gradle` is not edited. No seed value is ever concatenated or formatted into the statement text, so a quote, a semicolon or a comment marker in a seed value is stored as written. The only other statements the loader executes are those of the packaged classpath `db/` scripts of the schema step, and the seed location supplies only the two YAML data files and is never read for scripts.
 >   - Counts: loaded counts every accepted row, whether inserted, updated or unchanged; skipped counts every rejected row; derived timestamps is always 0. Each entity's counts reach the load report after that entity's load transaction commits.
 >   - A missing or unreadable seed file fails that entity's load with an error naming the file, and under the CS-09-001 rule no later-ordered loader starts.
 >   - The two loaders run before every Card Data entity loader, which CS-09-002 and CS-09-003 rely on.
@@ -64,6 +65,7 @@ Parent epic: [CS-13 Reference Data Integration](../README.md)
 >
 > - AC1: With the packaged seed files, the reference entity loaders write 7 `transaction_type` rows and 18 `transaction_category` rows, and the load report shows 7 loaded, 0 skipped and 0 derived timestamps for transaction types and 18 loaded, 0 skipped and 0 derived timestamps for transaction categories.
 > - AC2: Stored codes and descriptions equal the seed rows field for field, with leading zeros kept, including `01` Purchase, `07` Adjustment, `01`/`0001` Regular Sales Draft, `03`/`0001` Credit to Account and `07`/`0001` Sales draft credit adjustment.
+>   > SCOPE-QUESTION (Resolved): The criterion also covers seed values that carry quotes and statement fragments, which the corrected type-code pattern and the 1-to-50-character description admit. In a copy of the seed files supplied through the seed-location start argument, type `05` is changed from `Refund` to `Customer's refund`, a type row `'9` with description `x'); DROP TABLE account;--` is added, and a category row `'9`/`0001` with that same description is added. Each of these rows passes every row check, `'9` matching `^[\s\S]{2}$` and the two descriptions holding 17 and 26 characters with no leading or trailing space, and the category passes the parent-key check, so the load writes no seed-row rejection line. The in-memory row writer receives each of these codes and descriptions unchanged, character for character, as the value the store writer binds apart from its fixed statement text. The load report shows 8 loaded, 0 skipped and 0 derived timestamps for transaction types and 19 loaded, 0 skipped and 0 derived timestamps for transaction categories, and the other 6 type rows and 18 category rows equal the packaged seed rows. The container-backed proof that these values are stored as written and leave the store's tables and columns unchanged is CS-13-004.
 > - AC3: A category row `09`/`0001` added to a copy of the category seed file, with no `09` type row, is skipped, not stored, and counted as 1 skipped for transaction categories, while the other 18 category rows load.
 >   > SCOPE-QUESTION (Resolved): With the orphan `09`/`0001` row added, the load writes no seed-row rejection line, which shows that its 1 skipped is a foreign-key skip and not a failed row check.
 > - AC4: A type row whose code does not match `^[A-Za-z0-9]{2}$` (for example `1`, `ABC`, or an unquoted `01` that YAML reads as a number), or a category row whose category code does not match `^[0-9]{4}$` (for example `001` or `00A1`), is skipped, not stored, and counted as 1 skipped for its entity. A second row repeating a code key already read from the same seed file is skipped and counted the same way.
@@ -97,8 +99,8 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; pass when all tests pass with ≥80% line coverage per module. `ReferenceDataFixtureLoaderTest` covers AC1–AC7: the packaged seed load, field-for-field values, the orphan category, code shapes and duplicate keys, trimming and the 50-character boundary, reload through the seed-location start argument and the missing seed file, and the schema step and load order. For each rejected seed row it asserts, through Spring Boot's `OutputCaptureExtension`, exactly one seed-row rejection line with that row's seed file, 1-based row position and failed check, and it asserts that the orphan category and the 50-character description write none.
-- Integration: Applies, through the Reference Data integration suite CS-13-004, which proves the seed load and the reload against the `postgres:16.6` container. Command `./gradlew :card-servicing-service:integrationTest`; pass when all suites pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; pass when all tests pass with ≥80% line coverage per module. `ReferenceDataFixtureLoaderTest` covers AC1–AC7: the packaged seed load, field-for-field values, the orphan category, code shapes and duplicate keys, trimming and the 50-character boundary, reload through the seed-location start argument and the missing seed file, and the schema step and load order. For each rejected seed row it asserts, through Spring Boot's `OutputCaptureExtension`, exactly one seed-row rejection line with that row's seed file, 1-based row position and failed check, and it asserts that the orphan category and the 50-character description write none. It also loads a seed copy carrying the description `Customer's refund`, the description `x'); DROP TABLE account;--` and the type code `'9` (AC2) and asserts that each row passes the row checks with no rejection line and reaches the row writer unchanged.
+- Integration: Applies, through the Reference Data integration suite CS-13-004, which proves the seed load and the reload against the `postgres:16.6` container, and is the literal-storage proof that seed values carrying quotes and statement fragments are stored as written with the container's tables and columns unchanged. Command `./gradlew :card-servicing-service:integrationTest`; pass when all suites pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Not applicable — 25 reference rows load once per stack start, and this story has no request path. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
   - Pass: p50, p95 and p99 below 1,000 ms over successful requests, with failure injection off, at 10 users × 100 sequential calls, 100,000 category balances and 1,000,000 transactions.
@@ -111,74 +113,71 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A — seed data files loaded by the fixture loader.
+Recommended: Option A — seed data files.
 
-Rationale: the data owner changes a description by editing a seed data file and rerunning the load, which keeps reference data out of service code and out of the schema scripts.
+Rationale: descriptions change as data, outside code and schema.
 
-- Rejected: Option B, seed rows inside the schema scripts, because every description change becomes a schema change.
-- Rejected: descriptions held as constants in service code, because reference data must stay data that changes without a deploy.
+- Rejected: Option B, schema-script rows, because each edit becomes a schema change.
+- Rejected: code constants, because each change would need a deploy.
 
 ### Shared by both options
 
-- Topology: two reference tables in the relational store, each category pointing at its type.
-- Naming: tables and seed sets are named for transaction types and categories, with codes as keys.
-- Addressing: a type row is found by its type code, and a category row by its type code plus category code.
-- Isolation: reference rows reach the store ahead of every card data row.
-- Fallback: none at load time beyond rejecting a row, because the description fallback belongs to the client story.
-- Provisioning: the loader applies the schema scripts in name order before the first entity loads.
-- Cut-over: the real reference data service replaces the stub by a change of target address and credential source alone, and ownership of these tables and seed sets after that swap stays an open question in the plan's recommendations.
-- Failures: a bad row never becomes a stored row, and a missing seed set or script stops the load.
+- Topology: two reference tables, each category pointing at its type.
+- Naming: tables and seed sets named for types and categories.
+- Addressing: each row is found by its code key.
+- Isolation: reference rows load before any card data row.
+- Fallback: none at load, as description fallback is the client story's.
+- Provisioning: the loader applies the schema scripts in name order first.
+- Cut-over: the real service replaces the stub by address and credential alone.
+- Failures: bad rows are never stored, and a missing file stops the load.
 
-### Design Option A — seed data files loaded by the fixture loader
+### Design Option A — seed data files
 
-Seed rows live in two data files packaged beside the service. The fixture loader reads them, checks each row and writes the good ones, replacing rows by their code key. A description change is a file edit and a loader rerun, pointed at the edited copy when it lives outside the package.
+Two packaged seed files hold the rows. The loader checks them and writes good rows by code key, optionally from an outside copy.
 
 How it behaves:
 
-- The loader applies the schema scripts first, then reads the type seed set, then the category seed set.
-- Each row is checked for code shape, description length and a repeated key before any write.
-- Each rejected row is logged with its seed set, its position and the failed check, so it reads apart from a parent-key skip.
-- A category whose type has no stored type row is skipped and counted.
-- A good row is inserted, or updated in place when its code key exists with a different description.
-- A row missing from the seed set stays in the table, so no referenced row disappears.
-- The seed location defaults to the packaged copy and can point at an outside folder when the loader starts.
-- Each entity's counts reach the load report after its write commits.
+- Types load before categories, after the schema scripts.
+- Before any write, rows are checked for code shape, description length and repeated keys.
+- Each rejected row is logged with its seed set, position and failed check, unlike a parent-key skip.
+- Good rows are added, or rewritten when changed, never removed.
+- Seed values travel as bound values apart from the fixed statement text, so a quote or statement fragment is stored as written.
+- Each entity's counts reach the report after its commit.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Seed rows in data files (vs rows in schema scripts) | a description change needs no schema change | the file and the table can disagree until the next load |
-| 2 | Per-row checks in the loader (vs database constraints alone) | a bad row is skipped and counted | the length limit is stated in two places |
-| 3 | Replace by code key (vs empty and reload) | rows that other tables reference never vanish | a row dropped from a seed set stays until removed by hand |
+| 1 | Seed files (vs schema-script rows) | edits need no schema change | file and table differ until reload |
+| 2 | Loader row checks (vs constraints alone) | bad rows are skipped and counted | the length limit is stated twice |
+| 3 | Replace by code key (vs empty and reload) | referenced rows never vanish | dropped rows stay until removed by hand |
 
-Effort and risk: low effort and low risk once the loader core exists.
+Effort and risk: low, once the loader core exists.
 
-### Design Option B — seed rows in the schema scripts
+### Design Option B — schema-script rows
 
-The type and category rows are written as insert statements inside the schema script that creates the two tables. The rows reach the store when the loader applies the schema scripts, with no reference entity loader. A description change is an edit to that script, shipped with the next service build.
+The schema script also writes the rows. Each description change ships with a build.
 
 How it differs:
 
-- A description change is a schema-script edit shipped with a build.
-- The rows never pass through the loader, so they never appear in the load report.
-- One bad row aborts the whole script, and no reference row loads.
-- Code shape and description length rest on database constraints alone.
-- A changed row reaches an existing store only through a hand-written update.
+- Rows bypass the loader and never reach the load report.
+- Constraints alone guard each row, so one bad row aborts the script.
+- Values sit in the script text, so a quote must be escaped by hand.
+- A changed row reaches an existing store only by hand.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Rows in the schema script (vs seed data files) | no loader code for reference rows | every description change ships with a build |
-| 2 | Database constraints alone (vs per-row checks) | each rule lives in one place | a bad row aborts the script instead of a counted skip |
-| 3 | Rows written once with the schema (vs replace by code key) | no reload logic | a changed row needs a fresh store or a hand-written update |
+| 1 | Schema-script rows (vs seed files) | no reference loader code | each change ships with a build |
+| 2 | Constraints alone (vs row checks) | each rule lives once | one bad row aborts the script |
+| 3 | Rows written once (vs replace by key) | no reload logic | changed rows need a fresh store or hand fix |
 
-Effort and risk: lowest effort, with high risk to the data-change path.
+Effort and risk: lowest effort, high data-change risk.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: a description change stays a data load, and every rejected row shows in the load report.
-- Strongest argument against: the seed file and the table can disagree between loads.
-- Shared items that do not decide the choice: the two tables, their code keys, the codes themselves and the load order ahead of card data.
-- Flip conditions: the data owner delivers database exports instead of files, or reference rows must change in a store the loader never runs against.
+- Why: description changes stay data loads, and the load report shows every rejected row.
+- Strongest argument against: seed file and table can disagree between loads.
+- Shared items that do not decide the choice: the tables, keys, codes and load order.
+- Flip conditions: database exports replace files, or rows must change in a store the loader never reaches.
 
 ## Design Validation
 
@@ -186,50 +185,46 @@ Effort and risk: lowest effort, with high risk to the data-change path.
 
 Settled assumptions:
 
-- The seed content equals the mainframe type and category reference files, at 7 and 18 rows.
-- The sample descriptions run at most 29 characters, inside the 50-character limit.
-- The loader core supplies the parent-key skip, the per-entity counts and the load order.
-- Codes travel as quoted text in the seed files, so leading zeros survive.
+- Seed content equals the mainframe reference files: 7 and 18 rows, descriptions at most 29 characters.
+- The loader core supplies the parent-key skip, counts and load order.
+- Quoted codes keep their leading zeros.
 
 Open assumptions:
 
-- The form in which the reference entities appear in the load report. Open → settled by the report format of the loader core story.
+- How reference entities show in the load report. Open → settled by the loader core story.
 - Whether files stay the data owner's delivery form. Open → settled by the data owner's first change request.
-- Whether a rerun of the whole load job is safe for the card data entities. Open → settled by the card data fixture load story.
-- Who owns these tables and seed sets once the real reference data service replaces the stub. Open → settled by the data store ownership decision recorded in the plan's recommendations.
+- Whether a whole-job rerun is safe for card data. Open → settled by the card data load story.
+- Table ownership after the swap, under either option. Open → settled by the plan's ownership decision.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the loaders write every seed row and report the counts after commit |
-| AC2 | Holds | the loader keeps codes as text and trims each description before the write |
-| AC3 | Holds | the loader core's parent-key check skips the orphan category with no rejection line |
-| AC4 | Holds | the shape and repeated-key checks run on every row before the write and log each rejection |
-| AC5 | Holds | the length check runs on the trimmed description and logs each rejection |
-| AC6 | Holds | the loader reads its seed location at start and replaces rows by code key |
-| AC7 | Holds | the loader applies the scripts first and gives the reference loaders the lowest load orders |
+| AC1 | Holds | the loaders write all rows and report counts after commit |
+| AC2 | Holds | the loader binds each trimmed value and keeps codes as text |
+| AC3 | Holds | the parent-key skip counts the orphan with no rejection line |
+| AC4 | Holds | the shape and repeated-key checks skip and log each bad row |
+| AC5 | Holds | the length check follows trimming and logs each rejection |
+| AC6 | Holds | the loader reads its seed location at start and replaces by key |
+| AC7 | Holds | the loader runs scripts first and orders reference loaders lowest |
 
 ### Option B validation
 
 Settled assumptions:
 
-- The seed content equals the mainframe type and category reference files, at 7 and 18 rows.
-- The sample descriptions run at most 29 characters, inside the 50-character limit.
-- The loader applies the schema scripts in name order before any entity loads.
+- Seed content and description lengths are as in Option A.
 
 Open assumptions:
 
-- Whether the data owner accepts a service build for each description change. Open → settled by the data owner's first change request.
-- Whether the load report can count rows that a schema script wrote. Open → settled by the report format of the loader core story.
-- Who owns these tables and seed sets once the real reference data service replaces the stub. Open → settled by the data store ownership decision recorded in the plan's recommendations.
+- Whether the data owner accepts a build per change. Open → settled by the first change request.
+- Whether the report can count script-written rows. Open → settled by the loader core story.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Conditional | the row counts reach the load report only through an added counting step |
-| AC2 | Holds | the script carries each code and description as written |
-| AC3 | Breaks | a missing parent aborts the script instead of a counted skip |
-| AC4 | Breaks | no per-row check exists to skip and count a bad code |
-| AC5 | At risk | the column limit aborts the script on a long description with no trim or count |
-| AC6 | Breaks | a change needs a schema-script edit shipped with the build |
+| AC1 | Conditional | counts need an added counting step |
+| AC2 | At risk | a quote is stored as written only when escaped by hand |
+| AC3 | Breaks | a missing parent aborts the script with no counted skip |
+| AC4 | Breaks | no per-row check skips and counts a bad code |
+| AC5 | At risk | a long description aborts the script with no trim or count |
+| AC6 | Breaks | each change needs a script edit and a build |
 | AC7 | At risk | script order never reaches the load report |
 
 ## Metadata

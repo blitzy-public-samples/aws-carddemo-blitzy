@@ -127,11 +127,11 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A — the transaction read and the card-link read run side by side once access is allowed, and the card numbers are compared when both answer.
+Recommended: Option A — side-by-side transaction and card-link reads, then a card-number comparison.
 
-Rationale: the ownership rule needs both answers, so overlapping the two reads fits both first attempts into the budget left after authentication, and a retry runs only when its wait plus a full attempt still fits the time left.
+Rationale: ownership needs both answers, and overlapping the reads fits both first attempts into the post-authentication budget.
 
-- Rejected: Option B, reading the account's card links first and the transaction second, because two remote calls in a row share one budget, so on a cold path a slow card-link read can spend the time left and the transaction read then gets no attempt at all.
+- Rejected: Option B, card links first, because slow card links starve a cold-path transaction read.
 
 ```mermaid
 sequenceDiagram
@@ -161,66 +161,57 @@ sequenceDiagram
 
 ### Shared by both options
 
-- Topology: the detail service runs inside the service process after the access guard allows, and reaches the transaction service and the card data service through their existing clients.
-- Naming: a transaction belongs to the account when its card number equals one card number among the account's card links, as the card cross-reference record defines them.
-- Addressing: the account number and the transaction identifier come from the request, and the transaction service is asked by transaction identifier alone.
-- Isolation: no read happens before access is allowed, and the transaction cache entry carries no caller and no account, so the card comparison runs on every request, cache hits included.
-- Fallback: a transaction may come from a stale cache entry up to five minutes old, while the card links are never cached and never served stale.
+- Topology: the detail service follows the access guard and uses both services' existing clients.
+- Naming: a transaction belongs to the account that holds its card number.
+- Addressing: the transaction is fetched by identifier alone, the card links by account.
+- Isolation: no read precedes the access allow, and cache hits still compare cards.
+- Fallback: a stale transaction entry may answer, but card links are never cached and fail hard.
 - Provisioning: no new store, cache region, setting or deployed component.
-- Cut-over: real services replace the stubs by target address and credential source only.
-- Failures: an unknown transaction and a transaction on another account give one identical not-found answer, the unavailable status after retries gives 503, and the deadline-exceeded status at the cut-off gives 504.
+- Cut-over: real services replace the stubs by address and credential source only.
+- Failures: unknown and foreign transactions share one not-found answer, unavailable reads give 503 and deadline cut-offs 504.
 
 ### Design Option A — side-by-side reads, then compare
 
-The card-link read starts on the card data client's worker pool, and the transaction read runs on the request thread meanwhile, through the shared cache. The service waits for both, never past the remaining budget, marks the cut-off and applies the outcome rules in their fixed order. A matching card number returns the transaction with its data status and as-of time.
+The card-link read runs on its client's worker pool beside the cached transaction read. The service waits for both, then applies the ordered outcome rules.
 
 How it behaves:
 
-- On a cold path both reads start together, so the stage costs the slower read rather than the sum of both.
-- A fresh cached transaction skips the transaction call, while the card-link call still runs.
-- An unknown transaction gives the not-found answer even when the card-link read fails.
-- A card-link failure gives 503 or 504, even with the transaction already taken from the cache.
-- A transaction on another account gives the same not-found answer as an unknown one, with no transaction in it.
-- When both reads fail, the transaction read's status is the answer.
+- The stage costs the slower read, not both.
+- An unknown transaction answers not found despite a card-link failure.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Both reads side by side (vs card links first) | the stage costs one read's latency | a card-link call is spent on unknown transactions |
-| 2 | Card comparison inside the service (vs the transaction service naming the owner) | no change to either upstream interface | every request carries a card-link read |
-| 3 | One not-found answer for unknown and foreign transactions (vs a distinct answer) | a caller learns nothing about other accounts | the response alone cannot tell the two cases apart |
-| 4 | Transaction status first when both reads fail (vs card-link status first) | one fixed precedence for every test | the card-link failure is absent from the answer |
+| 1 | Side-by-side reads (vs card links first) | one read's latency per stage | a card-link call per unknown transaction |
+| 2 | Card comparison in the service (vs an upstream owner check) | unchanged upstream interfaces | a card-link read on every request |
+| 3 | One not-found answer for unknown and foreign transactions (vs distinct answers) | nothing leaks about other accounts | the two cases look identical |
+| 4 | Transaction status first on a double failure (vs card-link status first) | one fixed precedence | an unreported card-link failure |
 
-Effort and risk: one service, one result and one test, with the risk in the card data worker pool queueing the card-link read under load.
+Effort and risk: one service, result and test, with worker pool queueing as the risk.
 
 ### Design Option B — card links first, then the transaction
 
-The service reads the account's card links, waits for them, and only then reads the transaction through the shared cache. The card comparison is the same as in Option A, but a failed card-link read decides the answer first, so an unknown transaction then answers 503 or 504 rather than not found. An account with no card links ends in the not-found answer before any transaction read.
+The service reads the account's card links, then the transaction through the cache. A card-link failure decides the answer before any transaction read.
 
 How it differs:
 
-- The stage costs the sum of both reads.
-- On a cold path the two authentication calls can leave about 300 ms, which a slow card-link read can spend in full before the transaction read starts.
-- A fresh cached transaction still waits behind the card-link read.
-- An account with no card links skips the transaction call, so it answers not found even while the transaction service is failing.
-- A card-link failure ends the request before any transaction read.
-- An unknown transaction answers 503 or 504 when the card-link read fails, where Option A gives the not-found answer.
-- When both reads would fail, the card-link read's status is the answer.
+- The stage costs both reads.
+- A cached transaction still waits for card links.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Card links before the transaction (vs side by side) | an account with no card links skips the transaction call | the stage costs both latencies |
-| 2 | One read in flight at a time (vs two) | no worker pool use for this endpoint | no overlap absorbs a slow read |
-| 3 | Card-link status ahead of the transaction answer (vs the transaction answer first) | no transaction call follows a failed card-link read | an unknown transaction answers 503 or 504 instead of not found |
+| 1 | Card links first (vs side by side) | no transaction call for an account without card links | both latencies per stage |
+| 2 | One read in flight (vs two) | no worker pool use | no overlap for a slow read |
+| 3 | Card-link status first (vs the transaction answer first) | no transaction call after a card-link failure | 503 or 504 for an unknown transaction |
 
-Effort and risk: the same three files with no overlap of reads, with the risk in deadline-exceeded answers whenever both reads are slow.
+Effort and risk: the same files, with deadline-exceeded answers as the risk.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: only side-by-side reads keep the stage within one read's latency, so the worst cold path still gives each read its one full attempt, and a retry runs only when its wait plus a full attempt fits the time left.
-- Strongest argument against: every request spends a card-link read and a worker pool slot, even when the transaction turns out unknown.
-- Shared items that do not decide the choice: the ownership rule, the identical not-found answer, the fail-hard card-link read, the stale transaction fallback and the data status rules.
-- Flip conditions: the transaction service returns the owning account with each transaction, which removes the card-link read, or the card data client loses its worker pool, so the two reads can no longer overlap.
+- Why: only side-by-side reads leave each cold-path read a full attempt.
+- Strongest argument against: every request spends a card-link read and worker pool slot, unknown transactions included.
+- Shared items that do not decide the choice: the ownership rule, not-found answer, fail-hard card links and stale fallback.
+- Flip conditions: the transaction service names the owner, or the card data client loses its worker pool.
 
 ## Design Validation
 
@@ -228,67 +219,61 @@ Effort and risk: the same three files with no overlap of reads, with the risk in
 
 Settled assumptions:
 
-- The card data client returns its card-link read as a future on its own worker pool, and the transaction client blocks the request thread.
-- The card links are never cached, so each request compares against current ownership.
-- The transaction cache keeps an entry fresh for one minute and usable when stale for five minutes.
-- The access guard has allowed the request before the service runs.
-- A card number is a fixed sixteen-character value on both records.
+- The card data client offers its own worker pool.
+- A cache entry is fresh for one minute and usable stale for five.
 
 Open assumptions:
 
-- Open → whether the card data worker pool queues the card-link read under ten concurrent users, settled by the transaction detail service-level scenario.
-- Open → the share of detail requests answered from the transaction cache, settled by the stub request logs of the same scenario.
+- Open → whether card-link reads queue under ten concurrent users, settled by the transaction detail service-level scenario.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the service runs only after the guard allows access |
-| AC2 | Holds | both reads answer and the card numbers match |
-| AC3 | Holds | the card number is absent from the second account's card links |
-| AC4 | Holds | the not-found status ends the transaction read after one attempt |
-| AC5 | Holds | the overlapping reads cost the stage one latency |
-| AC6 | Holds | the call policy cuts each attempt to the remaining budget |
-| AC7 | Holds | the call policy applies the retry cap, the waits and the fit rule |
-| AC8 | Holds | with no usable entry the unavailable status stands |
-| AC9 | Holds | the transaction client serves the stale entry within five minutes |
-| AC10 | Holds | the card-link read fails hard whatever the transaction source |
-| AC11 | Holds | the fit rule stops after the second attempt |
-| AC12 | Holds | the deadline fixes the cut-off by 900 ms in every failure case |
-| AC13 | Holds | a fresh entry skips the transaction call while the card-link read still runs |
-| AC14 | Holds | the configuration refresh never reaches the data status or the budget |
-| AC15 | Holds | the guard rejects before the service runs |
-| AC16 | Holds | every failure passes through the standard error object with the receipt trace identifier |
+| AC1 | Holds | no read precedes the access allow |
+| AC2 | Holds | matching card numbers return the owned transaction |
+| AC3 | Holds | the second account lacks the transaction's card |
+| AC4 | Holds | not-found is never retried |
+| AC5 | Holds | the overlap costs one latency |
+| AC6 | Holds | the remaining budget cuts each attempt |
+| AC7 | Holds | the call policy governs every retry |
+| AC8 | Holds | no usable entry means 503 |
+| AC9 | Holds | the stale entry answers within five minutes |
+| AC10 | Holds | the card-link read fails hard despite the cache |
+| AC11 | Holds | a third attempt cannot fit |
+| AC12 | Holds | the deadline caps the cut-off at 900 ms |
+| AC13 | Holds | a fresh entry spares only the transaction call |
+| AC14 | Holds | configuration never shapes this outcome |
+| AC15 | Holds | the guard rejects before any read |
+| AC16 | Holds | every error carries the receipt trace identifier |
 
 ### Option B
 
 Settled assumptions:
 
-- The clients, cache periods and guard order are the same as in Option A.
+- Cache periods follow Option A, and guard order and uncached card links follow the shared block.
 - The card-link read finishes before the transaction read starts.
-- A failed card-link read decides the answer before any transaction read, so its status stands ahead of the transaction outcome.
-- The card links are never cached, so each request compares against current ownership.
 
 Open assumptions:
 
-- Open → how much of the stage budget the card-link read uses at the planning volume, settled by the stub request logs of the transaction detail service-level scenario.
+- Open → the card-link read's share of the stage budget, settled by the transaction detail service-level scenario.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the guard still runs first |
-| AC2 | Holds | both reads answer in turn and the card numbers match |
-| AC3 | Holds | the card comparison is unchanged |
-| AC4 | Holds | the not-found status still ends the transaction read after one attempt |
-| AC5 | Breaks | two reads of 200 ms in a row put the cut-off past 400 ms |
-| AC6 | Breaks | the failed card-link read ends the request before any transaction attempt |
-| AC7 | Holds | the call policy still applies the retry cap, the waits and the fit rule |
-| AC8 | Holds | with no usable entry the unavailable status still stands |
-| AC9 | Holds | the stale entry is served after the card-link read |
-| AC10 | Holds | the card-link failure ends the request before the transaction read |
-| AC11 | Conditional | the second transaction attempt fits only while the card-link read answers at once |
-| AC12 | Conditional | the cold-path case shows one transaction attempt only while the card-link read answers at once |
-| AC13 | Holds | the fresh entry is served after the card-link read |
-| AC14 | Holds | the configuration refresh never reaches the data status or the budget |
-| AC15 | Holds | the guard rejects before the service runs |
-| AC16 | Holds | every failure passes through the standard error object with the receipt trace identifier |
+| AC1 | Holds | the guard still precedes every read |
+| AC2 | Holds | matching card numbers still return the owned transaction |
+| AC3 | Holds | the second account still lacks the transaction's card |
+| AC4 | Holds | not-found is still never retried |
+| AC5 | Breaks | sequential reads take at least 400 ms |
+| AC6 | Breaks | no transaction attempt follows the card-link failure |
+| AC7 | Holds | the call policy still governs every retry |
+| AC8 | Holds | no usable entry still means 503 |
+| AC9 | Holds | the stale entry still answers |
+| AC10 | Holds | the card-link failure ends the request |
+| AC11 | Conditional | a second transaction attempt depends on an immediate card-link reply |
+| AC12 | Conditional | the cold-path attempt count depends on an immediate card-link reply |
+| AC13 | Holds | the fresh entry still answers |
+| AC14 | Holds | configuration still never shapes this outcome |
+| AC15 | Holds | the guard still rejects before any read |
+| AC16 | Holds | every error still carries the receipt trace identifier |
 
 ## Metadata
 

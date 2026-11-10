@@ -17,6 +17,7 @@ Parent epic: [CS-12 Auth Service Integration](../README.md)
 > Anchor basis: Use Cases · COACTVWC is the account view that this epic's access control protects. This story supplies the identities and per-account entitlements against which that access control is decided in every suite.
 >
 > Capability: a gRPC stub of `cardservicing.auth.v1.AuthService` answers `ValidateToken(token)` → `{subject, roles}` and `AuthorizeAccountAccess(subject, account_id)` → `{allowed}` only from a fixture identity file derived from the CardDemo user security seed: the DUSRSECJ job, whose records follow Data Layouts · CSUSR01Y with user ID X(08), first and last name X(20) each, an 8-character password X(08) and user type X(01), `A` for admin and `U` for user. The stub hosting of CS-11-002 runs it on a loopback port inside the test JVM, or alone in its own container in the Compose stack. Target paths:
+> > SCOPE-QUESTION (Resolved): Which document and anchor does "the CardDemo user security seed: the DUSRSECJ job" cite? Resolution: CardDemo user security seed · DUSRSECJ · user records, the ten user records that job loads, each laid out as Data Layouts · CSUSR01Y.
 >
 > - `card-servicing-service/src/main/resources/fixtures/auth-identities.yaml`:
 >   - One identity entry per CardDemo user: `subject` is the user ID, `roles` holds `REGULAR` for user type `U` and `ADMIN` for user type `A`, and `accounts` lists inclusive ranges of 11-digit account identifiers. Names and passwords are not carried, because no contract field returns them, so the file declares no password field.
@@ -42,6 +43,7 @@ Parent epic: [CS-12 Auth Service Integration](../README.md)
 > - Together these are the 4 files touched.
 >
 > Fixture identities, derived from the ten users of the CardDemo user security seed:
+> > SCOPE-QUESTION (Resolved): Which document and anchor does "the ten users of the CardDemo user security seed" cite? Resolution: CardDemo user security seed · DUSRSECJ · user records, the ten records `ADMIN001`–`ADMIN005` with user type `A` and `USER0001`–`USER0005` with user type `U`.
 >
 > - `USER0001`–`USER0005`, role `REGULAR`, each entitled to ten sample accounts in ID order and a 2,000-account slice of the synthetic range:
 >   - `USER0001`, token `fixture-token-user0001`: `00000000001`–`00000000010` and `10000000001`–`10000002000`.
@@ -54,6 +56,7 @@ Parent epic: [CS-12 Auth Service Integration](../README.md)
 > - `fixture-token-user0001` and its answer `{"subject":"USER0001","roles":["REGULAR"]}` are the contract example; every other token follows the same pattern.
 >
 > Admin fixture policy: the empty administrator entitlement is a chosen fixture policy, not an inherited rule. The CardDemo README states that the Admin users can only perform Admin functions. The main menu program (Use Cases · COMEN01C) blocks only regular users from admin-only options, the account view program (Use Cases · COACTVWC) carries no admin prohibition, and CardDemo has no user-to-account entitlement at all. The plan follows the README statement as the application-level rule and the least-privilege reading. Changing the policy is an edit to the fixture file with no code change.
+> > SCOPE-QUESTION (Resolved): Which document and anchor do "The CardDemo README states" and "the README statement" cite? Resolution: both cite CardDemo README · Application Details, the passage that names the two user types, Regular User and Admin User, and states that the Admin users can only perform Admin functions.
 >
 > Rules:
 >
@@ -93,6 +96,7 @@ Parent epic: [CS-12 Auth Service Integration](../README.md)
 > - AC5: The answers of AC1–AC4 are identical with the `x-api-key` metadata absent, empty and set to `wrong`, and with the forwarded `authorization` metadata absent.
 >   > SCOPE-QUESTION (Resolved): The AC4 answers are errors whose packed `ErrorObject` carries the `traceId` the stub generates per call, so two separate calls never share one and a literal comparison of those answers cannot pass. AC5 therefore reads as follows. For each call of AC1–AC3, whose answers are all `OK`, `allowed=false` included, the answers under every metadata variant AC5 names have the same status and equal response messages field for field. For each call of AC4, the answers under every variant have the same status, the one AC4 names for that input, and their packed `ErrorObject` values are equal in `code`, `message` and `details`. The `traceId` values are left out of the equality comparison: each is checked on its own as a 32-character lower-case hexadecimal value, the form the stub hosting of CS-11-002 issues at each call's receipt and the contract example `4bf92f3577b34da6a3ce929d0e0e4736` takes, and the values differ from one another, because each call receives its own. No `traceId` is reused or fixed in advance to make the comparison pass.
 > - AC6: `auth-identities.yaml` declares no password field, a case-sensitive search of it for the password value that the DUSRSECJ seed carries returns zero matches, and it carries the comment labelling the empty administrator entitlement as a fixture policy.
+>   > SCOPE-QUESTION (Resolved): Which document and anchor does "the DUSRSECJ seed" cite? Resolution: CardDemo user security seed · DUSRSECJ · user records, and the searched value is the one those records carry in Data Layouts · CSUSR01Y · SEC-USR-PWD; this story does not reproduce that value.
 > - AC7: Restarting the stub over a copy of `auth-identities.yaml` in which the sample range of `USER0001` ends at `00000000009` instead of `00000000010` makes `AuthorizeAccountAccess(USER0001, 00000000010)` return `allowed=false` and `AuthorizeAccountAccess(USER0001, 00000000009)` return `allowed=true`, with no Java source change.
 > - AC8: With a per-test failure-rate override of 1 (`STUB_FAILURE_RATE`), 10 of 10 calls to each operation return `UNAVAILABLE`. With a per-test latency override of 400 ms (`STUB_LATENCY_MS`), each answer arrives no earlier than 400 ms after the call. Every call adds exactly one request-log entry holding the full operation name, the outcome status name and the duration in ms, and neither the request log nor the stub's log output captured at DEBUG level contains any token value sent in the test.
 > > SCOPE-QUESTION (Resolved): Which criterion covers a fixture file with an invalid entry? None of AC1–AC8 does. Resolution: AC9–AC12 below, run in the stub unit suite. Each copy of `auth-identities.yaml` is built inside the test and differs from the packaged file only in the change named. "Fails the start" means the stub start raises an error, the harness reports no port for the stub and no call is answered. The error names the fixture resource and the failed rule and, for an entry, its list (`identities` or `tokens`) and its 1-based position in that list.
@@ -144,75 +148,72 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — identities and entitlement ranges held in one identity fixture file read at stub start.
+Recommended: Design Option A — identities and entitlement ranges in one identity fixture file read at stub start.
 
-Rationale: the access policy every suite depends on is data that a reviewer reads and changes in one place, with no code change and no deploy.
+Rationale: the access policy every suite relies on is data, edited in one place.
 
-- Rejected: Option B, entitlements computed from the user number by rules in code, because a policy change would need a code change and a deploy and the administrator policy would hide in code.
-- Rejected: a stub that accepts every token and allows every account, because denial and the unauthenticated status would then go untested.
+- Rejected: Option B, entitlements computed in code, because a policy change would need a code change and a deploy.
+- Rejected: an allow-everything stub, because denial and the unauthenticated status would go untested.
 
 Shared by both options:
 
-- Topology: the stub runs inside the test runtime on a loopback port, and alone in its own container in the compose stack.
-- Naming: the stub answers under the Auth service name of the contract, and each log entry carries the full operation name.
-- Addressing: the hosting harness hands out the loopback port, and the compose stack gives the container its address.
-- Isolation: the stub holds no store, no cache and no link to any other stub.
-- Fallback: none, since only failure injection makes a running stub fail and an invalid fixture file gets no partial load.
-- Provisioning: the identity fixture file is packaged with the service and read once at stub start.
-- Cut-over: the real Auth service replaces the stub by changing only the client address and credential source.
-- Failures: injected unavailable answers and latency come from the stub hosting story and land in the request log, and an invalid entry in the identity fixture file stops the stub at start before it answers any call.
+- Topology: the stub runs on a loopback port in the test runtime, or in its own container.
+- Naming: the contract's Auth service name.
+- Addressing: the hosting harness assigns the port, and the compose stack the container address.
+- Isolation: no store, no cache and no link to another stub.
+- Fallback: none; an invalid fixture file gets no partial load.
+- Provisioning: the fixture file ships with the service and is read once at start.
+- Cut-over: the real Auth service needs only a new client address and credential source.
+- Failures: injected failures and latency land in the request log.
 
 ### Design Option A
 
-Ten identities, their roles and their entitlement ranges sit in one identity fixture file that the stub reads once when it starts. Each token is listed with its owner and a state of valid, expired or malformed, so every token check is a lookup with no clock and no parser. An account request is allowed when the account number falls inside one of the owner's ranges, both ends included.
+One fixture file holds the ten identities, their roles and their entitlement ranges. Each token carries its owner and a valid, expired or malformed state, so no clock is needed. An account inside an owner's range, both ends included, is allowed.
 
 How it behaves:
 
 - A valid token returns its owner and role, and any other token returns the unauthenticated status.
-- An empty token, a token longer than 8,192 characters, an empty owner, or an account number that is not eleven digits or is all zeros returns the invalid argument status.
+- An empty token, a token longer than 8,192 characters, an empty owner, or a malformed or all-zeros account number returns the invalid argument status.
 - A denial is an ordinary answer, never an error.
-- The service key header and the forwarded caller token are ignored, and the stub never re-checks access.
-- A change to a range or to the administrator policy is an edit to the file followed by a stub restart.
-- The whole file is checked at start, and any invalid entry stops the start before the stub answers any call, with an error that names the entry and the broken rule but never a token value.
-- The checks leave policy choices to the file, so an administrator may hold ranges, ranges may overlap and an identity may hold none.
+- The stub ignores the service key and the caller token and never re-checks access.
+- An invalid entry stops the start with an error naming the entry and the rule, never a token value.
+- Administrator ranges, overlapping ranges and identities with no range pass the checks.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Inclusive account ranges (vs per-account lists) | 2,010 entitled accounts per user fit in two lines | a range edit can silently overlap a neighbouring range |
-| 2 | Empty administrator entitlement (vs full access for administrators) | the least-privilege reading of the source user rule holds | no administrator test path reaches account data |
-| 3 | Fixed fixture tokens with listed states (vs signed tokens with expiry times) | every answer is the same on every run | token parsing stays unexercised until the real swap |
-| 4 | One file read at start (vs a read on every call) | answers never change during a test | a file change needs a stub restart |
-| 5 | Whole-file check that stops the start (vs skipping invalid entries) | no call is ever answered from invalid fixture data | one bad entry stops every suite that starts the stub |
+| 1 | Inclusive account ranges (vs per-account lists) | 2,010 accounts per user fit in two lines | a range edit can silently overlap a neighbour |
+| 2 | Empty administrator entitlement (vs full administrator access) | the least-privilege reading of the source rule holds | no administrator test reaches account data |
+| 3 | Fixed tokens with listed states (vs signed expiring tokens) | identical answers on every run | token parsing stays untested until the real swap |
+| 4 | One read at start (vs a read per call) | answers never change during a test | a file change needs a restart |
+| 5 | Whole-file startup validation (vs skipping invalid entries) | no call is ever answered from invalid fixture data | one bad entry blocks every dependent suite |
 
-Effort and risk: one fixture file, one stub service, one registration and one test class, with the risk in token values drifting from the contract examples.
+Effort and risk: four files, with the risk in token values drifting from the contract examples.
 
 ### Design Option B
 
-Entitlements are computed from the number at the end of each user name by rules in code, for example ten sample accounts per regular user counted from the user number. The identity fixture file keeps only tokens and roles, and the administrator rule is a branch in the code. Answers match Option A for the packaged users, but every policy change is a code change.
+Code computes each regular user's ranges from its user number, for example ten sample accounts counted from it. The fixture file keeps only tokens and roles. Answers match Option A for the packaged users.
 
 How it differs:
 
-- The entitlement of a regular user follows from its user number by arithmetic.
-- The administrator policy is a code branch rather than an entry in the file.
-- A range change needs a code change, a new build and a deploy of the stub.
-- A reviewer reads the policy in code rather than in the identity fixture file.
-- The start check covers names, roles, token states and fields only, since the file holds no range to check.
+- The administrator policy is a code branch, not a file entry.
+- A range change needs a code change, a build and a deploy.
+- The start check covers names, roles, token states and fields only.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Ranges computed from the user number (vs ranges listed in the file) | the identity fixture file stays short | a policy change needs a code change and a deploy |
-| 2 | Administrator rule as a code branch (vs an empty entitlement in the file) | the rule covers any new administrator | the fixture policy is hidden from data reviewers |
-| 3 | Tokens and roles still listed in the file (vs tokens derived in code) | token values stay visible beside the contract examples | identity data is split across file and code |
+| 1 | Ranges computed from the user number (vs listed in the file) | a shorter fixture file | a policy change needs a code change and a deploy |
+| 2 | Administrator rule as a code branch (vs an empty file entitlement) | the rule covers any new administrator | the policy is hidden from data reviewers |
+| 3 | Tokens and roles still in the file (vs derived in code) | token values sit beside the contract examples | identity data splits across file and code |
 
-Effort and risk: a shorter file and one rule set in code, with the risk in a policy edit that silently needs a release.
+Effort and risk: a shorter file and a code rule set, with the risk of policy edits silently needing a release.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: the fixture policy is data, so every suite reads its users and ranges from one file and a policy change needs no code change.
-- Strongest argument against: token values in the identity fixture file and in the contract examples are copied by hand and can drift apart.
-- Shared items that do not decide the choice: the loopback and container hosting, the ignored service key header, the injected failures, the request log, the start check of names, roles and tokens, and the address-only cut-over.
-- Flip conditions: entitlements must follow a computed rule over far more accounts than a file can list, or the real identity provider defines entitlements by rule.
+- Why: a policy change is a data edit, with no code change.
+- Strongest argument against: token values in the file and the contract examples are copied by hand and can drift.
+- Shared items that do not decide the choice: hosting, the ignored service key, injected failures, the request log, token checks and the address-only cut-over.
+- Flip conditions: entitlements must follow a rule over far more accounts than a file lists, or the real identity provider sets them by rule.
 
 ## Design Validation
 
@@ -220,59 +221,57 @@ Effort and risk: a shorter file and one rule set in code, with the risk in a pol
 
 Settled assumptions:
 
-- The ten users come from the mainframe security seed, five administrators and five regular users.
-- The mainframe source application holds no user-to-account entitlement source, so the ranges are a fixture policy.
-- The five synthetic slices of 2,000 accounts are disjoint and together cover the synthetic range.
-- The contract names the invalid argument status for an empty token, for a token longer than 8,192 characters and for a malformed account number.
-- The packaged identity fixture file passes every start check.
+- The ten users, five administrators and five regular users, come from the mainframe security seed.
+- The source application holds no user-to-account entitlement, so the ranges are a fixture policy.
+- The five 2,000-account synthetic slices are disjoint and cover the synthetic range.
+- The contract names the invalid argument status for an empty token, a token longer than 8,192 characters and a malformed account number.
+- The packaged fixture file passes every start check.
 
 Open assumptions:
 
-- Open → the contract check and the stub unit suite settle that the token values in the identity fixture file match the contract examples.
-- Open → a requirements entry from the requirements author settles whether the empty administrator entitlement stays the policy.
+- Open → the contract check and the stub unit suite settle that file tokens match the contract examples.
+- Open → a requirements entry settles whether the empty administrator entitlement stays.
 
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Holds | each range check includes both ends |
-| AC2 | Holds | the administrator entries list no range |
-| AC3 | Conditional | the token values in the file must equal the contract example |
-| AC4 | Holds | token states and input checks are lookups with no clock |
-| AC5 | Holds | the stub reads neither the service key header nor the caller token |
-| AC6 | Holds | the file carries no password field |
-| AC7 | Holds | ranges are data read at stub start |
-| AC8 | Holds | injection and the request log come from the stub hosting story |
-| AC9 | Holds | each range end is checked as eleven digits of text before any answer |
+| AC2 | Holds | administrator entries list no range |
+| AC3 | Conditional | file tokens must equal the contract example |
+| AC4 | Holds | token states and input checks are lookups |
+| AC5 | Holds | the stub reads neither service key nor caller token |
+| AC6 | Holds | the file has no password field |
+| AC7 | Holds | ranges are data read at start |
+| AC8 | Holds | stub hosting supplies injection and the request log |
+| AC9 | Holds | each range end is checked as eleven digits of text |
 | AC10 | Holds | repeated names, unknown roles and unknown token states stop the start |
-| AC11 | Conditional | the syntax error must be reported by line and column without the parser excerpt |
-| AC12 | Holds | the checks leave range placement and overlap to the file |
+| AC11 | Conditional | the syntax error must give line and column without the parser excerpt |
+| AC12 | Holds | range placement and overlap stay with the file |
 
 ### Validation of Option B
 
 Settled assumptions:
 
-- The ten users come from the mainframe security seed, five administrators and five regular users.
-- The mainframe source application holds no user-to-account entitlement source.
-- The five synthetic slices of 2,000 accounts are disjoint.
+- The ten seed users, the missing entitlement source and the disjoint synthetic slices are settled as for Option A.
 
 Open assumptions:
 
-- Open → the stub unit suite settles that the computed ranges equal the listed ranges for all five regular users.
-- Open → the contract check settles that the token values in the identity fixture file match the contract examples.
+- Open → the stub unit suite settles that computed ranges equal the listed ranges for every regular user.
+- Open → the contract check settles that file tokens match the contract examples.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Conditional | the arithmetic must reproduce both range ends for every regular user |
+| AC1 | Conditional | the arithmetic must reproduce every range end |
 | AC2 | Holds | the administrator branch denies every account |
-| AC3 | Conditional | the token values in the file must equal the contract example |
+| AC3 | Conditional | file tokens must equal the contract example |
 | AC4 | Holds | token states and input checks are unchanged |
-| AC5 | Holds | the stub reads neither the service key header nor the caller token |
-| AC6 | Holds | the file carries no password field |
+| AC5 | Holds | the stub reads neither service key nor caller token |
+| AC6 | Holds | the file has no password field |
 | AC7 | Breaks | a range change needs a code change and a deploy |
-| AC8 | Holds | injection and the request log come from the stub hosting story |
-| AC9 | Breaks | the file holds no range for a changed copy to break |
-| AC10 | Holds | names, roles and token states are still checked at start |
-| AC11 | Conditional | the syntax error must be reported by line and column without the parser excerpt |
-| AC12 | Breaks | an administrator range needs a change to the code branch |
+| AC8 | Holds | stub hosting supplies injection and the request log |
+| AC9 | Breaks | the file holds no range to break |
+| AC10 | Holds | names, roles and token states are still checked |
+| AC11 | Conditional | the syntax error must give line and column without the parser excerpt |
+| AC12 | Breaks | an administrator range needs a code change |
 
 ## Metadata
 

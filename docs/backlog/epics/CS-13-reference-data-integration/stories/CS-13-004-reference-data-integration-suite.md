@@ -68,6 +68,7 @@ Parent epic: [CS-13 Reference Data Integration](../README.md)
 >
 > - AC4: Retry cap: no scenario logs more than 3 calls per operation (`UPSTREAM_MAX_RETRIES` = 2), and only `UNAVAILABLE` and `DEADLINE_EXCEEDED` are retried. Within one test request, every second or third entry of an operation follows an entry with outcome `UNAVAILABLE` or `CANCELLED`, the stub-side record of a client `DEADLINE_EXCEEDED`, and no entry follows an entry with outcome `OK`.
 > - AC5: Reload: after the suite reruns the reference entity loaders over the changed seed copy, the next stub call returns `Refund issued` for type `05` and the other 6 types unchanged, with no stub restart. On the empty cache that call is the client's single `ListTransactionTypes` read: `transactionTypes` returns `Refund issued` for `05` with status `FRESH` from exactly 1 logged call, and the Redis container then holds `cs:v1:reftypes` with a Redis TTL above 86,000 s and at most 86,400 s.
+>   > SCOPE-QUESTION (Resolved): The criterion also covers, in a separate test, a reload of seed values that carry quotes and statement fragments, the container-backed literal-storage proof that CS-13-001 AC2 leaves to this suite. The scenario settings file also holds those CS-13-001 AC2 seed changes: type `05` changed from `Refund` to `Customer's refund`, an added type row `'9` and an added category row `'9`/`0001`, each added row with description `x'); DROP TABLE account;--`. The suite writes a copy of both packaged seed files carrying them into its JUnit `@TempDir` folder, as for the AC5 change, records the table and column names that `information_schema.columns` lists for the container's `public` schema, `account` among them, and the row count of `account`, then reruns the reference entity loaders with the seed location `file:<temp folder>/`. On the empty cache, `transactionTypes` and then `transactionCategories`, each under its own test request with a fresh 900 ms deadline, each log exactly 1 call with outcome `OK` and return status `FRESH`, and the stub's answers carry the values as written: `typeDescription` gives `Customer's refund` for `05` and `x'); DROP TABLE account;--` for `'9`, and `categoryDescription` gives `x'); DROP TABLE account;--` for `'9`/`0001`. Read through the context's JPA `EntityManager`, `transaction_type` and `transaction_category` then hold exactly 8 and 19 rows, those three values character for character and every other row equal to its packaged seed row, while the table and column names in `information_schema.columns` and the row count of `account` equal those recorded before the rerun. Whether the test passes or fails, an after-test step then removes the added `'9`/`0001` category row and then the `'9` type row through the same `EntityManager`, so the next test's reload again starts from exactly 7 and 18 rows.
 > - AC6: Fresh hit: with a fresh Redis entry for each list, written by the suite with a `cachedAt` 60 s old and holding the seeded rows, the client returns status `FRESH`, `usable` true, `asOf` equal to each entry's `cachedAt`, the 7 type descriptions and the 18 category descriptions, and the stub request log records zero calls.
 >   > SCOPE-QUESTION (Resolved): The criterion also covers a cold-cache read in a separate test, so the hit proof above stays its own test. With an empty Redis, the packaged seed rows loaded and the stub at latency 0 and failure rate 0, the fresh-hit overrides of the scenario settings file, `transactionTypes` and then `transactionCategories` each run under their own test request with a fresh 900 ms deadline, and each operation logs exactly 1 call with outcome `OK`. Each result has status `FRESH`, `usable` true and `asOf` equal to the written entry's `cachedAt`, which lies between the call's start and its return. `typeDescription` answers each of the 7 packaged type rows and `categoryDescription` each of the 18 packaged category rows with its seeded description, from `01` Purchase to `07` Adjustment and from `01`/`0001` Regular Sales Draft to `07`/`0001` Sales draft credit adjustment. The Redis container then holds `cs:v1:reftypes` and `cs:v1:refcats`, each with a Redis TTL above 86,000 s and at most 86,400 s. Decoded under the CS-11-004 envelope, the first holds the 7 type rows ordered by type code and the second the 18 category rows ordered by type code, then category code, each code and description equal to the rows the suite reads from `transaction_type` and `transaction_category` in the PostgreSQL container through the context's JPA `EntityManager`, which hold exactly 7 and 18 rows. This is the container-backed read of both lists behind CS-13-003 AC2 (one call on a miss, the whole list written, `asOf` and `cachedAt` equal to the read time, a Redis expiry of 86,400 s), CS-13-002 AC1 and AC2 (the ordering) and the seed proof CS-13-001 leaves to this suite.
 > - AC7: Stale (degrade): with an entry for each list past the 3,600 s fresh TTL but within the 86,400 s max stale age, its `cachedAt` 7,200 s old, and a failing stub at failure rate 1.0, each operation logs exactly 3 calls and the client returns the entry's descriptions with `usable` true, status `STALE` and `asOf` equal to the entry's `cachedAt`. The entry is not rewritten: its `cachedAt` is unchanged afterwards.
@@ -99,7 +100,7 @@ Completed during implementation.
 ## 6. Test Plan
 
 - Unit: Not applicable — the story adds integration test code only. Threshold when it applies: `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass with ≥80% line coverage per module, unchanged by this story because the `integration`-tagged suite is excluded from the `test` task.
-- Integration: Applies. Command `./gradlew :card-servicing-service:integrationTest`; all pass. This is the one suite for the CS-13 external epic, covering a stub exception (AC2), latency above `UPSTREAM_TIMEOUT_MS` (AC3) and the `UPSTREAM_MAX_RETRIES` cap (AC4), with `cutoffMs` ≤ 900 and a client-measured response below 1,000 ms (AC3, AC8), against Testcontainers `postgres:16.6` and `redis:7.4.2` with the stubs on loopback ports inside the test JVM. It bounds attempt spacing by the caller-measured time (AC2, AC3), with each single backoff proven by the test-clock cases of CS-11-003, and proves a successful cold-cache read of both lists from the PostgreSQL container, one `OK` call each with the ordered 7 and 18 rows written back to the cache (AC6).
+- Integration: Applies. Command `./gradlew :card-servicing-service:integrationTest`; all pass. This is the one suite for the CS-13 external epic, covering a stub exception (AC2), latency above `UPSTREAM_TIMEOUT_MS` (AC3) and the `UPSTREAM_MAX_RETRIES` cap (AC4), with `cutoffMs` ≤ 900 and a client-measured response below 1,000 ms (AC3, AC8), against Testcontainers `postgres:16.6` and `redis:7.4.2` with the stubs on loopback ports inside the test JVM. It bounds attempt spacing by the caller-measured time (AC2, AC3), with each single backoff proven by the test-clock cases of CS-11-003, and proves a successful cold-cache read of both lists from the PostgreSQL container, one `OK` call each with the ordered 7 and 18 rows written back to the cache (AC6). It reloads seed values carrying an apostrophe, the quote-bearing type code `'9` and `x'); DROP TABLE account;--`, and asserts that each is stored and returned as written while the other rows, the container's tables and columns and the `account` row count stay unchanged (AC5).
 - Performance: Not applicable — no UI-facing endpoint is exercised; it applies to balance-retrieval and drill-down stories. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
   - Pass: p50, p95 and p99 below 1,000 ms over successful requests, with failure injection off, at 10 users × 100 sequential calls, 100,000 category balances and 1,000,000 transactions.
@@ -111,69 +112,64 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A — shared containers per test process, with cache entries cleared and seed rows reloaded before each test.
+Recommended: Option A — shared containers per test process, reset before each test.
 
-Rationale: one container pair per test process keeps the integration stage short, while per-test cleanup gives each scenario a known start.
+Rationale: shared containers keep the integration stage short, while per-test cleanup gives each scenario a known start.
 
-- Rejected: Option B, fresh containers per test class, which buys stronger isolation at the cost of a container start per class.
-- Rejected: the stub over the in-memory seed rows, because the reload scenario needs the stub reading the relational container.
+- Rejected: Option B, fresh containers per test class, whose stronger isolation costs a container start per class.
+- Rejected: the stub over in-memory seed rows, because the reload scenario needs the relational container.
 
 ### Shared by both options
 
-- Topology: one relational container and one cache container, with the stub in the test process on a loopback port.
-- Naming: the suite carries the integration tag and runs only in the integration stage.
-- Addressing: the client points at the loopback stub address.
+- Topology: one relational and one cache container, with the stub on a loopback port in the test process.
+- Naming: the integration tag confines the suite to the integration stage.
+- Addressing: the client targets the loopback stub.
 - Isolation: every test starts from the seed rows and an empty cache.
-- Fallback: the suite asserts the client's fallback and provides none of its own.
-- Provisioning: both containers run the pinned images that the container base story names.
-- Cut-over: the real service replaces the stub by a change of the client's target address and credential source, and a suite against it needs its own seed data, fault injection and call observation, because the seed reload, the injected faults and the request log belong to the local stub.
-- Failures: injected latency and failure rate set per test, read back from the request log.
+- Fallback: the suite asserts the client's fallback and adds none.
+- Provisioning: both containers run the container base story's pinned images.
+- Cut-over: the real service replaces the stub through the client's target address and credential source, and a suite against it needs its own seeds, faults and call observation.
+- Failures: per-test injected latency and failure rate, read from the request log.
 
 ### Design Option A — shared containers per test process
 
-The suite reuses the relational and cache containers that the container base starts once per test process. Before each test the cache is emptied and the packaged seed rows are reloaded, so a description changed by the reload scenario never reaches the next test. Each scenario sets its injected latency and failure rate, drives the client under a fresh request budget and reads the stub's request log.
+The suite reuses the containers the container base starts once per test process. Before each test the cache is emptied and the seed rows reloaded.
 
 How it behaves:
 
-- The first integration suite of the process pays the container start, and this suite starts no container of its own.
-- The seed reload before each test puts back any description an earlier scenario changed.
-- The stub reads the relational container on every call, so a reload is visible on the next call.
-- Each scenario writes the cache entries it needs before it drives the client.
-- Call counts come from the stub's request log, and timings come from the caller's own clock.
+- The stub reads the relational container on every call, so a reload shows on the next call.
+- Each scenario sets its faults and cache entries, then drives the client under a fresh request budget.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Shared containers per test process (vs fresh containers per test class) | one container start serves every integration suite | a missed cleanup carries state into the next test |
-| 2 | Cleanup before each test (vs cleanup after each test) | a test that fails midway still leaves the next test a known start | the last test of a run leaves its rows and entries behind |
-| 3 | Request-log counts (vs timing-only assertions) | attempt counts hold on a loaded runner | the assertions depend on the request-log format |
+| 1 | Shared containers per test process (vs per test class) | one start serves every integration suite | a missed cleanup leaks state |
+| 2 | Cleanup before each test (vs after) | a failed test still leaves a known start | the last test leaves its rows and entries behind |
+| 3 | Request-log counts (vs timing-only assertions) | attempt counts hold on a loaded runner | assertions depend on the request-log format |
 
-Effort and risk: one suite class and one scenario settings file, with the risk in timing bounds on a loaded runner.
+Effort and risk: two files, with timing bounds on a loaded runner as the risk.
 
 ### Design Option B — fresh containers per test class
 
-The suite declares its own relational and cache container pair, started before its first test and removed after its last. Each test class therefore begins on empty containers, and the seed rows load once per class. The scenarios, the injection settings and the request-log reads stay as in Option A.
+The suite starts its own containers before its first test and removes them after its last. Each class's first timing scenario therefore meets cold containers.
 
 How it differs:
 
-- Every test class pays a container start, which lengthens the integration stage.
-- The suite carries a container lifecycle of its own beside the shared base.
-- No state crosses a class boundary, but tests within one class still need a cleanup step.
-- The first timing scenario of each class meets cold containers.
+- The suite owns a container lifecycle beside the shared base.
+- Tests within a class still need cleanup.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Containers per test class (vs shared containers per test process) | no state crosses a class boundary | each class pays a container start |
-| 2 | Seed rows loaded once per class (vs reloaded before each test) | fewer loads per run | the reload scenario needs its own restore step |
+| 1 | Containers per test class (vs per test process) | no state crosses a class boundary | each class pays a container start |
+| 2 | Seed rows loaded once per class (vs per test) | fewer loads per run | the reload scenario needs a restore step |
 
-Effort and risk: similar effort with a container lifecycle in the suite, with the risk of a longer integration stage.
+Effort and risk: similar effort plus a container lifecycle, with a longer stage as the risk.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: the suite reuses containers that already run, so it adds no container start to the stage while each test still starts from known rows and an empty cache.
-- Strongest argument against: state left by one test can leak into the next if cleanup is missed.
-- Shared items that do not decide the choice: the scenarios, the injection settings, the request log and the pinned images.
-- Flip conditions: leaked state between test classes causes unstable outcomes in repeated stage runs.
+- Why: it adds no container start and still resets every test.
+- Strongest argument against: a missed cleanup leaks state into the next test.
+- Shared items that do not decide the choice: scenarios, injection settings, request log and pinned images.
+- Flip conditions: leaked state between test classes makes repeated stage runs unstable.
 
 ## Design Validation
 
@@ -181,55 +177,50 @@ Effort and risk: similar effort with a container lifecycle in the suite, with th
 
 Settled assumptions:
 
-- The container base supplies the pinned images and empties the cache before each test.
-- The stub hosting story supplies the per-test overrides and the request log.
-- The retry arithmetic gives 3 calls on immediate failure and 2 attempts at 400 ms latency.
-- Each backoff gap is proven on the call policy's test clock, so the suite bounds only the caller-measured total.
-- The stub sorts both lists by code itself, so a written entry holds its rows in code order.
+- The container base and stub hosting stories supply the pinned images, cache emptying, overrides and request log.
+- Immediate failure gives 3 calls and 400 ms latency gives 2 attempts.
+- The suite bounds caller-measured totals and request-log counts, while the call policy's test clock proves each backoff gap.
+- The stub sorts both lists by code, so a cold read from the relational container caches them in code order.
 - The seed reload replaces rows by code and never deletes one.
-- The stub reads the relational store on every call and keeps no copy between calls.
 
 Open assumptions:
 
-- Container start time stays within the stage budget. Open → settled by the first integration stage run.
-- Timing jitter on shared runners leaves the attempt counts unchanged. Open → settled by repeated stage runs.
+- Container starts fit the stage budget. Open → settled by the first stage run.
+- Runner timing jitter leaves attempt counts unchanged. Open → settled by repeated stage runs.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the inherited integration tag routes the suite to the integration task alone |
-| AC2 | Holds | immediate unavailable answers leave both retries and their backoffs inside the caller-measured time |
-| AC3 | Holds | the caller-measured time spans two timed-out attempts and one backoff, leaving no room for a second retry |
-| AC4 | Holds | the call policy caps retries at two and retries only the two retryable statuses |
-| AC5 | Holds | the reload commits before the suite makes the next call |
-| AC6 | Holds | the client calls the stub once per list on a miss and never on a fresh hit |
-| AC7 | Holds | the cache falls back to an entry within the max stale age after the last failed attempt |
-| AC8 | Holds | every failure path reaches its cut-off well before the response bound |
+| AC1 | Holds | the inherited tag confines the suite to the integration task |
+| AC2 | Holds | the caller-measured time spans both retries and their backoffs |
+| AC3 | Holds | two timed-out attempts and one backoff leave no room for another retry |
+| AC4 | Holds | the call policy retries only retryable statuses, at most twice |
+| AC5 | Holds | the reload commits before the next call |
+| AC6 | Holds | the client calls the stub only on a miss, once per list |
+| AC7 | Holds | the cache falls back to an entry within the max stale age |
+| AC8 | Holds | every cut-off precedes the response bound |
 
 ### Option B validation
 
 Settled assumptions:
 
-- The suite's containers run the pinned images that the container base story names.
-- The stub hosting story supplies the per-test overrides and the request log.
-- The retry arithmetic gives 3 calls on immediate failure and 2 attempts at 400 ms latency.
-- Each backoff gap is proven on the call policy's test clock, so the suite bounds only the caller-measured total.
-- The stub sorts both lists by code itself, so a written entry holds its rows in code order.
+- The suite's own containers run the pinned images.
+- Option A's assumptions on hosting, retry counts, backoff gaps and code order hold.
 
 Open assumptions:
 
-- Per-class container starts fit the stage budget. Open → settled by the first integration stage run.
-- Cold containers leave the first timing scenario of a class unaffected. Open → settled by repeated stage runs.
+- Per-class container starts fit the stage budget. Open → settled by the first stage run.
+- Cold containers leave each class's first timing scenario unaffected. Open → settled by repeated stage runs.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the integration tag routes the suite to the integration task alone |
-| AC2 | Holds | immediate unavailable answers leave both retries and their backoffs inside the caller-measured time |
+| AC1 | Holds | the integration tag confines the suite to the integration task |
+| AC2 | Holds | as in Option A |
 | AC3 | Conditional | cold container timings may skew attempt counts |
-| AC4 | Holds | the call policy caps retries at two and retries only the two retryable statuses |
-| AC5 | Holds | the reload commits before the suite makes the next call |
-| AC6 | Holds | the client calls the stub once per list on a miss and never on a fresh hit |
-| AC7 | Holds | the cache falls back to an entry within the max stale age after the last failed attempt |
-| AC8 | Conditional | cold container timings may push a first response toward the bound |
+| AC4 | Holds | as in Option A |
+| AC5 | Holds | as in Option A |
+| AC6 | Holds | as in Option A |
+| AC7 | Holds | as in Option A |
+| AC8 | Conditional | cold containers may push a first response toward the bound |
 
 ## Metadata
 

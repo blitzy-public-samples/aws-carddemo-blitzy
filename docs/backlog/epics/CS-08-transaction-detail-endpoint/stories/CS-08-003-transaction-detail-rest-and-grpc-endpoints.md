@@ -134,71 +134,66 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A — thin HTTP and remote procedure adapters over one shared transaction detail retrieval call.
+Recommended: Option A — thin adapters over one transaction detail retrieval.
 
-Rationale: one retrieval result rendered twice is the only way both interfaces return the same transaction, the same data status and the same not-found answer for a card outside the account.
+Rationale: one result rendered twice gives both interfaces the same transaction, data status and not-found answer.
 
-- Rejected: Option B, a separate retrieval per interface, because it duplicates the ownership check and lets the two interfaces disagree.
+- Rejected: Option B, a retrieval per interface, because it duplicates the ownership check.
 
 ### Shared by both options
 
-- Topology: an HTTP controller and a remote procedure method in the one service process, each behind the receipt stage and the access guard.
-- Naming: field names follow the interface description, camel case on the HTTP interface and lower case with underscores on the remote procedure interface.
-- Addressing: the account number and the transaction identifier arrive in the web path or in the remote procedure request message.
-- Isolation: caller identity comes only from the bearer token the guard validated, and an inbound service key is ignored.
-- Fallback: none beyond the retrieval outcomes, so a stale transaction returns with its data status and every other failure returns as an error.
-- Provisioning: nothing new is provisioned, because the existing remote procedure server and web layer host both adapters.
-- Cut-over: the deferred user interface binds to the web interface unchanged, and swapping a stub for its real service changes nothing in either adapter.
-- Failures: each failure maps to one status pair through the shared error mapping, with the trace identifier issued at receipt.
+- Topology: an HTTP controller and a remote procedure method in one service, behind the receipt stage and guard.
+- Naming: contract field names, camel case over HTTP and underscored over remote procedure calls.
+- Addressing: the account number and transaction identifier arrive in the web path or request message.
+- Isolation: identity comes only from the guard-validated bearer token, never an inbound service key.
+- Fallback: none in the adapters; a stale transaction returns with its data status.
+- Provisioning: none; the existing web and remote procedure servers host both adapters.
+- Cut-over: the deferred user interface binds unchanged; a stub swap changes neither adapter.
+- Failures: the shared error mapping gives each failure one status pair and the receipt trace identifier.
 
 ### Design Option A — thin adapters over one retrieval
 
-The HTTP controller and the remote procedure method each take the account number, the transaction identifier, the caller's token and the request deadline, and make one call to the shared transaction detail retrieval. Each renders the one result it returns in its own field casing, with amounts and times kept as the contract strings. Failures leave the adapters as typed failures for the shared error handler and interceptor.
+Each adapter passes the account number, transaction identifier, token and deadline to one shared retrieval, then renders all thirteen fields in its own casing. Failures pass unchanged to the shared error handler and interceptor.
 
 How it behaves:
 
-- A request rejected at receipt or by the guard never reaches either adapter.
-- The retrieval reads the transaction and the account's cards, checks ownership and fixes the outcome before the adapter renders.
-- The HTTP controller copies the data status from the rendered body into the data status header.
-- The remote procedure method returns the message rendering of the same result, with all thirteen transaction fields set.
-- An unknown transaction and a card outside the account leave both adapters as the same not-found failure.
-- Neither adapter reads the cache or any upstream, so a cold request makes exactly one transaction read and one card read.
+- Only the retrieval reads the transaction and the account's cards, checks ownership and decides not-found.
+- The HTTP controller copies the body's data status into its header.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Both interfaces call one retrieval (vs one retrieval each) | identical values on both interfaces | one shared change point |
-| 2 | Status header copied from the body status (vs computed separately) | header and body cannot disagree | the header waits for body rendering |
-| 3 | Errors raised to the shared handler and interceptor (vs mapped inside each adapter) | one error shape across both interfaces | adapters cannot tailor messages |
-| 4 | Remote procedure method added to the existing service class (vs a second service class) | one registration per service name | that class grows with every endpoint |
+| 1 | One retrieval for both interfaces (vs one each) | identical values | one shared change point |
+| 2 | Status header copied from the body (vs computed separately) | no possible mismatch | the header waits for the body |
+| 3 | Errors raised to the shared mapping (vs mapped per adapter) | one error shape | no adapter-specific messages |
+| 4 | Remote procedure method added to the existing service class (vs a second class) | one registration per service | a class growing with each endpoint |
 
-Effort and risk: one new controller, one added method and two test classes, with the risk in the shared service class that the other endpoint stories also edit.
+Effort and risk: one controller, one method and two test classes, with risk in the service class other endpoint stories edit.
 
 ### Design Option B — separate retrieval per interface
 
-Each interface owns its own retrieval path: the HTTP controller and the remote procedure method each launch the transaction and card reads, apply the ownership check, resolve the data status and build their own response. Both still sit behind the receipt stage and the access guard, and both use the standard error object.
+Each interface owns a full retrieval path and builds its own response. Both use the shared receipt stage, guard and error object.
 
 How it differs:
 
 - Each adapter launches its own transaction and card reads.
-- Each adapter carries its own copy of the ownership check and the not-found rule.
-- Each adapter resolves the data status and the read time itself.
-- A change to the transaction fields or the ownership rule lands in two places.
+- Each adapter keeps its own ownership, not-found and data status rules.
+- Field or ownership changes land in two places.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Each interface reads its own result (vs one shared retrieval) | each interface tunes its own reads | values can diverge between interfaces |
-| 2 | Ownership checked in each adapter (vs the shared retrieval) | local control of the rule | two copies of the security check |
-| 3 | Data status resolved in each adapter (vs the shared resolver) | local control of the status | two copies of the precedence rule |
+| 1 | Reads per interface (vs one shared retrieval) | per-interface read tuning | diverging values |
+| 2 | Ownership checked per adapter (vs in the retrieval) | local control | two copies of the security check |
+| 3 | Data status resolved per adapter (vs the shared resolver) | local control | two copies of the precedence rule |
 
-Effort and risk: two full read paths and their tests, with high risk because a drift in one ownership copy exposes another account's transaction.
+Effort and risk: two read paths and their tests, at high risk because one drifting ownership copy exposes another account's transaction.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: one retrieval and one ownership check serve both interfaces, so both return equal values and the same not-found answer.
-- Strongest argument against: one shared retrieval call couples both interfaces to one result shape.
-- Shared items that do not decide the choice: the contracts, the access guard, the error mapping and the request deadline started at receipt.
-- Flip conditions: the two interfaces need different field sets or different ownership rules.
+- Why: one retrieval and one ownership check serve both interfaces identically.
+- Strongest argument against: both interfaces are tied to one result shape.
+- Shared items that do not decide the choice: the contracts, guard, error mapping and request deadline.
+- Flip conditions: the interfaces need different field sets or ownership rules.
 
 ## Design Validation
 
@@ -206,60 +201,59 @@ Effort and risk: two full read paths and their tests, with high risk because a d
 
 Settled assumptions:
 
-- Both contracts carry the same thirteen transaction fields, all required, with amounts and times as strings.
-- The retrieval returns one result per request and fixes the outcome at the cut-off.
-- The receipt stage starts the deadline and runs validation, and the guard runs before either adapter.
-- The shared error handler and interceptor render every failure with the receipt trace identifier.
+- Both contracts carry the same thirteen required fields, with amounts and times as strings.
+- The receipt stage starts the deadline and validates ahead of the guard.
+- The retrieval returns one result per request, fixed at the cut-off.
+- The shared error mapping renders every failure with the receipt trace identifier.
 
 Open assumptions:
 
-- Open → the remote procedure class from the balance summary endpoint story exists before this story starts, settled by wave position order.
-- Open → which message the deferred user interface shows per error status, settled by the deferred UI run.
+- Open → whether the balance summary story's remote procedure class exists first, settled by wave position order.
+- Open → which message the deferred user interface shows per error status, settled by that interface's run.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the adapters run only after the guard allows |
-| AC2 | Holds | the one retrieval result renders the fixture transaction |
+| AC1 | Holds | the guard denies before either adapter |
+| AC2 | Holds | one retrieval serves the fixture transaction |
 | AC3 | Holds | both renderings come from one result |
 | AC4 | Holds | the header copies the body status |
-| AC5 | Holds | the result keeps amounts and times as contract strings |
-| AC6 | Holds | the receipt stage rejects the short identifier before any network call |
-| AC7 | Holds | the guard rejects a bad or missing token before either adapter |
-| AC8 | Holds | the retrieval returns one not-found failure for both cases |
-| AC9 | Holds | every failure passes unchanged to the shared error mapping |
-| AC10 | Holds | the call policy inside the clients sets attempts and retries |
-| AC11 | Conditional | it rests on the call policy's remaining-budget rule |
-| AC12 | Holds | the fallbacks sit inside the shared retrieval and its clients |
-| AC13 | Holds | the shared error mapping carries the receipt trace identifier |
+| AC5 | Holds | amounts and times stay contract strings |
+| AC6 | Holds | the receipt stage rejects the short identifier first |
+| AC7 | Holds | the guard rejects an expired or missing token first |
+| AC8 | Holds | both cases get one not-found failure |
+| AC9 | Holds | failures reach the shared mapping unchanged |
+| AC10 | Holds | the clients' call policy sets timeouts and retries |
+| AC11 | Conditional | it rests on the remaining-budget rule |
+| AC12 | Holds | the fallbacks sit below the adapters |
+| AC13 | Holds | the shared mapping adds the receipt trace identifier |
 
 ### Validation of Option B
 
 Settled assumptions:
 
-- Both contracts carry the same thirteen transaction fields, all required, with amounts and times as strings.
+- Option A's contract, receipt stage and guard assumptions hold unchanged.
 - Each interface builds one result per request.
-- The receipt stage starts the deadline and runs validation, and the guard runs before either adapter.
 
 Open assumptions:
 
-- Open → the remote procedure class from the balance summary endpoint story exists before this story starts, settled by wave position order.
-- Open → whether the two read paths share cache entries, settled by measuring both paths on the test stack.
+- Open → whether the balance summary story's remote procedure class exists first, settled by wave position order.
+- Open → whether the two read paths share cache entries, settled on the test stack.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | both paths run only after the guard allows |
-| AC2 | Holds | the HTTP path reads and renders the fixture transaction |
-| AC3 | At risk | values can diverge between the two read paths |
-| AC4 | At risk | the header and the body status come from separate logic |
-| AC5 | Holds | the contracts fix the amount and time forms |
-| AC6 | Holds | the receipt stage is shared by both options |
-| AC7 | Holds | the guard is shared by both options |
-| AC8 | At risk | each path must repeat the ownership check exactly |
-| AC9 | Holds | both paths use the shared error mapping |
-| AC10 | Holds | the call policy inside the clients sets attempts and retries |
-| AC11 | Conditional | it rests on the call policy's remaining-budget rule |
-| AC12 | At risk | each path must repeat the stale and fail-hard rules |
-| AC13 | Holds | both paths use the shared error mapping |
+| AC1 | Holds | the guard denies before either path |
+| AC2 | Holds | the HTTP path serves the fixture transaction |
+| AC3 | At risk | the two read paths can diverge |
+| AC4 | At risk | header and body use separate logic |
+| AC5 | Holds | the contracts fix amount and time forms |
+| AC6 | Holds | the receipt stage is shared |
+| AC7 | Holds | the guard is shared |
+| AC8 | At risk | each path repeats the ownership check |
+| AC9 | Holds | both paths use the shared mapping |
+| AC10 | Holds | the clients' call policy sets timeouts and retries |
+| AC11 | Conditional | it rests on the remaining-budget rule |
+| AC12 | At risk | each path repeats the fallback rules |
+| AC13 | Holds | both paths use the shared mapping |
 
 ## Metadata
 

@@ -128,61 +128,55 @@ Completed during implementation.
 
 Recommended: Design Option A — shared containers for the whole test run.
 
-Rationale: one shared container pair keeps the integration stage to one start-up, while resets around every test keep each scenario independent.
+Rationale: one shared container pair means one start-up, while per-test resets keep scenarios independent.
 
-- Rejected: Design Option B, fresh containers for every test class — start-up time multiplies with class count.
-- Rejected: the stub's in-memory fixture set in place of the relational store — the paging query and the sample load would never meet a real database.
+- Rejected: Design Option B, fresh containers for every test class — start-up multiplies per class.
+- Rejected: the stub's in-memory fixture set in place of the relational store — paging would skip a real database.
 
 ### Shared by both options
 
-- Topology: a relational store container and a cache container, with the transaction activity stub and the configuration stub on loopback ports in the test process.
-- Naming: the suite tag marks the suite for the integration stage only, and the unit stage never runs it.
-- Addressing: container ports are assigned at start and passed to the service as properties, and the client reaches the stub through its target address.
-- Isolation: the suite never runs beside another test class, each test begins with an empty cache, cleared request logs and failure injection off, and only the cache-outage case pauses a cache, its own dedicated one.
-- Fallback: a container that fails to start fails the suite at once instead of skipping it.
-- Provisioning: before its one load, the suite drops every table that an earlier suite left in the relational store and checks that none remain, so the schema, the sample load and the synthetic volume that the loader always adds are applied to an empty store once before the first test, and the schema checks run on a scratch database.
-- Cut-over: pointing the client at a real transaction activity service changes only its target address and credential source, and a suite run against that service needs its own data setup, fault injection and call observation, because the sample and synthetic rows that the store reset and the fixture loader job place in the local relational store, the injected failures and the stub request log exist only beside the local stub.
-- Failures: latency and unavailable answers are injected per test through the shared failure injector, and each attempt is counted in the stub's request log.
+- Topology: a relational store container and a cache container, with the transaction activity and configuration stubs on loopback ports.
+- Naming: the suite tag limits it to the integration stage.
+- Addressing: start-time ports pass as properties, and the client finds the stub by target address.
+- Isolation: no class runs beside the suite, tests start with empty caches, cleared logs and injection off, and only the outage case pauses its own cache.
+- Fallback: a failed container start fails the suite.
+- Provisioning: earlier suites' tables are dropped and checked gone before one load of schema, sample and synthetic volume, and schema checks use a scratch database.
+- Cut-over: a real service changes only target address and credential source, and needs its own data setup, fault injection and call observation.
+- Failures: per-test injected latency and unavailable answers, with attempts counted in the request log.
 
 ### Design Option A — shared containers for the whole test run
 
-The suite reuses the relational store container and the cache container that the container base starts once per test process, and it empties the relational store and loads the sample into it once before its first test. The base empties the cache before each test, and the stub harness clears the request log before each test and the per-test overrides after it. Each scenario drives the client under a fresh request budget.
+The suite reuses the two containers the container base starts once per test process and loads the sample once before its first test. Each scenario gets a fresh request budget.
 
 How it behaves:
 
-- The first suite of the run pays the container start, and this suite reuses both containers.
-- Before the load, the suite drops every table an earlier suite left and checks that the store holds none.
-- Every paging and lookup case reads the same loaded rows in the same newest-first order.
-- Each failure case sets its own injected delay or failure rate, counts attempts in the request log and checks the cut-off and the caller's elapsed time.
-- The fail-hard and stale cases warm the cache, move the entry's cache time back and then fail the stub.
-- The cache-outage case pauses a cache container of its own, so the shared pair keeps running.
-- The schema checks write only to a scratch database, which the suite drops when they end.
+- Paging and lookup cases share one load.
+- Failure cases check the cut-off and caller's elapsed time.
+- Fail-hard and stale cases warm and age a cache entry, then fail the stub.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Containers shared for the run (vs per test class) | one start-up cost for the suite | state can leak between suites without resets |
-| 2 | Cache keys, overrides and request log reset around every test (vs a container restart) | isolation at low cost | a suite that bypasses the base inherits another suite's entries |
-| 3 | Sample loaded once (vs per test) | the paging order is fixed for every test | a row one test changed would stay changed for every later test |
-| 4 | Schema checks on a scratch database (vs the suite database) | the loaded rows stay untouched | each check prepares its own parent rows |
+| 1 | Shared containers (vs per class) | one start-up | state leaks without resets |
+| 2 | Per-test resets (vs container restarts) | cheap isolation | a suite that bypasses the base inherits another suite's entries |
+| 3 | One sample load (vs per test) | fixed paging order | a row one test changed stays changed for later tests |
+| 4 | Schema checks on a scratch database (vs suite database) | loaded rows untouched | checks build their parent rows |
 
 Effort and risk: small effort, low risk with the resets in place.
 
 ### Design Option B — fresh containers for every test class
 
-Every test class starts its own relational store container and cache container and loads its own copy of the sample before its first test. Nothing is shared between classes or suites. The scenarios, the injection settings and the request-log reads stay as in Option A.
+Each test class starts its own containers and loads its own sample. Scenarios match Option A.
 
 How it differs:
 
-- No state is shared between classes or suites.
-- Start-up and the full load, synthetic volume included, repeat for each class.
-- The integration stage runs longer with every class added.
-- The cache-outage case pauses the class's own cache container.
+- Start-up and the full load repeat per class.
+- Run time grows per class.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Containers started per test class (vs shared for the run) | no state crosses classes or suites | start-up time multiplies with class count |
-| 2 | Sample loaded per class (vs once per run) | each class reads rows that only it loaded | every class pays the full load with its synthetic volume |
-| 3 | Containers removed after each class (vs at process exit) | a class never inherits a dirty container | each removal adds to the stage's run time |
+| 1 | Per-class containers (vs shared) | no state crosses classes | start-up multiplies per class |
+| 2 | Per-class sample load (vs once) | own rows per class | every class pays the full load |
+| 3 | Container removal per class (vs at process exit) | no dirty container inherited | removals add run time |
 
 Effort and risk: small effort, at risk on integration-stage run time.
 
@@ -190,9 +184,9 @@ Effort and risk: small effort, at risk on integration-stage run time.
 
 - Option: Design Option A
 - Why: the suite keeps one start-up while the resets keep tests independent.
-- Strongest argument against: a missed reset lets one test's state change another's outcome, and the store reset discards and repeats the full load that the card data suite may already have made.
-- Shared items that do not decide the choice: the scenarios, the thresholds, the stub harness, the failure injector, the store reset before the load and the relational stub on a loopback port.
-- Flip conditions: tests that write rows to the suite database, a suite that must run beside another test class, or a shared-state defect the resets cannot contain.
+- Strongest argument against: a missed reset leaks state, and the store reset may repeat the card data suite's load.
+- Shared items that do not decide the choice: scenarios, thresholds, stub harness, failure injector and store reset.
+- Flip conditions: tests writing rows to the suite database, a suite that must run beside other classes, or a shared-state defect the resets cannot contain.
 
 ## Design Validation
 
@@ -200,68 +194,61 @@ Effort and risk: small effort, at risk on integration-stage run time.
 
 Settled assumptions:
 
-- The container base exists from the container base story, starts both containers once per test process and empties the cache before each test.
-- The stub harness accepts per-test overrides, clears the request log before each test and clears the overrides after it.
-- No test writes rows to the suite database, and the schema checks write only to a scratch database.
-- The client story keeps a one-minute freshness window for both key families, no stale window for list pages and a five-minute maximum stale age for detail entries.
-- The suite never launches a configuration refresh, so the call policy keeps its built-in attempt timeout and retry cap.
-- A case with injected latency ends only after every delayed call has reached the request log.
-- The synthetic volume that the loader always adds sits outside the sample account range, so no scenario reads it.
-- Test classes run one at a time, and this suite never runs beside another class.
-- The suite drops every table an earlier suite left before its load, so every entity load starts from an empty store whichever suite ran before.
-- Every load is deterministic, so this suite and the card data suite leave the same rows in either order.
-- The shared base gives every suite the same store address, so a suite cannot move to a database of its own without a change to the base.
+- The base starts containers once per process, and base and harness reset cache, log and overrides per test.
+- No test writes rows outside the scratch database.
+- The client story keeps a one-minute freshness window, no list stale window and a five-minute detail stale age.
+- No configuration refresh runs, so built-in timeout and retry cap hold.
+- Synthetic volume lies outside the sample accounts.
+- Classes run one at a time, the store reset precedes the load and loads are deterministic.
 
 Open assumptions:
 
-- The integration stage on the pull-request runner can start both containers Open → the first pull-request run of the integration stage.
+- The pull-request runner can start both containers Open → the first pull-request run of the integration stage.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the suite inherits the integration tag and the shared container pair from the base |
-| AC2 | Holds | the relational stub reads the loaded rows in newest-first keyset order |
-| AC3 | Holds | the lookup reads the loaded row by its primary key |
-| AC4 | Holds | the call policy makes one attempt and two retries on immediate unavailable answers |
-| AC5 | Holds | the fit check stops a third attempt before the cut-off |
-| AC6 | Holds | the call policy retries only the two retryable statuses |
-| AC7 | Holds | the client keeps the list fail-hard and the detail within its stale window |
-| AC8 | Holds | the stub answers not found for an account with no cross-reference record |
-| AC9 | Holds | the stub rejects a changed page token before any store read |
-| AC10 | Holds | a fresh entry in the cache container answers with no remote call |
-| AC11 | Holds | the read-through cache treats an unanswered cache command as a miss |
-| AC12 | Holds | the store reset, the one-class-at-a-time run and the base's per-test cache flush leave no other suite's state |
-| AC13 | Holds | the schema checks run on a scratch database apart from the loaded rows |
-| AC14 | Holds | the load starts from an emptied store whichever suite ran before |
+| AC1 | Holds | base supplies tag and containers |
+| AC2 | Holds | stub pages loaded rows newest first |
+| AC3 | Holds | key lookup reads the row |
+| AC4 | Holds | policy allows two retries |
+| AC5 | Holds | retry-fit rule blocks attempt three |
+| AC6 | Holds | only retryable statuses retry |
+| AC7 | Holds | only details degrade, within stale age |
+| AC8 | Holds | no cross-reference means not found |
+| AC9 | Holds | stub rejects changed tokens |
+| AC10 | Holds | fresh entry skips the stub |
+| AC11 | Holds | cache outage counts as a miss |
+| AC12 | Holds | store reset, serial runs and flush isolate tests |
+| AC13 | Holds | schema checks use a scratch database |
+| AC14 | Holds | load starts from an empty store |
 
 ### Option B
 
 Settled assumptions:
 
-- Each test class starts and removes its own relational store container and cache container.
-- No test writes rows to the class's database outside the scratch database of the schema checks.
-- The synthetic volume, the client story's freshness and stale windows and the harness resets are as in Option A.
-- The store reset before the load and the one-class-at-a-time run are as in Option A, with the reset finding no table in the class's new container.
+- Each test class starts and removes its own container pair.
+- The other Option A assumptions hold unchanged.
 
 Open assumptions:
 
-- The integration stage on the pull-request runner can start a container pair for every class within its job limit Open → the first pull-request run of the integration stage.
+- The pull-request job limit fits per-class container pairs Open → the first pull-request run of the integration stage.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Conditional | it holds only if the base starts a container pair per test class |
-| AC2 | Holds | the relational stub reads the class's loaded rows in newest-first keyset order |
-| AC3 | Holds | the lookup reads the loaded row by its primary key |
-| AC4 | Holds | the call policy makes one attempt and two retries on immediate unavailable answers |
-| AC5 | Holds | the fit check stops a third attempt before the cut-off |
-| AC6 | Holds | the call policy retries only the two retryable statuses |
-| AC7 | Holds | the client keeps the list fail-hard and the detail within its stale window |
-| AC8 | Holds | the stub answers not found for an account with no cross-reference record |
-| AC9 | Holds | the stub rejects a changed page token before any store read |
-| AC10 | Holds | a fresh entry in the class's cache container answers with no remote call |
-| AC11 | Holds | the read-through cache treats an unanswered cache command as a miss |
-| AC12 | Holds | no shared state crosses classes to leak |
-| AC13 | Holds | the schema checks run on a scratch database in the class's own container |
-| AC14 | Holds | each class loads its own copy into empty containers |
+| AC1 | Conditional | only with per-class base containers |
+| AC2 | Holds | stub pages the class's rows newest first |
+| AC3 | Holds | key lookup reads the row |
+| AC4 | Holds | policy allows two retries |
+| AC5 | Holds | retry-fit rule blocks attempt three |
+| AC6 | Holds | only retryable statuses retry |
+| AC7 | Holds | only details degrade, within stale age |
+| AC8 | Holds | no cross-reference means not found |
+| AC9 | Holds | stub rejects changed tokens |
+| AC10 | Holds | fresh entry skips the stub |
+| AC11 | Holds | cache outage counts as a miss |
+| AC12 | Holds | no state crosses classes |
+| AC13 | Holds | schema checks use a scratch database |
+| AC14 | Holds | each class loads into empty containers |
 
 ## Metadata
 

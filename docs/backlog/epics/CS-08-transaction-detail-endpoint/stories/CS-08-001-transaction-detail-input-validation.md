@@ -95,72 +95,66 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A — one shared validation rule for the account number and the transaction identifier, used by both protocol adapters at receipt.
+Recommended: Option A — one shared validation rule for both identifiers, applied at receipt on both protocols.
 
-Rationale: one receipt rule set keeps the web and remote procedure checks identical and rejects a malformed transaction identifier before any authentication call, cache read or upstream call.
+Rationale: one receipt rule set checks both protocols identically and rejects malformed input before authentication.
 
-- Rejected: Option B, per-protocol parameter annotations, duplicates the rule and has no annotation hook on the remote procedure side.
+- Rejected: Option B, per-protocol parameter annotations, duplicates the rule and checks the web value after authentication.
 
 ### Shared by both options
 
-- Topology: validation runs inside the service process, with no new component and no network hop.
-- Naming: each error detail names the offending field as the web interface description names it, the account number or the transaction identifier.
-- Addressing: both identifiers arrive in the web path or in the remote procedure request message.
-- Isolation: the checks themselves read no stub, cache or store.
-- Fallback: none, since a malformed value fails closed with a bad-request status.
-- Provisioning: nothing new is deployed and no setting is added.
-- Cut-over: unchanged when real services replace the stubs, because the checks make no upstream call.
-- Failures: each rejection yields one standard error object carrying the trace identifier issued at receipt.
+- Topology: validation runs inside the service process, with no new component or network hop.
+- Naming: error details name offending fields as the interface description does.
+- Addressing: both identifiers arrive in the web path or the remote procedure request.
+- Isolation: the checks read no stub, cache or store.
+- Fallback: none, since a malformed value fails closed.
+- Provisioning: nothing new is deployed or configured.
+- Cut-over: unchanged when real services replace the stubs.
+- Failures: each rejection yields one standard error object with the receipt trace identifier.
 
 ### Design Option A — one shared rule at receipt
 
-The shared validator gains a transaction identifier rule of exactly sixteen characters of any kind, with sixteen spaces or sixteen null characters counted as empty, the same rule the interface description declares, and a transaction detail route entry for both protocols. That entry points at a transaction detail rule set, which checks the account number and the transaction identifier together. The receipt stage from the account number story already applies every declared route, so the checks run after the trace identifier is issued and before the access guard.
+The shared validator gains a transaction identifier rule of exactly sixteen characters of any kind and a route entry for both protocols. That entry points at a rule set checking both identifiers, which the receipt stage applies before the access guard.
 
 How it behaves:
 
-- The web adapter reads both identifiers from the path, and the remote procedure adapter reads them from the request message.
-- A transaction identifier of fifteen or seventeen characters is rejected, while any character, punctuation and accented letters included, passes.
-- An empty transaction identifier in a remote procedure request is rejected as malformed.
-- A transaction identifier of sixteen spaces or sixteen null characters counts as empty and is rejected on both protocols.
-- A malformed or all-zero account number is rejected with the account view screen text.
-- When both values are malformed, one rejection carries two field entries, account number first.
-- A rejected request stops before the guard, so no Auth, Config, cache or data call follows.
-- A well-formed pair passes unchanged to the guard.
+- Transaction identifiers of fifteen or seventeen characters fail, and empty, all-space or all-null values fail as empty.
+- Two malformed values yield one rejection with two field entries, account number first.
+- A rejected request makes no Auth, Config, cache or data call.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One rule for both protocols (vs one copy per protocol) | one change point for a contract pattern change | one shared table that four endpoints edit |
-| 2 | Check at the receipt stage ahead of the guard (vs at parameter binding) | no authentication call on malformed input | the stage order must stay explicit |
-| 3 | Every offending field in one rejection (vs stop at the first) | the caller fixes both values in one attempt | both checks finish before any failure |
+| 1 | One rule for both protocols (vs per-protocol copies) | one change point | four endpoints share one rule table |
+| 2 | Check at receipt (vs at parameter binding) | no authentication call on bad input | the stage order must stay explicit |
+| 3 | All offending fields in one rejection (vs first only) | one retry fixes both values | both checks always run |
 
-Effort and risk: one rule added to the shared validator, one rule set and one test, with the risk in the rule drifting from the interface description.
+Effort and risk: one rule, one rule set and one test, with the risk of drift from the interface description.
 
 ### Design Option B — per-protocol parameter annotations
 
-A framework constraint annotation on the web path parameter checks the transaction identifier when the controller binds the request. The remote procedure interface has no annotation hook, so its method repeats the check by hand at its start. The account number check stays in the shared receipt stage, so the two fields are checked at different moments.
+A framework constraint on the web path parameter checks the transaction identifier at request binding. The remote procedure method, lacking an annotation hook, repeats the check by hand.
 
 How it differs:
 
-- The web check runs at parameter binding, after the access guard has called the Auth service.
-- The remote procedure method carries its own copy of the transaction identifier rule.
-- The error handler must turn the framework's binding path into the transaction identifier field name.
-- With both values malformed, the receipt stage rejects the account number before the transaction identifier check runs.
+- The web check runs after the access guard calls the Auth service.
+- The error handler maps the binding path to the field name.
+- With both values malformed, only the account number is reported.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Framework constraint on the web path parameter (vs shared rule) | the rule sits beside the endpoint | it runs after the access guard |
-| 2 | Hand-written check in the remote procedure method (vs shared rule) | no edit to the shared validator | a second copy of the identifier rule |
-| 3 | Account number left in the receipt stage (vs moved to annotations) | no change to the account number story | the two fields fail at different moments |
+| 1 | Web path constraint (vs shared rule) | the rule sits beside the endpoint | it runs after the access guard |
+| 2 | Hand-written remote procedure check (vs shared rule) | no shared validator edit | a second copy of the rule |
+| 3 | Account number left at receipt (vs annotations) | no change to the account number story | the fields fail at different moments |
 
-Effort and risk: no shared edit and two local checks, with the risk in authentication calls on malformed input and in the two copies drifting apart.
+Effort and risk: two local checks, with the risk of authenticating malformed input and of copy drift.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: only one shared receipt rule rejects both malformed identifiers on both protocols before any network call.
-- Strongest argument against: a faulty edit to the shared rule table reaches all four endpoints at once.
-- Shared items that do not decide the choice: the identifier pattern, the field names in error details, the standard error object and the trace identifier.
-- Flip conditions: the framework gains one annotation mechanism that runs ahead of the request filters on both protocols, or the access guard moves behind the controllers.
+- Why: only a shared receipt rule rejects both identifiers on both protocols before any network call.
+- Strongest argument against: a faulty edit to the shared rule reaches four endpoints at once.
+- Shared items that do not decide the choice: the identifier pattern, field names, error object and trace identifier.
+- Flip conditions: one annotation mechanism ahead of the request filters on both protocols, or an access guard behind the controllers.
 
 ## Design Validation
 
@@ -168,57 +162,55 @@ Effort and risk: no shared edit and two local checks, with the risk in authentic
 
 Settled assumptions:
 
-- The interface description declares exactly sixteen characters of any kind for the transaction identifier, the full character range of the sixteen-character transaction record key.
-- The account number rule and the receipt stage come from the account number story and run on both protocols.
-- The receipt stage runs ahead of the access guard.
+- The interface description allows any sixteen characters, the full range of the record key.
+- The receipt stage and account number rule come from the account number story and run on both protocols ahead of the guard.
 - The legacy transaction view screen checks only for an empty transaction identifier.
 
 Open assumptions:
 
-- Open → whether real transaction identifiers ever need a narrower character set than the record key allows, settled by the Requirements Analysis author.
-- Open → whether a web request with an empty transaction identifier can reach this route, settled by the route tests of the endpoint exposure story.
+- Open → whether real transaction identifiers need a narrower character set, settled by the Requirements Analysis author.
+- Open → whether an empty web transaction identifier can reach this route, settled by the exposure story's route tests.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | a well-formed pair passes the receipt stage to the guard |
-| AC2 | Holds | the sixteen-character rule rejects a fifteen-character value |
-| AC3 | Holds | the sixteen-character rule rejects a seventeen-character value |
+| AC1 | Holds | a well-formed pair reaches the guard |
+| AC2 | Holds | the length rule rejects fifteen characters |
+| AC3 | Holds | the length rule rejects seventeen characters |
 | AC4 | Holds | the any-character rule passes the exclamation mark |
-| AC5 | Holds | the shared account number rule rejects ten digits with the screen text |
-| AC6 | Holds | the shared zero rule rejects the all-zero account number |
-| AC7 | Holds | one rule set reads both protocol inputs |
-| AC8 | Holds | the receipt stage ends the request before any network call or cache read |
-| AC9 | Holds | every rejection passes through the standard error object with the receipt trace identifier |
-| AC10 | Holds | the rule set checks both fields before raising one failure |
-| AC11 | Holds | the rule set rejects an empty value, sixteen spaces and sixteen null characters |
+| AC5 | Holds | the shared account number rule returns the screen text |
+| AC6 | Holds | the shared zero rule rejects all zeros |
+| AC7 | Holds | one rule set reads both protocols |
+| AC8 | Holds | rejection precedes every network call and cache read |
+| AC9 | Holds | the error object carries the receipt trace identifier |
+| AC10 | Holds | one failure lists both fields |
+| AC11 | Holds | the empty rule rejects empty, all-space and all-null values |
 
 ### Option B
 
 Settled assumptions:
 
-- The interface description declares exactly sixteen characters of any kind for the transaction identifier, the full character range of the sixteen-character transaction record key.
-- The account number rule and the receipt stage come from the account number story and run on both protocols.
+- The interface description allows any sixteen characters, and the receipt stage checks account numbers on both protocols.
 - Parameter binding runs after every request filter, the access guard included.
-- The remote procedure interface offers no annotation hook for request fields.
+- The remote procedure interface offers no annotation hook.
 
 Open assumptions:
 
-- Open → whether real transaction identifiers ever need a narrower character set than the record key allows, settled by the Requirements Analysis author.
-- Open → whether the framework's binding path maps to the contract field name, settled by the error handler tests in the first build.
+- Open → whether real transaction identifiers need a narrower character set, settled by the Requirements Analysis author.
+- Open → whether the binding path maps to the field name, settled by the error handler tests.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | a well-formed pair passes the guard and then the binding check |
-| AC2 | Conditional | the error handler must map the binding path to the field name |
-| AC3 | Conditional | the error handler must map the binding path to the field name |
-| AC4 | Holds | the binding check passes the exclamation mark like any other character |
+| AC1 | Holds | a well-formed pair passes both checks |
+| AC2 | Conditional | the binding path must map to the field name |
+| AC3 | Conditional | the binding path must map to the field name |
+| AC4 | Holds | the binding check passes the exclamation mark |
 | AC5 | Holds | the receipt stage still checks the account number |
 | AC6 | Holds | the receipt stage still applies the zero rule |
-| AC7 | At risk | the hand-written method check can drift from the web constraint |
-| AC8 | Breaks | a malformed transaction identifier reaches its check only after the Auth service call |
-| AC9 | Holds | the standard error object still carries the receipt trace identifier |
-| AC10 | Breaks | the receipt stage rejects the account number before the second check runs |
-| AC11 | Conditional | both local checks must treat an empty value, sixteen spaces and sixteen null characters as malformed |
+| AC7 | At risk | the two rule copies can drift apart |
+| AC8 | Breaks | the identifier check follows the Auth service call |
+| AC9 | Holds | the error object still carries the trace identifier |
+| AC10 | Breaks | the account number rejection precedes the identifier check |
+| AC11 | Conditional | both copies must reject empty, all-space and all-null values |
 
 ## Metadata
 

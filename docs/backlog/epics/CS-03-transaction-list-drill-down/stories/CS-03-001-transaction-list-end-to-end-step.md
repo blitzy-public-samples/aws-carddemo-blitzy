@@ -92,73 +92,64 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — step three takes its filter from the category row the category balance step received and hands its first transaction row to the transaction detail step.
+Recommended: Design Option A — step three filters by step two's category row and hands its first transaction row to the detail step.
 
-Rationale: a flow step that opens the transactions behind the category row step two received, as the deferred screen will, proves the category-to-transaction link along the real request path and gives the detail step the transaction it opens.
+Rationale: drilling down as the deferred screen will proves the category-to-transaction link along the real request path.
 
-- Rejected: Design Option B, fixed filter values written into the step — it misses a broken hand-off between steps, so the drill-down link stays unproven.
+- Rejected: Design Option B, fixed filter values — it misses a broken hand-off between steps.
 
 ### Shared by both options
 
-- Topology: the end-to-end client on the build host calls the service in the shared test stack, which reaches the five stub services, the relational store behind them and the cache.
-- Naming: the step is the third of the four interaction steps of one ordered flow, and it is named for the transaction list screen.
-- Addressing: the account sits in the request path, the type code, category code and page size travel as query values on the service's published port, and the stub log addresses come from the end-to-end harness.
-- Isolation: the step reads only sample accounts, so the synthetic volume in its own number range never changes an expected value, and the rejected calls run first, so no background configuration refresh falls inside their log windows.
-- Fallback: the step has no fallback path, so a failed step fails the flow and the transaction detail step does not run on a missing transaction row.
-- Provisioning: the end-to-end stage starts the stack before the suite and removes it after, and the shared loader seeds the sample set the step reads.
-- Cut-over: the deferred screen replaces the end-to-end client with no service change, and the real services replace the stubs by address and credential alone.
-- Failures: any status, item, order or header mismatch fails the step and reports the trace identifier, and degraded or failed upstream outcomes are proven under injection by the transaction list retrieval story and the integration suites.
+- Topology: the end-to-end client on the build host calls the test stack's service, which reaches five stubs, a relational store and the cache.
+- Naming: step three of the four-step flow is named for the transaction list screen.
+- Addressing: the request path carries the account, query values carry the filter and page size, and the harness supplies the stub log addresses.
+- Isolation: reading only sample accounts shields expected values from synthetic volume, and running rejected calls first keeps configuration refreshes out of their log windows.
+- Fallback: none exists, so a failed step fails the flow.
+- Provisioning: the end-to-end stage starts and removes the stack around the suite, and the shared loader seeds the samples.
+- Cut-over: the deferred screen replaces the client with no service change, and real services replace stubs by address and credential.
+- Failures: any status, row, order, data status, error object or deadline mismatch fails the step with its trace identifier, and the list retrieval story and integration suites prove injected upstream failures.
 
-### Design Option A — filter taken from the category balance step
+### Design Option A — filter from the category balance step
 
-The step reads the type code and category code from the row the category balance step received and sends them as the list filter. It sends the four rejected calls first, then the filtered call, the return-item filter, the unknown type code and the unfiltered call, one at a time. It checks each answer by status, rows, order, data status and error object, reads the new stub log entries of each call, and stores the first transaction row for the transaction detail step.
+The step sends step two's type code and category code as the list filter. It makes eight calls one at a time, four rejected ones first.
 
 How it behaves:
 
-- A failed category balance step stops the step before its first call, with a message naming that step.
-- The filtered answer must hold the five purchase rows of the first sample account in descending transaction number order, with no next-page token.
-- The return-item filter must hold the one return row, and the unfiltered answer must hold all six rows.
-- The unknown type code must return an empty list with no reference-data read.
-- Expected rows are literal fixture values, compared field by field with the interface example.
-- Stub request log counts are read before and after each request, and each allowed call must show the two authentication operations and one transaction read.
-- The data status header and the data status in the body are both checked and must read fresh.
-- Every call passes the client's deadline check on the logged cut-off time and the client latency.
+- A failed step two stops the step before any call, naming step two.
+- The filtered answer holds five purchase rows by descending transaction number, the return-item answer one return row, the unknown type code none and the unfiltered answer all six.
+- Rows match the interface example field by field, and each allowed call's stub logs show two authentication operations and one transaction read.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Filter taken from the previous step's row (vs fixed values) | the step proves the hand-off | step three cannot run alone |
-| 2 | Expected rows as literal fixture values (vs a store read) | the step stays free of the store | a fixture change needs a step edit |
-| 3 | Log counts compared before and after each call (vs a log reset) | no reset hook is needed | the counts rely on the suite running alone |
-| 4 | First transaction row kept for the next step (vs the detail step choosing its own row) | the detail step drills from a returned row | a failed step three stops the detail step |
+| 1 | Filter from step two's row (vs fixed values) | proves the hand-off | step three cannot run alone |
+| 2 | Literal fixture rows (vs a store read) | no store access | fixture changes need step edits |
+| 3 | Before-and-after log counts (vs a log reset) | no reset hook | counts need the suite running alone |
+| 4 | First returned row handed on (vs the detail step choosing) | the detail step opens a returned row | a failed step three blocks the detail step |
 
-Effort and risk: small effort in one existing file, with step-order coupling inside the flow as the main risk.
+Effort and risk: small, in one existing file, at risk from step-order coupling.
 
 ### Design Option B — fixed filter values
 
-The step writes the purchase type code and the regular sales draft category code into its filtered call instead of reading them from the category balance step. Call order, row checks, stub log checks and the transaction-row hand-off match Option A. The step can run without the category balance step, but it no longer proves that the category row leads to the transaction list.
+The filtered call carries a fixed purchase type and regular sales draft category. Everything else matches Option A.
 
 How it differs:
 
-- The filtered call always sends the purchase filter, whatever the category balance step returned.
-- A broken hand-off from the category balance step goes unnoticed, so the category-to-transaction link stays unproven.
-- The step runs alone, so a failed category balance step no longer stops it.
-- A change to the sample category row needs a matching edit in two steps.
+- The purchase filter goes out whatever step two returned.
+- A sample category row change needs edits in two steps.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Fixed filter values (vs the row from the previous step) | the step runs without the category balance step | the drill-down link goes unchecked |
-| 2 | Expected rows as literal fixture values (vs a store read) | the step stays free of the store | a fixture change needs a step edit |
-| 3 | Log counts compared before and after each call (vs a log reset) | no reset hook is needed | the counts rely on the suite running alone |
+| 1 | Fixed filter values (vs step two's row) | runs without step two | the drill-down link goes unchecked |
 
-Effort and risk: small effort in one existing file, at risk on the hand-off criterion, which fixed values cannot meet.
+Effort and risk: small, in one existing file, at risk on the hand-off criterion.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: it exercises the drill-down the way the deferred screen will, from the row the category view returned, and meets the hand-off criterion that Option B cannot.
-- Strongest argument against: the step cannot run without the category balance step, so a failure there hides every transaction-list check behind it.
-- Shared items that do not decide the choice: the stack, the end-to-end client, the fixture values, the call order, the status and log assertions, the deadline check and the transaction-row hand-off.
-- Flip conditions: the end-to-end harness being unable to carry state between steps, or the flow steps having to run in parallel.
+- Why: only it meets the hand-off criterion.
+- Strongest argument against: a failed step two hides every transaction-list check.
+- Shared items that do not decide the choice: the stack, client, call order, literal fixture rows, before-and-after log counts, status and deadline checks and row hand-off.
+- Flip conditions: a harness unable to carry state between steps, or steps that must run in parallel.
 
 ## Design Validation
 
@@ -166,55 +157,53 @@ Effort and risk: small effort in one existing file, at risk on the hand-off crit
 
 Settled assumptions:
 
-- The sample holds six transactions for the first sample account, all sharing one original time and a blank processed time.
-- The category balance step returns one purchase row with the regular sales draft category.
-- The default page size of twenty holds all six rows of the first sample account.
-- The first regular fixture user is entitled to the first ten sample accounts, and the eleventh sample account sits outside that range.
-- The flow empties the cache before step one, and no earlier step reads a transaction page.
+- The first sample account's six transactions share one original time and a blank processed time.
+- Step two returns one purchase row in the regular sales draft category.
+- The default page size of twenty holds all six rows.
+- The first regular fixture user is entitled to sample accounts one to ten only.
+- The cache is emptied before step one, and no earlier step reads transactions.
 - A rejected call reads no cache entry and launches no configuration refresh.
 
 Open assumptions:
 
-- Step order kept across the flow Open → the method ordering of the flow class that the balance summary step creates, confirmed when the first stack run reaches step three.
-- Completion log line with the cut-off time Open → the completion log reader of the end-to-end harness story, confirmed on the first stack run.
+- Step order kept across the flow Open → the balance summary step's flow ordering, confirmed on the first stack run.
+- Completion log line with the cut-off time Open → the harness log reader on the first stack run.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Conditional | step two must run ahead of step three in the same flow instance |
-| AC2 | Holds | the first sample account holds one return row and six rows in all |
-| AC3 | Holds | the transaction list makes no reference-data read |
-| AC4 | Holds | page-size validation rejects the call before any upstream call |
-| AC5 | Holds | token validation fails ahead of the authorization and data stages |
-| AC6 | Holds | the access guard denies the call before any data read |
-| AC7 | Holds | with failure injection off and an emptied cache each upstream operation runs once |
-| AC8 | Conditional | the harness must expose the completion log line with the cut-off time |
-| AC9 | Holds | with failure injection off every read answers fresh |
+| AC1 | Conditional | step two must run first |
+| AC2 | Holds | the account has one return row among six |
+| AC3 | Holds | the list reads no reference data |
+| AC4 | Holds | validation precedes every upstream call |
+| AC5 | Holds | token validation fails before authorization |
+| AC6 | Holds | denial precedes any data read |
+| AC7 | Holds | each operation runs once with injection off |
+| AC8 | Conditional | the harness must expose the cut-off time |
+| AC9 | Holds | injection off keeps every read fresh |
 
 ### Option B
 
 Settled assumptions:
 
-- The sample holds six transactions for the first sample account, all sharing one original time and a blank processed time.
-- The default page size of twenty holds all six rows of the first sample account.
-- The first regular fixture user is entitled to the first ten sample accounts, and the eleventh sample account sits outside that range.
-- The fixed purchase filter equals the category row of the first sample account's one balance.
+- Option A's sample, page-size and entitlement assumptions hold.
+- The fixed purchase filter equals the first sample account's one category row.
 
 Open assumptions:
 
 - Purchase row unchanged by a fixture refresh Open → the transaction fixture load report on each stack start.
-- Completion log line with the cut-off time Open → the completion log reader of the end-to-end harness story, confirmed on the first stack run.
+- Completion log line with the cut-off time Open → the harness log reader on the first stack run.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Breaks | the fixed filter is never read from step two |
-| AC2 | Holds | the first sample account holds one return row and six rows in all |
-| AC3 | Holds | the transaction list makes no reference-data read |
-| AC4 | Holds | page-size validation rejects the call before any upstream call |
-| AC5 | Holds | token validation fails ahead of the authorization and data stages |
-| AC6 | Holds | the access guard denies the call before any data read |
-| AC7 | Holds | with failure injection off and an emptied cache each upstream operation runs once |
-| AC8 | Conditional | the harness must expose the completion log line with the cut-off time |
-| AC9 | Holds | with failure injection off every read answers fresh |
+| AC1 | Breaks | the filter never comes from step two |
+| AC2 | Holds | the account has one return row among six |
+| AC3 | Holds | the list reads no reference data |
+| AC4 | Holds | validation precedes every upstream call |
+| AC5 | Holds | token validation fails before authorization |
+| AC6 | Holds | denial precedes any data read |
+| AC7 | Holds | each operation runs once with injection off |
+| AC8 | Conditional | the harness must expose the cut-off time |
+| AC9 | Holds | injection off keeps every read fresh |
 
 ## Metadata
 

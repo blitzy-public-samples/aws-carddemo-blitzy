@@ -98,73 +98,67 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — the end-to-end client keeps a stack of received next-page tokens and replays them to page backward.
+Recommended: Design Option A — the client replays kept next-page tokens to page backward.
 
-Rationale: a walk that keeps the tokens it received gives the deferred screen both paging keys of the mainframe list over the baseline interface, so backward paging needs no service change.
+Rationale: kept tokens give the deferred screen both mainframe paging keys over the baseline interface.
 
-- Rejected: Design Option B, previous-page tokens issued by the service — it changes the baseline contract and moves paging work into the service.
+- Rejected: Design Option B, service-issued previous-page tokens — it changes the baseline contract.
 
 ### Shared by both options
 
-- Topology: the end-to-end client on the build host calls the service in the shared test stack, which reaches the five stub services, the relational store behind them and the cache.
-- Naming: the paging step is the fourth test of the one ordered flow, run between the transaction list step and the transaction detail step, and named for the paging keys of the transaction list screen.
-- Addressing: the account sits in the request path, and the next-page token travels as a query value beside the page size and the filters on the service's published port.
-- Isolation: kept tokens live only in the client for one walk, and the walk reads only sample accounts, so the synthetic volume in its own number range never changes an expected page.
-- Fallback: a rejected token restarts the walk from the first page, a request without a token.
-- Provisioning: the end-to-end stage starts the stack before the suite and removes it after, and the shared loader seeds the six sample transactions the walk pages.
-- Cut-over: the deferred screen keeps the same paging behaviour, and the real transaction service replaces its stub by address and credential alone.
-- Failures: a failed page leaves every kept token valid, because each token carries its own position, and fails the step with its trace identifier.
+- Topology: the build host's end-to-end client calls the test stack's service, backed by five stubs, a store and a cache.
+- Naming: the step, the flow's fourth test, is named for the screen's paging keys.
+- Addressing: the account rides in the path and the token in the query, on the published port.
+- Isolation: kept tokens last one walk in the client, and sample accounts sit apart from the synthetic volume.
+- Fallback: a rejected token restarts the walk at the first page.
+- Provisioning: the end-to-end stage starts and removes the stack around the suite, seeded by the shared loader.
+- Cut-over: the screen keeps this paging, and the real transaction service replaces its stub by address and credential alone.
+- Failures: a failed page fails the step with its trace identifier and leaves kept tokens valid.
 
 ### Design Option A — client-kept token stack
 
-The client opens the first page with a request that carries no token and pushes each next-page token it receives onto a stack. Forward sends the newest kept token, and backward drops it and replays the token that opened the previous page, or sends no token for the first page. The walk ends on a page that arrives without a next-page token.
+The client opens the first page without a token and stacks each next-page token it receives. Forward sends the newest, and backward drops it and replays the one that opened the previous page, or none for the first page. An absent next-page token ends the list.
 
 How it behaves:
 
-- At page size two, the six sample transactions of the first sample account fill three pages in descending transaction number order.
-- The third page carries no next-page token, so forward paging stops there with no extra request.
-- Backward from the third page replays the token that opened the second page, and a request without a token then reopens the first page, each identical to its earlier visit.
-- Backward from the first page sends nothing, as the screen reports the top of the list.
-- The first-page token sent with an added type filter, and a malformed token, each draw the bad-request status before any upstream call.
-- An account outside the first regular fixture user's entitlements draws the permission-denied status with no transaction read.
-- A page size of ten, the screen's page length, returns all six rows on one page with no next-page token.
-- Every call is checked for the logged cut-off time, the client latency and its stub request log counts, and every page for a fresh data status header.
+- At page size two, the six sample transactions fill three pages, highest transaction number first.
+- Backward reopens each page as first seen, and at the top of the list sends nothing.
+- A mismatched filter or malformed token draws a bad request, and an unentitled account a denial, before any data read.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Backward by replaying a kept token (vs a previous-page token from the service) | needs no contract change | the client holds the walk's state |
-| 2 | Walk ends on an absent next-page token (vs an empty extra page) | matches the baseline end-of-list rule | each page needs a presence check |
-| 3 | Page size two on the six-item account (vs the default page size) | forces three pages from sample data | differs from the screen's page length |
-| 4 | Tampered and malformed tokens sent once each (vs repeating the codec cases) | proves rejection end to end | full codec cases stay with the token codec story |
+| 1 | Backward by token replay (vs a service previous-page token) | no contract change | the client holds walk state |
+| 2 | End on an absent next-page token (vs an empty page) | matches the baseline end-of-list rule | each page needs a presence check |
+| 3 | Page size two on six rows (vs the default size) | yields three sample pages | differs from the screen's page length |
+| 4 | One tampered and one malformed token (vs the codec cases) | proves rejection end to end | codec cases stay with their story |
 
-Effort and risk: small effort in one existing file, with a cached replayed page hiding a token-decoding fault as the main risk.
+Effort and risk: small, one existing file, at risk of a cached replay hiding a decoding fault.
 
-### Design Option B — previous-page tokens from the service
+### Design Option B — service-issued previous-page tokens
 
-Each page carries a previous-page token beside the next-page token, and the client follows it backward instead of keeping a stack. The transaction stub mints that token from the first row of the page and must also serve pages in ascending order from a cursor, which the service passes through. Forward paging, the end-of-list rule and the rejection cases match Option A.
+The transaction stub mints a previous-page token from each page's first row, and the service passes it through for the client to follow backward. Forward paging, the list end and the rejections match Option A.
 
 How it differs:
 
-- The page answer gains a previous-page field that the baseline contract lacks.
-- The service and the transaction stub gain a reverse page read, so paging work moves out of the client.
-- The client holds no state between pages, so a long walk costs it nothing.
-- Backward travel stays unavailable until the contract change lands, so the walk proves forward paging alone.
+- The page answer gains a previous-page field the baseline contract lacks.
+- Paging work moves from the client to the service and stub.
+- The client keeps no state, so a long walk costs it nothing.
+- Until the contract changes, the walk proves forward paging alone.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Previous-page token from the service (vs a client-kept token stack) | the client stays stateless | the baseline contract changes |
-| 2 | Reverse page read in the transaction stub (vs forward reads only) | a backward page costs one index seek | the stub gains work outside this story |
-| 3 | Page size two on the six-item account (vs the default page size) | forces three pages from sample data | differs from the screen's page length |
+| 1 | Previous-page token from the service (vs a client token stack) | the client stays stateless | the baseline contract changes |
+| 2 | Reverse page read in the stub (vs forward reads only) | one index seek per backward page | stub work beyond this story |
 
-Effort and risk: medium effort across the contract, the service and the stub, at risk on the backward criterion until a requirement adds the previous-page field.
+Effort and risk: medium, across contract, service and stub, at risk on backward paging.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: it mirrors the screen's backward key with no service change, over the same baseline interface the deferred screen will use.
-- Strongest argument against: the client must hold every token on a long walk, and a lost stack sends the walk back to the first page.
-- Shared items that do not decide the choice: the test stack, the fixture order, the rejection cases, the request log assertions and the deadline check.
-- Flip conditions: a Requirements Analysis entry adds a previous-page field to the page answer, or page tokens gain an expiry that would void kept tokens.
+- Why: it mirrors the screen's backward key with no service change.
+- Strongest argument against: the client holds a long walk's tokens, and losing them restarts the walk.
+- Shared items that do not decide the choice: the test stack, fixture order, page size two, rejection cases, request log and deadline checks.
+- Flip conditions: a Requirements Analysis entry adds a previous-page field, or kept tokens gain an expiry.
 
 ## Design Validation
 
@@ -172,41 +166,37 @@ Effort and risk: medium effort across the contract, the service and the stub, at
 
 Settled assumptions:
 
-- A page token carries its own position and is bound to the account and the filters, not to the page size.
-- The data is static this iteration, so a replayed token returns the same page.
-- The six sample transactions share one time, so they order by transaction number alone.
-- The first regular fixture user is entitled to the first ten sample accounts, and the eleventh sample account sits outside that range.
-- The flow empties the cache before step one, and no earlier step reads a page at page size two or ten.
-- The flow runs inside the configuration snapshot's fresh window, so no background refresh lands in a rejected call's log window.
-- The end-to-end client matches every call to its completion log line and reads its cut-off time.
+- A token holds its position, bound to account and filters but not page size.
+- The data is static this iteration.
+- The six sample transactions share one time, so transaction number orders them.
+- The first regular fixture user is entitled to the first ten sample accounts, not the eleventh.
+- The flow empties the cache before step one, and no earlier step reads pages of two or ten.
+- The flow runs in the configuration snapshot's fresh window, so no refresh lands in a rejected call's log.
+- The client reads each call's cut-off time from its matched completion log line.
 
 Open assumptions:
 
-- Cached replayed page hiding a token-decoding regression Open → the transaction client story's cache-key rules and the token codec story's unit cases.
+- Cached replayed page hiding a token-decoding fault Open → the transaction client story's cache-key rules and the token codec story's unit cases.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | a page size of two puts the two highest transaction numbers on the first page |
-| AC2 | Holds | the kept first-page token resumes after the second row |
-| AC3 | Holds | the last two rows leave no further item for a next-page token |
-| AC4 | Holds | a replayed token returns the same page over static data |
-| AC5 | Holds | the requested type filter differs from the filter bound into the token |
-| AC6 | Holds | a malformed token fails at receipt before any upstream call |
-| AC7 | Holds | all six rows fit inside a page of ten |
-| AC8 | Holds | the access guard denies the call before any data read |
-| AC9 | Holds | with failure injection off each upstream operation runs at most once per call |
-| AC10 | Holds | the end-to-end client checks the cut-off time and the latency on every call |
-| AC11 | Holds | with failure injection off every page answers fresh |
+| AC1 | Holds | the two highest numbers fill page one |
+| AC2 | Holds | the first-page token resumes at row three |
+| AC3 | Holds | nothing follows the last two rows |
+| AC4 | Holds | static data replays the same page |
+| AC5 | Holds | the filter differs from the token's bound filter |
+| AC6 | Holds | a malformed token fails before upstream calls |
+| AC7 | Holds | six rows fit in a page of ten |
+| AC8 | Holds | the access guard denies before any data read |
+| AC9 | Holds | with injection off no upstream operation repeats |
+| AC10 | Holds | the client checks cut-off and latency per call |
+| AC11 | Holds | with injection off every page is fresh |
 
 ### Option B
 
 Settled assumptions:
 
-- A page token carries its own position and is bound to the account and the filters, not to the page size.
-- The data is static this iteration, so a token returns the same page each time.
-- The six sample transactions share one time, so they order by transaction number alone.
-- The first regular fixture user is entitled to the first ten sample accounts, and the eleventh sample account sits outside that range.
-- The end-to-end client matches every call to its completion log line and reads its cut-off time.
+- Option A's token, data, order, entitlement and completion-log assumptions hold.
 
 Open assumptions:
 
@@ -214,17 +204,17 @@ Open assumptions:
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Conditional | holds only once the contract gains a previous-page field |
-| AC2 | Conditional | holds only once the contract gains a previous-page field |
-| AC3 | Conditional | holds only once the contract gains a previous-page field |
+| AC1 | Conditional | holds once the contract gains a previous-page field |
+| AC2 | Conditional | holds once the contract gains a previous-page field |
+| AC3 | Conditional | holds once the contract gains a previous-page field |
 | AC4 | Breaks | backward travel needs a field the baseline contract lacks |
-| AC5 | Holds | the requested type filter differs from the filter bound into the token |
-| AC6 | Holds | a malformed token fails at receipt before any upstream call |
-| AC7 | Holds | all six rows fit inside a page of ten |
-| AC8 | Holds | the access guard denies the call before any data read |
-| AC9 | Holds | with failure injection off each upstream operation runs at most once per call |
-| AC10 | Holds | the end-to-end client checks the cut-off time and the latency on every call |
-| AC11 | Holds | with failure injection off every page answers fresh |
+| AC5 | Holds | the filter differs from the token's bound filter |
+| AC6 | Holds | a malformed token fails before upstream calls |
+| AC7 | Holds | six rows fit in a page of ten |
+| AC8 | Holds | the access guard denies before any data read |
+| AC9 | Holds | with injection off no upstream operation repeats |
+| AC10 | Holds | the client checks cut-off and latency per call |
+| AC11 | Holds | with injection off every page is fresh |
 
 ## Metadata
 

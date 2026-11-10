@@ -102,71 +102,67 @@ Completed during implementation.
 
 Recommended: Design Option A — set-based batched inserts from a deterministic sequence.
 
-Rationale: a generator inside the fixture loader derives every synthetic transaction from its position in a fixed sequence, so the planning-baseline history needs no stored data and reads the same on every stack start.
+Rationale: a generator inside the fixture loader derives every row from a fixed seed, so no bulk data enters the repository and every stack start loads the same rows.
 
-- Rejected: Design Option B, pre-generated fixture files — they put hundreds of megabytes into the repository and add a parse cost to every stack start.
+- Rejected: Design Option B, pre-generated fixture files — they bloat the repository and slow stack starts.
 
 ### Shared by both options
 
-- Topology: the step runs inside the one-shot fixture loader at stack start, after the sample load and outside every request path.
-- Naming: synthetic transaction identifiers sit in a range disjoint from the sample range, and the load report entry names the synthetic transaction set.
-- Addressing: each row names one synthetic account in a fixed numeric range and that account's one card, and the card's cross-reference record supplies the row's account.
-- Isolation: synthetic rows never share an identifier with sample rows, so the end-to-end suite sees only the sample.
-- Fallback: none, because a failed load, or one that reaches the loader's time limit, ends the loader with a non-zero exit status, which keeps the stubs and the service from starting and fails the stack start.
-- Provisioning: the step runs after the sample load and the category balance volume on every stack start, with no data-set switch.
-- Cut-over: the step retires with the stubs, because the real transaction activity owner holds the real history.
-- Failures: any skipped row shows as a non-zero count in the load report and fails the shape test, and a failed batch or a query plan with a sort step rolls back the step and stops the loader.
+- Topology: a one-shot fixture loader step at stack start, after the sample load, outside request paths.
+- Naming: a disjoint synthetic identifier range under one load-report entry.
+- Addressing: each row names a fixed-range synthetic account and its card, whose cross-reference supplies the account.
+- Isolation: with no shared identifiers, end-to-end tests see only the sample.
+- Fallback: none, as a failed or timed-out load exits non-zero, failing the stack start.
+- Provisioning: every stack start, after the category balance volume, with no switch.
+- Cut-over: retires with the stubs.
+- Failures: a non-zero skip count fails the shape test, and a failed batch or sorting plan rolls back the step, stopping the loader.
 
 ### Design Option A — set-based batched inserts from a deterministic sequence
 
-A generator walks one million row positions and derives each row's account, card, type and category pair, amount, timestamps and identifier from its position and the fixed seed. Rows stream to the row writer in batches of one thousand inside one transaction, so memory holds one batch at a time. After the last batch the step refreshes the planner statistics and reads the query plan of the unfiltered first page on the large-history account before it commits.
+A generator maps one million positions to rows from the fixed seed. It writes thousand-row batches in one transaction and checks the query plan before commit.
 
 How it behaves:
 
-- One loader step runs after the three category balance volume steps, and its load report line carries the row count, zero skips and the load time.
-- The large-history account takes the first one hundred thousand positions, and every five-thousandth row on it carries type 05 with category 0001, which gives the sparse filter pair exactly twenty rows.
-- Each of the next nine thousand accounts takes one hundred positions, and the last 999 synthetic accounts take none, which keeps the empty-list path.
-- Every other row cycles through the seventeen remaining category reference pairs, and rows of the credit type carry negative amounts, as in the sample.
-- Each row's card follows the same fixed offset as the category balance volume story, so the generator reads no card list.
-- Every processed timestamp is distinct, so each account's newest-first order never falls back to the identifier.
-- A query plan that sorts or reads another index fails the step with a named error.
+- Its load-report line shows count, zero skips and load time.
+- Exactly twenty large-history rows carry type 05 with category 0001.
+- Cards come from a fixed offset, not a card list.
+- A sorting or other-index plan fails the step with a named error.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Rows derived from a fixed seed (vs a random source) | two runs yield identical rows | the seed must never change silently |
-| 2 | Set-based batches (vs row-by-row inserts) | load time stays inside the loader's time limit | large batches hold memory |
-| 3 | Sparse pair on the large-history account only (vs spread across accounts) | the volume scenario's worst case is exact | other accounts never exercise that pair |
-| 4 | Query plan check at stack start (vs a manual check) | a plan regression fails before any latency run | one planner choice can block both suites |
+| 1 | Fixed seed (vs random source) | identical rows every run | seed changes must be deliberate |
+| 2 | Set-based batches (vs row-by-row) | load fits the time limit | batches hold memory |
+| 3 | Sparse pair on one account (vs spread) | exact worst case | other accounts never exercise it |
+| 4 | Plan check at stack start (vs manual) | regressions fail before latency runs | one planner choice can block both suites |
 
-Effort and risk: small effort with one generator and one registration, low risk confined to the load time added to every stack start.
+Effort and risk: small effort, low risk limited to the load time added to every stack start.
 
 ### Design Option B — pre-generated fixture files
 
-The same one million rows are generated once by a separate tool and checked in as fixed-width fixture files beside the sample copy. The fixture loader reads them through the same parser and record layout as the sample daily transactions. The load order, identifier ranges, shape and query plan check are the same as in Option A.
+A separate tool writes the same rows once into files beside the sample copy. The loader parses them like the sample.
 
 How it differs:
 
-- About 350 megabytes of fixed-width text enter the repository.
-- Every stack start parses one million lines before the first insert.
-- Any shape change regenerates and re-commits the files.
-- A reviewer can read every row directly.
-- Determinism rests on the files staying unchanged rather than on the seed.
+- About 350 megabytes enter the repository.
+- Every stack start parses one million lines.
+- Shape changes regenerate the files.
+- Determinism rests on unchanged files.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Checked-in fixture files (vs generation at load time) | every row is open to direct review | the repository carries about 350 megabytes of bulk data |
-| 2 | Same parser as the sample (vs a dedicated generator) | no generation rule enters the loader | every stack start parses one million lines |
-| 3 | Sparse pair on the large-history account only (vs spread across accounts) | the volume scenario's worst case is exact | other accounts never exercise that pair |
+| 1 | Checked-in files (vs generation) | every row is reviewable | about 350 megabytes of bulk |
+| 2 | Sample parser (vs generator) | no loader generation rule | a million-line parse per start |
+| 3 | Sparse pair on one account (vs spread) | exact worst case | other accounts never exercise it |
 
 Effort and risk: small effort, at risk on repository size and stack start time.
 
 ### Recommendation
 
 - Option: Design Option A
-- Why: the shape lives in a few rules instead of a large file.
-- Strongest argument against: a generator defect repeats identically on every run, so determinism does not prove correctness.
-- Shared items that do not decide the choice: the shape, the identifier ranges, the ordering after the sample, the load report and the query plan check.
-- Flip conditions: a need to load data that a rule cannot describe, such as a captured production-like history.
+- Why: a few rules replace a large file.
+- Strongest argument against: a generator defect repeats on every run, so determinism does not prove correctness.
+- Shared items that do not decide the choice: shape, ranges, ordering, load report and plan check.
+- Flip conditions: data no rule describes, such as captured production-like history.
 
 ## Design Validation
 
@@ -174,52 +170,50 @@ Effort and risk: small effort, at risk on repository size and stack start time.
 
 Settled assumptions:
 
-- The synthetic accounts and their cards exist from the category balance volume story, one card per account.
-- The category reference data holds type 05 with category 0001, and no sample row carries that pair.
-- The keyset index exists from the schema story.
-- Every sample transaction identifier starts with seven zeros, so the synthetic range shares none of them.
-- The loader core runs steps in ascending order and stops at the first failed step.
+- The category balance volume story supplies accounts and cards.
+- Reference data holds type 05 with category 0001, unused by the sample.
+- The schema story supplies the keyset index.
+- Sample identifiers start with seven zeros.
+- The loader runs steps in order, stopping at the first failure.
 
 Open assumptions:
 
-- Load time on the pull-request runner Open → the first Compose stack start measured by the compose stack story.
-- Whether the planner chooses the keyset index at this volume Open → the query plan check after the load.
+- Pull-request runner load time Open → the compose stack story's first measured start.
+- Planner's keyset index choice at volume Open → the post-load plan check.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the generator walks exactly one million positions after the three hundred sample rows |
-| AC2 | Holds | each position maps to one account by a fixed range rule |
-| AC3 | Holds | only every five-thousandth row of the large-history account takes the sparse pair |
-| AC4 | Holds | no random source, clock or environment value enters a row |
-| AC5 | Holds | every card, account and pair comes from rows loaded before the step |
-| AC6 | Holds | the synthetic identifier range shares no leading digits with the sample |
-| AC7 | Holds | the step carries an order above every sample and category balance volume step |
-| AC8 | Conditional | the plan rests on fresh planner statistics after the load |
+| AC1 | Holds | one million positions follow the sample |
+| AC2 | Holds | a fixed range rule places each position |
+| AC3 | Holds | only every five-thousandth large-history row qualifies |
+| AC4 | Holds | no random, clock or environment input enters |
+| AC5 | Holds | every referenced row loads first |
+| AC6 | Holds | no synthetic identifier starts with seven zeros |
+| AC7 | Holds | the step follows the sample and volume loads |
+| AC8 | Conditional | the plan rests on fresh statistics |
 
 ### Option B
 
 Settled assumptions:
 
-- The synthetic accounts and their cards exist from the category balance volume story, one card per account.
-- The category reference data holds type 05 with category 0001, and no sample row carries that pair.
-- The keyset index exists from the schema story.
 - The generation tool's output is checked in once beside the sample copy.
+- Other prerequisites match Option A.
 
 Open assumptions:
 
-- Parse time added to the stack start Open → the first Compose stack start measured by the compose stack story.
-- Whether the planner chooses the keyset index at this volume Open → the query plan check after the load.
+- Stack start parse time Open → the compose stack story's first measured start.
+- Planner's keyset index choice at volume Open → the post-load plan check.
 
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Holds | the files hold exactly one million lines |
 | AC2 | Holds | the files carry the same account ranges |
 | AC3 | Holds | the files carry the same twenty sparse rows |
-| AC4 | Holds | the checked-in files are read unchanged on every run |
-| AC5 | Holds | every file line names a card, account and pair loaded before the step |
+| AC4 | Holds | unchanged files are read every run |
+| AC5 | Holds | every line references rows loaded first |
 | AC6 | Holds | the files carry the same disjoint identifier range |
 | AC7 | At risk | file parsing lengthens the load |
-| AC8 | Conditional | the plan rests on fresh planner statistics after the load |
+| AC8 | Conditional | the plan rests on fresh statistics |
 
 ## Metadata
 

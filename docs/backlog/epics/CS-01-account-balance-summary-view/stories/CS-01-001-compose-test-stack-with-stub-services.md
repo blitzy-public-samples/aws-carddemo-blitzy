@@ -32,6 +32,7 @@ Parent epic: [CS-01 Account Balance Summary View](../README.md)
 >     - `card-servicing-service` waits for `redis` and the five stubs with `service_healthy`, and for `fixture-loader` with `service_completed_successfully`.
 >   - Health checks: `postgres` and `redis` as above. The five stubs and the service inherit the image's probe and set an interval of 2 s, a probe timeout of 1 s, 30 retries and a 60 s start period, so a container that never listens turns unhealthy and fails `--wait`.
 >   - Ports: inside the stack every stub and the service listen on gRPC port 9090 and web port 8080. The file publishes them on fixed host ports, web then gRPC: service 8080 and 9090, Card Data stub 8081 and 9091, Transaction Activity stub 8082 and 9092, Config stub 8083 and 9093, Reference Data stub 8084 and 9094, Auth stub 8085 and 9095. A stub's web port serves its request log at `GET /internal/stub/request-log` (CS-11-002). `postgres` and `redis` publish no host port.
+>     > SCOPE-QUESTION (Resolved): The Ports bullet names no host address, so each mapping listens on every host interface and the unauthenticated stubs and their request logs answer other machines; the private stack network does not restrict published ports. Resolution: each of the twelve mappings names the IPv4 loopback address as `127.0.0.1:<host port>:<container port>`, from service `127.0.0.1:8080:8080` and `127.0.0.1:9090:9090` through Auth stub `127.0.0.1:8085:8080` and `127.0.0.1:9095:9090`, so only clients on the build host reach them. Host port numbers, in-stack ports, container-name addressing and stub behaviour, the service key ignored and no re-authorization, stay as stated. CS-01-002 and CS-01-003 address `http://localhost:<port>`, which the JDK resolves to `127.0.0.1` first because it prefers IPv4 addresses by default, and AC4's host calls target `127.0.0.1`. No file or dependency is added, so the 3 files touched stand.
 >   - Environment, every value a literal in the file with no `${…}` interpolation:
 >     - `card-servicing-service`: `AUTH_SERVICE_API_KEY` empty, `REDIS_HOST=redis`, `REDIS_PORT=6379`, `REDIS_PASSWORD` empty, `REDIS_SSL_ENABLED=false`, `AZURE_KEYVAULT_URI` empty, `UPSTREAM_TIMEOUT_MS=300`, `UPSTREAM_MAX_RETRIES=2`, `REQUEST_DEADLINE_MS=900` and `SPRING_PROFILES_ACTIVE=stack-service`.
 >     - `fixture-loader`, `card-data-stub`, `transaction-activity-stub` and `reference-data-stub`: `DB_URL=jdbc:postgresql://postgres:5432/cardservicing`, `DB_USERNAME=cardservicing`, `DB_PASSWORD=local-throwaway` and `AZURE_KEYVAULT_URI` empty.
@@ -71,6 +72,7 @@ Parent epic: [CS-01 Account Balance Summary View](../README.md)
 > - AC2: The `fixture-loader` container log holds the load report with zero skipped rows for all six entities. Sample rows: 50 accounts, 50 cross-references, 50 category balances, 300 transactions, 7 transaction types and 18 transaction categories. Synthetic rows: 10,000 accounts `10000000001`–`10000010000`, 10,000 cross-references, 100,000 category balances and 1,000,000 transactions.
 > - AC3: When the loader exits non-zero, `up -d --wait` exits non-zero and `card-servicing-service` and the five stubs are created but never started. The case is forced by a temporary override file outside the repository that gives `fixture-loader` a store password the store rejects. `docker compose -f tests/docker-compose.yml config` shows the loader's start command under a 600 s `timeout`.
 > - AC4: From the host, each stub answers one contract operation with `OK` on its published gRPC port, and the call appears in that stub's request log read from its published web port: Card Data `GetAccount` for `00000000001` on 9091, Transaction Activity `ListTransactions` for `00000000001` on 9092, Config `GetConfig` for `default_page_size` on 9093 returning `"20"`, Reference Data `ListTransactionTypes` on 9094 returning 7 rows, and Auth `ValidateToken` for `fixture-token-user0001` on 9095 returning subject `USER0001`.
+>   > SCOPE-QUESTION (Resolved): AC4 also checks the loopback publication that the note beneath section 1's Ports bullet sets. `docker compose -f tests/docker-compose.yml config` lists exactly twelve published port mappings, each with `host_ip` `127.0.0.1` and the host and container port pair of section 1, and a mapping with no host address, `0.0.0.0`, `::` or any address other than `127.0.0.1` fails AC4. On the running stack `docker compose -f tests/docker-compose.yml port <service> <container port>` prints `127.0.0.1:<host port>` for each mapping, for example `127.0.0.1:9091` for `port card-data-stub 9090`, and AC4's calls reach each stub through `127.0.0.1`. The AC list is unchanged.
 > - AC5: `docker compose -f tests/docker-compose.yml config` shows the environment of every container, the service container included, exactly as section 1 lists it, and no container carries a variable that section 1 does not list for it.
 >   > SCOPE-QUESTION (Resolved): Section 1's list includes the note beneath the Environment list, so `docker compose -f tests/docker-compose.yml config` shows `postgres` with exactly `POSTGRES_DB=cardservicing`, `POSTGRES_USER=cardservicing` and `POSTGRES_PASSWORD=local-throwaway`, `redis` with no variable, and every other container exactly as the Environment list gives it, its `SPRING_PROFILES_ACTIVE` value included. Any other variable on any container fails AC5. AC10 still holds: the only credential added is the throwaway local-container value `local-throwaway`, which the committed-secret scan of CS-11-001 allows.
 > - AC6: The service runs the upstream call policy with these values: each attempt times out at the lesser of 300 ms and the remaining request budget, and at most two retries follow, after 50 ms then 100 ms backoff, on `UNAVAILABLE` or `DEADLINE_EXCEEDED` only, each starting only when its backoff plus a full 300 ms attempt fits before the 900 ms cut-off. In this stack, with `card-data-stub` paused (`docker compose -f tests/docker-compose.yml pause card-data-stub`) and the cache emptied, `GET /v1/accounts/00000000001/balance-summary` with `fixture-token-user0001` returns 504, the logged `cutoffMs` is ≤ 900 and the client-measured response arrives below 1,000 ms. The per-attempt proof under injected latency and failure rates sits in CS-11-003 and the integration suites CS-09-006, CS-10-007, CS-11-007, CS-12-005 and CS-13-004.
@@ -119,97 +121,84 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — one stack file whose one-shot fixture loader gates every other application container.
+Recommended: Design Option A — one stack file whose one-shot loader gates every other application container.
 
-Rationale: one stack file, started by the one command both suites share, loads the sample set and the synthetic volume into one store in disjoint identifier ranges, so every run of that command yields the same data on every machine.
+Rationale: one start command always loads both data sets on every machine.
 
-- Rejected: Design Option B, one profile per suite — each suite names its profile in the start command, so the command both suites share no longer starts the same stack.
-- Rejected: a data-set switch read from the caller's shell — the same command loads different data on different machines.
-- Rejected: one stack file per suite — two start commands where the request gives one.
+- Rejected: Design Option B, one profile per suite — it splits the start command.
+- Rejected: a shell-read data-set switch — data then varies by machine.
+- Rejected: one stack file per suite — it needs two start commands.
 
 ```mermaid
 sequenceDiagram
-    participant Start as Start command
-    participant Store as Relational store
-    participant Cache as Cache
-    participant Loader as Fixture loader
-    participant Stubs as Five stub containers
-    participant Service as Card servicing service
-    Start->>Store: start and wait for health
-    Start->>Cache: start and wait for health
-    Store-->>Start: healthy
-    Cache-->>Start: healthy
-    Start->>Loader: start once the store is healthy
-    Loader->>Store: load sample set then synthetic volume
-    Loader-->>Start: exit with status zero
-    Start->>Stubs: start once the loader has succeeded
-    Stubs-->>Start: healthy
-    Start->>Service: start once cache and stubs are healthy
-    Service-->>Start: healthy
-    Note over Start: command returns once<br/>every container is ready
+    participant Command
+    Command->>Store: start
+    Command->>Cache: start
+    Store-->>Command: healthy
+    Cache-->>Command: healthy
+    Command->>Loader: start
+    Loader->>Store: load sample set, then synthetic volume
+    Loader-->>Command: exit zero
+    Command->>Stubs: start
+    Stubs-->>Command: healthy
+    Command->>Service: start
+    Service-->>Command: healthy
+    Note over Command: returns
 ```
 
 ### Shared by both options
 
-- Topology: one container each for the relational store, the cache, the fixture loader, each of the five stubs and the card servicing service, all on one private stack network.
-- Naming: each container carries a fixed stack name, and the service reaches each stub by that name.
-- Addressing: each stub and the service listen on the same two ports inside the stack, and the stack file maps each container to its own fixed pair of host ports.
-- Isolation: sample and synthetic rows sit in disjoint identifier ranges, and the end-to-end suite reads only sample accounts.
-- Fallback: a stopped or paused stub follows the degradation table, with stale or partial answers where the table allows them and a hard failure elsewhere.
-- Provisioning: every application container runs one image built from the service build, and its profile alone decides which mode it runs in.
-- Cut-over: the real services replace the stubs by a change of target address and credential source only, and the stack file stays a test asset.
-- Failures: a loader that fails or reaches its time limit stops the start, and a container that never turns healthy fails the start command.
+- Topology: store, cache, loader, five stubs and service on one private network.
+- Naming: the service reaches each stub by container name.
+- Addressing: each stub and the service publish fixed host ports on the build host's loopback address only.
+- Isolation: disjoint identifier ranges keep synthetic rows out of end-to-end reads.
+- Fallback: a stopped or paused stub yields the degradation table's answer.
+- Provisioning: one image, its mode set by each container's profile.
+- Cut-over: real services replace stubs by target address and credential source alone.
+- Failures: a failed loader or a never-healthy container fails the start.
 
 ### Design Option A — one stack file with a one-shot loader gating service start
 
-The stack file declares one fixture loader container that always loads the legacy sample set and then the synthetic volume, and every stub and the service wait for it to finish with status zero. Health checks on every long-running container make the start command return only when the full request path is ready. The same command and the same file serve the end-to-end and the performance suites.
+A one-shot loader always loads both data sets before stubs and service start. Both suites share this file and command.
 
 How it behaves:
 
-- The store and the cache start first and report healthy.
-- The fixture loader starts once the store is healthy, loads the sample set, then the synthetic volume, checks the query plan of the first transaction page and exits.
-- A loader that fails, or that is still running at its ten-minute limit, exits with a non-zero status, so the stubs and the service are created but never started.
-- The five stubs start after the loader succeeds, each serving one stub from the shared image.
-- The service starts after the cache and the five stubs report healthy.
-- Every value lives in the stack file itself, so no shell setting changes what the command starts or loads.
-- A stop removes every container, and the next start begins with an empty store and an empty cache.
+- A loader failure or ten-minute timeout leaves dependents created but unstarted.
+- A stop removes every container, emptying store and cache.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One stack file for both suites (vs one stack file per suite) | both suites share one start command | every start pays the volume load |
-| 2 | Loader as a one-shot container (vs loading inside the service at start) | a failed load stops the start before any request | the stack holds one more container |
-| 3 | Stubs from the service image (vs separate stub images) | one build feeds every application container | each stub container carries the whole service |
-| 4 | No data-set switch (vs a switch read from the shell) | the same command loads the same data everywhere | no run can skip the volume load |
+| 1 | One file for both suites (vs one per suite) | one start command | every start loads the volume |
+| 2 | One-shot loader container (vs in-service loading) | failed loads stop the start | one more container |
+| 3 | Stubs from the service image (vs separate images) | one build for every container | stubs carry the whole service |
+| 4 | No data-set switch (vs a shell-read one) | identical data everywhere | no run skips the volume |
 
-Effort and risk: small effort across three files, with the load time added to every start as the main risk.
+Effort and risk: small, with slower starts as the risk.
 
 ### Design Option B — profiles per suite
 
-The stack file keeps a sample-only loader for the end-to-end suite and adds a volume loader under a performance profile. The end-to-end suite starts the stack with no profile and loads only the sample set, while the performance suite names its profile to add the synthetic volume. Containers, health checks, ports and environment values are the same as in Option A.
+A sample-only loader serves end-to-end starts, and a performance profile adds a volume loader. All else matches Option A.
 
 How it differs:
 
-- The performance start command names its profile, so the two suites no longer share one command.
-- An end-to-end start skips the volume load and returns sooner.
-- A performance start runs a second loader after the sample loader.
-- A stop that names no profile can leave the volume loader container behind.
-- A run that names the wrong profile loads the wrong data set with no error.
+- The performance start command names its profile.
+- A wrong profile loads the wrong data set with no error.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One profile per suite (vs one stack for both suites) | an end-to-end start skips the volume load | the shared start command splits in two |
-| 2 | Volume loader as a second container (vs one loader for both data sets) | each data set has its own loader | a performance start waits on two loaders |
-| 3 | Stubs from the service image (vs separate stub images) | one build feeds every application container | each stub container carries the whole service |
+| 1 | One profile per suite (vs one shared stack) | end-to-end starts skip the volume | the start command splits |
+| 2 | Second volume loader (vs one for both sets) | one loader per data set | performance starts await two loaders |
+| 3 | Stubs from the service image (vs separate images) | one build for every container | stubs carry the whole service |
 
-Effort and risk: small effort across three files, at risk on the start command the request fixes for both suites.
+Effort and risk: small, risking the fixed start command.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: one command loads identical data on every machine, and the end-to-end suite reads only sample accounts, so it still observes the small set.
-- Strongest argument against: every start, end-to-end runs included, pays the synthetic volume load.
-- Shared items that do not decide the choice: the containers, the health checks, the host ports, the environment values, the shared image and the degradation behaviour.
-- Flip conditions: a volume load that outgrows the loader's time limit, or a request that allows a separate start command per suite.
+- Why: identical data everywhere, with end-to-end runs still reading only sample accounts.
+- Strongest argument against: end-to-end starts also pay the volume load.
+- Shared items that do not decide the choice: containers, health checks, ports, values, image and degradation.
+- Flip conditions: a load outgrowing the loader limit, or permission for per-suite start commands.
 
 ## Design Validation
 
@@ -217,57 +206,54 @@ Effort and risk: small effort across three files, at risk on the start command t
 
 Settled assumptions:
 
-- The pinned stack tool reports success once a one-shot dependency has exited with status zero, and leaves its dependents unstarted when it fails.
-- The pinned stack tool applies no wait limit to a one-shot dependency, so the loader's own time limit bounds the load.
-- The base image carries a shell that can open a network connection, and no web download tool.
-- The remote procedure server of each container listens only once its application is ready.
-- Each stub story serves its stub alone in a container when that container's profile names it.
+- The pinned stack tool awaits the loader's zero exit without limit, leaving a failed loader's dependents unstarted.
+- The base image shell opens network connections, and servers listen only once ready.
+- Each stub story serves one stub per profile.
 
 Open assumptions:
 
-- Load time on the continuous integration runner Open → the load time the transaction volume story records, set against the ten-minute loader limit.
-- Request-log reads from outside a stub container Open → the web route of the stub hosting story on each stub's published port.
+- Build runner load time Open → the transaction volume story's recorded time against ten minutes.
+- Host request-log reads Open → the stub hosting story's web route on each published port.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the wait succeeds once the loader completes and every long-running container reports healthy |
-| AC2 | Conditional | the full load must finish inside the loader's ten-minute limit |
-| AC3 | Holds | dependents of a failed one-shot loader stay created but unstarted |
-| AC4 | Holds | each stub listens on its own published port pair |
-| AC5 | Holds | every value is a literal in the stack file |
-| AC6 | Holds | the stack sets the values that the call policy story proves |
-| AC7 | Holds | the card data client serves a stale entry only inside its stale window |
-| AC8 | Holds | authentication and the transaction list have no degraded answer |
-| AC9 | Holds | configuration outcomes never change the data status |
-| AC10 | Holds | the stack file carries only empty or throwaway credentials |
+| AC1 | Holds | loader success and health checks gate readiness |
+| AC2 | Conditional | the full load must fit ten minutes |
+| AC3 | Holds | failed loads leave dependents unstarted |
+| AC4 | Holds | each stub has a loopback-bound port pair |
+| AC5 | Holds | every value is a literal |
+| AC6 | Holds | proven call-policy values apply |
+| AC7 | Holds | stale card data stays inside its window |
+| AC8 | Holds | authentication and transaction lists never degrade |
+| AC9 | Holds | configuration never changes data status |
+| AC10 | Holds | credentials are empty or throwaway |
 | AC11 | Holds | no named volume survives a stop |
 
 ### Option B
 
 Settled assumptions:
 
-- The pinned stack tool reports success once a one-shot dependency has exited with status zero, and leaves its dependents unstarted when it fails.
-- The performance start command names its profile.
-- A start that names no profile loads only the sample set.
+- The stack tool behaves as under Option A.
+- A profile-free start loads only the sample set.
 
 Open assumptions:
 
-- Whether a stop that names no profile removes the volume loader container Open → a trial stop on the pinned stack tool.
-- Load time of a performance start Open → the load time the transaction volume story records.
+- Profile-free stop cleanup Open → a trial stop on the pinned tool.
+- Performance load time Open → the transaction volume story's recorded time.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Conditional | the plain start command brings up only the end-to-end data set |
-| AC2 | Breaks | the plain start command loads no synthetic rows |
-| AC3 | Holds | dependents of a failed one-shot loader stay created but unstarted |
-| AC4 | Holds | each stub listens on its own published port pair |
-| AC5 | Holds | every value is a literal in the stack file |
-| AC6 | Holds | the stack sets the values that the call policy story proves |
-| AC7 | Holds | the card data client serves a stale entry only inside its stale window |
-| AC8 | Holds | authentication and the transaction list have no degraded answer |
-| AC9 | Holds | configuration outcomes never change the data status |
+| AC1 | Conditional | plain starts load only sample data |
+| AC2 | Breaks | plain starts load no synthetic rows |
+| AC3 | Holds | failed loads leave dependents unstarted |
+| AC4 | Holds | each stub has a loopback-bound port pair |
+| AC5 | Holds | every value is a literal |
+| AC6 | Holds | proven call-policy values apply |
+| AC7 | Holds | stale card data stays inside its window |
+| AC8 | Holds | authentication and transaction lists never degrade |
+| AC9 | Holds | configuration never changes data status |
 | AC10 | Holds | profiles need no interpolation |
-| AC11 | At risk | a stop that names no profile can leave the volume loader container behind |
+| AC11 | At risk | profile-free stops may leave the volume loader |
 
 ## Metadata
 

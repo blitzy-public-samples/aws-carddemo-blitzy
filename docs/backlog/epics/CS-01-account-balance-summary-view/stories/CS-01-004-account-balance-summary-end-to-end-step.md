@@ -85,76 +85,66 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — named checks on each contract field, with stub request-log checks on every call.
+Recommended: Design Option A, named field checks.
 
-Rationale: a flow step that names each account-view field it expects, and reads which upstream operations ran behind each answer, proves the balance summary along the real request path and hands the next step the type code it drills into.
+Rationale: named field and per-call log checks prove the summary on the real request path.
 
-- Rejected: Design Option B, a snapshot comparison of the whole answer — the read time and every error answer's trace identifier change on each call, and every added contract field breaks the stored snapshot.
+- Rejected: Design Option B, a whole-answer snapshot needing masks and broken by added fields.
 
 ### Shared by both options
 
-- Topology: the step runs on the build host and reaches the service and the five stubs through the end-to-end client over the stack's published host ports.
-- Naming: the step is the first of one ordered flow shared by the four interactions, and the later interaction steps join the same flow after it.
-- Addressing: the allowed call reads the first sample account as the first regular fixture user, and the denial call uses the eleventh sample account, the first one outside that user's entitlements.
-- Isolation: the flow empties the cache before the step, so the allowed call is the first read of the account and of the transaction types, and the rejected calls run first while the client closes each call's log window only once the stub logs have settled, so no background configuration refresh falls inside their log windows.
-- Fallback: the step has no fallback path, so an unexpected status, a missing field or a missing log entry fails the step instead of being skipped.
-- Provisioning: the continuous integration gate starts the stack before the suite and stops it afterwards, and the step needs no data beyond the sample set the loader always loads.
-- Cut-over: a real user interface replaces the end-to-end client and keeps the step's expected values, and real services replace the stubs by address and credential alone.
-- Failures: a failed step stops every later step through the type-code hand-off, and degraded or failed upstream outcomes are proven under injection by the endpoint assembly story and the integration suites.
+- Topology: from the build host, the end-to-end client reaches the service and five stubs.
+- Naming: the step opens the ordered flow and hands its type code onward.
+- Addressing: the first fixture user reads the first sample account and is denied the eleventh.
+- Isolation: the cache is emptied, then rejected calls run first in settled log windows.
+- Fallback: none; any unexpected status, field or log entry fails the step.
+- Provisioning: the end-to-end gate starts and stops the stack; the step reads only sample data.
+- Cut-over: a real interface replaces the client; real services replace stubs by address and credential.
+- Failures: a failed step halts later steps at the hand-off; the assembly story and integration suites prove injected failures.
 
 ### Design Option A — named field checks with per-call stub log checks
 
-The step sends four rejected calls and one allowed call through the end-to-end client, one at a time. It checks the allowed answer field by field against the values the sample records and the contract example fix, and checks each error answer by status, code and field detail. For every call it reads the new stub log entries and checks which upstream operations ran.
+Four rejected calls precede the allowed call. The step checks each answer by named field and each call's stub log.
 
 How it behaves:
 
-- The allowed answer is checked for the account number, the active status, the current balance, the credit limit, the cash credit limit, the cycle credit and debit, and the three dates.
-- The account group must be absent, because the sample record leaves it blank.
-- The type-group balances must hold one entry with type code, type description and balance.
-- The data-status header and the data status in the body must both read fresh.
-- The read time is checked by its form, with six fractional digits and a zone suffix.
-- The allowed call's log entries must show the two authentication operations, the two card data reads and the transaction-type read, each once.
-- The denial call must show the two authentication operations and no data read.
-- The two malformed account numbers must show no upstream call, and the malformed token must show token validation alone.
-- Every call passes the client's deadline check on cut-off time and client latency.
+- The blank account group must be absent; the read time is checked by form.
+- Each call's stub log shows only the upstream operations its outcome allows.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Field-by-field checks (vs a whole-answer snapshot) | values that change per call stay out of the comparison | a new contract field goes unchecked until a step names it |
-| 2 | Expected values written in the step (vs read from the contract example at run time) | the step reads plainly against the sample record | a change to the contract example needs a matching step change |
-| 3 | Absent account group checked as a missing field (vs an empty value accepted) | the check follows the omit-when-blank contract rule | a blank group sent as empty text fails the step |
-| 4 | Read time checked by its form (vs by its value) | the check holds whenever the call runs | a wrong read time of the right form passes |
-| 5 | Upstream operations checked per call (vs once per step) | each rejected call proves its own stop point | each call waits for the stub logs to settle |
+| 1 | Field-by-field checks (vs a whole-answer snapshot) | per-call values stay outside the comparison | new contract fields stay unchecked pending assertion |
+| 2 | Expected values in the step (vs from the contract example) | the step reads plainly against the sample record | contract example changes need step changes |
+| 3 | Blank account group checked as absent (vs empty text accepted) | the check follows the contract's blank-field omission rule | empty text for a blank group fails |
+| 4 | Read time checked by form (vs by value) | the check holds on every run | a wrong read time of the right form passes |
+| 5 | Upstream operations checked per call (vs per step) | each rejected call proves its stop point | each call waits for settled stub logs |
 
-Effort and risk: small effort in one file, with drift between the written values and the sample record as the main risk.
+Effort and risk: small, one file, at risk of sample-record drift.
 
 ### Design Option B — snapshot comparison of the whole answer
 
-The step stores each answer of the step as a reference document and compares every run's answers against it after masking the values that change per call. Rejected calls, call order and stub log checks match Option A. A field added to the contract shows up as a difference from the snapshot.
+Each answer is compared with a stored reference after masking per-call values. Calls and log checks match Option A.
 
 How it differs:
 
-- The allowed answer and each error answer are compared as whole documents against stored reference answers.
-- The read time and every error answer's trace identifier change on each call, so each needs a mask.
-- An added optional field fails the comparison until the reference answers are regenerated.
-- A wrong value and a missing field show up in one difference listing instead of by name.
-- The reference answers form a second file kept beside the flow.
+- Differences show in one listing, not by field name.
+- An added optional field fails pending regenerated references.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
 | 1 | Whole-answer snapshot (vs field-by-field checks) | every field is compared without naming it | each additive contract change breaks the snapshot |
-| 2 | Masked read time and trace identifier (vs exact comparison) | values that change per call no longer fail the comparison | the mask also hides a malformed read time |
-| 3 | Reference answers kept in a file (vs written in the step) | the expected answers read as whole documents | the step touches a second file |
+| 2 | Read time and trace identifier masked (vs compared exactly) | masked per-call values no longer fail the comparison | the mask also hides a malformed read time |
+| 3 | Reference answers in a file (vs in the step) | the expected answers read as whole documents | the step touches a second file |
 
-Effort and risk: small effort across two files, at risk on the read-time check that the mask removes.
+Effort and risk: small, two files, at risk on the masked read time.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: it checks every account-view field by name, keeps values that change per call out of the comparison and stays in the one flow file.
-- Strongest argument against: a field added to the contract goes unasserted until a step names it.
-- Shared items that do not decide the choice: the end-to-end client, the default fixture identity, the denial account, the cache emptying before the step, the call order, the stub log checks and the deadline check.
-- Flip conditions: the contract growing past what the flow steps name, or the read time leaving the answer body so a snapshot needs no mask.
+- Why: it names every field, needs no masks and stays in one file.
+- Strongest argument against: added contract fields stay unasserted until named.
+- Shared items that do not decide the choice: the client, cache emptying, call order, log checks and deadline check.
+- Flip conditions: the contract outgrowing the named fields, or the read time leaving the answer body.
 
 ## Design Validation
 
@@ -162,53 +152,49 @@ Effort and risk: small effort across two files, at risk on the read-time check t
 
 Settled assumptions:
 
-- The account sample record fixes the account values, the category-balance sample record fixes the single balance, and the transaction-type sample record fixes the type description.
-- The first regular fixture user is entitled to the first ten sample accounts, and the eleventh sample account exists outside that range.
-- The service writes one completion log line per request with its cut-off time.
-- Each stub log numbers its entries in receipt order.
+- Sample records fix the expected values, and the fixture user holds the first ten accounts.
+- The service logs each request's cut-off time, and stub logs number entries in receipt order.
 - A rejected call reads no cache entry and launches no configuration refresh.
 
 Open assumptions:
 
-- Empty cache at the allowed call Open → the cache emptying before the step, confirmed by the account read in the card data log on the first stack run.
-- Stack tool access to the cache container Open → the first run of the emptying command in the end-to-end stage.
-- Log entry written before the stub's answer reaches the service Open → the write order the stub hosting story fixes for its request log.
+- Empty cache Open → an account read in the first stack run's card data log.
+- Cache container access Open → the emptying command's first run.
+- Log entry before stub answer Open → the stub hosting story's write order.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | each account-view field is checked by name against the sample record |
-| AC2 | Holds | each value is checked by name or by its form |
-| AC3 | Conditional | the cache must be empty when the allowed call starts |
-| AC4 | Holds | the access guard denies the call before any data read |
-| AC5 | Holds | the receipt stage rejects both numbers before any upstream call |
-| AC6 | Holds | token validation fails ahead of the authorization and data stages |
-| AC7 | Holds | the client applies the deadline check to every call |
-| AC8 | Holds | with failure injection off each upstream operation runs once |
+| AC1 | Holds | each field is checked by name |
+| AC2 | Holds | each value is checked by name or form |
+| AC3 | Conditional | the allowed call needs an empty cache |
+| AC4 | Holds | the access guard denies before any data read |
+| AC5 | Holds | both numbers fail before any upstream call |
+| AC6 | Holds | token validation fails before the authorization stage |
+| AC7 | Holds | the client checks each deadline |
+| AC8 | Holds | no call retries with injection off |
 
 ### Option B
 
 Settled assumptions:
 
-- The account sample record fixes the account values, the category-balance sample record fixes the single balance, and the transaction-type sample record fixes the type description.
-- The first regular fixture user is entitled to the first ten sample accounts, and the eleventh sample account exists outside that range.
-- The reference answers are taken from one run on the sample set.
+- Option A's sample-record and entitlement assumptions hold, and one sample-set run yields the references.
 
 Open assumptions:
 
-- Read-time mask Open → a mask that still checks the timestamp form.
-- Reference answer upkeep Open → a regeneration rule agreed for additive contract changes.
-- Empty cache at the allowed call Open → the cache emptying before the step, confirmed by the account read in the card data log on the first stack run.
+- Read-time mask Open → a mask keeping the form check.
+- Reference upkeep Open → an agreed regeneration rule for additive changes.
+- Empty cache Open → the first run's card data log.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the snapshot holds every account-view field |
-| AC2 | At risk | the masked read time escapes the form check |
-| AC3 | Conditional | the cache must be empty when the allowed call starts |
-| AC4 | Conditional | the denial's changing trace identifier needs a mask |
-| AC5 | Conditional | each rejection's changing trace identifier needs a mask |
-| AC6 | Conditional | the rejection's changing trace identifier needs a mask |
-| AC7 | Holds | the client applies the deadline check to every call |
-| AC8 | Holds | with failure injection off each upstream operation runs once |
+| AC1 | Holds | the snapshot holds every field |
+| AC2 | At risk | the mask skips the form check |
+| AC3 | Conditional | the allowed call needs an empty cache |
+| AC4 | Conditional | the denial's trace identifier needs a mask |
+| AC5 | Conditional | each rejection's trace identifier needs a mask |
+| AC6 | Conditional | the rejection's trace identifier needs a mask |
+| AC7 | Holds | the client checks each deadline |
+| AC8 | Holds | no call retries with injection off |
 
 ## Metadata
 

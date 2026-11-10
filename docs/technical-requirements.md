@@ -202,7 +202,7 @@ Card Servicing is the consumer of all five external systems; each system is the 
 
 - Role: producer of token validation (subject and roles) and per-account access decisions.
 - Operations: `ValidateToken`, `AuthorizeAccountAccess`; contracts [auth_service.proto](../card-servicing-service/src/main/proto/cardservicing/auth/v1/auth_service.proto) and [auth-service.yaml](../card-servicing-service/src/main/resources/openapi/auth-service.yaml).
-- Data read: the fixture identity file `card-servicing-service/src/main/resources/fixtures/auth-identities.yaml`, a classpath resource derived from the ten CardDemo users ([admin fixture policy](#admin-fixture-policy)).
+- Data read: the fixture identity file `card-servicing-service/src/main/resources/fixtures/auth-identities.yaml`, a classpath resource derived from the ten users in `CardDemo user security seed · DUSRSECJ · user records` ([admin fixture policy](#admin-fixture-policy)).
 - Stub-phase hosting: gRPC stub with the fixture identities (CS-12-001), loopback in the test JVM, container in Compose.
 - Degradation: fail closed. 401 for an invalid, expired or malformed token, 403 for `allowed=false`, otherwise 503 or 504, with no account data read. The client (CS-12-002) sends the service API key; `AccountAccessGuard` (CS-12-003) calls it; the Key Vault secret source is CS-12-004 and the integration suite CS-12-005.
 - Swap point: the client's target address and credential source only.
@@ -420,9 +420,9 @@ Every `S<n>` in the diagram has a row above, and every row has its diagram form 
 
 ### Admin fixture policy
 
-- The two Use Cases sources disagree. The CardDemo README states that "the Admin users can only perform Admin functions". The main menu program (`Use Cases · COMEN01C`) blocks only regular users from admin-only options, and the account view program (`Use Cases · COACTVWC`) carries no admin prohibition.
+- The two Use Cases sources disagree. The CardDemo README (`CardDemo README · Application Details`, its user-types passage) states that "the Admin users can only perform Admin functions". The main menu program (`Use Cases · COMEN01C`) blocks only regular users from admin-only options, and the account view program (`Use Cases · COACTVWC`) carries no admin prohibition.
 - CardDemo has no user-to-account entitlement at all, so either reading has to be expressed as fixture data.
-- The plan follows the README statement, the application-level rule and the least-privilege reading. `ADMIN001`–`ADMIN005` hold valid tokens with no accounts. `USER0001`–`USER0005` are each entitled to ten sample accounts in ID order (`USER0001` → `00000000001`–`00000000010`, `USER0002` → `00000000011`–`00000000020`, through `USER0005` → `00000000041`–`00000000050`) plus a 2,000-account slice of the synthetic range. The fixtures also hold one expired and one malformed token.
+- The plan follows the CardDemo README statement, the application-level rule and the least-privilege reading. `ADMIN001`–`ADMIN005` hold valid tokens with no accounts. `USER0001`–`USER0005` are each entitled to ten sample accounts in ID order (`USER0001` → `00000000001`–`00000000010`, `USER0002` → `00000000011`–`00000000020`, through `USER0005` → `00000000041`–`00000000050`) plus a 2,000-account slice of the synthetic range. The fixtures also hold one expired and one malformed token.
 - This is a fixture policy, not an inherited rule. It is set in `card-servicing-service/src/main/resources/fixtures/auth-identities.yaml` (CS-12-001), and changing it is an edit to that file with no code change. The missing entitlement source is listed in [Recommendations](implementation-plan.md#recommendations).
 
 ## Card Servicing UI
@@ -510,7 +510,7 @@ Settled by CS-06-002 with CS-13-003: the category-balance contract carries `type
 - `REQUEST_DEADLINE_MS` is never a Config key.
 - The call policy reads its values through the `UpstreamSettings` provider (CS-11-003), which starts on the built-in defaults with a no-op `accessAllowed` hook and is backed by the snapshot once CS-11-006 lands, so no dependency changes.
 
-Launch-point tests: CS-11-006 proves that `accessAllowed` launches one refresh per stale period, single-flight under concurrent requests, without blocking the caller. CS-12-003 proves that the guard calls `accessAllowed` only after `allowed=true`. CS-05-003, CS-06-001, CS-07-001 and CS-08-001 prove that a Stage 0 400 leaves every stub request log empty, Config included. CS-12-005 proves that, with a stale snapshot, Stage 0 400, 401 and 403 requests leave the Config stub log empty while an allowed request yields exactly one `GetConfig`, and that an injected Config latency of 2,000 ms does not delay that request's response.
+Launch-point tests: CS-11-006 proves that `accessAllowed` launches one refresh per stale period, single-flight under concurrent requests, without blocking the caller. CS-12-003 proves that the guard calls `accessAllowed` only after `allowed=true`. CS-05-003, CS-06-001, CS-07-001 and CS-08-001 prove that a Stage 0 400 leaves every stub request log empty, Config included. CS-12-005 proves that, with a stale snapshot and the `cs:v1:config` mirror entry past its 300 s fresh TTL, Stage 0 400, 401 and 403 requests leave the Config stub log empty while an allowed request yields exactly one `GetConfig`, and that an injected Config latency of 2,000 ms does not delay that request's response. A fresh mirror entry satisfies the refresh with no `GetConfig` (CS-11-006).
 
 ### Stage budget on a cold path
 
