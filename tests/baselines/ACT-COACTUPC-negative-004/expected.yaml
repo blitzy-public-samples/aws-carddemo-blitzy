@@ -1,0 +1,74 @@
+# Derived baseline (capture_platform: derived) of scenario
+# ACT-COACTUPC-negative-004, authored from the COBOL and BMS source because no
+# TPE region runs in CI; only `report.py --import-unikix` replaces it, from
+# imported UniKix evidence. Open under GAP-INF-005 (derived ACT e2e baselines)
+# and GAP-INF-012 (online-only copybooks).
+#
+# It pins the account not-found screen as the source composes it, not the
+# message condition DID-NOT-FIND-ACCT-IN-ACCTDAT ('Did not find this account
+# in account master file'): that condition is tested after the account read,
+# but its one SET is commented out, so it is never set and never stops the
+# fetch [app/cbl/COACTUPC.cbl:479-528,3627-3629,3719] (GAP-UNC-014). That the
+# fetch goes on to the customer read and the details screen is the suspected
+# defect GAP-DEF-020, pinned as observed, never corrected.
+#
+# One screen per step, each the reply to the step's AID:
+# 1. USER0001 signs on and COSGN00C routes the type 'U' user to COMEN01C,
+#    which sends the main menu with a blank message
+#    [app/cbl/COSGN00C.cbl:221-237] [app/cbl/COMEN01C.cbl:236-252]
+#    [app/cpy/COMEN02Y.cpy:31-35].
+# 2. Option 2 XCTLs to COACTUPC, whose fresh-entry path sends COACTUP with a
+#    blank ACCTSID and ERRMSG and the search-key prompt
+#    [app/cbl/COACTUPC.cbl:880-893,964-972,2955-2983].
+# 3. ENTER with account 00000000001. 1210-EDIT-ACCOUNT accepts it and
+#    2000-DECIDE-ACTION performs 9000-READ-ACCT [app/cbl/COACTUPC.cbl:
+#    1783-1817,2562-2580,3608-3649]. CXACAIX gives card 9680294154603697 and
+#    customer 000000001 (app/data/ASCII/cardxref.txt record 49); ACCTDAT
+#    returns NOTFND because the fixture omits the account, and 9300 STRINGs
+#    'Account:' + id + ' not found in' + ' Acct Master file.Resp:' +
+#    ERROR-RESP '000000013 ' + ' Reas:' + ERROR-RESP2 into the 75-byte
+#    WS-RETURN-MSG, which cuts RESP2 to its first four digits '0000'; ERRMSG
+#    adds 3 spaces [app/cbl/COACTUPC.cbl:36-42,395-406,3701-3740,2979-2981].
+#    CUSTDAT then finds customer 000000001 (app/data/ASCII/custdata.txt
+#    record 1), 2000 sets ACUP-SHOW-DETAILS and 3250 the PROMPT-FOR-CHANGES
+#    INFOMSG; 3202 shows the customer fields [app/cbl/COACTUPC.cbl:
+#    2575-2580,2698-2724,2787-2867,2955-2983,3752-3765,3801-3885].
+#
+# The account fields of step 3 (ACSTTUS, ACURBAL, ACRDLIM, ACSHLIM, ACRCYCR,
+# ACRCYDB, OPN*, EXP*, RIS*, AADDGRP) are deliberately unasserted: they are
+# moved from ACCOUNT-RECORD, which the failed READ leaves as uninitialised
+# working storage, so their content depends on the platform.
+#
+# Values are whole BMS fields, trailing spaces kept: comparison never trims.
+# CURDATE and CURTIME come from the region clock, which UniKix cannot fix,
+# hence the matchers; TITLE01 and TITLE02 come from COTTL01Y
+# [app/cpy/COTTL01Y.cpy:17-22].
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN002: '02. Account Update                      '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  ACCTSID: '00000000001'
+  ACSFNAM: 'Immanuel                 '
+  ACSLNAM: 'Kessler                  '
+  ACSTNUM: '000000001'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S'
+    match: run-time
+  ERRMSG: 'Account:00000000001 not found in Acct Master file.Resp:000000013  Reas:0000   '
+  INFOMSG: 'Update account details presented above.      '
+  PGMNAME: COACTUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP

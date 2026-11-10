@@ -1,0 +1,66 @@
+# Derived baseline of scenario CRD-COCRDSLC-alternate-01 (capture_platform:
+# derived): USER0001 signs on, selects main-menu option 4 'Credit Card View'
+# and lands on the COCRDSLC search screen with the input prompt. Authored from
+# the source, never captured; open until report.py --import-unikix promotes a
+# UniKix run (GAP-INF-006, GAP-INF-012).
+# One screen per step, each the screen shown after the step's AID. Values are
+# at full BMS field width with their trailing spaces; fields the program
+# leaves LOW-VALUES are captured as spaces. CURDATE and CURTIME come from the
+# region clock, so they are run-date and run-time matchers.
+screens:
+# Step 1: COSGN00C XCTLs a type-U user to COMEN01C with program context 0
+# [app/cbl/COSGN00C.cbl:222-240]; on first entry COMEN01C sends COMEN1A from
+# LOW-VALUES with ERASE [app/cbl/COMEN01C.cbl:87-90,182-193]: header
+# [app/cbl/COMEN01C.cbl:212-231] [app/cpy/COTTL01Y.cpy:18-22], option 4 as
+# '04' + '. ' + its 35-byte name in the 40-byte WS-MENU-OPT-TXT
+# [app/cbl/COMEN01C.cbl:48,236-256] [app/cpy/COMEN02Y.cpy:43-47], and the
+# blank WS-MESSAGE in the 78-byte ERRMSG [app/cbl/COMEN01C.cbl:79-80,187].
+# The fields are those MNU-COMEN01C-alternate-04 asserts for the same screen.
+- '@map': COMEN01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTN004: '04. Credit Card View                    '
+  PGMNAME: COMEN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CM00
+# Step 2: option 4 is numeric, within the 10 options, of user type U and not a
+# DUMMY program, so COMEN01C XCTLs to COCRDSLC with context 0
+# [app/cbl/COMEN01C.cbl:127-155]. Either branch of COCRDSLC's COMMAREA test
+# leaves CDEMO-PGM-ENTER, so ENTER sends CCRDSLA without reading a file
+# [app/cbl/COCRDSLC.cbl:268-299,349-356,427-497]. No card is found, so the card
+# fields stay LOW-VALUES. ACCTSID and CARDSID get LOW-VALUES or the CC-ACCT-ID
+# and CC-CARD-NUM that INITIALIZE CC-WORK-AREA leaves blank, and get no '*'
+# because CDEMO-PGM-REENTER is set only after 1300-SETUP-SCREEN-ATTRS
+# [app/cbl/COCRDSLC.cbl:254-256,462-472,541-551,563-567]. The blank
+# WS-INFO-MSG becomes the 36-character prompt in the 40-byte INFOMSG, the blank
+# 75-byte WS-RETURN-MSG fills the 80-byte ERRMSG, whose last position is the
+# FKEYS attribute byte, and FKEYS shows its BMS INITIAL
+# [app/cbl/COCRDSLC.cbl:126-132,490-496] [app/bms/COCRDSL.bms:144-152].
+# The fields are every one the scenario's inline expectation names, so this
+# baseline asserts no less than the scenario: ACCTSID, CARDSID and FKEYS are
+# kept, and the values agree with MNU-COMEN01C-alternate-04 on every field the
+# two share.
+- '@map': COCRDSL
+  ACCTSID: '           '
+  CARDSID: '                '
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                                '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  FKEYS: 'ENTER=Search Cards  F3=Exit                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDSLC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCDL

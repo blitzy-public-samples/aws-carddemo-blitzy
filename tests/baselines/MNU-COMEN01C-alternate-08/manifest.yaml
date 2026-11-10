@@ -1,0 +1,27 @@
+# Manifest of the derived baseline of MNU-COMEN01C-alternate-08. Only unikix
+# can run the scenario, so expected.yaml was authored from the source, not
+# captured: option 8 of the COMEN02Y table [app/cpy/COMEN02Y.cpy:67-72], which
+# COMEN01C validates and XCTLs to COTRN02C [app/cbl/COMEN01C.cbl:127-160]
+# (GAP-INF-003, GAP-INF-012). It names no execution_id or
+# execution_fingerprint and holds no datasets/*.bin until an eligible UniKix
+# run is imported (report.py --import-unikix).
+#
+# source_identity.units are COMEN01C and its COPY closure
+# (inventory_tools.copy_closure). DFHAID and DFHBMSCA are CICS-supplied and not
+# in the repository, so they are absent.
+baseline_version: 1.0.0
+capture_date: '2026-11-10'
+capture_platform: derived
+source_commit: 4a31915e589d867aab3941e6e336f66c17ee5fc9
+source_identity:
+  commit: 4a31915e589d867aab3941e6e336f66c17ee5fc9
+  tree: app
+  units:
+    app/cbl/COMEN01C.cbl: ad5e376ac9221b21b8ce47597a5ca17fc1f39dc913793c814c6675e9b046fc09
+    app/cpy-bms/COMEN01.CPY: 21275363519e57f47c5c7842178344208f3ad773a551e74e5eeff285c775ad5c
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COMEN02Y.cpy: 22b1be06734c9ae91a25c4b544f9a9c4c85ab3f281a3d3bcc0765fb17e585d85
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb

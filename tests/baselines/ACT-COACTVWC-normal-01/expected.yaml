@@ -1,0 +1,68 @@
+# Derived baseline of scenario ACT-COACTVWC-normal-01 (capture_platform:
+# derived): authored from the app/ source, never captured, so it has no
+# datasets/ (GAP-INF-005, GAP-INF-012). One screen per step, each the screen
+# shown after the step's AID, over the fields the scenario asserts.
+# Step 3 shows account 00000000001 (ACCTDATA record 1) and its customer
+# 000000001 (CUSTDATA record 1) as 1200-SETUP-SCREEN-VARS moves them
+# [app/cbl/COACTVWC.cbl:460-535]. Amounts carry the BMS PICOUT
+# +ZZZ,ZZZ,ZZZ.99. AADDGRP is blank because ACCT-GROUP-ID is blank in the
+# fixture (GAP-DEF-005). ACSTSSN's 12th byte keeps the LOW-VALUES of
+# 1100-SCREEN-INIT and reads as a space.
+# INFOMSG pins the input prompt, not 'Displaying details of given Account':
+# 9000-READ-ACCT sets WS-NO-INFO-MESSAGE and nothing sets WS-INFORM-OUTPUT,
+# so 1200 restores WS-PROMPT-FOR-INPUT [app/cbl/COACTVWC.cbl:115-116,528-530,
+# 689] (GAP-UNC-013).
+# Row 1 fields are pinned from app/bms/COACTVW.bms; the UniKix copy lacks the
+# unnamed row 1, columns 1-9 field (GAP-DOC-025).
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN001: '01. Account View                        '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTVW
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TRNNAME: CAVW
+- '@map': COACTVW
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
+  ACSADL1: '618 Deshaun Route                                 '
+  ACSADL2: 'Apt. 802                                          '
+  ACSCITY: 'Altenwerthshire                                   '
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
+  ACSFNAM: 'Immanuel                 '
+  ACSGOVT: 00000000000049368437
+  ACSHLIM: +      1,020.00
+  ACSLNAM: 'Kessler                  '
+  ACSMNAM: 'Madeline                 '
+  ACSPFLG: Y
+  ACSPHN1: (908)119-8310
+  ACSPHN2: (373)693-8684
+  ACSSTTE: NC
+  ACSTDOB: '1961-06-08'
+  ACSTFCO: '274'
+  ACSTNUM: '000000001'
+  ACSTSSN: '020-97-3888 '
+  ACSTTUS: Y
+  ACSZIPC: '12546'
+  ACURBAL: +        194.00
+  ADTOPEN: '2014-11-20'
+  AEXPDT: '2025-05-20'
+  AREISDT: '2025-05-20'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAVW

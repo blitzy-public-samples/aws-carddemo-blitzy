@@ -1,0 +1,21 @@
+# Derived baseline of MNU-COMEN01C-alternate-06: main-menu option 6 transfers
+# to COTRN00C under CT00. Only unikix can run the scenario, so expected.yaml is
+# authored from the source and is inferred-not-observed (GAP-INF-003,
+# GAP-INF-012). It names no execution_id or execution_fingerprint and holds no
+# datasets/ until an eligible UniKix run is imported (report.py --import-unikix).
+#
+# source_identity.units are the app/ sources the expectation was derived from:
+# COMEN01C's option edit and XCTL [app/cbl/COMEN01C.cbl:127-160] and the option
+# table that names COTRN00C for option 6 [app/cpy/COMEN02Y.cpy:21,55-59]. An
+# e2e run has no program COPY closure in harness.results, so no other unit is
+# listed.
+baseline_version: '1.0.0'
+capture_date: '2026-11-10'
+capture_platform: derived
+source_commit: 0c85b6a8f32a96c938accebe34b8a68418657956
+source_identity:
+  commit: 0c85b6a8f32a96c938accebe34b8a68418657956
+  tree: app
+  units:
+    app/cbl/COMEN01C.cbl: ad5e376ac9221b21b8ce47597a5ca17fc1f39dc913793c814c6675e9b046fc09
+    app/cpy/COMEN02Y.cpy: 22b1be06734c9ae91a25c4b544f9a9c4c85ab3f281a3d3bcc0765fb17e585d85
