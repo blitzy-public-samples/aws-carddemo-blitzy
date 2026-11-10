@@ -17,7 +17,7 @@ sequenceDiagram
         participant AuthService as Auth service
         participant ConfigService as Config service
         participant CardDataService as Card Data service
-        participant ReferenceDataService as Reference Data service
+        participant ReferenceDataService as Reference Data
     end
     box rgb(244,204,204) Security
         participant LegendSecurity as Security
@@ -29,43 +29,43 @@ sequenceDiagram
 
     CardServicingUi->>ApiGateway: GET category balances
     ApiGateway->>CardServicingService: Forward request with bearer token
-    CardServicingService->>CardServicingService: Start 900 ms deadline and traceId
-    CardServicingService->>CardServicingService: Read held configuration snapshot
-    CardServicingService->>CardServicingService: Validate accountId 11 digits not all zero and typeCode pattern
-    alt invalid parameter
+    CardServicingService->>CardServicingService: Start 900 ms deadline<br/>and traceId
+    CardServicingService->>CardServicingService: Read held<br/>configuration snapshot
+    CardServicingService->>CardServicingService: Validate accountId<br/>11 digits not all zero<br/>and typeCode pattern
+    break invalid parameter
         CardServicingService-->>ApiGateway: 400 ErrorObject INVALID_ARGUMENT
         ApiGateway-->>CardServicingUi: 400 ErrorObject, no upstream or Config call
     end
 
     CardServicingService->>AccountAccessGuard: Check bearer token and account access
     AccountAccessGuard->>AuthService: ValidateToken
-    alt token invalid
+    break token invalid
         AuthService-->>AccountAccessGuard: UNAUTHENTICATED
         AccountAccessGuard-->>CardServicingService: Deny with 401
         CardServicingService-->>ApiGateway: 401 ErrorObject UNAUTHENTICATED
         ApiGateway-->>CardServicingUi: 401 ErrorObject
-    else Auth unavailable or deadline spent
+    end
+    break Auth unavailable or deadline spent
         AccountAccessGuard-->>CardServicingService: Fail closed after retries
         CardServicingService-->>ApiGateway: 503 or 504 ErrorObject
         ApiGateway-->>CardServicingUi: 503 or 504 ErrorObject
-    else token valid
-        AuthService-->>AccountAccessGuard: Subject and roles
     end
+    AuthService-->>AccountAccessGuard: Subject and roles
 
     AccountAccessGuard->>AuthService: AuthorizeAccountAccess for subject and accountId
-    alt allowed false
+    break allowed false
         AuthService-->>AccountAccessGuard: allowed false
         AccountAccessGuard-->>CardServicingService: Deny with 403, no data read
         CardServicingService-->>ApiGateway: 403 ErrorObject PERMISSION_DENIED
         ApiGateway-->>CardServicingUi: 403 ErrorObject
-    else Auth unavailable or deadline spent
+    end
+    break Auth unavailable or deadline spent
         AccountAccessGuard-->>CardServicingService: Fail closed, no data read
         CardServicingService-->>ApiGateway: 503 or 504 ErrorObject
         ApiGateway-->>CardServicingUi: 503 or 504 ErrorObject
-    else allowed true
-        AuthService-->>AccountAccessGuard: allowed true
-        AccountAccessGuard-->>CardServicingService: Access allowed
     end
+    AuthService-->>AccountAccessGuard: allowed true
+    AccountAccessGuard-->>CardServicingService: Access allowed
 
     opt stale configuration snapshot
         CardServicingService-)ConfigService: GetConfig background refresh, not awaited
@@ -90,11 +90,11 @@ sequenceDiagram
     end
 
     alt unknown typeCode, reference data usable
-        CardServicingService->>CardServicingService: Discard data read, outcome 400
+        CardServicingService->>CardServicingService: Discard data read,<br/>outcome 400
     else no usable reference data
-        CardServicingService->>CardServicingService: Skip typeCode check, apply filter, mark PARTIAL
+        CardServicingService->>CardServicingService: Skip typeCode check,<br/>apply filter,<br/>mark PARTIAL
     else typeCode known or absent
-        CardServicingService->>CardServicingService: Apply typeCode filter and label descriptions
+        CardServicingService->>CardServicingService: Apply typeCode filter<br/>and label descriptions
     end
 
     Note over CardServicingService: Cut-off at or before 900 ms
@@ -103,7 +103,7 @@ sequenceDiagram
         CardServicingService-->>ApiGateway: 400 ErrorObject for typeCode
         ApiGateway-->>CardServicingUi: 400 ErrorObject
     else category balances read or served stale
-        CardServicingService->>CardServicingService: Sort by typeCode and categoryCode, resolve dataStatus
+        CardServicingService->>CardServicingService: Sort by typeCode<br/>and categoryCode,<br/>resolve dataStatus
         CardServicingService-->>ApiGateway: 200 balances, dataStatus FRESH, STALE or PARTIAL
         ApiGateway-->>CardServicingUi: 200 with X-Data-Status, null descriptions if PARTIAL
     else account unknown
@@ -114,4 +114,4 @@ sequenceDiagram
         ApiGateway-->>CardServicingUi: 503 or 504 ErrorObject
     end
 
-    Note over LegendCompute,LegendNetworking: The service checks the token and account access, then reads the account's category balances and the category descriptions concurrently through the cache. An unknown typeCode returns 400 while reference data is usable, and missing descriptions give PARTIAL.
+    Note over LegendCompute,LegendNetworking: The service checks the token and account<br/>access, then reads the account's category<br/>balances and the category descriptions<br/>concurrently through the cache. An unknown<br/>typeCode returns 400 while reference data<br/>is usable, and missing descriptions<br/>give PARTIAL.

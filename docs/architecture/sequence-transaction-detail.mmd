@@ -4,24 +4,24 @@ title: Transaction detail request sequence
 sequenceDiagram
     box rgb(173,216,230) Compute
         participant LegendCompute as Compute
-        participant CardServicingUi
-        participant ApiGateway
-        participant CardServicingService
+        participant CardServicingUi as Card Servicing UI
+        participant ApiGateway as API gateway
+        participant CardServicingService as Card Servicing service
     end
     box rgb(144,238,144) Data stores
         participant LegendDataStores as Data stores
-        participant AzureManagedRedis
+        participant AzureManagedRedis as Azure Managed Redis
     end
     box rgb(211,211,211) External systems
         participant LegendExternal as External systems
-        participant AuthService
-        participant ConfigService
-        participant TransactionActivityService
-        participant CardDataService
+        participant AuthService as Auth service
+        participant ConfigService as Config service
+        participant TransactionActivityService as Transaction Activity service
+        participant CardDataService as Card Data service
     end
     box rgb(244,204,204) Security
         participant LegendSecurity as Security
-        participant AccountAccessGuard
+        participant AccountAccessGuard as Account access guard
     end
     box rgb(255,255,224) Networking
         participant LegendNetworking as Networking
@@ -29,46 +29,46 @@ sequenceDiagram
 
     CardServicingUi->>ApiGateway: GET transaction detail
     ApiGateway->>CardServicingService: Forward with bearer token
-    CardServicingService->>CardServicingService: Start 900 ms deadline and traceId
+    CardServicingService->>CardServicingService: Start 900 ms deadline<br/>and traceId
     CardServicingService->>CardServicingService: Read held config snapshot
-    CardServicingService->>CardServicingService: Validate accountId and transactionId
-    alt invalid accountId or transactionId
+    CardServicingService->>CardServicingService: Validate accountId<br/>and transactionId
+    break invalid accountId or transactionId
         CardServicingService-->>ApiGateway: 400 ErrorObject with traceId
         ApiGateway-->>CardServicingUi: 400 with no upstream call
     end
 
     CardServicingService->>AccountAccessGuard: Check token and account access
     AccountAccessGuard->>AuthService: ValidateToken
-    alt token valid
-        AuthService-->>AccountAccessGuard: Subject and roles
-    else token invalid
+    break token invalid
         AuthService-->>AccountAccessGuard: UNAUTHENTICATED
         AccountAccessGuard-->>CardServicingService: Token rejected
         CardServicingService-->>ApiGateway: 401 ErrorObject with traceId
         ApiGateway-->>CardServicingUi: 401 with no data read
-    else Auth unavailable or deadline spent
+    end
+    break Auth unavailable or deadline spent
         AccountAccessGuard-->>CardServicingService: Fail closed
         CardServicingService-->>ApiGateway: 503 or 504 ErrorObject
         ApiGateway-->>CardServicingUi: 503 or 504 with no data read
     end
+    AuthService-->>AccountAccessGuard: Subject and roles
 
     AccountAccessGuard->>AuthService: AuthorizeAccountAccess
-    alt allowed true
-        AuthService-->>AccountAccessGuard: allowed true
-    else allowed false
+    break allowed false
         AuthService-->>AccountAccessGuard: allowed false
         AccountAccessGuard-->>CardServicingService: Access denied
         CardServicingService-->>ApiGateway: 403 ErrorObject with traceId
         ApiGateway-->>CardServicingUi: 403 with no data read
-    else Auth unavailable or deadline spent
+    end
+    break Auth unavailable or deadline spent
         AccountAccessGuard-->>CardServicingService: Fail closed
         CardServicingService-->>ApiGateway: 503 or 504 ErrorObject
         ApiGateway-->>CardServicingUi: 503 or 504 with no data read
     end
+    AuthService-->>AccountAccessGuard: allowed true
     AccountAccessGuard-->>CardServicingService: Access allowed
 
     opt stale configuration snapshot
-        CardServicingService-)ConfigService: GetConfig background refresh
+        CardServicingService-)ConfigService: GetConfig background refresh, not awaited
     end
 
     par transaction
@@ -83,11 +83,11 @@ sequenceDiagram
         CardServicingService->>CardDataService: GetCardCrossReference
         CardDataService-->>CardServicingService: Card numbers on account
     end
-    CardServicingService->>CardServicingService: Match transaction card to account
+    CardServicingService->>CardServicingService: Match transaction card<br/>to account
     Note over CardServicingService: Cut-off at or before 900 ms
 
     alt card belongs to account
-        CardServicingService->>CardServicingService: Resolve dataStatus and asOf
+        CardServicingService->>CardServicingService: Resolve dataStatus<br/>and asOf
         CardServicingService-->>ApiGateway: 200 transaction detail
         ApiGateway-->>CardServicingUi: 200 with dataStatus FRESH or STALE
     else not found or card not on account
@@ -101,4 +101,4 @@ sequenceDiagram
         ApiGateway-->>CardServicingUi: 503 or 504
     end
 
-    Note over LegendCompute,LegendNetworking: The service validates the request and checks access, then reads the transaction and the account card cross-references concurrently. A transaction whose card number is not on the account returns 404.
+    Note over LegendCompute,LegendNetworking: The service validates the request and<br/>checks access, then reads the transaction<br/>and the account card cross-references<br/>concurrently. A transaction whose card<br/>number is not on the account returns 404.
