@@ -1,0 +1,127 @@
+# A monthly report request confirmed with a value other than Y or N.
+# Steps 1-2 reach the empty CORPT00 screen as MNU-COMEN01C-alternate-09 does:
+# USER0001 signs on, COSGN00C routes the type-U user to COMEN01C, and option 9
+# transfers control to CORPT00C with CDEMO-PGM-CONTEXT zero, so CORPT00C takes
+# its first-entry path, sets CDEMO-PGM-REENTER and sends CORPT0AO at
+# LOW-VALUES with a blank ERRMSG [app/cbl/CORPT00C.cbl:165-181,556-580].
+#
+# Step 3 runs under CR00, the TRANSID CORPT00C returned with. ENTER on the
+# re-entry receives the map into CORPT0AI and performs PROCESS-ENTER-KEY
+# [app/cbl/CORPT00C.cbl:183-186,596-604]. MONTHLY holds 'X', so the first WHEN
+# takes the monthly branch: it builds the start and end dates of the run month
+# from FUNCTION CURRENT-DATE into the JCL parameter fields only, then performs
+# SUBMIT-JOB-TO-INTRDR [app/cbl/CORPT00C.cbl:212-238]. CONFIRM holds 'X', so
+# the 'Please confirm' check does not hold [app/cbl/CORPT00C.cbl:464-474], and
+# the EVALUATE on CONFIRMI accepts only 'Y'/'y' and clears the screen only on
+# 'N'/'n'; WHEN OTHER builds
+#   STRING '"' CONFIRMI DELIMITED BY SPACE
+#          '" is not a valid value to confirm...' INTO WS-MESSAGE,
+# sets WS-ERR-FLG, puts the cursor on CONFIRM and performs SEND-TRNRPT-SCREEN
+# [app/cbl/CORPT00C.cbl:476-494]. WS-MESSAGE was set to spaces when the task
+# started [app/cbl/CORPT00C.cbl:169-170] and STRING writes only the 38
+# characters it composes, so the rest stays blank. SEND-TRNRPT-SCREEN rebuilds
+# the header from COTTL01Y and CSDAT01Y, moves the message to ERRMSG, sends
+# CORPT00 with ERASE and goes to RETURN-TO-CICS, which ends the task
+# [app/cbl/CORPT00C.cbl:556-591,609-628]. The JOBS write loop after the
+# EVALUATE is never reached [app/cbl/CORPT00C.cbl:496-508], so no report job
+# is submitted.
+# The absence of a submission is pinned by the screen staying on CORPT00 with
+# the confirm-value message, not through @TDQ:JOBS: the JOBS capture belongs
+# to RPT-CORPT00C-normal-01..03, and asserting it here would hold this
+# validation case behind GAP-MIS-017 as well.
+id: RPT-CORPT00C-negative-17
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects main-menu option 9 (Transaction Reports) and, on
+  the CORPT00 screen (CR00), marks the monthly report and answers the
+  confirmation with 'X'. CORPT00C refuses the answer with '"X" is not a valid
+  value to confirm...', redisplays the request with Monthly and the 'X' still
+  entered, and submits no report job.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, and the online-only copybooks CORPT00C copies. Sign-on
+# and the menu (CC00, CM00, COSGN00, USRSEC, option 9) are verified by the SEC
+# and MNU scenarios; CVTRA05Y is a batch copybook listed at the unit level.
+inventory_ids:
+- INV-RPT-028  # CORPT00C message '"<CONFIRMI>" is not a valid value to confirm...' (rule)
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, where option 9 is entered
+- INV-RPT-002  # CORPT00 map, the empty screen and the refused request
+- INV-CFG-019  # CR00 transaction, under which the request is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes step 3 a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; CORPT00C reads no file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # The monthly report, confirmed with a value that is neither Y nor N.
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      MONTHLY: 'X'
+      CONFIRM: 'X'
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. CORPT0AO redefines CORPT0AI
+# [app/cpy-bms/CORPT00.CPY:121] and the monthly branch touches no input field
+# between RECEIVE and SEND, so MONTHLY and CONFIRM come back as entered and the
+# fields left alone keep their FSET blank INITIAL [app/bms/CORPT00.bms:80-210].
+# ERRMSG is 78 bytes [app/bms/CORPT00.bms:218-221], the 38-character message
+# followed by the blanks of the 80-byte WS-MESSAGE [app/cbl/CORPT00C.cbl:39].
+# CURDATE and CURTIME come from the region clock, in the MM/DD/YY and HH:MM:SS
+# forms POPULATE-HEADER-INFO builds [app/cbl/CORPT00C.cbl:609-628].
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: 'X'
+    YEARLY: ' '
+    CUSTOM: ' '
+    SDTMM: '  '
+    SDTDD: '  '
+    SDTYYYY: '    '
+    EDTMM: '  '
+    EDTDD: '  '
+    EDTYYYY: '    '
+    CONFIRM: 'X'
+    ERRMSG: '"X" is not a valid value to confirm...                                        '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # CORPT00 screen, the confirm-value message after ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - '"X" is not a valid value to confirm...                                        '

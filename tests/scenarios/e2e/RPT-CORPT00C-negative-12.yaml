@@ -1,0 +1,132 @@
+# A custom-range report request whose end day is out of range.
+# Steps 1-2 reach the empty CORPT00 screen as MNU-COMEN01C-alternate-09 does:
+# USER0001 signs on, COSGN00C routes the type-U user to COMEN01C, and option 9
+# 'Transaction Reports' [app/cpy/COMEN02Y.cpy:74-78] transfers control to
+# CORPT00C with CDEMO-PGM-CONTEXT zero, so CORPT00C takes its first-entry path,
+# sets CDEMO-PGM-REENTER and sends CORPT0AO at LOW-VALUES with a blank ERRMSG
+# [app/cbl/CORPT00C.cbl:172-181,556-580].
+#
+# Step 3 runs under CR00, the TRANSID CORPT00C returned with. ENTER on the
+# re-entry receives the map into CORPT0AI and performs PROCESS-ENTER-KEY
+# [app/cbl/CORPT00C.cbl:183-186,596-604]. MONTHLY and YEARLY keep their blank
+# INITIAL and CUSTOM holds 'X', so the custom branch runs. Every date part is
+# supplied, so none of its empty checks fires [app/cbl/CORPT00C.cbl:256-303].
+# NUMVAL-C then normalizes each part through WS-NUM-99 or WS-NUM-9999 and moves
+# it back, which leaves '01', '01', '2022', '07', '50' and '2022' as entered
+# [app/cbl/CORPT00C.cbl:74-75,305-327]. The start month, day and year and the
+# end month pass their checks; the end day '50' is numeric but compares
+# greater than '31', so CORPT00C moves 'End Date - Not a valid Day...' to
+# WS-MESSAGE, sets WS-ERR-FLG, puts the cursor on EDTDD and performs
+# SEND-TRNRPT-SCREEN [app/cbl/CORPT00C.cbl:329-371]. That paragraph rebuilds
+# the header from COTTL01Y and CSDAT01Y, moves the message to ERRMSG, sends
+# CORPT00 with ERASE and goes to RETURN-TO-CICS, which ends the task
+# [app/cbl/CORPT00C.cbl:556-591,609-628]. The end-year check, the CSUTLDTC
+# date validation and SUBMIT-JOB-TO-INTRDR are never reached, so no
+# confirmation is asked and nothing is written to the JOBS queue
+# [app/cbl/CORPT00C.cbl:373-510].
+# The absence of a submission is pinned by the screen staying on CORPT00 with
+# the end-day message, not through @TDQ:JOBS: the JOBS capture (GAP-MIS-017)
+# belongs to RPT-CORPT00C-normal-01..03, and asserting it here would hold this
+# validation case behind that capture as well.
+# The UniKix copy's CORPT00C and CORPT00 match app/ on this path, so no
+# copy-difference entry applies.
+id: RPT-CORPT00C-negative-12
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects main-menu option 9 (Transaction Reports) and, on
+  the CORPT00 screen (CR00), asks for a custom report from 01/01/2022 to
+  07/50/2022. CORPT00C refuses the request with 'End Date - Not a valid
+  Day...', redisplays the entered values and submits no report job.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, and the online-only copybooks CORPT00C copies. Sign-on
+# and the menu (CC00, CM00, COSGN00, USRSEC, option 9) are verified by the SEC
+# and MNU scenarios; CVTRA05Y is a batch-level record copybook this path never
+# uses.
+inventory_ids:
+- INV-RPT-021  # CORPT00C message 'End Date - Not a valid Day...' (rule)
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, where option 9 is entered
+- INV-RPT-002  # CORPT00 map, the empty screen and the refused request
+- INV-CFG-019  # CR00 transaction, under which the request is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes step 3 a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; CORPT00C reads no file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # The valid custom range with the end day replaced by '50'.
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      CUSTOM: 'X'
+      SDTMM: '01'
+      SDTDD: '01'
+      SDTYYYY: '2022'
+      EDTMM: '07'
+      EDTDD: '50'
+      EDTYYYY: '2022'
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. CORPT0AO redefines CORPT0AI [app/cpy-bms/CORPT00.CPY:121],
+# and the NUMVAL-C round trip returns every date part unchanged, so the entered
+# values come back as received; MONTHLY and YEARLY show their blank INITIAL,
+# and CONFIRM, which has none, shows as a space. ERRMSG is the 78-byte ERRMSGO:
+# the 29-character message followed by spaces from the 80-byte WS-MESSAGE.
+# CURDATE and CURTIME come from the region clock, in the MM/DD/YY and HH:MM:SS
+# forms POPULATE-HEADER-INFO builds [app/cbl/CORPT00C.cbl:609-628].
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: 'X'
+    SDTMM: '01'
+    SDTDD: '01'
+    SDTYYYY: '2022'
+    EDTMM: '07'
+    EDTDD: '50'
+    EDTYYYY: '2022'
+    CONFIRM: ' '
+    ERRMSG: 'End Date - Not a valid Day...                                                 '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # CORPT00 screen, the end-day message after ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'End Date - Not a valid Day...                                                 '

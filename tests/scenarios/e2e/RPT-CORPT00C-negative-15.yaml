@@ -1,0 +1,158 @@
+# A custom-range report request whose end date, 2022-02-30, has the date form
+# but is not a calendar date. The refusal comes from CSUTLDTC, so the scenario
+# also verifies CSUTLDTC date acceptance for the mask YYYY-MM-DD that CORPT00C
+# passes.
+#
+# Steps 1-2: USER0001 signs on through CC00 and COSGN00C routes the type-U user
+# to the main menu COMEN01. Option '9' is 'Transaction Reports', program
+# CORPT00C [app/cpy/COMEN02Y.cpy:74-78]; COMEN01C transfers control with XCTL
+# and a zero CDEMO-PGM-CONTEXT, so CORPT00C takes its first-entry path, sets
+# CDEMO-PGM-REENTER, clears CORPT0AO and sends CORPT00 with a blank ERRMSG
+# [app/cbl/CORPT00C.cbl:172-181,556-580].
+#
+# Step 3 runs under CR00, the TRANSID CORPT00C returned with. ENTER receives
+# the map and performs PROCESS-ENTER-KEY [app/cbl/CORPT00C.cbl:183-186]:
+# - MONTHLY and YEARLY keep their blank INITIAL and CUSTOM holds 'X', so the
+#   custom branch runs. Every date part is supplied, so no empty check fires
+#   [app/cbl/CORPT00C.cbl:212-303].
+# - NUMVAL-C converts each part and moves it back, which leaves '01', '01',
+#   '2022', '02', '30' and '2022' unchanged. Each part is numeric, the months
+#   are not above '12' and the days not above '31', so the month, day and year
+#   checks pass [app/cbl/CORPT00C.cbl:305-379].
+# - CSUTLDTC accepts the start date 2022-01-01 with mask 'YYYY-MM-DD'
+#   [app/cbl/CORPT00C.cbl:381-406]. It then passes the end date 2022-02-30
+#   with the same mask; CSUTLDTC hands both to CEEDAYS and returns the feedback
+#   severity and message number in the first 19 bytes of its result
+#   [app/cbl/CSUTLDTC.cbl:42-47,103-124]. February has no 30th, so CEEDAYS
+#   refuses the date with a severity other than 0000 and the message number of
+#   an invalid date value (2508, FC-BAD-DATE-VALUE), not 2513.
+# - CORPT00C therefore moves 'End Date - Not a valid date...' to WS-MESSAGE,
+#   sets WS-ERR-FLG, puts the cursor on EDTMM and performs SEND-TRNRPT-SCREEN
+#   [app/cbl/CORPT00C.cbl:408-426]. That paragraph sends CORPT00 with ERASE and
+#   ends with GO TO RETURN-TO-CICS, so the task ends there: SUBMIT-JOB-TO-INTRDR
+#   never runs, no confirmation is asked and no JCL record is written to the
+#   JOBS queue [app/cbl/CORPT00C.cbl:428-436,556-591].
+#
+# That nothing is submitted shows in ERRMSG, which holds the date message
+# instead of 'Please confirm to print the Custom report...' or 'Custom report
+# submitted for printing ...'. @TDQ:JOBS is deliberately not asserted: its
+# capture (GAP-MIS-017) is scoped to RPT-CORPT00C-normal-01..03, and asserting
+# it here would hold this date-validation rule behind a capture it never
+# reaches.
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - CEEDAYS's refusal of 30 February is inferred, not observed (GAP-INF-001),
+#   and whether UniKix supplies CEEDAYS at all is unknown (GAP-MIS-010).
+# - The UniKix copy's CSUTLDTC passes CEEDAYS lengths trimmed of trailing
+#   spaces (GAP-DOC-021). 2022-02-30 fills the 10-byte field, so the trim does
+#   not change this input, but a UniKix run still cannot verify the items that
+#   gap lists, this scenario's primary item and INV-UTL-003 among them.
+# - CORPT0AO redefines CORPT0AI [app/cpy-bms/CORPT00.CPY:121], so the received
+#   values go back as entered. MONTHLY and YEARLY show their blank INITIAL, and
+#   CONFIRM, which has no INITIAL and was never typed, shows as a space
+#   [app/bms/CORPT00.bms:80-210].
+# - Text values are whole fields at their BMS length, trailing spaces kept:
+#   ERRMSG is the 78-byte ERRMSGO, the 30-character message followed by spaces
+#   from the 80-byte WS-MESSAGE [app/cbl/CORPT00C.cbl:39,560].
+# - CURDATE and CURTIME come from the region clock in the mm/dd/yy and
+#   hh:mm:ss forms of POPULATE-HEADER-INFO [app/cbl/CORPT00C.cbl:609-628],
+#   hence the matchers and clock_mode relative.
+id: RPT-CORPT00C-negative-15
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects main-menu option 9 'Transaction Reports' and, on
+  CORPT00 (CR00), asks for a custom report from 01/01/2022 to 02/30/2022.
+  Every date part passes its own check and CSUTLDTC accepts the start date,
+  but CSUTLDTC, through CEEDAYS with mask YYYY-MM-DD, refuses the end date
+  2022-02-30. CORPT00C sends CORPT00 again with 'End Date - Not a valid
+  date...' and the entered values, and submits no report job.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the online-only copybooks CORPT00C copies, and the
+# CSUTLDTC date-acceptance item whose YYYY-MM-DD refusal this scenario
+# observes. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC, option 9) are
+# verified by the SEC and MNU scenarios.
+inventory_ids:
+- INV-RPT-024  # CORPT00C message 'End Date - Not a valid date...' (rule)
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, where option 9 is entered
+- INV-RPT-002  # CORPT00 map, the empty screen and the refused request
+- INV-CFG-019  # CR00 transaction, under which the request is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes step 3 a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+- INV-UTL-003  # CSUTLDTC date acceptance, here the refusal of 2022-02-30 for mask YYYY-MM-DD
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-INF-001  # which dates CEEDAYS accepts is inferred, not observed
+- GAP-MIS-010  # whether UniKix supplies CEEDAYS
+- GAP-DOC-021  # the UniKix copy's CSUTLDTC passes trimmed lengths to CEEDAYS
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; CORPT00C reads no file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # The valid custom range with the end date changed to 02/30/2022.
+  # CONFIRM is left blank: the date check ends the task before it is read.
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      CUSTOM: 'X'
+      SDTMM: '01'
+      SDTDD: '01'
+      SDTYYYY: '2022'
+      EDTMM: '02'
+      EDTDD: '30'
+      EDTYYYY: '2022'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: 'X'
+    SDTMM: '01'
+    SDTDD: '01'
+    SDTYYYY: '2022'
+    EDTMM: '02'
+    EDTDD: '30'
+    EDTYYYY: '2022'
+    CONFIRM: ' '
+    ERRMSG: 'End Date - Not a valid date...                                                '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # CORPT00 screen, the end-date message after ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'End Date - Not a valid date...                                                '
