@@ -1,0 +1,56 @@
+# Derived baseline (capture_platform: derived) — authored from
+# app/cbl/CORPT00C.cbl:256-303,556-591 and app/bms/CORPT00.bms; not observed.
+# Pins current behavior. Promotion is only by
+# `python tests/harness/report.py --import-unikix <execution_id>`; never edit
+# to match a run.
+# Gaps: GAP-INF-009, GAP-INF-012
+#
+# USER0001 reaches COMEN01 and option 9 transfers to CORPT00C, whose first
+# entry sends CORPT00 with a blank message line
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:74-78]
+# [app/cbl/CORPT00C.cbl:163-181]. The ENTER with CUSTOM marked and the whole
+# start date supplied reaches the first empty check that holds, the end month:
+# 'End Date - Month can NOT be empty...' goes to WS-MESSAGE and
+# SEND-TRNRPT-SCREEN sends CORPT00 and returns, so no date is normalized or
+# validated and no report job is written to JOBS
+# [app/cbl/CORPT00C.cbl:256-286,556-591]. CORPT0AO redefines CORPT0AI
+# [app/cpy-bms/CORPT00.CPY:121], so the entered values come back as typed and
+# the untouched fields blank. ERRMSG is the full 78-byte field of both maps
+# [app/bms/COMEN01.bms:154-157] [app/bms/CORPT00.bms:218-221]: blank, or the
+# 36-character message and 42 trailing spaces, as Result.messages carries it
+# for each step. CURDATE and CURTIME are the region clock, so they are
+# matchers.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'End Date - Month can NOT be empty...                                          '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: X
+  EDTDD: '06'
+  EDTMM: '  '
+  EDTYYYY: '2022'
+  ERRMSG: 'End Date - Month can NOT be empty...                                          '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '01'
+  SDTMM: '01'
+  SDTYYYY: '2022'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

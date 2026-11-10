@@ -1,0 +1,34 @@
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'End Date - Not a valid Month...                                               '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: X
+  EDTDD: '06'
+  EDTMM: '45'
+  EDTYYYY: '2022'
+  ERRMSG: 'End Date - Not a valid Month...                                               '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '01'
+  SDTMM: '01'
+  SDTYYYY: '2022'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

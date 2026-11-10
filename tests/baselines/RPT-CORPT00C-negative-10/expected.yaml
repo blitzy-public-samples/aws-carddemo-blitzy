@@ -1,0 +1,49 @@
+# Derived baseline (capture_platform: derived) of RPT-CORPT00C-negative-10,
+# authored from app/cbl/CORPT00C.cbl and never observed: no TPE region runs in
+# CI (GAP-INF-009, GAP-INF-012). The start-year check 'Start Date - Not a valid
+# Year...' [app/cbl/CORPT00C.cbl:347-353] is not what the screen shows: the
+# scenario's expected governs and pins the confirmation request instead. NUMVAL-C
+# of '1-2-' is moved through the unsigned PIC 9999 WS-NUM-9999, so SDTYYYYI
+# always holds four digits ('0012' as pinned) and the year check is false
+# [app/cbl/CORPT00C.cbl:75,305-353]; CSUTLDTC answers message 2513 for a year
+# before 1582, which CORPT00C ignores [app/cbl/CORPT00C.cbl:381-426]
+# [app/cbl/CSUTLDTC.cbl:61-70]; with CONFIRM blank, SUBMIT-JOB-TO-INTRDR sends
+# 'Please confirm to print the Custom report...' and ends the task, so nothing
+# reaches JOBS [app/cbl/CORPT00C.cbl:429-441,556-580]. Doubtful behaviour
+# pinned as observed (observed-only, GAP-UNC-013). CURDATE and CURTIME come
+# from the run clock [app/cbl/CORPT00C.cbl:609-628]; TITLE01 and TITLE02 are
+# COTTL01Y's titles.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Please confirm to print the Custom report...                                  '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: X
+  EDTDD: '06'
+  EDTMM: '07'
+  EDTYYYY: '2022'
+  ERRMSG: 'Please confirm to print the Custom report...                                  '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '01'
+  SDTMM: '01'
+  SDTYYYY: '0012'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

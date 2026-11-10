@@ -1,0 +1,91 @@
+# Derived baseline of scenario BIL-COBIL00C-boundary-03 (capture_platform:
+# derived), authored from the app/ source and never observed: no TPE region
+# runs in CI. Open until a UniKix run is imported: GAP-INF-008 (derived BIL
+# end-to-end baselines) and GAP-INF-012 (online-only copybooks such as
+# COCOM01Y, COTTL01Y, CSDAT01Y and CSMSG01Y).
+# Step 1: USER0001 signs on and COSGN00C routes the type U user to COMEN01C,
+# which builds option 10 as '10. Bill Payment' in its 40-byte OPTN010 and
+# sends COMEN01 with a blank ERRMSG [app/cbl/COMEN01C.cbl:185-194,236-262]
+# [app/cpy/COMEN02Y.cpy:80-84].
+# Step 2: option 10 XCTLs to COBIL00C. On first entry it sets the re-enter
+# flag, finds no transaction selected and sends COBIL00 from LOW-VALUES, so
+# ACTIDIN and CURBAL are empty and ERRMSG holds the spaces of WS-MESSAGE
+# [app/cbl/COBIL00C.cbl:101-122,289-301].
+# Step 3: ENTER with account 00000000001 and CONFIRM left empty runs
+# PROCESS-ENTER-KEY: the blank CONFIRM reads ACCTDAT for update (NORMAL),
+# WS-CURR-BAL (PIC +9999999999.99) edits -0.01 into CURBAL as
+# -0000000000.01, and ACCT-CURR-BAL <= ZEROS refuses the payment with
+# 'You have nothing to pay...' before any cross-reference read, TRANSACT
+# browse, WRITE or REWRITE [app/cbl/COBIL00C.cbl:154-244,343-358].
+# SEND-BILLPAY-SCREEN refreshes the header from COTTL01Y and the region
+# clock, so CURDATE and CURTIME are matchers; ACTIDIN shows the account as
+# received and CONFIRM stays empty [app/cbl/COBIL00C.cbl:289-338].
+# RETURN TRANSID CB00 ends the task and releases the READ UPDATE hold, so
+# file_state holds the records as the preconditions materialize them,
+# decoded through CVACT01Y and CVTRA05Y, unchanged.
+# Screen values are full BMS width with trailing spaces kept (ERRMSG 78,
+# OPTN010 40, TITLE01/TITLE02 40, ACTIDIN 11, CURBAL 14, CONFIRM 1)
+# [app/bms/COBIL00.bms:34-130] [app/bms/COMEN01.bms:125-156]; messages is the
+# ERRMSG of each step, in step order.
+file_state:
+  ACCTDATA:
+    contains:
+    - ACCT-ACTIVE-STATUS: Y
+      ACCT-ADDR-ZIP: A000000000
+      ACCT-CASH-CREDIT-LIMIT: '1020.00'
+      ACCT-CREDIT-LIMIT: '2020.00'
+      ACCT-CURR-BAL: '-0.01'
+      ACCT-CURR-CYC-CREDIT: '0.00'
+      ACCT-CURR-CYC-DEBIT: '0.00'
+      ACCT-EXPIRAION-DATE: '2025-05-20'
+      ACCT-GROUP-ID: '          '
+      ACCT-ID: '1'
+      ACCT-OPEN-DATE: '2014-11-20'
+      ACCT-REISSUE-DATE: '2025-05-20'
+    count: 50
+  TRANSACT:
+    contains:
+    - TRAN-AMT: '603.22'
+      TRAN-CARD-NUM: '3260763612337560'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+      TRAN-ID: 0000000996722787
+      TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+      TRAN-MERCHANT-ID: '800000000'
+      TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+      TRAN-MERCHANT-ZIP: 53200-7529
+      TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+      TRAN-PROC-TS: '                          '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    count: 300
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'You have nothing to pay...                                                    '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN010: '10. Bill Payment                        '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COBIL00
+  ACTIDIN: '           '
+  CURBAL: '              '
+  ERRMSG: '                                                                              '
+  PGMNAME: COBIL00C
+  TRNNAME: CB00
+- '@map': COBIL00
+  ACTIDIN: '00000000001'
+  CONFIRM: ' '
+  CURBAL: '-0000000000.01'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'You have nothing to pay...                                                    '
+  PGMNAME: COBIL00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CB00

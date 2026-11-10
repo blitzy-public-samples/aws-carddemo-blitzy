@@ -1,0 +1,65 @@
+# Derived from the source, never observed (GAP-INF-008): one screens entry
+# per scenario step, the main menu, the first Bill Payment screen, and the
+# unformatted screen the CB00 task's abend leaves.
+#
+# Step 3 confirms a payment for account 00000000001 while TRANSACT is
+# unavailable. The READ UPDATE of ACCTDAT (balance 194.00) and the CXACAIX
+# read succeed; the STARTBR then answers neither NORMAL nor NOTFND and the
+# READPREV finds no browse, so each WHEN OTHER branch moves 'Unable to lookup
+# Transaction...' to WS-MESSAGE and sends COBIL00 with ERASE
+# [app/cbl/COBIL00C.cbl:208-215,441-496]. The ENDBR that follows has no RESP
+# option and COBIL00C sets no HANDLE CONDITION, so its INVREQ abends the task
+# (AEIP) before the WRITE and the REWRITE [app/cbl/COBIL00C.cbl:216-235,
+# 501-505] (GAP-DEF-023). The region's abnormal-termination message replaces
+# that screen; its wording, identifier and time are the region's own, so only
+# '@map: TEXT' is asserted, and it carries no ERRMSG for messages.
+#
+# Nothing is written or rewritten: account 00000000001 keeps the fixture
+# values and TRANSACT keeps its 300 loaded records. report.py --import-unikix
+# replaces this with the observed outcome; a different one is a MAJOR bump.
+file_state:
+  ACCTDATA:
+    contains:
+    - ACCT-ACTIVE-STATUS: Y
+      ACCT-ADDR-ZIP: A000000000
+      ACCT-CASH-CREDIT-LIMIT: '1020.00'
+      ACCT-CREDIT-LIMIT: '2020.00'
+      ACCT-CURR-BAL: '194.00'
+      ACCT-CURR-CYC-CREDIT: '0.00'
+      ACCT-CURR-CYC-DEBIT: '0.00'
+      ACCT-EXPIRAION-DATE: '2025-05-20'
+      ACCT-GROUP-ID: '          '
+      ACCT-ID: '1'
+      ACCT-OPEN-DATE: '2014-11-20'
+      ACCT-REISSUE-DATE: '2025-05-20'
+    count: 50
+  TRANSACT:
+    count: 300
+messages:
+- '                                                                              '
+- '                                                                              '
+screens:
+- '@map': COMEN01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTN010: '10. Bill Payment                        '
+  PGMNAME: COMEN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CM00
+- '@map': COBIL00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: COBIL00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CB00
+- '@map': TEXT

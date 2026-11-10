@@ -1,0 +1,47 @@
+# RPT-CORPT00C-negative-04: derived, inferred-not-observed (GAP-INF-009,
+# GAP-INF-012); capture_platform: derived, since no TPE region runs in CI.
+# USER0001 signs on to COMEN01 (CM00), option 9 sends the empty CORPT00 with a
+# blank ERRMSG [app/cbl/CORPT00C.cbl:169-181], and the ENTER with CUSTOM 'X',
+# the start month and day filled and SDTYYYY left at its INITIAL spaces takes
+# the custom branch: the third empty-field WHEN holds, so 'Start Date - Year
+# can NOT be empty...' goes to WS-MESSAGE and SEND-TRNRPT-SCREEN sends CORPT00
+# with ERASE and ends the task [app/cbl/CORPT00C.cbl:183-186,212-279,556-591].
+# No date edit, CSUTLDTC call or JOBS write follows. CORPT0AO redefines
+# CORPT0AI, so the received fields come back at their BMS lengths, trailing
+# spaces kept; ERRMSG is WS-MESSAGE X(80) cut to ERRMSGO X(78). The header is
+# rebuilt from COTTL01Y and CSDAT01Y [app/cbl/CORPT00C.cbl:609-628]; CURDATE
+# and CURTIME come from the region clock, so they are matchers.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Start Date - Year can NOT be empty...                                         '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: X
+  EDTDD: '06'
+  EDTMM: '07'
+  EDTYYYY: '2022'
+  ERRMSG: 'Start Date - Year can NOT be empty...                                         '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '01'
+  SDTMM: '01'
+  SDTYYYY: '    '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

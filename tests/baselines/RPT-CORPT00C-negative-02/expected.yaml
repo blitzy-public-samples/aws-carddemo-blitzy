@@ -1,0 +1,62 @@
+# Derived baseline of scenario RPT-CORPT00C-negative-02 (capture_platform:
+# derived, see manifest.yaml), authored from the source at commit
+# 93ebec71ff7b59a68cedd7c501afe496a8eaa68d and never observed: no TPE region
+# runs in CI, so there is no datasets/ directory. Derived from
+# app/cbl/CORPT00C.cbl:37-39,163-181,256-265,556-591,609-628,
+# app/bms/CORPT00.bms and app/cpy/COTTL01Y.cpy:18-22. Open until a UniKix run
+# is imported with report.py --import-unikix: GAP-INF-009 (derived RPT
+# end-to-end baselines), GAP-INF-012 (online-only copybooks).
+# Step 1: USER0001 signs on and COSGN00C routes the type 'U' user to COMEN01C
+# [app/cbl/COSGN00C.cbl:230-237], which sends the main menu COMEN01 headed
+# CM00/COMEN01C with a blank message [app/cbl/COMEN01C.cbl:36-38,75-90].
+# Step 2: option 9 'Transaction Reports' XCTLs to CORPT00C with
+# CDEMO-PGM-CONTEXT zeroed [app/cpy/COMEN02Y.cpy:74-78]
+# [app/cbl/COMEN01C.cbl:146-156]; its first entry moves LOW-VALUES to
+# CORPT0AO and sends CORPT00 with the CR00/CORPT00C header and a blank
+# message.
+# Step 3: ENTER with CUSTOM 'X' and every date part but the start month.
+# PROCESS-ENTER-KEY finds MONTHLY and YEARLY blank and CUSTOM marked; its first
+# custom check, SDTMMI = SPACES OR LOW-VALUES, moves 'Start Date - Month can
+# NOT be empty...' to WS-MESSAGE and performs SEND-TRNRPT-SCREEN, whose GO TO
+# RETURN-TO-CICS ends the task: no other date edit, no CSUTLDTC call, no JOBS
+# write. CORPT0AO redefines CORPT0AI, so the received fields go back as
+# entered; MONTHLY, YEARLY and SDTMM keep their blank INITIAL (all are FSET),
+# and CONFIRM, with no INITIAL, holds nulls shown as a space.
+# Values are full BMS width with trailing spaces kept (ERRMSG 78 from the
+# 80-byte WS-MESSAGE), because screens and messages compare exactly; messages
+# holds each step's ERRMSG in step order. CURDATE and CURTIME come from the
+# region clock, so they are matchers; colours and the cursor are not asserted.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Start Date - Month can NOT be empty...                                        '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: X
+  EDTDD: '06'
+  EDTMM: '07'
+  EDTYYYY: '2022'
+  ERRMSG: 'Start Date - Month can NOT be empty...                                        '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '01'
+  SDTMM: '  '
+  SDTYYYY: '2022'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '
