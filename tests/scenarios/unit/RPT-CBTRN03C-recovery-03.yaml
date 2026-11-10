@@ -1,0 +1,104 @@
+# RPT-CBTRN03C-recovery-03: the TRANREPT write-error abend of
+# 1111-WRITE-REPORT-REC [app/cbl/CBTRN03C.cbl:343-359].
+#
+# Derived, never observed. No adapter injects a write failure after a
+# successful open (GAP-MIS-013), so gnucobol-batch raises MissingPrerequisite
+# and the scenario stays implemented-unexecuted; its baseline is derived from
+# the source (GAP-INF-013) and capture.py refuses to capture it.
+#
+# How the expected messages were derived:
+# - All six files open; 0550-DATEPARM-READ displays the window
+#   [app/cbl/CBTRN03C.cbl:160-168,220-243].
+# - The one transaction lies inside the window, so the loop displays the whole
+#   350-byte TRAN-RECORD, its trailing spaces included, and looks up its card,
+#   type and category [app/cbl/CBTRN03C.cbl:170-198]. Card 9680294154603697 is a
+#   repository CARDXREF record (account 00000000001), and type 01 and category
+#   01/0001 exist in TRANTYPE and TRANCATG, so every lookup succeeds and only
+#   the report write can fail.
+# - 1100-WRITE-TRANSACTION-REPORT runs for the first time, so 1120-WRITE-HEADERS
+#   writes the report-name header first; that WRITE is the faulted one
+#   [app/cbl/CBTRN03C.cbl:274-279,324-326]. 1111-WRITE-REPORT-REC displays
+#   'ERROR WRITING REPTFILE', the status through 9910-DISPLAY-IO-STATUS and
+#   'ABENDING PROGRAM', then calls CEE3ABD [app/cbl/CBTRN03C.cbl:343-359,626-646].
+# - The fault condition io-error is taken as IBM file status 30 (inferred,
+#   GAP-INF-013): numeric and not 9x, so 9910 shows it as NNNN0030. A full
+#   device is another condition: GnuCOBOL reports that failed WRITE as 34.
+# - The CEE3ABD stub ends the run (GAP-STB-001, GAP-DEF-001): the adapter
+#   reports return_code null and appends the stub's marker; the close
+#   paragraphs and 'END OF EXECUTION OF PROGRAM CBTRN03C' are never reached.
+#   The libcob implicit-CLOSE warnings after the marker go to the raw evidence
+#   only.
+id: RPT-CBTRN03C-recovery-03
+level: unit
+type: recovery
+description: >-
+  CBTRN03C opens its six files, displays the DATEPARM window and its one
+  in-window transaction, and finds the card, type and category; the first
+  WRITE of the report, the report-name header, then fails with an I/O error,
+  so it displays 'ERROR WRITING REPTFILE', the status as 'FILE STATUS IS:
+  NNNN0030' and 'ABENDING PROGRAM', and abends through CEE3ABD with no report
+  line written.
+# Only the I/O-failure-after-open item: this case never executes, so listing the
+# program, a report item, a layout or a data file here would block items that
+# other CBTRN03C scenarios verify (a scenario lists an item only when the item's
+# verification depends on it).
+inventory_ids:
+- INV-RPT-044  # CBTRN03C abend on read, write or close failure after open (recovery)
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013  # no adapter injects a failure after a successful open
+- GAP-INF-013  # the derived baselines of the post-open fault scenarios
+- GAP-MIS-001  # DATEPARM is supplied as a parameter file
+- GAP-STB-001  # CEE3ABD stub: no abend code, dump or LE condition handling
+- GAP-DEF-001  # the parameterless CALL 'CEE3ABD'
+preconditions:
+  datasets:
+    # One synthetic transaction, already in card order as the TRANREPT sort
+    # would deliver it; its id, merchant and texts are invented.
+    TRANSACT-DALY:
+      records:
+      - TRAN-ID: '9900000000000621'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '0001'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic report write fault
+        TRAN-AMT: '10.00'
+        TRAN-MERCHANT-ID: '999000621'
+        TRAN-MERCHANT-NAME: Synthetic Merchant 621
+        TRAN-MERCHANT-CITY: Synthetic City
+        TRAN-MERCHANT-ZIP: '99999'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+    CARDXREF:
+      base: CARDXREF
+    TRANTYPE:
+      base: TRANTYPE
+    TRANCATG:
+      base: TRANCATG
+  parameters:
+    DATEPARM: '2022-07-01 2022-07-31'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  # No `after`: the first WRITE to TRANREPT, the report-name header, fails.
+  - target: TRANREPT
+    operation: write
+    condition: io-error
+inputs:
+  program: CBTRN03C
+expected:
+  return_code: null
+  messages:
+  - 'START OF EXECUTION OF PROGRAM CBTRN03C'
+  - 'Reporting from 2022-07-01 to 2022-07-31'
+  - '9900000000000621010001POS TERM  Synthetic report write fault                                                                        0000000100{999000621Synthetic Merchant 621                            Synthetic City                                    99999     96802941546036972022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - 'ERROR WRITING REPTFILE'
+  - 'FILE STATUS IS: NNNN0030'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'
+  datasets:
+    # The failed WRITE of the first header leaves the report without a line.
+    TRANREPT:
+      records: []

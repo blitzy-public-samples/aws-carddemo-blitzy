@@ -1,0 +1,84 @@
+# The open-failure abend of CBTRN03C on the last of its six files. TRANFILE
+# opens INPUT, TRANREPT opens OUTPUT, and CARDXREF, TRANTYPE and TRANCATG open
+# INPUT from the repository data, so control reaches 0500-DATEPARM-OPEN; the
+# date parameter file is left out, OPEN INPUT returns status 35 and the program
+# abends through CEE3ABD before 0550-DATEPARM-READ or any TRANFILE read
+# [app/cbl/CBTRN03C.cbl:160-168,376-482,626-646]. No job or data file creates
+# the DATEPARM dataset (GAP-MIS-001), which makes this the failure a run meets
+# when the parameter is not supplied, so neither preconditions.parameters nor
+# inputs.param_files carries one. The other five datasets are supplied because
+# each open must succeed for the DATEPARM open to run; the one transaction is
+# never read. TRANREPT was created by OPEN OUTPUT and holds no line when the
+# run ends. The libcob implicit-CLOSE warnings that follow the abend marker go
+# to the raw evidence only.
+id: RPT-CBTRN03C-recovery-01
+level: unit
+type: recovery
+description: >-
+  CBTRN03C with every file present except the date parameter file: the DATEPARM
+  open fails with status 35, the program displays 'ERROR OPENING DATE PARM
+  FILE', the file status and 'ABENDING PROGRAM', and abends through CEE3ABD
+  without reading a transaction, leaving an empty report.
+inventory_ids:
+- INV-RPT-043  # CBTRN03C abend on open failure (recovery)
+- INV-RPT-003  # CBTRN03C program
+- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
+- INV-DTA-013  # its EBCDIC cross-check counterpart
+- INV-DTA-009  # trantype.txt, the TRANTYPE fixture source
+- INV-DTA-020  # its EBCDIC cross-check counterpart
+- INV-DTA-008  # trancatg.txt, the TRANCATG fixture source
+- INV-DTA-019  # its EBCDIC cross-check counterpart
+# Untagged by design: GAP-DEF-001 (the parameterless CALL 'CEE3ABD' that ends
+# every CB* abend path) is cited as the gap this abend passes through;
+# suspected-defect marks the cases that pin a program's own defect.
+tags: []
+gap_ids:
+- GAP-MIS-001  # no job or data file creates the DATEPARM dataset
+- GAP-STB-001  # CEE3ABD stub: no abend code, dump or LE condition handling
+- GAP-DEF-001  # the parameterless CALL 'CEE3ABD'
+- GAP-STB-010  # Berkeley DB indexed files in place of VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    # The sequential TRANFILE input (programs.yaml); its record is never read.
+    TRANSACT-DALY:
+      records:
+      - TRAN-ID: '9900000000000601'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '0001'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic missing date parameter
+        TRAN-AMT: '10.00'
+        TRAN-MERCHANT-ID: '999000601'
+        TRAN-MERCHANT-NAME: Synthetic Merchant 601
+        TRAN-MERCHANT-CITY: Synthetic City
+        TRAN-MERCHANT-ZIP: '99999'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+    CARDXREF:
+      base: CARDXREF
+    TRANTYPE:
+      base: TRANTYPE
+    TRANCATG:
+      base: TRANCATG
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  - target: DATEPARM
+    operation: open
+    condition: unavailable
+inputs:
+  program: CBTRN03C
+expected:
+  return_code: null
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN03C
+  - ERROR OPENING DATE PARM FILE
+  - 'FILE STATUS IS: NNNN0035'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD
+  datasets:
+    TRANREPT:
+      records: []
