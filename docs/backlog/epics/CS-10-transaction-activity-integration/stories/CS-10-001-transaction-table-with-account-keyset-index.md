@@ -8,6 +8,8 @@ Parent epic: [CS-10 Transaction Activity Integration](../README.md)
 >
 > As a card servicing user, I want my transactions stored keyed by account in newest-first order, so that each page costs one index seek whatever the total volume.
 >
+> > SCOPE-QUESTION (Resolved): the one-index-seek page cost holds for an unfiltered page only. A page filtered by type code or category code scans the account's entries in newest-first order, rejecting rows until page size plus one entries match, so its cost grows with the account's history divided by the filter's selectivity, not with total volume. The transaction list performance scenario CS-03-003 measures that cost against the 150 ms p99 trigger of decision D4, and the three filter-leading indexes that answer the trigger stay outside this story.
+>
 > Trace: CARD_REQ_TBD · Data Layouts · CVTRA05Y · TRAN-ID
 >
 > Account-data access path: No
@@ -89,7 +91,7 @@ Completed during implementation.
 
 Recommended: Design Option A — account column with a composite keyset index.
 
-Rationale: copying each transaction's account onto its row lets one composite keyset index serve every newest-first page as a single seek, whatever the total volume.
+Rationale: copying each transaction's account onto its row lets one composite keyset index serve every unfiltered newest-first page as a single seek, whatever the total volume; a filtered page still scans that one account's history, and the transaction list performance scenario measures it against the filter trigger.
 
 - Rejected: Design Option B, the card-number index with a sort on every page — page cost grows with each account's history.
 - Rejected: a join through the cross-reference record on every page — the same ordering problem, ranked second among the transaction-to-account access alternatives.
@@ -119,7 +121,7 @@ How it behaves:
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Account column copied from the cross-reference record at load (vs a join on every page) | one index seek per page | about twelve extra bytes per row |
+| 1 | Account column copied from the cross-reference record at load (vs a join on every page) | one index seek per unfiltered page | about twelve extra bytes per row |
 | 2 | Processed timestamp then transaction identifier, both descending, as index order (vs the timestamp alone) | a stable order when timestamps repeat | wider index entries |
 | 3 | Card-number index kept (vs dropped) | the baseline card lookup stays | extra index upkeep during the load |
 

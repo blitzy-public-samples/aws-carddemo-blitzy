@@ -210,7 +210,13 @@ paths:
                     traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
                     details: []
         '504':
-          description: DEADLINE_EXCEEDED - the 900 ms request deadline was reached before a result or degraded result was available.
+          description: >-
+            DEADLINE_EXCEEDED - a required upstream call (ValidateToken,
+            AuthorizeAccountAccess or a data read) timed out on its last
+            permitted attempt, with retries exhausted or no retry fitting the
+            deadline, and no degraded result applies; or the 900 ms request
+            deadline was reached at the cut-off before a result or degraded
+            result was available.
           content:
             application/json:
               schema:
@@ -379,7 +385,13 @@ paths:
                     traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
                     details: []
         '504':
-          description: DEADLINE_EXCEEDED - the 900 ms request deadline was reached before a result or degraded result was available.
+          description: >-
+            DEADLINE_EXCEEDED - a required upstream call (ValidateToken,
+            AuthorizeAccountAccess or a data read) timed out on its last
+            permitted attempt, with retries exhausted or no retry fitting the
+            deadline, and no degraded result applies; or the 900 ms request
+            deadline was reached at the cut-off before a result or degraded
+            result was available.
           content:
             application/json:
               schema:
@@ -629,7 +641,12 @@ paths:
                     traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
                     details: []
         '503':
-          description: UNAVAILABLE - the transaction read is unavailable after retries.
+          description: >-
+            UNAVAILABLE - a required upstream call is unavailable after retries:
+            the token validation or account authorization call (ValidateToken or
+            AuthorizeAccountAccess), which fails the request closed with no
+            account data read from upstream or cache; or the transaction read,
+            which has no degraded result because a page is never served stale.
           content:
             application/json:
               schema:
@@ -642,7 +659,15 @@ paths:
                     traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
                     details: []
         '504':
-          description: DEADLINE_EXCEEDED - the 900 ms request deadline was reached before a result was available.
+          description: >-
+            DEADLINE_EXCEEDED - a required upstream call timed out on its last
+            permitted attempt, with retries exhausted or no retry fitting the
+            deadline: the token validation or account authorization call
+            (ValidateToken or AuthorizeAccountAccess), which fails the request
+            closed with no account data read from upstream or cache; or the
+            transaction read, which has no degraded result because a page is
+            never served stale. Also returned when the 900 ms request deadline
+            was reached at the cut-off before a result was available.
           content:
             application/json:
               schema:
@@ -793,9 +818,13 @@ paths:
                     details: []
         '503':
           description: >-
-            UNAVAILABLE - the transaction or cross-reference read is unavailable
-            after retries; a cross-reference failure returns 503 even when the
-            transaction came from cache.
+            UNAVAILABLE - a required upstream call is unavailable after retries:
+            the token validation or account authorization call (ValidateToken or
+            AuthorizeAccountAccess), which fails the request closed with no
+            account data read from upstream or cache; the transaction read, when
+            no cached transaction is within its maximum stale age; or the
+            cross-reference read, which returns 503 even when the transaction
+            came from cache.
           content:
             application/json:
               schema:
@@ -808,7 +837,17 @@ paths:
                     traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
                     details: []
         '504':
-          description: DEADLINE_EXCEEDED - the 900 ms request deadline was reached before a result was available.
+          description: >-
+            DEADLINE_EXCEEDED - a required upstream call timed out on its last
+            permitted attempt, with retries exhausted or no retry fitting the
+            deadline: the token validation or account authorization call
+            (ValidateToken or AuthorizeAccountAccess), which fails the request
+            closed with no account data read from upstream or cache; the
+            transaction read, when no cached transaction is within its maximum
+            stale age; or the cross-reference read, which returns 504 even when
+            the transaction came from cache. Also returned when the 900 ms
+            request deadline was reached at the cut-off before a result or
+            degraded result was available.
           content:
             application/json:
               schema:

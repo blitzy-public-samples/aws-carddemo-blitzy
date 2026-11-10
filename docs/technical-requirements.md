@@ -230,7 +230,7 @@ Dependency rows that follow the store stay as pinned: Spring Data JPA, the Postg
 
 - Failure modes: a zone-redundant failover takes tens of seconds, during which the stubs answer `UNAVAILABLE`. Account and category-balance reads serve `STALE` from cache within the 300 s max stale age; the transaction list returns 503; transaction detail fails with 503 or 504 when the cross-reference read fails, even with a cached transaction; reference data falls back to cache, otherwise `PARTIAL`.
 - Data growth: unfiltered transaction pages and every key lookup stay one index seek as total volume grows. Filtered pages grow with one account's history and are pressure-tested under D4. Monthly partitioning of `transaction_record` is flagged in [Recommendations](implementation-plan.md#recommendations) with the 1,000,000-row baseline it assumes.
-- 1-second SLA: each stub read is one index seek whose cost is set by index depth, not table size, so a stub attempt stays inside the 300 ms per-attempt timeout; the performance scenarios prove p50, p95 and p99 below 1,000 ms at the planning baseline.
+- 1-second SLA: the account and single-transaction lookups are primary-key seeks, and an unfiltered transaction page is one index seek plus `pageSize + 1` entries; the cross-reference and category-balance reads are one seek followed by a range over that one account's rows, and the reference-data reads return the 7 type and 18 category rows, so none of these reads grows with total volume. Index depth alone does not bound an attempt's latency, because the rows visited and their I/O still count. A filtered transaction page scans one account's history ([D4](#d4-transaction-to-account-access)), so its latency is measured by CS-03-003 against the 150 ms p99 trigger, with D4's three filter-leading indexes recorded as the remedy. The 300 ms per-attempt timeout is a budget each stub attempt is validated against, not a guarantee derived from the index; the performance scenarios prove p50, p95 and p99 below 1,000 ms at the planning baseline.
 
 ### D2 Epic grouping
 
@@ -607,6 +607,10 @@ The access guard runs inside the service process, so the physical view draws Aut
 
 No AKS deployment manifest is produced; the diagram documents the target topology only.
 
+## Security architecture key
+
+[Security architecture](architecture/security-architecture.mmd) (`flowchart TB`) extends the physical view with threat boundaries, mTLS, Key Vault secrets, authN/authZ, encryption at rest and a three-row access-control matrix. The physical `P<n>` numbering is removed and the controls are numbered `S1`–`S8`. The `S<n>` key is the [security control table](#security-control-table), one row per control with its kind, protected components and key, followed there by the diagram form of each kind; the `Acm*` nodes are keyed in the [access-control matrix](#access-control-matrix).
+
 ## Environment variables
 
 All 14 variables are declared with defaults in `card-servicing-service/src/main/resources/application.yml` (CS-11-001) and set in `tests/docker-compose.yml` (CS-01-001). No real secret is committed: the only credential-like values are empty placeholders or throwaway local-container values.
@@ -629,4 +633,3 @@ All 14 variables are declared with defaults in `card-servicing-service/src/main/
 | `STUB_FAILURE_RATE` | Stub failure injection: fraction of calls answered `UNAVAILABLE`, overridable per stub and per test | `0` | `CardDataService`, `TransactionActivityService`, `ConfigService`, `ReferenceDataService`, `AuthService` |
 
 The components that read `AUTH_SERVICE_API_KEY`, `REDIS_PASSWORD` or `DB_PASSWORD` are exactly the S7 consumers of the [security control table](#security-control-table).
-

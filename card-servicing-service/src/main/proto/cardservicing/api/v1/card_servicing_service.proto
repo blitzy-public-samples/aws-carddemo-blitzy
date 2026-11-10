@@ -55,7 +55,7 @@ service CardServicingService {
   //   PERMISSION_DENIED - account outside the caller's entitlements; authorization runs before any account-data read, cache reads included
   //   NOT_FOUND - account unknown
   //   UNAVAILABLE - a required upstream is unavailable after retries and no degraded result applies
-  //   DEADLINE_EXCEEDED - request deadline reached
+  //   DEADLINE_EXCEEDED - a required upstream call (ValidateToken, AuthorizeAccountAccess or a data read) times out on its last permitted attempt, with retries exhausted or no retry fitting the deadline, and no degraded result applies; or the 900 ms request deadline is reached at the cut-off before a result or degraded result
   //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
   rpc GetBalanceSummary(GetBalanceSummaryRequest) returns (GetBalanceSummaryResponse);
 
@@ -81,7 +81,7 @@ service CardServicingService {
   //   PERMISSION_DENIED - account outside the caller's entitlements; authorization runs before any account-data read, cache reads included
   //   NOT_FOUND - account unknown
   //   UNAVAILABLE - a required upstream is unavailable after retries and no degraded result applies
-  //   DEADLINE_EXCEEDED - request deadline reached
+  //   DEADLINE_EXCEEDED - a required upstream call (ValidateToken, AuthorizeAccountAccess or a data read) times out on its last permitted attempt, with retries exhausted or no retry fitting the deadline, and no degraded result applies; or the 900 ms request deadline is reached at the cut-off before a result or degraded result
   //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
   rpc ListCategoryBalances(ListCategoryBalancesRequest) returns (ListCategoryBalancesResponse);
 
@@ -118,7 +118,7 @@ service CardServicingService {
   //   PERMISSION_DENIED - account outside the caller's entitlements; authorization runs before any account-data read, cache reads included
   //   NOT_FOUND - the account has no cross-reference record
   //   UNAVAILABLE - a required upstream is unavailable after retries and no degraded result applies
-  //   DEADLINE_EXCEEDED - request deadline reached
+  //   DEADLINE_EXCEEDED - a required upstream call (ValidateToken, AuthorizeAccountAccess or a data read) times out on its last permitted attempt, with retries exhausted or no retry fitting the deadline, and no degraded result applies; or the 900 ms request deadline is reached at the cut-off before a result or degraded result
   //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
   rpc ListTransactions(ListTransactionsRequest) returns (ListTransactionsResponse);
 
@@ -144,7 +144,7 @@ service CardServicingService {
   //   PERMISSION_DENIED - account outside the caller's entitlements; authorization runs before any account-data read, cache reads included
   //   NOT_FOUND - transaction unknown, or its card_number is not among the account's cross-reference records
   //   UNAVAILABLE - a required upstream is unavailable after retries and no degraded result applies
-  //   DEADLINE_EXCEEDED - request deadline reached
+  //   DEADLINE_EXCEEDED - a required upstream call (ValidateToken, AuthorizeAccountAccess or a data read) times out on its last permitted attempt, with retries exhausted or no retry fitting the deadline, and no degraded result applies; or the 900 ms request deadline is reached at the cut-off before a result or degraded result
   //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
   rpc GetTransaction(GetTransactionRequest) returns (GetTransactionResponse);
 }
@@ -162,8 +162,13 @@ message GetBalanceSummaryRequest {
 // and status (Data Layouts · CVACT01Y), with one balance per transaction-type
 // group. Fields 7 to 14 carry what the Account View screen shows beyond the
 // baseline (Use Cases · COACTVWC). The screen's Customer Details section is not
-// carried here: its fields have no baseline entity or operation and are flagged
-// field gaps awaiting a Requirements Analysis ID.
+// carried here: its 17 labels are flagged field gaps awaiting a Requirements
+// Analysis ID. Sixteen come from the customer record (Data Layouts · CVCUS01Y),
+// which no baseline entity holds and no baseline operation returns. Customer id
+// is already baseline data, returned by CardDataService.GetCardCrossReference
+// as CardCrossReference.customer_id (Data Layouts · CVACT03Y · XREF-CUST-ID);
+// what is missing is its exposure on this response, which would need that
+// cross-reference read.
 message GetBalanceSummaryResponse {
   // The account number from the request, 11 digits, pattern ^[0-9]{11}$
   // (Data Layouts · CVACT01Y · ACCT-ID 9(11)).

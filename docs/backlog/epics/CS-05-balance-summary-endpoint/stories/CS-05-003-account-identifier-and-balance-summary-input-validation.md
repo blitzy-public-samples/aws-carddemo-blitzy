@@ -50,6 +50,9 @@ Parent epic: [CS-05 Balance Summary Endpoint](../README.md)
 > - AC3: Each of `0000000001` (10 digits), `000000000001` (12 digits), `ABCDEFGHIJK` (letters) and `0000000001A` (mixed) returns the AC2 status, message and `details` entry on both REST and gRPC.
 > - AC4: A gRPC `GetBalanceSummary` with an empty `account_id` returns `INVALID_ARGUMENT` with `message` "Account number not provided" and one `details` entry for `accountId`.
 > - AC5: For every request rejected in AC2–AC4, the Auth, Config, Card Data and Reference Data stub request logs hold zero entries, and the cache records zero reads.
+>
+> SCOPE-QUESTION (Resolved): AC5 names four of the five stub request logs and leaves out Transaction Activity. A Stage 0 400 leaves every stub request log empty, as the [TRD configuration snapshot rules](../../../../technical-requirements.md#configuration-snapshot) state for this story. AC5 therefore also requires the Transaction Activity stub request log to hold zero entries, and its assertion covers every request this story rejects at Stage 0, the AC6 request included: for each, the request logs of the Auth, Config, Card Data, Transaction Activity and Reference Data stubs all hold zero entries, and the cache records zero reads.
+>
 > - AC6: A malformed `accountId` sent with an expired fixture token returns 400, not 401, which proves that validation precedes the access guard.
 > - AC7: Every 400 in AC2–AC6 carries the receipt `traceId` and validates against `ErrorObject` in `card-servicing-api.yaml`.
 >
@@ -73,7 +76,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is ≥80% per module. Cases: each AC2–AC4 value on both protocols, empty stub request logs and zero cache reads using the loopback stubs, and the validation-before-guard ordering with an expired fixture token.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is ≥80% per module. Cases: each AC2–AC4 value on both protocols, empty request logs for all five stubs (Auth, Config, Card Data, Transaction Activity and Reference Data) and zero cache reads using the loopback stubs, and the validation-before-guard ordering with an expired fixture token.
 - Integration: Not applicable — this story makes no upstream call. Threshold when it applies: `./gradlew :card-servicing-service:integrationTest` passes, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS`, and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Not applicable — rejected requests sit outside the success-path percentiles. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.

@@ -37,14 +37,14 @@ paths:
         decimal-integer string. Baseline keys are default_page_size (default page size, 20), max_page_size (largest
         accepted page size, 100), upstream_timeout_ms (per-attempt upstream timeout in milliseconds, 300) and
         upstream_max_retries (retry cap, 2). The request deadline is never a Config key. A request that lists no
-        keys returns 400.
+        keys, or that lists an empty key name alone or beside other keys, returns 400.
       parameters:
         - name: keys
           in: query
           required: true
           description: >-
             Comma-separated configuration key names, as in ?keys=default_page_size,max_page_size. At least one key
-            is required.
+            is required, and every key name is non-empty.
           style: form
           explode: false
           schema:
@@ -74,7 +74,7 @@ paths:
                       upstream_timeout_ms: '300'
                       upstream_max_retries: '2'
         '400':
-          description: No configuration key was requested.
+          description: No configuration key was requested, or a requested key name is empty.
           content:
             application/json:
               schema:
@@ -89,6 +89,15 @@ paths:
                     details:
                       - field: keys
                         description: must list at least one key
+                emptyKeyName:
+                  summary: The keys parameter holds an empty key name
+                  value:
+                    code: INVALID_ARGUMENT
+                    message: Configuration key names must not be empty
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details:
+                      - field: keys
+                        description: must not contain an empty key name
         '401':
           description: The forwarded bearer token is missing, invalid or expired.
           content:

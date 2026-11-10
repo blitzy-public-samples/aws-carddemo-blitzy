@@ -25,6 +25,7 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 >   - The binding is a `@ConfigurationProperties` record nested in this file, so `card-servicing-service/src/main/java/com/example/cardservicing/config/CardServicingProperties.java` and `card-servicing-service/src/main/resources/application.yml` from CS-11-001 stay unchanged.
 >   - It checks the key map when the stub is built. A bound key outside the four baseline keys, `request_deadline_ms` included, or a bound value that is not a decimal-integer string matching `^[0-9]+$`, the `values` pattern of `config-service.yaml`, fails construction with an `IllegalArgumentException` naming the full property. `REQUEST_DEADLINE_MS` is never a Config key, so the stub never serves it.
 >   - `GetConfig` with at least one key answers `OK`, with `values` holding each requested key found in the key map, matched exactly and case-sensitively, and no other entry. An unknown key is absent from `values` and is not an error, as both contracts document.
+>     > SCOPE-QUESTION (Resolved): `OK` applies only when every listed key name is non-empty. A `keys` list holding an empty key name, alone or beside a valid key, answers `INVALID_ARGUMENT` before any lookup, with one `cardservicing.common.v1.ErrorObject` packed into the `google.rpc.Status` details. It carries `code` `INVALID_ARGUMENT`, `message` `Configuration key names must not be empty`, a `traceId` the stub issues at receipt as a 32-character lower-case hexadecimal value, and one `details` entry with `field` `keys` and `description` `must not contain an empty key name`, the `emptyKeyName` 400 example of `config-service.yaml` and the `keys` comment of `config_service.proto`. A nonempty unknown key keeps the `OK` outcome above, absent from `values`.
 >   - `GetConfig` with an empty `keys` list answers `INVALID_ARGUMENT`, as both contracts document, with one `cardservicing.common.v1.ErrorObject` packed into the `google.rpc.Status` details. It carries `code` `INVALID_ARGUMENT`, `message` `At least one configuration key is required`, a `traceId` the stub issues at receipt as a 32-character lower-case hexadecimal value, and one `details` entry with `field` `keys` and `description` `must list at least one key`, the 400 example of `config-service.yaml`.
 >   - It never answers `UNAUTHENTICATED`: the contract lists that status for the real service, and its comment states that the stub does not re-authorize.
 >   - A nested configuration class in this file, active only when `card-servicing.stub.serve` is `config`, binds the record and declares the `StubServerHost.HostedStub` bean named `config` for container mode. With `card-servicing.stub.serve` empty, the Card Servicing service process builds no Config stub.
@@ -37,6 +38,7 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 > - The 3 files above.
 > - Key-map answers for the four baseline keys, with bound overrides and their construction checks.
 > - The contract outcomes for an unknown key and for an empty key list.
+>   > SCOPE-QUESTION (Resolved): the contract outcome for an empty key name, alone or beside a valid key, is in scope as well, as resolved beneath the `GetConfig` answer rule above and verified under AC4.
 > - Never serving the request deadline.
 > - Registration with the test harness and the container-mode hosted stub.
 >
@@ -54,6 +56,7 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 > - AC2: `GetConfig` with `keys` `max_page_size` alone returns `OK` and a `values` map holding exactly one entry, `max_page_size` `"100"`. With `max_page_size` listed twice it returns the same single entry.
 > - AC3: `GetConfig` with `keys` `max_page_size` and `page_size_limit`, a key absent from the key map, returns `OK` and a `values` map holding exactly `max_page_size` `"100"`. With `page_size_limit` alone it returns `OK` and an empty `values` map. Neither call returns an error status.
 > - AC4: `GetConfig` with an empty `keys` list returns `INVALID_ARGUMENT`, and the `google.rpc.Status` details hold exactly one packed `ErrorObject` with `code` `INVALID_ARGUMENT`, `message` `At least one configuration key is required`, a 32-character lower-case hexadecimal `traceId` and exactly one `details` entry with `field` `keys` and `description` `must list at least one key`. The request log records the call with outcome `INVALID_ARGUMENT`.
+>   > SCOPE-QUESTION (Resolved): `GetConfig` with `keys` holding only the empty key name `""`, and `GetConfig` with `keys` `max_page_size` and `""`, each return `INVALID_ARGUMENT` and no `values` map, and the `google.rpc.Status` details of each hold exactly one packed `ErrorObject` with `code` `INVALID_ARGUMENT`, `message` `Configuration key names must not be empty`, a 32-character lower-case hexadecimal `traceId` and exactly one `details` entry with `field` `keys` and `description` `must not contain an empty key name`. The request log records each call with outcome `INVALID_ARGUMENT`. Both cases are verified under AC4.
 > - AC5: `GetConfig` with `keys` `REQUEST_DEADLINE_MS`, then `request_deadline_ms`, then `MAX_PAGE_SIZE`, returns `OK` and an empty `values` map each time, the unknown-key outcome of AC3. No answer of the stub carries a request-deadline value.
 > - AC6: In a context started with `card-servicing.stub.serve=config` and the bound override `card-servicing.stub.config.values.[default_page_size]=10`, the AC1 request returns `default_page_size` `"10"`, `max_page_size` `"100"`, `upstream_timeout_ms` `"300"` and `upstream_max_retries` `"2"`.
 > - AC7: A context started with `card-servicing.stub.serve=config` and the bound entry `[default_page_size]=ten`, `[default_page_size]=-1` or `[request_deadline_ms]=900` under `card-servicing.stub.config.values` fails startup in each of the 3 cases, with an `IllegalArgumentException` root cause whose message names the full property, `card-servicing.stub.config.values.[default_page_size]` or `card-servicing.stub.config.values.[request_deadline_ms]`.
@@ -87,7 +90,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. Cases: the four-key read, a single and a repeated key, unknown and case-variant keys, the empty key list with its packed error object, the request-deadline names, a bound override, the 3 construction failures, failure rates 1.0 and 0 with their request-log entries, the absent and wrong service key, discovery and the container-mode bean condition.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. Cases: the four-key read, a single and a repeated key, unknown and case-variant keys, the empty key list with its packed error object, an empty key name alone and beside a valid key with its packed error object, the request-deadline names, a bound override, the 3 construction failures, failure rates 1.0 and 0 with their request-log entries, the absent and wrong service key, discovery and the container-mode bean condition.
 - Integration: Applies. This story adds no integration suite; the Config integration suite (CS-11-007) runs the Config client against this stub with Testcontainers `postgres:16.6` and `redis:7.4.2`. Command `./gradlew :card-servicing-service:integrationTest`; all pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap, each injected on this stub for CS-11-007.
 - Performance: Not applicable — the stub sits on no request path, because the service reads Config only through a background refresh that no request waits for; it applies to balance-retrieval and drill-down stories. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -116,7 +119,7 @@ Shared by both options:
 - Fallback: none in the stub, since the configuration client owns the fallback to held values and built-in defaults.
 - Provisioning: the stub registration hands the test harness the stub name and its baseline key map.
 - Cut-over: the real Config service replaces the stub with only an address and credential change in the configuration client.
-- Failures: injected unavailable answers and delays come from the shared injector, and an empty key list gets the stub's own invalid-argument status.
+- Failures: injected unavailable answers and delays come from the shared injector, and an empty key list or an empty key name gets the stub's own invalid-argument status.
 
 ### Design Option A
 
@@ -125,7 +128,7 @@ The stub holds the four baseline values in its own code and overlays any value b
 How it behaves:
 
 - A read returns the requested keys that the map holds and leaves every other key out, with no error.
-- A read that lists no keys gets the invalid-argument status, with the standard error object naming the key list.
+- A read that lists no keys, or that lists an empty key name alone or beside a valid key, gets the invalid-argument status before any lookup, with the standard error object naming the key list.
 - A bound value replaces the baseline value of the same key, and every other key keeps its baseline value.
 - A bound key outside the four baseline keys, or a value that is not a whole number, fails startup with a message naming the property.
 - The request deadline can never be bound, so the stub can never serve it.
@@ -173,7 +176,7 @@ Effort and risk: a parser and two resources on top of the same service, with the
 Settled assumptions:
 
 - The contracts state that an unknown key is absent from the answer and is not an error.
-- The contracts state that a read listing no keys gets the invalid-argument status.
+- The contracts state that a read listing no keys, or listing an empty key name, gets the invalid-argument status.
 - The request deadline is never a configuration key.
 - The stub-hosting story gives each hosted stub only its injector and its request log.
 
@@ -187,7 +190,7 @@ Open assumptions:
 | AC1 | Holds | the baseline map answers the four keys with the contract values |
 | AC2 | Holds | the answer is a map keyed by name |
 | AC3 | Holds | a key missing from the map is left out of the answer |
-| AC4 | Holds | an empty key list is refused before any lookup |
+| AC4 | Holds | an empty key list or an empty key name is refused before any lookup |
 | AC5 | Holds | the deadline can never enter the map |
 | AC6 | Holds | a bound value replaces only its own key |
 | AC7 | Holds | the map is checked when the stub is built |
@@ -200,7 +203,7 @@ Open assumptions:
 Settled assumptions:
 
 - The contracts state that an unknown key is absent from the answer and is not an error.
-- The contracts state that a read listing no keys gets the invalid-argument status.
+- The contracts state that a read listing no keys, or listing an empty key name, gets the invalid-argument status.
 - The fixture resource is parsed once at start.
 
 Open assumptions:
@@ -213,7 +216,7 @@ Open assumptions:
 | AC1 | Holds | the packaged resource answers the four keys with the contract values |
 | AC2 | Holds | the answer is a map keyed by name |
 | AC3 | Holds | a key missing from the resource is left out of the answer |
-| AC4 | Holds | an empty key list is refused before any lookup |
+| AC4 | Holds | an empty key list or an empty key name is refused before any lookup |
 | AC5 | Conditional | the parser must refuse a deadline entry in the resource |
 | AC6 | Breaks | the override arrives as a second resource instead of one bound value |
 | AC7 | At risk | the check names a resource entry rather than the bound property |

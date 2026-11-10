@@ -265,4 +265,3 @@ Open assumptions:
 | Environment | TBD |
 | Persona | TBD |
 | Estimated Effort | TBD |
-
