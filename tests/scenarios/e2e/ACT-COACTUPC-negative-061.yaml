@@ -1,0 +1,338 @@
+# COACTUPC refuses an account update whose SSN first part is left blank: the
+# first of the three parts that 1265-EDIT-US-SSN edits, through
+# 1245-EDIT-NUM-REQD 'supplied' [app/cbl/COACTUPC.cbl:1529-1531,2431-2446,
+# 2109-2133].
+#
+# Steps 1-3 reach the fetched account as ACT-COACTUPC-alternate-04 does:
+# USER0001 signs on through CC00, chooses option 2 (Account Update) on COMEN01,
+# and enters account 00000000001. 9000-READ-ACCT reads CXACAIX by account id
+# (card 9680294154603697, customer 000000001, line 49 of
+# app/data/ASCII/cardxref.txt), ACCTDAT and CUSTDAT, keeps the records as the
+# old values in the COMMAREA and sets ACUP-SHOW-DETAILS; the screen shows them
+# with 'Update account details presented above.', the SSN split as 123, 45 and
+# 6789, and 3320-UNPROTECT-FEW-ATTRS gives every editable field MDT on, so all
+# of them come back on the next AID [app/cbl/COACTUPC.cbl:2568-2580,2787-2865,
+# 2955-3000,3441-3561,3608-3884].
+# Step 4 erases ACTSSN1 (EraseEOF, nothing typed) and presses ENTER:
+# - 1100-RECEIVE-MAP leaves ACUP-NEW-CUST-SSN-1 at LOW-VALUES whether the
+#   erased field arrives as spaces (moved as LOW-VALUES) or as nulls (moved as
+#   received); parts 2 and 3 keep 45 and 6789 [app/cbl/COACTUPC.cbl:1047,
+#   1233-1252].
+# - 1205-COMPARE-OLD-NEW finds the account fields unchanged and ACUP-NEW-CUST-
+#   SSN-X unequal to the fetched 123456789, so a change has occurred, and
+#   1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the field edits in
+#   screen order [app/cbl/COACTUPC.cbl:1460-1470,1681-1774].
+# - Account Status, the three account dates and the five amounts pass on the
+#   repository account [app/cbl/COACTUPC.cbl:1472-1527]. 1265-EDIT-US-SSN moves
+#   'SSN: First 3 chars' to WS-EDIT-VARIABLE-NAME and the three bytes of part 1
+#   to WS-EDIT-ALPHANUM-ONLY; 1245-EDIT-NUM-REQD finds them LOW-VALUES, sets
+#   INPUT-ERROR and FLG-ALPHNANUM-BLANK ('B', moved on to
+#   WS-EDIT-US-SSN-PART1-FLGS) and, the message line being off since the task
+#   started [app/cbl/COACTUPC.cbl:876], STRINGs TRIM(WS-EDIT-VARIABLE-NAME) and
+#   ' must be supplied.' into WS-RETURN-MSG [app/cbl/COACTUPC.cbl:2109-2133,
+#   2439-2446]. Part 1 not being valid, its 000/666/900-999 check is skipped;
+#   parts 2 and 3 and every later edit pass on the invented customer below and
+#   could not overwrite the message [app/cbl/COACTUPC.cbl:2448-2489,1533-1676].
+# - 2000-DECIDE-ACTION continues on ACUP-CHANGES-NOT-OK, so 9600-WRITE-
+#   PROCESSING (PF5 only), the only READ UPDATE and REWRITE path, does not run
+#   and nothing is written [app/cbl/COACTUPC.cbl:2596-2597].
+# - 3203-SHOW-UPDATED-VALUES shows the received values, the valid amounts
+#   re-edited through +ZZZ,ZZZ,ZZZ.99 and part 1 as its LOW-VALUES; 3250 sets
+#   PROMPT-FOR-CHANGES and moves the message to ERRMSG; 3300 puts the cursor on
+#   ACTSSN1 and, through CSSETATY for EDIT-US-SSN-PART1 with
+#   FLG-EDIT-US-SSN-PART1-BLANK on a reentry, colours it red and moves '*' to it
+#   (the field refused); 3320 keeps the fields editable; 3390 makes F12=Cancel
+#   bright because changes were made, while F5=Save stays dark
+#   [app/cbl/COACTUPC.cbl:2870-2951,2955-2983,3078-3080,3298-3302,3500-3584]
+#   [app/cpy/CSSETATY.cpy:18-27].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - The message is TRIM('SSN: First 3 chars') followed by ' must be supplied.',
+#   36 characters of the 75-byte WS-RETURN-MSG, shown in the 78-byte ERRMSG
+#   with 42 trailing spaces. ACTSSN1 is '*' in the 3-byte field, replacing the
+#   map's INITIAL '999' because the symbolic map sends it. INFOMSG is the
+#   40-byte WS-INFO-MSG in the 45-byte field. Fields are compared at their full
+#   BMS length, trailing spaces kept.
+# - FKEY05 and FKEY12 keep their INITIAL text; a dark (ASKIP,DRK) field is
+#   captured as blanks. Colour and cursor position are not in the s3270 text
+#   capture and are not asserted. AADDGRP is sent as LOW-VALUES (the blank
+#   group id), which s3270 shows as spaces.
+# - CURDATE and CURTIME come from the region clock, hence the matchers and
+#   clock_mode relative.
+#
+# Customer 000000001 is replaced by invented data that passes every COACTUPC
+# edit, so SSN part 1 is the only field refused: the repository record has
+# FICO 274, below 300, and zip 12546, which is not a North Carolina zip
+# [app/cbl/COACTUPC.cbl:2514-2558]. The SSN 123-45-6789 is invented and matches
+# no person. Account 00000000001 and its cross-reference stay as in the
+# repository.
+id: ACT-COACTUPC-negative-061
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 2 (Account Update), fetches
+  account 00000000001, whose customer's SSN shows as 123-45-6789, erases the
+  first three SSN characters and presses ENTER. COACTUPC refuses the change:
+  the message line shows 'SSN: First 3 chars must be supplied.', the first SSN
+  field shows '*', the other received values are shown again, editable, with
+  the change prompt 'Update account details presented above.' and F12=Cancel
+  made visible, and neither ACCTDATA nor CUSTDATA is rewritten.
+# Primary item first, then the program, the maps asserted, the transaction of
+# steps 3 and 4, the CSD files COACTUPC reads, and the online-only copybooks it
+# copies. The change prompt 'Update account details presented above.' is
+# asserted but verified by its own scenario. Sign-on (CC00, COSGN00, USRSEC)
+# and the menu transaction are verified by the SEC and MNU scenarios; the batch
+# record copybooks and the data files are verified at the lowest level that
+# executes them.
+inventory_ids:
+- INV-ACT-119  # COACTUPC SSN: First 3 chars: supplied (1245-EDIT-NUM-REQD)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, where option 2 is entered
+- INV-ACT-004  # COACTUP map, the search, detail and refused-change screens
+- INV-CFG-009  # CAUP transaction, which runs the fetch and the field edits
+- INV-CFG-006  # CXACAIX CSD file: card cross-reference by account id
+- INV-CFG-001  # ACCTDAT CSD file: account master read
+- INV-CFG-005  # CUSTDAT CSD file: customer master read
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and ids
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-007  # CSLKPCDY: the area-code and state/zip lookups the later edits pass
+- INV-LAY-008  # CSMSG01Y, copied by COACTUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COACTUPC
+- INV-LAY-010  # CSSETATY: the '*' and red attribute of the refused field
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
+- INV-LAY-013  # CSUTLDPY: the date edits the account dates and birth date pass
+- INV-LAY-014  # CSUTLDWY: the date-edit working storage
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# The UniKix COACTUPC drops TRIM from the field name in 1245-EDIT-NUM-REQD and
+# its TRIM-length blank test (COACTUPC.cl2:2113-2136), so on UniKix the message
+# reads 'SSN: First 3 chars' padded to the 25 bytes of WS-EDIT-VARIABLE-NAME
+# before ' must be supplied.'; the app/ text is pinned and a UniKix run never
+# verifies the item.
+- GAP-DOC-022
+# The UniKix COACTUP.bms differs at row 1, columns 1-9, where TRNNAME stands.
+- GAP-DOC-025
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    # Customer 000000001 replaced by invented data, as in the other COACTUPC
+    # scenarios; the 168-byte FILLER keeps the repository record's spaces.
+    CUSTDATA:
+      base: CUSTDATA
+      records:
+      - CUST-ID: '000000001'
+        CUST-FIRST-NAME: Testfirst
+        CUST-MIDDLE-NAME: Testmiddle
+        CUST-LAST-NAME: Testlast
+        CUST-ADDR-LINE-1: 100 Test Street
+        CUST-ADDR-LINE-2: Suite 1
+        CUST-ADDR-LINE-3: Raleigh
+        CUST-ADDR-STATE-CD: NC
+        CUST-ADDR-COUNTRY-CD: USA
+        CUST-ADDR-ZIP: '27601'
+        CUST-PHONE-NUM-1: (919)555-0101
+        CUST-PHONE-NUM-2: (919)555-0102
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: TESTGOVT0001
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: Y
+        CUST-FICO-CREDIT-SCORE: '700'
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+# PASSWORD is the documented demo password of README.md, not a secret.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '2'
+  - aid: ENTER
+    '@map': COACTUP
+    fields:
+      ACCTSID: '00000000001'
+  - aid: ENTER
+    '@map': COACTUP
+    fields:
+      ACTSSN1: ''
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  # The fetched account and customer, editable, with the change prompt.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: '                                                                              '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: '       '
+    FKEY12: '          '
+  # The refused change: '*' in the blank first SSN part, the composed message,
+  # the other received values shown again, still editable, the change prompt,
+  # and F12=Cancel shown while F5=Save stays dark.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '*  '
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: 'SSN: First 3 chars must be supplied.                                          '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: '       '
+    FKEY12: 'F12=Cancel'
+  # The change is refused, so neither master record is rewritten: both files
+  # keep their 50 records, account 00000000001 its fetched values and customer
+  # 000000001 the invented values, SSN 123456789 included.
+  file_state:
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-GROUP-ID: '          '
+    CUSTDATA:
+      count: 50
+      contains:
+      - CUST-ID: '1'
+        CUST-FIRST-NAME: 'Testfirst                '
+        CUST-MIDDLE-NAME: 'Testmiddle               '
+        CUST-LAST-NAME: 'Testlast                 '
+        CUST-ADDR-LINE-1: '100 Test Street                                   '
+        CUST-ADDR-LINE-2: 'Suite 1                                           '
+        CUST-ADDR-LINE-3: 'Raleigh                                           '
+        CUST-ADDR-STATE-CD: 'NC'
+        CUST-ADDR-COUNTRY-CD: 'USA'
+        CUST-ADDR-ZIP: '27601     '
+        CUST-PHONE-NUM-1: '(919)555-0101  '
+        CUST-PHONE-NUM-2: '(919)555-0102  '
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'
