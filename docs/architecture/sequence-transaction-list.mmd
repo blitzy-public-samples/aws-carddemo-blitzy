@@ -34,20 +34,29 @@ sequenceDiagram
     CardServicingService->>CardServicingService: Check pageSize 1 to 100,<br/>at most max_page_size
     CardServicingService->>CardServicingService: Decode pageToken,<br/>version 1, fingerprint<br/>of account and filters
     break invalid parameter or page token
+        CardServicingService->>CardServicingService: Mark cut-off now,<br/>outcome 400 fixed
         CardServicingService-->>ApiGateway: 400 INVALID_ARGUMENT, no upstream call
         ApiGateway-->>CardServicingUi: 400 with traceId
     end
 
     %% Stage 1 Authentication: fails closed
     CardServicingService->>AccountAccessGuard: Check access to accountId
+    break token missing, empty or not Bearer
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 401 fixed
+        AccountAccessGuard-->>CardServicingService: UNAUTHENTICATED, no Auth call
+        CardServicingService-->>ApiGateway: 401 UNAUTHENTICATED
+        ApiGateway-->>CardServicingUi: 401 with traceId
+    end
     AccountAccessGuard->>AuthService: ValidateToken
-    break token invalid
+    break token invalid, expired or malformed
         AuthService-->>AccountAccessGuard: UNAUTHENTICATED
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 401 fixed
         AccountAccessGuard-->>CardServicingService: UNAUTHENTICATED
         CardServicingService-->>ApiGateway: 401 UNAUTHENTICATED
         ApiGateway-->>CardServicingUi: 401 with traceId
     end
     break Auth unavailable or deadline spent
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 503 or 504 fixed
         AccountAccessGuard-->>CardServicingService: UNAVAILABLE or DEADLINE_EXCEEDED
         CardServicingService-->>ApiGateway: 503 or 504, no data read
         ApiGateway-->>CardServicingUi: 503 or 504 with traceId
@@ -58,11 +67,13 @@ sequenceDiagram
     AccountAccessGuard->>AuthService: AuthorizeAccountAccess for subject and accountId
     break allowed false
         AuthService-->>AccountAccessGuard: allowed false
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 403 fixed
         AccountAccessGuard-->>CardServicingService: PERMISSION_DENIED
         CardServicingService-->>ApiGateway: 403 PERMISSION_DENIED, no data read
         ApiGateway-->>CardServicingUi: 403 with traceId
     end
     break Auth unavailable or deadline spent
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 503 or 504 fixed
         AccountAccessGuard-->>CardServicingService: UNAVAILABLE or DEADLINE_EXCEEDED
         CardServicingService-->>ApiGateway: 503 or 504, no data read
         ApiGateway-->>CardServicingUi: 503 or 504 with traceId
@@ -95,6 +106,9 @@ sequenceDiagram
     else account unknown
         CardServicingService-->>ApiGateway: 404 NOT_FOUND
         ApiGateway-->>CardServicingUi: 404 with traceId
+    else upstream rejects page token, not retried
+        CardServicingService-->>ApiGateway: 400 INVALID_ARGUMENT,<br/>details field pageToken
+        ApiGateway-->>CardServicingUi: 400 with traceId
     else upstream unavailable or deadline spent
         CardServicingService-->>ApiGateway: 503 UNAVAILABLE or 504 DEADLINE_EXCEEDED
         ApiGateway-->>CardServicingUi: 503 or 504 with traceId

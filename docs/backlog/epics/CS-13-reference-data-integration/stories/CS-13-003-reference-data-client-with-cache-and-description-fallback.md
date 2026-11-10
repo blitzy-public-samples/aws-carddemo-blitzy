@@ -39,6 +39,9 @@ Parent epic: [CS-13 Reference Data Integration](../README.md)
 >   - The target is bound from `card-servicing.clients.reference-data.target` by a `@ConfigurationProperties` record nested in this file, with the placeholder default `localhost:9090`. It is not a variable of the TRD environment-variable table, so `card-servicing-service/src/main/resources/application.yml` and `CardServicingProperties` from CS-11-001 stay unchanged and no environment variable is added. The unit suite sets it to the `127.0.0.1` port that `StubHarness` reports, the Compose stack (CS-01-001) sets the stub container address, and the real-service swap changes only this value and the credential source.
 >   - Builds the two `ReadThroughCache.KeyFamily` values with their fresh TTL, max stale age and codec.
 >   - Holds the gRPC Netty transport's client frame logger `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` at INFO through Spring Boot's `LoggingSystem` when it starts, whatever the root level, as the Auth client does (CS-12-002), because at DEBUG that shared logger writes every outbound header value, `authorization` and `x-api-key` included.
+>
+> > SCOPE-QUESTION (Resolved): The level hold above does not by itself keep the credentials out of the log. A later application context in the same JVM, such as a test context started while the client's channel is live, initialises logging and applies its own `logging.level` settings when its environment is prepared. Until a client of that context re-applies the hold, which a context that starts no client never does, the frame logger of every live client connection reads DEBUG. `ReferenceDataClientConfiguration` therefore also owns a credential guard that no logger level can lift: its nested class `ReferenceDataClientConfiguration.ClientFrameLogGuard`, built the same way as the server guard `GrpcServerConfiguration.ServerFrameLogGuard` of CS-11-002, whose idempotent, synchronized static `install()` replaces the default logger factory of the shaded Netty transport, through `io.grpc.netty.shaded.io.netty.util.internal.logging.InternalLoggerFactory.setDefaultFactory`, with a wrapper around the factory it replaces. The wrapper hands every logger name to that factory unchanged except `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler`, for which it returns a logger that reports TRACE and DEBUG as disabled, discards every TRACE and DEBUG event and passes INFO and above to the delegate. The transport builds the frame logger of each connection the channel opens from that factory and asks the logger whether DEBUG is enabled before it writes a frame, so no frame of a guarded connection reaches a log line, whatever level `LoggingSystem`, a `logging.level` setting, a later context's logging reset or a runtime level change gives the logger. `ReferenceDataClientConfiguration` calls `install()` before it builds its channel, so the guard is in place before the channel opens its first connection. The guard records in a static field that it has installed its wrapper, so a second call changes nothing, and nothing removes the wrapper, so it holds for as long as the JVM runs, across every later context start and close. The Config client (CS-11-006) and the Auth client (CS-12-002) each install a guard of their own in the same way, as a nested class of the class that applies their hold and builds their channel, and a guard installed after another wraps it and changes nothing observable, because both drop the same events. The level hold stays, but the guard, not the level, is the never-log protection AC9 relies on. The guard adds no file, no dependency, since the factory ships in the pinned `grpc-netty-shaded`, and no environment variable, so the 5 files touched stand.
+>
 > - `card-servicing-service/src/test/java/com/example/cardservicing/integration/referencedata/ReferenceDataClientTest.java`: the client tests of section 2 on the loopback stub harness of CS-11-002 (`card-servicing-service/src/test/java/com/example/cardservicing/support/StubHarness.java`):
 >   - `StubHarness.of(new ReferenceDataStubRegistration())` (CS-13-002) serves the stub answers, with per-test latency and failure-rate overrides through `StubHarness.inject` on stub `reference-data` and attempts counted in the stub request log.
 >   - A test-local anonymous `StubRegistration` under stub name `reference-data`, which `StubHarness.allRegistered()` never discovers, wraps the stub's service definition with a header-capturing server interceptor, fails one operation while answering the other, and serves the `UNAUTHENTICATED` and `INTERNAL` answers the stub never gives.
@@ -82,6 +85,9 @@ Parent epic: [CS-13 Reference Data Integration](../README.md)
 > - AC7: When the stub fails and no usable entry exists, the client returns `usable` false, all descriptions null and status `PARTIAL`, and raises no error. This holds with no entry, with an entry aged 86,400 s on the test clock, and after every non-retried status of AC4. Every description lookup is empty, `isKnownTypeCode` answers false for every code, and `asOf` is empty.
 > - AC8: A Redis read or write failure is treated as a cache miss, and the stub answer is still returned. With every entry-store command failing, each call reaches the stub exactly once and returns `FRESH` with the stub's list, and with the stub failing as well the result is `PARTIAL` with no error.
 > - AC9: The caller's bearer token is forwarded in `authorization` metadata and `x-api-key` carries `AUTH_SERVICE_API_KEY`. Neither value appears in any log line. Cache keys contain no caller identity. On both operations the header-capturing interceptor records `authorization` equal to `Bearer ` followed by the test token, and `x-api-key` equal to the configured value, or an empty value when the key is empty. With the root log level at DEBUG, the log output captured across the AC2, AC4, AC6 and AC7 paths contains neither value, and calls made with two different tokens write only the keys `cs:v1:reftypes` and `cs:v1:refcats`.
+>
+> > SCOPE-QUESTION (Resolved): The criterion also covers a live client channel while logger levels change. Two more cases run in `ReferenceDataClientTest` against the Reference Data stub that `StubHarness` started, with every entry-store command failing so that each call reaches the stub, on a client built with a service key generated at runtime, whose channel a first call has opened. Each case sends `transactionTypes` calls, each with a bearer token generated at runtime, so no credential literal is committed and `CommittedSecretScanTest` (CS-11-001) stays green, with output captured by Spring Boot's `OutputCaptureExtension`, which records standard output and standard error and so keeps recording across a logging reset. First, the test sets the effective level of `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` to DEBUG through `LoggingSystem`, the state a logging reset leaves before any re-application, sends 5 calls that each return `FRESH` with the 7 type descriptions, and then sets the level back to INFO. Second, the test starts a further application through `SpringApplicationBuilder` from a test configuration that imports `ReferenceDataClientConfiguration` and declares the client's collaborators, with `card-servicing.clients.reference-data.target` set to the same stub's loopback port and `logging.level.root`, `logging.level.io.grpc` and `logging.level.io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` set to DEBUG, and adds a test listener ordered at `LoggingApplicationListener.DEFAULT_ORDER + 1`, directly after Spring Boot's logging listener. On `ApplicationEnvironmentPreparedEvent`, after that application has initialised logging and applied its DEBUG settings and before any of its beans exists, the listener reads the effective level of `NettyClientHandler` as DEBUG and then sends 5 calls on the already-live client of the first case, each with a newly generated token, all returning `FRESH` with the 7 type descriptions before the listener returns. The application then reports ready, with the effective level of `NettyClientHandler` back at INFO once its client configuration has started, and is closed. None of the values generated in either case appears in the captured output.
+>
 > - AC10: Types and categories resolve independently. A failing categories call leaves a fresh types result `FRESH`, and the reverse holds too. With the test-local server failing only `ListTransactionCategories`, `transactionTypes` returns `FRESH` from the stub while `transactionCategories` returns `PARTIAL`, the outcomes swap when only `ListTransactionTypes` fails, and a held `cs:v1:refcats` entry never answers a types call.
 >
 > ### 3. Dependencies
@@ -113,7 +119,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass with ≥80% line coverage per module. `ReferenceDataClientTest` and `ReferenceDataResultTest` cover AC1–AC10 on the loopback stub harness with per-test latency and failure overrides: fresh hit, miss and write-back, the attempt timeout, the retry counts and the non-retried statuses, the 2,000 ms deadline case, stale fallback at 3,600 s and 86,399 s, partial fallback at 86,400 s and with no entry, Redis failure, the forwarded credentials and their absence from logs, and independent lists.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass with ≥80% line coverage per module. `ReferenceDataClientTest` and `ReferenceDataResultTest` cover AC1–AC10 on the loopback stub harness with per-test latency and failure overrides: fresh hit, miss and write-back, the attempt timeout, the retry counts and the non-retried statuses, the 2,000 ms deadline case, stale fallback at 3,600 s and 86,399 s, partial fallback at 86,400 s and with no entry, Redis failure, the forwarded credentials and their absence from logs, the client frame-logger guard with the client frame logger forced to DEBUG on a live channel and during a later application's logging initialisation against the already-live client, and independent lists.
 - Integration: Applies. This story adds no integration suite; the Reference Data integration suite (CS-13-004) runs this client against the Reference Data stub on a real gRPC channel with Testcontainers `postgres:16.6` and `redis:7.4.2`. Command `./gradlew :card-servicing-service:integrationTest`; all pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Applies through the balance summary SLA scenario (CS-01-005) and the category balance SLA scenario (CS-02-002), whose endpoints call this client:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -137,29 +143,29 @@ Rationale: the client caches the full type list and the full category list as tw
 ### Shared by both options
 
 - Topology: the client runs inside the service, the stub sits behind the call policy, and the entries live in the shared cache.
-- Naming: each list has a versioned entry name with no caller in the name.
+- Naming: every entry name is versioned and carries no caller identity.
 - Addressing: the stub is reached by its configured target address.
 - Isolation: types and categories resolve independently.
-- Fallback: a stale entry within the max stale age, otherwise the partial status with descriptions absent.
-- Provisioning: the channel is built at service start.
+- Fallback: an unavailable or deadline-exceeded failure falls back to a stale entry within the max stale age, and any other failed status, or no usable entry, gives the partial status with descriptions absent and no error.
+- Provisioning: the channel is built at service start, after the transport is fitted with a header-logging guard that stays in place for the life of the process.
 - Cut-over: the real service swap changes only the target address and the credential source.
 - Failures: unavailable and deadline-exceeded statuses are retried inside the budget, and a cache failure is treated as a miss.
 
 ### Design Option A — two whole-list cache entries
 
-The client keeps one cache entry for the full type list and one for the full category list. A request reads at most one entry per list and calls the stub only when that entry is missing or past its freshness window. A failed call falls back to the held list while it is within the max stale age, and otherwise to the partial status with no descriptions.
+The client keeps one cache entry for the full type list and one for the full category list. A request reads at most one entry per list and calls the stub only when that entry is missing or past its freshness window. An unavailable or deadline-exceeded failure falls back to the held list while it is within the max stale age, and any other failed status, or no usable list, gives the partial status with no descriptions and no error.
 
 How it behaves:
 
 - Fresh hit: the held list answers with its stored time, and the stub sees no call.
 - Miss: one stub call fills the whole list and its entry in one step.
-- Stale fallback: a failed call within the max stale age returns the held list with the stale status.
-- Partial fallback: a failed call with no usable list returns the partial status with every description absent and no error.
+- Stale fallback: an unavailable or deadline-exceeded failure with the held list within the max stale age returns that list with the stale status.
+- Partial fallback: a failure with no usable list, or any other failed status even with a list held, returns the partial status with every description absent and no error.
 - Independent lists: a failure on one list leaves the other list's status unchanged.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Whole list per entry (vs one entry per code) | one cache read and one as-of time per list | one changed description refreshes the whole list |
+| 1 | Whole list per entry (vs one entry per code) | one cache read and one as-of time per list | every cache read carries the whole list even for one label |
 | 2 | Degrade to the partial status (vs fail the request) | balances stay visible during a reference outage | labels stay missing until the service recovers |
 | 3 | Independent lists (vs one combined entry) | one failing operation never hides the other list | the two entries age apart |
 
@@ -167,18 +173,18 @@ Effort and risk: low effort on top of the call policy and cache stories, with th
 
 ### Design Option B — one cache entry per code
 
-The client keeps one cache entry per type code and one per type-and-category pair. A response looks up the entry of each code it labels, and when any of them is missing or past its freshness window it calls the stub for the full list and writes one entry per code. A failed call falls back code by code to held entries within the max stale age.
+The client keeps one cache entry per type code and one per type-and-category pair. A response looks up the entry of each code it labels, and when any of them is missing or past its freshness window it calls the stub for the full list and writes one entry per code. An unavailable or deadline-exceeded failure falls back code by code to held entries within the max stale age, and any other failed status gives the partial status with every description absent and no error.
 
 How it differs:
 
 - A balance summary or category balance response reads up to 25 entries instead of one.
 - One miss fills up to 25 entries in one pass.
 - Entries written at different times give one response mixed ages, so one as-of time stands for the oldest of them.
-- A failed call can leave some codes labelled and others absent within one response.
+- An unavailable or deadline-exceeded failure can leave some codes labelled and others absent within one response.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One entry per code (vs whole list per entry) | a changed description refreshes only its own code | each response pays one cache read per code |
+| 1 | One entry per code (vs whole list per entry) | each cache read carries only one label | each response pays one cache read per code |
 | 2 | Code-by-code fallback (vs list-level fallback) | a partial outage keeps the labels still held | one response can mix fresh, stale and absent labels |
 
 Effort and risk: more effort, with the risk of mixed freshness within one response.
@@ -187,7 +193,7 @@ Effort and risk: more effort, with the risk of mixed freshness within one respon
 
 - Option: Option A.
 - Why: each list resolves in one cache read with one freshness and one as-of time, which leaves the budget to the balance reads.
-- Strongest argument against: one changed description refreshes the whole list.
+- Strongest argument against: every cache read carries the whole list even when a response needs few labels.
 - Shared items that do not decide the choice: the call policy, the deadline, the credentials, the fallback rule and the freshness window.
 - Flip conditions: the lists grow to thousands of codes, so a whole-list read costs more than per-code lookups.
 
@@ -200,6 +206,7 @@ Settled assumptions:
 - The 7 types and 18 categories fit one entry each.
 - Reference data carries no account data, so the shared entries are safe across callers.
 - The call policy and cache stories supply the timeout, retry and stale mechanics.
+- The transport writes header values only through its frame logger, which it takes from a replaceable logger factory for each new connection and which checks whether debug output is enabled before each frame.
 
 Open assumptions:
 
@@ -214,9 +221,9 @@ Open assumptions:
 | AC4 | Holds | the call policy retries only the two retryable statuses |
 | AC5 | Holds | one cache read per list leaves the budget to the stub attempts |
 | AC6 | Holds | the held list carries one stored time for the as-of value |
-| AC7 | Holds | a failed call with no usable entry yields the partial status |
+| AC7 | Holds | a failure with no permitted stale fallback yields the partial status |
 | AC8 | Holds | the cache treats its own failure as a miss |
-| AC9 | Holds | no log line or entry name carries the credentials |
+| AC9 | Holds | no log line or entry name carries the credentials, with the transport's header logging shut off by a process-wide guard |
 | AC10 | Holds | each list has its own entry and its own call |
 
 ### Option B validation
@@ -226,6 +233,7 @@ Settled assumptions:
 - The 7 types and 18 categories give at most 25 entries.
 - Reference data carries no account data, so the shared entries are safe across callers.
 - The call policy and cache stories supply the timeout, retry and stale mechanics.
+- The transport writes header values only through its frame logger, which it takes from a replaceable logger factory for each new connection and which checks whether debug output is enabled before each frame.
 
 Open assumptions:
 
@@ -240,9 +248,9 @@ Open assumptions:
 | AC4 | Holds | the call policy retries only the two retryable statuses |
 | AC5 | At risk | per-code lookups eat into the budget |
 | AC6 | Conditional | mixed entry ages blur one as-of time |
-| AC7 | Holds | codes with no usable entry yield the partial status |
+| AC7 | Holds | codes with no permitted stale fallback yield the partial status |
 | AC8 | Holds | the cache treats its own failure as a miss |
-| AC9 | Holds | no log line or entry name carries the credentials |
+| AC9 | Holds | no log line or entry name carries the credentials, with the transport's header logging shut off by a process-wide guard |
 | AC10 | Holds | type entries and category entries stay separate |
 
 ## Metadata

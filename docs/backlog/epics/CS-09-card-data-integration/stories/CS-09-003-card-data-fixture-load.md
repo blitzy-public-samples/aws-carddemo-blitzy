@@ -17,6 +17,7 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 > Capability: three entity loaders read the CardDemo sample accounts, card cross-references and category balances from copies carried on the class path and write the `account`, `card_cross_reference` and `category_balance` tables. They use the parser, overpunch decoding, FK skip-and-count rule, per-entity transaction and load report of the CS-09-001 loader core and never re-implement them. The record structures are `Data Layouts · CVACT01Y` (account), `Data Layouts · CVACT03Y` (card cross-reference) and `Data Layouts · CVTRA01Y` (category balance), at the 1-based positions that `docs/data-model.md` lists under Fixture mapping. Target paths:
 >
 > - Sample file copies, each byte-identical to its CardDemo ASCII sample file, made once at implementation and never regenerated at build or run time:
+>   > SCOPE-QUESTION (Resolved): Nothing above shows that a copy stays byte-identical once nothing may read `app/`, and a size or line-count check cannot show it, because a same-width change keeps both. Resolution: at the one-time copy, the SHA-256 digest of each reference sample file is computed and recorded as a constant in that entity's loader unit test: `AccountFixtureLoaderTest` for `acctdata.txt`, `CardCrossReferenceFixtureLoaderTest` for `cardxref.txt` and `CategoryBalanceFixtureLoaderTest` for `tcatbal.txt`. Each test computes the digest of its class-path copy with the JDK's `java.security.MessageDigest` and requires it to equal the recorded constant, so any changed byte, a same-width amount or identifier change included, fails the unit suite. Nothing reads `app/` after the copy, and no file or dependency is added, so the 10 files touched stand.
 >   - `card-servicing-service/src/main/resources/fixtures/acctdata.txt`, a copy of `Sample data · acctdata.txt` (50 lines × 300 bytes).
 >   - `card-servicing-service/src/main/resources/fixtures/cardxref.txt`, a copy of `Sample data · cardxref.txt` (50 lines × 36 bytes, FILLER absent).
 >   - `card-servicing-service/src/main/resources/fixtures/tcatbal.txt`, a copy of `Sample data · tcatbal.txt` (50 lines × 50 bytes).
@@ -26,6 +27,7 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 >   - `CategoryBalanceFixtureLoader.java`: entity `category_balance`, load order 5, layout `Data Layouts · CVTRA01Y` positions 1–28, with parent-key checks against loaded accounts and loaded type and category pairs.
 >   - Load orders 1 and 2 belong to the reference-data loaders of CS-13-001, so all three Card Data entities load after the reference data, and the transaction loader of CS-10-002 follows them.
 > - `card-servicing-service/src/test/java/com/example/cardservicing/support/CardDataFixtureSet.java`: the small in-memory Card Data fixture set for unit suites. It is built with no store connection by the same parser and the same three layouts from the same three class-path copies, so it holds all 50 sample accounts with their cross-references and category balances. This is the set the CS-09-004 in-memory provider serves.
+>   > SCOPE-QUESTION (Resolved): The same parser and the same three layouts apply the same record checks to the fixture set, so a copy failing any check fails the set's build with an error naming the fixture file and the 1-based line number, and no set is returned.
 > - Unit tests under `card-servicing-service/src/test/java/com/example/cardservicing/integration/fixture/`: `AccountFixtureLoaderTest.java`, `CardCrossReferenceFixtureLoaderTest.java` and `CategoryBalanceFixtureLoaderTest.java`. They drive the loaders through the recording transaction manager of CS-09-001, so the unit suite needs no store.
 > - Together these are the 10 files touched.
 >
@@ -34,8 +36,16 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 > - Cross-reference line length: 36-byte lines (the sample form, FILLER absent) and 50-byte lines (FILLER present) are both accepted, and the FILLER is ignored.
 > - ACCT-ADDR-ZIP (columns 103–112) and ACCT-GROUP-ID (columns 113–122) are loaded strictly by copybook offset and never re-aligned. Trailing padding is removed, and a group of ten spaces is stored as NULL. The sample rows therefore carry `addressZip` `A000000000` and no `groupId`.
 > - A row whose foreign key names no loaded parent row is skipped and counted per entity in the load report: a cross-reference or category balance naming no loaded account, and a category balance naming no seeded type and category pair.
+>   > SCOPE-QUESTION (Resolved): A row's parent keys are tested only after the row passes every record check of the layouts declared beneath the short-line rule below. A malformed row is never skipped: it fails its entity's load.
 > - Load order: account → cross-reference → category balance, after the reference data. Each entity loads in its own transaction, and its load-report entry is written after that transaction commits.
 > - A line shorter than its layout's last non-filler end column (122 for accounts, 36 for cross-references, 28 for category balances) fails that entity's load under the loader core's short-line rule, with an error naming the fixture file and the 1-based line number.
+>   > SCOPE-QUESTION (Resolved): The rule above names only a short line, while `docs/data-model.md` § Fixture rules checks every line in full before use through the record checks of the CS-09-001 loader core. Resolution: each loader's layout declares what those checks need, and the parser checks every line in full before any of its values is converted, mapped to NULL, tested for a parent key or written.
+>   >
+>   > - Account (`acctdata.txt`): accepted lengths 300 and 122 bytes. ACCT-ID is 9(11) unsigned digits and the key. ACCT-ACTIVE-STATUS is text with no check. The five S9(10)V99 amounts, ACCT-CURR-BAL, ACCT-CREDIT-LIMIT, ACCT-CASH-CREDIT-LIMIT, ACCT-CURR-CYC-CREDIT and ACCT-CURR-CYC-DEBIT, are signed amounts. ACCT-OPEN-DATE, ACCT-EXPIRAION-DATE and ACCT-REISSUE-DATE are dates. ACCT-ADDR-ZIP is text with no check, so `A000000000` is kept. ACCT-GROUP-ID is text whose blank is accepted and stored as NULL.
+>   > - Cross-reference (`cardxref.txt`): accepted lengths 50 and 36 bytes. XREF-CARD-NUM is text marked not blank and the key. XREF-CUST-ID is 9(09) and XREF-ACCT-ID 9(11) unsigned digits.
+>   > - Category balance (`tcatbal.txt`): accepted lengths 50 and 28 bytes. TRANCAT-ACCT-ID is 9(11) and TRANCAT-CD 9(04) unsigned digits. TRANCAT-TYPE-CD is text marked not blank: it meets `^[\s\S]{2}$`, and the not-blank mark rejects two spaces. TRAN-CAT-BAL is an S9(09)V99 signed amount. The key is the account, type and category together.
+>   > - The first malformed line in file order fails its entity's load with an error naming the fixture file and the 1-based line number. The entity's transaction rolls back, so its table holds no row from that load, and the load report holds no entry for it. No later-ordered loader starts, entities committed earlier keep their rows and report entries, and the job exits with a non-zero status.
+>   > - The checks keep the 36-byte cross-reference line, the blank group, the letter-led zip and any FILLER content: spaces in `acctdata.txt` and zeros in `tcatbal.txt`. Every sample row passes every check, so AC1 stands.
 > - The loaders read only the three class-path copies and write only the three tables. Nothing reads `app/`, or any file outside the class path, at build, test or run time.
 >
 > In scope:
@@ -70,7 +80,16 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 > - AC9: An account file whose second line is 121 bytes long, ending before column 122 where ACCT-GROUP-ID ends, fails the account load with an error naming `acctdata.txt` and line 2. The account transaction rolls back, so `account` holds no row from that load, the load report holds no `account` entry, and the cross-reference and category-balance loaders do not start. A line of exactly 122 bytes loads.
 > - AC10: The three loaders register with load orders 3 (`account`), 4 (`card_cross_reference`) and 5 (`category_balance`), after the reference-data orders 1 and 2. The cross-reference load starts only after the account load commits, and the category-balance load starts only after the cross-reference load commits.
 > - AC11: The three class-path copies under `fixtures/` measure 50 lines of 300 bytes (`acctdata.txt`), 50 lines of 36 bytes (`cardxref.txt`) and 50 lines of 50 bytes (`tcatbal.txt`), each line ended by a single line feed. With the process working directory set to an empty temporary directory, the sample load still meets AC1, and the loaders open no file outside the class path.
+>   > SCOPE-QUESTION (Resolved): AC11 also requires the SHA-256 digest of each class-path copy, computed in its loader unit test, to equal the constant recorded for that file at the one-time copy. A copy with one amount digit changed, its size and line count kept, fails the unit suite.
 > - AC12: The in-memory Card Data fixture set, built with no store connection, holds 50 accounts, 50 cross-references and 50 category balances. For `00000000001` it returns account, cross-reference and category-balance values equal, field for field, to the rows the three loaders write for AC2 and AC4.
+> > SCOPE-QUESTION (Resolved): Which criterion covers the record checks of the three layouts? None of AC1–AC12 covers a line length other than 35, 36, 50, 121, 122 and 300 bytes, a field check, a repeated key, or a malformed row that also breaks a parent key. Resolution: AC13–AC18 below, run in the three loader tests, the loader cases through the recording transaction manager of CS-09-001, over copies built in the test that differ from the class-path copy only in the change named. Each failure names the fixture file and the 1-based line number, and no row is counted as skipped.
+> >
+> > - AC13: Account lines of 123, 299 and 301 bytes each fail the account load (121 bytes is AC9). Cross-reference lines of 37, 49 and 51 bytes each fail the cross-reference load (35 bytes is AC6). A category-balance copy whose line 1 is cut to 28 bytes loads with stored values equal to those of its 50-byte form, while category-balance lines of 27, 29, 49 and 51 bytes each fail.
+> > - AC14: Each of these changes at line 2 fails its entity's load at line 2: ACCT-ID `0000000000A`; `?` at column 24, the current-balance sign position; open date `2022-02-30`; an expiration date of 10 spaces; a cross-reference card number of 16 spaces; a customer ID holding a space; a category-balance type code of two spaces; category `X001`; and `?` at column 28, the balance sign position.
+> > - AC15: Each of these line-2 keys, repeating the key of line 1, fails its entity's load at line 2: ACCT-ID `00000000001` in the account file, card `9680294154603697` in the cross-reference file, and account `00000000001` with type `01` and category `0001` in the category-balance file.
+> > - AC16: A category-balance line naming account `00000000099`, which the account load did not store, and category `X001` fails the category-balance load as malformed rather than being skipped.
+> > - AC17: After any failure of AC13–AC16, the failing entity's table holds no row from that load, the load report holds no entry for it, no later-ordered loader starts, entities committed earlier keep their rows and report entries, and the job exits with a non-zero status.
+> > - AC18: The in-memory Card Data fixture set built from any failing copy of AC13–AC16 fails with an error naming the fixture file and the 1-based line number, and no set is returned.
 >
 > ### 3. Dependencies
 >
@@ -92,7 +111,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; pass when all tests pass with ≥80% line coverage per module. The three loader tests cover AC1–AC11 through the recording transaction manager of CS-09-001, and the in-memory equality test covers AC12.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; pass when all tests pass with ≥80% line coverage per module. The three loader tests cover AC1–AC11 through the recording transaction manager of CS-09-001, including the SHA-256 digest of each class-path copy against the constant recorded at the copy and a same-size copy with one amount digit changed failing it, and the in-memory equality test covers AC12. Cases added by AC13–AC18: the account, cross-reference and category-balance lengths outside the two accepted lengths, the 28-byte category-balance line, the digit, amount, date and not-blank field checks at line 2, the repeated key in each file, the malformed category-balance row that also names no loaded account, the rollback-and-stop disposition after each failure, and the in-memory set built from a failing copy.
 - Integration: Applies, through the Card Data integration suite CS-09-006, which loads the sample into the `postgres:16.6` container and reads the stored rows back. Command `./gradlew :card-servicing-service:integrationTest`; pass when all suites pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Not applicable — this story is a load step, not a request path. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -121,7 +140,7 @@ Rationale: sample file copies carried inside the service package keep the fixtur
 - Fallback: none, because a stub has no card data to serve until the load commits.
 - Provisioning: account, then cross-reference, then category balance, after the reference data.
 - Cut-over: the real card data owner holds the real rows, and the sample file copies stay test-only.
-- Failures: a broken parent link is skipped and counted, and a truncated line stops its entity and every later one.
+- Failures: a malformed line, whether truncated, overlong or failing a field or key check, stops its entity and every later one with no report entry for it, and a broken parent link is skipped and counted only after its row passes every record check.
 
 ### Design Option A — sample file copies on the class path
 
@@ -131,20 +150,20 @@ How it behaves:
 
 - The account loader reads each line at its record positions, decodes the signed amounts and reads the zip and the group strictly at their own positions.
 - A blank group becomes no value, and the zip keeps the letter-led value the sample carries in that position.
-- The cross-reference loader accepts a line that ends after the account number and a line that carries the trailing filler.
-- A cross-reference or category balance row whose parent link names no loaded row is skipped and counted.
-- A line that ends before its last real field stops that entity with the file and the line number named, and no later loader starts.
+- Each loader accepts only its two line lengths, the full record and the end of its last real field, so the cross-reference loader accepts a line that ends after the account number and a line that carries the trailing filler.
+- Every line passes the digit, amount, date, not-blank and repeated-key checks of its layout before any value is used, and only then is a cross-reference or category balance row whose parent link names no loaded row skipped and counted.
+- A line that fails any check stops that entity with the file and the line number named, leaves no report entry for it, and no later loader starts.
 - The load report gains one entry per entity after its transaction commits.
-- A size and line-count check on each copy guards against drift from the reference files.
+- A digest of each reference file taken at the copy is checked against the packaged copy, so any changed byte fails the unit suite.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Sample file copies on the class path (vs reading the reference folder) | the fixture set moves with the service | the copies can drift from the reference files |
+| 1 | Sample file copies on the class path (vs reading the reference folder) | the fixture set moves with the service | a later reference file change never reaches the copies |
 | 2 | In-memory set from the same parser (vs hand-written values) | unit and relational values come from one source | every unit suite start parses three files |
 | 3 | Strict offsets for zip and group (vs re-aligning the position quirk) | stored values match the record layout exactly | the sample zip holds a letter-led value |
 | 4 | Both cross-reference line lengths accepted (vs padding the files) | the copies stay byte-identical to the sample | the loader accepts a second line length |
 
-Effort and risk: low effort with three small layouts, with the risk confined to a copy drifting from its reference file.
+Effort and risk: low effort with three small layouts, with the risk confined to a later reference file change that never reaches its copy.
 
 ### Design Option B — reference folder read at run time
 
@@ -171,8 +190,8 @@ Effort and risk: lowest effort with no copy step, with high risk that the load f
 
 - Option: Option A.
 - Why: the fixture set travels with the service, so every suite and every container reads the same bytes.
-- Strongest argument against: the copies can drift from the reference files, which the size and line-count check guards against.
-- Shared items that do not decide the choice: the load order, the offset rule and the skip counts.
+- Strongest argument against: a later change to a reference file never reaches the copies, and the digests guard only the copies.
+- Shared items that do not decide the choice: the load order, the offset rule, the record checks and the skip counts.
 - Flip conditions: the reference data becomes a published artifact versioned with the service.
 
 ## Design Validation
@@ -185,26 +204,34 @@ Settled assumptions:
 - Each sample account has one card and one category balance.
 - The zip position holds the same letter-led value in every sample account, and the group position is blank in every one.
 - The reference data loads first, through the reference data tables story.
+- Every sample row passes every record check.
+- Each packaged copy equals its reference file byte for byte, as the digest recorded at the copy proves.
+- A later change to a reference file never reaches the copies, because the copies are made once and never regenerated.
 
 Open assumptions:
 
 - Open → whether the in-memory set should shrink below the full sample → settled by the card data stub story's boundary tests.
-- Open → whether the reference sample files change after the copy → settled by the size and line-count check on each copy.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the sample holds no broken parent link and the copies are complete |
+| AC1 | Holds | the complete copies hold no broken parent link |
 | AC2 | Holds | the account layout reads every field at its record position |
 | AC3 | Holds | the zip and the group are read strictly at their own positions |
 | AC4 | Holds | identifiers are carried as text with their leading zeros |
 | AC5 | Holds | the copies hold exactly the fifty sample accounts |
-| AC6 | Holds | the minimum line length ends at the account number |
+| AC6 | Holds | the two accepted lengths end at the account number and at the full record |
 | AC7 | Holds | the loader core skips a row whose account is not loaded |
 | AC8 | Holds | the loader core skips a row whose category pair is not seeded |
-| AC9 | Holds | the loader core rolls back an entity at its first short line |
+| AC9 | Holds | the loader core rolls back an entity at its first line shorter than the last real field |
 | AC10 | Holds | each loader declares its order after the reference data |
-| AC11 | Holds | the copies travel inside the service package |
+| AC11 | Holds | digest-checked copies travel inside the service package |
 | AC12 | Holds | the in-memory set comes from the same parser and the same copies |
+| AC13 | Holds | each layout accepts only its full record and the end of its last real field |
+| AC14 | Holds | the layouts mark each digit, amount, date and not-blank field for the parser |
+| AC15 | Holds | each layout names its key for the parser's repeat check |
+| AC16 | Holds | the parent-key check runs only after every record check passes |
+| AC17 | Holds | the loader core rolls back the entity and stops every later loader |
+| AC18 | Holds | the in-memory set uses the same parser and layouts as the loaders |
 
 ### Option B validation
 
@@ -213,6 +240,7 @@ Settled assumptions:
 - The sample holds zero parent-link violations in every entity.
 - Each sample account has one card and one category balance.
 - The reference repository's data folder holds the same three files.
+- Every sample row passes every record check.
 
 Open assumptions:
 
@@ -226,13 +254,19 @@ Open assumptions:
 | AC3 | Holds | the zip and the group are read strictly at their own positions |
 | AC4 | Holds | identifiers are carried as text with their leading zeros |
 | AC5 | Holds | the reference files hold exactly the fifty sample accounts |
-| AC6 | Holds | the minimum line length ends at the account number |
+| AC6 | Holds | the two accepted lengths end at the account number and at the full record |
 | AC7 | Holds | the loader core skips a row whose account is not loaded |
 | AC8 | Holds | the loader core skips a row whose category pair is not seeded |
-| AC9 | Holds | the loader core rolls back an entity at its first short line |
+| AC9 | Holds | the loader core rolls back an entity at its first line shorter than the last real field |
 | AC10 | Holds | each loader declares its order after the reference data |
 | AC11 | Breaks | the loader opens files outside the class path by design |
 | AC12 | Conditional | the unit suite finds its input only inside the reference checkout |
+| AC13 | Holds | the same layouts accept only their full record and the end of their last real field |
+| AC14 | Holds | the same layouts mark each digit, amount, date and not-blank field for the parser |
+| AC15 | Holds | the same layouts name their keys for the parser's repeat check |
+| AC16 | Holds | the parent-key check runs only after every record check passes |
+| AC17 | Holds | the loader core rolls back the entity and stops every later loader |
+| AC18 | Conditional | the unit suite finds its input only inside the reference checkout |
 
 ## Metadata
 

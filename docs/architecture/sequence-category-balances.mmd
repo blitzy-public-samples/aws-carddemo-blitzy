@@ -33,19 +33,28 @@ sequenceDiagram
     CardServicingService->>CardServicingService: Read held<br/>configuration snapshot
     CardServicingService->>CardServicingService: Validate accountId<br/>11 digits not all zero<br/>and typeCode pattern
     break invalid parameter
+        CardServicingService->>CardServicingService: Mark cut-off now,<br/>outcome 400 fixed
         CardServicingService-->>ApiGateway: 400 ErrorObject INVALID_ARGUMENT
         ApiGateway-->>CardServicingUi: 400 ErrorObject, no upstream or Config call
     end
 
     CardServicingService->>AccountAccessGuard: Check bearer token and account access
+    break token missing, empty or not Bearer
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 401 fixed
+        AccountAccessGuard-->>CardServicingService: Deny with 401, no Auth call
+        CardServicingService-->>ApiGateway: 401 ErrorObject UNAUTHENTICATED
+        ApiGateway-->>CardServicingUi: 401 ErrorObject
+    end
     AccountAccessGuard->>AuthService: ValidateToken
-    break token invalid
+    break token invalid, expired or malformed
         AuthService-->>AccountAccessGuard: UNAUTHENTICATED
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 401 fixed
         AccountAccessGuard-->>CardServicingService: Deny with 401
         CardServicingService-->>ApiGateway: 401 ErrorObject UNAUTHENTICATED
         ApiGateway-->>CardServicingUi: 401 ErrorObject
     end
     break Auth unavailable or deadline spent
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 503 or 504 fixed
         AccountAccessGuard-->>CardServicingService: Fail closed after retries
         CardServicingService-->>ApiGateway: 503 or 504 ErrorObject
         ApiGateway-->>CardServicingUi: 503 or 504 ErrorObject
@@ -55,11 +64,13 @@ sequenceDiagram
     AccountAccessGuard->>AuthService: AuthorizeAccountAccess for subject and accountId
     break allowed false
         AuthService-->>AccountAccessGuard: allowed false
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 403 fixed
         AccountAccessGuard-->>CardServicingService: Deny with 403, no data read
         CardServicingService-->>ApiGateway: 403 ErrorObject PERMISSION_DENIED
         ApiGateway-->>CardServicingUi: 403 ErrorObject
     end
     break Auth unavailable or deadline spent
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 503 or 504 fixed
         AccountAccessGuard-->>CardServicingService: Fail closed, no data read
         CardServicingService-->>ApiGateway: 503 or 504 ErrorObject
         ApiGateway-->>CardServicingUi: 503 or 504 ErrorObject

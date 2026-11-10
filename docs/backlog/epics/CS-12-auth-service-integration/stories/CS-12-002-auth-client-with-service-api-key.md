@@ -23,8 +23,14 @@ Parent epic: [CS-12 Auth Service Integration](../README.md)
 >   - Builds one channel per service instance to the Auth target address, read from `card-servicing.auth.target` through its own placeholder with default `localhost:9090`, and shuts the channel down when the application context closes. The address is not a variable of the TRD environment-variable table, so `card-servicing-service/src/main/resources/application.yml` (CS-11-001) stays unchanged. The Compose stack (CS-01-001) and deployed environments set it, and the unit suite hands the client the loopback port that `StubHarness` reports.
 >   - `validateToken(token, deadline)` returns the subject and roles of a valid token. `authorizeAccountAccess(token, subject, accountId, deadline)` returns the `allowed` value, `false` included, as a normal result.
 >   - Runs every attempt through `UpstreamCallPolicy` (CS-11-003, `card-servicing-service/src/main/java/com/example/cardservicing/integration/support/`) inside the request's `RequestDeadline`. The policy reads the per-attempt timeout and the retry cap from `UpstreamSettings` at the start of every call: the built-in defaults 300 ms and 2 until the configuration snapshot of CS-11-006 backs the provider.
+>
+> > SCOPE-QUESTION (Resolved): The values reach the Auth calls from the request rather than from a live read. Every attempt of `validateToken` and `authorizeAccountAccess`, retries included, takes the per-attempt timeout and the retry cap from the immutable `UpstreamSettings.Capture` that the request's `RequestDeadline` took with one `capture()` call at receipt, as CS-11-003 resolves for the policy, the deadline and the provider. Neither `AuthClient` nor `UpstreamCallPolicy` calls the provider during the request: the client hands the request's `RequestDeadline` to the policy on every call and holds no reference to the `UpstreamSettings` provider. Both Auth calls of one request therefore use one published set of values, the built-in 300 ms and 2 until the first successful refresh of the configuration snapshot of CS-11-006, and a refresh published during or between them reaches only requests whose `RequestDeadline` starts after it. This story gains no file, dependency edge or environment variable, so the 3 files touched stand.
+>
 >   - Turns each final status into a typed failure naming a row of the CS-05-002 code table, `ErrorCode` in `card-servicing-service/src/main/java/com/example/cardservicing/config/error/`, by the rules below. The standard error handler renders it with the `traceId` that `TraceIdFilter` or `GrpcErrorInterceptor` issued at receipt.
 >   - Holds the gRPC Netty transport's client frame logger, `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler`, at INFO through Spring Boot's `LoggingSystem` when it starts, whatever the root level, because that logger writes every outbound header value, `authorization` and `x-api-key` included, at DEBUG. The logger is shared by every client channel in the process.
+>
+> > SCOPE-QUESTION (Resolved): The level hold above does not by itself keep the credentials out of the log. A later application context in the same JVM, such as a test context started while the client's channel is live, initialises logging and applies its own `logging.level` settings when its environment is prepared. Until a client of that context re-applies the hold, which a context that starts no client never does, the frame logger of every live client connection reads DEBUG. `AuthClient` therefore also owns a credential guard that no logger level can lift: its nested class `AuthClient.ClientFrameLogGuard`, built the same way as the server guard `GrpcServerConfiguration.ServerFrameLogGuard` of CS-11-002, whose idempotent, synchronized static `install()` replaces the default logger factory of the shaded Netty transport, through `io.grpc.netty.shaded.io.netty.util.internal.logging.InternalLoggerFactory.setDefaultFactory`, with a wrapper around the factory it replaces. The wrapper hands every logger name to that factory unchanged except `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler`, for which it returns a logger that reports TRACE and DEBUG as disabled, discards every TRACE and DEBUG event and passes INFO and above to the delegate. The transport builds the frame logger of each connection the channel opens from that factory and asks the logger whether DEBUG is enabled before it writes a frame, so no frame of a guarded connection reaches a log line, whatever level `LoggingSystem`, a `logging.level` setting, a later context's logging reset or a runtime level change gives the logger. `AuthClient` calls `install()` before it builds its channel, so the guard is in place before the channel opens its first connection. The guard records in a static field that it has installed its wrapper, so a second call changes nothing, and nothing removes the wrapper, so it holds for as long as the JVM runs, across every later context start and close. The Config client (CS-11-006) and the Reference Data client (CS-13-003) each install a guard of their own in the same way, as a nested class of the class that applies their hold and builds their channel, and a guard installed after another wraps it and changes nothing observable, because both drop the same events. The level hold stays, but the guard, not the level, is the never-log protection AC10 relies on. The guard adds no file, no dependency, since the factory ships in the pinned `grpc-netty-shaded`, and no environment variable, so the 3 files touched stand.
+>
 >   - Holds no cache, no store connection and no Redis client.
 > - `card-servicing-service/src/main/java/com/example/cardservicing/integration/auth/AuthCredentialsInterceptor.java`:
 >   - A gRPC `ClientInterceptor` on the Auth channel that adds `authorization: Bearer <caller token>` to every call, taking the token from a per-call `CallOptions` key that `AuthClient` sets.
@@ -75,8 +81,13 @@ Parent epic: [CS-12 Auth Service Integration](../README.md)
 > - AC6: Fail closed, a fail-hard outcome because the TRD degradation table gives Auth no degraded answer: rendered by the standard error handler of CS-05-002, the expired-token and empty-token answers of AC5 give 401 with `code` `UNAUTHENTICATED`, the `INVALID_ARGUMENT` answer to `AuthorizeAccountAccess` and the AC4 `UNAVAILABLE` outcome give 503 with `code` `UNAVAILABLE`, and the AC4 `DEADLINE_EXCEEDED` outcome gives 504 with `code` `DEADLINE_EXCEEDED`. Every body carries the `traceId` placed in the logging context at receipt, and no failure path returns a subject, roles or `allowed=true`.
 > - AC7: Deadline: the 900 ms deadline (`REQUEST_DEADLINE_MS`) runs from receipt to the cut-off. With a stub latency of 2,000 ms, `ValidateToken` ends in `DEADLINE_EXCEEDED` after exactly 2 attempts. The test marks the cut-off when the client returns, the completion line of `RequestDeadline` logs `cutoffMs` ≤ 900, and the time the test measures from the deadline's start to the client's return is below 1,000 ms.
 > - AC8: Settings: with no configuration snapshot loaded, both calls use the built-in defaults from `UpstreamSettings`, 300 ms and two retries. With a test `UpstreamSettings` supplying `upstream_timeout_ms` 200 and `upstream_max_retries` 1, a stub latency of 400 ms ends each attempt no later than 230 ms after it starts, and a failure rate of 1 gives exactly 2 attempts in the stub request log.
+>
+> > SCOPE-QUESTION (Resolved): The criterion reads the settings through the request's capture. The test starts each request's `RequestDeadline` from the provider under test, and the deadline calls that provider's `capture()` once: the built-in provider's capture holds 20, 100, 300 and 2, and the test `UpstreamSettings` capture holds 20, 100, 200 and 1, so both calls take the attempt timeout and the retry cap from that capture. Refresh between the Auth calls of one request, in `AuthClientTest`: with a per-test failure rate of 1 and a counting test provider whose capture changes from 300 and 2 to 200 and 1 after the request's `ValidateToken` call returns, that request's `AuthorizeAccountAccess` call still receives exactly 3 attempts in the stub request log. The same call in a request whose `RequestDeadline` starts after the change receives exactly 2, and the provider records exactly one `capture()` call per request.
+>
 > - AC9: No caching: two identical `ValidateToken` calls and two identical `AuthorizeAccountAccess` calls produce two stub request-log entries each, and no constructor parameter of `AuthClient` or `AuthCredentialsInterceptor` is a cache or Redis type.
 > - AC10: With the root log level at DEBUG, the log output captured across the success, 401, 503 and 504 paths of AC2, AC4 and AC6 contains neither the token string nor the service key value. The capture covers every logger except the stub server's transport frame logger, which the stub hosting of CS-11-002 governs.
+>
+> > SCOPE-QUESTION (Resolved): The criterion also covers a live client channel while logger levels change. Two more cases run in `AuthClientTest` against the Auth stub that `StubHarness` started, on an `AuthClient` built with a service key generated at runtime, whose channel a first call has opened. Each case sends `authorizeAccountAccess` calls for subject `USER0001` and account `00000000001`, each with a bearer token generated at runtime, so no credential literal is committed and `CommittedSecretScanTest` (CS-11-001) stays green, with output captured by Spring Boot's `OutputCaptureExtension`, which records standard output and standard error and so keeps recording across a logging reset, and with the stub server's transport frame logger left out as above. First, the test sets the effective level of `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` to DEBUG through `LoggingSystem`, the state a logging reset leaves before any re-application, sends 5 calls that each return `allowed=true`, since the stub ignores the forwarded token, and then sets the level back to INFO. Second, the test starts a further application through `SpringApplicationBuilder` from a test configuration that declares a second `AuthClient` and its collaborators, with `card-servicing.auth.target` set to the same stub's loopback port and `logging.level.root`, `logging.level.io.grpc` and `logging.level.io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` set to DEBUG, and adds a test listener ordered at `LoggingApplicationListener.DEFAULT_ORDER + 1`, directly after Spring Boot's logging listener. On `ApplicationEnvironmentPreparedEvent`, after that application has initialised logging and applied its DEBUG settings and before any of its beans exists, the listener reads the effective level of `NettyClientHandler` as DEBUG and then sends 5 calls on the already-live client of the first case, each with a newly generated token, all returning `allowed=true` before the listener returns. The application then reports ready, with the effective level of `NettyClientHandler` back at INFO once its client has started, and is closed. None of the values generated in either case appears in the captured output.
 >
 > ### 3. Dependencies
 >
@@ -110,7 +121,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. Cases: both credentials on both calls with a set and an empty service key, the fixture answers, the 300 ms and 200 ms attempt bounds, the retry cap and fit rule under injected failure and latency, the one-attempt statuses, the 401, 503 and 504 mapping with the receipt `traceId`, the 2,000 ms deadline case, the settings override, the uncached repeat calls and the DEBUG log scan.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. Cases: both credentials on both calls with a set and an empty service key, the fixture answers, the 300 ms and 200 ms attempt bounds, the retry cap and fit rule under injected failure and latency, the one-attempt statuses, the 401, 503 and 504 mapping with the receipt `traceId`, the 2,000 ms deadline case, the settings override, a provider change between the two Auth calls of one request, which leaves that request on the settings it captured at receipt while the next request uses the new ones, the uncached repeat calls, the DEBUG log scan, and the client frame-logger guard with the client frame logger forced to DEBUG on a live channel and during a later application's logging initialisation against the already-live client.
 - Integration: Applies through the Auth integration suite (CS-12-005), which runs this client against the Auth stub behind the account access guard. Command `./gradlew :card-servicing-service:integrationTest`; all pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Not applicable — Auth latency is measured through the endpoint SLA scenarios; it applies to balance-retrieval and drill-down stories. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -140,7 +151,7 @@ Shared by both options:
 - Fallback: none, because the client fails closed and Auth has no degraded answer.
 - Provisioning: the service key comes from the environment locally and from the secret vault when deployed.
 - Cut-over: the real Auth service replaces the stub by a change of address and credential source only.
-- Failures: each attempt is cut to the lesser of the timeout setting and the time left, retries stay within the call policy's cap and fit rule, the cut-off time ends the wait, and every failure maps to 401, 503 or 504.
+- Failures: both calls of a request take the timeout setting and retry cap from the one settings record that request took at receipt, each attempt is cut to the lesser of that timeout and the time left, retries stay within the call policy's cap and fit rule, the cut-off time ends the wait, and every failure maps to 401, 503 or 504.
 
 ### Design Option A
 
@@ -154,7 +165,7 @@ How it behaves:
 - An invalid-argument answer to a token check means a missing token and maps to 401, and any other unexpected status maps to 503.
 - A denial comes back as an ordinary answer for the access guard story to turn into 403.
 - The trace identifier issued at receipt reaches every failure through the standard error object.
-- Neither credential value reaches a log line, and the transport's header logging is held above debug level.
+- Neither credential value reaches a log line, and before it builds its channel the client fits the transport with a header-logging guard that stays in place for the life of the process, a later application start included.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
@@ -163,7 +174,7 @@ How it behaves:
 | 3 | Never cache Auth answers (vs a short-lived cache) | a revoked token fails on the next request | every request pays for two Auth calls |
 | 4 | Empty service key still sent (vs call refused) | the stub phase runs with no secret | a missing deployed key shows only as rejection by the real service |
 
-Effort and risk: one client, one interceptor and one test class, with the risk in a credential value leaking through transport debug logging.
+Effort and risk: one client with its header-logging guard, one interceptor and one test class, with the risk in a channel that opens a connection before the guard is fitted.
 
 ### Design Option B
 
@@ -199,9 +210,10 @@ Effort and risk: one client and one test class with no interceptor, with the ris
 Settled assumptions:
 
 - The stub ignores the service key header and the forwarded bearer token and never re-checks access.
-- The call policy story supplies the timeout setting, the retry rule and the request deadline with its cut-off time.
+- The call policy story supplies the timeout setting, the retry rule and the request deadline with its cut-off time, and the request deadline holds the settings record taken once at receipt.
 - The fixture tokens and their answers are fixed by the Auth stub story.
 - The error-object story maps the unauthenticated status to 401, the unavailable status to 503 and the deadline-exceeded status to 504, each with the receipt trace identifier.
+- The transport writes header values only through its frame logger, which it takes from a replaceable logger factory for each new connection and which checks whether debug output is enabled before each frame.
 
 Open assumptions:
 
@@ -217,17 +229,18 @@ Open assumptions:
 | AC5 | Holds | only two statuses enter the retry path |
 | AC6 | Holds | every non-success status maps to a failure with no identity or permission |
 | AC7 | Conditional | the real-clock case depends on thread scheduling on the runner |
-| AC8 | Holds | the client reads its timing only through the settings provider |
+| AC8 | Holds | both calls use the settings their request took once from the settings provider at receipt |
 | AC9 | Holds | the client holds no cache |
-| AC10 | Conditional | the transport's header logging must stay held above debug level |
+| AC10 | Holds | a process-wide guard shuts off the transport's header logging at every log level |
 
 ### Validation of Option B
 
 Settled assumptions:
 
 - The stub ignores the service key header and the forwarded bearer token and never re-checks access.
-- The call policy story supplies the timeout setting, the retry rule and the request deadline with its cut-off time.
+- The call policy story supplies the timeout setting, the retry rule and the request deadline with its cut-off time, and the request deadline holds the settings record taken once at receipt.
 - The fixture tokens and their answers are fixed by the Auth stub story.
+- The transport writes header values only through its frame logger, which it takes from a replaceable logger factory for each new connection and which checks whether debug output is enabled before each frame.
 
 Open assumptions:
 
@@ -243,9 +256,9 @@ Open assumptions:
 | AC5 | Holds | only two statuses enter the retry path |
 | AC6 | Holds | every non-success status maps to a failure with no identity or permission |
 | AC7 | Conditional | the real-clock case depends on thread scheduling on the runner |
-| AC8 | Holds | the client reads its timing only through the settings provider |
+| AC8 | Holds | both calls use the settings their request took once from the settings provider at receipt |
 | AC9 | Holds | the client holds no cache |
-| AC10 | At risk | two call sites could each log the token |
+| AC10 | At risk | two call sites could each log the token outside the transport guard |
 
 ## Metadata
 

@@ -54,6 +54,8 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 >
 > Timing rules: with every attempt timing out at 300 ms, a 900 ms budget allows 2 attempts (300 + 50 + 300 = 650 ms, then 100 + 300 > 250). Exactly 3 attempts arise only when failures return at once. On a cold path, two sequential Auth first attempts can consume up to 600 ms, leaving about 300 ms for stage 3: one full data attempt and no data retry.
 >
+> > SCOPE-QUESTION (Resolved): Failures that return at once are one way to reach exactly 3 attempts, not the only one. With the retry cap at 2, a call whose attempts each fail with `UNAVAILABLE` or `DEADLINE_EXCEEDED` receives 3 attempts whenever both retry-fit checks pass: at least 350 ms (50 + 300) is left after the first failure and at least 400 ms (100 + 300) after the second. The second check implies the first, so on a full 900 ms budget the first two attempts together take at most 450 ms, not counting the 50 ms wait between them. For example, with `UNAVAILABLE` answers that each arrive 100 ms after their attempt starts, attempt 1 fails at 100 ms with 800 ms left (50 + 300 ≤ 800), attempt 2 starts at 150 ms and fails at 250 ms with 650 ms left (100 + 300 ≤ 650), and attempt 3 starts at 350 ms and fails at 450 ms. The 2-attempt example for attempts that each time out at 300 ms stands.
+>
 > Test approach: the unit tests drive the policy with a test-local fake upstream call and a controllable test clock for exact timing, because the stub host (CS-11-002) is not a prerequisite. The 2,000 ms latency case in `ColdPathBudgetTest` runs on the real clock. The real-channel proof runs in each external integration suite (CS-09-006, CS-10-007, CS-11-007, CS-12-005, CS-13-004).
 >
 > In scope:
@@ -174,7 +176,7 @@ How it behaves:
 
 - With the full 900 ms budget an attempt gets 300 ms, and with 120 ms left it gets 120 ms.
 - A not-found, invalid-argument, unauthenticated or permission-denied status returns after one attempt.
-- The retry cap limits a call to three attempts when failures return at once, and attempts that each time out at 300 ms limit it to two.
+- The retry cap limits a call to three attempts whenever both fit checks pass, as when failures return at once or after 100 ms each, and attempts that each time out at 300 ms limit it to two.
 - A call that starts with no time left makes no attempt and returns the deadline-exceeded status.
 - The policy stops waiting when an attempt's own deadline passes, so an upstream that ignores the deadline still ends on time.
 - The request deadline takes one record of the four settings from the settings provider at receipt, and every call of that request reads the timeout setting and retry cap from that record, so a change published during the request reaches only later requests.
@@ -264,7 +266,7 @@ Open assumptions:
 |---|---|---|
 | AC1 | At risk | the attempt limit is fixed in the channel rules rather than read from the timeout setting |
 | AC2 | Breaks | the channel waits a random time up to each backoff value |
-| AC3 | Holds | the channel rules limit a call to three attempts |
+| AC3 | At risk | the fixed channel rules keep three attempts under a zero retry cap until the channel is rebuilt |
 | AC4 | Holds | the channel retries only the listed statuses |
 | AC5 | Breaks | the channel retries with no check that a full attempt fits |
 | AC6 | Breaks | a third attempt starts with less than a full attempt left |

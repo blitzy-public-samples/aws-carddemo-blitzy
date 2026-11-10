@@ -186,14 +186,14 @@ Open assumptions:
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Holds | the cursor round-trips through the version check |
-| AC2 | At risk | an altered token can still decode to a valid cursor |
+| AC2 | Breaks | a single changed character within the cursor can decode to another valid cursor |
 | AC3 | Breaks | the token carries no account binding |
 | AC4 | Breaks | the token carries no type filter binding |
 | AC5 | Breaks | the token carries no category filter binding |
 | AC6 | Holds | the version check rejects any marker other than 1 |
 | AC7 | Holds | a value outside the URL-safe alphabet fails to decode |
-| AC8 | Holds | the encoder writes at most 92 bytes as at most 123 URL-safe characters without padding |
-| AC9 | Holds | the codec adds no key setting and no environment variable |
+| AC8 | Breaks | the worst-case token carries 92 bytes in 123 characters instead of the required 124 bytes in exactly 166 characters |
+| AC9 | Breaks | the codec has no fingerprint and therefore no built-in fingerprint key |
 
 ## Metadata
 

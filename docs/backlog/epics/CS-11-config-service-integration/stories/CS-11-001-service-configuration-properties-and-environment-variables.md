@@ -133,14 +133,14 @@ Rationale: one typed record bound once at startup gives every consumer the same 
 
 Shared by both options:
 
-- Topology: one settings surface read by the service and its stubs at startup.
+- Topology: the service and its stubs each take the settings they use from the environment of their own process.
 - Naming: one environment variable per setting, with the 14 names fixed by the request.
-- Addressing: values reach the service only through environment variables and the packaged defaults file.
-- Isolation: secret values never appear in startup output, failure messages or logs.
-- Fallback: the packaged defaults let a local run start with no variable set.
+- Addressing: each value reaches the service only through its environment variable, or through a default packaged with the service when that variable is unset.
+- Isolation: no secret value may appear in startup output, failure messages or logs, whichever part writes them.
+- Fallback: a default for every setting lets a local run start with no variable set.
 - Provisioning: deployed values come from the environment, and the secret store source arrives with the key vault story.
-- Cut-over: the real-service swap changes only address and credential values, never the shape of the settings.
-- Failures: an invalid value stops startup with a message naming the setting.
+- Cut-over: the real-service swap changes only address and credential values, never the names of the settings.
+- Failures: the same conversion and range rules define an invalid value under either option, and the options differ in where, when and whether a broken rule is caught.
 
 ### Design Option A
 
@@ -187,7 +187,7 @@ Effort and risk: no shared record but one default and one check per consumer, wi
 - Option: Option A.
 - Why: one record gives each setting one default, one check and one mask, which meets the default, startup-rule and masking criteria directly.
 - Strongest argument against: one shared record grows with every new group, and every later story that adds a setting edits it.
-- Shared items that do not decide the choice: the 14 variable names, the packaged defaults file, the repository scan and the secret store source.
+- Shared items that do not decide the choice: the 14 variable names, the 14 default values the request sets, the repository scan and the secret store source.
 - Flip condition: the stubs move into separate deployable services that each need only their own settings.
 
 ## Design Validation
