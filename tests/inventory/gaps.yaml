@@ -150,6 +150,15 @@ gaps:
   needed: The owner's confirmation of intent. The behaviour is pinned as observed and never fixed under app/.
   resolving_evidence: null
   status: open
+- gap_id: GAP-DEF-013
+  category: suspected-defect
+  unknown: 'COUSR00C and COTRN00C end a browse that never started. When STARTBR returns NOTFND, the branch sets end of file, moves ''You are at the top of the page...'' to the message and sends the list map, but leaves the error flag off, so the page routine goes on to an ENDBR that has no RESP option [app/cbl/COUSR00C.cbl:282-329,336-379,597-606,687-691] [app/cbl/COTRN00C.cbl:279-326,333-376,602-611,692-696]. On CICS an ENDBR that matches no successful STARTBR raises INVREQ (RESP2 35), whose default action abends the task (AEIP) after the message has been sent, so the second send and the RETURN TRANSID never run. Whether the region raises INVREQ there is unknown; USR-COUSR00C-alternate-03 pins the screen as the NOTFND branch sends it.'
+  affected_inventory_ids:
+  - INV-TRN-015
+  - INV-USR-013
+  needed: The owner's confirmation of intent. The behaviour is pinned as derived and never fixed under app/. The unikix outcome of USR-COUSR00C-alternate-03 would show whether the region abends at the ENDBR.
+  resolving_evidence: null
+  status: open
 - gap_id: GAP-DOC-001
   category: doc-conflict
   unknown: 'The tech spec counts 18 online programs ("eighteen CICS programs", Section 1.2.2.1; "Online Programs (18 CICS Programs)", Section 1.2.2.2; "Online Programs (app/cbl/CO*.cbl): 18 programs", Section 6.6.2.1.2), but app/cbl holds 17 online sources. COCRDSEC (''CREDIT CARD SEARCH'') exists only as a CSD definition [app/csd/CARDDEMO.CSD:211-218], started by transaction CDV1 ''DEVELOPER TRANSACTION - 1'' [app/csd/CARDDEMO.CSD:388-390]; neither app/cbl nor the UniKix copy''s migrated_app/cbl holds its source, so both items are unreachable.'

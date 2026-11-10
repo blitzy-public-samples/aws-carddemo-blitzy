@@ -1,0 +1,135 @@
+# PF5 on the COUSR02 update screen rewrites the USRSEC record of the user id
+# entered. ADMIN001 signs on through CC00 and COSGN00C routes the type 'A' user
+# to COADM01C [app/cbl/COSGN00C.cbl:221-237]; option '3' transfers control with
+# XCTL to COUSR02C, the 'User Update (Security)' entry of COADM02Y
+# [app/cbl/COADM01C.cbl:115-145] [app/cpy/COADM02Y.cpy:34-37]. COADM01C passes
+# only the COCOM01Y COMMAREA, so on its first entry COUSR02C finds
+# CDEMO-CU02-USR-SELECTED blank, clears its output map and sends COUSR02 with
+# every entry field empty and no message [app/cbl/COUSR02C.cbl:87-105,266-278].
+# - ENTER with TESTU002 in USRIDIN: PROCESS-ENTER-KEY reads USRSEC by that key
+#   with UPDATE. On NORMAL, READ-USER-SEC-FILE sends the map with 'Press PF5
+#   key to save your updates ...'; PROCESS-ENTER-KEY then moves the record's
+#   names, password and type into the map and sends it again under the same
+#   message [app/cbl/COUSR02C.cbl:143-172,320-339].
+# - PF5 with a new first name, password and type: UPDATE-USER-INFO finds no
+#   field blank, reads the record again with UPDATE (another 'Press PF5' send),
+#   moves each map field that differs into the record (first name, password and
+#   type; the last name is unchanged) and REWRITEs SEC-USER-DATA whole, its
+#   FILLER as read. On NORMAL it STRINGs 'User ', SEC-USR-ID delimited by space
+#   and ' has been updated ...' into the message and sends the map a last time
+#   with the fields as received [app/cbl/COUSR02C.cbl:122-123,177-245,358-376].
+# Each task sends the map more than once with ERASE; the screen holds the last
+# send. Every new value is as long as the value it overwrites, so the field
+# reads the same whether or not the adapter erases the rest of it, and BMS pads
+# received text with blanks to the field length.
+# PASSWD is a dark (DRK) field whose text a 3270 screen read does not show
+# [app/bms/COUSR02.bms:130-134], so the password is asserted on the rewritten
+# record only. Text values keep their full field width with trailing spaces.
+# The baseline is derived from the source: no TPE region runs in CI.
+id: USR-COUSR02C-normal-02
+level: e2e
+type: normal
+description: >-
+  ADMIN001 signs on, selects admin option 3, fetches the invented user TESTU002
+  on the COUSR02 update screen and presses PF5 with a new first name, password
+  and user type. COUSR02C rewrites the TESTU002 USRSEC record with those values,
+  keeps its last name, leaves the ten fixture users unchanged and shows 'User
+  TESTU002 has been updated ...'.
+inventory_ids:
+- INV-USR-048  # COUSR02C USRSEC REWRITE (interface)
+- INV-USR-003  # COUSR02C program
+- INV-MNU-004  # COADM01 map, the admin menu option 3 is entered on
+- INV-USR-007  # COUSR02 map, the update screen
+- INV-CFG-025  # CU02 transaction, under which the fetch and the save run
+- INV-CFG-008  # USRSEC CSD file, read for update and rewritten
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carried between the tasks
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # USR end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # The ten fixture users, ADMIN001 among them for the sign-on, plus the
+    # invented user TESTU002 that the scenario updates.
+    USRSEC:
+      base: USRSEC
+      records:
+      - {SEC-USR-ID: TESTU002, SEC-USR-FNAME: TESTFIRST, SEC-USR-LNAME: TESTLAST, SEC-USR-PWD: TESTPWD2, SEC-USR-TYPE: U}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '3'}
+    '@map': COADM01
+  - aid: ENTER
+    fields: {USRIDIN: TESTU002}
+    '@map': COUSR02
+  - aid: PF5
+    fields: {FNAME: TESTNEWFN, PASSWD: TESTPWDX, USRTYPE: A}
+    '@map': COUSR02
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR02
+    TRNNAME: CU02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: '        '
+    FNAME: '                    '
+    LNAME: '                    '
+    USRTYPE: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COUSR02
+    TRNNAME: CU02
+    PGMNAME: COUSR02C
+    USRIDIN: TESTU002
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTLAST            '
+    USRTYPE: U
+    ERRMSG: 'Press PF5 key to save your updates ...                                        '
+  - '@map': COUSR02
+    TRNNAME: CU02
+    PGMNAME: COUSR02C
+    USRIDIN: TESTU002
+    FNAME: 'TESTNEWFN           '
+    LNAME: 'TESTLAST            '
+    USRTYPE: A
+    ERRMSG: 'User TESTU002 has been updated ...                                            '
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Press PF5 key to save your updates ...                                        '
+  - 'User TESTU002 has been updated ...                                            '
+  file_state:
+    # Every USRSEC record in key order: TESTU002 carries the new first name,
+    # password and type with its last name and FILLER as read, and the ten
+    # fixture users are as loaded.
+    USRSEC:
+      records:
+      - {SEC-USR-ID: ADMIN001, SEC-USR-FNAME: 'MARGARET            ', SEC-USR-LNAME: 'GOLD                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN002, SEC-USR-FNAME: 'RUSSELL             ', SEC-USR-LNAME: 'RUSSELL             ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN003, SEC-USR-FNAME: 'RAYMOND             ', SEC-USR-LNAME: 'WHITMORE            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN004, SEC-USR-FNAME: 'EMMANUEL            ', SEC-USR-LNAME: 'CASGRAIN            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN005, SEC-USR-FNAME: 'GRANVILLE           ', SEC-USR-LNAME: 'LACHAPELLE          ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: TESTU002, SEC-USR-FNAME: 'TESTNEWFN           ', SEC-USR-LNAME: 'TESTLAST            ', SEC-USR-PWD: TESTPWDX, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0001, SEC-USR-FNAME: 'LAWRENCE            ', SEC-USR-LNAME: 'THOMAS              ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0002, SEC-USR-FNAME: 'AJITH               ', SEC-USR-LNAME: 'KUMAR               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0003, SEC-USR-FNAME: 'LAURITZ             ', SEC-USR-LNAME: 'ALME                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0004, SEC-USR-FNAME: 'AVERARDO            ', SEC-USR-LNAME: 'MAZZI               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0005, SEC-USR-FNAME: 'LEE                 ', SEC-USR-LNAME: 'TING                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}

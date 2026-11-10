@@ -1,0 +1,135 @@
+# An administrator updates a user's last name through COUSR02C and receives the
+# composed confirmation 'User <id> has been updated ...'.
+#
+# Step 1: ADMIN001 signs on through CC00 and COSGN00C routes the type A user to
+# the admin menu COADM01 (asserted here by its header only; its content belongs
+# to SEC-COSGN00C-normal-01).
+# Step 2: option '3' makes COADM01C XCTL to COADM02Y entry 3, COUSR02C, with
+# CDEMO-PGM-CONTEXT 0 [app/cbl/COADM01C.cbl:115-145] [app/cpy/COADM02Y.cpy:34-37].
+# COADM01C passes only the COCOM01Y COMMAREA, so the group MOVE into COUSR02C's
+# longer CARDDEMO-COMMAREA pads CDEMO-CU02-USR-SELECTED with spaces and no user
+# is fetched. COUSR02C clears COUSR2AO to LOW-VALUES and sends COUSR02 with its
+# CU02 header, empty entry fields and a blank ERRMSG, then returns with TRANSID
+# CU02 [app/cbl/COUSR02C.cbl:84-105,135-138,266-315].
+# Step 3: ENTER with user id TESTU002. PROCESS-ENTER-KEY reads USRSEC by the id
+# with UPDATE; on RESP NORMAL READ-USER-SEC-FILE moves 'Press PF5 key to save
+# your updates ...' to WS-MESSAGE and sends, then the record's names, password
+# and type are moved into the map and the screen is sent again with the same
+# message [app/cbl/COUSR02C.cbl:143-172,320-339].
+# Step 4: PF5 with the last name typed over as TESTCHANGED. Every COUSR02 entry
+# field is FSET, so all of them come back; none is empty, so UPDATE-USER-INFO
+# reads the record again (sending the 'Press PF5' screen once more), finds only
+# the last name changed and REWRITEs USRSEC. On RESP NORMAL it STRINGs 'User ',
+# SEC-USR-ID delimited by space and ' has been updated ...' into the cleared
+# WS-MESSAGE and sends the screen, whose fields still echo the received input
+# because COUSR2AO redefines COUSR2AI [app/cbl/COUSR02C.cbl:177-245,358-376].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values are whole fields at their BMS length with trailing spaces:
+#   ERRMSG is the first 78 bytes of the 80-byte WS-MESSAGE; FNAME and LNAME are
+#   the 20-byte SEC-USR-FNAME and SEC-USR-LNAME [app/cpy/CSUSR01Y.cpy:17-23].
+# - PASSWD holds TESTPWD2 but is a dark field (ATTRB=(DRK,FSET,UNPROT))
+#   [app/bms/COUSR02.bms:130-134]. The screen capture (s3270 Ascii1) renders
+#   every position of a zero-intensity field as a blank, so it shows 8 spaces
+#   and the password never appears on the screen.
+# - The header is POPULATE-HEADER-INFO's: the COTTL01Y titles, CU02, COUSR02C,
+#   CURDATE mm/dd/yy and CURTIME hh:mm:ss of the run clock through CSDAT01Y,
+#   hence the matchers and clock_mode relative.
+# TESTU002 and its names and password are invented data added to the USRSEC
+# fixture; the user never signs on. The rewritten USRSEC record is the
+# REWRITE item's own scenario.
+id: USR-COUSR02C-normal-01
+level: e2e
+type: normal
+description: >-
+  ADMIN001 signs on, chooses admin menu option 3 'User Update (Security)', fetches
+  the invented user TESTU002 on the COUSR02 update screen, which shows its first
+  and last name and type with 'Press PF5 key to save your updates ...', changes
+  the last name to TESTCHANGED and presses PF5. COUSR02C rewrites the USRSEC
+  record and confirms with 'User TESTU002 has been updated ...'.
+inventory_ids:
+- INV-USR-044  # COUSR02C message 'User <SEC-USR-ID> has been updated ...' (rule)
+- INV-USR-003  # COUSR02C program
+- INV-MNU-004  # COADM01 map, the admin menu the option is entered on
+- INV-USR-007  # COUSR02 map, the update screen of steps 2-4
+- INV-CFG-025  # CU02 transaction, under which the fetch and the save run
+- INV-CFG-008  # USRSEC CSD file, read for update and rewritten
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA COADM01C passes with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # The 10 repository users, for the ADMIN001 sign-on, plus the user updated.
+    USRSEC:
+      base: USRSEC
+      records:
+      - {SEC-USR-ID: TESTU002, SEC-USR-FNAME: TESTFIRST, SEC-USR-LNAME: TESTLAST,
+         SEC-USR-PWD: TESTPWD2, SEC-USR-TYPE: U}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '3'}
+    '@map': COADM01
+  - aid: ENTER
+    fields: {USRIDIN: TESTU002}
+    '@map': COUSR02
+  - aid: PF5
+    fields: {LNAME: TESTCHANGED}
+    '@map': COUSR02
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+  - '@map': COUSR02
+    TRNNAME: CU02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: '        '
+    FNAME: '                    '
+    LNAME: '                    '
+    PASSWD: '        '
+    USRTYPE: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COUSR02
+    TRNNAME: CU02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: TESTU002
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTLAST            '
+    PASSWD: '        '
+    USRTYPE: U
+    ERRMSG: 'Press PF5 key to save your updates ...                                        '
+  - '@map': COUSR02
+    TRNNAME: CU02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: TESTU002
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTCHANGED         '
+    PASSWD: '        '
+    USRTYPE: U
+    ERRMSG: 'User TESTU002 has been updated ...                                            '

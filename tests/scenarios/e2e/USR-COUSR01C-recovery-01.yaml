@@ -1,0 +1,105 @@
+# COUSR01C cannot add a user while the USRSEC region file is out of service.
+# ADMIN001 signs on through CC00 and COSGN00C routes the type-A user to the
+# admin menu COADM01 [app/cbl/COSGN00C.cbl:221-237]. Option '2' makes COADM01C
+# transfer control, with CDEMO-PGM-CONTEXT 0, to COUSR01C, the 'User Add
+# (Security)' entry of COADM02Y [app/cbl/COADM01C.cbl:115-145]
+# [app/cpy/COADM02Y.cpy:29-32]. On that first entry COUSR01C clears its output
+# map, sends COUSR01 with a blank message and returns with TRANSID CU01
+# [app/cbl/COUSR01C.cbl:78-87,107-110,184-196].
+# The third step fills every entry field, so PROCESS-ENTER-KEY passes its five
+# presence checks and WRITE-USER-SEC-FILE writes the user record keyed by the
+# user id, with no READ of USRSEC before it [app/cbl/COUSR01C.cbl:115-160,238-248].
+# With the file closed or disabled the response is neither NORMAL nor
+# DUPKEY/DUPREC, so WHEN OTHER sets the error flag, moves 'Unable to Add
+# User...' to the message, puts the cursor on the first name and sends COUSR01
+# again [app/cbl/COUSR01C.cbl:250-274]. COUSR1AO redefines COUSR1AI
+# [app/cpy-bms/COUSR01.CPY:91], so the values just received, left-justified and
+# padded with blanks, are sent back as entered; INITIALIZE-ALL-FIELDS clears them
+# only after a successful WRITE. PASSWD is a dark field and is not asserted.
+# Expected text values are full field width with their trailing spaces. The
+# clock-derived CURDATE and CURTIME are matchers, so the clock is relative.
+# The baseline is derived from the source: no TPE region runs in CI.
+id: USR-COUSR01C-recovery-01
+level: e2e
+type: recovery
+description: >-
+  ADMIN001 signs on, selects admin option 2 'User Add (Security)' and enters a
+  complete new user TESTU001 on COUSR01 while the region file USRSEC is
+  unavailable. The WRITE fails, COUSR01C shows 'Unable to Add User...' on the
+  same screen with the entered values kept, and USRSEC still holds only the 10
+  fixture users.
+inventory_ids:
+- INV-USR-030  # COUSR01C message 'Unable to Add User...' (recovery)
+- INV-USR-002  # COUSR01C program
+- INV-MNU-004  # COADM01 map, the admin menu option 2 is entered on
+- INV-USR-006  # COUSR01 map, the add-user screen the failure is shown on
+- INV-CFG-024  # CU01 transaction, under which the add is processed
+- INV-CFG-008  # USRSEC CSD file, the target of the failing WRITE
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA passed with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, the common messages
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to put USRSEC out of service
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user; the unload after the run is compared
+    # with these 10 users.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  # No `after`: the unikix adapter applies an online fault after the sign-on
+  # step. Neither COADM01C's option transfer nor COUSR01C's first send touches
+  # a file, so the first USRSEC operation after the fault is the WRITE of step
+  # 3. An adapter without a confirmed region file control raises
+  # MissingPrerequisite under GAP-MIS-011.
+  faults:
+  - target: USRSEC
+    operation: write
+    condition: unavailable
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COADM01
+  # The user record being added, not a sign-on: TESTU001 never signs on.
+  - aid: ENTER
+    fields: {FNAME: TESTFIRST, LNAME: TESTLAST, USERID: TESTU001, PASSWD: TESTPWD1, USRTYPE: U}
+    '@map': COUSR01
+expected:
+  screens:
+  - '@map': COADM01
+  - '@map': COUSR01
+    TRNNAME: 'CU01'
+    PGMNAME: 'COUSR01C'
+    ERRMSG: '                                                                              '
+  - '@map': COUSR01
+    TRNNAME: 'CU01'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COUSR01C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTLAST            '
+    USERID: 'TESTU001'
+    USRTYPE: 'U'
+    ERRMSG: 'Unable to Add User...                                                         '
+  # The ERRMSG value of each step: blank on the admin menu and on the first
+  # COUSR01 send, then the failure message.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Unable to Add User...                                                         '
+  file_state:
+    # The failed WRITE adds no record: unloaded once the file is back in
+    # service, USRSEC holds the 10 fixture users and no TESTU001.
+    USRSEC: {count: 10}
