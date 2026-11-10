@@ -1,0 +1,53 @@
+# Derived baseline of scenario USR-COUSR02C-negative-02 (capture_platform:
+# derived): derived from app/cbl/COUSR02C.cbl:140-170, not observed, because
+# no TPE region runs in CI. Open until a UniKix run is imported: GAP-INF-004
+# (derived USR end-to-end baselines) and GAP-INF-012 (online-only copybooks).
+# One screen per step, the one shown after the step's AID:
+# 1. ADMIN001 (type A) signs on and COSGN00C transfers to COADM01C
+#    [app/cbl/COSGN00C.cbl:225-237], whose first entry sends the admin menu
+#    with a blank message [app/cbl/COADM01C.cbl:79-90,172-184].
+# 2. Option 3 XCTLs to COUSR02C [app/cbl/COADM01C.cbl:136-145]
+#    [app/cpy/COADM02Y.cpy:34-37]. COADM01C passes only the COCOM01Y
+#    COMMAREA, so CDEMO-CU02-USR-SELECTED is blank: COUSR02C clears COUSR2AO
+#    to LOW-VALUES, fetches no user and sends COUSR02 with a blank message
+#    [app/cbl/COUSR02C.cbl:84-105,266-278]; the capture shows nulls as spaces.
+# 3. ENTER with USRIDIN empty: PROCESS-ENTER-KEY sets WS-ERR-FLG, moves
+#    'User ID can NOT be empty...' to WS-MESSAGE and sends COUSR02 again;
+#    READ-USER-SEC-FILE is never performed, so USRSEC is neither read nor
+#    written and no file_state is asserted [app/cbl/COUSR02C.cbl:143-172].
+#    The entry fields echo the blanks received; PASSWD is dark (DRK) and a
+#    screen read does not show it, so it is not asserted.
+# Values are full BMS field width with trailing spaces kept: ERRMSG is the
+# first 78 bytes of the 80-byte WS-MESSAGE, TITLE01 and TITLE02 the COTTL01Y
+# titles. messages holds each step's ERRMSG in step order. CURDATE and
+# CURTIME come from the region clock, which UniKix cannot fix, so they are
+# matchers.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'User ID can NOT be empty...                                                   '
+screens:
+- '@map': COADM01
+  ERRMSG: '                                                                              '
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR02
+  ERRMSG: '                                                                              '
+  PGMNAME: COUSR02C
+  TRNNAME: CU02
+  USRIDIN: '        '
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'User ID can NOT be empty...                                                   '
+  FNAME: '                    '
+  LNAME: '                    '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: '        '
+  USRTYPE: ' '
