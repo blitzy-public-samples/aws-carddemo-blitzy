@@ -31,8 +31,8 @@ import hashlib
 import re
 import subprocess
 import sys
-from datetime import datetime
-from pathlib import Path, PurePath
+from datetime import date, datetime
+from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any
 
 import yaml
@@ -155,6 +155,92 @@ def cob_current_date(clock: str, fraction_mode: str = "hundredths") -> str:
 _SURROGATE_RE = re.compile("[\ud800-\udfff]")
 
 
+def _float_error(data: float) -> HarnessError:
+    return HarnessError(
+        f"float {data!r} cannot be written: numbers are Decimal values carried "
+        f"as strings with their scale, never floats"
+    )
+
+
+def _canonical_order(value: Any) -> tuple:
+    """Sort key placing any mapping key or set element in one total order.
+
+    A type rank comes first, then the value in its type's own order: ``None``;
+    numbers (``bool``, ``int`` and ``Decimal`` together, by numeric value);
+    ``str``; paths (POSIX flavour, then Windows, each in pathlib order);
+    ``bytes``; dates; naive datetimes; aware datetimes (by UTC instant); tuples
+    (element by element); frozensets (by their sorted elements). Distinct
+    values never tie, so a sort by this key depends on the values alone, never
+    on insertion or hash order. Numbers, strings, paths, bytes, dates and naive
+    datetimes keep the order ``sorted`` gives them.
+
+    A float, a ``Decimal`` NaN, an aware datetime whose UTC offset depends on
+    its fold, and a value of any other type raise ``HarnessError``.
+    """
+    if value is None:
+        return (0,)
+    if isinstance(value, float):
+        raise _float_error(value)
+    if isinstance(value, (int, decimal.Decimal)):
+        if isinstance(value, decimal.Decimal) and value.is_nan():
+            raise HarnessError(
+                f"Decimal {value} cannot be a mapping key or set element: NaN has no order"
+            )
+        return (1, value)
+    if isinstance(value, str):
+        return (2, value)
+    if isinstance(value, PurePath):
+        # Paths compare only within their flavour, and a POSIX and a Windows
+        # path never compare equal, even with the same text.
+        return (3, isinstance(value, PureWindowsPath), value)
+    if isinstance(value, bytes):
+        return (4, value)
+    if isinstance(value, datetime):
+        offset = value.utcoffset()
+        if offset is None:
+            return (6, 0, value)
+        # Naive and aware datetimes cannot be compared; aware ones order by
+        # UTC instant, then offset. A wall time whose offset changes with its
+        # fold (in a DST fold or gap) is unequal to the same instant in any
+        # other zone (PEP 495), so it would tie with a value it does not equal.
+        if value.replace(fold=1 - value.fold).utcoffset() != offset:
+            raise HarnessError(
+                f"datetime {value} cannot be a mapping key or set element: its UTC "
+                f"offset depends on its fold, so it has no canonical order"
+            )
+        instant = value.replace(tzinfo=None) - datetime.min - offset
+        return (6, 1, instant, offset)
+    if isinstance(value, date):
+        return (5, value)
+    if isinstance(value, tuple):
+        return (7, tuple(_canonical_order(item) for item in value))
+    if isinstance(value, (set, frozenset)):
+        return (8, tuple(sorted(_canonical_order(item) for item in value)))
+    raise HarnessError(
+        f"{type(value).__name__} {value!r} cannot be a mapping key or set element: "
+        f"it has no canonical order"
+    )
+
+
+def _node_signature(node: yaml.Node) -> tuple:
+    """Identity of a represented node as a YAML mapping key.
+
+    Two keys are the same YAML key when their nodes are equal: a scalar by tag
+    and value, a sequence by tag and its items in order, a mapping by tag and
+    its set of pairs. Style and emitted text play no part, so ``True`` (tag
+    bool) and ``'true'`` (tag str), or ``1`` and ``'1'``, stay distinct.
+    """
+    if isinstance(node, yaml.ScalarNode):
+        return ("scalar", node.tag, node.value)
+    if isinstance(node, yaml.SequenceNode):
+        return ("sequence", node.tag, tuple(_node_signature(item) for item in node.value))
+    return (
+        "mapping",
+        node.tag,
+        frozenset((_node_signature(key), _node_signature(value)) for key, value in node.value),
+    )
+
+
 class _CanonicalDumper(yaml.SafeDumper):
     """SafeDumper whose output depends only on the value it is given."""
 
@@ -163,6 +249,35 @@ class _CanonicalDumper(yaml.SafeDumper):
         # built from shared or from copied objects would dump differently, and
         # digests and fingerprints taken over dump_yaml would change with it.
         return True
+
+    def represent_mapping(
+        self, tag: str, mapping: Any, flow_style: bool | None = None
+    ) -> yaml.MappingNode:
+        # PyYAML sorts the items with sorted() and keeps insertion order when
+        # that raises TypeError (keys of mixed types, or None), and frozenset
+        # keys, which compare by subset, stay in hash order. It writes a list
+        # of pairs as given, so the canonical order is applied here instead.
+        if self.sort_keys and hasattr(mapping, "items"):
+            mapping = sorted(mapping.items(), key=lambda item: _canonical_order(item[0]))
+        items = list(mapping.items() if hasattr(mapping, "items") else mapping)
+        node = super().represent_mapping(tag, items, flow_style)
+        # Distinct keys can still become equal nodes: a str and a Decimal or a
+        # path with the same text, a POSIX and a Windows path with the same
+        # as_posix(), a tuple and a frozenset of the same items. YAML requires
+        # unique keys and the loader keeps only the last value, so a collision
+        # is refused rather than written.
+        seen: dict[tuple, Any] = {}
+        for (key, _), (key_node, _) in zip(items, node.value, strict=True):
+            signature = _node_signature(key_node)
+            if signature in seen:
+                first = seen[signature]
+                raise HarnessError(
+                    f"mapping keys {first!r} ({type(first).__name__}) and {key!r} "
+                    f"({type(key).__name__}) would be written as the same YAML key; "
+                    f"keys must be unique, and loading would keep only one value"
+                )
+            seen[signature] = key
+        return node
 
     def represent_str(self, data: str) -> yaml.ScalarNode:
         if _SURROGATE_RE.search(data):
@@ -178,10 +293,7 @@ class _CanonicalDumper(yaml.SafeDumper):
 
 
 def _represent_float(dumper: yaml.SafeDumper, data: float) -> yaml.Node:
-    raise HarnessError(
-        f"float {data!r} cannot be written: numbers are Decimal values carried "
-        f"as strings with their scale, never floats"
-    )
+    raise _float_error(data)
 
 
 def _represent_decimal(dumper: yaml.SafeDumper, data: decimal.Decimal) -> yaml.Node:
@@ -195,11 +307,7 @@ def _represent_path(dumper: yaml.SafeDumper, data: PurePath) -> yaml.Node:
 
 
 def _represent_set(dumper: yaml.SafeDumper, data: set | frozenset) -> yaml.Node:
-    try:
-        items = sorted(data)
-    except TypeError:
-        items = sorted(data, key=lambda item: (type(item).__name__, repr(item)))
-    return dumper.represent_list(items)
+    return dumper.represent_list(sorted(data, key=_canonical_order))
 
 
 _CanonicalDumper.add_representer(str, _CanonicalDumper.represent_str)
@@ -220,6 +328,16 @@ _SafeLoader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 def dump_yaml(obj: Any) -> str:
     """Serialize ``obj`` as canonical YAML: sorted keys, block style, no line
     folding, ``\\n`` line breaks, no anchors.
+
+    Mapping keys and set elements sort in one order across types: ``None``,
+    numbers (``bool``, ``int`` and ``Decimal`` by value), ``str``, paths,
+    ``bytes``, dates, naive then aware datetimes, tuples, frozensets, each
+    type in its own order (aware datetimes by UTC instant, tuples element by
+    element, frozensets by their sorted elements). The text therefore depends
+    on the value alone, never on insertion or hash order. A key or element
+    that is a ``Decimal`` NaN, an aware datetime in a DST fold or gap, or of
+    any other type raises ``HarnessError``, as do two keys of one mapping
+    written as the same YAML key, such as ``'1.5'`` and ``Decimal('1.5')``.
 
     ``Decimal`` becomes its string, paths their POSIX string, sets a sorted
     list, tuples a list in order. A float anywhere raises ``HarnessError``.
@@ -291,7 +409,19 @@ def sha256_hex(data: bytes | bytearray | memoryview | str) -> str:
 
 
 def sha256_file(path: str | PurePath, chunk_size: int = 1 << 20) -> str:
-    """Hex sha256 of a file's contents, read in chunks."""
+    """Hex sha256 of a file's contents, read in chunks of ``chunk_size`` bytes.
+
+    ``chunk_size`` must be a positive integer. A bool or any other non-int
+    raises ``TypeError`` and a value of zero or less raises ``ValueError``,
+    both before the file is opened, since a zero-byte read would end the loop
+    at once and hash a nonempty file as empty input.
+    """
+    if isinstance(chunk_size, bool) or not isinstance(chunk_size, int):
+        raise TypeError(
+            f"chunk_size must be a positive int, not {type(chunk_size).__name__} {chunk_size!r}"
+        )
+    if chunk_size <= 0:
+        raise ValueError(f"chunk_size must be a positive int, not {chunk_size}")
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(chunk_size), b""):
