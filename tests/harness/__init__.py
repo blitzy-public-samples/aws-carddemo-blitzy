@@ -28,14 +28,16 @@ from __future__ import annotations
 
 import decimal
 import hashlib
+import io
 import os
 import re
+import reprlib
 import stat
 import subprocess
 import sys
 from datetime import date, datetime
 from pathlib import Path, PurePath, PureWindowsPath
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -57,8 +59,13 @@ __all__ = [
     "SCENARIOS_DIR",
     "TESTS_ROOT",
     "UNIKIX_EVIDENCE_DIR",
+    "YAMLLoadError",
+    "YAMLStructureError",
+    "YAML_MAX_ALIAS_WEIGHT",
+    "YAML_MAX_DEPTH",
     "bootstrap_path",
     "cob_current_date",
+    "display_path",
     "dump_yaml",
     "git_head",
     "load_yaml",
@@ -101,10 +108,39 @@ RUNTIME_DIR = REPORTS_DIR / "runtime"  # git-ignored; outside the projection
 FIXTURES_FILE = TESTS_ROOT / "fixtures" / "datasets.yaml"
 ADAPTERS_DIR = TESTS_ROOT / "adapters"
 
+# Bounds on what a YAML file may make the harness build, far above the
+# committed files (at most 10 nested collections; aliases add at most 25,050,
+# in DAT-CBCUS01C-recovery-03) and far below what exhausts memory, the C
+# stack or the recursion limit: without them a few hundred bytes of nested
+# aliases expand into gigabytes. YAML_MAX_ALIAS_WEIGHT bounds what aliases
+# add beyond what the file spells out, where a scalar weighs 1 + its length
+# and a collection 1 + the weights of its children.
+YAML_MAX_DEPTH = 100
+YAML_MAX_ALIAS_WEIGHT = 100_000
+
 
 class HarnessError(Exception):
     """An error the harness itself detects: schema, fixture, cross-check,
     configuration. Harness modules subclass it for their own error kinds."""
+
+
+class YAMLLoadError(HarnessError, yaml.YAMLError):
+    """A YAML file ``load_yaml`` cannot load: it is not UTF-8 text or not
+    valid YAML. ``path`` is the file as ``display_path`` shows it and
+    ``problem`` what is wrong with it; the message is ``<path>: <problem>``.
+    It is also a ``yaml.YAMLError``, so a caller that catches PyYAML's errors
+    still catches it."""
+
+    def __init__(self, path: str, problem: str) -> None:
+        super().__init__(f"{path}: {problem}")
+        self.path = path
+        self.problem = problem
+
+
+class YAMLStructureError(YAMLLoadError):
+    """Valid YAML whose structure the harness refuses: a mapping key given
+    twice, an alias to a collection that contains it, aliases that add more
+    than ``YAML_MAX_ALIAS_WEIGHT``, or nesting deeper than ``YAML_MAX_DEPTH``."""
 
 
 # --------------------------------------------------------------------------
@@ -358,22 +394,337 @@ def dump_yaml(obj: Any) -> str:
         )
     except yaml.YAMLError as exc:
         raise HarnessError(f"cannot write value as YAML: {exc}") from exc
+    except RecursionError:
+        # Anchors are never written (ignore_aliases), so a value that contains
+        # itself recurses without end; load_yaml never builds one.
+        raise HarnessError(
+            "cannot write value as YAML: it nests too deeply or refers to itself"
+        ) from None
 
 
 def load_yaml(path: str | PurePath, missing_ok: bool = False) -> Any:
     """Load a UTF-8 YAML file with safe-load semantics.
 
     A missing file returns ``None`` when ``missing_ok`` is true and raises
-    ``FileNotFoundError`` otherwise.
+    ``FileNotFoundError`` otherwise; an empty document returns ``None``.
+
+    A file that is not UTF-8 text, not valid YAML, or holds a value the safe
+    constructors cannot build (an impossible date, a ``!!int`` that is not
+    an integer, a ``!!bool`` that is not a boolean) raises ``YAMLLoadError``,
+    whose message is one line that names the file once, as ``display_path``
+    shows it, and the line and column where they are known (PyYAML's own
+    multi-line text, which repeats the file in every mark, is not used).
+    Valid YAML whose structure would be
+    unsafe to build or to check raises ``YAMLStructureError``: a mapping key
+    given twice (YAML requires unique keys; the last one would silently win),
+    an alias to a collection that contains it, collections nested deeper than
+    ``YAML_MAX_DEPTH``, or aliases that add more than ``YAML_MAX_ALIAS_WEIGHT``
+    to the document. The nesting is checked on the parser's events before
+    anything is composed, and the rest on the composed node graph before any
+    value is constructed, so no file can make the loader recurse without
+    bound or expand a few bytes into gigabytes.
     """
     file_path = Path(path)
     try:
-        text = file_path.read_text(encoding="utf-8")
+        data = file_path.read_bytes()
     except FileNotFoundError:
         if missing_ok:
             return None
         raise
-    return yaml.load(text, Loader=_SafeLoader)
+    shown = display_path(file_path)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise YAMLLoadError(shown, f"not UTF-8 text: {_undecodable(data, exc.start)}") from None
+    try:
+        _check_written_depth(text, shown)
+        loader = _loader(text, shown)
+        loader.construct_object = _naming_constructor(loader, shown)
+        try:
+            node = loader.get_single_node()
+            if node is None:
+                return None
+            _check_graph(loader, node, shown)
+            try:
+                return loader.construct_document(node)
+            except _UNBUILDABLE as exc:  # raised outside every construct_object call
+                raise _unbuildable(shown, None, exc) from None
+        finally:
+            del loader.construct_object  # the wrapper refers back to the loader
+            loader.dispose()
+    except YAMLLoadError:
+        raise
+    except yaml.YAMLError as exc:
+        raise YAMLLoadError(shown, f"not valid YAML: {_yaml_problem(exc, text)}") from None
+    except RecursionError:
+        # Only the pure-Python composer recurses, once per level, and only
+        # after the written depth is bounded: a caller already near the
+        # recursion limit is the one case left.
+        raise YAMLStructureError(
+            shown, f"nests too deeply to load (the limit is {YAML_MAX_DEPTH} levels)"
+        ) from None
+
+
+_MERGE_TAG = "tag:yaml.org,2002:merge"
+# A plain '=' key; flatten_mapping retags it as the string '=' when it builds
+# the mapping, so it is compared as that string.
+_VALUE_TAG = "tag:yaml.org,2002:value"
+_COLLECTION_STARTS = (yaml.MappingStartEvent, yaml.SequenceStartEvent)
+_COLLECTION_ENDS = (yaml.MappingEndEvent, yaml.SequenceEndEvent)
+_KEY_REPR = reprlib.Repr()
+_KEY_REPR.maxstring = _KEY_REPR.maxother = 80
+# What PyYAML's safe constructors raise, rather than a YAMLError, on a value
+# they cannot build: an impossible date or time, an integer longer than
+# Python's digit limit, or a !!int, !!float, !!bool or !!timestamp value that
+# is not one. Their messages are clipped: float() quotes its whole input.
+_UNBUILDABLE = (ValueError, KeyError, AttributeError, IndexError)
+_UNBUILDABLE_DETAIL_MAX = 200
+
+
+def _undecodable(data: bytes, start: int) -> str:
+    """Where the first byte that is not UTF-8 lies: line and character column,
+    both 1-based."""
+    line_start = data.rfind(b"\n", 0, start) + 1
+    line = data.count(b"\n", 0, start) + 1
+    column = len(data[line_start:start].decode("utf-8", errors="replace")) + 1
+    return f"byte x'{data[start]:02x}' at line {line}, column {column}"
+
+
+def _yaml_problem(exc: yaml.YAMLError, text: str) -> str:
+    """PyYAML's error ``exc`` on one line, without the file name its marks
+    repeat, because the ``YAMLLoadError`` prefix names the file once.
+
+    A marked error reads: the context and where it began, then the problem
+    and where it was found, then the note, separated by ': ', each with its
+    whitespace collapsed. As in PyYAML's own text, the context's place is
+    left out when it is the problem's. A character the reader refuses (one
+    ``text`` holds) is placed at its line and column. Any other error is its
+    own text with the whitespace collapsed."""
+    if isinstance(exc, yaml.MarkedYAMLError):
+        context_mark, problem_mark = exc.context_mark, exc.problem_mark
+        if (
+            context_mark is not None
+            and exc.problem is not None
+            and problem_mark is not None
+            and (context_mark.name, context_mark.line, context_mark.column)
+            == (problem_mark.name, problem_mark.line, problem_mark.column)
+        ):
+            context_mark = None
+        parts = []
+        placed = ((exc.context, context_mark), (exc.problem, problem_mark), (exc.note, None))
+        for words, mark in placed:
+            part = " ".join(str(words).split()) if words is not None else ""
+            if mark is not None:
+                part = f"{part} at line {mark.line + 1}, column {mark.column + 1}".lstrip()
+            if part:
+                parts.append(part)
+        if parts:
+            return ": ".join(parts)
+    elif isinstance(exc, yaml.reader.ReaderError) and isinstance(exc.character, int):
+        reason = " ".join(str(exc.reason).split())
+        where = _reader_where(exc, text)
+        return f"unacceptable character #x{exc.character:04x}: {reason} at {where}"
+    return " ".join(str(exc).split()) or type(exc).__name__
+
+
+def _reader_where(exc: yaml.reader.ReaderError, text: str) -> str:
+    """The line and character column, both 1-based, of the character a
+    ``ReaderError`` refuses in ``text``. libyaml counts its position in bytes
+    of the UTF-8 text, the pure-Python reader in characters."""
+    index = exc.position
+    if _SafeLoader is not yaml.SafeLoader:
+        index = len(text.encode("utf-8")[:index].decode("utf-8", errors="replace"))
+    line_start = text.rfind("\n", 0, index) + 1
+    line = text.count("\n", 0, index) + 1
+    return f"line {line}, column {index - line_start + 1}"
+
+
+def _loader(text: str, shown: str) -> Any:
+    # Both the C and the pure-Python parser take a stream's name for their
+    # marks, so PyYAML's own messages name the file, not "<unicode string>".
+    stream = io.StringIO(text)
+    stream.name = shown
+    return _SafeLoader(stream)
+
+
+def _where(node: Any) -> str:
+    mark = node.start_mark
+    return f"line {mark.line + 1}, column {mark.column + 1}"
+
+
+def _unbuildable(shown: str, node: Any, exc: BaseException) -> YAMLLoadError:
+    """The error for a value the safe constructors refused with ``exc``,
+    placed at ``node``'s line and column when the node and its mark are known."""
+    detail = " ".join(str(exc).split())
+    if len(detail) > _UNBUILDABLE_DETAIL_MAX:
+        detail = detail[: _UNBUILDABLE_DETAIL_MAX - 3] + "..."
+    if getattr(node, "start_mark", None) is None:
+        what = "a value"
+    else:
+        what = f"the value at {_where(node)}"
+    return YAMLLoadError(
+        shown, f"not valid YAML: {what} cannot be constructed ({type(exc).__name__}: {detail})"
+    )
+
+
+def _naming_constructor(loader: Any, shown: str) -> Callable[..., Any]:
+    """A ``construct_object`` for ``loader``'s instance that raises
+    ``YAMLLoadError`` naming the file and the node for a value the safe
+    constructors refuse. They build nested values through
+    ``self.construct_object``, so every node passes through it and the
+    innermost failing one is reported; the ``YAMLLoadError`` is not one of
+    ``_UNBUILDABLE``, so the enclosing calls pass it on unchanged."""
+    construct = loader.construct_object
+
+    def construct_object(node: yaml.Node, deep: bool = False) -> Any:
+        try:
+            return construct(node, deep=deep)
+        except _UNBUILDABLE as exc:
+            raise _unbuildable(shown, node, exc) from None
+
+    return construct_object
+
+
+def _check_written_depth(text: str, shown: str) -> None:
+    """Refuse collections nested deeper than ``YAML_MAX_DEPTH`` as written.
+
+    The parsers are iterative, but libyaml's composer recurses on the C stack:
+    100,000 nested '[' (200 KB) crash the process before any check of the
+    composed graph could run. So the depth is counted from the parser's
+    events, and parsing stops at the first level too deep."""
+    loader = _loader(text, shown)
+    try:
+        depth = 0
+        while True:
+            event = loader.get_event()
+            if event is None or isinstance(event, yaml.StreamEndEvent):
+                return
+            if isinstance(event, _COLLECTION_STARTS):
+                depth += 1
+                if depth > YAML_MAX_DEPTH:
+                    raise YAMLStructureError(
+                        shown, f"nests deeper than {YAML_MAX_DEPTH} levels at {_where(event)}"
+                    )
+            elif isinstance(event, _COLLECTION_ENDS):
+                depth -= 1
+    finally:
+        loader.dispose()
+
+
+def _children(node: Any) -> list:
+    if isinstance(node, yaml.MappingNode):
+        return [child for pair in node.value for child in pair]
+    if isinstance(node, yaml.SequenceNode):
+        return list(node.value)
+    return []
+
+
+def _check_unique_keys(loader: Any, node: yaml.MappingNode, shown: str) -> None:
+    """Refuse a scalar key given twice in one mapping, compared as the keys of
+    the built dict compare (``1`` and ``0x1``, ``true`` and ``yes`` collide).
+    The merge key ``<<`` is a key too: given twice, the later merge would
+    silently replace the earlier one's values. The entries it merges may be
+    overridden by explicit keys, so they are not compared; a quoted ``'<<'``
+    is a plain string key."""
+    first: dict[Any, int] = {}
+    first_merge: int | None = None
+    for key_node, _ in node.value:
+        if key_node.tag == _MERGE_TAG:
+            # flatten_mapping merges every key with this tag, whatever its kind.
+            line = key_node.start_mark.line + 1
+            if first_merge is not None:
+                raise YAMLStructureError(
+                    shown,
+                    f"found duplicate key {_KEY_REPR.repr('<<')} at line {line} "
+                    f"(first given at line {first_merge})",
+                )
+            first_merge = line
+            continue
+        if not isinstance(key_node, yaml.ScalarNode):
+            continue
+        if key_node.tag == _VALUE_TAG:
+            key = key_node.value
+        else:
+            key = loader.construct_object(key_node, deep=True)
+        line = key_node.start_mark.line + 1
+        try:
+            earlier = first.get(key)
+        except TypeError:  # an unhashable key, which construct_mapping refuses
+            continue
+        if earlier is not None:
+            raise YAMLStructureError(
+                shown,
+                f"found duplicate key {_KEY_REPR.repr(key)} at line {line} "
+                f"(first given at line {earlier})",
+            )
+        first[key] = line
+
+
+def _check_graph(loader: Any, root: Any, shown: str) -> None:
+    """Check the composed node graph without recursion, before any value is
+    built: unique mapping keys, no collection that contains an alias to
+    itself, at most ``YAML_MAX_DEPTH`` nested collections with aliases
+    expanded, and at most ``YAML_MAX_ALIAS_WEIGHT`` added by aliases.
+
+    The walk is depth-first with an explicit stack; ``active`` holds the
+    collections on the current path, and each node's height and expanded
+    weight are computed once, so shared (aliased) nodes cost nothing more.
+    A stack entry carries a collection's children once it has been entered,
+    so its next appearance finishes it."""
+    if isinstance(root, yaml.ScalarNode):
+        return
+    height: dict[int, int] = {}  # node -> collections nested in it, itself included
+    weight: dict[int, int] = {}  # node -> its weight with every alias expanded
+    written = 0  # the weight of every node counted once: what the file spells out
+    active: set[int] = set()
+    stack: list[tuple[Any, list | None]] = [(root, None)]
+    while stack:
+        node, children = stack.pop()
+        key = id(node)
+        if children is not None:
+            active.discard(key)
+            height[key] = 1 + max((height[id(child)] for child in children), default=0)
+            if height[key] > YAML_MAX_DEPTH:
+                raise YAMLStructureError(
+                    shown, f"nests deeper than {YAML_MAX_DEPTH} levels at {_where(node)}"
+                )
+            weight[key] = 1 + sum(weight[id(child)] for child in children)
+            continue
+        if key in height:
+            continue
+        if isinstance(node, yaml.MappingNode):
+            _check_unique_keys(loader, node, shown)
+        written += 1
+        active.add(key)
+        if len(active) > YAML_MAX_DEPTH:
+            raise YAMLStructureError(
+                shown, f"nests deeper than {YAML_MAX_DEPTH} levels at {_where(node)}"
+            )
+        children = _children(node)
+        stack.append((node, children))
+        for child in reversed(children):
+            child_key = id(child)
+            if child_key in height:
+                continue
+            if isinstance(child, yaml.ScalarNode):
+                height[child_key] = 0
+                weight[child_key] = 1 + len(child.value)
+                written += weight[child_key]
+            elif child_key in active:
+                kind = "mapping" if isinstance(child, yaml.MappingNode) else "sequence"
+                raise YAMLStructureError(
+                    shown,
+                    f"recursive alias: the {kind} at {_where(child)} contains an alias to itself",
+                )
+            else:
+                stack.append((child, None))
+    added = weight[id(root)] - written
+    if added > YAML_MAX_ALIAS_WEIGHT:
+        raise YAMLStructureError(
+            shown,
+            f"aliases expand the document by {added} (nodes and characters); "
+            f"at most {YAML_MAX_ALIAS_WEIGHT} are allowed",
+        )
 
 
 # --------------------------------------------------------------------------
@@ -509,3 +860,29 @@ def relpath(path: str | PurePath) -> str:
         return resolved.relative_to(REPO_ROOT).as_posix()
     except ValueError:
         raise HarnessError(f"{path} lies outside the repository") from None
+
+
+def display_path(path: str | PurePath) -> str:
+    """``path`` as messages show it: its POSIX path relative to the repository
+    root when it lies inside the repository, else ``path`` as given, so a
+    checkout's absolute location never reaches a message or a result.
+
+    The message names the path the caller gave, never where a symbolic link
+    leads: a relative ``path`` is taken from the current folder, ``.`` and
+    ``..`` are removed lexically, and a link on the path, the named file
+    included, is not followed. Only when that path lies outside the
+    repository are the folders holding the file resolved (the file itself
+    still is not), so a checkout reached through a linked folder is still
+    shown relative to its root. It never raises.
+    """
+    candidate = Path(path)
+    try:
+        lexical = Path(os.path.abspath(candidate))
+        try:
+            return lexical.relative_to(REPO_ROOT).as_posix()
+        except ValueError:  # outside as given; perhaps through a linked folder
+            pass
+        located = lexical.parent.resolve() / lexical.name
+        return located.relative_to(REPO_ROOT).as_posix()
+    except (ValueError, OSError, RuntimeError):  # outside, or unresolvable
+        return candidate.as_posix()

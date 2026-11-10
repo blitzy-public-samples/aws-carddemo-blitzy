@@ -304,8 +304,9 @@ class UniKixEnvironment:
     ``vars`` is the complete environment passed to each command: what the
     operator's file exported, with the deployment variables replaced by the
     test-owned ones and, once the deployment exists, what ``userenv`` and
-    ``batchenv`` add. ``generation`` counts those re-reads (see the module
-    docstring). Build it with ``load``."""
+    ``batchenv`` add. Each re-read of those scripts starts again from what
+    ``load`` produced, so repeated re-reads never accumulate. ``generation``
+    counts them (see the module docstring). Build it with ``load``."""
 
     def __init__(
         self,
@@ -328,6 +329,9 @@ class UniKixEnvironment:
         self.runtime_scripts = {"userenv": "not-sourced", "batchenv": "not-sourced"}
         self.sourcing_output = sourcing_output
         self._inherited_cobcpy = inherited_cobcpy
+        # The environment load produced, which every source_runtime_scripts call starts from.
+        self._load_vars = dict(variables)
+        self._load_inherited_cobcpy = inherited_cobcpy
 
     def __repr__(self) -> str:
         # Never the variables: an operator's file may export anything.
@@ -357,8 +361,10 @@ class UniKixEnvironment:
 
         Raises ``AdapterUnavailable`` with GAP-MIS-009 when the variable is
         unset or names no readable file, before anything is created; when
-        sourcing fails or times out; and when ``UNIKIX``, ``INSTEBM``,
-        ``VCOBOL``, ``KIXLICDIR`` or ``JAVA_HOME`` is unset or missing.
+        sourcing the file returns non-zero (a syntax error, which stops bash
+        reading it, or a failing last command) or times out; and when
+        ``UNIKIX``, ``INSTEBM``, ``VCOBOL``, ``KIXLICDIR`` or ``JAVA_HOME`` is
+        unset, is not an absolute path, is missing or is not a directory.
         Raises ``HarnessError`` when the deployment root or a derived path
         lies outside where it must."""
         source = os.environ if environ is None else environ
@@ -389,8 +395,16 @@ class UniKixEnvironment:
 
         for name in REQUIRED_INSTALLATION_VARS:
             value = variables.get(name, "")
-            if not value or not os.path.exists(value):
-                raise AdapterUnavailable(f"{name} missing: {value or '(unset)'}", _GAP_INSTALLATION)
+            # Absoluteness first, so the verdict never depends on the caller's cwd.
+            if value and not os.path.isabs(value):
+                reason = f"{name} is not an absolute path: {value}"
+            elif not value or not os.path.exists(value):
+                reason = f"{name} missing: {value or '(unset)'}"
+            elif not os.path.isdir(value):
+                reason = f"{name} is not a directory: {value}"
+            else:
+                continue
+            raise AdapterUnavailable(reason, _GAP_INSTALLATION)
 
         environment = cls(
             env_file=env_file,
@@ -447,20 +461,27 @@ class UniKixEnvironment:
 
         Called by ``deploy.py`` after it has created the region and the BPE
         node. A script is sourced only when it is a file inside the
-        deployment root. Both run in one bash started with the current
-        ``vars``, so batchenv sees what userenv set. ``COBCPY`` is then
-        extended again from whatever the scripts left, as ``bin/compile``
-        would extend it in a shell where they had been sourced. Every call
-        starts a new ``generation``.
+        deployment root. Both run in one bash started from the environment
+        ``load`` produced, with its inherited ``COBCPY``, so batchenv sees
+        what userenv set, and a script that extends a variable, such as
+        ``PATH=<dir>:$PATH``, extends it once however often this is called.
+        The scripts are the ones that environment names, and the bash starts
+        in its ``PROJECT_ROOT`` once that exists. ``COBCPY`` is then extended
+        again from whatever the scripts left, as ``bin/compile`` would extend
+        it in a shell where they had been sourced. When neither script is
+        sourced, ``vars`` returns to what ``load`` produced. Every call starts
+        a new ``generation``.
 
         Returns the state of each script: ``sourced``, ``absent`` or
         ``outside-deployment-root``. Raises ``AdapterUnavailable`` with
         GAP-MIS-003 when userenv fails, times out or moves a deployment path
         out of the deployment root, and with GAP-MIS-006 when batchenv
         does."""
+        start = dict(self._load_vars)
+        start["COBCPY"] = self._load_inherited_cobcpy
         scripts = {
-            "userenv": Path(self.vars.get("KIXSYS", "")) / "bin" / "userenv",
-            "batchenv": Path(self.vars.get("EBMHOME", "")) / "batchenv",
+            "userenv": Path(start.get("KIXSYS", "")) / "bin" / "userenv",
+            "batchenv": Path(start.get("EBMHOME", "")) / "batchenv",
         }
         states: dict[str, str] = {}
         sourced: dict[str, str] = {}
@@ -474,8 +495,6 @@ class UniKixEnvironment:
                 sourced[key] = str(script)
 
         if sourced:
-            start = dict(self.vars)
-            start["COBCPY"] = self._inherited_cobcpy
             # $1 userenv, $2 batchenv, $3 the snapshot mark. A failing "."
             # ends bash before the snapshot of its phase, which attributes it.
             body = (
@@ -496,11 +515,15 @@ class UniKixEnvironment:
             ]
             first_gap = _GAP_USERENV if "userenv" in sourced else _GAP_BATCHENV
             self.log_dir.mkdir(parents=True, exist_ok=True)
+            # The directory _default_cwd picks for the load-time environment; the
+            # line above has created the deployment root if it had gone.
+            project = start.get("PROJECT_ROOT", "")
+            cwd = project if os.path.isdir(project) else str(self.deployment_root)
             try:
                 done = _run_process(
                     argv,
                     env=start,
-                    cwd=_default_cwd(self),
+                    cwd=cwd,
                     timeout=SOURCE_TIMEOUT_S,
                     spool_dir=str(self.log_dir),
                 )
@@ -537,6 +560,9 @@ class UniKixEnvironment:
             )
             self.vars = merged
             self.sourcing_output += _text(done.stderr)
+        else:
+            self.vars = dict(self._load_vars)
+            self._inherited_cobcpy = self._load_inherited_cobcpy
 
         self.runtime_scripts = states
         self.generation += 1
@@ -585,14 +611,23 @@ def _source_env_file(
     """Source ``env_file`` with ``set -a`` in a bash that has only ``PATH``,
     the empty ``HOME`` and ``LANG=C``. Returns the exported environment and
     the file's own output, which goes to stderr so that stdout holds only
-    ``env -0``."""
+    ``env -0``.
+
+    Sourcing fails when the file exits non-zero or ``.`` returns non-zero:
+    after a syntax error, which stops bash reading the file, or a failing last
+    command. bash then exits with that status before ``env -0``, the rule
+    ``source_runtime_scripts`` applies to each script. A command that fails
+    earlier in the file does not fail ``.``, as in the operator's own shell,
+    so that file is accepted and the command's message stays in the returned
+    output. A failure, a timeout or an empty environment raises
+    ``AdapterUnavailable`` with GAP-MIS-009."""
     minimal = {"PATH": source.get("PATH") or os.defpath, "HOME": str(home), "LANG": "C"}
     argv = [
         _bash(),
         "--noprofile",
         "--norc",
         "-c",
-        'set -a; . "$1" 1>&2; env -0',
+        'set -a; . "$1" 1>&2 || exit $?; env -0',
         "carddemo-env",
         str(env_file),
     ]
@@ -628,7 +663,8 @@ def _source_env_file(
 def _placeholders(text: str | None, where: str) -> frozenset[str]:
     """The ``{name}`` placeholders of ``text``. ``commands.yaml`` allows no
     other braces, so ``${VAR}``, positional fields and unbalanced braces are
-    errors."""
+    errors. A conversion or format spec (``{file!r}``, ``{file:>8}``) is an
+    error too: it would change a value after it was quoted or checked."""
     if text is None:
         return frozenset()
     names: set[str] = set()
@@ -636,7 +672,7 @@ def _placeholders(text: str | None, where: str) -> frozenset[str]:
         fields = list(string.Formatter().parse(text))
     except ValueError as exc:
         raise HarnessError(f"{where}: {exc}") from None
-    for _literal, name, _spec, _conversion in fields:
+    for _literal, name, spec, conversion in fields:
         if name is None:
             continue
         if not _PLACEHOLDER_RE.fullmatch(name):
@@ -644,8 +680,448 @@ def _placeholders(text: str | None, where: str) -> frozenset[str]:
                 f"{where}: {{{name}}} is not a placeholder; "
                 "write $VAR for a variable, never ${VAR}"
             )
+        if spec or conversion is not None:
+            written = name + ("" if conversion is None else f"!{conversion}")
+            written += f":{spec}" if spec else ""
+            raise HarnessError(
+                f"{where}: {{{written}}} carries a conversion or format spec, which would "
+                f"change its value after it was quoted or checked; write {{{name}}}"
+            )
         names.add(name)
     return frozenset(names)
+
+
+# The quoting scan renders each placeholder as _MARK + name + _MARK, so a
+# command must hold no NUL of its own.
+_MARK = "\0"
+_MARK_RE = re.compile("\0([^\0]*)\0")
+_SHELL_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_ASSIGNMENT_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
+# Reserved words and builtins after which the next word still names a command.
+_COMMAND_PREFIX_WORDS = frozenset(
+    ("!", "{", "if", "then", "elif", "else", "while", "until", "do", "time", "coproc", "exec",
+     "command", "builtin")
+)
+_SPECIAL_PARAMETERS = frozenset("@*#?-$!0123456789")
+_ARITHMETIC = "inside an arithmetic expression, which evaluates its value"
+_UNFOLLOWED_QUOTE = "after a single quote in ${...} or arithmetic, which the loader cannot follow"
+_UNFOLLOWED_CASE = "after a case statement inside $( ) or ( ), which the loader cannot follow"
+_UNFOLLOWED_HEREDOC = "after a << here-document, which the loader cannot follow"
+_QUOTING_ADVICE = (
+    "shell quoting keeps a value one word of data only where its placeholder stands unquoted, "
+    "as a whole word or part of one, e.g. kixfile close {file} or kixclt {member}.cl2"
+)
+
+
+@dataclass
+class _PlainContext:
+    """One plain context of a quoting scan: the top level, ``$(...)`` or
+    ``(...)``, with the state of its current word."""
+
+    nested: bool  # closed by ")"
+    inherited: str | None  # why every placeholder here is misplaced, from the enclosing word
+    command_pos: bool = True  # the next word names a command
+    target: bool = False  # the next word is the target of a redirection
+    cond: bool = False  # inside [[ ... ]]
+    word: str = ""  # the current word: unquoted characters, "\x01" for anything else
+    names: list[str] = field(default_factory=list)  # placeholders accepted in the word
+    fd_word: bool = True  # the word holds only digits and placeholders
+    tilde: bool = False  # the word is in a ~ tilde prefix
+    bracket: bool = False  # the word is inside [...]
+    braces: int = 0  # unclosed { of a brace expansion in the word
+
+
+class _QuotingScan:
+    """A lexical scan, after bash, of a command whose placeholders are
+    rendered as marks.
+
+    ``shlex.quote`` makes a value exactly one shell word of data only in a
+    plain context (the top level, ``$(...)``, ``(...)``), and only where bash
+    does not read the unquoted word specially. ``misplaced`` collects
+    ``(name, context)`` for every placeholder anywhere else: inside quotes,
+    backquotes, ``${...}``, arithmetic or a comment; right after ``$``,
+    ``$NAME`` or a backslash; as a command name; in a ``[[ ]]`` conditional,
+    a brace expansion, ``[...]``, a ``~`` prefix; or as a file descriptor
+    number. Where the scan cannot follow bash, ``lost`` refuses every later
+    placeholder: after a here-document operator ``<<`` or ``<<-`` (a ``<<<``
+    here-string is a plain word), a ``case`` inside ``$( )`` or ``( )``, or a
+    single quote inside ``${...}`` or arithmetic."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.pos = 0
+        self.misplaced: list[tuple[str, str]] = []
+        self.lost: str | None = None
+
+    def peek(self, offset: int = 1) -> str:
+        index = self.pos + offset
+        return self.text[index] if index < len(self.text) else ""
+
+    def lose(self, reason: str) -> None:
+        if self.lost is None:
+            self.lost = reason
+
+    def record(self, name: str, context: str | None) -> bool:
+        """Note ``name`` as misplaced in ``context``, unless ``context`` is
+        ``None`` and the scan is not lost; return whether it was accepted."""
+        context = self.lost or context
+        if context is None:
+            return True
+        self.misplaced.append((name, context))
+        return False
+
+    def mark(self, context: str | None) -> tuple[str, bool]:
+        """Consume the mark at ``pos``; return its name and whether it was
+        accepted."""
+        start = self.pos + 1
+        end = self.text.index(_MARK, start)
+        self.pos = end + 1
+        name = self.text[start:end]
+        return name, self.record(name, context)
+
+    def marks(self, start: int, end: int, context: str) -> None:
+        for match in _MARK_RE.finditer(self.text, start, end):
+            self.record(match.group(1), context)
+
+    def escape(self) -> None:
+        """Step over a backslash and what it escapes, never into a mark."""
+        self.pos += 1 if self.peek() in ("", _MARK) else 2
+
+    # ------------------------------------------------------- plain contexts
+
+    def plain(self, nested: bool, inherited: str | None = None) -> None:
+        """Scan a plain context up to its closing ``)`` (``nested``) or the
+        end of the text."""
+        ctx = _PlainContext(nested, inherited)
+        text = self.text
+        while self.pos < len(text):
+            char = text[self.pos]
+            if char == _MARK:
+                self.placeholder(ctx)
+            elif char == ")":
+                self.end_word(ctx)
+                self.pos += 1
+                if nested:
+                    break
+                ctx.command_pos = True  # the end of a case pattern
+            elif char in " \t":
+                self.end_word(ctx)
+                self.pos += 1
+            elif char == "\n":
+                self.end_word(ctx)
+                ctx.command_pos, ctx.target = True, False
+                self.pos += 1
+            elif char == "&" and self.peek() == ">":
+                self.end_word(ctx)
+                self.pos += 1
+                self.redirect(ctx)
+            elif char in ";&|":
+                self.end_word(ctx)
+                ctx.command_pos, ctx.target = True, False
+                self.pos += 1
+            elif char in "<>":
+                self.redirect(ctx)
+            elif char == "(":
+                self.group(ctx)
+            elif char == "#" and not ctx.word:
+                self.comment()
+            elif char == "\\":
+                self.plain_escape(ctx)
+            elif char == "$":
+                self.plain_dollar(ctx)
+            elif char in "'\"`":
+                self.pos += 1
+                if char == "'":
+                    self.single()
+                elif char == '"':
+                    self.double()
+                else:
+                    self.escaped("`", "inside backquotes `...`")
+                ctx.word, ctx.fd_word = ctx.word + "\x01", False
+            else:
+                self.literal(ctx, char)
+
+    @staticmethod
+    def word_context(ctx: _PlainContext) -> str | None:
+        """Why a placeholder at this point of the current word is misplaced,
+        or ``None``."""
+        if ctx.inherited:
+            return ctx.inherited
+        if ctx.cond:
+            return "inside a [[ ]] conditional, which matches patterns and evaluates arithmetic"
+        if ctx.braces:
+            return "inside a {...} brace expansion, which splits its value at commas"
+        if ctx.bracket:
+            return "inside [...] in a word, a glob bracket or an arithmetic subscript"
+        if ctx.tilde:
+            return "in a ~ tilde prefix, where its value would name a user"
+        return None
+
+    def placeholder(self, ctx: _PlainContext) -> None:
+        context = self.word_context(ctx)
+        if context is None and not ctx.word and ctx.command_pos and not ctx.target:
+            context = "at the start of a command, where its value would name the command"
+        name, accepted = self.mark(context)
+        if accepted:
+            ctx.names.append(name)
+        ctx.word += "\x01"
+
+    def literal(self, ctx: _PlainContext, char: str) -> None:
+        if char == "{":
+            # A lone { is the reserved word; any other opens a brace expansion.
+            if ctx.word or self.peek() not in ("", " ", "\t", "\n"):
+                ctx.braces += 1
+        elif char == "}":
+            ctx.braces = max(ctx.braces - 1, 0)
+        elif char in "[]":
+            ctx.bracket = char == "["
+        elif char == "~":
+            ctx.tilde = ctx.tilde or not ctx.word or ctx.word[-1] in "=:"
+        elif char == "/":
+            ctx.tilde = False
+        ctx.word += char
+        ctx.fd_word = ctx.fd_word and char in "0123456789"
+        self.pos += 1
+
+    def end_word(self, ctx: _PlainContext) -> None:
+        """Close the current word and note what it means for the next one."""
+        word = ctx.word
+        if word:
+            if ctx.target:
+                ctx.target = False
+            elif word == "[[":
+                ctx.cond, ctx.command_pos = True, False
+            elif word == "]]":
+                ctx.cond = False
+            elif word not in _COMMAND_PREFIX_WORDS and not _ASSIGNMENT_WORD_RE.match(word):
+                ctx.command_pos = False
+            if word == "case" and ctx.nested:
+                # Its patterns end in ")" too, which this scan would take for the close.
+                self.lose(_UNFOLLOWED_CASE)
+        ctx.word, ctx.names, ctx.fd_word = "", [], True
+        ctx.tilde = ctx.bracket = False
+        ctx.braces = 0
+
+    def plain_escape(self, ctx: _PlainContext) -> None:
+        following = self.peek()
+        if following == "\n":
+            self.pos += 2  # a line continuation joins the lines
+            return
+        if following == _MARK:
+            self.pos += 1
+            self.mark("right after a backslash, which would escape its opening quote")
+        else:
+            self.escape()
+        ctx.word, ctx.fd_word = ctx.word + "\x01", False
+
+    def plain_dollar(self, ctx: _PlainContext) -> None:
+        following = self.peek()
+        if following == "'":
+            self.pos += 2
+            self.escaped("'", "inside ANSI-C quotes $'...'")
+        elif following == '"':
+            self.pos += 2
+            self.double()
+        elif following == _MARK:
+            self.pos += 1
+            self.mark("right after $, where its quoted value would become $'...' or a variable")
+        elif not self.expansion():
+            variable = _SHELL_NAME_RE.match(self.text, self.pos + 1)
+            if variable:
+                self.pos = variable.end()
+                if self.peek(0) == _MARK:
+                    self.mark(
+                        f"right after ${variable.group()}, where its value would extend the "
+                        "variable name"
+                    )
+            else:
+                self.pos += 2 if following and following in _SPECIAL_PARAMETERS else 1
+        ctx.word, ctx.fd_word = ctx.word + "\x01", False
+
+    def group(self, ctx: _PlainContext) -> None:
+        """Scan ``((...))``, or ``(...)``: a subshell, array or pattern list."""
+        inherited = self.word_context(ctx)
+        self.end_word(ctx)
+        if self.peek() == "(":
+            self.pos += 2
+            self.expression("(", "))", _ARITHMETIC)
+        else:
+            self.pos += 1
+            self.plain(nested=True, inherited=inherited)
+        ctx.command_pos = True
+
+    def redirect(self, ctx: _PlainContext) -> None:
+        """Scan the redirection operator at ``pos``."""
+        if ctx.word and ctx.fd_word:
+            # Digits right before < or > are the file descriptor it redirects.
+            for name in ctx.names:
+                self.record(
+                    name, "right before a < or > redirection, where a number names a descriptor"
+                )
+            ctx.word = ""
+        self.end_word(ctx)
+        text = self.text
+        if text.startswith("<<<", self.pos):
+            self.pos += 3
+        elif text.startswith("<<", self.pos):
+            # bash ends a here-document body by rules this scan does not follow (line
+            # joining, every byte of the delimiter kept), so it refuses everything after <<.
+            self.pos += 3 if text.startswith("<<-", self.pos) else 2
+            self.lose(_UNFOLLOWED_HEREDOC)
+        elif self.peek() == "(":
+            self.pos += 2
+            self.plain(nested=True)  # a process substitution, a word of its own
+            ctx.word, ctx.fd_word = "\x01", False
+            return
+        else:
+            self.pos += 1
+            if self.peek(0) in ("&", ">", "|"):
+                self.pos += 1
+        ctx.target = True
+
+    def comment(self) -> None:
+        end = self.text.find("\n", self.pos)
+        end = len(self.text) if end < 0 else end
+        self.marks(self.pos, end, "inside a # comment, which a newline in its value would end")
+        self.pos = end
+
+    # ------------------------------------------------- every other context
+
+    def expansion(self) -> bool:
+        """At a ``$``: scan the ``$((...))``, ``$(...)``, ``$[...]`` or
+        ``${...}`` that starts here and return ``True``; return ``False``,
+        consuming nothing, for any other ``$``."""
+        text, pos = self.text, self.pos
+        if text.startswith("$((", pos):
+            self.pos += 3
+            self.expression("(", "))", _ARITHMETIC)
+        elif text.startswith("$(", pos):
+            self.pos += 2
+            self.plain(nested=True)
+        elif text.startswith("$[", pos):
+            self.pos += 2
+            self.expression("[", "]", _ARITHMETIC)
+        elif text.startswith("${", pos):
+            self.pos += 2
+            self.expression("{", "}", "inside a ${...} expansion")
+        else:
+            return False
+        return True
+
+    def dollar(self) -> None:
+        """At a ``$`` outside a plain context: scan the expansion it starts,
+        or step over it and the special parameter it names, so that ``$$(``
+        is never taken for ``$(``."""
+        if not self.expansion():
+            following = self.peek()
+            self.pos += 2 if following and following in _SPECIAL_PARAMETERS else 1
+
+    def single(self) -> None:
+        end = self.text.find("'", self.pos)
+        end = len(self.text) if end < 0 else end
+        self.marks(self.pos, end, "inside single quotes '...'")
+        self.pos = min(end + 1, len(self.text))
+
+    def double(self, context: str = 'inside double quotes "..."') -> None:
+        text = self.text
+        while self.pos < len(text):
+            char = text[self.pos]
+            if char == '"':
+                self.pos += 1
+                return
+            if char == _MARK:
+                self.mark(context)
+            elif char == "\\":
+                self.escape()
+            elif char == "`":
+                self.pos += 1
+                self.escaped("`", "inside backquotes `...`")
+            elif char == "$":
+                self.dollar()
+            else:
+                self.pos += 1
+
+    def escaped(self, closer: str, context: str) -> None:
+        """Scan ANSI-C quotes or backquotes up to the first unescaped
+        ``closer``; bash ends backquotes there even inside quotes."""
+        text = self.text
+        while self.pos < len(text):
+            char = text[self.pos]
+            if char == closer:
+                self.pos += 1
+                return
+            if char == _MARK:
+                self.mark(context)
+            elif char == "\\":
+                self.escape()
+            else:
+                self.pos += 1
+
+    def expression(self, opener: str, closer: str, context: str) -> None:
+        """Scan ``${...}``, ``$((...))``, ``((...))`` or ``$[...]`` up to
+        ``closer``; bare ``opener`` characters nest, as in bash. A single
+        quote, which bash may or may not take as quoting here, or a lone
+        ``)`` where ``))`` should close, loses the scan."""
+        text = self.text
+        shut = closer[0]
+        depth = 0
+        while self.pos < len(text):
+            char = text[self.pos]
+            if char == _MARK:
+                self.mark(context)
+                continue
+            if char == shut and not depth:
+                if text.startswith(closer, self.pos):
+                    self.pos += len(closer)
+                else:
+                    self.lose("after an arithmetic expression the loader cannot follow")
+                    self.pos += 1
+                return
+            if char == opener:
+                depth += 1
+            elif char == shut:
+                depth -= 1
+            elif char == "'":
+                self.lose(_UNFOLLOWED_QUOTE)
+            elif char == "\\":
+                self.escape()
+                continue
+            elif char == '"':
+                self.pos += 1
+                self.double(context)
+                continue
+            elif char == "`":
+                self.pos += 1
+                self.escaped("`", context)
+                continue
+            elif char == "$":
+                self.dollar()
+                continue
+            self.pos += 1
+
+
+def _command_placeholders(command: str | None, where: str) -> frozenset[str]:
+    """The placeholders of ``command``, each of which must stand where
+    ``shlex.quote`` keeps its value exactly one shell word of data (see
+    ``_QuotingScan``). Every misplaced placeholder is reported in one
+    ``HarnessError``. ``cwd`` is never held to this: no shell parses it."""
+    names = _placeholders(command, where)
+    if command is None:
+        return names
+    if _MARK in command:
+        raise HarnessError(f"{where} holds a NUL character")
+    scan = _QuotingScan(command.format_map({name: f"{_MARK}{name}{_MARK}" for name in names}))
+    try:
+        scan.plain(nested=False)
+    except RecursionError:
+        too_deep = "in a command nested too deeply to scan"
+        scan.misplaced = [(name, too_deep) for name in sorted(names)]
+    if scan.misplaced:
+        found = ", ".join(
+            f"{{{name}}} stands {context}" for name, context in dict.fromkeys(scan.misplaced)
+        )
+        raise HarnessError(f"{where}: {found}; {_QUOTING_ADVICE}")
+    return names
 
 
 @dataclass(frozen=True)
@@ -672,8 +1148,11 @@ class CommandEntry:
 
     @property
     def placeholders(self) -> frozenset[str]:
-        """The caller values the command and its ``cwd`` need."""
-        return _placeholders(self.command, f"{self.id}.command") | _placeholders(
+        """The caller values the command and its ``cwd`` need. A command
+        placeholder that does not stand where shell quoting holds raises
+        ``HarnessError``, so an entry built without ``CommandSet.load`` is
+        refused too, before anything runs."""
+        return _command_placeholders(self.command, f"{self.id}.command") | _placeholders(
             self.cwd, f"{self.id}.cwd"
         )
 
@@ -750,9 +1229,12 @@ def _entry(entry_id: Any, raw: Any, where: str) -> CommandEntry:
     action, source, notes = text("action"), text("source"), text("notes")
     cwd = text("cwd", optional=True)
     parse, template = table("parse"), table("template")
-    for key, value in (("command", command), ("cwd", cwd)):
+    for key, value, check in (
+        ("command", command, _command_placeholders),
+        ("cwd", cwd, _placeholders),
+    ):
         try:
-            _placeholders(value, key)
+            check(value, key)
         except HarnessError as exc:
             problems.append(str(exc))
     if problems:
@@ -792,7 +1274,14 @@ def _values(entry: CommandEntry, values: Mapping[str, Any]) -> dict[str, str]:
 
 
 def _render_command(command: str, values: Mapping[str, str]) -> str:
-    """``command`` with every value shell-quoted; ``$VAR`` is left for bash."""
+    """``command`` with every value shell-quoted; ``$VAR`` is left for bash.
+
+    ``shlex.quote`` makes a value one word of data only where its placeholder
+    stands unquoted in plain shell context, so ``command`` must be one that
+    ``_command_placeholders`` accepted, as ``CommandEntry.placeholders`` has
+    checked before every run. The value is still only data to the command
+    it reaches: a command that re-parses its arguments (``eval``, ``sh -c``)
+    would run it."""
     return command.format_map({name: shlex.quote(value) for name, value in values.items()})
 
 
@@ -875,7 +1364,8 @@ class CommandSet:
     @classmethod
     def load(cls, path: str | os.PathLike[str] | None = None) -> CommandSet:
         """Read ``commands.yaml`` (``schema_version: 1``, ``entries`` mapping
-        id -> entry). Any schema problem raises ``HarnessError``."""
+        id -> entry). Any schema problem raises ``HarnessError``, which names
+        every entry that has one."""
         file = Path(path) if path is not None else COMMANDS_FILE
         data = load_yaml(file)
         if not isinstance(data, Mapping) or data.get("schema_version") != 1:
@@ -886,10 +1376,15 @@ class CommandSet:
         raw_entries = data.get("entries")
         if not isinstance(raw_entries, Mapping) or not raw_entries:
             raise HarnessError(f"{file}: entries must be a non-empty mapping of id -> entry")
-        entries = {
-            str(entry_id): _entry(entry_id, raw, str(file))
-            for entry_id, raw in raw_entries.items()
-        }
+        entries: dict[str, CommandEntry] = {}
+        problems: list[str] = []
+        for entry_id, raw in raw_entries.items():
+            try:
+                entries[str(entry_id)] = _entry(entry_id, raw, str(file))
+            except HarnessError as exc:
+                problems.append(str(exc))
+        if problems:
+            raise HarnessError("\n".join(problems))
         return cls(entries, file)
 
     # -------------------------------------------------------------- entries
@@ -1019,7 +1514,9 @@ class CommandSet:
         **values: str | int,
     ) -> CommandResult:
         """Run the entry ``entry_id`` with ``env`` and the placeholder
-        ``values``, which are shell-quoted into the command.
+        ``values``. Each is shell-quoted into the command as exactly one word
+        of data, which holds because a placeholder stands only unquoted in
+        plain shell context (``_command_placeholders``).
 
         The command runs as ``bash --noprofile --norc -c <command>`` in the
         entry's ``cwd`` (``$VAR`` expanded), or else in ``$PROJECT_ROOT``.
@@ -1036,7 +1533,9 @@ class CommandSet:
           gap)`` when ``check`` is true and is returned otherwise.
 
         An unknown ``entry_id`` raises ``KeyError``, and a placeholder without
-        a value raises ``HarnessError``: both are programming errors."""
+        a value raises ``HarnessError``: both are programming errors. A
+        command placeholder that stands anywhere else than unquoted in plain
+        shell context also raises ``HarnessError``, before anything runs."""
         entry = self._entries[entry_id]
         texts = _values(entry, values)
         deadline: float | None = None

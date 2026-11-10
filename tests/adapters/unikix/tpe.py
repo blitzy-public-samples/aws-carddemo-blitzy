@@ -189,14 +189,20 @@ def parse_address(value: str | None) -> TN3270Address:
         host, port_text = match.groups()
     else:
         host, separator, port_text = text.rpartition(":")
-        if not separator or not host:
+        malformed = not separator or not host
+        if ":" in host:
+            try:
+                ipaddress.IPv6Address(host)  # scope ids included; no name is resolved
+            except ValueError:
+                malformed = True  # colons in a host that is not an IPv6 address
+            else:
+                raise AdapterUnavailable(
+                    f"an IPv6 TN3270 address must be written [address]:port, got {text!r}",
+                    LISTENER_GAP,
+                )
+        if malformed:
             raise AdapterUnavailable(
                 f"TN3270 address must be host:port or [v6]:port, got {text!r}", LISTENER_GAP
-            )
-        if ":" in host:
-            raise AdapterUnavailable(
-                f"an IPv6 TN3270 address must be written [address]:port, got {text!r}",
-                LISTENER_GAP,
             )
     if not _PORT_RE.fullmatch(port_text) or not 1 <= int(port_text) <= 65535:
         raise AdapterUnavailable(f"TN3270 port must be 1-65535, got {text!r}", LISTENER_GAP)

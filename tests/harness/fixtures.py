@@ -48,7 +48,9 @@ the same bytes.
 from __future__ import annotations
 
 import functools
+import itertools
 import re
+import reprlib
 import stat
 import sys
 import threading
@@ -61,7 +63,15 @@ if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
 
 from adapters.base import GAP_ID_RE, MissingPrerequisite  # noqa: E402
-from harness import FIXTURES_FILE, REPO_ROOT, HarnessError, load_yaml, sha256_hex  # noqa: E402
+from harness import (  # noqa: E402
+    FIXTURES_FILE,
+    REPO_ROOT,
+    HarnessError,
+    YAMLLoadError,
+    display_path,
+    load_yaml,
+    sha256_hex,
+)
 from harness import codec as _codec  # noqa: E402
 from harness import layouts as _layouts  # noqa: E402
 from harness.scenarios import Scenario  # noqa: E402
@@ -328,13 +338,49 @@ class Mismatch:
 # --------------------------------------------------------------------------
 
 
+class _BriefRepr(reprlib.Repr):
+    """``repr`` bounded for messages: a value datasets.yaml or a scenario gives
+    is shown exactly as ``repr`` shows it while it is short, and clipped with
+    ``...`` past 120 characters, 8 items or 3 levels, so an error message
+    stays short however large the value is."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.maxlevel = 3
+        self.maxstring = self.maxother = 120
+        self.maxlist = self.maxtuple = self.maxdict = 8
+        self.maxset = self.maxfrozenset = self.maxdeque = self.maxarray = 8
+
+    def repr_dict(self, x: dict, level: int) -> str:
+        # reprlib sorts the keys; repr keeps the mapping's own order.
+        if not x:
+            return "{}"
+        if level <= 0:
+            return "{" + self.fillvalue + "}"
+        pieces = [
+            f"{self.repr1(key, level - 1)}: {self.repr1(x[key], level - 1)}"
+            for key in itertools.islice(x, self.maxdict)
+        ]
+        if len(x) > self.maxdict:
+            pieces.append(self.fillvalue)
+        return "{" + ", ".join(pieces) + "}"
+
+
+_BRIEF = _BriefRepr()
+
+
+def _brief(value: Any) -> str:
+    """``repr(value)``, clipped when it is long (``_BriefRepr``)."""
+    return _BRIEF.repr(value)
+
+
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _int(value: Any, what: str, minimum: int = 0) -> int:
     if not _is_int(value) or value < minimum:
-        raise FixtureError(f"{what} must be an integer of at least {minimum}, got {value!r}")
+        raise FixtureError(f"{what} must be an integer of at least {minimum}, got {_brief(value)}")
     return value
 
 
@@ -342,17 +388,17 @@ def _strings(value: Any, what: str) -> tuple[str, ...]:
     if value is None:
         return ()
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise FixtureError(f"{what} must be a list of strings, got {value!r}")
+        raise FixtureError(f"{what} must be a list of strings, got {_brief(value)}")
     return tuple(value)
 
 
 def _relative_path(value: Any, what: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise FixtureError(f"{what} must be a repository-relative path, got {value!r}")
+        raise FixtureError(f"{what} must be a repository-relative path, got {_brief(value)}")
     path = PurePosixPath(value.strip())
     if path.is_absolute() or ".." in path.parts:
         raise FixtureError(
-            f"{what} {value!r} must be relative to the repository root and stay inside it"
+            f"{what} {_brief(value)} must be relative to the repository root and stay inside it"
         )
     return path.as_posix()
 
@@ -371,9 +417,9 @@ def _span(value: Any, what: str) -> tuple[int, int]:
     elif isinstance(value, Mapping) and _is_int(value.get("from")) and _is_int(value.get("to")):
         first, last = value["from"], value["to"]
     else:
-        raise FixtureError(f'{what} must be a 1-based range such as "103-112", got {value!r}')
+        raise FixtureError(f'{what} must be a 1-based range such as "103-112", got {_brief(value)}')
     if not 1 <= first <= last:
-        raise FixtureError(f"{what} {value!r} is not a 1-based range with first <= last")
+        raise FixtureError(f"{what} {_brief(value)} is not a 1-based range with first <= last")
     return first, last
 
 
@@ -386,7 +432,7 @@ def _offset_length(value: Any, what: str, record_length: int) -> tuple[int, int]
         length = _int(value.get("length"), f"{what}.length", 1)
     else:
         raise FixtureError(
-            f'{what} must be "<offset>/<length>" or {{offset, length}}, got {value!r}'
+            f'{what} must be "<offset>/<length>" or {{offset, length}}, got {_brief(value)}'
         )
     if length < 1 or offset + length > record_length:
         raise FixtureError(
@@ -405,7 +451,7 @@ def _alternate_keys(value: Any, what: str, record_length: int) -> tuple[Alternat
     if value is None:
         return ()
     if not isinstance(value, list):
-        raise FixtureError(f"{what} must be a list, got {value!r}")
+        raise FixtureError(f"{what} must be a list, got {_brief(value)}")
     keys = []
     for index, item in enumerate(value):
         where = f"{what}[{index}]"
@@ -414,10 +460,12 @@ def _alternate_keys(value: Any, what: str, record_length: int) -> tuple[Alternat
             duplicates = item.get("duplicates", False)
             name, path = item.get("name"), item.get("path")
             if not isinstance(duplicates, bool):
-                raise FixtureError(f"{where}.duplicates must be true or false, got {duplicates!r}")
+                raise FixtureError(
+                    f"{where}.duplicates must be true or false, got {_brief(duplicates)}"
+                )
             for label, text in (("name", name), ("path", path)):
                 if text is not None and not isinstance(text, str):
-                    raise FixtureError(f"{where}.{label} must be a string, got {text!r}")
+                    raise FixtureError(f"{where}.{label} must be a string, got {_brief(text)}")
             keys.append(AlternateKey(offset, length, duplicates, name, path))
         else:
             keys.append(AlternateKey(offset, length, False))
@@ -435,7 +483,7 @@ def _encoding(entry: Mapping[str, Any], source: str | None, what: str) -> str:
     if encoding is None:
         encoding = "cp037" if source and source.startswith("app/data/EBCDIC/") else "ascii"
     if encoding not in ENCODINGS:
-        raise FixtureError(f"{what} {encoding!r} is not one of {', '.join(ENCODINGS)}")
+        raise FixtureError(f"{what} {_brief(encoding)} is not one of {', '.join(ENCODINGS)}")
     return encoding
 
 
@@ -444,7 +492,8 @@ def _cross_check(value: Any, what: str) -> CrossCheck | None:
         return None
     if not isinstance(value, Mapping):
         raise FixtureError(
-            f"{what} must be a mapping {{source, encoding, form?, lines?}} or none, got {value!r}"
+            f"{what} must be a mapping {{source, encoding, form?, lines?}} or none, "
+            f"got {_brief(value)}"
         )
     path = _relative_path(value.get("source", value.get("path")), f"{what}.source")
     encoding = value.get("encoding", "cp037")
@@ -453,11 +502,12 @@ def _cross_check(value: Any, what: str) -> CrossCheck | None:
         encoding, form = "ascii", form or "instream"
     if encoding not in ENCODINGS:
         raise FixtureError(
-            f"{what}.encoding {encoding!r} is not one of {', '.join(ENCODINGS)} or jcl-instream"
+            f"{what}.encoding {_brief(encoding)} is not one of {', '.join(ENCODINGS)} "
+            f"or jcl-instream"
         )
     form = form or "records"
     if form not in ("records", "instream"):
-        raise FixtureError(f"{what}.form {form!r} is not records or instream")
+        raise FixtureError(f"{what}.form {_brief(form)} is not records or instream")
     if form == "instream" and encoding != "ascii":
         raise FixtureError(f"{what}: in-stream JCL data is text, so its encoding is ascii")
     lines = value.get("lines")
@@ -473,13 +523,13 @@ def _registered_mismatches(
     if value is None:
         return ()
     if not isinstance(value, list):
-        raise FixtureError(f"{what} must be a list, got {value!r}")
+        raise FixtureError(f"{what} must be a list, got {_brief(value)}")
     entries = []
     for index, item in enumerate(value):
         where = f"{what}[{index}]"
         if not isinstance(item, Mapping):
             raise FixtureError(
-                f"{where} must be a mapping {{record, columns, gap_id}}, got {item!r}"
+                f"{where} must be a mapping {{record, columns, gap_id}}, got {_brief(item)}"
             )
         record = _int(item.get("record"), f"{where}.record", 1)
         columns = _span(item.get("columns"), f"{where}.columns")
@@ -490,7 +540,7 @@ def _registered_mismatches(
         gap_id = item.get("gap_id")
         if not isinstance(gap_id, str) or not GAP_ID_RE.fullmatch(gap_id):
             raise FixtureError(
-                f"{where}.gap_id must be a gap id such as GAP-DOC-012, got {gap_id!r}"
+                f"{where}.gap_id must be a gap id such as GAP-DOC-012, got {_brief(gap_id)}"
             )
         entries.append(RegisteredMismatch(record, columns, gap_id))
     return tuple(entries)
@@ -500,13 +550,13 @@ def _fields(value: Any, what: str, record_length: int) -> tuple[DatasetField, ..
     if value is None:
         return ()
     if not isinstance(value, list):
-        raise FixtureError(f"{what} must be a list, got {value!r}")
+        raise FixtureError(f"{what} must be a list, got {_brief(value)}")
     fields = []
     names: set[str] = set()
     for index, item in enumerate(value):
         where = f"{what}[{index}]"
         if not isinstance(item, Mapping) or not isinstance(item.get("name"), str):
-            raise FixtureError(f"{where} must be a mapping with a name, got {item!r}")
+            raise FixtureError(f"{where} must be a mapping with a name, got {_brief(item)}")
         name = item["name"]
         if name in names:
             raise FixtureError(f"{where}: field {name} is defined twice")
@@ -514,11 +564,11 @@ def _fields(value: Any, what: str, record_length: int) -> tuple[DatasetField, ..
         offset, length = _offset_length(item, where, record_length)
         layout = item.get("layout")
         if layout is not None and not isinstance(layout, str):
-            raise FixtureError(f"{where}.layout must be a layout name, got {layout!r}")
+            raise FixtureError(f"{where}.layout must be a layout name, got {_brief(layout)}")
         type_ = item.get("type", "group" if layout else "alphanumeric")
         if type_ not in _codec.TYPES:
             raise FixtureError(
-                f"{where}.type {type_!r} is not one of {', '.join(sorted(_codec.TYPES))}"
+                f"{where}.type {_brief(type_)} is not one of {', '.join(sorted(_codec.TYPES))}"
             )
         digits = item.get("digits")
         if digits is not None:
@@ -526,7 +576,7 @@ def _fields(value: Any, what: str, record_length: int) -> tuple[DatasetField, ..
         scale = item.get("scale")
         scale = 0 if scale is None else scale
         if not _is_int(scale):
-            raise FixtureError(f"{where}.scale must be an integer, got {scale!r}")
+            raise FixtureError(f"{where}.scale must be an integer, got {_brief(scale)}")
         fields.append(DatasetField(name, offset, length, type_, layout, digits, scale))
     return tuple(fields)
 
@@ -542,29 +592,33 @@ def _entry_spec(name: str, entry: Mapping[str, Any]) -> DatasetSpec:
         organization = "ksds"
     if organization not in ORGANIZATIONS:
         raise FixtureError(
-            f"{what}.organization {organization!r} is not one of {', '.join(ORGANIZATIONS)}", name
+            f"{what}.organization {_brief(organization)} is not one of "
+            f"{', '.join(ORGANIZATIONS)}",
+            name,
         )
     key = _key(entry.get("key"), f"{what}.key", record_length)
     if organization == "ksds" and key is None:
         raise FixtureError(f"{what}: a ksds dataset needs a primary key", name)
     layout = entry.get("layout")
     if layout is not None and not isinstance(layout, str):
-        raise FixtureError(f"{what}.layout must be a layout name, got {layout!r}", name)
+        raise FixtureError(f"{what}.layout must be a layout name, got {_brief(layout)}", name)
     record_count = entry.get("record_count")
     if record_count is not None:
         record_count = _int(record_count, f"{what}.record_count")
     derive_from = entry.get("derive_from")
     if derive_from is not None and not isinstance(derive_from, str):
         raise FixtureError(
-            f"{what}.derive_from must be a logical dataset name, got {derive_from!r}", name
+            f"{what}.derive_from must be a logical dataset name, got {_brief(derive_from)}", name
         )
     gap_ids = _strings(entry.get("gap_ids"), f"{what}.gap_ids")
     for gap_id in gap_ids:
         if not GAP_ID_RE.fullmatch(gap_id):
-            raise FixtureError(f"{what}.gap_ids: {gap_id!r} is not a gap id", name)
+            raise FixtureError(f"{what}.gap_ids: {_brief(gap_id)} is not a gap id", name)
     text_lines = entry.get("text_lines", False)
     if not isinstance(text_lines, bool):
-        raise FixtureError(f"{what}.text_lines must be true or false, got {text_lines!r}", name)
+        raise FixtureError(
+            f"{what}.text_lines must be true or false, got {_brief(text_lines)}", name
+        )
     return DatasetSpec(
         name=name,
         source=source,
@@ -602,8 +656,9 @@ def _parse_entry(name: str, entry: Mapping[str, Any]) -> DatasetSpec:
 
 
 def _parse_document(document: Any, path: Path) -> dict[str, DatasetSpec]:
+    shown = display_path(path)
     if not isinstance(document, Mapping) or "datasets" not in document:
-        raise FixtureError(f"{path} holds no top-level datasets section")
+        raise FixtureError(f"{shown} holds no top-level datasets section")
     section = document["datasets"]
     if isinstance(section, Mapping):
         named = [(str(name), entry) for name, entry in section.items()]
@@ -611,29 +666,29 @@ def _parse_document(document: Any, path: Path) -> dict[str, DatasetSpec]:
         named = []
         for index, entry in enumerate(section):
             if not isinstance(entry, Mapping) or not isinstance(entry.get("name"), str):
-                raise FixtureError(f"{path}: datasets[{index}] must be a mapping with a name")
+                raise FixtureError(f"{shown}: datasets[{index}] must be a mapping with a name")
             named.append((entry["name"], entry))
     else:
         raise FixtureError(
-            f"{path}: datasets must be a list of entries or a mapping of logical names"
+            f"{shown}: datasets must be a list of entries or a mapping of logical names"
         )
     parsed: dict[str, DatasetSpec] = {}
     for name, entry in named:
         if not isinstance(entry, Mapping):
-            raise FixtureError(f"{path}: the entry of {name} must be a mapping", name)
+            raise FixtureError(f"{shown}: the entry of {name} must be a mapping", name)
         if name in parsed:
-            raise FixtureError(f"{path}: logical dataset {name} is defined twice", name)
+            raise FixtureError(f"{shown}: logical dataset {name} is defined twice", name)
         parsed[name] = _parse_entry(name, entry)
     for entry in parsed.values():
         parent = parsed.get(entry.derive_from) if entry.derive_from else entry
         if parent is None:
             raise FixtureError(
-                f"{path}: {entry.name} derives from {entry.derive_from}, which is not defined",
+                f"{shown}: {entry.name} derives from {entry.derive_from}, which is not defined",
                 entry.name,
             )
         if parent is not entry and parent.derive_from:
             raise FixtureError(
-                f"{path}: {entry.name} derives from {parent.name}, which is itself a twin",
+                f"{shown}: {entry.name} derives from {parent.name}, which is itself a twin",
                 entry.name,
             )
         # A twin is verified through its parent's cross-check, which only
@@ -643,7 +698,7 @@ def _parse_document(document: Any, path: Path) -> dict[str, DatasetSpec]:
             != (parent.source, parent.encoding, parent.record_length)
         ):
             raise FixtureError(
-                f"{path}: {entry.name} must repeat the source, encoding and record_length of "
+                f"{shown}: {entry.name} must repeat the source, encoding and record_length of "
                 f"{parent.name}, which it derives from",
                 entry.name,
             )
@@ -660,13 +715,19 @@ def _load_specs(path: Path = FIXTURES_FILE) -> dict[str, DatasetSpec]:
     try:
         status = path.stat()
     except FileNotFoundError:
-        raise FixtureError(f"{path} is missing: the logical datasets are defined there") from None
+        raise FixtureError(
+            f"{display_path(path)} is missing: the logical datasets are defined there"
+        ) from None
     stamp = (status.st_mtime_ns, status.st_size)
     with _SPEC_LOCK:
         hit = _SPEC_CACHE.get(str(path))
     if hit is not None and hit[0] == stamp:
         return hit[1]
-    parsed = _parse_document(load_yaml(path), path)
+    try:
+        document = load_yaml(path)
+    except YAMLLoadError as exc:
+        raise FixtureError(str(exc)) from None
+    parsed = _parse_document(document, path)
     with _SPEC_LOCK:
         _SPEC_CACHE[str(path)] = (stamp, parsed)
     return parsed
@@ -683,7 +744,7 @@ def spec(logical: str) -> DatasetSpec:
     definitions = _load_specs()
     if not isinstance(logical, str) or logical not in definitions:
         raise FixtureError(
-            f"{logical!r} is not a logical dataset of tests/fixtures/datasets.yaml; "
+            f"{_brief(logical)} is not a logical dataset of tests/fixtures/datasets.yaml; "
             f"known: {', '.join(definitions)}",
             logical if isinstance(logical, str) else None,
         )
@@ -1015,7 +1076,7 @@ def _encode_record(definition: DatasetSpec, values: Any, base: bytes | None, whe
     overlays: list[tuple[DatasetField, Any]] = []
     for key, value in values.items():
         if not isinstance(key, str):
-            raise FixtureError(f"{where}: field key {key!r} must be text", definition.name)
+            raise FixtureError(f"{where}: field key {_brief(key)} must be text", definition.name)
         own = own_fields.get(key)
         if own is not None and (
             _SUBSCRIPT_RE.sub("", key) not in layout_keys
@@ -1218,7 +1279,8 @@ def build(
     for logical in sorted(datasets, key=str):
         if not isinstance(logical, str):
             raise FixtureError(
-                f"{scenario_id}: preconditions.datasets key {logical!r} must be a logical name"
+                f"{scenario_id}: preconditions.datasets key {_brief(logical)} must be a "
+                f"logical name"
             )
         built[logical] = _precondition_dataset(logical, datasets[logical], root, scenario_id)
     for logical, data in param_datasets(scenario).items():

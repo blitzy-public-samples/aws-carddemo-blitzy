@@ -77,13 +77,16 @@ demo users ``ADMIN001`` and ``USER0001`` with ``PASSWORD``; ``NOSUCHID`` is the
 invented id of ``SEC-COSGN00C-negative-04``.
 
 Loading never raises for a schema problem, so collection cannot crash on a bad
-scenario; only unparsable YAML raises ``ScenarioError``. Only regular files
-are read as scenarios: a symbolic link (the file, its level folder or the
-scenarios folder) is never followed, ``load_file`` reports such a path in
-``load_problems`` unread, and ``check_manifest`` reports it. ``get`` looks up
-only ids of the closed manifest. Parsed scenarios are cached per file and
-re-read when the file changes. Callers share the cached objects and must not
-modify their mappings.
+scenario. A file whose YAML structure ``harness.load_yaml`` refuses (a key
+given twice, a recursive alias, nesting or alias expansion beyond its bounds)
+loads as an empty scenario whose load problem ``validate`` reports; only a
+file that is not UTF-8 text or not valid YAML raises ``ScenarioError``, naming
+the file. Only regular files are read as scenarios: a symbolic link (the file,
+its level folder or the scenarios folder) is never followed, ``load_file``
+reports such a path in ``load_problems`` unread, and ``check_manifest``
+reports it. ``get`` looks up only ids of the closed manifest. Parsed scenarios
+are cached per file and re-read when the file changes. Callers share the
+cached objects and must not modify their mappings.
 """
 
 from __future__ import annotations
@@ -112,8 +115,12 @@ from harness import (  # noqa: E402
     REPO_ROOT,
     SCENARIOS_DIR,
     TESTS_ROOT,
+    YAML_MAX_DEPTH,
     HarnessError,
+    YAMLLoadError,
+    YAMLStructureError,
     cob_current_date,
+    display_path,
     dump_yaml,
     load_yaml,
     sha256_hex,
@@ -433,8 +440,10 @@ class Scenario:
         return hash((self.id, str(self.path)))
 
 
-def _scenario(path: Path, level: str, document: Any) -> Scenario:
-    problems: list[str] = []
+def _scenario(path: Path, level: str, document: Any, problem: str | None = None) -> Scenario:
+    """The scenario of ``document``; ``problem`` is a load problem found
+    before it (the structure ``load_yaml`` refused, with ``document`` empty)."""
+    problems: list[str] = [problem] if problem else []
     if isinstance(document, dict):
         data = document
     else:
@@ -502,22 +511,30 @@ def _refusal(path: Path) -> str | None:
 
 def load_file(path: str | Path, level: str | None = None) -> Scenario:
     """Parse one scenario file; ``level`` defaults to its folder's name.
-    Raises ``ScenarioError`` only when the file is not valid YAML, and
-    ``FileNotFoundError`` when it is absent. Only a regular file whose level
-    folder and scenarios folder are not symbolic links is read: a symbolic
-    link (whatever it points to) at any of the three, or any other kind of
-    file, gives an empty scenario whose ``load_problems`` say why it was not
-    read. Folders above the scenarios folder are not examined."""
+
+    Raises ``ScenarioError``, naming the file, only when the file is not UTF-8
+    text or not valid YAML, and ``FileNotFoundError`` when it is absent. A file
+    whose YAML structure ``load_yaml`` refuses (a key given twice, a recursive
+    alias, nesting or alias expansion beyond its bounds) gives a scenario with
+    empty data whose load problem ``validate`` reports, so collection goes on.
+    Only a regular file whose level folder and scenarios folder are not
+    symbolic links is read: a symbolic link (whatever it points to) at any of
+    the three, or any other kind of file, gives an empty scenario whose
+    ``load_problems`` say why it was not read. Folders above the scenarios
+    folder are not examined."""
     file_path = Path(path)
     level = level or file_path.parent.name
     refusal = _refusal(file_path)
     if refusal is not None:
         return replace(_scenario(file_path, level, {}), load_problems=(refusal,))
+    problem = None
     try:
         document = load_yaml(file_path)
-    except yaml.YAMLError as exc:
-        raise ScenarioError(f"{file_path}: not valid YAML: {exc}") from None
-    return _scenario(file_path, level, document)
+    except YAMLStructureError as exc:
+        document, problem = {}, exc.problem
+    except YAMLLoadError as exc:
+        raise ScenarioError(str(exc)) from None
+    return _scenario(file_path, level, document, problem)
 
 
 _LOCK = threading.Lock()
@@ -639,18 +656,25 @@ def _reference(path: Path, build: Callable[[Path], _T]) -> _T:
     return value
 
 
-def _named_entries(section: Any) -> dict[str, Any]:
+def _named_entries(section: Any, label: str) -> dict[str, Any]:
     """A YAML section as ``{name: entry}``: a mapping as is, a list by each
-    entry's ``name`` (or the entry itself when it is a string)."""
+    entry's ``name`` (or the entry itself when it is a string). A name given
+    twice raises ``HarnessError`` naming ``label`` (the file), rather than
+    letting the last entry silently win; ``fixtures`` refuses it as well."""
+    named: list[tuple[str, Any]] = []
     if isinstance(section, dict):
-        return {str(name): entry for name, entry in section.items()}
-    entries: dict[str, Any] = {}
-    if isinstance(section, list):
+        named = [(str(name), entry) for name, entry in section.items()]
+    elif isinstance(section, list):
         for entry in section:
             if isinstance(entry, str):
-                entries[entry] = {}
+                named.append((entry, {}))
             elif isinstance(entry, dict) and isinstance(entry.get("name"), str):
-                entries[entry["name"]] = entry
+                named.append((entry["name"], entry))
+    entries: dict[str, Any] = {}
+    for name, entry in named:
+        if name in entries:
+            raise HarnessError(f"{label}: {name} is defined twice")
+        entries[name] = entry
     return entries
 
 
@@ -661,7 +685,7 @@ def _section(path: Path, name: str) -> dict[str, Any]:
     if not isinstance(document, dict):
         return {}
     if name in document:
-        return _named_entries(document[name])
+        return _named_entries(document[name], display_path(path))
     return {str(key): value for key, value in document.items() if key != "schema_version"}
 
 
@@ -714,11 +738,12 @@ def _build_resources(path: Path) -> _Resources:
     document = load_yaml(path, missing_ok=True)
     if not isinstance(document, dict):
         return _Resources(frozenset(), frozenset(), frozenset())
+    label = display_path(path)
     tdq = document.get("tdq")
-    queues = _named_entries(tdq if isinstance(tdq, list) else [tdq] if isinstance(tdq, dict) else [])
+    queues = _named_entries(tdq if isinstance(tdq, list) else [tdq] if isinstance(tdq, dict) else [], label)
     return _Resources(
         jobs=frozenset(_section(path, "jobs")),
-        region_files=frozenset(_named_entries(document.get("region_files"))),
+        region_files=frozenset(_named_entries(document.get("region_files"), label)),
         tdq=frozenset(queues),
     )
 
@@ -1031,7 +1056,8 @@ def asserted_keys(s: Scenario) -> list[str]:
 
 def digest(s: Scenario) -> str:
     """The ``scenario_digest`` of result records: sha256 of the canonical YAML
-    of the whole file. A record is current only while this is unchanged."""
+    of the whole file. A record is current only while this is unchanged.
+    Data that refers to itself or nests too deeply raises ``HarnessError``."""
     return sha256_hex(dump_yaml(s.data))
 
 
@@ -1039,15 +1065,23 @@ def digest(s: Scenario) -> str:
 # Schema check: shared helpers
 # --------------------------------------------------------------------------
 
+# The <where> of a problem with the file as a whole, and of reference data
+# (inventory, gaps, fixtures, adapter mapping files) that cannot be read.
+_DOCUMENT = "(document)"
+_REFERENCE_DATA = "(reference data)"
+
 
 class _Problems:
-    def __init__(self, scenario_id: str) -> None:
-        self.scenario_id = scenario_id
+    """The problems of one scenario, each ``<file>: <where>: <problem>``: the
+    scenario file as ``display_path`` shows it (its stem is the id) and the
+    key path, ``(document)`` when none is given."""
+
+    def __init__(self, s: Scenario) -> None:
+        self.file = display_path(s.path)
         self.items: list[str] = []
 
     def add(self, where: str, message: str) -> None:
-        prefix = f"{self.scenario_id}: {where}" if where else self.scenario_id
-        self.items.append(f"{prefix}: {message}")
+        self.items.append(f"{self.file}: {where or _DOCUMENT}: {message}")
 
 
 def _unknown(problems: _Problems, where: str, mapping: dict, allowed: Iterable[str]) -> None:
@@ -1059,7 +1093,51 @@ def _unknown(problems: _Problems, where: str, mapping: dict, allowed: Iterable[s
         )
 
 
+def _unsafe_shape(data: dict) -> tuple[str, str] | None:
+    """``(where, problem)`` for the first mapping or list in ``data`` that
+    contains itself or nests deeper than ``YAML_MAX_DEPTH`` levels, ``None``
+    when there is none.
+
+    ``load_yaml`` refuses both in a file, but a scenario can also be built in
+    memory. The walk uses an explicit stack, with ``active`` holding the
+    containers on the current path, and visits each container once, so it
+    neither recurses nor repeats shared parts. ``_walk`` and ``_texts``
+    recurse, so ``_validate`` runs them only on data this accepted."""
+    height: dict[int, int] = {}  # container -> containers nested in it, itself included
+    active: set[int] = set()
+    stack: list[tuple[Any, str, list | None]] = [(data, "", None)]
+    while stack:
+        value, where, children = stack.pop()
+        key = id(value)
+        if children is not None:
+            active.discard(key)
+            height[key] = 1 + max((height[id(child)] for child in children), default=0)
+            if height[key] > YAML_MAX_DEPTH:
+                return where or _DOCUMENT, f"nests deeper than {YAML_MAX_DEPTH} levels"
+            continue
+        if key in height:
+            continue
+        active.add(key)
+        if len(active) > YAML_MAX_DEPTH:
+            return where or _DOCUMENT, f"nests deeper than {YAML_MAX_DEPTH} levels"
+        if isinstance(value, dict):
+            items = [(f"{where}.{name}" if where else str(name), item) for name, item in value.items()]
+        else:
+            items = [(f"{where}[{index}]", item) for index, item in enumerate(value)]
+        children = [item for _, item in items if isinstance(item, (dict, list))]
+        stack.append((value, where, children))
+        for child_where, item in reversed(items):
+            if not isinstance(item, (dict, list)) or id(item) in height:
+                continue
+            if id(item) in active:
+                return child_where, "refers to a mapping or list that contains it (a recursive alias)"
+            stack.append((item, child_where, None))
+    return None
+
+
 def _walk(value: Any, where: str) -> Iterator[tuple[str, Any]]:
+    """``(path, value)`` for ``value`` and everything under it. Recursive:
+    ``_validate`` runs it only on data ``_unsafe_shape`` accepted."""
     yield where, value
     if isinstance(value, dict):
         for key, item in value.items():
@@ -1071,7 +1149,8 @@ def _walk(value: Any, where: str) -> Iterator[tuple[str, Any]]:
 
 def _texts(value: Any, where: str, skip: Callable[[str], bool]) -> Iterator[tuple[str, str]]:
     """Every string under ``value``, mapping keys included, except below the
-    paths ``skip`` accepts."""
+    paths ``skip`` accepts. Recursive: ``_validate`` runs it only on data
+    ``_unsafe_shape`` accepted."""
     if isinstance(value, str):
         yield where, value
     elif isinstance(value, dict):
@@ -1264,8 +1343,8 @@ def _check_tags_and_gaps(s: Scenario, problems: _Problems) -> None:
         return
     try:
         manifest = load_yaml(manifest_path, missing_ok=True)
-    except yaml.YAMLError as exc:
-        problems.add("baseline", f"{manifest_path.name} is not valid YAML: {exc}")
+    except YAMLLoadError as exc:
+        problems.add("baseline", str(exc))  # the message names the manifest
         return
     if (
         isinstance(manifest, dict)
@@ -2032,23 +2111,34 @@ def _check_neutrality(s: Scenario, problems: _Problems) -> None:
 
 
 def validate(s: Scenario) -> list[str]:
-    """Every schema problem of ``s`` as ``<id>: <where>: <problem>``; empty when
-    the scenario is valid. Reference data that cannot be read is reported as a
-    problem rather than raised."""
-    problems = _Problems(s.id)
+    """Every schema problem of ``s`` as ``<file>: <where>: <problem>``; empty
+    when the scenario is valid. ``<file>`` is the scenario file, relative to
+    the repository root when it lies inside it, and ``<where>`` the key path,
+    ``(document)`` for the file as a whole. Reference data that cannot be read
+    is reported under ``(reference data)`` rather than raised."""
+    problems = _Problems(s)
     try:
         _validate(s, problems)
     except (HarnessError, OSError, yaml.YAMLError) as exc:
-        problems.add("", f"reference data could not be read: {exc}")
+        problems.add(_REFERENCE_DATA, f"reference data could not be read: {exc}")
+    except RecursionError:
+        # _unsafe_shape bounds the scenario's own data first; this keeps the
+        # promise to report rather than raise should anything still recurse.
+        problems.add(_DOCUMENT, "the scenario data nests too deeply to check")
     return problems.items
 
 
 def _validate(s: Scenario, problems: _Problems) -> None:
     for message in s.load_problems:
-        problems.add("", message)
+        problems.add(_DOCUMENT, message)
     data = s.data
+    unsafe = _unsafe_shape(data)
+    if unsafe is not None:
+        # The checks below recurse into the data, so none of them runs.
+        problems.add(*unsafe)
+        return
     _check_identity(s, problems)
-    _unknown(problems, "", data, _TOP_KEYS)
+    _unknown(problems, _DOCUMENT, data, _TOP_KEYS)
     for key in _REQUIRED_TOP_KEYS:
         if key not in data:
             problems.add(key, "is required")

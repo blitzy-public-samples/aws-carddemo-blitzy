@@ -58,8 +58,6 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator, Sequence
 
-import yaml
-
 _TESTS_ROOT = str(Path(__file__).resolve().parents[1])
 if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
@@ -69,6 +67,7 @@ from harness import (  # noqa: E402
     PROTECTED_BASE,
     REPO_ROOT,
     HarnessError,
+    YAMLLoadError,
     dump_yaml,
     git_head,
     load_yaml,
@@ -3292,14 +3291,6 @@ def _locked(target: Path) -> Iterator[None]:
 _ABSENT = object()
 
 
-def _yaml_problem(exc: yaml.YAMLError) -> str:
-    """``exc`` on one line: its problem and the line where it was found."""
-    problem, mark = getattr(exc, "problem", None), getattr(exc, "problem_mark", None)
-    if problem and mark is not None:
-        return f"{' '.join(problem.split())} (line {mark.line + 1})"
-    return " ".join(str(exc).split())
-
-
 def _read_yaml(path: str | Path) -> Any:
     """The YAML document at ``path``, safely loaded (``None`` for a file with
     no document), or ``_ABSENT`` when no file exists there. An unreadable,
@@ -3308,21 +3299,12 @@ def _read_yaml(path: str | Path) -> Any:
         return load_yaml(path)
     except FileNotFoundError:
         return _ABSENT
-    except UnicodeDecodeError as exc:
-        raise InventoryError(f"{path} is not UTF-8 text: byte {exc.start} cannot be decoded") from exc
     except OSError as exc:
         raise InventoryError(f"cannot read {path}: {_os_reason(exc)}") from exc
-    except yaml.YAMLError as exc:
-        raise InventoryError(f"{path} is not valid YAML: {_yaml_problem(exc)}") from exc
-    # PyYAML's safe constructors raise these, not YAMLError, on bad input: an
-    # impossible date or time, an integer over Python's digit limit, a !!int,
-    # !!float, !!bool or !!timestamp value that is not one, or nesting too
-    # deep for the pure-Python loader.
-    except (ValueError, KeyError, AttributeError, RecursionError) as exc:
-        detail = " ".join(str(exc).split())
-        raise InventoryError(
-            f"{path} is not valid YAML: a value cannot be constructed ({type(exc).__name__}: {detail})"
-        ) from exc
+    except YAMLLoadError as exc:
+        # Not UTF-8, not valid YAML, a value that cannot be built, or a refused
+        # structure: the message already names the file, and the line where known.
+        raise InventoryError(str(exc)) from exc
 
 
 def load(path: str | Path = INVENTORY_FILE, missing_ok: bool = False) -> dict[str, Any]:

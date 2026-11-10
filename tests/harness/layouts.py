@@ -71,8 +71,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
-import yaml
-
 _TESTS_ROOT = str(Path(__file__).resolve().parents[1])
 if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
@@ -81,6 +79,7 @@ from harness import (  # noqa: E402
     INVENTORY_DIR,
     REPO_ROOT,
     HarnessError,
+    YAMLLoadError,
     dump_yaml,
     load_yaml,
     sha256_file,
@@ -1769,8 +1768,12 @@ def generate(repo_root: str | Path = REPO_ROOT) -> dict[str, Any]:
 @functools.lru_cache(maxsize=None)
 def load(path: str | Path = LAYOUTS_FILE) -> dict[str, Any]:
     """The committed layout file, parsed once per process. Callers share the
-    returned mapping and must not modify it."""
-    data = load_yaml(path, missing_ok=True)
+    returned mapping and must not modify it. A file that cannot be loaded
+    raises ``HarnessError`` naming it."""
+    try:
+        data = load_yaml(path, missing_ok=True)
+    except YAMLLoadError as exc:
+        raise HarnessError(f"{exc}; run python {GENERATED_BY} --write") from None
     if data is None:
         raise HarnessError(f"{path} is missing or empty: run python {GENERATED_BY} --write")
     if not isinstance(data, dict) or data.get("version") != SCHEMA_VERSION:
@@ -1914,11 +1917,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{shown} is missing: run python {GENERATED_BY} --write", file=sys.stderr)
         return 1
     except UnicodeDecodeError:
-        print(
-            f"layouts: {shown} is not UTF-8 text: run python {GENERATED_BY} --write",
-            file=sys.stderr,
-        )
-        return 1
+        committed_text = None  # load_yaml names the first byte that is not UTF-8
     except OSError as exc:
         print(f"layouts: cannot read {shown}: {exc.strerror or exc}", file=sys.stderr)
         return 1
@@ -1927,27 +1926,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         committed = load_yaml(LAYOUTS_FILE)
-    except yaml.YAMLError as exc:
-        problem = " ".join(str(exc).split())
-        print(
-            f"{shown} is not valid YAML ({problem}): run python {GENERATED_BY} --write",
-            file=sys.stderr,
-        )
+    except YAMLLoadError as exc:
+        # The message already names the file (and the line where known); a
+        # value the safe constructors refuse arrives here too.
+        print(f"{exc}; run python {GENERATED_BY} --write", file=sys.stderr)
         return 1
-    except (OSError, UnicodeDecodeError) as exc:
-        print(f"layouts: cannot read {shown}: {exc}", file=sys.stderr)
-        return 1
-    # PyYAML's safe constructors raise these, not YAMLError, on bad input: an
-    # impossible date or time, an integer over Python's digit limit, a !!int,
-    # !!float, !!bool or !!timestamp value that is not one, or nesting too
-    # deep for the pure-Python loader. UnicodeDecodeError, a ValueError, is
-    # taken by the branch above.
-    except (ValueError, KeyError, AttributeError, RecursionError) as exc:
-        problem = f"a value cannot be constructed, {type(exc).__name__}: {' '.join(str(exc).split())}"
-        print(
-            f"{shown} is not valid YAML ({problem}): run python {GENERATED_BY} --write",
-            file=sys.stderr,
-        )
+    except OSError as exc:
+        print(f"layouts: cannot read {shown}: {exc.strerror or exc}", file=sys.stderr)
         return 1
     where = _first_difference(committed, generated) or "(formatting only)"
     print(

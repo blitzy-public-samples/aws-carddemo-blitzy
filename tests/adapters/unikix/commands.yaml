@@ -16,6 +16,17 @@
 # - Placeholders in {braces} (member, map, job, file, queue, dsn, clock, job_number) are filled by the caller
 #   with shell-quoted values; $VAR is expanded by bash. Commands therefore hold no other braces: write $VAR,
 #   never ${VAR}.
+# - Shell quoting keeps a value one word of data only where its placeholder stands unquoted, as a whole word
+#   or part of one (kixfile close {file}, kixclt {member}.cl2), in the command itself or inside $( ) or ( ).
+#   A placeholder therefore never names the command and never stands inside '...', "...", $'...', $"...",
+#   backquotes, ${...}, $(( )), (( )), $[ ], [[ ]], a brace expansion, [...] or a # comment; never after a
+#   here-document operator << or <<- (its delimiter, its body or anything later; a <<< here-string is fine);
+#   never right after $, $VAR, \ or a word-initial ~; never as digits right before < or >; and it carries no
+#   conversion or format spec ({file!r}, {file:>8}). env.py refuses all of these when it loads this file and
+#   again before each run. It cannot follow a case statement inside $( ) or ( ), or a single quote inside
+#   ${...} or arithmetic, so it refuses every placeholder after one.
+# - The value is data only to the command it reaches: never pass a placeholder to one that re-parses its
+#   arguments as shell code or arithmetic (eval, sh -c, let, declare, local, read, printf -v).
 # - `probe` exits 0 when the command is available. env.py runs every probe once per session.
 # - `command: null` means no public source names a command. Its probe is "false", so every scenario that
 #   depends on the entry is blocked under the entry's `gap`.

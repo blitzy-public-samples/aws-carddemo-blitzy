@@ -113,7 +113,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from harness import HarnessError, cob_current_date, dump_yaml, load_yaml, sha256_file, sha256_hex
+from harness import (
+    HarnessError,
+    YAMLLoadError,
+    cob_current_date,
+    dump_yaml,
+    load_yaml,
+    sha256_file,
+    sha256_hex,
+)
 
 __all__ = [
     "COMMON_FLAGS",
@@ -335,7 +343,9 @@ def _load_config(repo_root: Path, relative: str) -> Any:
         data = load_yaml(path)
     except FileNotFoundError:
         raise BuildError(f"{relative} is missing") from None
-    except Exception as exc:  # PyYAML reports parse errors with several classes
+    except YAMLLoadError as exc:  # its message names the file, and the line where known
+        raise BuildError(str(exc)) from None
+    except Exception as exc:  # unreadable: permissions, a directory, an I/O error
         raise BuildError(f"cannot read {relative}: {exc}") from exc
     if not isinstance(data, Mapping):
         raise BuildError(f"{relative} does not hold a mapping")
