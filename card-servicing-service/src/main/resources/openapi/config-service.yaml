@@ -1,0 +1,189 @@
+openapi: 3.1.0
+info:
+  title: Config Service stub contract
+  version: 1.0.0
+  description: >-
+    Stub-phase contract for the gRPC service cardservicing.config.v1.ConfigService, described here as HTTP/JSON.
+    The stub answers from its configured key map; replacing it with the real Config service changes only the
+    target address and the credential source. The caller's bearer token is forwarded in the Authorization header
+    and the service credential travels in the x-api-key header; the stub ignores the key and does not
+    re-authorize. The Card Servicing service calls this operation only as a background refresh of its in-memory
+    configuration snapshot, launched after account access is allowed, and no request waits for it. Until the first
+    successful refresh, the service uses its built-in defaults - default_page_size 20, max_page_size 100,
+    upstream_timeout_ms 300 and upstream_max_retries 2. The page size originates in Use Cases · COTRN00C.
+  contact:
+    name: Card Servicing workstream
+  license:
+    name: Apache 2.0
+    identifier: Apache-2.0
+servers:
+  - url: http://localhost:8080
+    description: Local stub-phase address
+tags:
+  - name: Config
+    description: Runtime configuration values that the Card Servicing service reads into its configuration snapshot.
+security:
+  - bearerAuth: []
+    apiKey: []
+paths:
+  /v1/config:
+    get:
+      operationId: GetConfig
+      tags: [Config]
+      summary: Read configuration values
+      description: >-
+        HTTP/JSON form of cardservicing.config.v1.ConfigService/GetConfig. Returns the values of the requested keys
+        that are known, keyed by name; an unknown key is absent from values rather than an error. Every value is a
+        decimal-integer string. Baseline keys are default_page_size (default page size, 20), max_page_size (largest
+        accepted page size, 100), upstream_timeout_ms (per-attempt upstream timeout in milliseconds, 300) and
+        upstream_max_retries (retry cap, 2). The request deadline is never a Config key. A request that lists no
+        keys returns 400.
+      parameters:
+        - name: keys
+          in: query
+          required: true
+          description: >-
+            Comma-separated configuration key names, as in ?keys=default_page_size,max_page_size. At least one key
+            is required.
+          style: form
+          explode: false
+          schema:
+            type: array
+            minItems: 1
+            items:
+              type: string
+              minLength: 1
+          examples:
+            baselineKeys:
+              summary: The four baseline configuration keys
+              value: [default_page_size, max_page_size, upstream_timeout_ms, upstream_max_retries]
+      responses:
+        '200':
+          description: Values of the known requested keys.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetConfigResponse'
+              examples:
+                baseline:
+                  summary: Baseline values for the four baseline keys
+                  value:
+                    values:
+                      default_page_size: '20'
+                      max_page_size: '100'
+                      upstream_timeout_ms: '300'
+                      upstream_max_retries: '2'
+        '400':
+          description: No configuration key was requested.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                missingKeys:
+                  summary: The keys parameter lists no key
+                  value:
+                    code: INVALID_ARGUMENT
+                    message: At least one configuration key is required
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details:
+                      - field: keys
+                        description: must list at least one key
+        '401':
+          description: The forwarded bearer token is missing, invalid or expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unauthenticated:
+                  summary: The forwarded bearer token is not valid
+                  value:
+                    code: UNAUTHENTICATED
+                    message: Token missing, invalid or expired
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '503':
+          description: The Config service is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unavailable:
+                  summary: The Config service cannot answer
+                  value:
+                    code: UNAVAILABLE
+                    message: Upstream unavailable
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '504':
+          description: The request deadline was reached before the Config service answered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                deadlineExceeded:
+                  summary: The request deadline ran out
+                  value:
+                    code: DEADLINE_EXCEEDED
+                    message: Request deadline exceeded
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: The caller's bearer token, forwarded by the Card Servicing service in the Authorization header.
+    apiKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: The Card Servicing service credential; the stub ignores it and does not re-authorize.
+  schemas:
+    GetConfigResponse:
+      type: object
+      description: Response of GetConfig, holding the known requested configuration values keyed by name.
+      required: [values]
+      additionalProperties: false
+      properties:
+        values:
+          type: object
+          description: >-
+            Values of the known requested keys only, each a decimal-integer string keyed by its snake_case
+            configuration key name; an unknown requested key is absent.
+          additionalProperties:
+            type: string
+            pattern: '^[0-9]+$'
+    ErrorObject:
+      type: object
+      description: Standard error object returned with every non-2xx status; gRPC carries the same message in google.rpc.Status details.
+      required: [code, message, traceId, details]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: Canonical status name - INVALID_ARGUMENT (400), UNAUTHENTICATED (401), PERMISSION_DENIED (403), NOT_FOUND (404), UNAVAILABLE (503) or DEADLINE_EXCEEDED (504).
+        message:
+          type: string
+          description: Human-readable explanation of the error.
+        traceId:
+          type: string
+          description: Identifier of the request that produced the error, used to correlate log lines.
+        details:
+          type: array
+          description: Field-level violations; empty when the error concerns no single field.
+          items:
+            type: object
+            description: One field-level violation.
+            required: [field, description]
+            additionalProperties: false
+            properties:
+              field:
+                type: string
+                description: Name of the request field or parameter that failed, for example accountId or pageToken.
+              description:
+                type: string
+                description: The rule the field must satisfy.
