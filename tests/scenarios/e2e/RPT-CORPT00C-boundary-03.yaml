@@ -1,0 +1,161 @@
+# Custom report, start month at its lower edge 00. The custom start-month
+# boundaries are 12, 13 and 00 (RPT-CORPT00C-boundary-01 to -03): 12 passes,
+# 13 is refused by the month check with 'Start Date - Not a valid Month...',
+# and 00 passes that check and is refused only by the CSUTLDTC date check.
+#
+# Steps 1-2 reach the empty CORPT00 screen as RPT-CORPT00C-negative-04 does:
+# USER0001 signs on through CC00, COSGN00C routes the type-U user to COMEN01C,
+# and option 9 'Transaction Reports' [app/cpy/COMEN02Y.cpy:74-78] transfers
+# control to CORPT00C with CDEMO-PGM-CONTEXT zero, so CORPT00C takes its
+# first-entry path, sets CDEMO-PGM-REENTER, sends CORPT0AO at LOW-VALUES with a
+# blank ERRMSG and returns with TRANSID(CR00) [app/cbl/CORPT00C.cbl:172-181,199-202].
+#
+# Step 3 selects Custom, enters the range 00/01/2022 to 12/31/2022 and presses
+# ENTER under CR00. CORPT00C receives the map and performs PROCESS-ENTER-KEY
+# [app/cbl/CORPT00C.cbl:183-186,596-604]. MONTHLY and YEARLY keep their blank
+# INITIAL and CUSTOM holds 'X', so the custom branch runs:
+# - The empty checks pass: every date part is supplied [app/cbl/CORPT00C.cbl:258-303].
+# - NUMVAL-C stores each part back through WS-NUM-99 (PIC 99) or WS-NUM-9999
+#   (PIC 9999), so '00', '01', '2022', '12', '31' and '2022' are unchanged
+#   [app/cbl/CORPT00C.cbl:74-75,305-327].
+# - The month check, the predicate of this boundary: '00' is NUMERIC and not
+#   > '12', so 'Start Date - Not a valid Month...' is not sent
+#   [app/cbl/CORPT00C.cbl:329-336]. The day, year and end-date checks pass too
+#   [app/cbl/CORPT00C.cbl:338-379].
+# - WS-START-DATE becomes '2022-00-01' and is passed to CSUTLDTC with the mask
+#   'YYYY-MM-DD' [app/cbl/CORPT00C.cbl:60-72,381-394]. CEEDAYS refuses month 00;
+#   the stub returns FC-INVALID-MONTH, message 2517 'Invalid month', severity 3
+#   [app/cbl/CSUTLDTC.cbl:67,116-149]. The severity is not '0000' and the
+#   message number is not '2513' (unsupported range, the only refusal CORPT00C
+#   tolerates), so CORPT00C moves 'Start Date - Not a valid date...' to
+#   WS-MESSAGE, sets WS-ERR-FLG, puts the cursor on SDTMM and performs
+#   SEND-TRNRPT-SCREEN [app/cbl/CORPT00C.cbl:396-406]. Any other refusal token
+#   CEEDAYS might give for month 00 (such as 2508 'Datevalue error') yields the
+#   same message; only severity 0 or 2513 would change the outcome.
+# - SEND-TRNRPT-SCREEN ends with GO TO RETURN-TO-CICS, so the task ends there
+#   [app/cbl/CORPT00C.cbl:556-591]: the end-date CSUTLDTC call and
+#   SUBMIT-JOB-TO-INTRDR never run, no confirmation is asked and no JCL record is
+#   written to the JOBS queue [app/cbl/CORPT00C.cbl:408-436,462-535].
+#
+# That nothing is submitted shows in ERRMSG, which holds the date message
+# instead of 'Please confirm to print the Custom report...'. @TDQ:JOBS is not
+# asserted: its capture (GAP-MIS-017) is scoped to RPT-CORPT00C-normal-01..03,
+# and asserting it here would block this date check on a capture it never
+# reaches.
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - CORPT0AO redefines CORPT0AI [app/cpy-bms/CORPT00.CPY:121], so the received
+#   values are sent back as entered. MONTHLY and YEARLY show their blank INITIAL
+#   ' ' [app/bms/CORPT00.bms:80-107]; CONFIRM, which has no INITIAL and is
+#   never typed into, shows as a space.
+# - ERRMSG is the 78-byte ERRMSGO: the 32-character message followed by spaces
+#   from the 80-byte WS-MESSAGE; comparisons never trim.
+# - The header is POPULATE-HEADER-INFO's [app/cbl/CORPT00C.cbl:609-628]: the
+#   COTTL01Y titles, CR00, CORPT00C, CURDATE as mm/dd/yy of the run date and
+#   CURTIME as hh:mm:ss, both from the region clock, hence the matchers.
+# - Which dates CEEDAYS refuses is known only through the stub (GAP-INF-001),
+#   and whether UniKix supplies CEEDAYS is open (GAP-MIS-010).
+id: RPT-CORPT00C-boundary-03
+level: e2e
+type: boundary
+description: >-
+  USER0001 signs on, chooses option 9 'Transaction Reports' on the main menu
+  and submits a Custom report on CORPT00 from 00/01/2022 to 12/31/2022. Start
+  month 00 is numeric and not above 12, so the month check lets it through;
+  the CSUTLDTC (CEEDAYS) check with mask YYYY-MM-DD refuses 2022-00-01, and
+  CORPT00C sends CORPT00 again under CR00 with 'Start Date - Not a valid
+  date...' in ERRMSG and the entered values kept. It asks for no confirmation
+  and submits no report job.
+# Primary item first, then the message the boundary ends on, the program, the
+# maps asserted, the transaction step 3 runs under, the online-only copybooks
+# CORPT00C copies, and the CSUTLDTC date acceptance the start date reaches.
+# Sign-on and the menu (CC00, CM00, COSGN00, USRSEC, option 9) are verified by
+# the SEC and MNU scenarios, and CVTRA05Y at the lowest level that executes it.
+inventory_ids:
+- INV-RPT-017  # CORPT00C message 'Start Date - Not a valid Month...' (rule): month 00 is its lower edge, let through
+- INV-RPT-023  # CORPT00C message 'Start Date - Not a valid date...' (rule): the outcome asserted
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, where option 9 is entered
+- INV-RPT-002  # CORPT00 map, the empty screen and the refused request
+- INV-CFG-019  # CR00 transaction, under which the request is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes step 3 a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+- INV-UTL-003  # CSUTLDTC date acceptance for masks YYYY-MM-DD and YYYYMMDD: 2022-00-01 refused
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-INF-001  # which dates CEEDAYS accepts is known only through the stub
+- GAP-MIS-010  # whether UniKix supplies CEEDAYS
+# The UniKix copy of CSUTLDTC trims the Vstring lengths it passes to CEEDAYS;
+# it lists INV-RPT-023 and INV-UTL-003. The date '2022-00-01' and the mask
+# 'YYYY-MM-DD' fill their 10 bytes with no trailing space, so the trimming
+# changes nothing on this path, but a UniKix run of it still runs the copy.
+- GAP-DOC-021
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; CORPT00C reads no file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # The custom range with the start month at 00; CONFIRM is left as sent.
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      CUSTOM: 'X'
+      SDTMM: '00'
+      SDTDD: '01'
+      SDTYYYY: '2022'
+      EDTMM: '12'
+      EDTDD: '31'
+      EDTYYYY: '2022'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: 'X'
+    SDTMM: '00'
+    SDTDD: '01'
+    SDTYYYY: '2022'
+    EDTMM: '12'
+    EDTDD: '31'
+    EDTYYYY: '2022'
+    CONFIRM: ' '
+    ERRMSG: 'Start Date - Not a valid date...                                              '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # CORPT00 screen, the date message after ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Start Date - Not a valid date...                                              '
