@@ -1,0 +1,27 @@
+screens:
+- '@map': COMEN01
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: ' '
+  EDTDD: '  '
+  EDTMM: '  '
+  EDTYYYY: '    '
+  ERRMSG: 'Yearly report submitted for printing ...                                      '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '  '
+  SDTMM: '  '
+  SDTYYYY: '    '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

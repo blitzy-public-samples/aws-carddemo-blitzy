@@ -1,0 +1,93 @@
+# Derived baseline of scenario TRN-COTRN02C-negative-16 (capture_platform:
+# derived), authored from the app/ source and never observed: no TPE region
+# runs in CI. Only `report.py --import-unikix` promotes it; it is never edited
+# by hand to match a run.
+# Step 1: USER0001 is type U, so COSGN00C transfers to COMEN01C, whose first
+# entry sends the main menu headed CM00/COMEN01C with a blank ERRMSG
+# [app/cbl/COSGN00C.cbl:230-237].
+# Step 2: option 8 is COTRN02C [app/cpy/COMEN02Y.cpy:67-72]; on first entry it
+# moves LOW-VALUES to COTRN2AO and sends COTRN02 with the COTTL01Y titles, its
+# CT02 header and a blank message [app/cbl/COTRN02C.cbl:107-130,516-571].
+# Step 3: ACTIDIN is blank, so the card branch runs: the card is numeric,
+# NUMVAL keeps its 16 digits in CARDNIN, and READ CCXREF finds record 1 of
+# app/data/ASCII/cardxref.txt, whose account 00000000050 goes to ACTIDINI
+# [app/cbl/COTRN02C.cbl:210-223,609-632]. Type CD through Merchant Name are
+# supplied and MCITYI is empty, so the WHEN at line 306 moves 'Merchant City
+# can NOT be empty...' to WS-MESSAGE and performs SEND-TRNADD-SCREEN, which
+# sends COTRN02 with ERASE and ends the task with RETURN TRANSID CT02: the
+# Merchant Zip, numeric, amount, date and merchant-id edits, the CSUTLDTC
+# calls, the CONFIRM evaluation and ADD-TRANSACTION never run
+# [app/cbl/COTRN02C.cbl:235-311,516-534].
+# COTRN2AO redefines the received COTRN2AI [app/cpy-bms/COTRN02.CPY:145], so
+# the typed fields come back as BMS padded them with blanks; the erased MCITY
+# and the untouched CONFIRM show blank. Values are full BMS width with
+# trailing spaces kept (ERRMSG is the 80-byte WS-MESSAGE cut to 78), because
+# screens and messages compare exactly. messages is each step's ERRMSG in
+# step order. CURDATE and CURTIME come from the region clock, so they are
+# matchers.
+# file_state: TRANSACT keeps the 300 fixture records built from DALYTRAN; the
+# highest key, the record an add would browse back to, is shown decoded
+# through CVTRA05Y. COTRN02C changes TRANSACT only by WRITE, so the count and
+# this record pin the unchanged file.
+file_state:
+  TRANSACT:
+    contains:
+    - TRAN-AMT: '603.22'
+      TRAN-CARD-NUM: '3260763612337560'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+      TRAN-ID: 0000000996722787
+      TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+      TRAN-MERCHANT-ID: '800000000'
+      TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+      TRAN-MERCHANT-ZIP: 53200-7529
+      TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+      TRAN-PROC-TS: '                          '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    count: 300
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Merchant City can NOT be empty...                                             '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CT02
+- '@map': COTRN02
+  ACTIDIN: '00000000050'
+  CARDNIN: '0500024453765740'
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Merchant City can NOT be empty...                                             '
+  MCITY: '                         '
+  MID: '800000001'
+  MNAME: 'Test Merchant                 '
+  MZIP: '27601     '
+  PGMNAME: COTRN02C
+  TCATCD: '0001'
+  TDESC: 'Test purchase                                               '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-07-01'
+  TPROCDT: '2022-07-01'
+  TRNAMT: '+00000012.34'
+  TRNNAME: CT02
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'

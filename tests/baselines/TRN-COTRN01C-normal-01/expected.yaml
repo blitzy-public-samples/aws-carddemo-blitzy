@@ -1,0 +1,92 @@
+# Derived baseline of scenario TRN-COTRN01C-normal-01 (capture_platform:
+# derived): USER0001 signs on, selects main menu option 7 'Transaction View'
+# and, on the empty COTRN01 view screen, enters transaction id
+# 0000000000683580, whose record COTRN01C reads from TRANSACT and shows.
+# Authored from the source, never captured; open until a UniKix run is
+# imported (GAP-INF-007, GAP-INF-012).
+# One screen per step, each the screen shown after the step's AID, holding the
+# fields the scenario asserts for that step. Values are whole fields at their
+# BMS length with trailing spaces kept [app/bms/COMEN01.bms]
+# [app/bms/COTRN01.bms]; a field the program leaves LOW-VALUES shows its
+# INITIAL ' ' followed by nulls, captured as spaces. CURDATE and CURTIME come
+# from the region clock through CSDAT01Y, so they are run-date (mm/dd/yy) and
+# run-time matchers [app/cbl/COTRN01C.cbl:243-262].
+screens:
+# Step 1: COSGN00C XCTLs a type-U user to COMEN01C with program context 0,
+# and COMEN01C sends COMEN01 on first entry: its CM00 and COMEN01C header,
+# option 7 as '07. ' and the COMEN02Y name in the 40-byte field, and the blank
+# WS-MESSAGE in ERRMSG [app/cbl/COSGN00C.cbl:221-240]
+# [app/cbl/COMEN01C.cbl:77-90,182-277] [app/cpy/COMEN02Y.cpy:61-65]. The
+# values are those MNU-COMEN01C-alternate-07 pins for the same screen.
+- '@map': 'COMEN01'
+  ERRMSG: '                                                                              '
+  OPTN007: '07. Transaction View                    '
+  PGMNAME: 'COMEN01C'
+  TRNNAME: 'CM00'
+# Step 2: COMEN01C XCTLs to COTRN01C with context 0 and its COCOM01Y COMMAREA
+# [app/cbl/COMEN01C.cbl:146-155]. The group MOVE into the longer
+# CARDDEMO-COMMAREA space-fills CDEMO-CT01-TRN-SELECTED, so nothing is
+# fetched: COTRN1AO stays LOW-VALUES and COTRN01C sends COTRN01 with ERASE,
+# its CT01 and COTRN01C header and a blank ERRMSG
+# [app/cbl/COTRN01C.cbl:52-61,88-109,213-262].
+- '@map': 'COTRN01'
+  CARDNUM: '                '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: 'run-date'
+  CURTIME:
+    match: 'run-time'
+  ERRMSG: '                                                                              '
+  MCITY: '                         '
+  MID: '         '
+  MNAME: '                              '
+  MZIP: '          '
+  PGMNAME: 'COTRN01C'
+  TCATCD: '    '
+  TDESC: '                                                            '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '          '
+  TPROCDT: '          '
+  TRNAMT: '            '
+  TRNID: '                '
+  TRNIDIN: '                '
+  TRNNAME: 'CT01'
+  TRNSRC: '          '
+  TTYPCD: '  '
+# Step 3: ENTER under CT01 with CDEMO-PGM-REENTER set takes PROCESS-ENTER-KEY.
+# The id is not blank, so TRANSACT is read with UPDATE by TRAN-ID, the READ is
+# NORMAL, and the record of app/data/ASCII/dailytran.txt line 1 is moved to the
+# map, then COTRN01 is sent with WS-MESSAGE still blank
+# [app/cbl/COTRN01C.cbl:144-192,267-296]. TRNIDIN keeps the id as received,
+# since COTRN1AO redefines COTRN1AI. TRAN-DESC, TRAN-MERCHANT-NAME and
+# TRAN-MERCHANT-CITY are truncated to the 60-, 30- and 25-byte fields;
+# TRAN-AMT 0000005047G (+504.77) is edited through WS-TRAN-AMT
+# PIC +99999999.99 [app/cbl/COTRN01C.cbl:49]; TRAN-ORIG-TS keeps its date part
+# in the 10-byte TORIGDT, and TRAN-PROC-TS, blank in the daily file, leaves
+# TPROCDT blank [app/cpy/CVTRA05Y.cpy:1-17].
+- '@map': 'COTRN01'
+  CARDNUM: '4859452612877065'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: 'run-date'
+  CURTIME:
+    match: 'run-time'
+  ERRMSG: '                                                                              '
+  MCITY: 'North Enoshaven          '
+  MID: '800000000'
+  MNAME: 'Abshire-Lowe                  '
+  MZIP: '72112     '
+  PGMNAME: 'COTRN01C'
+  TCATCD: '0001'
+  TDESC: 'Purchase at Abshire-Lowe                                    '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-06-10'
+  TPROCDT: '          '
+  TRNAMT: '+00000504.77'
+  TRNID: '0000000000683580'
+  TRNIDIN: '0000000000683580'
+  TRNNAME: 'CT01'
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'

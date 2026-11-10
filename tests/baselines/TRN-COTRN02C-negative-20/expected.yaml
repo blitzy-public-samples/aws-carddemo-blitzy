@@ -1,0 +1,76 @@
+# Derived baseline (capture_platform: derived) of scenario
+# TRN-COTRN02C-negative-20, authored from the source because no TPE region runs
+# in CI; only `report.py --import-unikix` replaces it, from imported UniKix
+# evidence, and it is never edited by hand to match a run.
+#
+# USER0001 signs on and takes main-menu option 8 (Transaction Add) to COTRN02C
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:67-72]. On first entry COTRN02C sends COTRN02 headed
+# CT02/COTRN02C with a blank ERRMSG [app/cbl/COTRN02C.cbl:115-130,516-571].
+# Step 3 enters the valid add set for card 0500024453765740 with Amount 12.34:
+# - the card branch keeps the card through NUMVAL, reads CCXREF by card
+#   (NORMAL) and moves XREF-ACCT-ID 00000000050 to ACTIDIN
+#   [app/cbl/COTRN02C.cbl:210-223,609-637] [app/data/ASCII/cardxref.txt:1];
+# - every field is supplied and Type CD 01 and Category CD 0001 are numeric
+#   [app/cbl/COTRN02C.cbl:235-337];
+# - BMS pads the received 12.34 to the 12-byte TRNAMT, so position 1 is '1',
+#   neither '-' nor '+': the first WHEN of the amount EVALUATE holds, moves
+#   'Amount should be in format -99999999.99' to WS-MESSAGE and performs
+#   SEND-TRNADD-SCREEN, which sends COTRN02 with ERASE and RETURNs TRANSID CT02
+#   [app/cbl/COTRN02C.cbl:339-350,516-534]. The date checks, the CONFIRM
+#   evaluation and ADD-TRANSACTION never run, so TRANSACT is neither browsed
+#   nor written and keeps its 300 fixture records.
+# COTRN2AO redefines COTRN2AI [app/cpy-bms/COTRN02.CPY:145], so the entered
+# fields come back as received, the refused amount unchanged; CONFIRM was left
+# empty.
+# Open under GAP-INF-007 (derived TRN end-to-end baselines) and GAP-INF-012
+# (online-only copybooks).
+#
+# One screen per step, each the screen shown after the step's AID; messages
+# holds each step's ERRMSG. Text is the whole BMS field of app/bms/COTRN02.bms
+# with trailing spaces kept; ERRMSG is the 80-byte WS-MESSAGE in the 78-byte
+# ERRMSGO. CURDATE and CURTIME come from the region clock, which UniKix cannot
+# fix (GAP-MIS-015), hence the matchers. TRANSACT asserts the record count the
+# scenario asserts, as derived baselines do until an observed run supplies
+# every record.
+file_state:
+  TRANSACT:
+    count: 300
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Amount should be in format -99999999.99                                       '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TRNNAME: CT02
+- '@map': COTRN02
+  ACTIDIN: '00000000050'
+  CARDNIN: '0500024453765740'
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Amount should be in format -99999999.99                                       '
+  MCITY: 'Testville                '
+  MID: '800000001'
+  MNAME: 'Test Merchant                 '
+  MZIP: '27601     '
+  PGMNAME: COTRN02C
+  TCATCD: '0001'
+  TDESC: 'Test purchase                                               '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-07-01'
+  TPROCDT: '2022-07-01'
+  TRNAMT: '12.34       '
+  TRNNAME: CT02
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'
