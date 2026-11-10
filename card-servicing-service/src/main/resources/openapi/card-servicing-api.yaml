@@ -266,12 +266,17 @@ paths:
           in: query
           required: false
           description: >-
-            Optional filter on the transaction type code, two characters (Data
-            Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)); omitted returns every
-            type. An unknown value returns 400 while reference data is usable.
+            Optional filter on the transaction type code, exactly two
+            characters of any kind, because PIC X places no restriction on its
+            characters (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02));
+            omitted returns every type. Reserved characters, the space, control
+            characters and non-ASCII characters are percent-encoded in the URL
+            (RFC 3986, UTF-8 for non-ASCII), and the pattern applies to the
+            decoded value. An unknown value returns 400 while reference data
+            is usable.
           schema:
             type: string
-            pattern: '^[A-Za-z0-9]{2}$'
+            pattern: '^[\s\S]{2}$'
           examples:
             purchase:
               value: '01'
@@ -444,12 +449,17 @@ paths:
           in: query
           required: false
           description: >-
-            Optional filter on the transaction type code, two characters (Data
-            Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)); omitted returns every
-            type. A well-formed but unknown value returns empty transactions.
+            Optional filter on the transaction type code, exactly two
+            characters of any kind, because PIC X places no restriction on its
+            characters (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)); omitted
+            returns every type. Reserved characters, the space, control
+            characters and non-ASCII characters are percent-encoded in the URL
+            (RFC 3986, UTF-8 for non-ASCII), and the pattern applies to the
+            decoded value. A well-formed but unknown value returns empty
+            transactions.
           schema:
             type: string
-            pattern: '^[A-Za-z0-9]{2}$'
+            pattern: '^[\s\S]{2}$'
           examples:
             purchase:
               value: '01'
@@ -487,11 +497,22 @@ paths:
           required: false
           description: >-
             Opaque keyset cursor copied from the previous page's nextPageToken;
-            omitted requests the first page. The token is bound to accountId and
-            the filters, and a token that does not decode or does not match them
-            returns 400 with a details entry whose field is pageToken.
+            an empty or omitted value requests the first page. The token is
+            bound to accountId and the filters, and a token that does not decode
+            or does not match them returns 400 with a details entry whose field
+            is pageToken. The version-1 payload is at most 124 bytes (a 1-byte
+            version marker, the cursor's processed timestamp of at most 27
+            bytes in its RFC 3339 microsecond form and its 16-character
+            transaction ID of at most 64 bytes in UTF-8, and the 32-byte
+            HMAC-SHA-256 fingerprint), so its unpadded URL-safe encoding is at
+            most 166 characters from A-Z, a-z, 0-9, '-' and '_'. A value longer
+            than 166 characters or holding any other character, padding '='
+            included, returns 400 with a details entry whose field is pageToken
+            at receipt, before any upstream call or cache read.
           schema:
             type: string
+            pattern: '^[A-Za-z0-9_-]*$'
+            maxLength: 166
           examples:
             nextPage:
               value: 'example-opaque-page-token'
@@ -717,11 +738,20 @@ paths:
           in: path
           required: true
           description: >-
-            The transaction ID, 16 characters (Data Layouts · CVTRA05Y · TRAN-ID
-            X(16); Use Cases · COTRN01C reads by transaction ID).
+            The transaction ID, exactly 16 characters of any kind, because
+            PIC X places no restriction on its characters (Data Layouts ·
+            CVTRA05Y · TRAN-ID X(16); Use Cases · COTRN01C reads by
+            transaction ID). Reserved characters, the space, control
+            characters and non-ASCII characters are percent-encoded in the URL
+            (RFC 3986, UTF-8 for non-ASCII), and the pattern applies to the
+            decoded value. A value of 16 spaces or of 16 NUL characters
+            (U+0000, the screen's LOW-VALUES) is empty and returns 400
+            INVALID_ARGUMENT with a details entry whose field is transactionId,
+            because Use Cases · COTRN01C rejects a Tran ID of SPACES or
+            LOW-VALUES as empty.
           schema:
             type: string
-            pattern: '^[A-Za-z0-9]{16}$'
+            pattern: '^[\s\S]{16}$'
           examples:
             fixtureTransaction:
               value: '0000000776200014'
@@ -884,12 +914,12 @@ components:
           pattern: '^[0-9]{11}$'
         currentBalance:
           type: string
-          description: The current balance as a scale-2 decimal string, for example 1234.56 (Data Layouts · CVACT01Y · ACCT-CURR-BAL S9(10)V99).
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
+          description: The current balance as a scale-2 decimal string, for example 1234.56, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CURR-BAL S9(10)V99).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
         creditLimit:
           type: string
-          description: The credit limit as a scale-2 decimal string (Data Layouts · CVACT01Y · ACCT-CREDIT-LIMIT S9(10)V99).
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
+          description: The credit limit as a scale-2 decimal string, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CREDIT-LIMIT S9(10)V99).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
         balancesByTypeGroup:
           type: array
           description: >-
@@ -935,16 +965,16 @@ components:
           pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
         cashCreditLimit:
           type: string
-          description: The cash credit limit as a scale-2 decimal string (Data Layouts · CVACT01Y · ACCT-CASH-CREDIT-LIMIT S9(10)V99; Use Cases · COACTVWC Cash credit Limit).
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
+          description: The cash credit limit as a scale-2 decimal string, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CASH-CREDIT-LIMIT S9(10)V99; Use Cases · COACTVWC Cash credit Limit).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
         currentCycleCredit:
           type: string
-          description: Credits in the current cycle as a scale-2 decimal string (Data Layouts · CVACT01Y · ACCT-CURR-CYC-CREDIT S9(10)V99; Use Cases · COACTVWC Current Cycle Credit).
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
+          description: Credits in the current cycle as a scale-2 decimal string, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CURR-CYC-CREDIT S9(10)V99; Use Cases · COACTVWC Current Cycle Credit).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
         currentCycleDebit:
           type: string
-          description: Debits in the current cycle as a scale-2 decimal string (Data Layouts · CVACT01Y · ACCT-CURR-CYC-DEBIT S9(10)V99; Use Cases · COACTVWC Current Cycle Debit).
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
+          description: Debits in the current cycle as a scale-2 decimal string, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CURR-CYC-DEBIT S9(10)V99; Use Cases · COACTVWC Current Cycle Debit).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
         groupId:
           type: string
           description: The account group, at most 10 characters (Data Layouts · CVACT01Y · ACCT-GROUP-ID X(10); Use Cases · COACTVWC Account Group); omitted when the source value is blank.
@@ -960,8 +990,8 @@ components:
       properties:
         typeCode:
           type: string
-          description: The transaction type code, two characters (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)).
-          pattern: '^[A-Za-z0-9]{2}$'
+          description: The transaction type code, exactly two characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)).
+          pattern: '^[\s\S]{2}$'
         typeDescription:
           type: [string, "null"]
           description: >-
@@ -973,7 +1003,7 @@ components:
           maxLength: 50
         balance:
           type: string
-          description: The exact decimal sum of this type's category balances as a scale-2 decimal string, for example 1234.56.
+          description: The exact decimal sum of this type's category balances as a scale-2 decimal string, for example 1234.56. Being a sum, its integer part is not limited to the nine digits of one category balance.
           pattern: '^-?[0-9]+\.[0-9]{2}$'
     ListCategoryBalancesResponse:
       type: object
@@ -1017,8 +1047,8 @@ components:
       properties:
         typeCode:
           type: string
-          description: The transaction type code, two characters (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)).
-          pattern: '^[A-Za-z0-9]{2}$'
+          description: The transaction type code, exactly two characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)).
+          pattern: '^[\s\S]{2}$'
         typeDescription:
           type: [string, "null"]
           description: >-
@@ -1043,8 +1073,8 @@ components:
           maxLength: 50
         balance:
           type: string
-          description: The category balance as a scale-2 decimal string, for example 1234.56 (Data Layouts · CVTRA01Y · TRAN-CAT-BAL S9(09)V99).
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
+          description: The category balance as a scale-2 decimal string, for example 1234.56, at most 9 integer digits and 2 decimals (Data Layouts · CVTRA01Y · TRAN-CAT-BAL S9(09)V99).
+          pattern: '^-?[0-9]{1,9}\.[0-9]{2}$'
     ListTransactionsResponse:
       type: object
       description: One page of the account's transactions.
@@ -1069,7 +1099,10 @@ components:
           description: >-
             Opaque cursor for the next page, passed through from the Transaction
             Activity service; present only when a further item exists and
-            omitted on the last page.
+            omitted on the last page. It is at most 166 characters of A-Z, a-z,
+            0-9, '-' and '_', the bound pageToken states.
+          pattern: '^[A-Za-z0-9_-]+$'
+          maxLength: 166
         dataStatus:
           type: string
           description: >-
@@ -1097,12 +1130,12 @@ components:
       properties:
         transactionId:
           type: string
-          description: The transaction ID, 16 characters (Data Layouts · CVTRA05Y · TRAN-ID X(16)).
-          pattern: '^[A-Za-z0-9]{16}$'
+          description: The transaction ID, exactly 16 characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA05Y · TRAN-ID X(16)).
+          pattern: '^[\s\S]{16}$'
         typeCode:
           type: string
-          description: The transaction type code, two characters (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)).
-          pattern: '^[A-Za-z0-9]{2}$'
+          description: The transaction type code, exactly two characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)).
+          pattern: '^[\s\S]{2}$'
         categoryCode:
           type: string
           description: The transaction category code, four digits (Data Layouts · CVTRA05Y · TRAN-CAT-CD 9(04)).
@@ -1113,8 +1146,8 @@ components:
           maxLength: 100
         amount:
           type: string
-          description: The transaction amount as a scale-2 decimal string, negative for returns, for example 1234.56 (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
+          description: The transaction amount as a scale-2 decimal string, negative for returns, for example 1234.56, at most 9 integer digits and 2 decimals (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
+          pattern: '^-?[0-9]{1,9}\.[0-9]{2}$'
         originalTimestamp:
           type: string
           description: When the transaction originated, RFC 3339 with microseconds and Z (Data Layouts · CVTRA05Y · TRAN-ORIG-TS X(26); Use Cases · COTRN00C Date column).
@@ -1164,12 +1197,12 @@ components:
       properties:
         transactionId:
           type: string
-          description: The transaction ID, 16 characters (Data Layouts · CVTRA05Y · TRAN-ID X(16)).
-          pattern: '^[A-Za-z0-9]{16}$'
+          description: The transaction ID, exactly 16 characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA05Y · TRAN-ID X(16)).
+          pattern: '^[\s\S]{16}$'
         typeCode:
           type: string
-          description: The transaction type code, two characters (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)).
-          pattern: '^[A-Za-z0-9]{2}$'
+          description: The transaction type code, exactly two characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)).
+          pattern: '^[\s\S]{2}$'
         categoryCode:
           type: string
           description: The transaction category code, four digits (Data Layouts · CVTRA05Y · TRAN-CAT-CD 9(04)).
@@ -1184,8 +1217,8 @@ components:
           maxLength: 100
         amount:
           type: string
-          description: The transaction amount as a scale-2 decimal string, negative for returns, for example 1234.56 (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
+          description: The transaction amount as a scale-2 decimal string, negative for returns, for example 1234.56, at most 9 integer digits and 2 decimals (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
+          pattern: '^-?[0-9]{1,9}\.[0-9]{2}$'
         merchantId:
           type: string
           description: The merchant ID, nine digits (Data Layouts · CVTRA05Y · TRAN-MERCHANT-ID 9(09)).

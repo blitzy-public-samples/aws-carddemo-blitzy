@@ -72,13 +72,17 @@ paths:
           in: query
           required: false
           description: >-
-            Transaction-type filter, matched exactly
-            (Data Layouts · CVTRA05Y · TRAN-TYPE-CD); omit it for no filter. A
-            well-formed but unknown value returns 200 with an empty transactions
-            array.
+            Transaction-type filter, matched exactly. A value is exactly two
+            characters of any kind, because PIC X places no restriction on its
+            characters (Data Layouts · CVTRA05Y · TRAN-TYPE-CD); omit it for no
+            filter. Reserved characters, the space, control characters and
+            non-ASCII characters are percent-encoded in the URL (RFC 3986,
+            UTF-8 for non-ASCII), and the pattern applies to the decoded value.
+            A well-formed but unknown value returns 200 with an empty
+            transactions array.
           schema:
             type: string
-            pattern: '^[A-Za-z0-9]{2}$'
+            pattern: '^[\s\S]{2}$'
           examples:
             purchase:
               summary: Purchase transactions
@@ -119,11 +123,21 @@ paths:
           required: false
           description: >-
             Opaque keyset cursor taken from the previous page's nextPageToken;
-            omit it for the first page. The token is bound to accountId and the
-            filters, and a token that does not decode or does not match them
-            returns 400 with a pageToken detail.
+            leave it empty or omit it for the first page. The token is bound to
+            accountId and the filters, and a token that does not decode or does
+            not match them returns 400 with a pageToken detail. The version-1
+            payload is at most 124 bytes (a 1-byte version marker, the cursor's
+            processed timestamp of at most 27 bytes in its RFC 3339 microsecond
+            form and its 16-character transaction ID of at most 64 bytes in
+            UTF-8, and the 32-byte HMAC-SHA-256 fingerprint), so its unpadded
+            URL-safe encoding is at most 166 characters from A-Z, a-z, 0-9, '-'
+            and '_'. A value longer than 166 characters or holding any other
+            character, padding '=' included, returns 400 with a pageToken detail
+            at receipt, before any upstream call or cache read.
           schema:
             type: string
+            pattern: '^[A-Za-z0-9_-]*$'
+            maxLength: 166
           examples:
             nextPage:
               summary: Cursor returned with the previous page
@@ -354,11 +368,15 @@ paths:
           in: path
           required: true
           description: >-
-            Transaction to return, 16 letters or digits
-            (Data Layouts · CVTRA05Y · TRAN-ID).
+            Transaction to return, exactly 16 characters of any kind, because
+            PIC X places no restriction on its characters (Data Layouts ·
+            CVTRA05Y · TRAN-ID). Reserved characters, the space, control
+            characters and non-ASCII characters are percent-encoded in the URL
+            (RFC 3986, UTF-8 for non-ASCII), and the pattern applies to the
+            decoded value.
           schema:
             type: string
-            pattern: '^[A-Za-z0-9]{16}$'
+            pattern: '^[\s\S]{16}$'
           examples:
             fixtureTransaction:
               summary: Newest transaction of fixture account 00000000001
@@ -389,7 +407,7 @@ paths:
                       originalTimestamp: '2022-06-10T19:27:53.000000Z'
                       processedTimestamp: '2022-06-10T19:27:53.000000Z'
         '400':
-          description: INVALID_ARGUMENT. transactionId is not 16 letters or digits.
+          description: INVALID_ARGUMENT. transactionId is not exactly 16 characters.
           content:
             application/json:
               schema:
@@ -399,11 +417,11 @@ paths:
                   summary: Malformed transaction ID
                   value:
                     code: 'INVALID_ARGUMENT'
-                    message: 'Transaction ID must be 16 letters or digits'
+                    message: 'Transaction ID must be exactly 16 characters'
                     traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
                     details:
                       - field: 'transactionId'
-                        description: 'must be 16 letters or digits'
+                        description: 'must be exactly 16 characters'
         '401':
           description: >-
             UNAUTHENTICATED. The forwarded bearer token is missing, invalid or
@@ -497,7 +515,10 @@ components:
           description: >-
             Opaque cursor for the next page, passed back as pageToken. Present
             only when a further item exists and omitted on the last page, where
-            gRPC carries the empty string.
+            gRPC carries the empty string. It is at most 166 characters of A-Z,
+            a-z, 0-9, '-' and '_', the bound pageToken states.
+          pattern: '^[A-Za-z0-9_-]+$'
+          maxLength: 166
     GetTransactionResponse:
       type: object
       description: The transaction returned by GetTransaction.
@@ -529,12 +550,12 @@ components:
       properties:
         transactionId:
           type: string
-          description: Transaction identifier, 16 letters or digits (Data Layouts · CVTRA05Y · TRAN-ID).
-          pattern: '^[A-Za-z0-9]{16}$'
+          description: Transaction identifier, exactly 16 characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA05Y · TRAN-ID).
+          pattern: '^[\s\S]{16}$'
         typeCode:
           type: string
-          description: Transaction type code (Data Layouts · CVTRA05Y · TRAN-TYPE-CD).
-          pattern: '^[A-Za-z0-9]{2}$'
+          description: Transaction type code, exactly two characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA05Y · TRAN-TYPE-CD).
+          pattern: '^[\s\S]{2}$'
         categoryCode:
           type: string
           description: Transaction category code (Data Layouts · CVTRA05Y · TRAN-CAT-CD).
@@ -550,10 +571,10 @@ components:
         amount:
           type: string
           description: >-
-            Transaction amount as a scale-2 decimal string, negative for credits
-            and returns, for example 1234.56 (Data Layouts · CVTRA05Y ·
-            TRAN-AMT).
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
+            Transaction amount as a scale-2 decimal string with at most 9
+            integer digits and 2 decimals, negative for returns,
+            for example 1234.56 (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
+          pattern: '^-?[0-9]{1,9}\.[0-9]{2}$'
         merchantId:
           type: string
           description: Merchant identifier, 9 digits (Data Layouts · CVTRA05Y · TRAN-MERCHANT-ID).

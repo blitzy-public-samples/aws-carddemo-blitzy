@@ -76,7 +76,8 @@ message ListTransactionsRequest {
   // Data Layouts · CVACT03Y · XREF-ACCT-ID.
   string account_id = 1;
   // JSON name typeCode. Transaction-type filter; unset means no filter. A set
-  // value matches pattern ^[A-Za-z0-9]{2}$ (Data Layouts · CVTRA05Y ·
+  // value is exactly two characters of any kind, pattern ^[\s\S]{2}$, because
+  // PIC X places no restriction on its characters (Data Layouts · CVTRA05Y ·
   // TRAN-TYPE-CD). A well-formed but unknown value yields empty transactions.
   optional string type_code = 2;
   // JSON name categoryCode. Transaction-category filter; unset means no filter.
@@ -90,9 +91,18 @@ message ListTransactionsRequest {
   int32 page_size = 4;
   // JSON name pageToken. Opaque keyset cursor taken from a previous
   // next_page_token; empty means the first page. The token is version 1 and is
-  // bound by a fingerprint to account_id and the filters. A token that does not
-  // decode, or whose fingerprint mismatches, returns INVALID_ARGUMENT with a
-  // details entry for field pageToken.
+  // bound by a fingerprint to account_id and the filters. At most 166
+  // characters, pattern ^[A-Za-z0-9_-]*$: the version-1 payload is at most 124
+  // bytes (a 1-byte version marker, the cursor's processed timestamp of at
+  // most 27 bytes in its RFC 3339 microsecond form and its 16-character
+  // transaction ID of at most 64 bytes in UTF-8, and the 32-byte HMAC-SHA-256
+  // fingerprint), so its unpadded URL-safe encoding is at most 166 characters
+  // from A-Z, a-z, 0-9, '-' and '_'.
+  // A longer value or any other character, padding '=' included, returns
+  // INVALID_ARGUMENT with a details entry for field pageToken before any
+  // upstream call or cache read. A token that does not decode, or whose
+  // fingerprint mismatches, returns INVALID_ARGUMENT with a details entry for
+  // field pageToken.
   string page_token = 5;
 }
 
@@ -104,15 +114,17 @@ message ListTransactionsResponse {
   repeated Transaction transactions = 1;
   // JSON name nextPageToken. Opaque cursor for the next page, passed back as
   // page_token. It is the empty string on the last page, which proto3 JSON
-  // omits; the REST twin omits the property.
+  // omits; the REST twin omits the property. When non-empty, it is at most 166
+  // characters of A-Z, a-z, 0-9, '-' and '_', the bound page_token states.
   string next_page_token = 2;
 }
 
 // Request for GetTransaction: one transaction ID. Use Cases · COTRN01C reads a
 // transaction by its ID alone.
 message GetTransactionRequest {
-  // JSON name transactionId. The transaction to return: 16 characters, pattern
-  // ^[A-Za-z0-9]{16}$ (Data Layouts · CVTRA05Y · TRAN-ID).
+  // JSON name transactionId. The transaction to return: exactly 16 characters
+  // of any kind, pattern ^[\s\S]{16}$, because PIC X places no restriction on
+  // its characters (Data Layouts · CVTRA05Y · TRAN-ID).
   string transaction_id = 1;
 }
 
@@ -127,11 +139,13 @@ message GetTransactionResponse {
 // and carry the same names and numbering as the Card Servicing API's
 // Transaction. Free-text values are carried with trailing padding removed.
 message Transaction {
-  // JSON name transactionId. Transaction identifier, pattern ^[A-Za-z0-9]{16}$
-  // (Data Layouts · CVTRA05Y · TRAN-ID X(16)).
+  // JSON name transactionId. Transaction identifier, exactly 16 characters of
+  // any kind, pattern ^[\s\S]{16}$, because PIC X places no restriction on its
+  // characters (Data Layouts · CVTRA05Y · TRAN-ID X(16)).
   string transaction_id = 1;
-  // JSON name typeCode. Transaction type code, pattern ^[A-Za-z0-9]{2}$
-  // (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)).
+  // JSON name typeCode. Transaction type code, exactly two characters of any
+  // kind, pattern ^[\s\S]{2}$, because PIC X places no restriction on its
+  // characters (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)).
   string type_code = 2;
   // JSON name categoryCode. Transaction category code, pattern ^[0-9]{4}$
   // (Data Layouts · CVTRA05Y · TRAN-CAT-CD 9(04)).
@@ -142,9 +156,9 @@ message Transaction {
   // Transaction description, at most 100 characters
   // (Data Layouts · CVTRA05Y · TRAN-DESC X(100)).
   string description = 5;
-  // Transaction amount as a scale-2 decimal string matching
-  // ^-?[0-9]+\.[0-9]{2}$, negative for returns, for example "1234.56"
-  // (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
+  // Transaction amount as a scale-2 decimal string with at most 9 integer digits
+  // and 2 decimals, matching ^-?[0-9]{1,9}\.[0-9]{2}$, negative for returns, for
+  // example "1234.56" (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
   string amount = 6;
   // JSON name merchantId. Merchant identifier, pattern ^[0-9]{9}$
   // (Data Layouts · CVTRA05Y · TRAN-MERCHANT-ID 9(09)).

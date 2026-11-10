@@ -95,14 +95,14 @@ message Account {
   // The account's active-status flag, for example "Y"; max length 1
   // (Data Layouts · CVACT01Y · ACCT-ACTIVE-STATUS X(01)).
   string active_status = 2;
-  // The current balance as a scale-2 decimal string such as "1234.56", pattern ^-?[0-9]+\.[0-9]{2}$
-  // (Data Layouts · CVACT01Y · ACCT-CURR-BAL S9(10)V99).
+  // The current balance as a scale-2 decimal string such as "1234.56", at most 10 integer digits
+  // and 2 decimals, pattern ^-?[0-9]{1,10}\.[0-9]{2}$ (Data Layouts · CVACT01Y · ACCT-CURR-BAL S9(10)V99).
   string current_balance = 3;
-  // The credit limit as a scale-2 decimal string, pattern ^-?[0-9]+\.[0-9]{2}$
-  // (Data Layouts · CVACT01Y · ACCT-CREDIT-LIMIT S9(10)V99).
+  // The credit limit as a scale-2 decimal string, at most 10 integer digits and 2 decimals,
+  // pattern ^-?[0-9]{1,10}\.[0-9]{2}$ (Data Layouts · CVACT01Y · ACCT-CREDIT-LIMIT S9(10)V99).
   string credit_limit = 4;
-  // The cash credit limit as a scale-2 decimal string, pattern ^-?[0-9]+\.[0-9]{2}$
-  // (Data Layouts · CVACT01Y · ACCT-CASH-CREDIT-LIMIT S9(10)V99).
+  // The cash credit limit as a scale-2 decimal string, at most 10 integer digits and 2 decimals,
+  // pattern ^-?[0-9]{1,10}\.[0-9]{2}$ (Data Layouts · CVACT01Y · ACCT-CASH-CREDIT-LIMIT S9(10)V99).
   string cash_credit_limit = 5;
   // The date the account was opened, as YYYY-MM-DD
   // (Data Layouts · CVACT01Y · ACCT-OPEN-DATE X(10)).
@@ -113,10 +113,12 @@ message Account {
   // The account reissue date, as YYYY-MM-DD
   // (Data Layouts · CVACT01Y · ACCT-REISSUE-DATE X(10)).
   string reissue_date = 8;
-  // The credits posted in the current cycle as a scale-2 decimal string, pattern ^-?[0-9]+\.[0-9]{2}$
+  // The credits posted in the current cycle as a scale-2 decimal string, at most 10 integer digits
+  // and 2 decimals, pattern ^-?[0-9]{1,10}\.[0-9]{2}$
   // (Data Layouts · CVACT01Y · ACCT-CURR-CYC-CREDIT S9(10)V99).
   string current_cycle_credit = 9;
-  // The debits posted in the current cycle as a scale-2 decimal string, pattern ^-?[0-9]+\.[0-9]{2}$
+  // The debits posted in the current cycle as a scale-2 decimal string, at most 10 integer digits
+  // and 2 decimals, pattern ^-?[0-9]{1,10}\.[0-9]{2}$
   // (Data Layouts · CVACT01Y · ACCT-CURR-CYC-DEBIT S9(10)V99).
   string current_cycle_debit = 10;
   // The account address zip code, read at its copybook offset; max length 10
@@ -171,14 +173,15 @@ message CategoryBalance {
   // The account the balance belongs to: 11 digits, pattern ^[0-9]{11}$
   // (Data Layouts · CVTRA01Y · TRANCAT-ACCT-ID 9(11)).
   string account_id = 1;
-  // The transaction type code: 2 characters, pattern ^[A-Za-z0-9]{2}$
+  // The transaction type code: exactly 2 characters of any kind, pattern
+  // ^[\s\S]{2}$, because PIC X places no restriction on its characters
   // (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)).
   string type_code = 2;
   // The transaction category code: 4 digits, pattern ^[0-9]{4}$
   // (Data Layouts · CVTRA01Y · TRANCAT-CD 9(04)).
   string category_code = 3;
-  // The category balance as a scale-2 decimal string such as "1234.56", pattern ^-?[0-9]+\.[0-9]{2}$
-  // (Data Layouts · CVTRA01Y · TRAN-CAT-BAL S9(09)V99).
+  // The category balance as a scale-2 decimal string such as "1234.56", at most 9 integer digits
+  // and 2 decimals, pattern ^-?[0-9]{1,9}\.[0-9]{2}$ (Data Layouts · CVTRA01Y · TRAN-CAT-BAL S9(09)V99).
   string balance = 4;
 }
 

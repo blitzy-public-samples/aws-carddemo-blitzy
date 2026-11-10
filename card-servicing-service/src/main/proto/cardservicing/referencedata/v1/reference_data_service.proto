@@ -89,7 +89,8 @@ message ListTransactionTypesResponse {
 
 // One transaction type, seeded from Reference Tables · TRANTYPE file.
 message TransactionType {
-  // Transaction type code, pattern ^[A-Za-z0-9]{2}$, e.g. "01". Data Layouts · CVTRA03Y · TRAN-TYPE X(02).
+  // Transaction type code, exactly two characters of any kind, pattern ^[\s\S]{2}$, e.g. "01", because PIC X
+  // places no restriction on its characters. Data Layouts · CVTRA03Y · TRAN-TYPE X(02).
   string type_code = 1;
   // Transaction type description, at most 50 characters with trailing padding removed, e.g. "Purchase".
   // Data Layouts · CVTRA03Y · TRAN-TYPE-DESC X(50).
@@ -107,7 +108,8 @@ message ListTransactionCategoriesResponse {
 
 // One transaction category, seeded from Reference Tables · TRANCATG file; the (type_code, category_code) pair is the key.
 message TransactionCategory {
-  // Owning transaction type code, pattern ^[A-Za-z0-9]{2}$; always names an existing TransactionType.
+  // Owning transaction type code, exactly two characters of any kind, pattern ^[\s\S]{2}$, because PIC X
+  // places no restriction on its characters; always names an existing TransactionType.
   // Data Layouts · CVTRA04Y · TRAN-TYPE-CD X(02).
   string type_code = 1;
   // Transaction category code, pattern ^[0-9]{4}$, e.g. "0001". Data Layouts · CVTRA04Y · TRAN-CAT-CD 9(04).

@@ -398,16 +398,16 @@ components:
           description: The account's active-status flag, for example Y (Data Layouts · CVACT01Y · ACCT-ACTIVE-STATUS).
         currentBalance:
           type: string
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
-          description: The current balance as a scale-2 decimal string such as 1234.56 (Data Layouts · CVACT01Y · ACCT-CURR-BAL).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
+          description: The current balance as a scale-2 decimal string such as 1234.56, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CURR-BAL S9(10)V99).
         creditLimit:
           type: string
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
-          description: The credit limit as a scale-2 decimal string (Data Layouts · CVACT01Y · ACCT-CREDIT-LIMIT).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
+          description: The credit limit as a scale-2 decimal string, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CREDIT-LIMIT S9(10)V99).
         cashCreditLimit:
           type: string
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
-          description: The cash credit limit as a scale-2 decimal string (Data Layouts · CVACT01Y · ACCT-CASH-CREDIT-LIMIT).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
+          description: The cash credit limit as a scale-2 decimal string, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CASH-CREDIT-LIMIT S9(10)V99).
         openDate:
           type: string
           format: date
@@ -425,12 +425,12 @@ components:
           description: The account reissue date, as YYYY-MM-DD (Data Layouts · CVACT01Y · ACCT-REISSUE-DATE).
         currentCycleCredit:
           type: string
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
-          description: The credits posted in the current cycle as a scale-2 decimal string (Data Layouts · CVACT01Y · ACCT-CURR-CYC-CREDIT).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
+          description: The credits posted in the current cycle as a scale-2 decimal string, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CURR-CYC-CREDIT S9(10)V99).
         currentCycleDebit:
           type: string
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
-          description: The debits posted in the current cycle as a scale-2 decimal string (Data Layouts · CVACT01Y · ACCT-CURR-CYC-DEBIT).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
+          description: The debits posted in the current cycle as a scale-2 decimal string, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CURR-CYC-DEBIT S9(10)V99).
         addressZip:
           type: string
           maxLength: 10
@@ -491,16 +491,16 @@ components:
           description: The account the balance belongs to, 11 digits (Data Layouts · CVTRA01Y · TRANCAT-ACCT-ID).
         typeCode:
           type: string
-          pattern: '^[A-Za-z0-9]{2}$'
-          description: The transaction type code, 2 characters (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD).
+          pattern: '^[\s\S]{2}$'
+          description: The transaction type code, exactly 2 characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD).
         categoryCode:
           type: string
           pattern: '^[0-9]{4}$'
           description: The transaction category code, 4 digits (Data Layouts · CVTRA01Y · TRANCAT-CD).
         balance:
           type: string
-          pattern: '^-?[0-9]+\.[0-9]{2}$'
-          description: The category balance as a scale-2 decimal string such as 1234.56 (Data Layouts · CVTRA01Y · TRAN-CAT-BAL).
+          pattern: '^-?[0-9]{1,9}\.[0-9]{2}$'
+          description: The category balance as a scale-2 decimal string such as 1234.56, at most 9 integer digits and 2 decimals (Data Layouts · CVTRA01Y · TRAN-CAT-BAL S9(09)V99).
     ErrorObject:
       type: object
       description: Standard error object returned with every non-2xx status; gRPC carries the same message in google.rpc.Status details.

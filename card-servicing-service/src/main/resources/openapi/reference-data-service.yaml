@@ -240,8 +240,8 @@ components:
       properties:
         typeCode:
           type: string
-          pattern: '^[A-Za-z0-9]{2}$'
-          description: Transaction type code. Data Layouts · CVTRA03Y · TRAN-TYPE X(02).
+          pattern: '^[\s\S]{2}$'
+          description: Transaction type code, exactly two characters of any kind, because PIC X places no restriction on its characters. Data Layouts · CVTRA03Y · TRAN-TYPE X(02).
         typeDescription:
           type: string
           maxLength: 50
@@ -265,8 +265,8 @@ components:
       properties:
         typeCode:
           type: string
-          pattern: '^[A-Za-z0-9]{2}$'
-          description: Code of the transaction type the category belongs to; always names an existing transaction type. Data Layouts · CVTRA04Y · TRAN-TYPE-CD X(02).
+          pattern: '^[\s\S]{2}$'
+          description: Code of the transaction type the category belongs to, exactly two characters of any kind, because PIC X places no restriction on its characters; always names an existing transaction type. Data Layouts · CVTRA04Y · TRAN-TYPE-CD X(02).
         categoryCode:
           type: string
           pattern: '^[0-9]{4}$'

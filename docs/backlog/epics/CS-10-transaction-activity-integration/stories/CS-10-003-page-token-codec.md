@@ -16,6 +16,8 @@ Parent epic: [CS-10 Transaction Activity Integration](../README.md)
 >
 > Capability: `PageTokenCodec` encodes and decodes the opaque page token of the transaction listing. The payload carries the version `v` = 1, the last returned row's cursor (processed timestamp at microsecond precision and transaction ID) and a fingerprint that binds the token to `accountId`, `typeCode` and `categoryCode`, with an absent filter encoded distinctly from every value. The fingerprint is a keyed digest, HMAC-SHA-256 from the JDK, computed over the version, the cursor and those three values; its key is a built-in codec constant, so the codec adds no dependency, environment variable or configuration key. The token is encoded in the URL-safe alphabet without padding (A–Z, a–z, 0–9, `-`, `_`), and decoding accepts only that exact encoded form. An empty or absent token means the first page and is never decoded. Decoding fails with `INVALID_ARGUMENT`, rendered as 400 with a `details` entry whose field is `pageToken`, when the value does not decode, when `v` is not 1, or when the fingerprint does not match the presented account and filters. The codec raises the typed failure of the CS-05-002 code table, which `ApiErrorHandler` renders for REST and `GrpcErrorInterceptor` for gRPC; it builds no error body itself. Use Cases · COTRN00C pages its list forward and back (PF7/PF8); the baseline keyset token carries that navigation, and backward paging replays earlier tokens the caller keeps. The Transaction Activity stub (CS-10-004) encodes each next token and decodes the cursor it receives, and the transaction list validation (CS-07-001) decodes the token at Stage 0 before any upstream call. Target paths (3 files):
 >
+> > SCOPE-QUESTION (Resolved): The payload above fixes no byte layout and no length, so a codec built to it could issue a token longer than the page-token contracts accept. The version 1 payload is the layout those contracts state, with each field at a fixed position and no separator or length field: the 1-byte version marker, then the cursor's processed timestamp as the 27 bytes of its RFC 3339 microsecond form (for example `2022-06-10T19:27:53.000000Z`), then the cursor's transaction ID as its UTF-8 bytes, at most 64 for its 16 characters, then the 32 raw bytes of the HMAC-SHA-256 fingerprint. Decoding reads each field back from the same position, the transaction ID being the bytes between the timestamp and the fingerprint. The payload is therefore at most 124 bytes (1 + 27 + 64 + 32), and its URL-safe encoding without padding is at most 166 characters, the bound that `page_token` and `next_page_token` state in `card-servicing-service/src/main/proto/cardservicing/api/v1/card_servicing_service.proto` and `card-servicing-service/src/main/proto/cardservicing/transactionactivity/v1/transaction_activity_service.proto`, and that `pageToken` and `nextPageToken` state in their twins `card-servicing-service/src/main/resources/openapi/card-servicing-api.yaml` and `card-servicing-service/src/main/resources/openapi/transaction-activity-service.yaml`.
+>
 > - `card-servicing-service/src/main/java/com/example/cardservicing/integration/transactionactivity/PageTokenCodec.java` — encoding, decoding, the fingerprint check and the version check.
 > - `card-servicing-service/src/main/java/com/example/cardservicing/integration/transactionactivity/PageCursor.java` — the cursor value: processed timestamp and transaction ID.
 > - `card-servicing-service/src/test/java/com/example/cardservicing/integration/transactionactivity/PageTokenCodecTest.java` — the unit suite for AC1–AC9.
@@ -45,6 +47,7 @@ Parent epic: [CS-10 Transaction Activity Integration](../README.md)
 > - AC6: A well-formed token carrying version 2 fails with 400 and a `pageToken` details entry.
 > - AC7: A value that does not decode, such as `***`, fails with 400 and a `pageToken` details entry.
 > - AC8: Every encoded token contains only the characters A–Z, a–z, 0–9, `-` and `_`.
+>   > SCOPE-QUESTION (Resolved): AC8 also bounds the length: every encoded token is at most 166 characters, the page-token contract bound, the worst case included. The worst case is the cursor (`2022-06-10T19:27:53.000000Z`, a transaction ID of 16 copies of U+1F600, each a four-byte UTF-8 character) for account `00000000001` with no filters, whose 124-byte version 1 payload encodes to exactly 166 characters, and that token decodes, with the same account and no filters, to the same cursor.
 > - AC9: The fingerprint key is a constant built into the codec, and the service declares no environment variable beyond the 14 in `card-servicing-service/src/main/resources/application.yml`.
 >
 > ### 3. Dependencies
@@ -66,7 +69,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit — Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass; at least 80% line coverage per module. Cases: the AC1 round trip, a single-character change at every position of a valid token, the account, type-filter and category-filter mismatches, version 2, the undecodable value `***`, the alphabet of every token the suite encodes, the absence of any new environment variable, and each rejection rendered through `ApiErrorHandler` as the 400 body.
+- Unit — Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass; at least 80% line coverage per module. Cases: the AC1 round trip, a single-character change at every position of a valid token, the account, type-filter and category-filter mismatches, version 2, the undecodable value `***`, the alphabet of every token the suite encodes, the length of every token the suite encodes at no more than 166 characters, with the AC1 token at exactly 102 and the worst-case token of the note beneath AC8, whose transaction ID is 16 four-byte UTF-8 characters, at exactly 166, the absence of any new environment variable, and each rejection rendered through `ApiErrorHandler` as the 400 body.
 - Integration — Not applicable — a pure function with no upstream call; CS-10-007 exercises it through the stub. Command `./gradlew :card-servicing-service:integrationTest`; one suite per external epic (CS-10-007 for this epic) covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance — Not applicable — no input or output beyond memory. `docker compose -f tests/docker-compose.yml up -d --wait`, `./gradlew :card-servicing-service:performanceTest`, `docker compose -f tests/docker-compose.yml down`; p50, p95 and p99 below 1,000 ms over successful requests with failure injection off at 10 users × 100 sequential calls, 100,000 category balances and 1,000,000 transactions; injected failures proven by a logged `cutoffMs` at most 900 and a client-measured response below 1,000 ms; applies to balance-retrieval and drill-down stories.
 - End-to-end — Not applicable — paging navigation is proven by CS-03-002. `docker compose -f tests/docker-compose.yml up -d --wait`, `./gradlew :card-servicing-service:e2eTest`, `docker compose -f tests/docker-compose.yml down`; the four-step flow for account `00000000001` returns the expected fixture values and each stub's request log shows at least one call.
@@ -87,7 +90,7 @@ Rationale: a keyed fingerprint binds each page token to the account and filters 
 
 - Topology: one codec, used by the listing stub to issue and read tokens and by the transaction list validation to check them before any upstream call.
 - Naming: a version marker leads every token, and version 1 is the only accepted value.
-- Addressing: the cursor holds the last returned row's processed timestamp at microsecond precision and its transaction identifier.
+- Addressing: the cursor holds the last returned row's processed timestamp at microsecond precision and its transaction identifier, written after the version marker at fixed positions with no separator or length field.
 - Isolation: the token carries no caller identity, credential or entitlement, so per-account authorization, never the token, decides which account a caller may read.
 - Fallback: any decode failure yields the invalid-argument status, never a silent restart from page one, and an absent or empty token means the first page.
 - Provisioning: nothing is provisioned, because the codec adds no environment setting.
@@ -96,11 +99,11 @@ Rationale: a keyed fingerprint binds each page token to the account and filters 
 
 ### Design Option A — versioned compact encoding with a keyed fingerprint
 
-Each token carries the version marker, the cursor of the last returned row and a keyed digest computed over the version, the cursor, the account and both filters. The bytes are written in the URL-safe alphabet without padding. Decoding recomputes the digest from the presented account and filters and rejects the token on any difference.
+Each token carries the version marker, the cursor of the last returned row and a keyed digest computed over the version, the cursor, the account and both filters. The digest follows the transaction identifier as its raw 32 bytes, so the payload is at most 124 bytes and its URL-safe encoding without padding at most 166 characters, the bound the page-token contracts state. Decoding recomputes the digest from the presented account and filters and rejects the token on any difference.
 
 How it behaves:
 
-- Issuing writes the version marker, the cursor and the keyed digest, then encodes the bytes in the URL-safe alphabet.
+- Issuing writes the version marker, the timestamp, the transaction identifier and the raw 32-byte keyed digest in that order, then encodes the bytes in the URL-safe alphabet.
 - Reading accepts only the exact encoded form, so an altered unused trailing bit still fails.
 - Reading checks the version marker before the digest, and only version 1 passes.
 - Reading recomputes the digest from the presented account and filters, and any difference rejects the token.
@@ -139,7 +142,7 @@ Effort and risk: smallest effort, high risk of cross-list paging.
 - Option: Design Option A
 - Why: a token presented against another account or filter is rejected before any read.
 - Strongest argument against: the built-in key is the same in every environment, so the fingerprint resists tampering but not a reader of the source.
-- Shared items that do not decide the choice: the cursor content, the version marker, the URL-safe alphabet and the error rendering.
+- Shared items that do not decide the choice: the cursor content and its fixed positions, the version marker, the URL-safe alphabet and the error rendering.
 - Flip conditions: a revision of the token contract that drops the account and filter binding, which a swap to the real service never makes.
 
 ## Design Validation
@@ -166,7 +169,7 @@ Open assumptions:
 | AC5 | Holds | an absent category filter differs from every category value in the digest |
 | AC6 | Holds | the version check rejects any marker other than 1 |
 | AC7 | Holds | a value outside the URL-safe alphabet fails to decode |
-| AC8 | Holds | the encoder writes only the URL-safe alphabet without padding |
+| AC8 | Holds | the encoder writes at most 124 bytes as at most 166 URL-safe characters without padding |
 | AC9 | Holds | the key is a constant inside the codec |
 
 ### Option B
@@ -189,7 +192,7 @@ Open assumptions:
 | AC5 | Breaks | the token carries no category filter binding |
 | AC6 | Holds | the version check rejects any marker other than 1 |
 | AC7 | Holds | a value outside the URL-safe alphabet fails to decode |
-| AC8 | Holds | the encoder writes only the URL-safe alphabet without padding |
+| AC8 | Holds | the encoder writes at most 92 bytes as at most 123 URL-safe characters without padding |
 | AC9 | Holds | the codec adds no key setting and no environment variable |
 
 ## Metadata

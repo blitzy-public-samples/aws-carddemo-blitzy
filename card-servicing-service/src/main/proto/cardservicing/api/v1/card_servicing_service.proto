@@ -174,10 +174,11 @@ message GetBalanceSummaryResponse {
   // (Data Layouts · CVACT01Y · ACCT-ID 9(11)).
   string account_id = 1;
   // The current balance as a scale-2 decimal string, for example "1234.56",
-  // pattern ^-?[0-9]+\.[0-9]{2}$ (Data Layouts · CVACT01Y · ACCT-CURR-BAL
-  // S9(10)V99).
+  // at most 10 integer digits and 2 decimals, pattern ^-?[0-9]{1,10}\.[0-9]{2}$
+  // (Data Layouts · CVACT01Y · ACCT-CURR-BAL S9(10)V99).
   string current_balance = 2;
-  // The credit limit as a scale-2 decimal string, pattern ^-?[0-9]+\.[0-9]{2}$
+  // The credit limit as a scale-2 decimal string, at most 10 integer digits and
+  // 2 decimals, pattern ^-?[0-9]{1,10}\.[0-9]{2}$
   // (Data Layouts · CVACT01Y · ACCT-CREDIT-LIMIT S9(10)V99).
   string credit_limit = 3;
   // One element per type_code that has at least one category balance, ordered
@@ -208,17 +209,19 @@ message GetBalanceSummaryResponse {
   // The card reissue date, YYYY-MM-DD (Data Layouts · CVACT01Y ·
   // ACCT-REISSUE-DATE X(10); Use Cases · COACTVWC Reissue).
   string reissue_date = 10;
-  // The cash credit limit as a scale-2 decimal string, pattern
-  // ^-?[0-9]+\.[0-9]{2}$ (Data Layouts · CVACT01Y · ACCT-CASH-CREDIT-LIMIT
-  // S9(10)V99; Use Cases · COACTVWC Cash credit Limit).
+  // The cash credit limit as a scale-2 decimal string, at most 10 integer digits
+  // and 2 decimals, pattern ^-?[0-9]{1,10}\.[0-9]{2}$ (Data Layouts · CVACT01Y ·
+  // ACCT-CASH-CREDIT-LIMIT S9(10)V99; Use Cases · COACTVWC Cash credit Limit).
   string cash_credit_limit = 11;
-  // Credits in the current cycle as a scale-2 decimal string, pattern
-  // ^-?[0-9]+\.[0-9]{2}$ (Data Layouts · CVACT01Y · ACCT-CURR-CYC-CREDIT
-  // S9(10)V99; Use Cases · COACTVWC Current Cycle Credit).
+  // Credits in the current cycle as a scale-2 decimal string, at most 10 integer
+  // digits and 2 decimals, pattern ^-?[0-9]{1,10}\.[0-9]{2}$ (Data Layouts ·
+  // CVACT01Y · ACCT-CURR-CYC-CREDIT S9(10)V99; Use Cases · COACTVWC Current
+  // Cycle Credit).
   string current_cycle_credit = 12;
-  // Debits in the current cycle as a scale-2 decimal string, pattern
-  // ^-?[0-9]+\.[0-9]{2}$ (Data Layouts · CVACT01Y · ACCT-CURR-CYC-DEBIT
-  // S9(10)V99; Use Cases · COACTVWC Current Cycle Debit).
+  // Debits in the current cycle as a scale-2 decimal string, at most 10 integer
+  // digits and 2 decimals, pattern ^-?[0-9]{1,10}\.[0-9]{2}$ (Data Layouts ·
+  // CVACT01Y · ACCT-CURR-CYC-DEBIT S9(10)V99; Use Cases · COACTVWC Current
+  // Cycle Debit).
   string current_cycle_debit = 13;
   // The account group, at most 10 characters (Data Layouts · CVACT01Y ·
   // ACCT-GROUP-ID X(10); Use Cases · COACTVWC Account Group). Unset when the
@@ -230,7 +233,8 @@ message GetBalanceSummaryResponse {
 // sum of the account's category balances with this type_code
 // (Data Layouts · CVTRA01Y · TRAN-CAT-BAL), labelled with the type description.
 message TypeGroupBalance {
-  // The transaction type code, two characters, pattern ^[A-Za-z0-9]{2}$
+  // The transaction type code, exactly two characters of any kind, pattern
+  // ^[\s\S]{2}$, because PIC X places no restriction on its characters
   // (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)).
   string type_code = 1;
   // The transaction type description, at most 50 characters
@@ -239,7 +243,9 @@ message TypeGroupBalance {
   // it as null. An empty string never stands for an unset description.
   optional string type_description = 2;
   // The exact decimal sum of this type's category balances as a scale-2
-  // decimal string, for example "1234.56", pattern ^-?[0-9]+\.[0-9]{2}$.
+  // decimal string, for example "1234.56", pattern ^-?[0-9]+\.[0-9]{2}$. Being
+  // a sum, its integer part is not limited to the nine digits of one category
+  // balance.
   string balance = 3;
 }
 
@@ -248,12 +254,13 @@ message ListCategoryBalancesRequest {
   // The account number: 11 digits, pattern ^[0-9]{11}$, and not all zeros
   // (Use Cases · COACTVWC; Data Layouts · CVTRA01Y · TRANCAT-ACCT-ID 9(11)).
   string account_id = 1;
-  // Optional filter on the transaction type code, pattern ^[A-Za-z0-9]{2}$
-  // (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)); unset returns every
-  // type. An unknown value returns INVALID_ARGUMENT while reference data is
-  // usable (fresh or within its maximum stale age). With no usable reference
-  // data the check is skipped, the filter still applies and data_status is
-  // PARTIAL.
+  // Optional filter on the transaction type code, exactly two characters of
+  // any kind, pattern ^[\s\S]{2}$, because PIC X places no restriction on its
+  // characters (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)); unset
+  // returns every type. An unknown value returns INVALID_ARGUMENT while
+  // reference data is usable (fresh or within its
+  // maximum stale age). With no usable reference data the check is skipped,
+  // the filter still applies and data_status is PARTIAL.
   optional string type_code = 2;
 }
 
@@ -280,7 +287,8 @@ message ListCategoryBalancesResponse {
 // One category balance of an account (Data Layouts · CVTRA01Y), labelled with
 // its type and category descriptions.
 message CategoryBalance {
-  // The transaction type code, two characters, pattern ^[A-Za-z0-9]{2}$
+  // The transaction type code, exactly two characters of any kind, pattern
+  // ^[\s\S]{2}$, because PIC X places no restriction on its characters
   // (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)).
   string type_code = 1;
   // The transaction type description, at most 50 characters
@@ -297,8 +305,8 @@ message CategoryBalance {
   // stands for an unset description.
   optional string category_description = 4;
   // The category balance as a scale-2 decimal string, for example "1234.56",
-  // pattern ^-?[0-9]+\.[0-9]{2}$ (Data Layouts · CVTRA01Y · TRAN-CAT-BAL
-  // S9(09)V99).
+  // at most 9 integer digits and 2 decimals, pattern ^-?[0-9]{1,9}\.[0-9]{2}$
+  // (Data Layouts · CVTRA01Y · TRAN-CAT-BAL S9(09)V99).
   string balance = 5;
 }
 
@@ -310,9 +318,10 @@ message ListTransactionsRequest {
   // account's transactions are those whose card number belongs to one of its
   // cross-reference records.
   string account_id = 1;
-  // Optional filter on the transaction type code, pattern ^[A-Za-z0-9]{2}$
-  // (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)); unset returns every type. A
-  // well-formed but unknown value returns empty transactions.
+  // Optional filter on the transaction type code, exactly two characters of
+  // any kind, pattern ^[\s\S]{2}$, because PIC X places no restriction on its
+  // characters (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)); unset returns
+  // every type. A well-formed but unknown value returns empty transactions.
   optional string type_code = 2;
   // Optional filter on the transaction category code, pattern ^[0-9]{4}$
   // (Data Layouts · CVTRA05Y · TRAN-CAT-CD 9(04)); unset returns every
@@ -326,10 +335,18 @@ message ListTransactionsRequest {
   optional int32 page_size = 4;
   // The opaque keyset cursor copied from a previous response's
   // next_page_token; empty means the first page. The token is version 1 and
-  // bound by a fingerprint to account_id and the filters. A token that does not
-  // decode, carries another version or was issued for another account or
-  // filter set returns INVALID_ARGUMENT with a details entry whose field is
-  // pageToken.
+  // bound by a fingerprint to account_id and the filters. At most 166
+  // characters, pattern ^[A-Za-z0-9_-]*$: the version-1 payload is at most 124
+  // bytes (a 1-byte version marker, the cursor's processed timestamp of at
+  // most 27 bytes in its RFC 3339 microsecond form and its 16-character
+  // transaction ID of at most 64 bytes in UTF-8, and the 32-byte HMAC-SHA-256
+  // fingerprint), so its unpadded URL-safe encoding is at most 166 characters
+  // from A-Z, a-z, 0-9, '-' and '_'.
+  // A longer value or any other character, padding '=' included, returns
+  // INVALID_ARGUMENT with a details entry whose field is pageToken before any
+  // upstream call or cache read. A token that does not decode, carries another
+  // version or was issued for another account or filter set returns
+  // INVALID_ARGUMENT with a details entry whose field is pageToken.
   string page_token = 5;
 }
 
@@ -345,7 +362,8 @@ message ListTransactionsResponse {
   repeated TransactionSummary transactions = 2;
   // The opaque cursor for the next page, passed through from the Transaction
   // Activity service. A plain string that is empty on the last page; the REST
-  // twin then omits nextPageToken.
+  // twin then omits nextPageToken. When non-empty, it is at most 166
+  // characters of A-Z, a-z, 0-9, '-' and '_', the bound page_token states.
   string next_page_token = 3;
   // Freshness of the data behind this response: FRESH, STALE or PARTIAL, with
   // precedence PARTIAL > STALE > FRESH. STALE means a cached value past its
@@ -361,10 +379,12 @@ message ListTransactionsResponse {
 // whose Description and Date columns it carries, the Date taken from
 // TRAN-ORIG-TS).
 message TransactionSummary {
-  // The transaction ID, 16 characters, pattern ^[A-Za-z0-9]{16}$
+  // The transaction ID, exactly 16 characters of any kind, pattern
+  // ^[\s\S]{16}$, because PIC X places no restriction on its characters
   // (Data Layouts · CVTRA05Y · TRAN-ID X(16)).
   string transaction_id = 1;
-  // The transaction type code, two characters, pattern ^[A-Za-z0-9]{2}$
+  // The transaction type code, exactly two characters of any kind, pattern
+  // ^[\s\S]{2}$, because PIC X places no restriction on its characters
   // (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)).
   string type_code = 2;
   // The transaction category code, four digits, pattern ^[0-9]{4}$
@@ -375,8 +395,8 @@ message TransactionSummary {
   // Description column).
   string description = 4;
   // The transaction amount as a scale-2 decimal string, negative for returns,
-  // for example "1234.56", pattern ^-?[0-9]+\.[0-9]{2}$
-  // (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
+  // for example "1234.56", at most 9 integer digits and 2 decimals, pattern
+  // ^-?[0-9]{1,9}\.[0-9]{2}$ (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
   string amount = 5;
   // When the transaction originated, RFC 3339 with microseconds and Z, for
   // example "2024-03-05T14:07:09.123456Z" (Data Layouts · CVTRA05Y ·
@@ -395,9 +415,13 @@ message GetTransactionRequest {
   // transaction's card number must be among this account's cross-reference
   // records.
   string account_id = 1;
-  // The transaction ID, 16 characters, pattern ^[A-Za-z0-9]{16}$
+  // The transaction ID, exactly 16 characters of any kind, pattern
+  // ^[\s\S]{16}$, because PIC X places no restriction on its characters
   // (Data Layouts · CVTRA05Y · TRAN-ID X(16); Use Cases · COTRN01C reads by
-  // transaction ID).
+  // transaction ID). A value of 16 spaces or of 16 NUL characters (U+0000,
+  // the screen's LOW-VALUES) is empty and returns INVALID_ARGUMENT with a
+  // details entry whose field is transactionId, because Use Cases · COTRN01C
+  // rejects a Tran ID of SPACES or LOW-VALUES as empty.
   string transaction_id = 2;
 }
 
@@ -422,10 +446,12 @@ message GetTransactionResponse {
 // (Data Layouts · CVTRA05Y; Use Cases · COTRN01C). Field names and numbers
 // equal those of the Transaction Activity service's transaction.
 message Transaction {
-  // The transaction ID, 16 characters, pattern ^[A-Za-z0-9]{16}$
+  // The transaction ID, exactly 16 characters of any kind, pattern
+  // ^[\s\S]{16}$, because PIC X places no restriction on its characters
   // (Data Layouts · CVTRA05Y · TRAN-ID X(16)).
   string transaction_id = 1;
-  // The transaction type code, two characters, pattern ^[A-Za-z0-9]{2}$
+  // The transaction type code, exactly two characters of any kind, pattern
+  // ^[\s\S]{2}$, because PIC X places no restriction on its characters
   // (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)).
   string type_code = 2;
   // The transaction category code, four digits, pattern ^[0-9]{4}$
@@ -438,8 +464,8 @@ message Transaction {
   // (Data Layouts · CVTRA05Y · TRAN-DESC X(100)).
   string description = 5;
   // The transaction amount as a scale-2 decimal string, negative for returns,
-  // for example "1234.56", pattern ^-?[0-9]+\.[0-9]{2}$
-  // (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
+  // for example "1234.56", at most 9 integer digits and 2 decimals, pattern
+  // ^-?[0-9]{1,9}\.[0-9]{2}$ (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
   string amount = 6;
   // The merchant ID, nine digits, pattern ^[0-9]{9}$
   // (Data Layouts · CVTRA05Y · TRAN-MERCHANT-ID 9(09)).
