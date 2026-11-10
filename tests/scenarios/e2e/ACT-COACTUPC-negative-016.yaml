@@ -1,7 +1,7 @@
 # COACTUPC refuses an Open Date whose month is outside 1-12: month 15 gives
 # 'Open Date: Month must be a number between 1 and 12.' and nothing is saved.
-# Months 00 and 13, the edges of the range, are ACT-COACTUPC-boundary-01 and
-# -04; this negative case enters 15.
+# Months 00 and 13, the edges of the range, are ACT-COACTUPC-boundary-05 and
+# -08; this negative case enters 15.
 #
 # Steps 1-2 reach the COACTUP search screen as ACT-COACTUPC-alternate-01 does:
 # entered from COMEN01C without CDEMO-PGM-REENTER, COACTUPC sends the cleared

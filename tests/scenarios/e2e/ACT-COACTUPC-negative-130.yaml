@@ -1,0 +1,341 @@
+# COACTUPC refuses an account update whose zip does not belong to the state:
+# the State with Zip cross edit 1280-EDIT-US-STATE-ZIP-CD, which
+# 1200-EDIT-MAP-INPUTS performs once every field edit has passed
+# [app/cbl/COACTUPC.cbl:1664-1669,2536-2558].
+#
+# Steps 1-3 sign on, choose main-menu option 2 and fetch account 00000000001
+# as ACT-COACTUPC-alternate-03 does: the details of the account and of the
+# invented customer 000000001 are shown with ACUP-SHOW-DETAILS in the returned
+# COMMAREA, and 3320-UNPROTECT-FEW-ATTRS gives every editable field MDT on, so
+# all of them come back on the next AID [app/cbl/COACTUPC.cbl:2568-2580,
+# 2787-2865,3500-3561].
+# Step 4 types 12546, the zip of repository customer 000000001, over the Zip
+# (ACSZIPC, shown as '27601') and presses ENTER; State stays NC:
+# - 1100-RECEIVE-MAP moves the received '12546', neither '*' nor spaces, to the
+#   10-byte ACUP-NEW-CUST-ADDR-ZIP [app/cbl/COACTUPC.cbl:1350-1355].
+# - 1205-COMPARE-OLD-NEW finds the trimmed new zip unequal to the fetched
+#   '27601', so a change has occurred, and 1200-EDIT-MAP-INPUTS sets
+#   ACUP-CHANGES-NOT-OK and runs the field edits in screen order
+#   [app/cbl/COACTUPC.cbl:1460-1470,1744-1747,1769-1771].
+# - Account Status, the three account dates, the five amounts, the SSN, the
+#   Date of Birth, the FICO Score, the names and Address Line 1 pass on the
+#   repository account and the invented customer and leave the message line
+#   off [app/cbl/COACTUPC.cbl:876,1472-1590]. State NC passes
+#   1225-EDIT-ALPHA-REQD and 1270-EDIT-US-STATE-CD, leaving FLG-STATE-ISVALID
+#   [app/cbl/COACTUPC.cbl:1592-1602,2493-2511] [app/cpy/CSLKPCDY.cpy:1046].
+#   Zip '12546' is supplied, numeric and not zero, so 1245-EDIT-NUM-REQD
+#   leaves FLG-ZIPCODE-ISVALID [app/cbl/COACTUPC.cbl:1605-1611,2109-2176].
+#   City, Country, both phone numbers, EFT Account Id and Primary Card Holder
+#   pass as well [app/cbl/COACTUPC.cbl:1615-1662].
+# - Both flags valid, the cross edit runs: it STRINGs the state and the first
+#   two zip digits into US-STATE-AND-FIRST-ZIP2, giving 'NC12', which
+#   VALID-US-STATE-ZIP-CD2-COMBO does not list (North Carolina has only NC27
+#   and NC28) [app/cpy/CSLKPCDY.cpy:1072-1073,1186-1187]. It sets INPUT-ERROR,
+#   FLG-STATE-NOT-OK and FLG-ZIPCODE-NOT-OK and, the message line being off,
+#   STRINGs 'Invalid zip code for state', with no field name, into
+#   WS-RETURN-MSG [app/cbl/COACTUPC.cbl:2536-2558].
+# - INPUT-ERROR keeps ACUP-CHANGES-NOT-OK, and 2000-DECIDE-ACTION continues on
+#   it, so 9600-WRITE-PROCESSING, the only READ UPDATE and REWRITE path, does
+#   not run [app/cbl/COACTUPC.cbl:2562-2621].
+# - 3203-SHOW-UPDATED-VALUES shows the received values, ACSZIPC as received and
+#   the valid amounts re-edited through +ZZZ,ZZZ,ZZZ.99; 3250 sets
+#   PROMPT-FOR-CHANGES and moves the message to ERRMSG; 3300 keeps the fields
+#   editable and puts the cursor on ACSSTTE, the first flagged field; CSSETATY
+#   marks both ACSSTTE and ACSZIPC red without the '*' of a blank field; 3390
+#   makes F12=Cancel bright because changes were made, while F5=Save stays
+#   dark [app/cbl/COACTUPC.cbl:2870-2951,2955-2983,3121-3128,3363-3379,
+#   3566-3581] [app/cpy/CSSETATY.cpy:18-27].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Screen fields are compared at their full BMS length, trailing spaces kept.
+#   ERRMSG is 'Invalid zip code for state' (26 characters) in the 75-byte
+#   WS-RETURN-MSG, moved to the 78-byte ERRMSGO: 52 trailing spaces. ACSZIPC
+#   is '12546' in its 5-byte field and ACSSTTE 'NC' in its 2-byte field
+#   [app/bms/COACTUP.bms:366-369,382-385]. INFOMSG is the 40-byte WS-INFO-MSG
+#   in the 45-byte INFOMSGO.
+# - AADDGRP is sent as LOW-VALUES on screen 4 (the blank group id comes back as
+#   spaces, which 1100 turns into LOW-VALUES); s3270 shows nulls as spaces.
+# - FKEY05 and FKEY12 keep their INITIAL text; a dark (ASKIP,DRK) field is
+#   captured as blanks. Colour and cursor position are not in the s3270 text
+#   capture and are not asserted. No upper-case translation of input is
+#   assumed (CARDDEMO.CSD gives CAUP the profile DFHCICST).
+# - CURDATE and CURTIME come from the region clock, hence the matchers and
+#   clock_mode relative.
+#
+# Customer 000000001 is replaced by invented data that passes every COACTUPC
+# field edit (the repository record has FICO 274, below 300, and Phone Number
+# 2 area code 373, either of which would compose its own message first and so
+# hide this one), so the State with Zip combination is the only refusal
+# [app/cbl/COACTUPC.cbl:2225-2531].
+# Account 00000000001 and its cross-reference stay as in the repository.
+id: ACT-COACTUPC-negative-130
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 2 (Account Update), fetches
+  account 00000000001, whose customer lives in NC at zip 27601, types 12546
+  over the Zip and presses ENTER. Every field edit passes, but NC with a zip
+  starting 12 is not a valid state and zip combination, so COACTUPC refuses
+  the change: it shows the received values again, editable, with 'Invalid zip
+  code for state' in the message line, the zip as typed, the change prompt
+  'Update account details presented above.' and F12=Cancel made visible.
+  Nothing is saved: ACCTDATA and CUSTDATA still hold the fetched records.
+# Primary item first, then the program, the maps asserted, the transaction of
+# steps 3 and 4, the CSD files COACTUPC reads, and the online-only copybooks it
+# copies. The change prompt 'Update account details presented above.'
+# (INV-ACT-030) is asserted but verified by its own scenario. Sign-on (CC00,
+# COSGN00, USRSEC) and the menu transaction are verified by the SEC and MNU
+# scenarios; the batch record copybooks and the data files are verified at the
+# lowest level that executes them.
+inventory_ids:
+- INV-ACT-188  # COACTUPC State with Zip: zip code valid for the state (1280-EDIT-US-STATE-ZIP-CD)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, where option 2 is entered
+- INV-ACT-004  # COACTUP map, the search, detail and refused-change screens
+- INV-CFG-009  # CAUP transaction, which runs the fetch and the field edits
+- INV-CFG-006  # CXACAIX CSD file: card cross-reference by account id
+- INV-CFG-001  # ACCTDAT CSD file: account master read
+- INV-CFG-005  # CUSTDAT CSD file: customer master read
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and ids
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-007  # CSLKPCDY: the state code, area code and state/zip combination lookups
+- INV-LAY-008  # CSMSG01Y, copied by COACTUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COACTUPC
+- INV-LAY-010  # CSSETATY: the error attribute set on ACSSTTE and ACSZIPC
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
+- INV-LAY-013  # CSUTLDPY: the date edits the earlier dates pass
+- INV-LAY-014  # CSUTLDWY: the date-edit working storage
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# The UniKix COACTUPC keeps this cross edit and its message unchanged but drops
+# FUNCTION TRIM from the change-detection comparisons that decide whether the
+# edits run, and changes the field edits that must all pass before it; the
+# app/ behaviour is pinned.
+- GAP-DOC-022
+# The UniKix COACTUP.bms differs at row 1, columns 1-9, where TRNNAME stands.
+- GAP-DOC-025
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    # Customer 000000001 replaced by invented data, as in the other COACTUPC
+    # scenarios; the 168-byte FILLER keeps the repository record's spaces.
+    CUSTDATA:
+      base: CUSTDATA
+      records:
+      - CUST-ID: '000000001'
+        CUST-FIRST-NAME: Testfirst
+        CUST-MIDDLE-NAME: Testmiddle
+        CUST-LAST-NAME: Testlast
+        CUST-ADDR-LINE-1: 100 Test Street
+        CUST-ADDR-LINE-2: Suite 1
+        CUST-ADDR-LINE-3: Raleigh
+        CUST-ADDR-STATE-CD: NC
+        CUST-ADDR-COUNTRY-CD: USA
+        CUST-ADDR-ZIP: '27601'
+        CUST-PHONE-NUM-1: (919)555-0101
+        CUST-PHONE-NUM-2: (919)555-0102
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: TESTGOVT0001
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: Y
+        CUST-FICO-CREDIT-SCORE: '700'
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+# PASSWORD is the documented demo password of README.md, not a secret.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '2'
+  - aid: ENTER
+    '@map': COACTUP
+    fields:
+      ACCTSID: '00000000001'
+  - aid: ENTER
+    '@map': COACTUP
+    fields:
+      ACSZIPC: '12546'
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  # The fetched account and customer, editable, with the change prompt.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: '                                                                              '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: '       '
+    FKEY12: '          '
+  # The refused change: the received values again, State NC and the Zip as
+  # received, the state/zip message, the change prompt, and F12=Cancel shown
+  # while F5=Save stays dark.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '12546'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: 'Invalid zip code for state                                                    '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: '       '
+    FKEY12: 'F12=Cancel'
+  # The change is refused, so neither master record is rewritten: both files
+  # keep their 50 records, account 00000000001 keeps its repository values and
+  # customer 000000001 the invented values, zip 27601 included.
+  file_state:
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-GROUP-ID: '          '
+    CUSTDATA:
+      count: 50
+      contains:
+      - CUST-ID: '1'
+        CUST-FIRST-NAME: 'Testfirst                '
+        CUST-MIDDLE-NAME: 'Testmiddle               '
+        CUST-LAST-NAME: 'Testlast                 '
+        CUST-ADDR-LINE-1: '100 Test Street                                   '
+        CUST-ADDR-LINE-2: 'Suite 1                                           '
+        CUST-ADDR-LINE-3: 'Raleigh                                           '
+        CUST-ADDR-STATE-CD: 'NC'
+        CUST-ADDR-COUNTRY-CD: 'USA'
+        CUST-ADDR-ZIP: '27601     '
+        CUST-PHONE-NUM-1: '(919)555-0101  '
+        CUST-PHONE-NUM-2: '(919)555-0102  '
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'
+
