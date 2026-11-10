@@ -29,6 +29,8 @@ Parent epic: [CS-13 Reference Data Integration](../README.md)
 >   - Seed location: the setting `card-servicing.fixture.reference-data-location`, declared with its default `classpath:reference-data/` in this class, so `application.yml` and `CardServicingProperties` are not edited and no environment variable is added. It is overridden at loader start with a start argument such as `--card-servicing.fixture.reference-data-location=file:/data/reference-data/`, with no rebuild of the service.
 >   - Row checks, applied before any write: a type code matches the contract type-code pattern `^[A-Za-z0-9]{2}$`; a category code matches `^[0-9]{4}$`; a description is trimmed of leading and trailing spaces and then holds 1 to 50 characters; a code key appears once per seed file. A row failing a check is skipped and counted, never stored in part.
 >     > SCOPE-QUESTION (Resolved): The contract type-code pattern now reads `^[\s\S]{2}$` (exactly two characters of any kind, the TRAN-TYPE X(02) domain), and the row check uses that pattern.
+>     >
+>     > SCOPE-QUESTION (Resolved): The row checks above give a rejected seed row only a skipped count, while `docs/data-model.md` § Fixture rules requires each rejected seed row to be logged with its seed file, its position in that file and the failed check, apart from a foreign-key skip. Resolution: for each row a row check rejects, `ReferenceDataFixtureLoader` writes one WARN log line `Seed row rejected: file=<seed file> row=<n> check=<check>`. The seed file is `transaction-types.yaml` or `transaction-categories.yaml`, `<n>` is the row's 1-based position in that file's row list, and `<check>` is the first check the row fails, taken in the order `type-code`, `category-code`, `description`, `duplicate-key`. A category skipped by the CS-09-001 foreign-key skip writes no such line, so for each entity the skipped count less its rejection lines equals its foreign-key skips. The loaded, skipped and derived-timestamp counts below stay unchanged.
 >   - The category loader's parent-key check uses the CS-09-001 foreign-key skip: a category whose type code names no `transaction_type` row is skipped and counted.
 >   - Writes replace each row by its code key with `insert … on conflict … do update`, changing a stored row only when its description differs, and never delete a row.
 >   - Counts: loaded counts every accepted row, whether inserted, updated or unchanged; skipped counts every rejected row; derived timestamps is always 0. Each entity's counts reach the load report after that entity's load transaction commits.
@@ -63,9 +65,13 @@ Parent epic: [CS-13 Reference Data Integration](../README.md)
 > - AC1: With the packaged seed files, the reference entity loaders write 7 `transaction_type` rows and 18 `transaction_category` rows, and the load report shows 7 loaded, 0 skipped and 0 derived timestamps for transaction types and 18 loaded, 0 skipped and 0 derived timestamps for transaction categories.
 > - AC2: Stored codes and descriptions equal the seed rows field for field, with leading zeros kept, including `01` Purchase, `07` Adjustment, `01`/`0001` Regular Sales Draft, `03`/`0001` Credit to Account and `07`/`0001` Sales draft credit adjustment.
 > - AC3: A category row `09`/`0001` added to a copy of the category seed file, with no `09` type row, is skipped, not stored, and counted as 1 skipped for transaction categories, while the other 18 category rows load.
+>   > SCOPE-QUESTION (Resolved): With the orphan `09`/`0001` row added, the load writes no seed-row rejection line, which shows that its 1 skipped is a foreign-key skip and not a failed row check.
 > - AC4: A type row whose code does not match `^[A-Za-z0-9]{2}$` (for example `1`, `ABC`, or an unquoted `01` that YAML reads as a number), or a category row whose category code does not match `^[0-9]{4}$` (for example `001` or `00A1`), is skipped, not stored, and counted as 1 skipped for its entity. A second row repeating a code key already read from the same seed file is skipped and counted the same way.
 >   > SCOPE-QUESTION (Resolved): The corrected type-code pattern `^[\s\S]{2}$` still rejects each listed type-code example (`1` and `ABC` by length, and an unquoted `01` that YAML reads as the number 1), and any two-character code such as `A-` now passes the type-code check.
+>   >
+>   > SCOPE-QUESTION (Resolved): Each row this criterion skips also writes exactly one seed-row rejection line naming its seed file, its 1-based row position and its failed check: `type-code` for a type code of the wrong shape, the unquoted `01` read as a number included, `category-code` for a category code of the wrong shape, and `duplicate-key` for the second row repeating a code key, while the first row carrying that key loads and writes none.
 > - AC5: Descriptions are stored with leading and trailing spaces removed, so `"  Purchase  "` is stored as `Purchase`. A description of 50 characters after trimming loads. A description of 51 characters after trimming, or one that is empty after trimming, is skipped and counted.
+>   > SCOPE-QUESTION (Resolved): Each description this criterion skips, of 51 characters or empty after trimming, also writes exactly one seed-row rejection line naming its seed file, its 1-based row position and the check `description`. The 50-character description writes none.
 > - AC6: With type `05` changed from `Refund` to `Refund issued` in a copy of the seed files supplied through the seed-location start argument, rerunning the reference entity loaders updates exactly that row, leaves the other 24 rows unchanged, needs no rebuild of the service and keeps the row counts at 7 and 18. An override naming a folder without `transaction-types.yaml` fails the type load with an error naming that file, and no later-ordered loader starts.
 > - AC7: The `db/` scripts are applied in file-name order, starting with `01-reference-data-tables.sql`, before the first type row is read. With a Card Data entity loader registered at a later order, the load report lists transaction types, then transaction categories, then the Card Data entity.
 >
@@ -91,7 +97,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; pass when all tests pass with ≥80% line coverage per module. `ReferenceDataFixtureLoaderTest` covers AC1–AC7: the packaged seed load, field-for-field values, the orphan category, code shapes and duplicate keys, trimming and the 50-character boundary, reload through the seed-location start argument and the missing seed file, and the schema step and load order.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; pass when all tests pass with ≥80% line coverage per module. `ReferenceDataFixtureLoaderTest` covers AC1–AC7: the packaged seed load, field-for-field values, the orphan category, code shapes and duplicate keys, trimming and the 50-character boundary, reload through the seed-location start argument and the missing seed file, and the schema step and load order. For each rejected seed row it asserts, through Spring Boot's `OutputCaptureExtension`, exactly one seed-row rejection line with that row's seed file, 1-based row position and failed check, and it asserts that the orphan category and the 50-character description write none.
 - Integration: Applies, through the Reference Data integration suite CS-13-004, which proves the seed load and the reload against the `postgres:16.6` container. Command `./gradlew :card-servicing-service:integrationTest`; pass when all suites pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Not applicable — 25 reference rows load once per stack start, and this story has no request path. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -131,6 +137,7 @@ How it behaves:
 
 - The loader applies the schema scripts first, then reads the type seed set, then the category seed set.
 - Each row is checked for code shape, description length and a repeated key before any write.
+- Each rejected row is logged with its seed set, its position and the failed check, so it reads apart from a parent-key skip.
 - A category whose type has no stored type row is skipped and counted.
 - A good row is inserted, or updated in place when its code key exists with a different description.
 - A row missing from the seed set stays in the table, so no referenced row disappears.
@@ -195,9 +202,9 @@ Open assumptions:
 |---|---|---|
 | AC1 | Holds | the loaders write every seed row and report the counts after commit |
 | AC2 | Holds | the loader keeps codes as text and trims each description before the write |
-| AC3 | Holds | the loader core's parent-key check skips the orphan category |
-| AC4 | Holds | the shape and repeated-key checks run on every row before the write |
-| AC5 | Holds | the length check runs on the trimmed description |
+| AC3 | Holds | the loader core's parent-key check skips the orphan category with no rejection line |
+| AC4 | Holds | the shape and repeated-key checks run on every row before the write and log each rejection |
+| AC5 | Holds | the length check runs on the trimmed description and logs each rejection |
 | AC6 | Holds | the loader reads its seed location at start and replaces rows by code key |
 | AC7 | Holds | the loader applies the scripts first and gives the reference loaders the lowest load orders |
 

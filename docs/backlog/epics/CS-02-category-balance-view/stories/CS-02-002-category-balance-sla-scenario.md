@@ -25,6 +25,9 @@ Parent epic: [CS-02 Category Balance View](../README.md)
 >   - Volume check: before any call to the service, the class reads `docker compose -f tests/docker-compose.yml logs fixture-loader` and checks the load-report entries of AC5.
 >   - Content probes: before the measured calls, the class sends four requests for `10000002000`, the last account of `USER0001`'s slice and outside every target list, with `fixture-token-user0001`: unfiltered and with `typeCode` `01`, `02` and `03`. It parses each body with the Jackson parser Spring Boot already brings.
 >   - Shape split: after `run`, the class pairs each call record of the run result with the target it was sent for, groups the records into the unfiltered and the filtered shape, and computes p50, p95 and p99 of each shape over its 200 responses with the nearest-rank `PercentileCalculator` of CS-01-003. It writes one line per shape to standard output and appends the same lines to the scenario's report file under `cardservicing.performance.report-dir` once the runner has written it.
+>
+>     SCOPE-QUESTION (Resolved): What ties each call record to the target it was sent for, when ten virtual users complete their calls concurrently? Each call record of the runner's result carries its user number, its call index and the target it was sent for (CS-01-003), so the class groups the records by target alone: a record whose target carries a `typeCode` value belongs to the filtered shape, and one whose target carries none to the unfiltered shape. The grouping reads neither completion order nor a record's position in the result, so the same run always yields the same two groups. Each group must hold exactly 500 records, all with status 200, and any other count fails the scenario before the per-shape percentiles are computed.
+>
 >   - Stub conditions: the scenario declares the runner's no-timeout-retry condition on `cardservicing.carddata.v1.CardDataService/ListCategoryBalances`, `cardservicing.auth.v1.AuthService/ValidateToken` and `cardservicing.auth.v1.AuthService/AuthorizeAccountAccess`, each of which has entries in every run window.
 >   - Completion log: the class reads `docker compose -f tests/docker-compose.yml logs card-servicing-service` just before and just after the runner's `run`, waiting up to 5 s for the last lines, and checks the completion lines added in between.
 >   - Denial check: after the measured window, each regular identity sends one request for a sample account outside its entitlements through the class's own JDK `java.net.http.HttpClient` to the `cardservicing.performance.service-url` address. The class reads the highest `sequence` of the Card Data and Reference Data stub request logs (`GET /internal/stub/request-log`, CS-11-002) on the `cardservicing.performance.stub.card-data` and `cardservicing.performance.stub.reference-data` addresses before and after those five requests.
@@ -121,11 +124,12 @@ How it behaves:
 
 - Half of each virtual user's calls return all ten balances of an account.
 - The other half return the five, three or two balances of the first, second or third transaction type.
-- Each account takes the cold path on its first read, and the second virtual user of the identity often finds that entry warm.
+- Each account takes the cold path on whichever read reaches it first, and the identity's other virtual user finds it warm only when that read has already filled the entry.
 - Transaction type and category descriptions come from the cache after their first read in the run.
 - Four content probes on one account outside the lists confirm the balance count of each shape before measurement.
 - The loader log confirms the planning-baseline volume before the first request.
 - The completion log and the stub request logs give the deadline and retry evidence for the measured window.
+- The scenario splits the calls by shape through the target each call record names, never through the order the calls complete in.
 - One permission-denied call per identity runs after the measured window.
 
 | No. | Decision (vs rejected) | Pro | Con |
@@ -137,7 +141,7 @@ How it behaves:
 | 5 | The three transaction types in turn (vs one type only) | every filter selectivity of the volume is measured | each type gets a third of the filtered sample |
 | 6 | Denial calls after the measured window (vs denied targets inside the load) | the percentiles stay over successful requests | the denial adds calls after measurement |
 
-Effort and risk: small effort in one file, with the shape split resting on the runner's call records as the main risk.
+Effort and risk: small effort in one file, with runner capacity on the shared host inflating the per-shape percentiles as the main risk.
 
 ### Design Option B — unfiltered calls only
 
@@ -165,7 +169,7 @@ Effort and risk: smaller effort in one file, breaking the criteria that measure 
 - Why: it measures both request shapes the category balance view sends, on the shared runner, in one run of a thousand calls and one file.
 - Strongest argument against: the filtered share dilutes the unfiltered and combined percentile samples, so each shape rests on five hundred calls.
 - Shared items that do not decide the choice: the shared runner, the load shape, the identity mapping, the stride rule, the volume check, the permission-denied calls, the completion log check, the thresholds, failure injection off and the stack start and stop.
-- Flip conditions: the interface never sends the type filter, or the shared runner returns no call record that ties a latency to its target.
+- Flip conditions: the interface never sends the type filter.
 
 ## Design Validation
 
@@ -179,24 +183,24 @@ Settled assumptions:
 - No other scenario reads the category balances of the listed accounts.
 - The stack runs with failure injection off on its defaults and loads the synthetic volume before it reports ready.
 - The shared runner holds the load shape, the combined percentiles, the thresholds and the report.
+- Each call record of the shared runner's result names the user, the call position and the target the call was sent for.
 
 Open assumptions:
 
-- Call records in the shared runner's result tied to their targets Open → the result record of the performance harness story, read on the first run.
 - Runner capacity on the shared continuous integration host Open → repeated runs on that host compared against a run on an idle machine.
 
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Holds | each identity's list holds one hundred distinct accounts of its slice |
 | AC2 | Holds | every second entry carries one of the three transaction types the volume gives each account |
-| AC3 | Conditional | the shape split and the shared host capacity stay unproven until the first run |
+| AC3 | Conditional | the shared host capacity stays unproven until the first run |
 | AC4 | Holds | with failure injection off every upstream read answers on the success path |
 | AC5 | Holds | the loader log carries one load report line per entity |
 | AC6 | Holds | the access guard denies the request before any card data or reference data read |
 | AC7 | Holds | success-path stub calls end well inside the per-attempt limit |
 | AC8 | Holds | an attempt that never fails triggers no retry |
 | AC9 | Holds | fresh upstream reads and fresh cached descriptions give the fresh status |
-| AC10 | Conditional | the per-shape lines need call records tied to their targets |
+| AC10 | Holds | the target on each call record places every call in its shape line |
 
 ### Option B
 

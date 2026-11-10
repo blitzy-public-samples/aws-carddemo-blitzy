@@ -22,6 +22,9 @@ Parent epic: [CS-04 Transaction Detail Drill-Down](../README.md)
 >   - Virtual users: the runner's mapping, two per regular fixture identity `USER0001`–`USER0005`, users 1 and 2 as `USER0001` with `fixture-token-user0001` through users 9 and 10 as `USER0005` with `fixture-token-user0005` (CS-12-001).
 >   - Prechecks, before any call to the service: the `fixture-loader` load report read from `docker compose -f tests/docker-compose.yml logs fixture-loader` shows 100,000 synthetic category balances and 1,000,000 synthetic transactions with zero skipped rows, and `docker compose -f tests/docker-compose.yml exec -T <stub service> printenv STUB_LATENCY_MS STUB_FAILURE_RATE` prints 0 and 0 for each of the five stub services. Every `docker compose` command of this scenario runs through the JDK process API with the repository root as its working directory, and a non-zero exit or any other value fails the scenario.
 >   - Identifier sampling: before the measured window, an untimed setup pass lists the first page of each sampled account with `GET /v1/accounts/{accountId}/transactions?pageSize=20` and the owning identity's token. The sampled accounts are the first ten synthetic accounts of each identity's slice: `10000000001`–`10000000010` for `USER0001`, `10000002001`–`10000002010` for `USER0002`, `10000004001`–`10000004010` for `USER0003`, `10000006001`–`10000006010` for `USER0004` and `10000008001`–`10000008010` for `USER0005`. Each of them holds history, 100 transactions, except the large-history account `10000000001` in `USER0001`'s sample, which holds 100,000. The 20 `transactionId` values of each listing give 200 distinct identifiers per identity, listed as that identity's targets, and 100 per virtual user, so no measured call repeats a transaction.
+>
+>     SCOPE-QUESTION (Resolved): How does each of an identity's two virtual users get its own 100 identifiers, when by default the runner walks both users through the identity's whole list? The scenario sets the runner's split target assignment (CS-01-003). Each identity's list holds its 200 targets in sampled-account order, and within an account in listing order, so user 2n − 1, the identity's first user, walks the first 100, the identifiers of its first five sampled accounts, and user 2n walks the second 100, those of its last five: for `USER0001`, user 1 walks those of `10000000001`–`10000000005` and user 2 those of `10000000006`–`10000000010`. Before the measured window, the scenario checks that its five lists hold 1,000 distinct pairs of account and `transactionId`, 200 per identity, and otherwise fails before the first measured call. After `run`, it checks that the result's call records name 1,000 distinct requested pairs, 100 per user number, so no measured call repeats a transaction. With the cache emptied before the window, each of those 1,000 calls reads its transaction and its cross-reference from the stubs, which gives the call count of 1,000 for `GetTransaction` and for `GetCardCrossReference` that the stub conditions require.
+>
 >   - Cache start state: after the setup pass and before the measured window, the scenario empties the stack's cache with `docker compose -f tests/docker-compose.yml exec -T redis redis-cli FLUSHALL`, so no measured transaction is cached and each measured call reads `GetTransaction` and `GetCardCrossReference` from their stubs.
 >   - Stub conditions: the scenario declares the runner's no-timeout-retry condition on `cardservicing.transactionactivity.v1.TransactionActivityService/GetTransaction` and on `cardservicing.carddata.v1.CardDataService/GetCardCrossReference`, and requires from the result's stub figures a call count of 1,000 and a retry count of 0 for each of the two operations.
 >   - Completion log: the scenario reads `docker compose -f tests/docker-compose.yml logs card-servicing-service` just before and just after the runner's `run`, waiting up to 5 s for the last lines, and checks that the 1,000 completion lines added in between each carry `cutoffMs` ≤ 900.
@@ -50,6 +53,9 @@ Parent epic: [CS-04 Transaction Detail Drill-Down](../README.md)
 > - AC1: The scenario runs 10 concurrent virtual users, each making 100 sequential `GET /v1/accounts/{accountId}/transactions/{transactionId}` calls, for 1,000 measured calls. Every call targets a distinct transaction of a synthetic account inside the calling identity's entitlements. It runs against the Compose stack with 1,000,000 synthetic transactions and 100,000 synthetic category balances loaded. The fixture loader's load report, checked before the measured window, shows both counts with zero skipped rows.
 > - AC2: The report gives p50, p95 and p99 client-measured latency over successful measured calls, and each is below 1,000 ms.
 > - AC3: Every measured call returns 200 with `transaction.transactionId` equal to the requested `transactionId` and `X-Data-Status: FRESH`. Any non-200 response or other data status fails the scenario.
+>
+> SCOPE-QUESTION (Resolved): How does the scenario see the `transaction.transactionId` of each measured answer, when the measured calls run inside the runner's `run`? Through the runner's per-response check (CS-01-003). The scenario's check parses each 200 body with the Jackson parser Spring Boot already brings and accepts it only when `transaction.transactionId` equals the `transactionId` of the call's target, so a 200 answer carrying another identifier, lacking that field or failing to parse fails the scenario with a message naming the scenario, the user number, the call index and the request path. `X-Data-Status: FRESH` is read from each call record of the result, and a record with any other value, or none, fails the scenario after `run`. The setup listings supply the targets only and prove nothing about the measured answers.
+>
 > - AC4: The scenario runs with failure injection off, with `STUB_LATENCY_MS` and `STUB_FAILURE_RATE` at their Compose default of 0, and the report records both values.
 > - AC5: Setup calls that collect transaction identifiers run before the measured window and are excluded from the percentiles.
 > - AC6: Outside the percentile set, each regular fixture identity makes one call for an account outside its entitlements (e.g. `USER0001` → `10000002001`). Each such call returns 403 with `code` `PERMISSION_DENIED`, and the Transaction Activity and Card Data stub request logs gain no entry for it, so no account data is read from upstream before access is allowed. The cache side is proven by CS-12-003.
@@ -64,6 +70,8 @@ Parent epic: [CS-04 Transaction Detail Drill-Down](../README.md)
 >   - Config leaves the response unchanged.
 >
 >   These outcomes fall outside this scenario's percentiles and are proven under injected failures by CS-08-002 and the integration suites. This scenario fails if any measured call returns 503 or 504.
+>
+> SCOPE-QUESTION (Resolved): Does AC9's second bullet make a transaction-detail failure and a cross-reference failure fail hard alike? No. The TRD degradation table gives the two reads separate branches, each applied when the call fails after retries or is unfinished at the cut-off. A `GetTransaction` failure serves the cached transaction as a 200 marked `STALE` while its entry is within the 300 s max stale age that CS-10-006 sets, otherwise 503 or 504. A `GetCardCrossReference` failure returns 503 or 504 regardless of cache, even when the transaction came from cache, because cross-references are never cached. These injected outcomes, the degraded 200 included, fall outside this scenario's percentiles. CS-08-002 proves them on the endpoint: AC9 the `STALE` 200 and the 503 once the entry reaches its max stale age, AC10 the cross-reference 503 and 504 with the transaction held in a fresh cache entry, and AC12 a logged `cutoffMs` of at most 900 ms and a client-measured response below 1,000 ms for each degraded 200, 503 and 504. CS-08-003 AC4, AC9, AC11 and AC12 carry both branches and those two bounds to REST and gRPC, and the integration suites CS-10-007 (AC7) and CS-09-006 (AC8 and AC10) prove the transaction and cross-reference branches against real containers, each failure within the same bounds. This scenario stays success-only: its cache flush leaves no measured transaction with a usable entry, and under AC3 and AC9 any measured 503, 504 or `STALE` answer fails it.
 >
 > ### 3. Dependencies
 >
@@ -122,9 +130,9 @@ Before timing starts, an untimed setup pass lists the first page of the first te
 
 How it behaves:
 
-- Two virtual users share each regular identity and split its two hundred identifiers between them.
+- Two virtual users share each regular identity, and the runner gives the first hundred of its two hundred identifiers to one and the second hundred to the other.
 - The listing calls run before the cache is emptied and stay out of the timed set.
-- Every timed call must succeed with the requested transaction and a fresh data status header.
+- Every timed call must succeed with a fresh data status header, and an answer check confirms the requested transaction in each answer.
 - The median, 95th and 99th percentile of the thousand timed calls must each stay below one second.
 - The upstream request logs must show one transaction read and one card-link read per timed call, with no retry.
 - The service completion log must show a cut-off time of at most 900 ms for every timed call.
@@ -174,24 +182,25 @@ Settled assumptions:
 - Each regular identity's first ten synthetic accounts hold history.
 - Compose defaults keep injection off.
 - Synthetic rows match sample shape.
+- The load runner hands each of an identity's two virtual users its own half of that identity's targets when the scenario asks for split targets.
+- The load runner hands the scenario's answer check every successful answer with the target it was sent for.
 
 Open assumptions:
 
 - Open → whether cold card-link reads stay inside the threshold at full volume → settled by the first scenario run.
-- Open → whether the load runner hands each of an identity's two virtual users its own half of that identity's targets → settled by the performance harness story.
 - Open → whether the service container log carries one completion line per call with its cut-off time → settled by the first scenario run against the call policy story's log line.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Conditional | distinctness rests on the runner splitting an identity's targets between its two users |
+| AC1 | Holds | split targets give each virtual user its own hundred identifiers with none repeated |
 | AC2 | Conditional | cold-path latency at full volume is unproven until the first run |
-| AC3 | Holds | every target comes from a listing of an account the identity holds |
+| AC3 | Holds | the answer check compares each returned identifier with its target's identifier |
 | AC4 | Holds | the precheck reads each stub's injection values before timing |
 | AC5 | Holds | the setup pass ends before the timed window opens |
 | AC6 | Holds | the denied calls run after the timed window with both upstream logs compared |
 | AC7 | Holds | injection off leaves no failed or timed-out attempt |
 | AC8 | Conditional | the check rests on the completion log carrying the cut-off time per call |
-| AC9 | Holds | no injected failure runs, so any unavailable or deadline answer fails the scenario |
+| AC9 | Holds | no injected failure runs, so any unavailable, deadline or stale answer fails the scenario |
 
 ### Design Option B
 
@@ -200,6 +209,7 @@ Settled assumptions:
 - Compose defaults keep injection off.
 - The card-link read is never cached, so it reaches its upstream service on every call.
 - Each repeated transaction belongs to an account its identity holds.
+- The load runner hands the scenario's answer check every successful answer with the target it was sent for.
 
 Open assumptions:
 
@@ -210,13 +220,13 @@ Open assumptions:
 |---|---|---|
 | AC1 | Breaks | one transaction is not a distinct sample |
 | AC2 | Holds | cached transaction reads keep every percentile low |
-| AC3 | Holds | the repeated transaction answers with its own identifier |
+| AC3 | Holds | the answer check compares the repeated identifier on every call |
 | AC4 | Holds | the precheck reads each stub's injection values before timing |
 | AC5 | Holds | no setup calls exist |
 | AC6 | Holds | the denied calls run after the timed window with both upstream logs compared |
 | AC7 | Holds | injection off leaves no failed or timed-out attempt |
 | AC8 | Conditional | the check rests on the completion log carrying the cut-off time per call |
-| AC9 | Holds | no injected failure runs, so any unavailable or deadline answer fails the scenario |
+| AC9 | Holds | no injected failure runs, so any unavailable, deadline or stale answer fails the scenario |
 
 ## Metadata
 

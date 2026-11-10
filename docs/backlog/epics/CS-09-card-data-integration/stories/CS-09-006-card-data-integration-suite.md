@@ -23,6 +23,15 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 > - `card-servicing-service/src/test/java/com/example/cardservicing/integration/carddata/CardDataIntegrationTest.java`, the `integration`-tagged suite:
 >   - Extends `IntegrationTestSupport` (`card-servicing-service/src/test/java/com/example/cardservicing/support/IntegrationTestSupport.java`, CS-11-007), so it carries `@Tag("integration")`, runs under the `integration` profile and reuses the base's `postgres:16.6` and `redis:7.4.2` containers, started once per test JVM, with the Redis container emptied by `FLUSHALL` before each test. It starts a `@SpringBootTest` context under that profile and holds one `@Nested` group per failure mode. Every group except the cache-outage group shares that container pair and that context.
 >   - Before the first group, the fixture loader loads the CardDemo sample into the container database: the suite runs the CS-09-001 `FixtureLoader` job once under the `fixture-load` profile against that database, its schema step (CS-13-001) applies the `db/` scripts in file-name order, and its registered entity loaders load the reference data (CS-13-001) and the sample accounts, cross-references and category balances (CS-09-003).
+>
+>   > SCOPE-QUESTION (Resolved): The bullet above names only some of the loads the job runs, and it runs the full job in the `cardservicing` database that the CS-11-007 base shares with every suite, where CS-10-007 runs the same job, while the loader stories define no rule for a load over rows already stored and CS-09-007 AC5 proves repeatability only from an empty store. Resolution:
+>   >
+>   > - The job runs every registered entity loader, none of which a setting switches off: besides the loads named above, the sample transaction load of CS-10-002 (load order 6) and, once CS-09-007 and CS-10-008 land, their synthetic volume loads (load orders 101–104). The synthetic rows sit in the disjoint account range from `10000000001`, under their own load-report entities `synthetic_account`, `synthetic_card_cross_reference`, `synthetic_category_balance` and `synthetic_transaction_record`.
+>   > - Reset, then load: before the job runs, the suite opens a JDBC connection to the base's PostgreSQL container with the container's own JDBC URL, user name and password, read back from the container. It reads every table of the `cardservicing` database's `public` schema from the `pg_tables` catalogue view, drops them in one `DROP TABLE … CASCADE` statement, or drops nothing when the view lists none, and asserts that the view then lists no table in that schema. It then runs the job once. The job's schema step re-creates every table from its create-if-absent scripts, so every entity load starts from an empty store, the precondition CS-09-007 AC5 states, whichever suite ran before. Rows another suite loaded are discarded, never loaded over, so no load meets a stored key and no count drifts, and because every load is deterministic, this suite and CS-10-007 leave the same rows in either class order.
+>   > - One class at a time: JUnit Jupiter runs test classes one after another unless parallel execution is enabled, and no story enables it. The suite class also carries JUnit's `@Isolated`, so it never runs beside another test class even if parallel execution is enabled later. The per-test reference reload of CS-13-004 re-applies the schema scripts and replaces its seed rows by code, so it needs no row this suite leaves.
+>   > - Not a suite-owned database: the CS-11-007 base binds the store URL in its own `@DynamicPropertySource` method, and under Spring Framework 6.2.12 (Spring Boot 3.5.7) the superclass registration of the same property replaces the subclass's, so a suite cannot point its context at another database without changing the shared base, which CS-11-007 says suites extend with no change.
+>   > - The reset and the annotation sit in the suite file, so the 2 files touched stand.
+>
 >   - Registers `StubHarness.of(...)` (CS-11-002) as a static extension over two registrations, each on a `127.0.0.1` loopback port inside the test JVM. The first is a test-local anonymous `StubRegistration` under stub name `card-data`, which `StubHarness.allRegistered()` never discovers, serving the CS-09-004 `CardDataStubService` over its relational `CardDataMockDataProvider`. A nested `@TestConfiguration` builds that provider over the context's CS-09-002 repositories, so the stub reads the container database on every call. The second is `ConfigStubRegistration` (CS-11-005) under stub name `config`, whose port the integration profile's Config client target needs when the context starts.
 >   - A `@DynamicPropertySource` method supplies `integration.stub-ports.config` and sets `card-servicing.clients.card-data.target` to `127.0.0.1:<card-data port>`, so the context's `CardDataClient` calls the test-local stub over a real gRPC channel.
 >   - Each group resets injection to its own settings through `inject("card-data", latencyMs, failureRate)` and clears every `cs:v1:` cache entry before its first call, so no override or entry crosses groups.
@@ -69,6 +78,9 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 > - AC10: Deadline: every failure case of AC2, AC3 and AC5 to AC9 logs `cutoffMs` ≤ 900 and has a caller-measured response, from the deadline's start to the future's completion, below 1,000 ms.
 > - AC11: Tagging: the suite carries the `integration` tag and runs under `./gradlew :card-servicing-service:integrationTest`, in the Integration stage of `.github/workflows/ci.yml` on every pull request. It is excluded from `./gradlew :card-servicing-service:test`: that task's report under `card-servicing-service/build/test-results/test/` lists no `CardDataIntegrationTest`. A pull request with one failing case in the suite fails the gate.
 > - AC12: Sample load in the container (the proof CS-09-001 and CS-09-003 hand to this suite): the fixture loader job exits with status 0, and its load report holds `account` 50 loaded / 0 skipped, `card_cross_reference` 50 loaded / 0 skipped and `category_balance` 50 loaded / 0 skipped, each with 0 derived timestamps. Read back from the container database, the three tables hold 50 rows each, with the stored values that CS-09-003 AC2, AC4 and AC5 state for `00000000001` and `00000000050`.
+>
+> > SCOPE-QUESTION (Resolved): The job also runs the synthetic volume loads of CS-09-007 once that story lands (note beneath the fixture-loader bullet), and they add 10,000 accounts, 10,000 cross-references and 100,000 category balances to the same three tables, so whole-table counts of 50 hold only until then. Which rows does the read-back count? Resolution: the 50-row read-back counts only the sample account range `00000000001`–`00000000050`: `account` holds 50 rows in that range, and `card_cross_reference` and `category_balance` each hold 50 rows whose account lies in it, with the stored values that CS-09-003 AC2, AC4 and AC5 state for `00000000001` and `00000000050`. The three sample entries stay `account`, `card_cross_reference` and `category_balance` at 50 loaded / 0 skipped / 0 derived timestamps, and AC12 does not count the synthetic entries `synthetic_account`, `synthetic_card_cross_reference` and `synthetic_category_balance`. Because the load starts from the emptied store, each of the three tables also holds exactly the sum of the loaded counts of its own load-report entries: 50, 50 and 50 before CS-09-007 lands, and 10,050, 10,050 and 100,050 after, whichever integration suite ran first in the test JVM.
+>
 > - AC13: Schema in the container (the proof CS-09-002 hands to this suite): on scratch databases the suite creates in the shared PostgreSQL container, each prepared as the criterion states, the suite proves CS-09-002 AC1 to AC10 as written, the catalogue read-backs of AC2 and AC3 included. It drops every scratch database afterwards, so the suite database holds only the loaded rows.
 > - AC14: Provider equality on stored rows (the proof CS-09-004 hands to this suite): for `00000000001`, `00000000050` and `00000000099`, a client of the generated `CardDataServiceGrpc` stub calls each of the three operations on the test-local stub over the stored rows and on a second harness serving `CardDataStubRegistration` over `CardDataFixtureSet`. The answers compare as the note beneath CS-09-004 AC14 sets it: equal status and equal response fields, presence of `group_id` included, `NOT_FOUND` `ErrorObject` values equal in `code`, `message` and `details`, and each `traceId` checked on its own as a 32-character lower-case hexadecimal value distinct from the other.
 >
@@ -116,15 +128,15 @@ Shared by both options:
 - Topology: the relational store and cache containers come from the shared integration base, and the stub runs on a loopback port inside the test process.
 - Naming: groups are named after the failure mode they prove.
 - Addressing: the client is pointed at the loopback stub through its target address.
-- Isolation: each group resets injection and clears cache entries, and only the cache-outage case stops a cache, its own dedicated one.
+- Isolation: the suite never runs beside another test class, each group resets injection and clears cache entries, and only the cache-outage case stops a cache, its own dedicated one.
 - Fallback: the stale path is tested only against the real cache.
-- Provisioning: the fixture loader loads the sample once per suite.
-- Cut-over: the same suite can later point at a real service test instance by address.
+- Provisioning: before its one load, the suite drops every table that an earlier suite left in the shared relational store and checks that none remain, so the fixture loader rebuilds the schema and loads the sample, with the synthetic volume it always adds, into an empty store.
+- Cut-over: pointing the client at a real card data service changes only its target address and credential source, and a suite run against that service needs its own data setup, fault injection and call observation, because the sample rows loaded into the local relational store, the injected failures and the request log exist only beside the local stub.
 - Failures: unavailable, slow, not-found and cache outage.
 
 ### Design Option A — one file with a group per failure mode
 
-The suite is one test file holding one nested group per failure mode, all sharing the container pair that the integration base starts once per test process. The sample is loaded into the relational store before the first group, and the stub reads that store on every call. Each group takes its injected delay, failure rate and entry ages from the suite settings, prepares the cache state it needs and reads the stub's request log.
+The suite is one test file holding one nested group per failure mode, all sharing the container pair that the integration base starts once per test process. The relational store is emptied and the sample loaded into it before the first group, and the stub reads that store on every call. Each group takes its injected delay, failure rate and entry ages from the suite settings, prepares the cache state it needs and reads the stub's request log.
 
 How it behaves:
 
@@ -134,7 +146,9 @@ How it behaves:
 - The cross-reference group warms first and then shows that the read still fails hard with nothing cached.
 - The cache-outage group warms its own cache container, stops it and reads again.
 - Each failure call runs under its own request budget and records the cut-off and the caller's elapsed time.
+- Before the load, the suite drops every table an earlier suite left and checks that the store holds none.
 - The schema checks run on scratch databases in the same relational container, and the load and provider checks read the loaded sample.
+- The load check counts only the sample account range, so the synthetic rows never change its counts.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
@@ -170,7 +184,7 @@ Effort and risk: similar effort, with the risk that the stale and cache-outage p
 - Option: Option A.
 - Why: stateful setups stay readable, because each group states its warm read, ageing or cache stop as its own steps.
 - Strongest argument against: one file grows long as the failure modes accumulate.
-- Shared items that do not decide the choice: the container pair, the fixture loader and the deadline assertions.
+- Shared items that do not decide the choice: the container pair, the store reset, the fixture loader and the deadline assertions.
 - Flip conditions: every failure mode needs identical setup, or the file passes one to two screens per group.
 
 ## Design Validation
@@ -184,6 +198,10 @@ Settled assumptions:
 - The first sample account holds a current balance of 194.00 and a credit limit of 2020.00.
 - The shared integration base supplies the container pair and empties the cache before each test.
 - The account entry has a 60-second freshness window and a 300-second maximum stale age.
+- Test classes run one at a time, and this suite never runs beside another class.
+- The store is emptied before the load, so every entity load starts from an empty store whichever suite ran before.
+- The synthetic volume that the loader always adds sits outside the sample account range, so the sample read-back never counts it.
+- The shared base gives every suite the same store address, so a suite cannot move to a database of its own without a change to the base.
 
 Open assumptions:
 
@@ -203,7 +221,7 @@ Open assumptions:
 | AC9 | Holds | the dedicated cache container stops without touching the shared pair |
 | AC10 | Holds | every failure path reaches its cut-off before the response bound |
 | AC11 | Holds | the inherited integration tag routes the suite to the integration task alone |
-| AC12 | Holds | the loader runs once against the relational container before any group |
+| AC12 | Holds | one load into the emptied store precedes any group, with the read-back held to the sample range |
 | AC13 | Holds | scratch databases keep the schema checks apart from the loaded sample |
 | AC14 | Holds | a second harness serves the in-memory set beside the relational stub |
 
@@ -215,6 +233,7 @@ Settled assumptions:
 - Immediate unavailable answers give three attempts, and a 400 ms injected delay gives two, ending at 650 ms.
 - The first sample account holds a current balance of 194.00 and a credit limit of 2020.00.
 - The shared integration base supplies the container pair and empties the cache before each test.
+- Test classes run one at a time, the store is emptied before the load, the synthetic volume sits outside the sample account range and every suite shares one store address, as in Option A.
 
 Open assumptions:
 
@@ -234,7 +253,7 @@ Open assumptions:
 | AC9 | At risk | stopping a dedicated cache container cannot be a table row |
 | AC10 | Holds | every row records its cut-off and elapsed time |
 | AC11 | Holds | the integration tag routes the suite to the integration task alone |
-| AC12 | Holds | the loader runs once before the table |
+| AC12 | Holds | one load into the emptied store precedes the table, with the read-back held to the sample range |
 | AC13 | Holds | the schema checks run outside the table on scratch databases |
 | AC14 | Holds | the provider comparison runs outside the table |
 

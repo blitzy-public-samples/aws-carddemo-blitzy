@@ -107,7 +107,7 @@ How it behaves:
 - Half of each virtual user's calls read the sample accounts the account view shows, each sample account five times.
 - The other half read fifty distinct synthetic accounts, each with ten category balances, spread across the slice at an even stride.
 - Each sample account takes the cold path on its first read and is served from the cache on its repeats within the fresh period.
-- Each synthetic account takes the cold path on its first read, and the second virtual user of the identity often finds that entry warm.
+- Each synthetic account takes the cold path on whichever read reaches it first, and the identity's other virtual user finds it warm only when that read has already filled the entry.
 - The permission-denied check runs before the runner opens its stub log window, so its authentication calls stay out of the report.
 - The report gives the median, 95th and 99th percentile, the maximum, the call count, the success count per data-status header value and the stub figures for the five upstream operations.
 
@@ -127,8 +127,9 @@ Each regular fixture identity gets one list of one hundred distinct synthetic ac
 
 How it differs:
 
-- Every call of a virtual user reads a different account, so the first virtual user of each identity always takes the cold path.
-- The second virtual user of an identity still finds warm entries left by the first.
+- Every call of a virtual user reads a different account, and both virtual users of an identity start together on the same list, so neither has a fixed lead.
+- Each account takes the cold path on whichever read reaches it first, the other virtual user finds it warm only when that read has already filled the entry, and two reads that miss at the same moment both go upstream.
+- The share of warm reads is observed from the card data call count in the report, not guaranteed.
 - The measured latency sits nearer the cold path than in Option A.
 - The sample accounts the account view reads, with their legacy record values, are never measured.
 - The scenario reads only the synthetic range that the stack's data partition gives the performance suite.
@@ -188,6 +189,7 @@ Open assumptions:
 
 - Runner capacity on the shared continuous integration host Open → repeated runs on that host compared against a run on an idle machine.
 - Cold-path latency at one hundred distinct accounts per identity Open → the first report's percentiles compared with a run of Option A.
+- Share of warm reads among the measured calls Open → the card data call count in the first report compared with the thousand measured calls.
 
 | AC | Verdict | Why |
 |---|---|---|

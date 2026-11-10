@@ -23,6 +23,14 @@ Parent epic: [CS-10 Transaction Activity Integration](../README.md)
 > - `card-servicing-service/src/test/java/com/example/cardservicing/integration/transactionactivity/TransactionActivityIntegrationTest.java`, the suite:
 >   - Extends `IntegrationTestSupport` (`card-servicing-service/src/test/java/com/example/cardservicing/support/IntegrationTestSupport.java`, CS-11-007), so it inherits `@Tag("integration")`, the `integration` profile and the base's `postgres:16.6` and `redis:7.4.2` containers, started once per test JVM, with the Redis container emptied by `FLUSHALL` before each test. It starts a `@SpringBootTest` context under that profile.
 >   - Before the first test, it runs the CS-09-001 `FixtureLoader` job once under the `fixture-load` profile against the container database. The job's schema step (CS-13-001) applies the `db/` scripts in file-name order, `03-transaction-record.sql` of CS-10-001 included, and its registered entity loaders load the reference data, the Card Data sample and then the 300 sample transactions through `TransactionFixtureLoader` (CS-10-002, load order 6). The job then runs the synthetic volume loads of CS-09-007 and CS-10-008, which no setting switches off. Their rows sit in the disjoint account range from `10000000001` and under their own load-report entities, so no assertion of this suite, which reads only sample accounts and the `transaction_record` entry, reads them.
+>
+>   > SCOPE-QUESTION (Resolved): The bullet above runs the full job in the `cardservicing` database that the CS-11-007 base shares with every suite, where CS-09-006 runs the same job, while the loader stories define no rule for a load over rows already stored and CS-09-007 AC5 proves repeatability only from an empty store. Resolution:
+>   >
+>   > - Reset, then load: before the job runs, the suite opens a JDBC connection to the base's PostgreSQL container with the container's own JDBC URL, user name and password, read back from the container. It reads every table of the `cardservicing` database's `public` schema from the `pg_tables` catalogue view, drops them in one `DROP TABLE … CASCADE` statement, or drops nothing when the view lists none, and asserts that the view then lists no table in that schema. It then runs the job once. The job's schema step re-creates every table from its create-if-absent scripts, so every entity load starts from an empty store, the precondition CS-09-007 AC5 states, whichever suite ran before. Rows another suite loaded are discarded, never loaded over, so no load meets a stored key and no count drifts, and because every load is deterministic, this suite and CS-09-006 leave the same rows in either class order.
+>   > - One class at a time: JUnit Jupiter runs test classes one after another unless parallel execution is enabled, and no story enables it. The suite class also carries JUnit's `@Isolated`, so it never runs beside another test class even if parallel execution is enabled later. The per-test reference reload of CS-13-004 re-applies the schema scripts and replaces its seed rows by code, so it needs no row this suite leaves.
+>   > - Not a suite-owned database: the CS-11-007 base binds the store URL in its own `@DynamicPropertySource` method, and under Spring Framework 6.2.12 (Spring Boot 3.5.7) the superclass registration of the same property replaces the subclass's, so a suite cannot point its context at another database without changing the shared base, which CS-11-007 says suites extend with no change.
+>   > - The reset and the annotation sit in the suite file, so the 2 files touched stand.
+>
 >   - Registers `StubHarness.of(...)` (`card-servicing-service/src/test/java/com/example/cardservicing/support/StubHarness.java`, CS-11-002) as a static extension over two registrations, each on a `127.0.0.1` loopback port inside the test JVM. The first is a test-local anonymous `StubRegistration` under stub name `transaction-activity`, which `StubHarness.allRegistered()` never discovers, serving the CS-10-004 and CS-10-005 `TransactionActivityStub` over its relational listing provider, nested in `TransactionMockDataProvider`, and its relational primary-key lookup source. A nested `@TestConfiguration` builds both over the context's JPA `EntityManager`, as the stub's container-mode configuration builds them, and the stub reaches them through the context on each call, so the harness starts it before the context binds its port. `TransactionActivityStubRegistration` (CS-10-004) is not used, because its in-memory provider never reads the store. The second is `ConfigStubRegistration` (CS-11-005) under stub name `config`, whose port the integration profile's Config client target needs when the context starts.
 >   - A `@DynamicPropertySource` method supplies `integration.stub-ports.config` and sets `card-servicing.clients.transaction-activity.target` (CS-10-006) to `127.0.0.1:<transaction-activity port>`, so the context's `TransactionActivityClient` calls the stub over a real gRPC channel.
 >   - Each scenario call is one test request: it starts a `RequestDeadline` (CS-11-003) from the bound `REQUEST_DEADLINE_MS` value, places a test `traceId` in the logging context, calls `transactions` or `transaction` with a bearer token built at runtime, and marks its cut-off when the call returns, so the completion line logs `cutoffMs`. The caller measures the time from the deadline's start to the outcome.
@@ -74,8 +82,13 @@ Parent epic: [CS-10 Transaction Activity Integration](../README.md)
 > - AC10: Cache hit: after a lookup made as in AC3 within the same test, the Redis container holds `cs:v1:transaction:0000000776200014`. A second identical lookup within the 60 s fresh TTL is served from the Redis container `FRESH` with the first read's `cachedAt`, with no new request-log entry, so the log still holds exactly 1 `GetTransaction` entry.
 > - AC11: Redis down: in the cache-outage class, after one `PING` through the service's Redis connection answers `PONG`, the class pauses its dedicated Redis container through the Testcontainers Docker client. A lookup of `0000000776200014` then calls the stub, adding exactly 1 `GetTransaction` entry with outcome `OK`, and returns the record `FRESH` with amount `"985.22"` and no error reaching the caller. The case unpauses the container in a `finally` block, and the base's shared containers keep running with unchanged container IDs.
 > - AC12: Isolation: each test starts with no cache keys of its own and with failure injection off: at its start the Redis container holds no `cs:v1:` key and the effective latency and failure rate of stub `transaction-activity` both read 0. A run of the suite under JUnit's random method order (`MethodOrderer.Random`) gives every test the same outcome as the declared order, so reordering the tests changes no outcome.
+>
+> > SCOPE-QUESTION (Resolved): AC12 resets per-test state only. What keeps rows another test class left in the shared database from reaching this suite? Resolution: before its job runs, the suite empties the store and asserts that the catalogue lists no table (note beneath the fixture-loader bullet), and the suite class carries JUnit's `@Isolated`, so no other test class runs beside it. Every test of the suite therefore has the same outcome whether this suite runs before or after CS-09-006 in one `integrationTest` run.
+>
 > - AC13: Schema in the container (the proof CS-10-001 hands to this suite): on a scratch database the suite creates in the shared PostgreSQL container, prepared as each criterion states, the suite proves CS-10-001 AC1 to AC8 as written, the catalogue read-backs of AC1, AC5 and AC6 included. It drops the scratch database afterwards, so the suite database holds only the loaded rows.
 > - AC14: Sample load in the container (the proof CS-10-002 hands to this suite): the fixture loader job exits with status 0, and its load report holds `transaction_record` as 300 loaded, 0 skipped and 300 derived processed timestamps. Read back from the container database, `transaction_record` holds 300 rows for the sample accounts, exactly six for each account from `00000000001` to `00000000050`, 50 of them with a negative amount, and the six rows of `00000000001` equal the values CS-10-002 AC3 states, each with `account_id` `00000000001`.
+>
+> > SCOPE-QUESTION (Resolved): Does the load-report count depend on what CS-09-006 loaded before this suite in the same test JVM? No. The suite empties the store before its job runs (note beneath the fixture-loader bullet), so the `transaction_record` entry stays 300 loaded, 0 skipped and 300 derived, and the table as a whole also holds exactly the sum of the loaded counts of its load-report entries `transaction_record` and `synthetic_transaction_record`: 300 rows before CS-10-008 lands and 1,000,300 after, whichever of the two suites ran first. The 300 sample rows and their values stay as AC14 states.
 >
 > ### 3. Dependencies
 >
@@ -120,19 +133,20 @@ Rationale: one shared container pair keeps the integration stage to one start-up
 - Topology: a relational store container and a cache container, with the transaction activity stub and the configuration stub on loopback ports in the test process.
 - Naming: the suite tag marks the suite for the integration stage only, and the unit stage never runs it.
 - Addressing: container ports are assigned at start and passed to the service as properties, and the client reaches the stub through its target address.
-- Isolation: each test begins with an empty cache, cleared request logs and failure injection off, and only the cache-outage case pauses a cache, its own dedicated one.
+- Isolation: the suite never runs beside another test class, each test begins with an empty cache, cleared request logs and failure injection off, and only the cache-outage case pauses a cache, its own dedicated one.
 - Fallback: a container that fails to start fails the suite at once instead of skipping it.
-- Provisioning: the schema, the sample load and the synthetic volume that the loader always adds are applied once before the first test, and the schema checks run on a scratch database.
-- Cut-over: the same suite can target a real service by address once the stub is swapped.
+- Provisioning: before its one load, the suite drops every table that an earlier suite left in the relational store and checks that none remain, so the schema, the sample load and the synthetic volume that the loader always adds are applied to an empty store once before the first test, and the schema checks run on a scratch database.
+- Cut-over: pointing the client at a real transaction activity service changes only its target address and credential source, and a suite run against that service needs its own data setup, fault injection and call observation, because the sample and synthetic rows that the store reset and the fixture loader job place in the local relational store, the injected failures and the stub request log exist only beside the local stub.
 - Failures: latency and unavailable answers are injected per test through the shared failure injector, and each attempt is counted in the stub's request log.
 
 ### Design Option A — shared containers for the whole test run
 
-The suite reuses the relational store container and the cache container that the container base starts once per test process, and it loads the sample into the relational store once before its first test. The base empties the cache before each test, and the stub harness clears the request log before each test and the per-test overrides after it. Each scenario drives the client under a fresh request budget.
+The suite reuses the relational store container and the cache container that the container base starts once per test process, and it empties the relational store and loads the sample into it once before its first test. The base empties the cache before each test, and the stub harness clears the request log before each test and the per-test overrides after it. Each scenario drives the client under a fresh request budget.
 
 How it behaves:
 
 - The first suite of the run pays the container start, and this suite reuses both containers.
+- Before the load, the suite drops every table an earlier suite left and checks that the store holds none.
 - Every paging and lookup case reads the same loaded rows in the same newest-first order.
 - Each failure case sets its own injected delay or failure rate, counts attempts in the request log and checks the cut-off and the caller's elapsed time.
 - The fail-hard and stale cases warm the cache, move the entry's cache time back and then fail the stub.
@@ -143,7 +157,7 @@ How it behaves:
 |---|---|---|---|
 | 1 | Containers shared for the run (vs per test class) | one start-up cost for the suite | state can leak between suites without resets |
 | 2 | Cache keys, overrides and request log reset around every test (vs a container restart) | isolation at low cost | a suite that bypasses the base inherits another suite's entries |
-| 3 | Sample loaded once (vs per test) | the paging order is fixed for every test | a repeat load over rows another suite loaded must leave them unchanged |
+| 3 | Sample loaded once (vs per test) | the paging order is fixed for every test | a row one test changed would stay changed for every later test |
 | 4 | Schema checks on a scratch database (vs the suite database) | the loaded rows stay untouched | each check prepares its own parent rows |
 
 Effort and risk: small effort, low risk with the resets in place.
@@ -171,9 +185,9 @@ Effort and risk: small effort, at risk on integration-stage run time.
 
 - Option: Design Option A
 - Why: the suite keeps one start-up while the resets keep tests independent.
-- Strongest argument against: a missed reset, or another suite that changes the shared rows, lets one test's state change another's outcome.
-- Shared items that do not decide the choice: the scenarios, the thresholds, the stub harness, the failure injector and the relational stub on a loopback port.
-- Flip conditions: tests that write rows to the suite database, a repeat sample load that changes the shared rows, or a shared-state defect the resets cannot contain.
+- Strongest argument against: a missed reset lets one test's state change another's outcome, and the store reset discards and repeats the full load that the card data suite may already have made.
+- Shared items that do not decide the choice: the scenarios, the thresholds, the stub harness, the failure injector, the store reset before the load and the relational stub on a loopback port.
+- Flip conditions: tests that write rows to the suite database, a suite that must run beside another test class, or a shared-state defect the resets cannot contain.
 
 ## Design Validation
 
@@ -188,11 +202,14 @@ Settled assumptions:
 - The suite never launches a configuration refresh, so the call policy keeps its built-in attempt timeout and retry cap.
 - A case with injected latency ends only after every delayed call has reached the request log.
 - The synthetic volume that the loader always adds sits outside the sample account range, so no scenario reads it.
+- Test classes run one at a time, and this suite never runs beside another class.
+- The suite drops every table an earlier suite left before its load, so every entity load starts from an empty store whichever suite ran before.
+- Every load is deterministic, so this suite and the card data suite leave the same rows in either order.
+- The shared base gives every suite the same store address, so a suite cannot move to a database of its own without a change to the base.
 
 Open assumptions:
 
 - The integration stage on the pull-request runner can start both containers Open → the first pull-request run of the integration stage.
-- A repeat sample load over the rows that the card data suite loaded in the same test process leaves them and their counts unchanged Open → the first integration stage run that holds both suites.
 
 | AC | Verdict | Why |
 |---|---|---|
@@ -207,9 +224,9 @@ Open assumptions:
 | AC9 | Holds | the stub rejects a changed page token before any store read |
 | AC10 | Holds | a fresh entry in the cache container answers with no remote call |
 | AC11 | Holds | the read-through cache treats an unanswered cache command as a miss |
-| AC12 | Conditional | it holds only while no other suite changes the shared rows or leaves the shared cache dirty |
+| AC12 | Holds | the store reset, the one-class-at-a-time run and the base's per-test cache flush leave no other suite's state |
 | AC13 | Holds | the schema checks run on a scratch database apart from the loaded rows |
-| AC14 | Conditional | it holds only if a repeat load over shared rows reports the same counts |
+| AC14 | Holds | the load starts from an emptied store whichever suite ran before |
 
 ### Option B
 
@@ -218,6 +235,7 @@ Settled assumptions:
 - Each test class starts and removes its own relational store container and cache container.
 - No test writes rows to the class's database outside the scratch database of the schema checks.
 - The synthetic volume, the client story's freshness and stale windows and the harness resets are as in Option A.
+- The store reset before the load and the one-class-at-a-time run are as in Option A, with the reset finding no table in the class's new container.
 
 Open assumptions:
 

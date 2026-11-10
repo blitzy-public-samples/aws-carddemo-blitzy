@@ -6,7 +6,7 @@ Provide account, card cross-reference and category-balance data through a mocked
 
 ## Business Justification
 
-The balance summary (CS-05), the category balance view (CS-06) and the transaction ownership check (CS-08) all read the account, card cross-reference and category-balance records that Data Layouts · CVACT01Y, Data Layouts · CVACT03Y and Data Layouts · CVTRA01Y define. Mocking them behind the Card Data contract keeps zero live external calls in this iteration, and decision D3 (Stub hosting and swap point) in the Technical Requirements document fixes the swap point: replacing the stub with the real Card Data service changes only the client's target address and credential source. The epic also owns the fixture-loader core, because it is the core's first consumer in build order, and the Transaction Activity (CS-10) and Reference Data (CS-13) loaders reuse it.
+The balance summary (CS-05), the category balances endpoint (CS-06) and the transaction ownership check (CS-08) all read the account, card cross-reference and category-balance records that Data Layouts · CVACT01Y, Data Layouts · CVACT03Y and Data Layouts · CVTRA01Y define. Mocking them behind the Card Data contract keeps zero live external calls in this iteration, and decision D3 (Stub hosting and swap point) in the Technical Requirements document fixes the swap point: replacing the stub with the real Card Data service changes only the client's target address and credential source. The epic also owns the fixture-loader core, because it is the core's first consumer in build order, and the Transaction Activity (CS-10) and Reference Data (CS-13) loaders reuse it.
 
 ## Requirements
 
@@ -20,7 +20,7 @@ The balance summary (CS-05), the category balance view (CS-06) and the transacti
 
 ## Acceptance Criteria
 
-1. The sample fixture load report shows `account` 50 loaded / 0 skipped, `card_cross_reference` 50 loaded / 0 skipped and `category_balance` 50 loaded / 0 skipped, and the three tables hold 50 rows each.
+1. The sample fixture load report shows `account` 50 loaded / 0 skipped, `card_cross_reference` 50 loaded / 0 skipped and `category_balance` 50 loaded / 0 skipped, and each of the three tables holds 50 rows whose account lies in the sample range `00000000001`–`00000000050`. With the synthetic rows of item 9, the full tables hold 10,050, 10,050 and 100,050 rows.
 2. `GetAccount` for account `00000000001` returns `activeStatus` "Y", `currentBalance` "194.00", `creditLimit` "2020.00", `cashCreditLimit` "1020.00", `currentCycleCredit` "0.00", `currentCycleDebit` "0.00", `openDate` "2014-11-20", `expirationDate` and `reissueDate` "2025-05-20", `addressZip` "A000000000", and no `groupId`.
 3. `GetCardCrossReference` for `00000000001` returns exactly one cross-reference: card `9680294154603697` and customer `000000001`.
 4. `ListCategoryBalances` for `00000000001` returns exactly one entry: type `01`, category `0001`, balance "0.00".
