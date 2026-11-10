@@ -25,6 +25,17 @@ Parent epic: [CS-12 Auth Service Integration](../README.md)
 > - `card-servicing-service/src/main/java/com/example/cardservicing/integration/auth/AuthStubService.java`:
 >   - Extends `AuthServiceGrpc.AuthServiceImplBase`, the base grpc-java generates for `cardservicing.auth.v1.AuthService` in the Java package `com.example.cardservicing.contract.auth.v1` from `card-servicing-service/src/main/proto/cardservicing/auth/v1/auth_service.proto`.
 >   - Reads the fixture file once at stub start from a Spring `Resource`, `classpath:fixtures/auth-identities.yaml` by default, with the SnakeYAML parser that Spring Boot already brings, so the build gains no dependency. It holds no store connection, no cache and no client of any other service.
+>     > SCOPE-QUESTION (Resolved): What does the stub do when the fixture file it reads at start holds an entry it cannot trust? Nothing above says, though those entries decide account access and AC7 restarts the stub over an edited copy. Resolution: before it answers any call, the stub checks the whole file against the rules below and fails its start on the first rule broken, so no call is ever answered from invalid fixture data.
+>     >
+>     > - The top level holds exactly two lists, `identities` and `tokens`. The `identities` list is checked before the `tokens` list, each entry in file order. A repeated `subject` or `token` value fails at its second occurrence, and the error gives the position of the first.
+>     > - Identity entry: `subject` is a YAML string of 1–64 characters, the contract's subject bound, and no other identity entry carries the same `subject`. `roles` is a non-empty list of distinct values, each `REGULAR` or `ADMIN`. `accounts` may be empty or absent.
+>     > - Account range: each range in `accounts` holds exactly two endpoints, the lower first and the upper second. Each endpoint is a YAML string of exactly 11 digits with its leading zeros kept, so an endpoint the parser reads as a number, such as an unquoted `00000000010`, fails. The lower endpoint is not above the upper one.
+>     > - Token entry: `token` is a non-empty YAML string that no other token entry carries, and `state` is `valid`, `expired` or `malformed`. A `valid` or `expired` token names in `subject` the subject of an identity entry in the file. A `malformed` token carries no `subject`, as `fixture-token-malformed` does.
+>     > - An identity entry holds no field beyond `subject`, `roles` and `accounts`, and a token entry none beyond `token`, `subject` and `state`, so a password field fails wherever it appears.
+>     > - A missing or unreadable resource, a YAML syntax error and a top level other than the two lists each fail the start.
+>     > - On failure in the loopback harness, the stub start raises an error and no port is served. In its own container, the stub process exits with a non-zero status before it listens. The error names the fixture resource and the failed rule and, for an entry, its list and its 1-based position in that list. It never contains a token value from the file: a YAML syntax error is reported by line and column without the parser's excerpt of the file.
+>     > - Not rejected, because entitlement policy is fixture data that changes with no code change: an administrator entry with ranges, ranges that overlap across identities, an identity with no range, and more than one token naming the same subject.
+>     > - The checks sit in `AuthStubService.java` and the invalid copies are built inside `AuthStubServiceTest.java`, so the story still touches the 4 files above.
 >   - A nested configuration class declares the `StubServerHost.HostedStub` bean named `auth` only when `card-servicing.stub.serve` is `auth`, so `StubServerHost` (CS-11-002, `card-servicing-service/src/main/java/com/example/cardservicing/integration/stub/`) hosts the stub in its own container and the Card Servicing service process never builds it.
 > - `card-servicing-service/src/test/java/com/example/cardservicing/integration/auth/AuthStubRegistration.java`: the `StubRegistration` (CS-11-002) of stub name `auth`, building `AuthStubService` over the packaged fixture file, so `StubHarness` starts it on a loopback port inside the test JVM. It sits in the test sources because `StubRegistration` and `StubHarness` are test-source types.
 > - `card-servicing-service/src/test/java/com/example/cardservicing/integration/auth/AuthStubServiceTest.java`: the tests of section 2, run through `StubHarness.of(new AuthStubRegistration())` with a generated gRPC client on the port the harness reports.
@@ -81,6 +92,12 @@ Parent epic: [CS-12 Auth Service Integration](../README.md)
 > - AC6: `auth-identities.yaml` declares no password field, a case-sensitive search of it for the password value that the DUSRSECJ seed carries returns zero matches, and it carries the comment labelling the empty administrator entitlement as a fixture policy.
 > - AC7: Restarting the stub over a copy of `auth-identities.yaml` in which the sample range of `USER0001` ends at `00000000009` instead of `00000000010` makes `AuthorizeAccountAccess(USER0001, 00000000010)` return `allowed=false` and `AuthorizeAccountAccess(USER0001, 00000000009)` return `allowed=true`, with no Java source change.
 > - AC8: With a per-test failure-rate override of 1 (`STUB_FAILURE_RATE`), 10 of 10 calls to each operation return `UNAVAILABLE`. With a per-test latency override of 400 ms (`STUB_LATENCY_MS`), each answer arrives no earlier than 400 ms after the call. Every call adds exactly one request-log entry holding the full operation name, the outcome status name and the duration in ms, and neither the request log nor the stub's log output captured at DEBUG level contains any token value sent in the test.
+> > SCOPE-QUESTION (Resolved): Which criterion covers a fixture file with an invalid entry? None of AC1–AC8 does. Resolution: AC9–AC12 below, run in the stub unit suite. Each copy of `auth-identities.yaml` is built inside the test and differs from the packaged file only in the change named. "Fails the start" means the stub start raises an error, the harness reports no port for the stub and no call is answered. The error names the fixture resource and the failed rule and, for an entry, its list (`identities` or `tokens`) and its 1-based position in that list.
+> >
+> > - AC9: Each of these changes to the sample range of `USER0001` fails the start, with an error naming the `identities` list and the position of the `USER0001` entry: lower endpoint `0000000001` (10 digits), lower endpoint `0000000001A`, upper endpoint written unquoted as `00000000010` so the parser reads it as a number, a third endpoint `00000000020` added to the range, and the range reversed to `00000000010`–`00000000001`.
+> > - AC10: Each of these changes fails the start, with an error naming the list and the position of the failing entry: a second identity entry with subject `USER0001` appended after the last identity, whose error also gives the position of the first; a second token entry with value `fixture-token-user0001` appended after the last token, whose error also gives the position of the first; `USER0001` roles set to `["SUPERUSER"]`; `USER0001` roles set to `[]`; an appended identity entry with roles `["REGULAR"]` and a subject of 65 `A` characters; and `fixture-token-expired` with state `revoked`.
+> > - AC11: Each of these changes fails the start: an appended token entry `fixture-token-user0099` with state `valid` and subject `USER0099`, which no identity entry carries; the subject removed from `fixture-token-user0001`; subject `USER0001` added to `fixture-token-malformed`; an appended token entry whose value is the empty string; a `password` field added to the `USER0001` entry; a `password` key added at the top level; a fixture resource name that does not exist, which the error names; and an unclosed `[` on the line of `fixture-token-user0001`, a YAML syntax error that the error reports by line and column. For every change in AC9–AC11, neither the error text nor the stub log output captured at DEBUG level contains any token value from the copy, `fixture-token-user0001` included.
+> > - AC12: Each of these files starts the stub and the harness reports its port: the packaged `auth-identities.yaml`; a copy that gives `ADMIN001` the range `00000000001`–`00000000001`, over which `AuthorizeAccountAccess(ADMIN001, 00000000001)` returns `allowed=true` and `AuthorizeAccountAccess(ADMIN001, 00000000002)` returns `allowed=false`, with no Java source change; a copy that adds the range `00000000001`–`00000000010` to `USER0002`, over which `AuthorizeAccountAccess(USER0001, 00000000005)` and `AuthorizeAccountAccess(USER0002, 00000000005)` both return `allowed=true`; a copy that removes both ranges of `USER0005`, over which `AuthorizeAccountAccess(USER0005, 00000000041)` returns `allowed=false`; and a copy that appends an identity entry with roles `["REGULAR"]` and a subject of 64 `A` characters.
 >
 > ### 3. Dependencies
 >
@@ -110,7 +127,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. Cases: range ends and the account above each range for the five regular users, the administrator denials, the ten fixture tokens, the expired, malformed, unknown and empty tokens, the malformed account identifiers and empty subject, service-key indifference, the password and policy-comment scan of the fixture file, the restart over a changed fixture copy, and injected failure, injected latency and request-log entries.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. Cases: range ends and the account above each range for the five regular users, the administrator denials, the ten fixture tokens, the expired, malformed, unknown and empty tokens, the malformed account identifiers and empty subject, service-key indifference, the password and policy-comment scan of the fixture file, the restart over a changed fixture copy, injected failure, injected latency and request-log entries, the fixture start checks in which each invalid range endpoint, repeated subject or token value, unknown role or state, 65-character subject, broken token subject, extra or password field, missing resource and YAML syntax error fails the start with no token value in the error or the DEBUG log output, and the positive controls that start: the packaged file, an administrator range, overlapping ranges, an identity with no range and a 64-character subject.
 - Integration: Applies through the Auth integration suite (CS-12-005), which runs this stub behind the Auth client and the account access guard. Command `./gradlew :card-servicing-service:integrationTest`; all pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Not applicable — stub-only story with no UI-facing endpoint; it applies to balance-retrieval and drill-down stories. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -137,10 +154,10 @@ Shared by both options:
 - Naming: the stub answers under the Auth service name of the contract, and each log entry carries the full operation name.
 - Addressing: the hosting harness hands out the loopback port, and the compose stack gives the container its address.
 - Isolation: the stub holds no store, no cache and no link to any other stub.
-- Fallback: none, since only failure injection makes the stub fail.
+- Fallback: none, since only failure injection makes a running stub fail and an invalid fixture file gets no partial load.
 - Provisioning: the identity fixture file is packaged with the service and read once at stub start.
 - Cut-over: the real Auth service replaces the stub by changing only the client address and credential source.
-- Failures: injected unavailable answers and latency come from the stub hosting story and land in the request log.
+- Failures: injected unavailable answers and latency come from the stub hosting story and land in the request log, and an invalid entry in the identity fixture file stops the stub at start before it answers any call.
 
 ### Design Option A
 
@@ -153,6 +170,8 @@ How it behaves:
 - A denial is an ordinary answer, never an error.
 - The service key header and the forwarded caller token are ignored, and the stub never re-checks access.
 - A change to a range or to the administrator policy is an edit to the file followed by a stub restart.
+- The whole file is checked at start, and any invalid entry stops the start before the stub answers any call, with an error that names the entry and the broken rule but never a token value.
+- The checks leave policy choices to the file, so an administrator may hold ranges, ranges may overlap and an identity may hold none.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
@@ -160,6 +179,7 @@ How it behaves:
 | 2 | Empty administrator entitlement (vs full access for administrators) | the least-privilege reading of the source user rule holds | no administrator test path reaches account data |
 | 3 | Fixed fixture tokens with listed states (vs signed tokens with expiry times) | every answer is the same on every run | token parsing stays unexercised until the real swap |
 | 4 | One file read at start (vs a read on every call) | answers never change during a test | a file change needs a stub restart |
+| 5 | Whole-file check that stops the start (vs skipping invalid entries) | no call is ever answered from invalid fixture data | one bad entry stops every suite that starts the stub |
 
 Effort and risk: one fixture file, one stub service, one registration and one test class, with the risk in token values drifting from the contract examples.
 
@@ -173,6 +193,7 @@ How it differs:
 - The administrator policy is a code branch rather than an entry in the file.
 - A range change needs a code change, a new build and a deploy of the stub.
 - A reviewer reads the policy in code rather than in the identity fixture file.
+- The start check covers names, roles, token states and fields only, since the file holds no range to check.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
@@ -187,7 +208,7 @@ Effort and risk: a shorter file and one rule set in code, with the risk in a pol
 - Option: Option A.
 - Why: the fixture policy is data, so every suite reads its users and ranges from one file and a policy change needs no code change.
 - Strongest argument against: token values in the identity fixture file and in the contract examples are copied by hand and can drift apart.
-- Shared items that do not decide the choice: the loopback and container hosting, the ignored service key header, the injected failures, the request log and the address-only cut-over.
+- Shared items that do not decide the choice: the loopback and container hosting, the ignored service key header, the injected failures, the request log, the start check of names, roles and tokens, and the address-only cut-over.
 - Flip conditions: entitlements must follow a computed rule over far more accounts than a file can list, or the real identity provider defines entitlements by rule.
 
 ## Design Validation
@@ -200,6 +221,7 @@ Settled assumptions:
 - The mainframe source application holds no user-to-account entitlement source, so the ranges are a fixture policy.
 - The five synthetic slices of 2,000 accounts are disjoint and together cover the synthetic range.
 - The contract names the invalid argument status for an empty token and for a malformed account number.
+- The packaged identity fixture file passes every start check.
 
 Open assumptions:
 
@@ -216,6 +238,10 @@ Open assumptions:
 | AC6 | Holds | the file carries no password field |
 | AC7 | Holds | ranges are data read at stub start |
 | AC8 | Holds | injection and the request log come from the stub hosting story |
+| AC9 | Holds | each range end is checked as eleven digits of text before any answer |
+| AC10 | Holds | repeated names, unknown roles and unknown token states stop the start |
+| AC11 | Conditional | the syntax error must be reported by line and column without the parser excerpt |
+| AC12 | Holds | the checks leave range placement and overlap to the file |
 
 ### Validation of Option B
 
@@ -240,6 +266,10 @@ Open assumptions:
 | AC6 | Holds | the file carries no password field |
 | AC7 | Breaks | a range change needs a code change and a deploy |
 | AC8 | Holds | injection and the request log come from the stub hosting story |
+| AC9 | Breaks | the file holds no range for a changed copy to break |
+| AC10 | Holds | names, roles and token states are still checked at start |
+| AC11 | Conditional | the syntax error must be reported by line and column without the parser excerpt |
+| AC12 | Breaks | an administrator range needs a change to the code branch |
 
 ## Metadata
 

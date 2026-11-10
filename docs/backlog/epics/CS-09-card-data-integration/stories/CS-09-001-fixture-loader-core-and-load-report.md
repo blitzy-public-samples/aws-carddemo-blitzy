@@ -147,7 +147,7 @@ How it behaves:
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
 | 1 | Declared layouts (vs per-loader slicing) | every offset lives in one declaration | a new field kind edits the shared parser |
-| 2 | Minimum length from the last real field (vs fixed record length) | short cross-reference lines without filler parse | a truncated filler goes unnoticed |
+| 2 | Minimum length from the last real field (vs fixed record length) | short cross-reference lines without filler parse | catching a truncated filler takes a second check against the full record length |
 | 3 | Report entry after commit (vs during load) | the report never claims rows a rollback removed | a failed entity leaves no partial counts to inspect |
 | 4 | One transaction per entity (vs one for the whole load) | a failure keeps every earlier committed entity | a failed run leaves the store part loaded |
 

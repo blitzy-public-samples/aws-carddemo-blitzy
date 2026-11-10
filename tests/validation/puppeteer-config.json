@@ -1,3 +1,4 @@
 {
+  "executablePath": "tests/validation/chrome-headless-shell.sh",
   "args": ["--no-sandbox"]
 }

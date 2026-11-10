@@ -438,12 +438,42 @@ Load order follows the foreign keys: `transaction_type`, `transaction_category`,
 These rules bind the fixture-loader stories CS-09-001, CS-09-003, CS-10-002 and CS-13-001.
 
 - Overpunch signs. A signed amount is zoned decimal whose last position carries the sign and the last digit: `{` is +0, `A`–`I` are +1 to +9, `}` is −0 and `J`–`R` are −1 to −9. Two decimals are implied. For example `00000001940{` is 194.00 and `0000000707P` is −70.77. 50 of the 300 sample transaction amounts are negative. Account `00000000001` loads with current balance `194.00`, credit limit `2020.00` and cash credit limit `1020.00`.
-- Cross-reference line length. Both 36-byte lines (the sample form, without FILLER) and 50-byte lines (the full record) are accepted.
+- Cross-reference line length. Both 36-byte lines (the sample form, without FILLER) and 50-byte lines (the full record) are accepted. Any other length, a 35-byte line for example, is a malformed line and fails the load.
 - Timestamp forms. Both `YYYY-MM-DD HH:MM:SS.ffffff` (the sample form) and `YYYY-MM-DD-HH.MM.SS.ffffff` (the form batch posting writes) are parsed as UTC into `timestamptz(6)`.
 - Blank processed timestamp. When TRAN-PROC-TS is blank, as it is in all 300 sample rows, `processed_timestamp` takes the `original_timestamp` value and the row is counted as a derived timestamp in the load report. Every sample TRAN-ORIG-TS is `2022-06-10 19:27:53.000000`, so within an account the sample ordering falls to `transaction_id` descending.
 - Zip and group ID by offset. ACCT-ADDR-ZIP and ACCT-GROUP-ID are read strictly at their copybook offsets, never re-aligned. The sample rows therefore carry `addressZip` `A000000000` and no `groupId`, because positions 103–112 hold `A000000000` and positions 113–122 are blank in every row.
-- Foreign-key skips. A row whose foreign key names no loaded parent row is skipped and counted per entity in the load report. The sample set skips zero rows in every entity.
+- Foreign-key skips. A row whose foreign key names no loaded parent row is skipped and counted per entity in the load report. The sample set skips zero rows in every entity. A row's foreign keys are tested only after it passes every check below; a malformed row is never skipped, it fails the load.
 - Sample shape. Account IDs run `00000000001`–`00000000050`. Each sample account has one card, one category balance (type `01`, category `0001`, balance `0.00`) and six transactions once card numbers are joined through the cross-reference.
+
+Validation before use. Every row read from a fixture file or a seed file is checked in full before any of its values is converted, derived, tested for a foreign key or written, so no row is ever stored in part. These checks extend the loader core's short-line, sign and timestamp rules (CS-09-001).
+
+Accepted line lengths. A line's length counts its bytes before the line feed. Each of the four fixture files accepts its full record length, or exactly the end column of its layout's last non-filler field with the FILLER wholly absent, which is the loader core's short-line rule. The two reference files accept only their full 60-byte record, read once when the seed YAML is transcribed. Any other length is malformed: a line shorter than that end column, a line holding only part of the FILLER, or a line longer than the record. FILLER content is never checked; in the sample it is spaces in `acctdata.txt` and `dailytran.txt` and zeros in `tcatbal.txt`, `trantype.txt` and `trancatg.txt`.
+
+| File | Accepted lengths (bytes) | Last non-filler field and its end column |
+|---|---|---|
+| `acctdata.txt` | 300 or 122 | ACCT-GROUP-ID, 122 |
+| `cardxref.txt` | 50 or 36 (the sample form) | XREF-ACCT-ID, 36 |
+| `tcatbal.txt` | 50 or 28 | TRAN-CAT-BAL, 28 |
+| `dailytran.txt` | 350 or 330 | DALYTRAN-PROC-TS, 330 |
+| `trantype.txt` | 60, at the one-time transcription into the seed YAML | TRAN-TYPE-DESC, 52 |
+| `trancatg.txt` | 60, at the one-time transcription into the seed YAML | TRAN-CAT-TYPE-DESC, 56 |
+
+Field checks, taken from the copybook PICTUREs:
+
+- Unsigned digits. Every 9(n) field holds exactly n digits `0`–`9`: ACCT-ID, XREF-CUST-ID, XREF-ACCT-ID, TRANCAT-ACCT-ID, TRANCAT-CD, DALYTRAN-CAT-CD, DALYTRAN-MERCHANT-ID and TRAN-CAT-CD. Any non-digit in any position, a space included, is malformed.
+- Signed amounts. Every S9(n)V99 field (ACCT-CURR-BAL, ACCT-CREDIT-LIMIT, ACCT-CASH-CREDIT-LIMIT, ACCT-CURR-CYC-CREDIT, ACCT-CURR-CYC-DEBIT, TRAN-CAT-BAL and DALYTRAN-AMT) holds a digit in each position before its last and a legal overpunch byte (`{`, `A`–`I`, `}`, `J`–`R`) in its last. A `?` at position 143 of a `dailytran.txt` line is malformed.
+- Dates. ACCT-OPEN-DATE, ACCT-EXPIRAION-DATE and ACCT-REISSUE-DATE each hold a real calendar date written `YYYY-MM-DD`, with February 29 valid only in a leap year, so `2022-02-30` is malformed.
+- Timestamps. DALYTRAN-ORIG-TS holds a real date and time in one of the two timestamp forms above: a real calendar date, hours `00`–`23`, minutes and seconds `00`–`59`, and six fraction digits. `2022-13-10 19:27:53.000000` (month 13) and `2022-06-10 24:00:00.000000` (hour 24) are malformed. DALYTRAN-PROC-TS passes the same check or holds exactly 26 spaces.
+- Keys and codes. DALYTRAN-ID matches the contract transaction-identifier pattern `^[A-Za-z0-9]{16}$`. TRANCAT-TYPE-CD and DALYTRAN-TYPE-CD match `^[A-Za-z0-9]{2}$`, the pattern CS-13-001 applies to seed type codes. XREF-CARD-NUM and DALYTRAN-CARD-NUM are not blank.
+- Blank fields. A field is blank when every position holds a space. A blank is accepted only where the source holds one: DALYTRAN-PROC-TS, which takes the original timestamp, and ACCT-GROUP-ID, which becomes NULL. Every other date, timestamp, amount, identifier and code is malformed when blank. For DALYTRAN-ORIG-TS the parser reads the blank as no value (CS-09-001), and the transaction loader rejects it as malformed.
+- Other text. The remaining PICTURE X fields (ACCT-ACTIVE-STATUS, ACCT-ADDR-ZIP, DALYTRAN-SOURCE, DALYTRAN-DESC, DALYTRAN-MERCHANT-NAME, DALYTRAN-MERCHANT-CITY and DALYTRAN-MERCHANT-ZIP) carry no content check and load as the mapping tables above state.
+- Duplicate keys. A row repeating the primary key of an earlier row in the same file is malformed: ACCT-ID in `acctdata.txt`, XREF-CARD-NUM in `cardxref.txt`, TRANCAT-ACCT-ID with TRANCAT-TYPE-CD and TRANCAT-CD in `tcatbal.txt`, and DALYTRAN-ID in `dailytran.txt`.
+
+Malformed rows in the four fixture files. The first row, in file order, that fails a check fails its entity's load with an error naming the fixture file and the 1-based line number. That entity's transaction rolls back: its table holds no row from that load, and the load report holds no entry for it. No later-ordered entity load starts, entities committed earlier keep their rows and report entries, and the job exits with a non-zero status. A malformed row is never skipped: the skipped count holds only foreign-key skips, decided after a row passes every check.
+
+Seed rows. `trantype.txt` and `trancatg.txt` are transcribed once, at implementation, into `transaction-types.yaml` and `transaction-categories.yaml`, and the transcription takes only 60-byte lines whose fields pass the seed row checks that follow. At load time each seed row is checked again, before any write, by the CS-13-001 row checks: a type code matching `^[A-Za-z0-9]{2}$`, a category code matching `^[0-9]{4}$`, a description of 1 to 50 characters after trimming, and a code key that appears once per seed file. Under CS-13-001's seed rule, a row failing a check is rejected, never stored in part and counted as skipped. Each rejected seed row is logged with the seed file, the row's position in it and the failed check, which tells it apart from a foreign-key skip. A missing or unreadable seed file fails its entity's load with an error naming the file, under the rollback and stop rules above.
+
+Exceptions kept. The checks keep every source-backed exception: the 36-byte cross-reference line, the blank DALYTRAN-PROC-TS, the blank ACCT-GROUP-ID, the letter-led ACCT-ADDR-ZIP `A000000000` and any FILLER content. Every sample row passes every check, so the sample load still produces the expected report above, with zero skipped rows and no failed load.
 
 ## Synthetic volume
 
@@ -464,4 +494,3 @@ Consumers of each range:
 - Auth fixture entitlements span both ranges: `USER0001`–`USER0005` each get ten sample accounts in ID order (`USER0001` → `00000000001`–`00000000010`) plus a 2,000-account synthetic slice, and `ADMIN001`–`ADMIN005` get no accounts, as the [admin fixture policy](technical-requirements.md#admin-fixture-policy) sets out.
 
 Planning baseline, recorded as an assumption in the [Technical Requirements and Architecture document](technical-requirements.md#scope-and-planning-baseline-assumptions): 10 concurrent users, 100,000 category balances and 1,000,000 transactions. Monthly partitioning of `transaction_record` is not part of this schema; it is deferred to [Recommendations](implementation-plan.md#recommendations), with the baseline it assumes.
-
