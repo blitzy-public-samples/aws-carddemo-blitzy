@@ -1,0 +1,181 @@
+# A confirmed bill payment against an empty TRANSACT file, the only way the
+# HIGH-VALUES STARTBR of COBIL00C answers NOTFND.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00, and
+# COSGN00C transfers control to COMEN01C, whose first entry sends COMEN01 with
+# a blank message and returns with TRANSID CM00 [app/cbl/COSGN00C.cbl:221-240]
+# [app/cbl/COMEN01C.cbl:82-90,107-110,182-194].
+#
+# Step 2: option 10 is 'Bill Payment', program COBIL00C, user type U
+# [app/cpy/COMEN02Y.cpy:80-84], so COMEN01C moves 0 to CDEMO-PGM-CONTEXT and
+# transfers control (XCTL) to COBIL00C [app/cbl/COMEN01C.cbl:115-156]. The
+# COMMAREA COMEN01C passes ends before CDEMO-CB00-INFO, so the move pads
+# CDEMO-CB00-TRN-SELECTED with spaces and no account is pre-selected. COBIL00C
+# sets the re-enter flag, moves LOW-VALUES to COBIL0AO and sends COBIL00 with
+# its header and a blank message, then returns with TRANSID CB00
+# [app/cbl/COBIL00C.cbl:107-122,146-149,289-338].
+#
+# Step 3 enters account 00000000001 with CONFIRM Y under CB00
+# [app/cbl/COBIL00C.cbl:124-127,154-177]:
+# - READ ACCTDAT UPDATE finds account 1, whose balance is +194.00, so the
+#   'nothing to pay' check passes and CURBAL receives the edited balance
+#   [app/cbl/COBIL00C.cbl:193-206,343-372].
+# - READ CXACAIX by account id finds its one card, 9680294154603697
+#   [app/cbl/COBIL00C.cbl:208-211,408-436].
+# - STARTBR TRANSACT at HIGH-VALUES finds no record in the empty file and
+#   answers NOTFND: the error flag is set, 'Transaction ID NOT found...' (the
+#   primary item) is moved to WS-MESSAGE and COBIL00 is sent with ERASE
+#   [app/cbl/COBIL00C.cbl:212-213,441-459].
+# - Nothing in the pay block tests the error flag [app/cbl/COBIL00C.cbl:
+#   208-235], so READPREV follows with no browse active. It answers INVREQ, and
+#   its WHEN OTHER branch moves 'Unable to lookup Transaction...' to WS-MESSAGE
+#   and sends COBIL00 again [app/cbl/COBIL00C.cbl:214,472-496].
+# - ENDBR follows, with no RESP option, and COBIL00C sets no HANDLE CONDITION
+#   or HANDLE ABEND [app/cbl/COBIL00C.cbl:215,501-505]. On CICS an ENDBR that
+#   matches no successful STARTBR raises INVREQ (RESP2 35), whose default
+#   action abends the task with AEIP. The WRITE of the payment record, the
+#   account REWRITE, the closing send and the RETURN TRANSID(CB00) never run
+#   [app/cbl/COBIL00C.cbl:216-244,146-149], and the terminal receives the
+#   region's abnormal-termination message on an unformatted screen. A region
+#   whose ENDBR returned normally would still stop the task at ADD 1 to the
+#   HIGH-VALUES TRAN-ID moved to the numeric WS-TRAN-ID-NUM (a data exception)
+#   before the WRITE [app/cbl/COBIL00C.cbl:216-217].
+#
+# So neither message stays on the screen: 'Transaction ID NOT found...' is sent
+# and then overwritten. Its only observable outcomes are the abend screen and
+# the files left unchanged. ACCTDAT and TRANSACT are defined RECOVERY(NONE)
+# [app/csd/CARDDEMO.CSD:1-12,76-87], so the abend backs nothing out, but no
+# write or rewrite was issued before it: account 1 keeps its balance and
+# TRANSACT stays empty. The READ UPDATE lock ends with the task. Whether the
+# message is meant to be shown is doubtful, so the outcome is pinned as
+# observed (observed-only) under GAP-UNC-013, the open question of online
+# message texts no screen ever shows.
+#
+# The expectation is derived from the source and the CICS file control
+# responses, never observed (GAP-INF-008); no TPE region runs in CI.
+id: BIL-COBIL00C-negative-06
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 10 'Bill Payment' and confirms
+  payment of account 00000000001 (balance 194.00) while TRANSACT holds no
+  record. COBIL00C reads the account for update and its card through CXACAIX,
+  then the STARTBR at HIGH-VALUES answers NOTFND and COBIL00 is sent with
+  'Transaction ID NOT found...'. The pay block tests no error flag, so READPREV
+  runs with no browse, answers INVREQ and COBIL00 is sent again with 'Unable to
+  lookup Transaction...'; the ENDBR that follows has no RESP option, so on CICS
+  the task abends (AEIP). The user sees the region's abend message on an
+  unformatted screen, no payment record is written and account 1 keeps its
+  balance.
+# The primary item first, then the program, the maps asserted, the transaction
+# whose task abends, the CSD files COBIL00C reads, browses and leaves
+# unchanged, and the online-only copybooks it copies. Neither 'Unable to lookup
+# Transaction...' nor the TRANSACT WRITE is listed: the message never stays on
+# a screen and the write never runs, so neither item's verification depends on
+# this scenario. Sign-on and the menu option (CC00, CM00, COSGN00, USRSEC) are
+# verified by the SEC and MNU scenarios; CVACT01Y, CVACT03Y, CVTRA05Y and the
+# data files are verified at the lowest level that executes them.
+inventory_ids:
+- INV-BIL-012  # COBIL00C message 'Transaction ID NOT found...' (STARTBR NOTFND)
+- INV-BIL-001  # COBIL00C program
+- INV-MNU-003  # COMEN01 map, where option 10 is entered
+- INV-BIL-002  # COBIL00 map, the bill payment screen of steps 2 and 3
+- INV-CFG-012  # CB00 transaction, whose step-3 task abends
+- INV-CFG-001  # ACCTDAT CSD file: read for update, left unchanged
+- INV-CFG-006  # CXACAIX CSD file: card cross-reference read by account id
+- INV-CFG-007  # TRANSACT CSD file: browsed while empty, left empty
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose context 0 selects the first entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COBIL00C
+tags:
+- inferred-not-observed
+- observed-only
+gap_ids:
+- GAP-INF-008  # BIL end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-UNC-013  # a message COBIL00C sends is overwritten and never stays on a screen
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user from USRSEC; ACCTDATA is the region's
+    # ACCTDAT and CARDXREF its CCXREF file and CXACAIX path. TRANSACT is loaded
+    # empty, so the HIGH-VALUES STARTBR finds no record.
+    USRSEC: {base: USRSEC}
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    TRANSACT: {records: []}
+  parameters:
+    clock_mode: relative
+  faults: []
+# PASSWORD is the README's documented demo password, not a secret: the scenario
+# schema accepts no other sign-on password.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+  - aid: ENTER
+    '@map': COMEN01
+    fields: {OPTION: '10'}
+  - aid: ENTER
+    '@map': COBIL00
+    fields: {ACTIDIN: '00000000001', CONFIRM: 'Y'}
+expected:
+  # Text fields keep their full BMS length with trailing spaces: ERRMSG is 78
+  # characters, the titles and OPTN010 40. Fields the program leaves as
+  # LOW-VALUES are sent without data and captured as spaces. CURDATE and
+  # CURTIME come from the region clock, so they are matchers.
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN010: '10. Bill Payment                        '
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: 'CB00'
+    PGMNAME: 'COBIL00C'
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CURBAL: '              '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  # The AEIP abend at the RESP-less ENDBR ends the task after both COBIL00
+  # sends, so the screen is the region's unformatted abnormal-termination
+  # message. Its text carries the region's own wording, identifier and time,
+  # which the source cannot give, so only the unformatted screen is asserted.
+  - '@map': TEXT
+  # The ERRMSG of each formatted screen: the blank messages of the menu and of
+  # the empty payment screen. The abend screen has no ERRMSG, so neither
+  # 'Transaction ID NOT found...' nor 'Unable to lookup Transaction...' appears.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  file_state:
+    # No REWRITE ran: all 50 accounts stand, account 00000000001 with its
+    # fixture values (decoded: ACCT-ID is the number 1, the amounts decimals).
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: 'A000000000'
+        ACCT-GROUP-ID: '          '
+    # No WRITE ran: TRANSACT holds no payment record.
+    TRANSACT:
+      records: []

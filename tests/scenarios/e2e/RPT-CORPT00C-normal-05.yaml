@@ -1,0 +1,186 @@
+# USER0001 submits a custom transaction report for 2022-01-01 to 2022-07-06,
+# and CORPT00C writes the TRNRPT00 job to the extrapartition TDQ JOBS.
+#
+# Step 1 signs on through CC00; COSGN00C routes the type-U user to COMEN01C,
+# which sends the COMEN01 main menu (the sign-on screen itself is asserted by
+# SEC-COSGN00C-normal-02).
+# Step 2 enters option 9 on COMEN01 (received as '09', JUSTIFY=(RIGHT,ZERO));
+# COMEN01C transfers control to CORPT00C with a zero program context
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:74-78]. On that first
+# entry CORPT00C moves LOW-VALUES to its output map, so every input field shows
+# its blank BMS default, and sends CORPT00 under CR00 with WS-MESSAGE (spaces)
+# in ERRMSG [app/cbl/CORPT00C.cbl:172-181,556-628].
+# Step 3 marks CUSTOM, enters both dates and confirms with Y. Under CR00
+# CORPT00C receives the map and performs PROCESS-ENTER-KEY:
+# - MONTHLY and YEARLY are blank, so the CUSTOM branch runs. No date part is
+#   empty; NUMVAL-C turns each part into its zero-padded digits ('01', '2022');
+#   every part is numeric, the months are not above 12 and the days not above
+#   31 [app/cbl/CORPT00C.cbl:212-379].
+# - WS-START-DATE becomes 2022-01-01 and WS-END-DATE 2022-07-06, and CSUTLDTC
+#   accepts both with the mask YYYY-MM-DD (severity 0000), so neither 'Not a
+#   valid date' message is set [app/cbl/CORPT00C.cbl:381-426]. That acceptance
+#   is the CSUTLDTC date-acceptance item, so it is listed.
+# - The dates go into PARM-START-DATE-1/-2 and PARM-END-DATE-1/-2, which are
+#   records 11, 12 and 15 of JOB-DATA [app/cbl/CORPT00C.cbl:81-127,429-436].
+# - SUBMIT-JOB-TO-INTRDR: CONFIRM is Y, so the loop moves JOB-LINES(1), (2), ...
+#   to the 80-byte JCL-RECORD and performs WIRTE-JOBSUB-TDQ for each. The test
+#   for '/*EOF', spaces or low-values only sets END-LOOP-YES, which the UNTIL
+#   checks before the next pass, so record 17, '/*EOF', is written too and the
+#   loop then stops; every WRITEQ TD QUEUE('JOBS') LENGTH(80) is NORMAL
+#   [app/cbl/CORPT00C.cbl:462-535].
+# - No error flag is set, so INITIALIZE-ALL-FIELDS moves spaces to the ten input
+#   fields and WS-MESSAGE, and STRING builds 'Custom' (up to its first space)
+#   followed by ' report submitted for printing ...'; ERRMSG is set green and
+#   CORPT00 is sent again with ERASE [app/cbl/CORPT00C.cbl:445-456,633-646].
+#   The input fields share their bytes with the output fields, so the screen
+#   shows them blank.
+#
+# Each JOBS record is the JOB-DATA line padded with spaces to 80 bytes, trailing
+# spaces kept. The dates are entered, not derived from the clock, so the records
+# are exact values; only CURDATE and CURTIME come from the region clock, so they
+# are matchers and the clock is relative.
+id: RPT-CORPT00C-normal-05
+level: e2e
+type: normal
+description: >-
+  Signed on as USER0001, the user chooses main-menu option 9 and, on CORPT00,
+  requests a custom report from 01/01/2022 to 07/06/2022 with CONFIRM Y.
+  CORPT00C writes the TRNRPT00 job to the TDQ JOBS as 17 records of 80 bytes,
+  from the JOB card to the '/*EOF' line, with the entered dates in the
+  PARM-START-DATE and PARM-END-DATE symbol records and in the in-stream DATEPARM
+  record, then clears the fields and shows 'Custom report submitted for
+  printing ...'. The expectation is the records the program writes, the
+  '/*EOF' line included, because @TDQ:JOBS is the records the region wrote to
+  the queue. On z/OS the internal reader takes '/*EOF' as its end-of-job
+  delimiter, so a capture that returns only the job JCL BPE received may lack
+  that record; no capture is confirmed (GAP-MIS-017), and an imported run that
+  returns the JCL without it replaces this expectation with the 16 records it
+  observes.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the online-only copybooks CORPT00C copies, and the CSUTLDTC
+# date acceptance the custom dates pass through. The TDQUEUE JOBS definition is
+# verified by RPT-CORPT00C-normal-01..03; sign-on (CC00, COSGN00, USRSEC) and
+# the menu option by the SEC and MNU scenarios; the submission message and the
+# custom date range by their own CORPT00C scenarios; CVTRA05Y, which CORPT00C
+# also copies, at the lowest level that executes it.
+inventory_ids:
+- INV-RPT-032  # CORPT00C JOBS TDQ write (interface), the 17 records in file_state
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, where option 9 is entered
+- INV-RPT-002  # CORPT00 map, the report screen of steps 2 and 3
+- INV-CFG-019  # CR00 transaction, under which CORPT00C receives the submission
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+- INV-UTL-003  # CSUTLDTC date acceptance for mask YYYY-MM-DD, both custom dates
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-017  # no confirmed capture of the JOBS records and their BPE job
+- GAP-INF-001  # which dates CEEDAYS accepts is known only through the stub
+- GAP-MIS-010  # whether UniKix supplies CEEDAYS
+# The UniKix copy of CSUTLDTC trims the Vstring lengths it passes to CEEDAYS;
+# it lists INV-UTL-003, so a unikix record of this scenario never verifies the
+# app/ date acceptance.
+- GAP-DOC-021
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      CUSTOM: 'X'
+      SDTMM: '01'
+      SDTDD: '01'
+      SDTYYYY: '2022'
+      EDTMM: '07'
+      EDTDD: '06'
+      EDTYYYY: '2022'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': CORPT00
+    TRNNAME: 'CR00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'CORPT00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: ' '
+    SDTMM: '  '
+    SDTDD: '  '
+    SDTYYYY: '    '
+    EDTMM: '  '
+    EDTDD: '  '
+    EDTYYYY: '    '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: 'CR00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'CORPT00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: ' '
+    SDTMM: '  '
+    SDTDD: '  '
+    SDTYYYY: '    '
+    EDTMM: '  '
+    EDTDD: '  '
+    EDTYYYY: '    '
+    CONFIRM: ' '
+    ERRMSG: 'Custom report submitted for printing ...                                      '
+  # The ERRMSG of each step: the menu and the empty report screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Custom report submitted for printing ...                                      '
+  file_state:
+    # The JOB-DATA lines in write order, each 80 bytes. Records 11 and 12 are
+    # the 18- and 16-byte symbol prefixes, the date and a quote padded to 52 and
+    # 54; record 15 is start date, a space, end date and 59 spaces.
+    '@TDQ:JOBS':
+      records:
+      - "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
+      - "// NOTIFY=&SYSUID                                                               "
+      - "//*                                                                             "
+      - "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')                                  "
+      - "//*                                                                             "
+      - "//STEP10 EXEC PROC=TRANREPT                                                     "
+      - "//*                                                                             "
+      - "//STEP05R.SYMNAMES DD *                                                         "
+      - "TRAN-CARD-NUM,263,16,ZD                                                         "
+      - "TRAN-PROC-DT,305,10,CH                                                          "
+      - "PARM-START-DATE,C'2022-01-01'                                                   "
+      - "PARM-END-DATE,C'2022-07-06'                                                     "
+      - "/*                                                                              "
+      - "//STEP10R.DATEPARM DD *                                                         "
+      - "2022-01-01 2022-07-06                                                           "
+      - "/*                                                                              "
+      - "/*EOF                                                                           "

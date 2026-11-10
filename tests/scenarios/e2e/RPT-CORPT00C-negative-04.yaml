@@ -1,0 +1,123 @@
+# A custom-range report request with the start year left empty.
+# Steps 1-2 reach the empty CORPT00 screen as MNU-COMEN01C-alternate-09 does:
+# USER0001 signs on, COSGN00C routes the type-U user to COMEN01C, and option 9
+# transfers control to CORPT00C with CDEMO-PGM-CONTEXT zero, so CORPT00C takes
+# its first-entry path, sets CDEMO-PGM-REENTER and sends CORPT0AO at
+# LOW-VALUES with a blank ERRMSG [app/cbl/CORPT00C.cbl:172-181,556-580].
+# Step 3 runs under CR00, the TRANSID CORPT00C returned with. ENTER on the
+# re-entry receives the map into CORPT0AI and performs PROCESS-ENTER-KEY
+# [app/cbl/CORPT00C.cbl:183-186,596-604]. MONTHLY and YEARLY keep their blank
+# INITIAL, CUSTOM holds 'X', so the custom branch runs its empty-field checks
+# in the order start month, day, year, end month, day, year. The start month
+# and day are filled, so the first WHEN that holds is SDTYYYYI = SPACES OR
+# LOW-VALUES (the field keeps its INITIAL of four spaces): CORPT00C moves
+# 'Start Date - Year can NOT be empty...' to WS-MESSAGE, sets WS-ERR-FLG,
+# puts the cursor on SDTYYYY and performs SEND-TRNRPT-SCREEN
+# [app/cbl/CORPT00C.cbl:208-213,239,256-279]. That paragraph rebuilds the
+# header from COTTL01Y and CSDAT01Y, moves the message to ERRMSG, sends CORPT00
+# with ERASE and goes to RETURN-TO-CICS, which ends the task
+# [app/cbl/CORPT00C.cbl:556-591,609-628]. The later checks, the date
+# validation through CSUTLDTC and SUBMIT-JOB-TO-INTRDR are never reached, so
+# nothing is written to the JOBS queue.
+# The absence of a submission is pinned by the screen staying on CORPT00 with
+# the start-year message, not through @TDQ:JOBS: the JOBS capture belongs to
+# RPT-CORPT00C-normal-01..03, and asserting it here would hold this
+# validation case behind GAP-MIS-017 as well.
+id: RPT-CORPT00C-negative-04
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects main-menu option 9 (Transaction Reports) and, on
+  the CORPT00 screen (CR00), asks for a custom report from 01/01 to 07/06/2022
+  with the start year left empty. CORPT00C refuses the request with 'Start
+  Date - Year can NOT be empty...', redisplays the entered values with the
+  start year still blank, and submits no report job.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, and the online-only copybooks CORPT00C copies. Sign-on
+# and the menu (CC00, CM00, COSGN00, USRSEC, option 9) are verified by the SEC
+# and MNU scenarios.
+inventory_ids:
+- INV-RPT-013  # CORPT00C message 'Start Date - Year can NOT be empty...' (rule)
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, where option 9 is entered
+- INV-RPT-002  # CORPT00 map, the empty screen and the refused request
+- INV-CFG-019  # CR00 transaction, under which the request is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes step 3 a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; CORPT00C reads no file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # The valid custom range with SDTYYYY left as sent.
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      CUSTOM: 'X'
+      SDTMM: '01'
+      SDTDD: '01'
+      EDTMM: '07'
+      EDTDD: '06'
+      EDTYYYY: '2022'
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. CORPT0AO redefines CORPT0AI and nothing on this path
+# touches the input fields between RECEIVE and SEND, so the entered values come
+# back as received; the fields left alone show their blank INITIAL, and
+# CONFIRM, which has none, shows as a space. CURDATE and CURTIME come from the
+# region clock, in the MM/DD/YY and HH:MM:SS forms POPULATE-HEADER-INFO builds
+# [app/cbl/CORPT00C.cbl:609-628].
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: 'X'
+    SDTMM: '01'
+    SDTDD: '01'
+    SDTYYYY: '    '
+    EDTMM: '07'
+    EDTDD: '06'
+    EDTYYYY: '2022'
+    CONFIRM: ' '
+    ERRMSG: 'Start Date - Year can NOT be empty...                                         '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # CORPT00 screen, the start-year message after ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Start Date - Year can NOT be empty...                                         '

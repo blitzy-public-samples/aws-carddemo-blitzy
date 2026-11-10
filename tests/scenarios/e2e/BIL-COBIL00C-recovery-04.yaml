@@ -1,0 +1,186 @@
+# A confirmed bill payment is made while the region file TRANSACT is out of
+# service.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00, and
+# COSGN00C transfers control to COMEN01C, whose first entry sends COMEN01 with
+# a blank message and returns with TRANSID CM00 [app/cbl/COSGN00C.cbl:221-240]
+# [app/cbl/COMEN01C.cbl:82-90,107-110,182-194]. Sign-on reads only USRSEC, so
+# the fault, applied after the sign-on step, first acts in step 3.
+#
+# Step 2: option '10' is 'Bill Payment', program COBIL00C, so COMEN01C zeroes
+# CDEMO-PGM-CONTEXT and transfers control (XCTL) to COBIL00C
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:80-84]. The group move
+# of the shorter COCOM01Y COMMAREA pads CDEMO-CB00-TRN-SELECTED with spaces, so
+# this first entry sets CDEMO-PGM-REENTER, moves LOW-VALUES to COBIL0AO, reads
+# no file, sends COBIL00 with its header and a blank message and returns with
+# TRANSID CB00 [app/cbl/COBIL00C.cbl:104-124,146-149,289-339].
+#
+# Step 3: account 00000000001 with CONFIRM 'Y' and ENTER, under CB00.
+# PROCESS-ENTER-KEY sets CONF-PAY-YES and reads the account with READ UPDATE on
+# ACCTDAT (NORMAL: balance 194.00, which is above zero), then reads CXACAIX by
+# account id (NORMAL: card 9680294154603697) and moves HIGH-VALUES to TRAN-ID
+# [app/cbl/COBIL00C.cbl:154-212,343-372,408-436]. The pay block then performs
+# STARTBR, READPREV and ENDBR on TRANSACT in a row, testing WS-ERR-FLG neither
+# between them nor before the WRITE and the REWRITE that follow
+# [app/cbl/COBIL00C.cbl:208-244]:
+# - The STARTBR answers neither NORMAL nor NOTFND (DISABLED, RESP 84 with RESP2
+#   50, for a disabled file; NOTOPEN, RESP 19 with RESP2 60, for a closed one),
+#   so its WHEN OTHER branch sets the error flag, moves 'Unable to lookup
+#   Transaction...' to WS-MESSAGE, the primary item, and sends COBIL00 with
+#   ERASE [app/cbl/COBIL00C.cbl:289-301,441-467].
+# - The READPREV has no browse to continue and answers INVREQ, so its WHEN
+#   OTHER branch moves the same text and sends COBIL00 again
+#   [app/cbl/COBIL00C.cbl:472-496]. Both branches belong to the one item.
+# - The ENDBR has no RESP option, and COBIL00C sets no HANDLE CONDITION or
+#   HANDLE ABEND [app/cbl/COBIL00C.cbl:501-505]. On CICS an ENDBR that matches
+#   no successful STARTBR raises INVREQ (RESP2 35), whose default action abends
+#   the CB00 task with AEIP. The terminal receives the region's
+#   abnormal-termination message on an unformatted screen in place of the
+#   COBIL00 screen the two branches sent.
+# The abend ends the task before the next-id computation, the WRITE and the
+# account REWRITE [app/cbl/COBIL00C.cbl:216-235]: the READ UPDATE lock on the
+# account is released at task end, nothing was written or rewritten, so
+# nothing needs backing out (the three files are RECOVERY(NONE)
+# [app/csd/CARDDEMO.CSD:1-12,63-87]), and ACCTDATA and TRANSACT keep what was
+# loaded. That the pay block goes on after the failed browse, and that the
+# region abends at the ENDBR, is the suspected defect GAP-DEF-023, which also
+# records what the pay block would do if the ENDBR completed.
+#
+# The expectation is derived from the source and the CICS file control
+# responses, never observed (GAP-INF-008); no TPE region runs in CI. The UniKix
+# copy's COBIL00C.cl2, COBIL00.bms and symbolic map equal app/'s, so no GAP-DOC
+# entry applies. Without a confirmed region file control the runner raises
+# MissingPrerequisite under GAP-MIS-011.
+id: BIL-COBIL00C-recovery-04
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, chooses main menu option 10 'Bill Payment', enters
+  account 00000000001 with confirmation Y while the region file TRANSACT is
+  unavailable. COBIL00C reads the account for update and its cross-reference
+  record, then its STARTBR on TRANSACT fails and its READPREV finds no browse,
+  so each moves 'Unable to lookup Transaction...' to the message and sends the
+  Bill Payment screen. The ENDBR that follows has no RESP option, so on CICS
+  the CB00 task abends (AEIP): the user sees the region's abend message on an
+  unformatted screen, the account keeps its balance of 194.00 and no payment
+  transaction is written.
+# The recovery message is the primary item, then the program, the maps
+# asserted, the transaction the failing step runs under, the CSD files the
+# payment reads and browses, and the online-only copybooks COBIL00C copies.
+# The sign-on step's own items (COSGN00, CC00, USRSEC) and the option-10
+# navigation belong to the SEC and MNU scenarios. CVACT01Y, CVACT03Y, CVTRA05Y
+# and the data files are left out: their lowest executing level is a batch
+# scenario.
+inventory_ids:
+- INV-BIL-013  # COBIL00C message 'Unable to lookup Transaction...' (STARTBR and READPREV WHEN OTHER)
+- INV-BIL-001  # COBIL00C program
+- INV-MNU-003  # COMEN01 map, the main menu option 10 is entered on
+- INV-BIL-002  # COBIL00 map, the screen the account and confirmation are entered on
+- INV-CFG-012  # CB00 transaction, the task that processes the payment and abends
+- INV-CFG-001  # ACCTDAT CSD file, read for update and left unchanged
+- INV-CFG-006  # CXACAIX CSD file, the account's cross-reference read
+- INV-CFG-007  # TRANSACT CSD file, the file the browse fails on
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes step 3 a reentry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COBIL00C
+# suspected-defect under GAP-DEF-023, not observed-only under GAP-UNC-013:
+# nothing here is observed, GAP-UNC-013 asks about code that never runs, and a
+# suspected defect is pinned, tagged and registered under its own entry.
+tags:
+- inferred-not-observed
+- suspected-defect
+gap_ids:
+- GAP-INF-008  # BIL end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to make TRANSACT unavailable
+- GAP-DEF-023  # the pay block goes on after the failed browse, and the RESP-less ENDBR abends the task
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user from USRSEC; COBIL00C reads account
+    # 00000000001 from ACCTDATA and its card through the CXACAIX path of
+    # CARDXREF. TRANSACT is built from the repository's daily transactions
+    # (its own source is 'built', so it has no repository base of its own), so
+    # a working browse would find records and the failure comes from the fault
+    # alone.
+    USRSEC: {base: USRSEC}
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  # No `after`: no TRANSACT request precedes the STARTBR of step 3. The schema
+  # has no browse operation, so the STARTBR is a read.
+  faults:
+  - target: TRANSACT
+    operation: read
+    condition: unavailable
+# PASSWORD is the README's documented demo password, not a secret: the scenario
+# schema accepts no other sign-on password.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '10'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACTIDIN: '00000000001', CONFIRM: 'Y'}
+    '@map': COBIL00
+expected:
+  # Text fields keep their full BMS length with trailing spaces: ERRMSG is 78
+  # characters, the titles and OPTN010 40. CURDATE and CURTIME come from the
+  # region clock, so they are matchers. ACTIDIN, CURBAL and CONFIRM of screen 2
+  # are LOW-VALUES on the first entry and are not asserted.
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN010: '10. Bill Payment                        '
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: CB00
+    PGMNAME: COBIL00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  # The AEIP abend at the RESP-less ENDBR (GAP-DEF-023) replaces the COBIL00
+  # screen that carried 'Unable to lookup Transaction...' with the region's
+  # unformatted abnormal-termination message. Its text carries the region's
+  # own wording, identifier and time, which the source cannot give, so only
+  # the unformatted screen is asserted.
+  - '@map': TEXT
+  # The ERRMSG of each formatted screen: the blank message of the menu and of
+  # the first Bill Payment screen. The unformatted abend screen has no ERRMSG.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  file_state:
+    # Nothing is written or rewritten: account 00000000001 keeps the values
+    # loaded, its balance included, and TRANSACT keeps the 300 records loaded,
+    # with no payment record added.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: 'A000000000'
+        ACCT-GROUP-ID: '          '
+    TRANSACT:
+      count: 300
