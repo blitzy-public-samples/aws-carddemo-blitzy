@@ -6,8 +6,12 @@ this module. It speaks to the test-owned region's 3270 listener with
 ``py3270`` is not used. Each reply is zero or more ``data: ...`` lines, a
 12-field status line and ``ok`` or ``error``. Status field 1 is the keyboard
 (``U`` unlocked, ``L`` locked, ``E`` operator error), field 2 the screen
-formatting (``F`` formatted, ``U`` unformatted) and field 4 the connection
-(``N`` when not connected).
+formatting (``F`` formatted, ``U`` unformatted), field 4 the connection
+(``N`` when not connected, ``C(<host>)`` when connected) and fields 7 and 8
+the screen rows and columns (24 and 80, model 3279-2); a status line that
+breaks any of these is outside the protocol. ``s3270`` 4.x never reports
+``E``: it answers an operator error, a keystroke the terminal rejects, with
+an ``error`` reply carrying the data line ``Keyboard locked``.
 
 Actions issued: ``Connect``, ``Wait(<s>,Unlock)``, ``Clear``, ``String``,
 ``Enter``, ``PF``, ``PA``, ``MoveCursor1``, ``EraseEOF``, ``Ascii1``,
@@ -44,10 +48,13 @@ Credentials
     starting ``CC00`` is always on ``COSGN00``, whatever ``@map`` it
     declares), and in any case before the id is typed.
 Outcomes
-    A missing ``s3270``, an unreachable listener, a lost connection or an
-    unidentified screen is ``AdapterUnavailable`` (``blocked``). A rejected
-    keystroke or an unknown field is ``HarnessError``. The scenario deadline
-    passing while a reply is awaited is ``ScenarioTimeout``. An application
+    A missing ``s3270``, an unreachable listener, a lost connection, an
+    action that ``s3270`` answers ``error`` while connected, or an
+    unidentified screen is ``AdapterUnavailable`` (``blocked``); so is a reply
+    outside the protocol or a malformed status line, under ``GAP-MIS-009``. A
+    rejected keystroke (an operator error), an unknown field or an over-long
+    value is ``HarnessError``. The scenario deadline passing while an action
+    is sent or a reply is awaited is ``ScenarioTimeout``. An application
     outcome, such as landing on another map than the step expects, is captured
     and left to the comparison; it is never turned into ``blocked``.
 
@@ -60,9 +67,11 @@ from __future__ import annotations
 
 import functools
 import ipaddress
+import math
 import os
 import queue
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -132,9 +141,19 @@ AIDS = frozenset({"ENTER", "CLEAR", "PA1", "PA2", "PA3"} | {f"PF{n}" for n in ra
 
 _STEP_KEYS = frozenset({"transid", "aid", "fields", "session", SCREEN_MAP})
 _STATUS_FIELD_COUNT = 12
+# The status fields the driver reads: keyboard, formatting, connection and
+# screen size; s3270 writes the connection as C(<host>) or N.
+_KEYBOARD_STATES = frozenset({"U", "L", "E"})
+_FORMATTING_STATES = frozenset({"F", "U"})
+_NOT_CONNECTED = "N"
+_CONNECTED_RE = re.compile(r"C\([^\s()]+\)")
+_OPERATOR_ERROR = "E"  # the keyboard field x3270-script documents for an operator error
+# The data line of the error reply that s3270 4.x gives a keystroke it rejects.
+_OPERATOR_ERROR_LINE = "Keyboard locked"
 _BUFFER_SIZE = SCREEN_ROWS * SCREEN_COLS
 _REWAIT_PAUSE_S = 0.1  # between Wait(Unlock) replies that return early
 _CLOSE_WAIT_S = 2.0  # for Quit, then for each signal, when a session closes
+_CLOSE_SEND_S = 0.5  # for the input pipe to take Disconnect and Quit on close
 _STDERR_LINES = 40
 
 _BRACKETED_RE = re.compile(r"\[([^\[\]]+)\]:([0-9]+)")
@@ -228,18 +247,36 @@ def find_s3270() -> str:
 
 
 def quote_string(value: str) -> str:
-    """``value`` as the double-quoted argument of ``String``.
+    """``value`` as the double-quoted argument of ``String``, which types it
+    literally.
 
-    s3270 reads ``\\`` as the start of an escape (``\\n`` is Enter, ``\\t``
-    Tab), so backslashes and double quotes are escaped; a non-printable
-    character could only be sent as an escape or a key, so it is refused with
+    s3270 reads the argument twice. Its action parser reads ``\\"`` as a quote
+    and keeps a backslash before any other character, but a ``"`` after two or
+    more backslashes ends the argument, so doubling backslashes would let text
+    such as ``\\") Quit() #`` close ``String`` and run further actions.
+    ``String`` then decodes its own escapes: ``\\\\`` is one backslash, ``\\n``
+    Enter, an unknown escape loses its backslash, a trailing ``\\`` is dropped,
+    and ``\\u`` takes at most four hex digits; from s3270 4.3 a first argument
+    equal to ``-subst`` in any case is an option, not text.
+
+    So every ``"`` is written ``\\u0022``, every ``\\`` ``\\u005c`` and a
+    leading ``-`` ``\\u002d``, always with four hex digits, so a hex letter
+    after one stays text. The argument then holds no ``"`` and every backslash
+    in it begins a ``\\uXXXX``: the action parser passes it on unchanged, and
+    ``String`` types each escape as its one ASCII character, which s3270 4.1,
+    keeping one byte of a ``\\u`` value, types the same way. Every other
+    printable character is passed as it is; a non-printable character could
+    only be sent as an escape or a key, so it is refused with
     ``HarnessError``."""
     if not isinstance(value, str):
         raise HarnessError(f"a field value must be text, got {type(value).__name__} {value!r}")
     for char in value:
         if not char.isprintable():
             raise HarnessError(f"field value {value!r} holds the non-printable character {char!r}")
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    encoded = value.translate({ord("\\"): "\\u005c", ord('"'): "\\u0022"})
+    if encoded.startswith("-"):
+        encoded = "\\u002d" + encoded[1:]
+    return '"' + encoded + '"'
 
 
 # --------------------------------------------------------------------------
@@ -249,7 +286,8 @@ def quote_string(value: str) -> str:
 
 class Reply(NamedTuple):
     """One s3270 reply: its ``data:`` lines (prefix stripped, content as
-    sent), the 12 status fields and whether it ended ``ok``."""
+    sent), the 12 status fields, which ``_status_problem`` has found well
+    formed, and whether it ended ``ok``."""
 
     action: str
     data: tuple[str, ...]
@@ -266,11 +304,41 @@ class Reply(NamedTuple):
 
     @property
     def connected(self) -> bool:
-        return not self.status[3].startswith("N")
+        return self.status[3] != _NOT_CONNECTED
 
     @property
     def detail(self) -> str:
         return " | ".join(line.strip() for line in self.data if line.strip()) or "no detail"
+
+    @property
+    def operator_error(self) -> bool:
+        """Whether the terminal rejected a keystroke: keyboard field ``E``, or
+        an ``error`` reply carrying the data line ``Keyboard locked``."""
+        return self.keyboard == _OPERATOR_ERROR or (
+            not self.ok and any(line.strip() == _OPERATOR_ERROR_LINE for line in self.data)
+        )
+
+
+def _status_problem(fields: Sequence[str]) -> str | None:
+    """What is wrong with a status line split into ``fields``, or ``None``
+    when the fields the driver reads are well formed: 12 fields, keyboard
+    ``U``, ``L`` or ``E``, formatting ``F`` or ``U``, connection ``N`` or
+    ``C(<host>)``, and the 24 rows and 80 columns of model 3279-2."""
+    if len(fields) != _STATUS_FIELD_COUNT:
+        return f"field count {len(fields)}, expected {_STATUS_FIELD_COUNT}"
+    keyboard, formatting, _, connection, _, _, rows, cols = fields[:8]
+    if keyboard not in _KEYBOARD_STATES:
+        return f"keyboard field {keyboard!r} is not U, L or E"
+    if formatting not in _FORMATTING_STATES:
+        return f"formatting field {formatting!r} is not F or U"
+    if connection != _NOT_CONNECTED and not _CONNECTED_RE.fullmatch(connection):
+        return f"connection field {connection!r} is not N or C(<host>)"
+    if (rows, cols) != (str(SCREEN_ROWS), str(SCREEN_COLS)):
+        return (
+            f"screen size {rows} x {cols} is not the {SCREEN_ROWS} x {SCREEN_COLS} of model "
+            f"{S3270_MODEL}"
+        )
+    return None
 
 
 class Screen(NamedTuple):
@@ -318,7 +386,13 @@ class S3270:
     Every read of a reply is bounded by ``time_left()``, the seconds before
     the scenario deadline; once it reaches 0, ``ScenarioTimeout`` is raised.
     Standard output is read by a thread into a queue so that bound holds even
-    while s3270 is silent."""
+    while s3270 is silent. Every write of an action is bounded the same way:
+    standard input is non-blocking, and each line is written as the pipe takes
+    it, so a child that stops reading cannot hold the driver past the
+    deadline. An action written only in part when the deadline passed leaves
+    s3270's input ending in half a line: every later ``command`` of the
+    session then raises ``ScenarioTimeout`` without writing, and ``close``
+    sends nothing more before its signals."""
 
     def __init__(
         self,
@@ -330,8 +404,12 @@ class S3270:
         self.session = session
         self._time_left = time_left
         self._closed = False
+        self._torn: str | None = None  # the action s3270 received only in part
         self._lines: queue.Queue[str | None] = queue.Queue()
         self._stderr: deque[str] = deque(maxlen=_STDERR_LINES)
+        # The stderr thread appends while _gone reads: a deque must not change
+        # while it is iterated.
+        self._stderr_lock = threading.Lock()
         program = executable or find_s3270()
         environment = {
             "PATH": os.environ.get("PATH", os.defpath),
@@ -363,18 +441,53 @@ class S3270:
             threading.Thread(
                 target=_pump_lines, args=(stream, sink), name=f"s3270-{session}", daemon=True
             ).start()
+        try:
+            # Actions are written to the descriptor by _write, never through
+            # the text stream, whose close therefore has nothing to flush.
+            os.set_blocking(self._process.stdin.fileno(), False)
+        except (OSError, ValueError) as exc:
+            self.close()
+            raise AdapterUnavailable(
+                f"s3270 input could not be made non-blocking: {exc}", INSTALLATION_GAP
+            ) from exc
 
     def _keep_stderr(self, line: str | None) -> None:
         if line is not None:
-            self._stderr.append(line)
+            with self._stderr_lock:
+                self._stderr.append(line)
 
     def _gone(self, during: str) -> AdapterUnavailable:
-        tail = " | ".join(line.strip() for line in self._stderr if line.strip())
+        with self._stderr_lock:
+            lines = list(self._stderr)
+        tail = " | ".join(line.strip() for line in lines if line.strip())
         return AdapterUnavailable(
             f"s3270 session {self.session} ended during {during}"
             f" (exit {self._process.poll()}): {tail or 'no message'}",
             LISTENER_GAP,
         )
+
+    def _write(self, data: bytes, time_left: Callable[[], float]) -> int:
+        """Write ``data`` to s3270's non-blocking input as the pipe takes it,
+        waiting for room only while ``time_left()`` is above 0, and return the
+        number of bytes written: ``len(data)`` unless time ran out first.
+        Raises ``OSError`` when the pipe is broken and ``ValueError`` when the
+        stream is closed."""
+        descriptor = self._process.stdin.fileno()
+        poller = select.poll()
+        poller.register(descriptor, select.POLLOUT)
+        view = memoryview(data)
+        sent = 0
+        while sent < len(view):
+            left = time_left()
+            if left <= 0:
+                break
+            try:
+                sent += os.write(descriptor, view[sent:])
+            except BlockingIOError:
+                # until there is room or time is up; one poll never outlasts a
+                # whole deadline, so an unbounded time_left() cannot overflow it
+                poller.poll(math.ceil(min(left, DEFAULT_DEADLINE_S) * 1000))
+        return sent
 
     def _read_line(self, action: str) -> str:
         left = self._time_left()
@@ -397,13 +510,22 @@ class S3270:
             raise HarnessError(f"s3270 session {self.session} is closed; cannot send {action}")
         if "\n" in action or "\r" in action:
             raise HarnessError(f"an s3270 action is one line, got {action!r}")
+        if self._torn is not None:
+            raise ScenarioTimeout(
+                f"session {self.session}: deadline passed sending {self._torn}, which s3270 "
+                f"received in part; cannot send {action}"
+            )
         if self._process.poll() is not None:
             raise self._gone(action)
+        encoded = (action + "\n").encode("utf-8", "replace")
         try:
-            self._process.stdin.write(action + "\n")
-            self._process.stdin.flush()
+            sent = self._write(encoded, self._time_left)
         except (OSError, ValueError):
             raise self._gone(action) from None
+        if sent < len(encoded):
+            if sent:
+                self._torn = action
+            raise ScenarioTimeout(f"session {self.session}: deadline passed sending {action}")
         data: list[str] = []
         status: tuple[str, ...] | None = None
         while True:
@@ -414,8 +536,16 @@ class S3270:
                 if status is None:
                     break
                 return Reply(action, tuple(data), status, line == "ok")
-            elif status is None and len(line.split()) == _STATUS_FIELD_COUNT:
-                status = tuple(line.split())
+            elif status is None:
+                fields = tuple(line.split())
+                problem = _status_problem(fields)
+                if problem is not None:
+                    raise AdapterUnavailable(
+                        f"s3270 session {self.session} answered {action} with a status line "
+                        f"outside the x3270-script protocol ({problem}): {line!r}",
+                        INSTALLATION_GAP,
+                    )
+                status = fields
             else:
                 break
         raise AdapterUnavailable(
@@ -426,21 +556,34 @@ class S3270:
         )
 
     def checked(self, action: str) -> Reply:
-        """``command`` that must succeed: a lost connection is
-        ``AdapterUnavailable``; an ``error`` reply or a keyboard left in
-        operator-error state (a rejected keystroke) is ``HarnessError``."""
+        """``command`` that must succeed, sent once and never repeated, since
+        an AID is not idempotent.
+
+        A lost connection, and an action that ``s3270`` answers ``error``
+        while connected, are ``AdapterUnavailable(..., "GAP-MIS-005")``
+        (``blocked``), the latter with the complete reply. A rejected
+        keystroke (an operator error: keyboard ``E``, or an ``error`` reply
+        carrying ``Keyboard locked``) is ``HarnessError``. ``command`` raises
+        the rest: a reply outside the protocol or a malformed status line is
+        ``AdapterUnavailable(..., "GAP-MIS-009")``, and the scenario deadline
+        passing while the action is sent or its reply awaited is
+        ``ScenarioTimeout``."""
         reply = self.command(action)
         if not reply.connected:
             raise AdapterUnavailable(
                 f"TN3270 connection lost (session {self.session}) at {action}: {reply.detail}",
                 LISTENER_GAP,
             )
-        if not reply.ok:
-            raise HarnessError(f"s3270 {action} failed (session {self.session}): {reply.detail}")
-        if reply.keyboard == "E":
+        if reply.operator_error:
             raise HarnessError(
-                f"s3270 {action} left the keyboard in operator-error state (session "
-                f"{self.session}): the terminal refused the input"
+                f"s3270 {action} was rejected as an operator error (session {self.session}): "
+                f"the terminal refused the input; {reply.detail}"
+            )
+        if not reply.ok:
+            raise AdapterUnavailable(
+                f"s3270 session {self.session} answered {action} with error while connected: "
+                f"data {list(reply.data)!r}, status {' '.join(reply.status)!r}",
+                LISTENER_GAP,
             )
         return reply
 
@@ -459,7 +602,8 @@ class S3270:
 
         Waiting for the application has no limit of its own: a wait that
         returns ``error`` while time is left means the keyboard is still
-        locked, and is repeated until the deadline."""
+        locked, and is repeated until the deadline, unless the reply reports
+        an operator error, which is ``HarnessError``."""
         while True:
             left = self._time_left()
             if left <= 0:
@@ -473,7 +617,7 @@ class S3270:
                     f"keyboard: {reply.detail}",
                     LISTENER_GAP,
                 )
-            if reply.keyboard == "E":
+            if reply.operator_error:
                 raise HarnessError(
                     f"keyboard in operator-error state (session {self.session}): the terminal "
                     f"refused the input; {reply.detail}"
@@ -496,7 +640,7 @@ class S3270:
         return Screen(rows, reply.formatted)
 
     def type_text(self, value: str) -> None:
-        """``String`` of one field value."""
+        """``String`` of one field value, typed literally through ``quote_string``."""
         self.checked(f"String({quote_string(value)})")
 
     def enter_field(self, field: "MapField", value: str) -> None:
@@ -524,10 +668,15 @@ class S3270:
         self.wait_unlock()
 
     def close(self) -> None:
-        """End the session: ``Disconnect`` and ``Quit`` best effort, then
-        SIGTERM and SIGKILL to the process group. Idempotent; never raises,
-        because it runs in ``finally`` blocks and in the adapter's cleanup,
-        where an exception would replace the scenario's own outcome."""
+        """End the session: ``Disconnect`` and ``Quit`` when s3270's input
+        takes both whole within ``_CLOSE_SEND_S``, and never after an action
+        was written only in part, then up to ``_CLOSE_WAIT_S`` for s3270 to
+        exit; then SIGTERM and SIGKILL to the process group, each waited for
+        up to ``_CLOSE_WAIT_S``. No step waits on the pipe without a bound, so
+        a child that stopped reading is still killed and reaped. Idempotent;
+        never raises, because it runs in ``finally`` blocks and in the
+        adapter's cleanup, where an exception would replace the scenario's own
+        outcome."""
         if self._closed:
             return
         self._closed = True
@@ -535,16 +684,18 @@ class S3270:
             _LIVE.discard(self)
         process = self._process
         try:
-            if process.poll() is None:
+            if process.poll() is None and self._torn is None:
+                farewell = b"Disconnect()\nQuit()\n"
+                until = time.monotonic() + _CLOSE_SEND_S
                 try:
-                    process.stdin.write("Disconnect()\nQuit()\n")
-                    process.stdin.flush()
+                    sent = self._write(farewell, lambda: until - time.monotonic())
                 except (OSError, ValueError):
-                    pass  # s3270 is already gone or no longer reading
-                try:
-                    process.wait(timeout=_CLOSE_WAIT_S)
-                except subprocess.TimeoutExpired:
-                    pass  # the signals below end it
+                    sent = 0  # s3270 is already gone or no longer reading
+                if sent == len(farewell):
+                    try:
+                        process.wait(timeout=_CLOSE_WAIT_S)
+                    except subprocess.TimeoutExpired:
+                        pass  # the signals below end it
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 if process.poll() is not None:
                     break
@@ -560,7 +711,7 @@ class S3270:
             pass
         finally:
             try:
-                process.stdin.close()
+                process.stdin.close()  # nothing buffered in it, so it cannot block
             except (OSError, ValueError):
                 pass  # the reader threads close stdout and stderr
 
