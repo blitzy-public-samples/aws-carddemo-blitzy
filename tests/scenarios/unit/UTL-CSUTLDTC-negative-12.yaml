@@ -1,0 +1,51 @@
+# The FC-NON-NUMERIC-DATA branch of CSUTLDTC's feedback-token mapping, reached
+# by injection: ceedays_feedback '09D8' makes the CEEDAYS stub skip its own date
+# check and return the severity-3 token 00 03 09 D8 59 C3 C5 C5, whatever the
+# date, so CSUTLDTC moves 'Nonnumeric data' to WS-RESULT, severity 0003 and
+# message number 2520 (x'09D8') into the result, and the severity into
+# RETURN-CODE [app/cbl/CSUTLDTC.cbl:69,116-124,143-144,97-98].
+#
+# The date and mask are valid, so the outcome depends on the injected token
+# alone and says nothing about which dates CEEDAYS refuses: the date-acceptance
+# item is not listed and no inferred-not-observed gap is cited (GAP-STB-002).
+#
+# DTCDRV calls CSUTLDTC once per DTCIN record and prints one line: RC is
+# CSUTLDTC's severity, and DTCDRV itself exits 0. Result bytes 46-47 are the
+# binary Vstring length x'000A' that MOVE WS-DATE-TO-TEST TO WS-DATE copies,
+# shown as '..' in RESULT and 000A in HEX; they are pinned as observed. The
+# line is the captured DTCDRV output, byte for byte.
+id: UTL-CSUTLDTC-negative-12
+level: unit
+type: negative
+description: >-
+  CSUTLDTC called with 2022-07-18 and mask YYYY-MM-DD while the CEEDAYS stub
+  returns the injected feedback token 09D8: the result reads severity 0003,
+  'Mesg Code:' 2520 and 'Nonnumeric data', and RETURN-CODE is 3.
+inventory_ids:
+- INV-UTL-002  # CSUTLDTC CEEDAYS feedback-token mapping (rule)
+- INV-UTL-004  # CSUTLDTC result message layout and RETURN-CODE (interface)
+- INV-UTL-001  # CSUTLDTC program
+tags: []
+gap_ids:
+- GAP-STB-002  # CEEDAYS stub; the token is injected, not computed
+- GAP-STB-004  # DTCDRV stands in for CSUTLDTC's callers
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets: {}
+  parameters:
+    ceedays_feedback: '09D8'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  # The DTCDRV call list is a parameter file, as tests/stubs/DTCDRV.cbl's input
+  # contract states: each line is one 80-byte DTCIN record (padded with spaces),
+  # date in bytes 1-10 and mask in bytes 11-20.
+  param_files:
+    DTCIN:
+    - '2022-07-18YYYY-MM-DD'
+expected:
+  return_code: 0
+  messages:
+  - 'DTCDRV DATE=2022-07-18 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2520 Nonnumeric data TstDate: ..2022-07- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A2032353230204E6F6E6E756D65726963206461746120547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D4D4D2D444420202020'
