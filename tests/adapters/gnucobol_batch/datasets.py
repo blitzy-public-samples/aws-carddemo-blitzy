@@ -1649,6 +1649,8 @@ _PARAM_RE = {
 # IDCAMS KEYS is length first, then offset, written "(a b)" or "(a,b)".
 _KEYS_RE = re.compile(r"\bKEYS\s*\(\s*(\d+)\s*[\s,]\s*(\d+)\s*\)")
 _NONUNIQUE_RE = re.compile(r"\bNONUNIQUEKEY\b")
+# A data set name of two or more qualifiers in an IDCAMS command.
+_DSN_TOKEN_RE = re.compile(r"[A-Z0-9#@$][A-Z0-9#@$-]*(?:\.[A-Z0-9#@$][A-Z0-9#@$-]*)+")
 
 
 def _jobs_mapping(jobs_cfg: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -2165,16 +2167,18 @@ class Catalog:
            those jobs defines (DEFGDGB, DALYREJS and REPTFILE start without
            the bases they define).
         2. Each precondition dataset in ``inputs/`` whose logical dataset a dd
-           of the scenario's jobs names: a sequential one as NONVSAM, a ksds
+           or an IDCAMS command of the scenario's jobs names (TRANIDX names
+           TRANSACT only in its SYSIN): a sequential one as NONVSAM, a ksds
            as a CLUSTER loaded with the ``datasets.yaml`` keys (primary and
            alternates), a GDG logical (TRANSACT-BKUP, SYSTRAN, ...) as
            generation ``G0001V00`` of its base. No AIX or PATH is catalogued:
            the jobs that build them define them.
 
         A dataset an ``open``/``unavailable`` fault targets is neither
-        materialized nor catalogued, and a precondition no dd of the jobs uses
-        is ignored; both are logged in ``evidence/catalog.yaml``. ``faults``
-        defaults to the scenario's ``preconditions.faults``."""
+        materialized nor catalogued, and a precondition neither a dd nor an
+        IDCAMS command of the jobs uses is ignored; both are logged in
+        ``evidence/catalog.yaml``. ``faults`` defaults to the scenario's
+        ``preconditions.faults``."""
         jobs = _jobs_mapping(jobs_cfg)
         names = scenario_jobs(scenario)
         if not names:
@@ -2204,6 +2208,12 @@ class Catalog:
                     )
                     if gdg_name is not None:
                         defined.add(gdg_name)
+                    # A dataset an IDCAMS command names without a DD (TRANIDX's
+                    # BLDINDEX INDATASET, a RELATE) is used by the job as well.
+                    for dsn in _DSN_TOKEN_RE.findall(statement):
+                        logical = mapping.logical_for(dsn)
+                        if logical is not None:
+                            used.add(logical)
         for name in sorted(referenced - defined):
             attributes = catalog.gdg_definitions.get(name)
             if attributes is None:
@@ -2219,7 +2229,8 @@ class Catalog:
                 catalog.log.append(f"left out {logical}: open fault, condition unavailable")
             elif logical not in used:
                 catalog.log.append(
-                    f"ignored precondition {logical}: no dd of {', '.join(names)} uses it"
+                    f"ignored precondition {logical}: no dd or IDCAMS command of "
+                    f"{', '.join(names)} uses it"
                 )
             else:
                 catalog.seed_dataset(logical, store.read_sequential(source_dir / f"{logical}.dat"))
