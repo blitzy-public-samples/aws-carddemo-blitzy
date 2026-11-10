@@ -1,0 +1,150 @@
+# The account view finds the account but not its customer: COACTVWC composes
+# 'CustId:<id> not found in customer master.Resp: <RESP> REAS:<RESP2>'.
+#
+# Step 1: USER0001 (type U) signs on through CC00 and COSGN00C XCTLs to the main
+# menu COMEN01C (asserted by its header only; the menu content belongs to the
+# SEC and MNU scenarios).
+# Step 2: option '1' makes COMEN01C XCTL to COACTVWC [app/cpy/COMEN02Y.cpy:25-29].
+# Coming from the menu and not re-entered, COACTVWC initializes the COMMAREA,
+# takes the CDEMO-PGM-ENTER path and sends COACTVW with the account-id prompt,
+# a blank ERRMSG and an empty account number, reading no file
+# [app/cbl/COACTVWC.cbl:282-286,353-360,460-535].
+# Step 3: ENTER with account 00000000003. The re-entry edits the id as a
+# non-zero 11-digit number [app/cbl/COACTVWC.cbl:649-680], then 9000-READ-ACCT:
+# - CXACAIX by account id: RESP NORMAL. cardxref.txt record 17 is card
+#   3999169246375885, customer 000000003, account 00000000003, the only record
+#   of that account, so CDEMO-CUST-ID becomes 000000003 [app/cbl/COACTVWC.cbl:727-740].
+# - ACCTDAT by account id: RESP NORMAL, FOUND-ACCT-IN-MASTER [app/cbl/COACTVWC.cbl:776-788].
+# - CUSTDAT by customer id 000000003: the CUSTDATA fixture omits that record, so
+#   RESP is NOTFND (13) and RESP2 80, and the STRING at
+#   app/cbl/COACTVWC.cbl:846-856 composes the message [app/cbl/COACTVWC.cbl:826-857].
+# 1000-SEND-MAP then shows the account fields, because FOUND-ACCT-IN-MASTER is
+# set, but no customer field, because FOUND-CUST-IN-MASTER is not
+# [app/cbl/COACTVWC.cbl:471-523]. 9000-READ-ACCT cleared WS-INFO-MSG, so INFOMSG
+# shows the prompt again [app/cbl/COACTVWC.cbl:528-534,689].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - ERROR-RESP and ERROR-RESP2 are PIC X(10) receiving the PIC S9(09) COMP RESP
+#   codes, so each holds the 9 unsigned digits and one space ('000000013 ',
+#   '000000080 ') [app/cbl/COACTVWC.cbl:40-43,98-103]. The composed text is 78
+#   characters, and STRING stops when the 75-byte WS-RETURN-MSG is full
+#   [app/cbl/COACTVWC.cbl:117], so only '0000000' of RESP2 survives: any RESP2
+#   below 100 gives the same screen. ERRMSG is the 78-byte BMS field holding
+#   those 75 bytes and 3 trailing spaces.
+# - The amounts are ACCTDATA record 3 edited through PICOUT '+ZZZ,ZZZ,ZZZ.99'
+#   [app/cpy-bms/COACTVW.CPY:302-344]: balance 147.00, credit limit 4909.00,
+#   cash limit 538.00, cycle credit and debit 0.00. ACCT-GROUP-ID is blank in
+#   every account record (GAP-DEF-005), so AADDGRP shows 10 spaces.
+# - CACTVWAO starts as LOW-VALUES [app/cbl/COACTVWC.cbl:432]; a field left at
+#   LOW-VALUES is not sent and reads back as spaces at its full BMS length,
+#   as the empty account number of step 2 and every customer field of step 3 do.
+# - CURDATE and CURTIME come from the region clock, hence the matchers and
+#   clock_mode relative.
+# The UniKix copy of COACTVW.bms lacks the unnamed field at row 1, columns 1-9
+# (GAP-DOC-025); no asserted field lies there.
+id: ACT-COACTVWC-negative-08
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 1 'Account View' and asks
+  COACTVWC for account 00000000003, whose cross-reference and account records
+  exist but whose customer 000000003 is missing from CUSTDAT. The screen shows
+  the account's status, dates and amounts, leaves every customer field blank,
+  and reports 'CustId:000000003 not found in customer master.Resp: 000000013
+  REAS:0000000', the composed message cut to the 75-byte WS-RETURN-MSG.
+inventory_ids:
+- INV-ACT-022  # COACTVWC message 'CustId:<id> not found in customer master.Resp: <RESP> REAS:<RESP2>'
+- INV-ACT-001  # COACTVWC program
+- INV-MNU-003  # COMEN01 map, the main menu option 1 is entered on
+- INV-ACT-003  # COACTVW map, the account view of steps 2 and 3
+- INV-CFG-010  # CAVW transaction, under which the account lookup runs
+- INV-CFG-006  # CXACAIX CSD file, read by account id
+- INV-CFG-001  # ACCTDAT CSD file, read by account id
+- INV-CFG-005  # CUSTDAT CSD file, the read that returns NOTFND
+- INV-LAY-002  # COCOM01Y copybook, CDEMO-ACCT-ID and CDEMO-CUST-ID carried between the reads
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COACTVWC
+- INV-LAY-009  # CSMSG02Y copybook, the abend data COACTVWC copies
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping that makes ENTER the re-entry key
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID echoed into ACCTSID
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # account (ACT) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    # Customer 000000003 of account 00000000003 is left out, so the CUSTDAT
+    # READ returns NOTFND; the other 49 customers stay.
+    CUSTDATA:
+      base: CUSTDATA
+      omit_keys: ['000000003']
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '1'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000003'}
+    '@map': COACTVW
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTVWC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000003'
+    ACSTTUS: 'Y'
+    ADTOPEN: '2013-08-23'
+    ACRDLIM: '+      4,909.00'
+    AEXPDT: '2024-01-10'
+    ACSHLIM: '+        538.00'
+    AREISDT: '2024-01-10'
+    ACURBAL: '+        147.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '         '
+    ACSTSSN: '            '
+    ACSTDOB: '          '
+    ACSTFCO: '   '
+    ACSFNAM: '                         '
+    ACSMNAM: '                         '
+    ACSLNAM: '                         '
+    ACSADL1: '                                                  '
+    ACSSTTE: '  '
+    ACSADL2: '                                                  '
+    ACSZIPC: '     '
+    ACSCITY: '                                                  '
+    ACSCTRY: '   '
+    ACSPHN1: '             '
+    ACSGOVT: '                    '
+    ACSPHN2: '             '
+    ACSEFTC: '          '
+    ACSPFLG: ' '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: 'CustId:000000003 not found in customer master.Resp: 000000013  REAS:0000000   '

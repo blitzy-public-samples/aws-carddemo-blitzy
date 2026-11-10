@@ -1,0 +1,115 @@
+# PF3 on the COACTUPC 'Account Update' screen returns to the main menu.
+# USER0001 signs on through CC00 and reaches COMEN01C; option '2' of the
+# COMEN02Y table is 'Account Update', so COMEN01C moves CM00 and COMEN01C to
+# CDEMO-FROM-TRANID and CDEMO-FROM-PROGRAM, zeroes CDEMO-PGM-CONTEXT and XCTLs
+# to COACTUPC [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:31-35].
+# COACTUPC, entered from LIT-MENUPGM without CDEMO-PGM-REENTER, takes its
+# fresh-entry path: 3000-SEND-MAP sends COACTUP with its own CAUP and COACTUPC
+# header and a blank message line, and returns with TRANSID CAUP
+# [app/cbl/COACTUPC.cbl:964-973,1007-1019,2649-2676,2955-2982].
+# PF3 runs CAUP again. YYYY-STORE-PFKEY maps DFHPF3 to CCARD-AID-PFK03
+# [app/cpy/CSSTRPFY.cpy:34-35], which is always a valid key, and the PF3 branch
+# takes CDEMO-TO-TRANID and CDEMO-TO-PROGRAM from the FROM fields the menu set
+# (CM00, COMEN01C; LIT-MENUTRANID and LIT-MENUPGM only when they are blank),
+# stores CAUP and COACTUPC as the new FROM fields, sets CDEMO-USRTYP-USER and
+# CDEMO-PGM-ENTER, records COACTUP/CACTUPA as the last mapset and map, issues
+# SYNCPOINT and XCTLs to COMEN01C with the COMMAREA
+# [app/cbl/COACTUPC.cbl:898-916,927-959]. The branch receives no map and
+# issues no file command, so no CSD file is listed.
+# COMEN01C, entered with a COMMAREA whose context is 0, takes its first-entry
+# path: it clears COMEN1AO and sends the main menu with its own CM00 and
+# COMEN01C header, the COTTL01Y titles, the run clock's date and time, the ten
+# COMEN02Y options built as '<nn>. <name>' in 40-character fields, OPTN011,
+# OPTN012 and OPTION left blank, and a blank ERRMSG
+# [app/cbl/COMEN01C.cbl:77-90,182-277] [app/cpy/COTTL01Y.cpy:17-22].
+# CURDATE and CURTIME come from the region clock, so they are matchers and the
+# clock is relative. The baseline is derived from the source: no TPE region
+# runs in CI.
+id: ACT-COACTUPC-alternate-05
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, selects main menu option 2 'Account Update' and reaches
+  the COACTUPC Account Update screen COACTUP (transaction CAUP). PF3 there
+  commits (SYNCPOINT) and transfers control back to the program that called
+  COACTUPC, COMEN01C, which shows the main menu COMEN01 afresh with
+  transaction CM00, program COMEN01C, its ten options and no message.
+# The sign-on step and the option step only establish the session: CC00, CM00,
+# COSGN00C and COMEN01C are verified by the SEC-COSGN00C and MNU-COMEN01C
+# scenarios, so they are not listed here.
+inventory_ids:
+- INV-ACT-066  # COACTUPC PF3 return to the calling program (navigation rule)
+- INV-ACT-002  # COACTUPC program
+- INV-ACT-004  # COACTUP map, the screen PF3 is pressed on
+- INV-MNU-003  # COMEN01 map, the screen the XCTL lands on
+- INV-CFG-009  # CAUP transaction, under which PF3 is processed
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA passed with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-007  # CSLKPCDY copybook, copied by COACTUPC
+- INV-LAY-008  # CSMSG01Y copybook, copied by COACTUPC
+- INV-LAY-009  # CSMSG02Y copybook, copied by COACTUPC
+- INV-LAY-010  # CSSETATY copybook, copied by COACTUPC
+- INV-LAY-011  # CSSTRPFY copybook, the PF-key mapping of DFHPF3 to CCARD-AID-PFK03
+- INV-LAY-013  # CSUTLDPY copybook, copied by COACTUPC
+- INV-LAY-014  # CSUTLDWY copybook, copied by COACTUPC
+- INV-LAY-019  # CVCRD01Y copybook, the CCARD-AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # account view and update (ACT) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# The UniKix copy of COACTUP.bms drops the unnamed field at row 1, columns 1-9,
+# where the TRNNAME of the screen PF3 is pressed on is asserted, so a UniKix
+# run of this scenario never verifies the COACTUP map item while it is open.
+- GAP-DOC-025
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001 from USRSEC.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COMEN01
+  - aid: PF3
+    fields: {}
+    '@map': COACTUP
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. Fields COMEN01C leaves at LOW-VALUES (OPTN011,
+# OPTN012, OPTION) and the blank message lines show as spaces.
+expected:
+  screens:
+  - '@map': COMEN01
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ERRMSG: '                                                                              '
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN001: '01. Account View                        '
+    OPTN002: '02. Account Update                      '
+    OPTN003: '03. Credit Card List                    '
+    OPTN004: '04. Credit Card View                    '
+    OPTN005: '05. Credit Card Update                  '
+    OPTN006: '06. Transaction List                    '
+    OPTN007: '07. Transaction View                    '
+    OPTN008: '08. Transaction Add                     '
+    OPTN009: '09. Transaction Reports                 '
+    OPTN010: '10. Bill Payment                        '
+    OPTN011: '                                        '
+    OPTN012: '                                        '
+    OPTION: '  '
+    ERRMSG: '                                                                              '

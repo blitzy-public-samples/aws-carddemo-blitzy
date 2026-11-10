@@ -1,0 +1,163 @@
+# The account master has no record for an account the cross-reference knows.
+# USER0001 (type U) signs on through CC00 and COSGN00C routes it to COMEN01C
+# [app/cbl/COSGN00C.cbl:221-240]. Option '1' makes COMEN01C XCTL to COACTVWC
+# [app/cbl/COMEN01C.cbl:117-155], which, called from COMEN01C and not re-entered,
+# initializes the COMMAREA, takes the CDEMO-PGM-ENTER path and sends COACTVW with
+# a blank account id, the input prompt and no error, then returns with TRANSID
+# CAVW [app/cbl/COACTVWC.cbl:282-286,353-360,461-466,527-532,577-591].
+#
+# Step 3 enters account 00000000001 under CAVW. The id is supplied, numeric and
+# non-zero, so the edit passes [app/cbl/COACTVWC.cbl:648-683]. The READ of
+# CXACAIX by account id answers NORMAL: cardxref.txt line 49 links account
+# 00000000001 to card 9680294154603697 and customer 000000001
+# [app/cbl/COACTVWC.cbl:723-740]. The READ of ACCTDAT answers NOTFND, because the
+# precondition leaves that record out of ACCTDATA [app/cbl/COACTVWC.cbl:774-806].
+#
+# The primary item is the 88-level DID-NOT-FIND-ACCT-IN-ACCTDAT, 'Did not find
+# this account in account master file' [app/cbl/COACTVWC.cbl:131-132]. Its only
+# SET, in the NOTFND branch of 9300-GETACCTDATA-BYACCT, is commented out
+# [app/cbl/COACTVWC.cbl:792], so that text can never reach the screen. Pinned as
+# observed (observed-only, GAP-UNC-013), the NOTFND branch instead STRINGs into
+# the 75-byte WS-RETURN-MSG: 'Account:' 00000000001 ' not found in' ' Acct
+# Master file.Resp:' ERROR-RESP ' Reas:' ERROR-RESP2 [app/cbl/COACTVWC.cbl:793-806].
+# ERROR-RESP and ERROR-RESP2 are X(10) fields that receive the S9(09) COMP
+# WS-RESP-CD and WS-REAS-CD as 9 unsigned digits plus a space
+# [app/cbl/COACTVWC.cbl:40-43,98-103]. NOTFND is RESP 13, which gives
+# '000000013 '. The receiving field is full after the first 4 bytes of
+# ERROR-RESP2, so the message ends 'Reas:0000' whatever RESP2 the region returns.
+# ERRMSG (78 bytes) shows those 75 bytes and 3 spaces.
+#
+# Because the 88-level is never set, the guard that tests it in 9000-READ-ACCT
+# [app/cbl/COACTVWC.cbl:704] does not fire. COACTVWC goes on to read CUSTDAT
+# with the customer id from the cross-reference, gets NORMAL, sets
+# FOUND-CUST-IN-MASTER, and leaves WS-RETURN-MSG unchanged
+# [app/cbl/COACTVWC.cbl:708-716,825-838]. 1200-SETUP-SCREEN-VARS then fills the
+# customer fields from customer 000000001 of custdata.txt beside the error
+# [app/cbl/COACTVWC.cbl:493-523]. Under the same FOUND-CUST-IN-MASTER test it
+# also moves the account fields of ACCOUNT-RECORD [app/cbl/COACTVWC.cbl:471-490].
+# That record is working storage without a VALUE clause, which the NOTFND READ
+# left unfilled, so the source does not determine those ten fields. They are not
+# asserted, and an observed run pins them in the promoted baseline. The
+# 9000-READ-ACCT reset of the info message makes 1200 show the prompt again
+# [app/cbl/COACTVWC.cbl:689,527-530], and the rejected id stays in ACCTSID
+# [app/cbl/COACTVWC.cbl:465-469].
+#
+# Screen fields are compared at their full BMS length with trailing spaces. The
+# 12th byte of ACSTSSN is left LOW-VALUES by the STRING of the 11-character
+# nnn-nn-nnnn form [app/cbl/COACTVWC.cbl:432,496-504] and is captured as a space.
+# CURDATE and CURTIME come from the region clock, so they are matchers. The
+# expected outcome is derived from the source (GAP-INF-005). No step writes a
+# file, so file_state is not asserted.
+id: ACT-COACTVWC-negative-03
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 1 'Account View' and asks for
+  account 00000000001, which CARDXREF links to customer 000000001 but ACCTDATA
+  does not hold. The 88-level text 'Did not find this account in account master
+  file' never appears, because its SET is commented out. COACTVW shows the
+  composed 'Account:00000000001 not found in Acct Master file.Resp:000000013
+  Reas:0000' instead, keeps the id, and, since the guard on the never-set
+  condition does not stop the lookup, shows customer 000000001 as well.
+# The message condition is the primary item. After it come the program, the maps
+# asserted (COMEN01 on step 1, COACTVW on steps 2 and 3), the transaction that
+# runs the lookup, the three CSD files it reads, and the online-only copybooks
+# COACTVWC copies. INV-ACT-020, the composed account-not-found message, is left
+# out: its verification belongs to its own scenario. The batch copybooks
+# (CVACT01Y, CVACT03Y, CVCUS01Y, CSUSR01Y) and the data files are left out too,
+# because their lowest executing level is unit or integration.
+inventory_ids:
+- INV-ACT-012  # COACTVWC message 'Did not find this account in account master file' (recovery)
+- INV-ACT-001  # COACTVWC program
+- INV-MNU-003  # COMEN01 map, the main menu option 1 is entered on
+- INV-ACT-003  # COACTVW map, the account view screen of steps 2 and 3
+- INV-CFG-010  # CAVW transaction, under which the account lookup runs
+- INV-CFG-006  # CXACAIX CSD file, the cross-reference read by account id (NORMAL)
+- INV-CFG-001  # ACCTDAT CSD file, the account read that answers NOTFND
+- INV-CFG-005  # CUSTDAT CSD file, the customer read the never-set condition fails to prevent
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carried from COMEN01C and across CAVW
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COACTVWC
+- INV-LAY-009  # CSMSG02Y copybook, the abend data of COACTVWC's HANDLE ABEND
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping that makes ENTER the lookup key
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID holding the entered and echoed account id
+tags:
+- inferred-not-observed
+- observed-only
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-UNC-013  # message condition defined but never set: the 88-level text cannot appear
+- GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    # CARDXREF holds account 00000000001 (card 9680294154603697, customer
+    # 000000001). The account master is the repository data without that account,
+    # so its READ answers NOTFND. This is the notfnd condition, produced by
+    # omission, so no fault entry is needed. CUSTDATA holds customer 000000001,
+    # and USRSEC holds the sign-on user.
+    CARDXREF: {base: CARDXREF}
+    ACCTDATA: {base: ACCTDATA, omit_keys: ['00000000001']}
+    CUSTDATA: {base: CUSTDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '1'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000001'}
+    '@map': COACTVW
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTVWC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTNUM: '000000001'
+    ACSTSSN: '020-97-3888 '
+    ACSTDOB: '1961-06-08'
+    ACSTFCO: '274'
+    ACSFNAM: 'Immanuel                 '
+    ACSMNAM: 'Madeline                 '
+    ACSLNAM: 'Kessler                  '
+    ACSADL1: '618 Deshaun Route                                 '
+    ACSSTTE: NC
+    ACSADL2: 'Apt. 802                                          '
+    ACSZIPC: '12546'
+    ACSCITY: 'Altenwerthshire                                   '
+    ACSCTRY: USA
+    ACSPHN1: '(908)119-8310'
+    ACSGOVT: '00000000000049368437'
+    ACSPHN2: '(373)693-8684'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: 'Account:00000000001 not found in Acct Master file.Resp:000000013  Reas:0000   '
+  # The ERRMSG of each step's screen, in step order.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Account:00000000001 not found in Acct Master file.Resp:000000013  Reas:0000   '
