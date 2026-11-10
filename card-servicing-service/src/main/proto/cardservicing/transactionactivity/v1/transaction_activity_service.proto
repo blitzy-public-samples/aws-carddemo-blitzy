@@ -1,0 +1,180 @@
+syntax = "proto3";
+
+package cardservicing.transactionactivity.v1;
+
+import "cardservicing/common/v1/common.proto";
+
+option java_multiple_files = true;
+option java_package = "com.example.cardservicing.contract.transactionactivity.v1";
+
+// Transaction Activity: the external system that serves posted transactions,
+// listed per account with keyset paging or looked up by transaction ID
+// (Data Layouts · CVTRA05Y; Use Cases · COTRN00C, Use Cases · COTRN01C).
+// An account's transactions are those whose card number belongs to one of the
+// account's cross-reference records (Data Layouts · CVACT03Y).
+//
+// Stub-phase hosting: a stub gRPC server answered by a mock-data provider over
+// the fixture-loaded transactions. Swapping in the real service changes only
+// the target address and the credential source.
+//
+// Identity: the caller's bearer token is forwarded in authorization metadata,
+// and the service credential travels in x-api-key. The stub ignores the key
+// and does not re-authorize.
+service TransactionActivityService {
+  // Lists one account's transactions, ordered by processed_timestamp descending then transaction_id descending, one page at a time.
+  // A well-formed but unknown type_code or category_code filter returns empty transactions.
+  //
+  // The example is the whole history of fixture account 00000000001: its six
+  // transactions fit one page, so next_page_token is the empty string, which
+  // proto3 JSON omits.
+  //
+  // Example request:
+  //   {"accountId":"00000000001","pageSize":20}
+  //
+  // Example response:
+  //   {"transactions":[
+  //     {"transactionId":"0000000776200014","typeCode":"01","categoryCode":"0001","source":"POS TERM","description":"Purchase at Lebsack and Sons","amount":"985.22","merchantId":"800000000","merchantName":"Lebsack and Sons","merchantCity":"Otisbury","merchantZip":"32545","cardNumber":"9680294154603697","originalTimestamp":"2022-06-10T19:27:53.000000Z","processedTimestamp":"2022-06-10T19:27:53.000000Z"},
+  //     {"transactionId":"0000000755736377","typeCode":"01","categoryCode":"0001","source":"POS TERM","description":"Purchase at Torp-Stark","amount":"906.44","merchantId":"800000000","merchantName":"Torp-Stark","merchantCity":"North Edison","merchantZip":"41040-7099","cardNumber":"9680294154603697","originalTimestamp":"2022-06-10T19:27:53.000000Z","processedTimestamp":"2022-06-10T19:27:53.000000Z"},
+  //     {"transactionId":"0000000624335286","typeCode":"01","categoryCode":"0001","source":"POS TERM","description":"Purchase at Crona, Turner and Hane","amount":"598.44","merchantId":"800000000","merchantName":"Crona, Turner and Hane","merchantCity":"Glenton","merchantZip":"32966-6359","cardNumber":"9680294154603697","originalTimestamp":"2022-06-10T19:27:53.000000Z","processedTimestamp":"2022-06-10T19:27:53.000000Z"},
+  //     {"transactionId":"0000000555363230","typeCode":"01","categoryCode":"0001","source":"POS TERM","description":"Purchase at Metz, Blanda and Homenick","amount":"484.99","merchantId":"800000000","merchantName":"Metz, Blanda and Homenick","merchantCity":"North Linwood","merchantZip":"41398","cardNumber":"9680294154603697","originalTimestamp":"2022-06-10T19:27:53.000000Z","processedTimestamp":"2022-06-10T19:27:53.000000Z"},
+  //     {"transactionId":"0000000532120892","typeCode":"03","categoryCode":"0001","source":"OPERATOR","description":"Return item at Frami-Hyatt","amount":"-70.77","merchantId":"800000000","merchantName":"Frami-Hyatt","merchantCity":"Jamilside","merchantZip":"14372-1790","cardNumber":"9680294154603697","originalTimestamp":"2022-06-10T19:27:53.000000Z","processedTimestamp":"2022-06-10T19:27:53.000000Z"},
+  //     {"transactionId":"0000000503557384","typeCode":"01","categoryCode":"0001","source":"POS TERM","description":"Purchase at Casper Group","amount":"81.44","merchantId":"800000000","merchantName":"Casper Group","merchantCity":"Millsborough","merchantZip":"57690","cardNumber":"9680294154603697","originalTimestamp":"2022-06-10T19:27:53.000000Z","processedTimestamp":"2022-06-10T19:27:53.000000Z"}
+  //   ]}
+  //
+  // Errors:
+  //   INVALID_ARGUMENT - account_id, type_code or category_code malformed, page_size outside 1-100, or page_token that does not decode or whose fingerprint mismatches (details entry field pageToken)
+  //   UNAUTHENTICATED - forwarded bearer token missing, invalid or expired (the stub does not re-authorize)
+  //   NOT_FOUND - the account has no cross-reference record
+  //   UNAVAILABLE - service unavailable after retries
+  //   DEADLINE_EXCEEDED - request deadline reached
+  //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
+  rpc ListTransactions(ListTransactionsRequest) returns (ListTransactionsResponse);
+
+  // Returns one transaction by transaction ID.
+  //
+  // Example request:
+  //   {"transactionId":"0000000776200014"}
+  //
+  // Example response:
+  //   {"transaction":{"transactionId":"0000000776200014","typeCode":"01","categoryCode":"0001","source":"POS TERM","description":"Purchase at Lebsack and Sons","amount":"985.22","merchantId":"800000000","merchantName":"Lebsack and Sons","merchantCity":"Otisbury","merchantZip":"32545","cardNumber":"9680294154603697","originalTimestamp":"2022-06-10T19:27:53.000000Z","processedTimestamp":"2022-06-10T19:27:53.000000Z"}}
+  //
+  // Errors:
+  //   INVALID_ARGUMENT - transaction_id malformed
+  //   UNAUTHENTICATED - forwarded bearer token missing, invalid or expired (the stub does not re-authorize)
+  //   NOT_FOUND - transaction unknown
+  //   UNAVAILABLE - service unavailable after retries
+  //   DEADLINE_EXCEEDED - request deadline reached
+  //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
+  rpc GetTransaction(GetTransactionRequest) returns (GetTransactionResponse);
+}
+
+// Request for ListTransactions: one account plus optional type and category
+// filters and a keyset position.
+message ListTransactionsRequest {
+  // JSON name accountId. The account whose transactions are listed: 11 digits,
+  // pattern ^[0-9]{11}$, never all zeros (Use Cases · COACTVWC).
+  // Data Layouts · CVACT03Y · XREF-ACCT-ID.
+  string account_id = 1;
+  // JSON name typeCode. Transaction-type filter; unset means no filter. A set
+  // value matches pattern ^[A-Za-z0-9]{2}$ (Data Layouts · CVTRA05Y ·
+  // TRAN-TYPE-CD). A well-formed but unknown value yields empty transactions.
+  optional string type_code = 2;
+  // JSON name categoryCode. Transaction-category filter; unset means no filter.
+  // A set value matches pattern ^[0-9]{4}$ (Data Layouts · CVTRA05Y ·
+  // TRAN-CAT-CD). A well-formed but unknown value yields empty transactions.
+  optional string category_code = 3;
+  // JSON name pageSize. Maximum transactions per page, 1-100. The Card
+  // Servicing service always sends its configuration-snapshot value
+  // (Use Cases · COTRN00C pages its list). Zero or any value outside 1-100
+  // returns INVALID_ARGUMENT.
+  int32 page_size = 4;
+  // JSON name pageToken. Opaque keyset cursor taken from a previous
+  // next_page_token; empty means the first page. The token is version 1 and is
+  // bound by a fingerprint to account_id and the filters. A token that does not
+  // decode, or whose fingerprint mismatches, returns INVALID_ARGUMENT with a
+  // details entry for field pageToken.
+  string page_token = 5;
+}
+
+// Response for ListTransactions: one page of an account's transactions and the
+// cursor for the next page.
+message ListTransactionsResponse {
+  // Up to page_size transactions, ordered by processed_timestamp descending
+  // then transaction_id descending; empty when nothing matches.
+  repeated Transaction transactions = 1;
+  // JSON name nextPageToken. Opaque cursor for the next page, passed back as
+  // page_token. It is the empty string on the last page, which proto3 JSON
+  // omits; the REST twin omits the property.
+  string next_page_token = 2;
+}
+
+// Request for GetTransaction: one transaction ID. Use Cases · COTRN01C reads a
+// transaction by its ID alone.
+message GetTransactionRequest {
+  // JSON name transactionId. The transaction to return: 16 characters, pattern
+  // ^[A-Za-z0-9]{16}$ (Data Layouts · CVTRA05Y · TRAN-ID).
+  string transaction_id = 1;
+}
+
+// Response for GetTransaction.
+message GetTransactionResponse {
+  // The transaction whose transaction_id equals the request's.
+  Transaction transaction = 1;
+}
+
+// One posted transaction (Data Layouts · CVTRA05Y; the daily transaction feed
+// shares the layout, Data Layouts · CVTRA06Y). Its 13 fields are all strings
+// and carry the same names and numbering as the Card Servicing API's
+// Transaction. Free-text values are carried with trailing padding removed.
+message Transaction {
+  // JSON name transactionId. Transaction identifier, pattern ^[A-Za-z0-9]{16}$
+  // (Data Layouts · CVTRA05Y · TRAN-ID X(16)).
+  string transaction_id = 1;
+  // JSON name typeCode. Transaction type code, pattern ^[A-Za-z0-9]{2}$
+  // (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)).
+  string type_code = 2;
+  // JSON name categoryCode. Transaction category code, pattern ^[0-9]{4}$
+  // (Data Layouts · CVTRA05Y · TRAN-CAT-CD 9(04)).
+  string category_code = 3;
+  // Where the transaction originated, for example "POS TERM" or "OPERATOR",
+  // at most 10 characters (Data Layouts · CVTRA05Y · TRAN-SOURCE X(10)).
+  string source = 4;
+  // Transaction description, at most 100 characters
+  // (Data Layouts · CVTRA05Y · TRAN-DESC X(100)).
+  string description = 5;
+  // Transaction amount as a scale-2 decimal string matching
+  // ^-?[0-9]+\.[0-9]{2}$, negative for returns, for example "1234.56"
+  // (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
+  string amount = 6;
+  // JSON name merchantId. Merchant identifier, pattern ^[0-9]{9}$
+  // (Data Layouts · CVTRA05Y · TRAN-MERCHANT-ID 9(09)).
+  string merchant_id = 7;
+  // JSON name merchantName. Merchant name, at most 50 characters
+  // (Data Layouts · CVTRA05Y · TRAN-MERCHANT-NAME X(50)).
+  string merchant_name = 8;
+  // JSON name merchantCity. Merchant city, at most 50 characters
+  // (Data Layouts · CVTRA05Y · TRAN-MERCHANT-CITY X(50)).
+  string merchant_city = 9;
+  // JSON name merchantZip. Merchant postal code, at most 10 characters
+  // (Data Layouts · CVTRA05Y · TRAN-MERCHANT-ZIP X(10)).
+  string merchant_zip = 10;
+  // JSON name cardNumber. Number of the card the transaction was made with, at
+  // most 16 characters (Data Layouts · CVTRA05Y · TRAN-CARD-NUM X(16)). It
+  // links the transaction to an account through
+  // Data Layouts · CVACT03Y · XREF-CARD-NUM.
+  string card_number = 11;
+  // JSON name originalTimestamp. When the transaction originated, RFC 3339
+  // with microseconds and Z, for example "2024-03-05T14:07:09.123456Z"
+  // (Data Layouts · CVTRA05Y · TRAN-ORIG-TS).
+  string original_timestamp = 12;
+  // JSON name processedTimestamp. When the transaction was processed, in the
+  // same form as original_timestamp; equals original_timestamp when the source
+  // value is blank (Data Layouts · CVTRA05Y · TRAN-PROC-TS).
+  string processed_timestamp = 13;
+}
+
+// Names the standard error object that every RPC in this service packs, as cardservicing.common.v1.ErrorObject itself, into google.rpc.Status details on a non-OK status; not a request or response type.
+message ErrorDetail {
+  // The standard error object for a non-OK status.
+  cardservicing.common.v1.ErrorObject error = 1;
+}

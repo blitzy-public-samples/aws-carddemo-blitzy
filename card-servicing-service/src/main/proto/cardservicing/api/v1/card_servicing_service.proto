@@ -1,0 +1,469 @@
+syntax = "proto3";
+
+package cardservicing.api.v1;
+
+import "cardservicing/common/v1/common.proto";
+
+option java_multiple_files = true;
+option java_package = "com.example.cardservicing.contract.api.v1";
+
+// The UI-facing, read-only Card Servicing API over CardDemo account data. It
+// serves four interactions: the account balance summary, the category
+// balances, the transaction list and the transaction detail. Each RPC mirrors
+// one REST operation of the REST twin, and proto3 JSON field names are the
+// lowerCamelCase forms of the snake_case fields, as in that twin.
+//
+// Hosting: the Card Servicing service serves this API on its own gRPC server
+// beside REST. In the stub phase its five upstreams (Card Data, Transaction
+// Activity, Config, Reference Data and Auth) are stub gRPC servers answered by
+// mock-data providers. Swapping in a real upstream changes only its target
+// address and credential source.
+//
+// Identity: the caller's bearer token arrives in authorization metadata and the
+// Auth service validates it. Auth then authorizes the caller for the request's
+// account before any account data is read, cache reads included. An inbound
+// x-api-key is ignored, and a caller never supplies subject, roles or
+// entitlements.
+//
+// Deadline: each request's outcome is fixed at a cut-off 900 ms after receipt,
+// leaving 100 ms for serialization and network. Each upstream attempt times out
+// after 300 ms, or sooner when less of the deadline remains, and is retried at
+// most twice, after 50 ms and then 100 ms of backoff, only on UNAVAILABLE or
+// DEADLINE_EXCEEDED and only while a full attempt still fits the deadline.
+service CardServicingService {
+  // Returns the balance summary of one account: balances, credit limits, dates,
+  // status and one balance per transaction-type group (Use Cases · COACTVWC).
+  // REST twin: GET /v1/accounts/{accountId}/balance-summary. A stale cached
+  // account or category-balance read gives STALE; unavailable reference data
+  // gives PARTIAL with type_description unset; any other upstream failure ends
+  // the request with UNAVAILABLE or DEADLINE_EXCEEDED.
+  //
+  // Example request:
+  //   {"accountId":"00000000001"}
+  //
+  // Example response:
+  //   {"accountId":"00000000001","currentBalance":"194.00","creditLimit":"2020.00",
+  //   "balancesByTypeGroup":[{"typeCode":"01","typeDescription":"Purchase","balance":"0.00"}],
+  //   "dataStatus":"FRESH","asOf":"2024-03-05T14:07:09.123456Z","activeStatus":"Y",
+  //   "openDate":"2014-11-20","expirationDate":"2025-05-20","reissueDate":"2025-05-20",
+  //   "cashCreditLimit":"1020.00","currentCycleCredit":"0.00","currentCycleDebit":"0.00"}
+  //   PARTIAL variant: "dataStatus":"PARTIAL" with typeDescription unset (absent from JSON).
+  //
+  // Errors:
+  //   INVALID_ARGUMENT - account_id malformed or all zeros, or another parameter malformed; the details entry names accountId
+  //   UNAUTHENTICATED - bearer token missing, invalid or expired
+  //   PERMISSION_DENIED - account outside the caller's entitlements; authorization runs before any account-data read, cache reads included
+  //   NOT_FOUND - account unknown
+  //   UNAVAILABLE - a required upstream is unavailable after retries and no degraded result applies
+  //   DEADLINE_EXCEEDED - request deadline reached
+  //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
+  rpc GetBalanceSummary(GetBalanceSummaryRequest) returns (GetBalanceSummaryResponse);
+
+  // Returns the category balances of one account, optionally filtered by
+  // transaction type, ordered by (type_code, category_code) ascending, with no
+  // paging (Data Layouts · CVTRA01Y). REST twin:
+  // GET /v1/accounts/{accountId}/category-balances. A stale cached read gives
+  // STALE; with no usable reference data the type_code check is skipped, the
+  // filter still applies and the result is PARTIAL with both descriptions unset.
+  //
+  // Example request:
+  //   {"accountId":"00000000001","typeCode":"01"}
+  //
+  // Example response:
+  //   {"accountId":"00000000001","categoryBalances":[{"typeCode":"01","typeDescription":"Purchase",
+  //   "categoryCode":"0001","categoryDescription":"Regular Sales Draft","balance":"0.00"}],
+  //   "dataStatus":"FRESH","asOf":"2024-03-05T14:07:09.123456Z"}
+  //   PARTIAL variant: "dataStatus":"PARTIAL" with typeDescription and categoryDescription unset.
+  //
+  // Errors:
+  //   INVALID_ARGUMENT - account_id malformed or all zeros, or another parameter malformed; type_code unknown while reference data is usable (fresh or within its maximum stale age); with no usable reference data the filter still applies and the result is PARTIAL
+  //   UNAUTHENTICATED - bearer token missing, invalid or expired
+  //   PERMISSION_DENIED - account outside the caller's entitlements; authorization runs before any account-data read, cache reads included
+  //   NOT_FOUND - account unknown
+  //   UNAVAILABLE - a required upstream is unavailable after retries and no degraded result applies
+  //   DEADLINE_EXCEEDED - request deadline reached
+  //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
+  rpc ListCategoryBalances(ListCategoryBalancesRequest) returns (ListCategoryBalancesResponse);
+
+  // Returns one page of an account's transactions, newest processed first,
+  // optionally filtered by type code and category code (Use Cases · COTRN00C).
+  // REST twin: GET /v1/accounts/{accountId}/transactions. The page token is
+  // passed through to and from the Transaction Activity service. The list makes
+  // no reference-data call, so a well-formed but unknown filter returns empty
+  // transactions.
+  //
+  // Example request:
+  //   {"accountId":"00000000001","pageSize":20}
+  //
+  // Example response:
+  //   {"accountId":"00000000001","transactions":[
+  //   {"transactionId":"0000000776200014","typeCode":"01","categoryCode":"0001","description":"Purchase at Lebsack and Sons",
+  //   "amount":"985.22","originalTimestamp":"2022-06-10T19:27:53.000000Z","processedTimestamp":"2022-06-10T19:27:53.000000Z"},
+  //   {"transactionId":"0000000755736377","typeCode":"01","categoryCode":"0001","description":"Purchase at Torp-Stark",
+  //   "amount":"906.44","originalTimestamp":"2022-06-10T19:27:53.000000Z","processedTimestamp":"2022-06-10T19:27:53.000000Z"},
+  //   {"transactionId":"0000000624335286","typeCode":"01","categoryCode":"0001","description":"Purchase at Crona, Turner and Hane",
+  //   "amount":"598.44","originalTimestamp":"2022-06-10T19:27:53.000000Z","processedTimestamp":"2022-06-10T19:27:53.000000Z"},
+  //   {"transactionId":"0000000555363230","typeCode":"01","categoryCode":"0001","description":"Purchase at Metz, Blanda and Homenick",
+  //   "amount":"484.99","originalTimestamp":"2022-06-10T19:27:53.000000Z","processedTimestamp":"2022-06-10T19:27:53.000000Z"},
+  //   {"transactionId":"0000000532120892","typeCode":"03","categoryCode":"0001","description":"Return item at Frami-Hyatt",
+  //   "amount":"-70.77","originalTimestamp":"2022-06-10T19:27:53.000000Z","processedTimestamp":"2022-06-10T19:27:53.000000Z"},
+  //   {"transactionId":"0000000503557384","typeCode":"01","categoryCode":"0001","description":"Purchase at Casper Group",
+  //   "amount":"81.44","originalTimestamp":"2022-06-10T19:27:53.000000Z","processedTimestamp":"2022-06-10T19:27:53.000000Z"}
+  //   ],"dataStatus":"FRESH","asOf":"2024-03-05T14:07:09.123456Z"}
+  //   Last page: next_page_token is the empty string, so nextPageToken is absent from JSON.
+  //
+  // Errors:
+  //   INVALID_ARGUMENT - account_id malformed or all zeros, or another parameter malformed; page_size outside 1 to the configured max_page_size; page_token malformed, of another version, or bound to another account or filters, with a details entry whose field is pageToken
+  //   UNAUTHENTICATED - bearer token missing, invalid or expired
+  //   PERMISSION_DENIED - account outside the caller's entitlements; authorization runs before any account-data read, cache reads included
+  //   NOT_FOUND - the account has no cross-reference record
+  //   UNAVAILABLE - a required upstream is unavailable after retries and no degraded result applies
+  //   DEADLINE_EXCEEDED - request deadline reached
+  //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
+  rpc ListTransactions(ListTransactionsRequest) returns (ListTransactionsResponse);
+
+  // Returns one transaction of an account, after checking that its card number
+  // is among the account's cross-reference records (Use Cases · COTRN01C).
+  // REST twin: GET /v1/accounts/{accountId}/transactions/{transactionId}. A
+  // cross-reference read failure ends the request with UNAVAILABLE or
+  // DEADLINE_EXCEEDED even when the transaction came from cache.
+  //
+  // Example request:
+  //   {"accountId":"00000000001","transactionId":"0000000776200014"}
+  //
+  // Example response:
+  //   {"accountId":"00000000001","transaction":{"transactionId":"0000000776200014","typeCode":"01",
+  //   "categoryCode":"0001","source":"POS TERM","description":"Purchase at Lebsack and Sons","amount":"985.22",
+  //   "merchantId":"800000000","merchantName":"Lebsack and Sons","merchantCity":"Otisbury","merchantZip":"32545",
+  //   "cardNumber":"9680294154603697","originalTimestamp":"2022-06-10T19:27:53.000000Z",
+  //   "processedTimestamp":"2022-06-10T19:27:53.000000Z"},"dataStatus":"FRESH","asOf":"2024-03-05T14:07:09.123456Z"}
+  //
+  // Errors:
+  //   INVALID_ARGUMENT - account_id malformed or all zeros, or another parameter malformed; transaction_id malformed
+  //   UNAUTHENTICATED - bearer token missing, invalid or expired
+  //   PERMISSION_DENIED - account outside the caller's entitlements; authorization runs before any account-data read, cache reads included
+  //   NOT_FOUND - transaction unknown, or its card_number is not among the account's cross-reference records
+  //   UNAVAILABLE - a required upstream is unavailable after retries and no degraded result applies
+  //   DEADLINE_EXCEEDED - request deadline reached
+  //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
+  rpc GetTransaction(GetTransactionRequest) returns (GetTransactionResponse);
+}
+
+// Request for GetBalanceSummary: the account whose balance summary is returned.
+message GetBalanceSummaryRequest {
+  // The account number: 11 digits, pattern ^[0-9]{11}$, and not all zeros;
+  // 00000000000 returns INVALID_ARGUMENT, as the Account View screen rejects it
+  // with "Account number must be a non zero 11 digit number"
+  // (Use Cases · COACTVWC; Data Layouts · CVACT01Y · ACCT-ID 9(11)).
+  string account_id = 1;
+}
+
+// Response for GetBalanceSummary: the account's balances, credit limits, dates
+// and status (Data Layouts · CVACT01Y), with one balance per transaction-type
+// group. Fields 7 to 14 carry what the Account View screen shows beyond the
+// baseline (Use Cases · COACTVWC). The screen's Customer Details section is not
+// carried here: its fields have no baseline entity or operation and are flagged
+// field gaps awaiting a Requirements Analysis ID.
+message GetBalanceSummaryResponse {
+  // The account number from the request, 11 digits, pattern ^[0-9]{11}$
+  // (Data Layouts · CVACT01Y · ACCT-ID 9(11)).
+  string account_id = 1;
+  // The current balance as a scale-2 decimal string, for example "1234.56",
+  // pattern ^-?[0-9]+\.[0-9]{2}$ (Data Layouts · CVACT01Y · ACCT-CURR-BAL
+  // S9(10)V99).
+  string current_balance = 2;
+  // The credit limit as a scale-2 decimal string, pattern ^-?[0-9]+\.[0-9]{2}$
+  // (Data Layouts · CVACT01Y · ACCT-CREDIT-LIMIT S9(10)V99).
+  string credit_limit = 3;
+  // One element per type_code that has at least one category balance, ordered
+  // by type_code ascending. Empty when the account has no category balance; the
+  // REST twin always carries the array.
+  repeated TypeGroupBalance balances_by_type_group = 4;
+  // Freshness of the data behind this response: FRESH, STALE or PARTIAL, a
+  // string rather than an enum so REST and gRPC carry identical text. PARTIAL
+  // (reference descriptions unavailable) outranks STALE (a cached value past its
+  // fresh lifetime was used), which outranks FRESH. Config outcomes never
+  // affect it.
+  string data_status = 5;
+  // When the data was read: the upstream read time, or the oldest cachedAt of
+  // the cache entries used. RFC 3339 with microseconds and Z, for example
+  // "2024-03-05T14:07:09.123456Z".
+  string as_of = 6;
+  // The account's active status, one character, for example "Y"
+  // (Data Layouts · CVACT01Y · ACCT-ACTIVE-STATUS X(01); Use Cases · COACTVWC
+  // Active Y/N).
+  string active_status = 7;
+  // The date the account was opened, YYYY-MM-DD
+  // (Data Layouts · CVACT01Y · ACCT-OPEN-DATE X(10); Use Cases · COACTVWC Opened).
+  string open_date = 8;
+  // The account expiry date, YYYY-MM-DD (Data Layouts · CVACT01Y ·
+  // ACCT-EXPIRAION-DATE X(10), misspelled so in the source; Use Cases · COACTVWC
+  // Expiry).
+  string expiration_date = 9;
+  // The card reissue date, YYYY-MM-DD (Data Layouts · CVACT01Y ·
+  // ACCT-REISSUE-DATE X(10); Use Cases · COACTVWC Reissue).
+  string reissue_date = 10;
+  // The cash credit limit as a scale-2 decimal string, pattern
+  // ^-?[0-9]+\.[0-9]{2}$ (Data Layouts · CVACT01Y · ACCT-CASH-CREDIT-LIMIT
+  // S9(10)V99; Use Cases · COACTVWC Cash credit Limit).
+  string cash_credit_limit = 11;
+  // Credits in the current cycle as a scale-2 decimal string, pattern
+  // ^-?[0-9]+\.[0-9]{2}$ (Data Layouts · CVACT01Y · ACCT-CURR-CYC-CREDIT
+  // S9(10)V99; Use Cases · COACTVWC Current Cycle Credit).
+  string current_cycle_credit = 12;
+  // Debits in the current cycle as a scale-2 decimal string, pattern
+  // ^-?[0-9]+\.[0-9]{2}$ (Data Layouts · CVACT01Y · ACCT-CURR-CYC-DEBIT
+  // S9(10)V99; Use Cases · COACTVWC Current Cycle Debit).
+  string current_cycle_debit = 13;
+  // The account group, at most 10 characters (Data Layouts · CVACT01Y ·
+  // ACCT-GROUP-ID X(10); Use Cases · COACTVWC Account Group). Unset when the
+  // source value is blank; the REST twin then omits groupId.
+  optional string group_id = 14;
+}
+
+// The balance of one transaction-type group of an account: the exact decimal
+// sum of the account's category balances with this type_code
+// (Data Layouts · CVTRA01Y · TRAN-CAT-BAL), labelled with the type description.
+message TypeGroupBalance {
+  // The transaction type code, two characters, pattern ^[A-Za-z0-9]{2}$
+  // (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)).
+  string type_code = 1;
+  // The transaction type description, at most 50 characters
+  // (Data Layouts · CVTRA03Y · TRAN-TYPE-DESC X(50)). Unset when data_status is
+  // PARTIAL because reference data is unavailable; the REST twin then renders
+  // it as null. An empty string never stands for an unset description.
+  optional string type_description = 2;
+  // The exact decimal sum of this type's category balances as a scale-2
+  // decimal string, for example "1234.56", pattern ^-?[0-9]+\.[0-9]{2}$.
+  string balance = 3;
+}
+
+// Request for ListCategoryBalances: the account and an optional type filter.
+message ListCategoryBalancesRequest {
+  // The account number: 11 digits, pattern ^[0-9]{11}$, and not all zeros
+  // (Use Cases · COACTVWC; Data Layouts · CVTRA01Y · TRANCAT-ACCT-ID 9(11)).
+  string account_id = 1;
+  // Optional filter on the transaction type code, pattern ^[A-Za-z0-9]{2}$
+  // (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)); unset returns every
+  // type. An unknown value returns INVALID_ARGUMENT while reference data is
+  // usable (fresh or within its maximum stale age). With no usable reference
+  // data the check is skipped, the filter still applies and data_status is
+  // PARTIAL.
+  optional string type_code = 2;
+}
+
+// Response for ListCategoryBalances: the account's category balances.
+message ListCategoryBalancesResponse {
+  // The account number from the request, 11 digits, pattern ^[0-9]{11}$
+  // (Data Layouts · CVTRA01Y · TRANCAT-ACCT-ID 9(11)).
+  string account_id = 1;
+  // The matching category balances, ordered by (type_code, category_code)
+  // ascending, with no paging. Empty when nothing matches; the REST twin always
+  // carries the array.
+  repeated CategoryBalance category_balances = 2;
+  // Freshness of the data behind this response: FRESH, STALE or PARTIAL, with
+  // precedence PARTIAL > STALE > FRESH. PARTIAL means reference descriptions are
+  // unavailable; STALE means a cached value past its fresh lifetime was used.
+  // Config outcomes never affect it.
+  string data_status = 3;
+  // When the data was read: the upstream read time, or the oldest cachedAt of
+  // the cache entries used. RFC 3339 with microseconds and Z, for example
+  // "2024-03-05T14:07:09.123456Z".
+  string as_of = 4;
+}
+
+// One category balance of an account (Data Layouts · CVTRA01Y), labelled with
+// its type and category descriptions.
+message CategoryBalance {
+  // The transaction type code, two characters, pattern ^[A-Za-z0-9]{2}$
+  // (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)).
+  string type_code = 1;
+  // The transaction type description, at most 50 characters
+  // (Data Layouts · CVTRA03Y · TRAN-TYPE-DESC X(50)). Unset when data_status is
+  // PARTIAL; the REST twin then renders it as null. An empty string never
+  // stands for an unset description.
+  optional string type_description = 2;
+  // The transaction category code, four digits, pattern ^[0-9]{4}$
+  // (Data Layouts · CVTRA01Y · TRANCAT-CD 9(04)).
+  string category_code = 3;
+  // The transaction category description, at most 50 characters
+  // (Data Layouts · CVTRA04Y · TRAN-CAT-TYPE-DESC X(50)). Unset when data_status
+  // is PARTIAL; the REST twin then renders it as null. An empty string never
+  // stands for an unset description.
+  optional string category_description = 4;
+  // The category balance as a scale-2 decimal string, for example "1234.56",
+  // pattern ^-?[0-9]+\.[0-9]{2}$ (Data Layouts · CVTRA01Y · TRAN-CAT-BAL
+  // S9(09)V99).
+  string balance = 5;
+}
+
+// Request for ListTransactions: the account, optional filters, the page size
+// and the keyset position.
+message ListTransactionsRequest {
+  // The account number: 11 digits, pattern ^[0-9]{11}$, and not all zeros
+  // (Use Cases · COACTVWC; Data Layouts · CVACT03Y · XREF-ACCT-ID 9(11)). An
+  // account's transactions are those whose card number belongs to one of its
+  // cross-reference records.
+  string account_id = 1;
+  // Optional filter on the transaction type code, pattern ^[A-Za-z0-9]{2}$
+  // (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)); unset returns every type. A
+  // well-formed but unknown value returns empty transactions.
+  optional string type_code = 2;
+  // Optional filter on the transaction category code, pattern ^[0-9]{4}$
+  // (Data Layouts · CVTRA05Y · TRAN-CAT-CD 9(04)); unset returns every
+  // category. A well-formed but unknown value returns empty transactions.
+  optional string category_code = 3;
+  // The maximum number of transactions on the page (Use Cases · COTRN00C pages
+  // its list). Unset means the configured default_page_size, 20 unless
+  // configured otherwise. When set, it must be 1 to the configured
+  // max_page_size, which is at most 100; any other value, 0 included, returns
+  // INVALID_ARGUMENT.
+  optional int32 page_size = 4;
+  // The opaque keyset cursor copied from a previous response's
+  // next_page_token; empty means the first page. The token is version 1 and
+  // bound by a fingerprint to account_id and the filters. A token that does not
+  // decode, carries another version or was issued for another account or
+  // filter set returns INVALID_ARGUMENT with a details entry whose field is
+  // pageToken.
+  string page_token = 5;
+}
+
+// Response for ListTransactions: one page of the account's transactions.
+message ListTransactionsResponse {
+  // The account number from the request, 11 digits, pattern ^[0-9]{11}$
+  // (Data Layouts · CVACT03Y · XREF-ACCT-ID 9(11)).
+  string account_id = 1;
+  // Up to page_size transactions, ordered by processed_timestamp descending,
+  // then transaction_id descending. Empty when nothing matches, including a
+  // well-formed but unknown type_code or category_code filter; the REST twin
+  // always carries the array.
+  repeated TransactionSummary transactions = 2;
+  // The opaque cursor for the next page, passed through from the Transaction
+  // Activity service. A plain string that is empty on the last page; the REST
+  // twin then omits nextPageToken.
+  string next_page_token = 3;
+  // Freshness of the data behind this response: FRESH, STALE or PARTIAL, with
+  // precedence PARTIAL > STALE > FRESH. STALE means a cached value past its
+  // fresh lifetime was used. Config outcomes never affect it.
+  string data_status = 4;
+  // When the data was read: the upstream read time, or the oldest cachedAt of
+  // the cache entries used. RFC 3339 with microseconds and Z, for example
+  // "2024-03-05T14:07:09.123456Z".
+  string as_of = 5;
+}
+
+// One row of the transaction list (Data Layouts · CVTRA05Y; Use Cases · COTRN00C,
+// whose Description and Date columns it carries, the Date taken from
+// TRAN-ORIG-TS).
+message TransactionSummary {
+  // The transaction ID, 16 characters, pattern ^[A-Za-z0-9]{16}$
+  // (Data Layouts · CVTRA05Y · TRAN-ID X(16)).
+  string transaction_id = 1;
+  // The transaction type code, two characters, pattern ^[A-Za-z0-9]{2}$
+  // (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)).
+  string type_code = 2;
+  // The transaction category code, four digits, pattern ^[0-9]{4}$
+  // (Data Layouts · CVTRA05Y · TRAN-CAT-CD 9(04)).
+  string category_code = 3;
+  // The transaction description, at most 100 characters
+  // (Data Layouts · CVTRA05Y · TRAN-DESC X(100); Use Cases · COTRN00C
+  // Description column).
+  string description = 4;
+  // The transaction amount as a scale-2 decimal string, negative for returns,
+  // for example "1234.56", pattern ^-?[0-9]+\.[0-9]{2}$
+  // (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
+  string amount = 5;
+  // When the transaction originated, RFC 3339 with microseconds and Z, for
+  // example "2024-03-05T14:07:09.123456Z" (Data Layouts · CVTRA05Y ·
+  // TRAN-ORIG-TS X(26); Use Cases · COTRN00C Date column).
+  string original_timestamp = 6;
+  // When the transaction was processed, in the same form; equals
+  // original_timestamp when the source value is blank
+  // (Data Layouts · CVTRA05Y · TRAN-PROC-TS X(26)).
+  string processed_timestamp = 7;
+}
+
+// Request for GetTransaction: the account and the transaction to return.
+message GetTransactionRequest {
+  // The account number: 11 digits, pattern ^[0-9]{11}$, and not all zeros
+  // (Use Cases · COACTVWC; Data Layouts · CVACT03Y · XREF-ACCT-ID 9(11)). The
+  // transaction's card number must be among this account's cross-reference
+  // records.
+  string account_id = 1;
+  // The transaction ID, 16 characters, pattern ^[A-Za-z0-9]{16}$
+  // (Data Layouts · CVTRA05Y · TRAN-ID X(16); Use Cases · COTRN01C reads by
+  // transaction ID).
+  string transaction_id = 2;
+}
+
+// Response for GetTransaction: the requested transaction of the account.
+message GetTransactionResponse {
+  // The account number from the request, 11 digits, pattern ^[0-9]{11}$
+  // (Data Layouts · CVACT03Y · XREF-ACCT-ID 9(11)).
+  string account_id = 1;
+  // The transaction whose ID equals the request's transaction_id.
+  Transaction transaction = 2;
+  // Freshness of the data behind this response: FRESH, STALE or PARTIAL, with
+  // precedence PARTIAL > STALE > FRESH. STALE means a cached value past its
+  // fresh lifetime was used. Config outcomes never affect it.
+  string data_status = 3;
+  // When the data was read: the upstream read time, or the oldest cachedAt of
+  // the cache entries used. RFC 3339 with microseconds and Z, for example
+  // "2024-03-05T14:07:09.123456Z".
+  string as_of = 4;
+}
+
+// One posted transaction with every field the Transaction View screen shows
+// (Data Layouts · CVTRA05Y; Use Cases · COTRN01C). Field names and numbers
+// equal those of the Transaction Activity service's transaction.
+message Transaction {
+  // The transaction ID, 16 characters, pattern ^[A-Za-z0-9]{16}$
+  // (Data Layouts · CVTRA05Y · TRAN-ID X(16)).
+  string transaction_id = 1;
+  // The transaction type code, two characters, pattern ^[A-Za-z0-9]{2}$
+  // (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)).
+  string type_code = 2;
+  // The transaction category code, four digits, pattern ^[0-9]{4}$
+  // (Data Layouts · CVTRA05Y · TRAN-CAT-CD 9(04)).
+  string category_code = 3;
+  // The transaction source, at most 10 characters, for example "POS TERM"
+  // (Data Layouts · CVTRA05Y · TRAN-SOURCE X(10)).
+  string source = 4;
+  // The transaction description, at most 100 characters
+  // (Data Layouts · CVTRA05Y · TRAN-DESC X(100)).
+  string description = 5;
+  // The transaction amount as a scale-2 decimal string, negative for returns,
+  // for example "1234.56", pattern ^-?[0-9]+\.[0-9]{2}$
+  // (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
+  string amount = 6;
+  // The merchant ID, nine digits, pattern ^[0-9]{9}$
+  // (Data Layouts · CVTRA05Y · TRAN-MERCHANT-ID 9(09)).
+  string merchant_id = 7;
+  // The merchant name, at most 50 characters
+  // (Data Layouts · CVTRA05Y · TRAN-MERCHANT-NAME X(50)).
+  string merchant_name = 8;
+  // The merchant city, at most 50 characters
+  // (Data Layouts · CVTRA05Y · TRAN-MERCHANT-CITY X(50)).
+  string merchant_city = 9;
+  // The merchant ZIP code, at most 10 characters
+  // (Data Layouts · CVTRA05Y · TRAN-MERCHANT-ZIP X(10)).
+  string merchant_zip = 10;
+  // The card number the transaction was made with, at most 16 characters
+  // (Data Layouts · CVTRA05Y · TRAN-CARD-NUM X(16)); it links the transaction
+  // to an account through Data Layouts · CVACT03Y · XREF-CARD-NUM.
+  string card_number = 11;
+  // When the transaction originated, RFC 3339 with microseconds and Z, for
+  // example "2024-03-05T14:07:09.123456Z"
+  // (Data Layouts · CVTRA05Y · TRAN-ORIG-TS X(26)).
+  string original_timestamp = 12;
+  // When the transaction was processed, in the same form; equals
+  // original_timestamp when the source value is blank
+  // (Data Layouts · CVTRA05Y · TRAN-PROC-TS X(26)).
+  string processed_timestamp = 13;
+}
+
+// Names the standard error object that every RPC in this service packs, as cardservicing.common.v1.ErrorObject itself, into google.rpc.Status details on a non-OK status; not a request or response type.
+message ErrorDetail {
+  // The standard error object for a non-OK status.
+  cardservicing.common.v1.ErrorObject error = 1;
+}
