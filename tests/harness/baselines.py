@@ -19,8 +19,9 @@ Every scenario has one baseline directory ``tests/baselines/<id>/``:
 ``datasets/<LOGICAL>.bin``
     Observed baselines only: the raw bytes of each business dataset named in
     ``expected.datasets`` or ``expected.file_state``, as the adapter returned
-    them. Reserved observations (``@CATALOG``, ``@AIX:<path>``, ...) have
-    none.
+    them, exactly one file per such dataset; a missing or an extra ``.bin``
+    is refused. Reserved observations (``@CATALOG``, ``@AIX:<path>``, ...)
+    have none.
 
 Values in ``expected.yaml``
     ``return_code`` is an integer, or null for an abend. ``messages`` is the
@@ -41,10 +42,12 @@ Values in ``expected.yaml``
     names are compared. ``screens`` holds one ``{field: value}`` map per step,
     ``@map`` and ``@text`` included. The top-level ``matchers`` maps a field
     name to a matcher wherever an expected record or screen names that field.
-    Text compares exactly, trailing spaces included; numbers are decoded
-    text with their scale (``'194.00'`` is not ``'194.0'``), and an integer
-    matches decimal text of the same value; ``{raw: <hex>}`` is a numeric
-    field whose bytes are invalid. Floats are refused.
+    Text compares exactly, trailing spaces included; numbers are quoted
+    decoded text with their scale (``'194.00'`` is not ``'194.0'``). An
+    integer carries no scale, so a record field refuses it (a scenario's
+    inline integer matches only its own text: ``194`` is ``'194'``, never
+    ``'194.00'`` or ``'0194'``); ``{raw: <hex>}`` is a numeric field whose
+    bytes are invalid. Floats are refused.
 
 Matchers (``{match: <kind>, format?, offset_days?}``, kinds as
 ``harness.scenarios.MATCH_KINDS`` defines them) stand only for values derived
@@ -62,9 +65,11 @@ unknown" without one.
 ``compare`` checks every key the scenario's ``expected`` names, twice: against
 the baseline value, and against the scenario's own inline value unless that is
 ``baseline`` (inline ``messages`` are an ordered subsequence of the lines).
-When the baseline was captured on the running adapter, each business dataset
-with a ``.bin`` is also compared byte for byte; on ``unikix`` the bytes of
-matcher fields are left out. Raw evidence is never rewritten.
+When the baseline was captured on the running adapter, every business dataset
+the scenario's ``expected`` names is also compared byte for byte with its
+``.bin``, and one the baseline holds no ``.bin`` for is an ``error``; on
+``unikix`` the bytes of matcher fields are left out. Raw evidence is never
+rewritten.
 
 ``python tests/harness/baselines.py --check-bumps --base <revision>`` checks
 every baseline directory of the working tree against the same directory at
@@ -82,9 +87,11 @@ The module writes only under ``tests/baselines/<id>/`` (``write``).
 from __future__ import annotations
 
 import argparse
+import calendar
 import copy
 import datetime as _dt
 import difflib
+import errno
 import functools
 import hashlib
 import os
@@ -94,7 +101,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -218,6 +225,7 @@ _VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 _REASON_TEXT_RE = re.compile(r"[0-9]{4}")
 _FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
 _DECIMAL_TEXT_RE = re.compile(r"[+-]?[0-9]+(?:\.[0-9]+)?")
+_INT_TEXT_RE = re.compile(r"0|-?[1-9][0-9]*")  # the text str() gives an int
 
 # The baselines folder relative to the repository root, as git names it.
 BASELINES_REL = BASELINES_DIR.relative_to(REPO_ROOT).as_posix()
@@ -309,6 +317,10 @@ _DIRECTIVES = {
     "f": _Directive("time", r"[0-9]{6}", lambda value: f"{value.microsecond:06d}", 999_999),
 }
 
+# The largest run-date offset in days (3652058): the span of the dates
+# datetime.date represents, so no run date can carry a larger one.
+_OFFSET_DAYS_MAX = (_dt.date.max - _dt.date.min).days
+
 
 @functools.lru_cache(maxsize=None)
 def _format_parts(fmt: str) -> tuple[tuple[str, str], ...]:
@@ -396,14 +408,14 @@ class Matcher:
         """The ``Matcher`` of a matcher mapping; a malformed one raises
         ``BaselineError`` naming what is wrong."""
         if not is_matcher(value):
-            raise BaselineError(f"{value!r} is not a matcher {{match: <kind>, ...}}")
+            raise BaselineError(f"{_show(value)} is not a matcher {{match: <kind>, ...}}")
         kind = value["match"]
         options = _scenarios.MATCH_KINDS.get(kind) if isinstance(kind, str) else None
         if options is None:
             raise BaselineError(
-                f"matcher kind {kind!r} is not one of {', '.join(_scenarios.MATCH_KINDS)}"
+                f"matcher kind {_show(kind)} is not one of {', '.join(_scenarios.MATCH_KINDS)}"
             )
-        unknown = sorted(str(key) for key in value if key != "match" and key not in options)
+        unknown = sorted(_key_text(key) for key in value if key != "match" and key not in options)
         if unknown:
             raise BaselineError(
                 f"matcher {kind} takes {', '.join(sorted(options)) or 'no option'}, "
@@ -416,17 +428,32 @@ class Matcher:
         offset = value.get("offset_days", 0)
         if isinstance(offset, bool) or not isinstance(offset, int):
             raise BaselineError(f"matcher {kind}: offset_days must be a whole number of days")
+        if abs(offset) > _OFFSET_DAYS_MAX:
+            # The offset itself is not shown: it may be too long to render.
+            raise BaselineError(
+                f"matcher {kind}: offset_days must lie within -{_OFFSET_DAYS_MAX}..+{_OFFSET_DAYS_MAX} days, "
+                f"the span of the dates {_dt.date.min.isoformat()} to {_dt.date.max.isoformat()}"
+            )
         return cls(kind, fmt, offset)
 
     def target_date(self, run_date: _dt.date) -> _dt.date:
-        """The date the matcher's date directives render, for ``run_date``."""
+        """The date the matcher's date directives render, for ``run_date``.
+        Raises ``BaselineError`` naming the matcher, the run date and the
+        offset when ``run_date`` plus ``offset_days`` falls outside the dates
+        ``datetime.date`` can represent (0001-01-01 to 9999-12-31)."""
         if self.kind == "run-date":
-            return run_date + _dt.timedelta(days=self.offset_days)
+            try:
+                return run_date + _dt.timedelta(days=self.offset_days)
+            except OverflowError as exc:
+                raise BaselineError(
+                    f"matcher {self.describe()}: the run date {run_date.isoformat()} "
+                    f"{self.offset_days:+d} days lies outside the dates "
+                    f"{_dt.date.min.isoformat()} to {_dt.date.max.isoformat()}"
+                ) from exc
         if self.kind == "run-month-start":
             return run_date.replace(day=1)
         if self.kind == "run-month-end":
-            following = (run_date.replace(day=28) + _dt.timedelta(days=4)).replace(day=1)
-            return following - _dt.timedelta(days=1)
+            return run_date.replace(day=calendar.monthrange(run_date.year, run_date.month)[1])
         if self.kind == "run-year-start":
             return _dt.date(run_date.year, 1, 1)
         if self.kind == "run-year-end":
@@ -524,8 +551,27 @@ def resolve_matchers(value: Any, clock: str | _dt.datetime, exact: bool = True) 
 
 
 def _show(value: Any, limit: int = 160) -> str:
-    text = repr(value)
+    """``repr(value)`` clipped to ``limit`` characters. It never raises: an
+    integer too long for Python's decimal conversion limit, alone or inside a
+    container, is shown by its size instead."""
+    try:
+        text = repr(value)
+    except ValueError:
+        if isinstance(value, int):
+            # log10(2) ~ 0.30103: the digit count without a decimal conversion.
+            text = f"<int of about {abs(value).bit_length() * 30103 // 100000 + 1} digits>"
+        else:
+            text = f"<{type(value).__name__} holding an integer too long to show>"
     return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _key_text(key: Any) -> str:
+    """A mapping key as messages name it: ``str(key)``, or ``_show(key)`` for
+    an integer too long to write in decimal."""
+    try:
+        return str(key)
+    except ValueError:
+        return _show(key)
 
 
 # --------------------------------------------------------------------------
@@ -540,7 +586,7 @@ def _floats(value: Any, where: str) -> Iterable[str]:
         yield where
     elif isinstance(value, Mapping):
         for key, item in value.items():
-            yield from _floats(item, f"{where}.{key}" if where else str(key))
+            yield from _floats(item, f"{where}.{_key_text(key)}" if where else _key_text(key))
     elif isinstance(value, list):
         for index, item in enumerate(value):
             yield from _floats(item, f"{where}[{index}]")
@@ -554,14 +600,21 @@ def _check_matcher_at(value: Any, where: str, problems: list[str]) -> None:
 
 
 def _check_field_value(value: Any, where: str, problems: list[str]) -> None:
-    """A value of an expected record or screen field."""
+    """A value of an expected record field: the decoded text (a number with
+    its scale, as ``harness.codec.to_plain`` renders it), a matcher or
+    ``{raw: <hex>}``. An integer carries no scale, so it is refused."""
     if is_matcher(value):
         _check_matcher_at(value, where, problems)
     elif isinstance(value, Mapping):
         if set(value) != {"raw"} or not isinstance(value["raw"], str):
             problems.append(f"{where}: a mapping value is a matcher or {{raw: <hex>}}")
-    elif isinstance(value, bool) or not isinstance(value, (str, int)):
-        problems.append(f"{where}: {_show(value)} must be text, an integer, a matcher or {{raw: <hex>}}")
+    elif isinstance(value, int) and not isinstance(value, bool):
+        problems.append(
+            f"{where}: {_show(value)} is an integer; "
+            "write the decoded text with its scale, quoted (text compares exactly)"
+        )
+    elif not isinstance(value, str):
+        problems.append(f"{where}: {_show(value)} must be text, a matcher or {{raw: <hex>}}")
 
 
 def _check_items(items: Any, where: str, problems: list[str], item_check: Any) -> None:
@@ -580,7 +633,7 @@ def _check_record(record: Any, where: str, problems: list[str]) -> None:
     elif isinstance(record, Mapping):
         for name, value in record.items():
             if not isinstance(name, str):
-                problems.append(f"{where}: field key {name!r} must be text")
+                problems.append(f"{where}: field key {_show(name)} must be text")
             else:
                 _check_field_value(value, f"{where}.{name}", problems)
     else:
@@ -617,7 +670,7 @@ def _check_list_spec(
         problems.append(f"{where}: must be a list or a mapping of records, contains, count and matchers")
         return
     allowed = _LIST_SPEC_KEYS if matchers_ok else _LIST_SPEC_KEYS - {"matchers"}
-    unknown = sorted(str(key) for key in value if key not in allowed)
+    unknown = sorted(_key_text(key) for key in value if key not in allowed)
     if unknown:
         problems.append(f"{where}: unknown key(s) {', '.join(unknown)}; allowed: {', '.join(sorted(allowed))}")
     if not ({"records", "contains", "count"} & set(value)):
@@ -639,7 +692,7 @@ def _check_matcher_map(value: Any, where: str, problems: list[str]) -> None:
         return
     for name, matcher in value.items():
         if not isinstance(name, str):
-            problems.append(f"{where}: field key {name!r} must be text")
+            problems.append(f"{where}: field key {_show(name)} must be text")
         else:
             _check_matcher_at(matcher, f"{where}.{name}", problems)
 
@@ -650,7 +703,7 @@ def _check_screen(screen: Any, where: str, problems: list[str]) -> None:
         return
     for name, value in screen.items():
         if not isinstance(name, str):
-            problems.append(f"{where}: field key {name!r} must be text")
+            problems.append(f"{where}: field key {_show(name)} must be text")
         elif is_matcher(value):
             _check_matcher_at(value, f"{where}.{name}", problems)
         elif not isinstance(value, str):
@@ -666,7 +719,7 @@ def expected_problems(expected: Any) -> list[str]:
         f"{where}: is a float; write numbers as quoted decimal text with their scale, as decoded"
         for where in _floats(expected, "")
     ]
-    unknown = sorted(str(key) for key in expected if key not in _scenarios.EXPECTED_KEYS)
+    unknown = sorted(_key_text(key) for key in expected if key not in _scenarios.EXPECTED_KEYS)
     if unknown:
         problems.append(
             f"(document): unknown key(s) {', '.join(unknown)}; allowed: {', '.join(_scenarios.EXPECTED_KEYS)}"
@@ -688,7 +741,7 @@ def expected_problems(expected: Any) -> list[str]:
             continue
         for name, item in value.items():
             if not isinstance(name, str) or not name:
-                problems.append(f"{section}: dataset name {name!r} must be text")
+                problems.append(f"{section}: dataset name {_show(name)} must be text")
                 continue
             _check_list_spec(item, f"{section}.{name}", problems, _check_record, True)
     if "screens" in expected:
@@ -749,6 +802,36 @@ def manifest_problems(manifest: Any, has_raw: bool) -> list[str]:
     return problems
 
 
+def _raw_set_problems(expected: Any, manifest: Any, names: Iterable[str]) -> list[str]:
+    """For a baseline observed on a capture platform, every business dataset
+    ``expected.datasets`` or ``expected.file_state`` names that has no
+    ``.bin`` among ``names``, and every ``.bin`` of ``names`` no such
+    dataset names, in name order. Reserved observations (``@...``) need none.
+    A derived baseline holds no ``.bin`` at all, which ``manifest_problems``
+    checks; a malformed ``expected`` or ``manifest`` is reported there too."""
+    if not isinstance(expected, Mapping) or not isinstance(manifest, Mapping):
+        return []
+    platform = manifest.get("capture_platform")
+    if platform == DERIVED or platform not in CAPTURE_PLATFORMS:
+        return []
+    wanted = {
+        name
+        for section in ("datasets", "file_state")
+        if isinstance(expected.get(section), Mapping)
+        for name in expected[section]
+        if isinstance(name, str) and name and not name.startswith("@")
+    }
+    held = set(names)
+    return [
+        f"datasets/{name}{RAW_SUFFIX}: missing; a baseline observed on {platform} holds the raw bytes of every "
+        f"business dataset its expected.datasets and expected.file_state name"
+        if name in wanted
+        else f"datasets/{name}{RAW_SUFFIX}: {name} is not a business dataset expected.datasets or "
+        f"expected.file_state names"
+        for name in sorted(wanted ^ held)
+    ]
+
+
 def _iso_date(value: Any) -> bool:
     if isinstance(value, _dt.datetime):
         return False
@@ -776,8 +859,10 @@ class Baseline:
     """One baseline: ``expected`` (the content of ``expected.yaml``),
     ``manifest``, ``datasets`` (logical name -> raw expected bytes) and the
     directory it was read from (``None`` for one built in memory, as
-    ``capture.py`` does before writing). Construction validates the contract
-    and raises ``BaselineError`` listing every problem."""
+    ``capture.py`` does before writing). An observed baseline holds exactly
+    one raw dataset per business dataset its ``expected.datasets`` and
+    ``expected.file_state`` name, a derived one none. Construction validates
+    the contract and raises ``BaselineError`` listing every problem."""
 
     id: str
     expected: dict
@@ -799,9 +884,11 @@ class Baseline:
                 problems.append(f"datasets/{name}{RAW_SUFFIX}: must hold bytes, not {type(data).__name__}")
             else:
                 raw[name] = bytes(data)
+        named = [name for name in self.datasets if isinstance(name, str) and _LOGICAL_RE.fullmatch(name)]
         object.__setattr__(self, "datasets", dict(sorted(raw.items())))
         problems.extend(f"{EXPECTED_FILE}: {problem}" for problem in expected_problems(self.expected))
         problems.extend(f"{MANIFEST_FILE}: {problem}" for problem in manifest_problems(self.manifest, bool(raw)))
+        problems.extend(_raw_set_problems(self.expected, self.manifest, named))
         if problems:
             raise BaselineError(f"{label}: " + "; ".join(problems))
 
@@ -844,6 +931,62 @@ def _read_yaml(path: Path) -> Any:
         raise BaselineError(str(exc)) from None
 
 
+# The names a writer gives its temp files, ``.<file>.<pid>.<8 hex>.tmp``:
+# ``_write_bytes`` for ``<LOGICAL>.bin`` (``_RAW_TEMP_RE``), and
+# ``harness.write_text`` for the YAML files (``_TEMP_RE`` covers all three).
+# Group 1 is the writer's pid.
+_TEMP_TAIL = r"\.([0-9]+)\.[0-9a-f]{8}\.tmp"
+_RAW_NAME = r"[A-Z][A-Z0-9-]*" + re.escape(RAW_SUFFIX)
+_RAW_TEMP_RE = re.compile(rf"\.{_RAW_NAME}{_TEMP_TAIL}")
+_TEMP_RE = re.compile(rf"\.(?:{re.escape(EXPECTED_FILE)}|{re.escape(MANIFEST_FILE)}|{_RAW_NAME}){_TEMP_TAIL}")
+
+
+def _writer_alive(pid: int) -> bool:
+    """Whether the process named in a temp file may still be writing it: one
+    that exists, or that this user may not signal, is alive; a pid no process
+    can have is not."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OverflowError:
+        return False
+    return True
+
+
+def _entries(folder: Path) -> list[Path]:
+    """The entries of ``folder`` in name order; none once a concurrent writer
+    has removed it."""
+    try:
+        return sorted(folder.iterdir())
+    except FileNotFoundError:
+        return []
+
+
+def _remove_stale_temps(directory: Path) -> None:
+    """Remove the temp files that writers which no longer run (an interrupted
+    ``write``) left in the baseline ``directory`` or its ``datasets/``. A
+    live writer's temp file is left alone, and symbolic links and anything
+    not named as a writer's temp file are never touched."""
+    for folder, pattern in ((directory, _TEMP_RE), (directory / DATASETS_DIR, _RAW_TEMP_RE)):
+        if folder.is_symlink() or not folder.is_dir():
+            continue
+        for entry in _entries(folder):
+            match = pattern.fullmatch(entry.name)
+            if match is None:
+                continue
+            try:
+                mode = entry.lstat().st_mode
+            except FileNotFoundError:
+                continue
+            if stat.S_ISREG(mode) and not _writer_alive(int(match.group(1))):
+                entry.unlink(missing_ok=True)
+
+
 def _read_datasets(folder: Path) -> dict[str, bytes]:
     if folder.is_symlink():
         raise BaselineError(f"{display_path(folder)} is not read: it is a symbolic link")
@@ -856,6 +999,8 @@ def _read_datasets(folder: Path) -> dict[str, bytes]:
         shown = display_path(entry)
         if entry.is_symlink():
             raise BaselineError(f"{shown} is not read: it is a symbolic link")
+        if _RAW_TEMP_RE.fullmatch(entry.name):
+            continue  # an unfinished or interrupted write's temp file, not a dataset
         if not (entry.is_file() and entry.suffix == RAW_SUFFIX and _LOGICAL_RE.fullmatch(entry.stem)):
             raise BaselineError(f"{shown} is not a <LOGICAL>{RAW_SUFFIX} dataset")
         datasets[entry.stem] = entry.read_bytes()
@@ -871,7 +1016,14 @@ def load(
     ``BaselineError`` otherwise. A directory that exists but breaks the
     contract (a missing or unreadable ``expected.yaml`` or ``manifest.yaml``,
     a float in ``expected.yaml``, a file in ``datasets/`` that is not
-    ``<LOGICAL>.bin``, a symbolic link) always raises ``BaselineError``."""
+    ``<LOGICAL>.bin``, a symbolic link) always raises ``BaselineError``.
+
+    A writer's temp file ``.<LOGICAL>.bin.<pid>.<8 hex>.tmp`` in
+    ``datasets/`` is ignored, not refused, so an unfinished or interrupted
+    ``write`` never makes the baseline unreadable. ``write`` keeps its temp
+    files in the baseline directory, where ``load`` reads nothing but
+    ``expected.yaml``, ``manifest.yaml`` and ``datasets/``, and removes the
+    stale ones."""
     root = Path(baselines_dir)
     directory = root / _check_id(baseline_id)
     _refuse_links((root, directory), directory)
@@ -887,18 +1039,22 @@ def load(
     return Baseline(baseline_id, expected, manifest, datasets, directory)
 
 
-def _write_bytes(path: Path, data: bytes) -> bool:
-    """Write ``data`` exactly, atomically (a new file beside the target, then
-    ``os.replace``); an identical file is left untouched. Returns whether the
-    file was written."""
+def _write_bytes(path: Path, data: bytes, temp_folder: Path) -> bool:
+    """Write ``data`` exactly to ``path``, atomically: the bytes go to a new
+    file ``.<name>.<pid>.<8 hex>.tmp`` in ``temp_folder`` (the baseline
+    directory: the same filesystem, outside the ``datasets/`` folder ``load``
+    reads), and ``os.replace`` swaps it in once ``path``'s folder exists,
+    creating that folder again should a concurrent writer remove it in
+    between. An identical file is left untouched, and the new file is removed
+    when anything fails. Returns whether the file was written."""
     try:
         if path.read_bytes() == data:
             return False
     except FileNotFoundError:
         pass
-    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_folder.mkdir(parents=True, exist_ok=True)
     while True:
-        temp_path = path.with_name(f".{path.name}.{os.getpid()}.{os.urandom(4).hex()}.tmp")
+        temp_path = temp_folder / f".{path.name}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
         try:
             descriptor = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
             break
@@ -907,7 +1063,14 @@ def _write_bytes(path: Path, data: bytes) -> bool:
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
-        os.replace(temp_path, path)
+        while True:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.replace(temp_path, path)
+                break
+            except FileNotFoundError:
+                if not os.path.lexists(temp_path) or path.parent.is_dir():
+                    raise  # not the folder vanishing between mkdir and replace
     except BaseException:
         try:
             os.unlink(temp_path)
@@ -933,7 +1096,16 @@ def write(
     (the ``datasets`` folder too, once empty). The content is validated first,
     so nothing is written for a baseline ``load`` would refuse. Unchanged
     files keep their modification time. Used by ``capture.py`` and
-    ``report.py --import-unikix``; the bump check judges the change."""
+    ``report.py --import-unikix``; the bump check judges the change.
+
+    Every temp file (``.<file>.<pid>.<8 hex>.tmp``, from
+    ``harness.write_text`` and ``_write_bytes``) goes to the baseline
+    directory, never into ``datasets/``. Before writing, the temp files of
+    writers that no longer run (an interrupted ``write``) are removed from
+    the baseline directory and ``datasets/``; a live writer's are left alone.
+    A concurrent writer of the same id is tolerated: each file is replaced
+    atomically, and a ``.bin`` file or the ``datasets`` folder it removes
+    first, or a file it adds to that folder, is not an error."""
     root = Path(baselines_dir)
     directory = root / _check_id(baseline_id)
     raw = dict(datasets or {})
@@ -941,18 +1113,25 @@ def write(
     _refuse_links((root, directory, directory / EXPECTED_FILE, directory / MANIFEST_FILE), directory)
     raw_folder = directory / DATASETS_DIR
     _refuse_links((raw_folder,), raw_folder)
+    _remove_stale_temps(directory)
     write_text(directory / EXPECTED_FILE, dump_yaml(dict(expected)))
     write_text(directory / MANIFEST_FILE, dump_yaml(dict(manifest)))
     for name, data in sorted(raw.items()):
         target = raw_folder / f"{name}{RAW_SUFFIX}"
         _refuse_links((target,), target)
-        _write_bytes(target, bytes(data))
+        _write_bytes(target, bytes(data), directory)
     if raw_folder.is_dir():
-        for entry in sorted(raw_folder.iterdir()):
+        for entry in _entries(raw_folder):
             if entry.suffix == RAW_SUFFIX and entry.stem not in raw and not entry.is_dir():
-                entry.unlink()
-        if not any(raw_folder.iterdir()):
-            raw_folder.rmdir()
+                entry.unlink(missing_ok=True)
+        if not _entries(raw_folder):
+            try:
+                raw_folder.rmdir()
+            except FileNotFoundError:
+                pass  # a concurrent writer removed it first
+            except OSError as exc:
+                if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+                    raise  # anything but a file a concurrent writer has just added
     written = load(baseline_id, missing_ok=True, baselines_dir=root)
     if written is None:
         raise BaselineError(f"{display_path(directory)} vanished while it was written")
@@ -1190,8 +1369,10 @@ class _Context:
 
 def _plain_problem(expected: Any, actual: Any) -> str | None:
     """Why ``actual`` is not the literal ``expected``: text exactly (trailing
-    spaces included), an integer as decimal text of the same value, anything
-    else equal and of the same type."""
+    spaces included); an integer as the same integer (``return_code``) or as
+    exactly its own text at scale 0 (``194`` is ``'194'``, never ``'194.00'``,
+    ``'0194'``, ``'+194'`` or ``'-0'`` for ``0``); anything else equal and of
+    the same type."""
     if isinstance(expected, bool) or expected is None:
         same = actual is expected
     elif isinstance(expected, int):
@@ -1199,11 +1380,20 @@ def _plain_problem(expected: Any, actual: Any) -> str | None:
             same = False
         elif isinstance(actual, int):
             same = actual == expected
-        elif isinstance(actual, str) and _DECIMAL_TEXT_RE.fullmatch(actual):
+        elif isinstance(actual, str):
             try:
-                same = Decimal(actual) == expected
-            except InvalidOperation:
-                same = False
+                text = str(expected)
+            except ValueError:
+                # Too long to write in decimal: only the same number's integer
+                # text equals it, which Decimal compares without that limit.
+                same = bool(_INT_TEXT_RE.fullmatch(actual)) and Decimal(actual) == expected
+                return None if same else f"expected {_show(expected)}, got {_show(actual)}"
+            same = actual == text
+            if not same and _DECIMAL_TEXT_RE.fullmatch(actual) and Decimal(actual) == expected:
+                return (
+                    f"expected {_show(expected)}, got {_show(actual)}: an integer stands only for the text "
+                    f"{_show(text)}; write the value as decoded, with its scale"
+                )
         else:
             same = False
     else:
@@ -1313,7 +1503,7 @@ def _list_check(
         expected_shown["count"] = specs["count"]
         actual_shown["count"] = count
         if specs["count"] != count:
-            problems.append(f"{label}: {count} record(s), expected count {specs['count']}")
+            problems.append(f"{label}: {count} record(s), expected count {_show(specs['count'])}")
     if "records" in specs:
         records = list(specs["records"])
         union = _union_fields(records)
@@ -1658,17 +1848,18 @@ _FINDING_TITLES = {
 def _yaml_lines(value: Any) -> list[str]:
     try:
         return dump_yaml(value).splitlines()
-    except HarnessError:
+    except (HarnessError, ValueError):  # ValueError: an integer too long to write in decimal
         return [_show(value, 10_000)]
 
 
-def _render(findings: Sequence[_Finding]) -> str:
-    """The human-readable diff: per failing key its problems, then a unified
-    diff of the expected and the actual value as YAML, truncated at
-    ``DIFF_MAX_LINES`` lines."""
+def _render(findings: Sequence[_Finding], scenario_id: Any) -> str:
+    """The human-readable diff: per failing key a title naming
+    ``scenario_id`` and the key, its problems, then a unified diff of the
+    expected and the actual value as YAML, truncated at ``DIFF_MAX_LINES``
+    lines."""
     lines: list[str] = []
     for finding in findings:
-        lines.append(f"{finding.key}: {_FINDING_TITLES[finding.kind]}")
+        lines.append(f"{scenario_id}: {finding.key}: {_FINDING_TITLES[finding.kind]}")
         listed = finding.problems[:_PROBLEMS_PER_KEY]
         lines.extend(f"  - {problem}" for problem in listed)
         if len(finding.problems) > len(listed):
@@ -1809,9 +2000,14 @@ def _findings(
             names = expected.get(section)
             for name in names if isinstance(names, Mapping) else ():
                 name = str(name)
-                if name.startswith("@") or name in compared or name not in baseline.datasets:
+                if name.startswith("@") or name in compared:
                     continue
                 compared.add(name)
+                if name not in baseline.datasets:
+                    checker.add("error", f"{section}.{name}", [
+                        f"datasets/{name}{RAW_SUFFIX}: the baseline observed on {adapter_name} holds no raw bytes "
+                        f"for {name}, so it cannot be compared byte for byte"])
+                    continue
                 view = bundle.views[(section, name)]
                 excluded: list[tuple[int, int]] = []
                 if not exact:
@@ -1837,21 +2033,24 @@ def compare(
     Every key the scenario's ``expected`` names is checked against the
     baseline value (which must exist) and, unless it is ``baseline``, against
     the scenario's own value; when the baseline was captured on
-    ``adapter_name`` the business datasets with a ``.bin`` are also compared
-    byte for byte (on an adapter whose clock is not fixed, without the bytes
-    of matcher fields). Matchers resolve exactly on ``FIXED_CLOCK_ADAPTERS``
-    and are judged against ``run_date`` elsewhere.
+    ``adapter_name`` every business dataset the scenario's ``expected`` names
+    is also compared byte for byte with its ``.bin`` (on an adapter whose
+    clock is not fixed, without the bytes of matcher fields), and one without
+    a ``.bin`` fails with reason ``error``. Matchers resolve exactly on
+    ``FIXED_CLOCK_ADAPTERS`` and are judged against ``run_date`` elsewhere.
 
     ``("passed", None, "")`` when every check holds. Otherwise ``failing``
     with reason ``error`` (no baseline, a key the baseline lacks, a result
     that cannot be decoded, a malformed expectation), else
     ``cross-adapter-divergence`` when a decoded value differs from a
     baseline observed on another adapter (that baseline stays
-    authoritative), else ``assertion``; ``diff`` says what differs."""
+    authoritative), else ``assertion``; ``diff`` names the scenario and
+    says what differs."""
+    scenario_id = getattr(scenario, "id", "?")
     try:
         findings = _findings(scenario, baseline, result, adapter_name, run_date)
     except HarnessError as exc:
-        return STATUS_FAILING, REASON_ERROR, f"comparison error: {exc}"
+        return STATUS_FAILING, REASON_ERROR, f"{scenario_id}: comparison error: {exc}"
     if not findings:
         return STATUS_PASSED, None, ""
     kinds = {finding.kind for finding in findings}
@@ -1861,7 +2060,7 @@ def compare(
         reason = REASON_DIVERGENCE
     else:
         reason = REASON_ASSERTION
-    return STATUS_FAILING, reason, _render(findings)
+    return STATUS_FAILING, reason, _render(findings, scenario_id)
 
 
 # --------------------------------------------------------------------------
