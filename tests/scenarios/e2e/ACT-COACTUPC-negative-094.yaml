@@ -11,12 +11,17 @@
 # Step 4 erases ACSADL1 (EraseEOF, nothing typed) and presses ENTER:
 # - 1100-RECEIVE-MAP moves LOW-VALUES to ACUP-NEW-CUST-ADDR-LINE-1 whether the
 #   erased field arrives as nulls or as spaces [app/cbl/COACTUPC.cbl:1315-1320].
-# - 1205-COMPARE-OLD-NEW finds a change, because TRIM leaves the LOW-VALUES
-#   unequal to the fetched '100 Test Street' [app/cbl/COACTUPC.cbl:1724-1727],
-#   so 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the field edits
-#   in screen order. The account fields, SSN, Date of Birth, FICO Score and
-#   the three names pass on these fixtures, so the message line is still off,
-#   as the task started it [app/cbl/COACTUPC.cbl:876,1470-1582].
+# - 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at its account test, which is
+#   false because its group-id term compares the LOW-VALUES of the blank
+#   Account Group with the fetched spaces (TRIM removes spaces only,
+#   GAP-DEF-019), and exits before the customer fields are compared; the
+#   LOW-VALUES address line would differ from the fetched '100 Test Street' as
+#   well, but that comparison is not reached. So 1200-EDIT-MAP-INPUTS sets
+#   ACUP-CHANGES-NOT-OK and runs the field edits in screen order
+#   [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847]. The account
+#   fields, SSN, Date of Birth, FICO Score and the three names pass on these
+#   fixtures, so the message line is still off, as the task started it
+#   [app/cbl/COACTUPC.cbl:876,1470-1582].
 # - 'Address Line 1' is moved to WS-EDIT-VARIABLE-NAME and the line, with
 #   length 50, to WS-EDIT-ALPHANUM-ONLY. 1215-EDIT-MANDATORY finds the 50 bytes
 #   equal to LOW-VALUES, sets INPUT-ERROR and FLG-MANDATORY-BLANK ('B', moved

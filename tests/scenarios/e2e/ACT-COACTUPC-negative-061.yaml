@@ -18,10 +18,15 @@
 #   erased field arrives as spaces (moved as LOW-VALUES) or as nulls (moved as
 #   received); parts 2 and 3 keep 45 and 6789 [app/cbl/COACTUPC.cbl:1047,
 #   1233-1252].
-# - 1205-COMPARE-OLD-NEW finds the account fields unchanged and ACUP-NEW-CUST-
-#   SSN-X unequal to the fetched 123456789, so a change has occurred, and
-#   1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the field edits in
-#   screen order [app/cbl/COACTUPC.cbl:1460-1470,1681-1774].
+# - 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at its account test: the
+#   group-id term compares the LOW-VALUES that 1100-RECEIVE-MAP moves for the
+#   blank Account Group with the fetched spaces, which TRIM does not make
+#   equal (it removes spaces only, GAP-DEF-019), so the test is false whatever
+#   its other terms give and the paragraph exits before the customer fields
+#   are compared. ACUP-NEW-CUST-SSN-X would differ from the fetched 123456789
+#   as well, but that comparison is not reached. So 1200-EDIT-MAP-INPUTS sets
+#   ACUP-CHANGES-NOT-OK and runs the field edits in screen order
+#   [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847].
 # - Account Status, the three account dates and the five amounts pass on the
 #   repository account [app/cbl/COACTUPC.cbl:1472-1527]. 1265-EDIT-US-SSN moves
 #   'SSN: First 3 chars' to WS-EDIT-VARIABLE-NAME and the three bytes of part 1

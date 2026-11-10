@@ -14,12 +14,17 @@
 # and presses ENTER:
 # - 1100-RECEIVE-MAP moves the received 'Test9first', neither '*' nor spaces,
 #   to ACUP-NEW-CUST-FIRST-NAME [app/cbl/COACTUPC.cbl:1286-1293].
-# - 1205-COMPARE-OLD-NEW finds UPPER-CASE(TRIM('Test9first')) unequal to the
-#   fetched 'TESTFIRST', so 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and
-#   runs the field edits in screen order [app/cbl/COACTUPC.cbl:1460-1470,
-#   1708-1715]. Account Status, the three dates and the five amounts pass on
-#   the repository account; SSN, Date of Birth and FICO Score pass on the
-#   invented customer below [app/cbl/COACTUPC.cbl:1472-1556].
+# - 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at the account test, which
+#   is false because its group-id term compares the LOW-VALUES of the blank
+#   Account Group with the fetched spaces (TRIM removes spaces only,
+#   GAP-DEF-019), and exits before the customer fields are compared;
+#   UPPER-CASE(TRIM('Test9first')) would differ from the fetched 'TESTFIRST'
+#   as well, but that comparison is not reached. So 1200-EDIT-MAP-INPUTS sets
+#   ACUP-CHANGES-NOT-OK and runs the field edits in screen order
+#   [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847]. Account Status,
+#   the three dates and the five amounts pass on the repository account; SSN,
+#   Date of Birth and FICO Score pass on the invented customer below
+#   [app/cbl/COACTUPC.cbl:1472-1556].
 # - 'First Name' is moved to WS-EDIT-VARIABLE-NAME and the 25-byte name to
 #   WS-EDIT-ALPHANUM-ONLY. 1225-EDIT-ALPHA-REQD finds it neither LOW-VALUES,
 #   nor SPACES, nor blank after TRIM, so it is supplied; INSPECT CONVERTING

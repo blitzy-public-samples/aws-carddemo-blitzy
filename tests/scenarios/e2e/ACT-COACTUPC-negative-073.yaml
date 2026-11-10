@@ -12,10 +12,14 @@
 # Step 4 types 1861 over the birth year 1961 and presses ENTER.
 # - 1100-RECEIVE-MAP moves 1861 to ACUP-NEW-CUST-DOB-YEAR; the month 06 and
 #   day 08 come back unchanged [app/cbl/COACTUPC.cbl:1256-1275].
-# - 1205-COMPARE-OLD-NEW finds every account field equal, then
-#   ACUP-NEW-CUST-DOB-YYYY-MM-DD 18610608 unequal to the fetched 19610608, so
+# - 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at the account test, which
+#   is false because its group-id term compares the LOW-VALUES of the blank
+#   Account Group with the fetched spaces (TRIM removes spaces only,
+#   GAP-DEF-019), and exits before the customer fields are compared: the
+#   edited ACUP-NEW-CUST-DOB-YYYY-MM-DD 18610608 would differ from the fetched
+#   19610608 as well, but that comparison is not reached. So
 #   1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the field edits in
-#   screen order [app/cbl/COACTUPC.cbl:1460-1470,1681-1766].
+#   screen order [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847].
 # - Account Status Y, Open Date 2014-11-20, Credit Limit, Expiry Date
 #   2025-05-20, Cash Credit Limit, Reissue Date 2025-05-20, Current Balance,
 #   both cycle limits and the SSN 123-45-6789 pass first, the three dates

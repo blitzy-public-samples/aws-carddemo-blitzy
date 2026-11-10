@@ -13,9 +13,14 @@
 # Step 4 erases the birth day (08) and presses ENTER.
 # - 1100-RECEIVE-MAP moves LOW-VALUES to ACUP-NEW-CUST-DOB-DAY for a blank,
 #   null or '*' DOBDAY [app/cbl/COACTUPC.cbl:1270-1275].
-# - 1205-COMPARE-OLD-NEW finds the date of birth changed, so
-#   1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the field edits in
-#   screen order [app/cbl/COACTUPC.cbl:1460-1476,1681-1777]. Account Status,
+# - 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at the account test, which
+#   is false because its group-id term compares the LOW-VALUES of the blank
+#   Account Group with the fetched spaces (TRIM removes spaces only,
+#   GAP-DEF-019), and exits before the customer fields are compared: the date
+#   of birth with its LOW-VALUES day would differ from the fetched 19610608 as
+#   well, but that comparison is not reached. So 1200-EDIT-MAP-INPUTS sets
+#   ACUP-CHANGES-NOT-OK and runs the field edits in screen order
+#   [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847]. Account Status,
 #   Open Date, Credit Limit, Expiry Date, Cash Credit Limit, Reissue Date, the
 #   three balances and SSN 123-45-6789 pass on the fetched values
 #   [app/cbl/COACTUPC.cbl:1472-1531].

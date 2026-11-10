@@ -17,11 +17,15 @@
 # presses ENTER.
 # - 1100-RECEIVE-MAP moves the received 'M1ddle' and its 19 blanks, being
 #   neither '*' nor spaces, to ACUP-NEW-CUST-MIDDLE-NAME
-#   [app/cbl/COACTUPC.cbl:1295-1302]. 1205-COMPARE-OLD-NEW finds the account
-#   part unchanged and the upper-cased, trimmed 'M1DDLE' unequal to the old
-#   'TESTMIDDLE', so a change has occurred, and 1200-EDIT-MAP-INPUTS sets
-#   ACUP-CHANGES-NOT-OK and runs the field edits in screen order
-#   [app/cbl/COACTUPC.cbl:1460-1470,1681-1773].
+#   [app/cbl/COACTUPC.cbl:1295-1302]. 1205-COMPARE-OLD-NEW sets
+#   CHANGE-HAS-OCCURRED at its account test, which is false because its
+#   group-id term compares the LOW-VALUES of the blank Account Group with the
+#   fetched spaces (TRIM removes spaces only, GAP-DEF-019), and exits before
+#   the customer fields are compared; the upper-cased, trimmed 'M1DDLE' would
+#   differ from the old 'TESTMIDDLE' as well, but that comparison is not
+#   reached. So 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the
+#   field edits in screen order [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,
+#   1697-1704,3847].
 # - Account Status, Open Date, the five amounts, Expiry and Reissue Date pass
 #   on the repository account; SSN, Date of Birth, FICO Score and First Name
 #   pass on the invented customer below [app/cbl/COACTUPC.cbl:1472-1566].

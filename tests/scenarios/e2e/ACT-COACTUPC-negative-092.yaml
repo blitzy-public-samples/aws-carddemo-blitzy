@@ -13,9 +13,14 @@
 # - 1100-RECEIVE-MAP leaves ACUP-NEW-CUST-LAST-NAME at LOW-VALUES whether the
 #   erased field arrives as spaces (moved as LOW-VALUES) or as nulls (moved as
 #   received) [app/cbl/COACTUPC.cbl:1306-1311].
-# - 1205-COMPARE-OLD-NEW finds TRIM of those LOW-VALUES unequal to the fetched
-#   'Testlast', so 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the
-#   field edits in screen order [app/cbl/COACTUPC.cbl:1460-1470,1720-1723].
+# - 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at its account test, which is
+#   false because its group-id term compares the LOW-VALUES of the blank
+#   Account Group with the fetched spaces (TRIM removes spaces only,
+#   GAP-DEF-019), and exits before the customer fields are compared; the
+#   LOW-VALUES last name would differ from the fetched 'Testlast' as well, but
+#   that comparison is not reached. So 1200-EDIT-MAP-INPUTS sets
+#   ACUP-CHANGES-NOT-OK and runs the field edits in screen order
+#   [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847].
 #   Account Status, the three dates, the five amounts, SSN, Date of Birth,
 #   FICO Score, First Name and Middle Name pass with these fixtures.
 # - 1225-EDIT-ALPHA-REQD finds WS-EDIT-ALPHANUM-ONLY(1:25) equal to

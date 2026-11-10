@@ -18,9 +18,14 @@
 # - 1100-RECEIVE-MAP moves the 1A, being neither '*' nor spaces, to
 #   ACUP-NEW-CUST-DOB-MON. DOBMON fills its two positions, so JUSTIFY=(RIGHT)
 #   pads nothing [app/cbl/COACTUPC.cbl:1263-1268] [app/bms/COACTUP.bms:299-303].
-# - 1205-COMPARE-OLD-NEW finds the birth date 19611A08 different from the
-#   fetched 19610608, so 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs
-#   the field edits in screen order [app/cbl/COACTUPC.cbl:1460-1470,1681-1770].
+# - 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at the account test, which
+#   is false because its group-id term compares the LOW-VALUES of the blank
+#   Account Group with the fetched spaces (TRIM removes spaces only,
+#   GAP-DEF-019), and exits before the customer fields are compared: the birth
+#   date 19611A08 would differ from the fetched 19610608 as well, but that
+#   comparison is not reached. So 1200-EDIT-MAP-INPUTS sets
+#   ACUP-CHANGES-NOT-OK and runs the field edits in screen order
+#   [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847].
 # - Account Status, Open Date (2014-11-20), Credit Limit, Expiry Date
 #   (2025-05-20), Cash Credit Limit, Reissue Date (2025-05-20), the three
 #   amounts and the SSN (123, 45, 6789) pass on the fetched values. Each of the

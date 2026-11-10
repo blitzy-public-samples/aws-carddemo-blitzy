@@ -14,9 +14,15 @@
 # - The erased field arrives as nulls, which 1100-RECEIVE-MAP moves to
 #   ACUP-NEW-CUST-DOB-YEAR; a '*' or spaces would give LOW-VALUES as well
 #   [app/cbl/COACTUPC.cbl:1256-1261].
-# - 1205-COMPARE-OLD-NEW finds the birth date changed from the fetched
-#   19610608, so 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the
-#   field edits in screen order [app/cbl/COACTUPC.cbl:1460-1470,1759-1772].
+# - 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at its account test: the
+#   group-id term compares the LOW-VALUES that 1100-RECEIVE-MAP moves for the
+#   blank Account Group with the fetched spaces, which TRIM does not make
+#   equal (it removes spaces only, GAP-DEF-019), so the test is false whatever
+#   its other terms give and the paragraph exits before the customer fields
+#   are compared. The birth date would differ from the fetched 19610608 as
+#   well, but that comparison is not reached. So 1200-EDIT-MAP-INPUTS sets
+#   ACUP-CHANGES-NOT-OK and runs the field edits in screen order
+#   [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847].
 # - Account Status Y, Open Date 2014-11-20, Credit Limit, Expiry Date
 #   2025-05-20, Cash Credit Limit, Reissue Date 2025-05-20, Current Balance,
 #   the cycle credit and debit, and SSN 123-45-6789 pass, so WS-RETURN-MSG is

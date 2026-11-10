@@ -17,10 +17,15 @@
 # presses ENTER.
 # - 1100-RECEIVE-MAP moves the received '1A3', which is neither '*' nor
 #   SPACES, to ACUP-NEW-CUST-SSN-1 [app/cbl/COACTUPC.cbl:1233-1238].
-#   1205-COMPARE-OLD-NEW finds ACUP-NEW-CUST-SSN-X ('1A3456789') unequal to
-#   the old SSN (123456789), so a change has occurred, and
+#   1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at its account test: the
+#   group-id term compares the LOW-VALUES that 1100-RECEIVE-MAP moves for the
+#   blank Account Group with the fetched spaces, which TRIM does not make
+#   equal (it removes spaces only, GAP-DEF-019), so the test is false whatever
+#   its other terms give and the paragraph exits before the customer fields
+#   are compared. ACUP-NEW-CUST-SSN-X ('1A3456789') would differ from the old
+#   SSN (123456789) as well, but that comparison is not reached. So
 #   1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the field edits in
-#   screen order [app/cbl/COACTUPC.cbl:1460-1470,1682-1777].
+#   screen order [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847].
 # - Account Status, Open Date, Credit Limit, Expiry Date, Cash Credit Limit,
 #   Reissue Date, Current Balance and the two cycle amounts pass on the
 #   repository account [app/cbl/COACTUPC.cbl:1472-1527]. 1265-EDIT-US-SSN

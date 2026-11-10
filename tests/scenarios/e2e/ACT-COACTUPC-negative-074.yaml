@@ -14,10 +14,14 @@
 # - The erased DOBMON arrives as LOW-VALUES (as SPACES it would be turned into
 #   LOW-VALUES), so ACUP-NEW-CUST-DOB-MON is LOW-VALUES
 #   [app/cbl/COACTUPC.cbl:1263-1268].
-# - 1205-COMPARE-OLD-NEW finds every account field as fetched and the
-#   customer's date of birth changed from 19610608, so 1200-EDIT-MAP-INPUTS
-#   sets ACUP-CHANGES-NOT-OK and runs the field edits in screen order
-#   [app/cbl/COACTUPC.cbl:1460-1470,1681-1773].
+# - 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at the account test, which
+#   is false because its group-id term compares the LOW-VALUES of the blank
+#   Account Group with the fetched spaces (TRIM removes spaces only,
+#   GAP-DEF-019), and exits before the customer fields are compared: the date
+#   of birth with its LOW-VALUES month would differ from the fetched 19610608
+#   as well, but that comparison is not reached. So 1200-EDIT-MAP-INPUTS sets
+#   ACUP-CHANGES-NOT-OK and runs the field edits in screen order
+#   [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847].
 # - Account Status, Open Date, Credit Limit, Expiry Date, Cash Credit Limit,
 #   Reissue Date, Current Balance, Current Cycle Credit and Debit Limit and
 #   SSN keep their fetched values and pass [app/cbl/COACTUPC.cbl:1472-1531].
@@ -341,4 +345,3 @@ expected:
         CUST-EFT-ACCOUNT-ID: '0053581756'
         CUST-PRI-CARD-HOLDER-IND: 'Y'
         CUST-FICO-CREDIT-SCORE: '700'
-

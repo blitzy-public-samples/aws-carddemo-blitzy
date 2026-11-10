@@ -14,9 +14,15 @@
 # year 1961 and presses ENTER.
 # - 1100-RECEIVE-MAP moves 19B1, neither blank nor '*', to
 #   ACUP-NEW-CUST-DOB-YEAR [app/cbl/COACTUPC.cbl:1256-1261].
-# - 1205-COMPARE-OLD-NEW finds ACUP-NEW-CUST-DOB-YYYY-MM-DD different from the
-#   fetched 19610608, so 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs
-#   the field edits in screen order [app/cbl/COACTUPC.cbl:1460-1470,1681-1777].
+# - 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at its account test: the
+#   group-id term compares the LOW-VALUES that 1100-RECEIVE-MAP moves for the
+#   blank Account Group with the fetched spaces, which TRIM does not make
+#   equal (it removes spaces only, GAP-DEF-019), so the test is false whatever
+#   its other terms give and the paragraph exits before the customer fields
+#   are compared. ACUP-NEW-CUST-DOB-YYYY-MM-DD would differ from the fetched
+#   19610608 as well, but that comparison is not reached. So
+#   1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the field edits in
+#   screen order [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847].
 # - Account Status, the Open, Expiry and Reissue Dates, the five amounts and
 #   the SSN pass on the fetched values [app/cbl/COACTUPC.cbl:1472-1531].
 # - Date of Birth moves the field name and 19B10608 to WS-EDIT-DATE-CCYYMMDD

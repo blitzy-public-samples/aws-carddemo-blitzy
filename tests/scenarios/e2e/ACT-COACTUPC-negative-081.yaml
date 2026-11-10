@@ -19,10 +19,14 @@
 # (DOBYEAR, DOBMON, DOBDAY) and presses ENTER.
 # - 1100-RECEIVE-MAP moves them to ACUP-NEW-CUST-DOB-YEAR, -MON and -DAY and
 #   every other returned field to ACUP-NEW-DETAILS [app/cbl/COACTUPC.cbl:
-#   1039-1230,1256-1274]. 1205-COMPARE-OLD-NEW finds the change from
-#   1961-06-08 [app/cbl/COACTUPC.cbl:1759-1760], so 1200-EDIT-MAP-INPUTS sets
-#   ACUP-CHANGES-NOT-OK and runs the field edits in screen order
-#   [app/cbl/COACTUPC.cbl:1460-1470].
+#   1039-1230,1256-1274]. 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at the
+#   account test, which is false because its group-id term compares the
+#   LOW-VALUES of the blank Account Group with the fetched spaces (TRIM
+#   removes spaces only, GAP-DEF-019), and exits before the customer fields
+#   are compared: the date of birth 19600230 would differ from the fetched
+#   19610608 as well, but that comparison is not reached. So
+#   1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the field edits in
+#   screen order [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847].
 # - Account Status 'Y', Open Date 2014-11-20, Credit Limit, Expiry Date
 #   2025-05-20, Cash Credit Limit, Reissue Date 2025-05-20, Current Balance,
 #   the cycle credit and debit, and SSN 123-45-6789 pass their edits

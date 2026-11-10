@@ -14,13 +14,17 @@
 # presses ENTER:
 # - 1100-RECEIVE-MAP moves the received 'Test-last', neither '*' nor spaces,
 #   to ACUP-NEW-CUST-LAST-NAME [app/cbl/COACTUPC.cbl:1306-1311].
-# - 1205-COMPARE-OLD-NEW compares the upper-cased, trimmed names, TEST-LAST
-#   against the fetched TESTLAST, and finds a change, so 1200-EDIT-MAP-INPUTS
-#   sets ACUP-CHANGES-NOT-OK and runs the field edits in screen order
-#   [app/cbl/COACTUPC.cbl:1460-1470,1720-1723]. Account Status, the three
-#   dates, the five amounts, the SSN, Date of Birth, FICO Score, First Name
-#   and Middle Name pass on the repository account and the invented customer,
-#   so WS-RETURN-MSG is still blank when the Last Name edit runs.
+# - 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at its account test, which is
+#   false because its group-id term compares the LOW-VALUES of the blank
+#   Account Group with the fetched spaces (TRIM removes spaces only,
+#   GAP-DEF-019), and exits before the customer fields are compared; the
+#   upper-cased, trimmed TEST-LAST would differ from the fetched TESTLAST as
+#   well, but that comparison is not reached. So 1200-EDIT-MAP-INPUTS sets
+#   ACUP-CHANGES-NOT-OK and runs the field edits in screen order
+#   [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847]. Account Status,
+#   the three dates, the five amounts, the SSN, Date of Birth, FICO Score,
+#   First Name and Middle Name pass on the repository account and the invented
+#   customer, so WS-RETURN-MSG is still blank when the Last Name edit runs.
 # - The Last Name edit moves 'Last Name' to WS-EDIT-VARIABLE-NAME and the
 #   25-byte name to WS-EDIT-ALPHANUM-ONLY [app/cbl/COACTUPC.cbl:1576-1580].
 #   1225-EDIT-ALPHA-REQD finds it supplied, then INSPECT ... CONVERTING turns

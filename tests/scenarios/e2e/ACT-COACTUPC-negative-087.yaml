@@ -12,9 +12,14 @@
 # ENTER.
 # - 1100-RECEIVE-MAP moves the received '000', neither '*' nor spaces, to the
 #   3-byte ACUP-NEW-CUST-FICO-SCORE-X [app/cbl/COACTUPC.cbl:1277-1284].
-#   1205-COMPARE-OLD-NEW finds it unequal to the fetched '700', so a change has
-#   occurred, and 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the
-#   field edits in screen order [app/cbl/COACTUPC.cbl:1460-1470,1767-1770].
+#   1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at the account test, which
+#   is false because its group-id term compares the LOW-VALUES of the blank
+#   Account Group with the fetched spaces (TRIM removes spaces only,
+#   GAP-DEF-019), and exits before the customer fields are compared; '000'
+#   would differ from the fetched '700' as well, but that comparison is not
+#   reached. So 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the
+#   field edits in screen order [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,
+#   1697-1704,3847].
 # - Account Status, the three account dates, the five amounts, the SSN and the
 #   Date of Birth pass with these fixtures and leave the message line off
 #   [app/cbl/COACTUPC.cbl:876,1472-1543]. 'FICO Score' is moved to

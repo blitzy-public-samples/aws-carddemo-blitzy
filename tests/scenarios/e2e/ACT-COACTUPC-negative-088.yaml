@@ -18,9 +18,13 @@
 # - 1100-RECEIVE-MAP moves the received '150' to the 3-byte
 #   ACUP-NEW-CUST-FICO-SCORE-X, which ACUP-NEW-CUST-FICO-SCORE redefines as
 #   PIC 9(03) [app/cbl/COACTUPC.cbl:845-849,1279-1284]. 1205-COMPARE-OLD-NEW
-#   finds it unequal to the old score 700, so a change has occurred, and
-#   1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the field edits in
-#   screen order [app/cbl/COACTUPC.cbl:1460-1470,1764-1768].
+#   sets CHANGE-HAS-OCCURRED at the account test, which is false because its
+#   group-id term compares the LOW-VALUES of the blank Account Group with the
+#   fetched spaces (TRIM removes spaces only, GAP-DEF-019), and exits before
+#   the customer fields are compared; '150' would differ from the old score
+#   700 as well, but that comparison is not reached. So 1200-EDIT-MAP-INPUTS
+#   sets ACUP-CHANGES-NOT-OK and runs the field edits in screen order
+#   [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847].
 # - Account Status, Open Date, Credit Limit, Expiry Date, Cash Credit Limit,
 #   Reissue Date, the current balance and cycle amounts, SSN and Date of Birth
 #   pass on the repository account and the invented customer. 'FICO Score' is

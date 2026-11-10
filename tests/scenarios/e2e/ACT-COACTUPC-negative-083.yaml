@@ -38,9 +38,14 @@
 # Step 4 types 1964, 02 and 29 over the date-of-birth year, month and day
 # (1961-06-08) and presses ENTER.
 # - 1100-RECEIVE-MAP moves them to ACUP-NEW-CUST-DOB-YYYY-MM-DD
-#   [app/cbl/COACTUPC.cbl:1256-1275]; 1205-COMPARE-OLD-NEW finds the change at
-#   the date-of-birth comparison, so 1200-EDIT-MAP-INPUTS runs every field edit
-#   [app/cbl/COACTUPC.cbl:1460-1470,1681-1777].
+#   [app/cbl/COACTUPC.cbl:1256-1275]. 1205-COMPARE-OLD-NEW sets
+#   CHANGE-HAS-OCCURRED at the account test, which is false because its
+#   group-id term compares the LOW-VALUES of the blank Account Group with the
+#   fetched spaces (TRIM removes spaces only, GAP-DEF-019), and exits before
+#   the customer fields are compared; the new date of birth 1964-02-29 would
+#   differ from the fetched 1961-06-08 as well, but that comparison is not
+#   reached. So 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs every
+#   field edit [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847].
 # - Every account field, the three account dates included, and the SSN pass on
 #   the repository account and the invented customer, each date through its own
 #   CSUTLDTC call with severity 0, as ACT-COACTUPC-negative-024, -039 and -054

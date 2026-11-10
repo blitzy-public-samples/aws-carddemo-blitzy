@@ -15,10 +15,15 @@
 # [app/cbl/COACTUPC.cbl:2568-2580,2787-2865,3441-3562,3608-3884].
 # Step 4: ENTER with DOBYEAR 1962, DOBMON 02 and DOBDAY 29 typed over
 # 1961-06-08; every other field comes back as sent. 1100-RECEIVE-MAP moves the
-# three parts to ACUP-NEW-CUST-DOB-YYYY-MM-DD [app/cbl/COACTUPC.cbl:1256-1274],
-# 1205-COMPARE-OLD-NEW finds the new date of birth [app/cbl/COACTUPC.cbl:
-# 1759-1760], so 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the
-# field edits in screen order. Account Status 'Y', Open Date 2014-11-20, Credit
+# three parts to ACUP-NEW-CUST-DOB-YYYY-MM-DD [app/cbl/COACTUPC.cbl:1256-1274].
+# 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at the account test, which is
+# false because its group-id term compares the LOW-VALUES of the blank Account
+# Group with the fetched spaces (TRIM removes spaces only, GAP-DEF-019), and
+# exits before the customer fields are compared; the new date of birth
+# 1962-02-29 would differ from the fetched 1961-06-08 as well, but that
+# comparison is not reached. So 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK
+# and runs the field edits in screen order [app/cbl/COACTUPC.cbl:1213-1218,
+# 1460-1470,1697-1704,3847]. Account Status 'Y', Open Date 2014-11-20, Credit
 # Limit 2,020.00, Expiry Date 2025-05-20, Cash Credit Limit 1,020.00, Reissue
 # Date 2025-05-20, Current Balance 194.00, both cycle amounts .00 and SSN
 # 123-45-6789 pass, then 'Date of Birth' goes through EDIT-DATE-CCYYMMDD THRU

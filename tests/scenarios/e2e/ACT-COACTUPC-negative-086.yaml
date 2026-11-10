@@ -17,9 +17,14 @@
 # [app/bms/COACTUP.bms:318-321], so the terminal accepts the letter.
 # - 1100-RECEIVE-MAP moves the received '7O0', neither '*' nor spaces, to the
 #   3-byte ACUP-NEW-CUST-FICO-SCORE-X [app/cbl/COACTUPC.cbl:1277-1284].
-#   1205-COMPARE-OLD-NEW finds it unequal to the old '700', so a change has
-#   occurred, and 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the
-#   field edits in screen order [app/cbl/COACTUPC.cbl:1460-1470,1767-1772].
+#   1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at the account test, which
+#   is false because its group-id term compares the LOW-VALUES of the blank
+#   Account Group with the fetched spaces (TRIM removes spaces only,
+#   GAP-DEF-019), and exits before the customer fields are compared; '7O0'
+#   would differ from the old '700' as well, but that comparison is not
+#   reached. So 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the
+#   field edits in screen order [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,
+#   1697-1704,3847].
 # - Account Status, the three account dates, the five amounts (each received
 #   as shown and valid), SSN and Date of Birth pass on the repository account
 #   and the invented customer below, so WS-RETURN-MSG is still blank

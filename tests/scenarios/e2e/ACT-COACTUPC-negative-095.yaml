@@ -12,9 +12,14 @@
 # - 1100-RECEIVE-MAP leaves ACUP-NEW-CUST-ADDR-STATE-CD at LOW-VALUES whether
 #   the erased field arrives as spaces (moved as LOW-VALUES) or as nulls (moved
 #   as received) [app/cbl/COACTUPC.cbl:1336-1341].
-# - 1205-COMPARE-OLD-NEW finds the trimmed LOW-VALUES unequal to the fetched
-#   'NC', so 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the field
-#   edits in screen order [app/cbl/COACTUPC.cbl:1460-1470,1736-1739,1771].
+# - 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at its account test, which is
+#   false because its group-id term compares the LOW-VALUES of the blank
+#   Account Group with the fetched spaces (TRIM removes spaces only,
+#   GAP-DEF-019), and exits before the customer fields are compared; the
+#   LOW-VALUES state would differ from the fetched 'NC' as well, but that
+#   comparison is not reached. So 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK
+#   and runs the field edits in screen order [app/cbl/COACTUPC.cbl:1213-1218,
+#   1460-1470,1697-1704,3847].
 #   Every edit before State passes with these fixtures. 1225-EDIT-ALPHA-REQD,
 #   with WS-EDIT-ALPHANUM-LENGTH 2, finds WS-EDIT-ALPHANUM-ONLY(1:2) equal to
 #   LOW-VALUES, sets INPUT-ERROR and FLG-ALPHA-BLANK ('B', moved on to
