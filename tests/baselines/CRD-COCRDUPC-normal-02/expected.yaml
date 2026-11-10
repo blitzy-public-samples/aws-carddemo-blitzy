@@ -20,7 +20,7 @@
 #   app/cpy/CSDAT01Y.cpy, the run-clock fields as matchers.
 # Step 5 shows the values received with the PF5 ('TEST HOLDER'), not the
 # fetched ones: CCUP-CHANGES-MADE includes 'C' (CCUP-CHANGES-OKAYED-AND-DONE)
-# [app/cbl/COCRDUPC.cbl:278-281], so 3200's WHEN CCUP-CHANGES-MADE is taken
+# [app/cbl/COCRDUPC.cbl:282-287], so 3200's WHEN CCUP-CHANGES-MADE is taken
 # ahead of its WHEN OTHER [app/cbl/COCRDUPC.cbl:1113-1129].
 # EXPDAY is ATTRB=(DRK,FSET,PROT) and is captured blank; being FSET, its hidden
 # '09' returns with every AID and ends up in the rewritten expiry date.

@@ -11,8 +11,8 @@
 # CCUP-DETAILS-NOT-FETCHED, takes the fresh-entry branch, sends its own COCRDUP
 # screen and returns with TRANSID CCUP and CDEMO-PGM-REENTER; it checks no user
 # id or type and issues no XCTL [app/cbl/COCRDUPC.cbl:380-395,502-511,546-558].
-# Pinned as observed - direct entry without sign-on is not corrected
-# (observed-only, GAP-UNC-010).
+# Pinned as derived current behavior - direct entry without sign-on is not
+# corrected (observed-only, GAP-UNC-010).
 #
 # This screen is the reply to the step's ENTER, not the fresh screen: the
 # driver identifies the fresh COCRDUP as the step's input map, then presses
