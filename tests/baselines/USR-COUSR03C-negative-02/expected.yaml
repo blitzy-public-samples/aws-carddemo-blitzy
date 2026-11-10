@@ -1,0 +1,48 @@
+# Derived baseline of scenario USR-COUSR03C-negative-02 (capture_platform:
+# derived): ADMIN001 takes admin option 4 and presses ENTER on the COUSR03
+# delete-user screen with the user id blank. Authored from the source, never
+# captured: no TPE region runs in CI. Open until a UniKix run is imported:
+# GAP-INF-004 (derived USR end-to-end baselines) and GAP-INF-012 (online-only
+# copybooks).
+# One screen per step, each the one shown after the step's AID:
+# 1. COSGN00C routes user type A to COADM01C, whose first entry sends the admin
+#    menu with a blank message [app/cbl/COSGN00C.cbl:221-237]
+#    [app/cbl/COADM01C.cbl:79-90,172-184];
+# 2. option 4 XCTLs to COUSR03C [app/cpy/COADM02Y.cpy:39-42]; the padded
+#    COMMAREA selects no user, so COUSR3AO is LOW-VALUES and the screen is sent
+#    with a blank message [app/cbl/COUSR03C.cbl:84-105,211-224];
+# 3. PROCESS-ENTER-KEY finds USRIDINI blank, moves 'User ID can NOT be
+#    empty...' to WS-MESSAGE and sends COUSR03 again; the error flag skips the
+#    USRSEC read, so the name and type fields stay blank
+#    [app/cbl/COUSR03C.cbl:142-168].
+# Values are whole BMS fields with trailing spaces kept (ERRMSG 78 from the
+# X(80) WS-MESSAGE, TITLE01 and TITLE02 40 from COTTL01Y). CURDATE and CURTIME
+# come from the region clock, which UniKix cannot fix, hence the matchers.
+# messages and file_state are not asserted: the screens carry every ERRMSG,
+# and COUSR03C touches no USRSEC record on this path.
+screens:
+- '@map': COADM01
+  ERRMSG: '                                                                              '
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR03
+  ERRMSG: '                                                                              '
+  PGMNAME: COUSR03C
+  TRNNAME: CU03
+  USRIDIN: '        '
+- '@map': COUSR03
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S'
+    match: run-time
+  ERRMSG: 'User ID can NOT be empty...                                                   '
+  FNAME: '                    '
+  LNAME: '                    '
+  PGMNAME: COUSR03C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU03
+  USRIDIN: '        '
+  USRTYPE: ' '

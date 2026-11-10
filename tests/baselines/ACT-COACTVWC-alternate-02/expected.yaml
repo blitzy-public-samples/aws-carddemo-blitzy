@@ -1,0 +1,29 @@
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTVW
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAVW
+- '@map': COMEN01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTN001: '01. Account View                        '
+  PGMNAME: COMEN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CM00
