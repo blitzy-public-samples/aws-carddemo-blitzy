@@ -32,6 +32,9 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 >   - Builds the bounded worker pool the blocking calls run on: 32 daemon threads and a queue of 64 waiting reads, both constants of this class and never configuration entries. A read submitted while 32 reads run and 64 wait completes at once with `UNAVAILABLE` and sends no stub call and no cache command.
 >   - Builds the two `ReadThroughCache.KeyFamily` values of the rules below, each with a codec that writes the generated `GetAccountResponse` or `ListCategoryBalancesResponse` as protobuf bytes.
 >   - Holds the gRPC Netty transport's client frame logger `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` at INFO through Spring Boot's `LoggingSystem` when it starts, and installs, before it builds its channel, a nested `CardDataChannelConfiguration.ClientFrameLogGuard` built the same way as the client frame-log guards of CS-12-002, CS-11-006 and CS-13-003, because at DEBUG that shared logger writes every outbound header value, `authorization` and `x-api-key` included.
+>
+> > SCOPE-QUESTION (Resolved): Does "built the same way" keep every wrapper in place when another frame-log guard installs at the same time? Not if each guard locks only its own class: every frame-log guard of the process replaces the one default logger factory of the shaded Netty transport, separate class monitors do not exclude each other, and two installers that both read the same factory each publish a wrapper around it, so the later publication drops the earlier wrapper, and that guard's frame logger can write credentials once a later context resets it to DEBUG. Resolution: "built the same way" includes one shared installation lock. `CardDataChannelConfiguration.ClientFrameLogGuard.install()`, like every other frame-log guard of the process, the server guard `GrpcServerConfiguration.ServerFrameLogGuard` (CS-11-002) and the client guards `AuthClient.ClientFrameLogGuard` (CS-12-002), `ConfigClient.ClientFrameLogGuard` (CS-11-006), `ReferenceDataClientConfiguration.ClientFrameLogGuard` (CS-13-003) and `TransactionActivityClient.ClientFrameLogGuard` (CS-10-006), runs its whole body while holding the monitor of the shaded logger-factory class itself, `synchronized (InternalLoggerFactory.class)` on `io.grpc.netty.shaded.io.netty.util.internal.logging.InternalLoggerFactory`: the synchronization of its static `install()` is that shared monitor, and the guard class's own monitor plays no part. That class object exists once per class loader, the same scope as the default-factory field every guard replaces, so every installer able to replace that factory shares it, with no shared class, no new file and no story edge. Inside the lock, `install()` reads the guard's installed flag and returns at once when it is set. Otherwise it reads the current default factory with `InternalLoggerFactory.getDefaultFactory()`, builds its wrapper around exactly that factory, publishes the wrapper with `InternalLoggerFactory.setDefaultFactory` and sets the installed flag only after that call returns. Because the read and the publication happen under the same lock, no installer publishes over a factory it has not read: each wrapper delegates to the factory it found, the wrappers of earlier guards included, so the chain keeps every guard installed before it, whatever the start order and the thread. No code of the service or its tests replaces the default factory except an installer that holds this lock and follows this sequence, such as the test-local client-side installer of CS-11-002. The wrapper's behaviour, the install-before-channel rule, the never-removed rule and the level hold stay as the guards of CS-12-002, CS-11-006 and CS-13-003 set them, and the lock adds no file, no dependency and no environment variable, so the 5 files touched stand.
+>
 > - `card-servicing-service/src/main/resources/application.yml`: adds the Card Data target-address entry `card-servicing.clients.card-data.target` under the service's `card-servicing` configuration (owned by CS-11-001) with the literal loopback default `localhost:9090`. It is not an environment placeholder and not a variable of the TRD environment-variable table, and the 14 bound properties of CS-11-001 stay unchanged. The unit suite sets it to the `127.0.0.1` port that `StubHarness` reports, the Compose stack (CS-01-001) sets the stub container address, and a deployed environment sets the real service address.
 > - `card-servicing-service/src/test/java/com/example/cardservicing/integration/carddata/CardDataClientTest.java`: policy, deadline, credentials, worker-pool, swap-point and status-mapping cases against the registered Card Data stub, `StubHarness.of(new CardDataStubRegistration())` (CS-09-004, `card-servicing-service/src/test/java/com/example/cardservicing/support/StubHarness.java`), with per-test latency and failure-rate overrides through `StubHarness.inject` on stub `card-data` and attempts counted in the stub request log. A test-local `StubRegistration` under stub name `card-data`, which `StubHarness.allRegistered()` never discovers, wraps the stub's service definition with a header-capturing server interceptor that also records each call's arrival time. The cache runs on an empty in-memory `EntryStore` unless a case seeds it. The test builds its token and service-key values at runtime, so the committed-secret scan of CS-11-001 finds no literal credential.
 > - `card-servicing-service/src/test/java/com/example/cardservicing/integration/carddata/CardDataClientCacheTest.java`: fresh hit, miss, stale refresh, stale fallback, expiry beyond max stale age and Redis failure, on the in-memory recording `EntryStore` and the failing `EntryStore` that the CS-11-004 tests use, with one controllable test clock for entry ages and the registered Card Data stub as the upstream.
@@ -82,6 +85,9 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 > - AC10: Not found: `NOT_FOUND` from any of the three operations for account `00000000099` completes the future exceptionally with `NOT_FOUND` and its packed `ErrorObject` unchanged, which the standard error mapping turns into 404. It is not retried: each operation shows exactly 1 attempt in the request log. No entry is written, and an entry for that account aged 120 s is never returned in its place.
 > - AC11: Redis failure: with every entry-store command failing, each `account` and `categoryBalances` read is treated as a miss: it reaches the stub exactly once and completes `FRESH` with the stub's values, and no Redis error reaches the caller. With the stub failing as well, the stub's `UNAVAILABLE` status is the one returned.
 > - AC12: Credentials: every stub call carries the forwarded `authorization` bearer token and the `x-api-key` value. On all three operations the header-capturing interceptor records `authorization` equal to `Bearer ` followed by the test token, and `x-api-key` equal to the configured value, or an empty value when the key is empty. With the root log level and the client frame logger at DEBUG on a live channel, the log output captured across the AC1, AC2, AC6, AC7 and AC9 paths contains neither value, and no written cache key contains either.
+>
+> > SCOPE-QUESTION (Resolved): The criterion also covers concurrent guard installation. Does this client's frame-log guard stay in the shaded transport's logger factory when the server guard `GrpcServerConfiguration.ServerFrameLogGuard` (CS-11-002) installs at the same moment, and do new connections then keep both credentials out of the log after a later DEBUG reset? Resolution: `CardDataClientTest` adds two cases, with no new file. (T1) Shared-lock check, in the test JVM: while the test thread holds the monitor of `InternalLoggerFactory`, a second thread calling `CardDataChannelConfiguration.ClientFrameLogGuard.install()` reaches thread state `BLOCKED` within 1 s, and `InternalLoggerFactory.getDefaultFactory()` returns the same object as before. Once the test releases the monitor, the call returns within 1 s. The check holds whether or not the guard is already installed, because the installed flag is read inside the lock. (T2) Concurrent installation with later DEBUG resets, in fresh JVMs: the test starts 5 child JVMs one after another through the JDK process API, `ProcessBuilder` with the running JVM's `java` command and the test class path, each running a `main` nested in `CardDataClientTest`, so no guard is installed when a child starts. In each child, two threads released together by one `CountDownLatch` call `GrpcServerConfiguration.ServerFrameLogGuard.install()` and `CardDataChannelConfiguration.ClientFrameLogGuard.install()`. The child then sets the root level, `io.grpc`, `io.grpc.netty.shaded.io.grpc.netty.NettyServerHandler` and `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` to DEBUG through `LoggingSystem.get(classLoader)`, the state a later context's logging reset leaves, starts a new loopback server for the Card Data stub, `CardDataStubRegistration` (CS-09-004), through `StubServerHost`, opens a new plaintext channel to the port it reports, built the way `CardDataChannelConfiguration` builds its channel, and sets the same four loggers to DEBUG again, since `StubServerHost` holds the server frame logger at INFO when it starts a server. It then sends 5 `GetAccount` calls for account `00000000001` through the generated blocking stub on that channel, each carrying `authorization: Bearer <token>` and `x-api-key` with a bearer token and a service key that the parent generated at runtime and wrote to the child's standard input, so no credential literal is committed, `CommittedSecretScanTest` (CS-11-001) stays green and neither value appears on a command line. The child prints that `InternalLoggerFactory.getInstance` reports DEBUG disabled for both frame-logger names while both loggers stand at DEBUG, and exits 0. The parent reads the child's merged standard output and standard error and finds neither value.
+>
 > - AC13: Swap point: with `card-servicing.clients.card-data.target` set to the port of a second `StubHarness` serving `CardDataStubRegistration`, every call of the three operations lands in that harness's request log and none in the first harness's log, with no change to any class. With the property not overridden, the bound target address is `localhost:9090`.
 > - AC14: Bounded worker pool: with a stub latency of 400 ms, 20 concurrent `account` reads for the accounts `00000000001` to `00000000020` each reach the stub within 50 ms of submission, as the interceptor's arrival times show. With a stub latency of 2,000 ms, 96 concurrent `account` reads for `00000000001` fill the 32 worker threads and the 64 queue places, and a 97th read, for `00000000002`, submitted before any of them completes, ends exceptionally with `UNAVAILABLE` while the recording entry store holds no command for `cs:v1:account:00000000002`.
 > > SCOPE-QUESTION (Resolved): Which criterion carries the authorization constraint of this account-data access path? None of AC1–AC14 does. Resolution: AC15 below. The client adds no access check of its own, and its unit suite adds no case for AC15: the account access guard (CS-12-003) decides access before any caller invokes the client, so the proof sits with the guard and with the endpoint stories that call this client.
@@ -109,7 +115,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass with ≥80% line coverage per module. `CardDataClientTest` and `CardDataClientCacheTest` cover AC1–AC14 on the loopback stub harness with per-test latency and failure overrides: the attempt timeout, the retry counts and the non-retried statuses, the fit rule, the 2,000 ms deadline case, fresh hit, miss and write-back, stale refresh, stale fallback at 60 s and 299 s, expiry at 300 s and with no entry, the fail-hard cross-reference read, not-found, Redis failure, the forwarded credentials and their absence from logs, the swap point and the worker-pool bound. AC15 is proven where the account access guard runs, by CS-12-003, CS-12-005 and the endpoint stories that call this client.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass with ≥80% line coverage per module. `CardDataClientTest` and `CardDataClientCacheTest` cover AC1–AC14 on the loopback stub harness with per-test latency and failure overrides: the attempt timeout, the retry counts and the non-retried statuses, the fit rule, the 2,000 ms deadline case, fresh hit, miss and write-back, stale refresh, stale fallback at 60 s and 299 s, expiry at 300 s and with no entry, the fail-hard cross-reference read, not-found, Redis failure, the forwarded credentials and their absence from logs, the shared installation lock of the frame-log guard in the test JVM and its concurrent installation beside the server guard in five fresh JVMs with both frame loggers reset to DEBUG, the swap point and the worker-pool bound. AC15 is proven where the account access guard runs, by CS-12-003, CS-12-005 and the endpoint stories that call this client.
 - Integration: Applies through the Card Data integration suite CS-09-006, which runs this client against the Card Data stub on a real gRPC channel with Testcontainers `postgres:16.6` and `redis:7.4.2`; this story adds no integration suite. Command `./gradlew :card-servicing-service:integrationTest`; all pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Applies through the balance summary SLA scenario (CS-01-005) and the category balance SLA scenario (CS-02-002), whose endpoints call this client:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -123,92 +129,87 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A, blocking remote calls on a bounded worker pool, wrapped by the call policy and the cache.
+Recommended: Option A, blocking calls on a bounded worker pool inside the shared policy and cache.
 
-Rationale: each read runs as one blocking remote call on a worker thread, so the shared call policy alone decides every attempt's timeout, retry and deadline fit, and the shared cache alone decides freshness and fallback.
+Rationale: blocking calls leave timing, freshness and fallback to the shared policy and cache.
 
-- Rejected: Option B, asynchronous future-based remote calls composed per call, because it duplicates the call policy's timing rules in callback chains.
+- Rejected: Option B, per-call callback chains, which duplicate the timing rules.
 
 ```mermaid
 sequenceDiagram
-    participant Endpoint as Balance summary endpoint
+    participant Endpoint as Balance endpoint
     participant Client as Card Data client
-    participant Cache as Shared cache
+    participant Cache
     participant Stub as Card Data stub
-    Note over Endpoint,Stub: the account read starts with 700 ms left in the request budget
-    Endpoint->>Client: account read on a worker thread
-    Client->>Cache: read account entry
-    Cache-->>Client: entry aged 120 s, past its freshness window
-    Client->>Stub: first attempt with a 300 ms timeout
-    Stub-->>Client: unavailable status at once
-    Client->>Client: wait 50 ms as 50 plus 300 ms fits in 700 ms
-    Client->>Stub: retry with a 300 ms timeout
-    Stub-->>Client: no answer within 300 ms
-    Client->>Client: next retry does not fit as 100 plus 300 ms exceeds the 350 ms left
-    Client-->>Endpoint: cached entry marked stale with its cache timestamp
+    Endpoint->>Client: account read, 700 ms left
+    Client->>Cache: read entry
+    Cache-->>Client: entry aged 120 s, not fresh
+    Client->>Stub: attempt 1, 300 ms timeout
+    Stub-->>Client: unavailable
+    Client->>Client: wait 50 ms, 50 plus 300 fits in 700
+    Client->>Stub: attempt 2, 300 ms timeout
+    Stub-->>Client: no answer in 300 ms
+    Client->>Client: no retry, 100 plus 300 exceeds 350 left
+    Client-->>Endpoint: stale entry with its cache time
 ```
 
 Shared by both options:
 
-- Topology: one client per upstream service inside the card servicing service.
-- Naming: cache entries named by version and account without caller identity.
+- Topology: one client per upstream service.
+- Naming: cache keys carry version and account only.
 - Addressing: one typed target address per upstream.
-- Isolation: the cache is reached only through the shared read-through component.
+- Isolation: cache access only through the shared read-through component.
 - Fallback: stale entries for account and category-balance reads only.
-- Provisioning: credentials from the environment, and from the key vault when deployed.
-- Cut-over: change the target address and credential source only.
-- Failures: unavailable and deadline outcomes after the retry cap, and the cross-reference read fails hard.
+- Provisioning: credentials from the environment or deployed key vault.
+- Cut-over: only the target address and credential source change.
+- Failures: unavailable or deadline status after the retry cap.
 
 ### Design Option A
 
-Each read is one blocking remote call submitted to a worker pool of 32 threads with 64 waiting places, so the endpoint can start its concurrent reads and wait on all of them. The call policy wraps every attempt of that call and gives it the lesser of the 300 ms timeout and the time left before the cut-off. The account read and the category balance list pass that wrapped call to the shared cache, which returns a fresh entry, the new answer or a stale entry with its cache timestamp. The cross-reference read goes to the call policy alone.
+Each read is one blocking call on 32 worker threads with 64 waiting places. The call policy gives each attempt the lesser of 300 ms and the time left. Account and category-balance reads run inside the shared cache.
 
 How it behaves:
 
-- A fresh entry answers on the worker thread with no remote call.
-- A miss or an entry past its freshness window triggers one wrapped remote call, and a successful answer is written back with a new cache timestamp.
-- An unavailable or deadline-exceeded status after the last permitted attempt returns an entry within the maximum stale age as a stale result.
-- With no usable entry the unavailable or deadline-exceeded status reaches the endpoint unchanged.
-- A not-found status passes through after one attempt and never falls back.
-- The cross-reference read never touches the shared cache and fails hard on any failed status.
-- A read submitted to a full worker pool ends at once with the unavailable status.
-- The caller token and the service credential ride on each call and never reach a log line or a cache entry name.
+- A fresh entry answers without a remote call.
+- A miss makes one call and writes back.
+- A failed last attempt falls back to a usable stale entry.
+- A full pool fails new reads at once.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Bounded worker pool (vs unbounded threads) | a burst of reads cannot exhaust the service's threads | a full pool turns a read into an unavailable status |
-| 2 | Call policy wraps each attempt (vs one timeout per call) | every attempt is cut to the time left before the cut-off | each attempt computes its own timeout |
-| 3 | Cross-reference read uncached (vs cached) | the ownership check always reads current data | every transaction detail pays one remote call |
-| 4 | Stale result carries the cache timestamp (vs a plain value) | the endpoint can state how old a stale balance is | each result carries a timestamp beside its value |
+| 1 | Bounded worker pool (vs unbounded threads) | bursts cannot exhaust threads | a full pool fails reads |
+| 2 | Policy wraps each attempt (vs one call timeout) | attempts fit the time left | each attempt computes a timeout |
+| 3 | Uncached cross-reference read (vs cached) | ownership checks see current data | every transaction detail costs a call |
+| 4 | Stale results carry cache time (vs plain values) | stale balances show their age | results carry a timestamp |
 
-Effort and risk: low effort on top of the call policy and cache stories, with the risk in a worker pool sized below the concurrent reads.
+Effort and risk: low effort, with pool sizing as the risk.
 
 ### Design Option B
 
-Each read is an asynchronous remote call whose completion runs a chain of callbacks. The client composes per call the attempt timeout, the retry waits, the fit check and the cache fallback in those callbacks instead of handing a blocking call to the shared call policy. No worker pool exists, because the remote procedure interface runs the callbacks on its own transport threads.
+Each read is an asynchronous call with a per-call callback chain. Transport threads run the callbacks, so no worker pool exists.
 
 How it differs:
 
-- The attempt timeout, retry waits and fit check are written again in callback form beside the shared call policy.
-- A retry is scheduled from a callback, so its start time depends on the transport thread that runs it.
-- The cache fallback runs in a callback after the last failed attempt, so the cache read and the remote call share no single wrapper.
-- Concurrency has no bound unless a separate limit is added.
+- Timeout, retry and fit rules are rewritten as callbacks.
+- Retry start times depend on the transport thread.
+- The stale fallback runs outside the cache wrapper.
+- Concurrency is unbounded without a separate limit.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Callback chains per call (vs blocking calls on a worker pool) | no worker thread waits on a remote call | the timing rules live in two places |
-| 2 | Transport threads run the callbacks (vs a dedicated worker pool) | no pool to size | concurrent reads have no bound |
-| 3 | Fallback composed in the client (vs inside the shared cache wrapper) | each callback chain sees the final status | stale handling repeats the cache story's rule |
+| 1 | Callback chains (vs pooled blocking calls) | no thread waits on a call | timing rules live twice |
+| 2 | Transport threads run callbacks (vs a dedicated pool) | no pool to size | reads are unbounded |
+| 3 | Client-side fallback (vs the cache wrapper) | each chain sees the final status | stale handling repeats the cache rule |
 
-Effort and risk: more effort, with the risk of timing drift between the callback chains and the shared call policy.
+Effort and risk: more effort, with timing drift as the risk.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: one timing rule lives in one place, so the call policy and the cache decide every timeout, retry, fit check and fallback for all three reads.
-- Strongest argument against: the worker pool caps concurrency and must be sized against the concurrent reads.
-- Shared items that do not decide the choice: the cache rules, the retry cap, the credentials and the swap point.
-- Flip conditions: the call policy gains native asynchronous support, or pool exhaustion appears in the performance scenarios.
+- Why: one place decides all timing and fallback.
+- Strongest argument against: the pool caps concurrency and needs sizing.
+- Shared items that do not decide the choice: cache rules, retry cap, credentials and swap point.
+- Flip conditions: an asynchronous call policy, or pool exhaustion under load.
 
 ## Design Validation
 
@@ -216,67 +217,61 @@ Effort and risk: more effort, with the risk of timing drift between the callback
 
 Settled assumptions:
 
-- The cache rules fix a 300-second maximum stale age, and this story fixes a 60-second freshness window for both entries.
-- The retry cap is two, with waits of 50 ms and then 100 ms.
 - The request deadline runs from receipt to a cut-off no later than 900 ms after receipt.
-- Card cross-references are never cached.
-- The transport writes header values only through its frame logger, which a process-wide guard silences below the information level.
+- A guard silences the transport's header logging, and every such guard of the process, server or client, installs under one shared lock and wraps the guards installed before it.
 
 Open assumptions:
 
-- Open → worker pool size under ten concurrent users → settled by the balance summary performance scenario.
-- Open → a stale path against a real shared cache behaves as it does on the in-memory store → settled by the card data integration suite.
-- Open → a 60-second freshness window suits the balance owner once real postings replace the stub → settled by the data owner at sign-off.
+- Open → pool size for ten concurrent users → settled by the balance summary performance scenario.
+- Open → real-cache stale reads match the in-memory store → settled by the card data integration suite.
+- Open → 60-second freshness suits the balance owner with real postings → settled by the data owner at sign-off.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the call policy cuts each attempt to the time left |
-| AC2 | Holds | the call policy retries only the two retryable statuses |
-| AC3 | Holds | the call policy checks the fit before each retry |
-| AC4 | Holds | the worker thread returns at the cut-off with the policy's final status |
-| AC5 | Holds | the shared cache answers a fresh entry with no remote call |
-| AC6 | Holds | a miss runs one wrapped call and writes one shared entry |
-| AC7 | Holds | the shared cache returns a usable stale entry with its cache timestamp |
-| AC8 | Holds | an expired or absent entry lets the final status through |
-| AC9 | Holds | the cross-reference read bypasses the shared cache |
-| AC10 | Holds | the not-found status ends the call after one attempt |
-| AC11 | Holds | the shared cache treats its own failure as a miss |
-| AC12 | Holds | both credentials ride on each call with the frame logger silenced |
-| AC13 | Holds | the channel reads its target address from configuration |
-| AC14 | Holds | the pool bound turns overflow into the unavailable status |
-| AC15 | Holds | the account access guard denies the request before any read reaches the client |
+| AC1 | Holds | attempts fit the time left |
+| AC2 | Holds | only retryable statuses retry |
+| AC3 | Holds | retries check their fit |
+| AC4 | Holds | outcomes beat the cut-off |
+| AC5 | Holds | fresh entries skip the call |
+| AC6 | Holds | a miss writes one entry |
+| AC7 | Holds | stale entries return unchanged |
+| AC8 | Holds | expired entries pass the status through |
+| AC9 | Holds | cross-references bypass the cache |
+| AC10 | Holds | not-found is never retried |
+| AC11 | Holds | cache failure means a miss |
+| AC12 | Holds | credentials ride each call unlogged |
+| AC13 | Holds | configuration sets the address |
+| AC14 | Holds | the pool rejects overflow |
+| AC15 | Holds | the access guard denies first |
 
 ### Option B
 
 Settled assumptions:
 
-- The cache rules fix a 300-second maximum stale age, and this story fixes a 60-second freshness window for both entries.
-- The retry cap is two, with waits of 50 ms and then 100 ms.
-- The request deadline runs from receipt to a cut-off no later than 900 ms after receipt.
-- Card cross-references are never cached.
+- Option A's settled assumptions hold.
 
 Open assumptions:
 
-- Open → the callback timing matches the call policy's fit rule → settled by repeating the call policy's timing tests against the callback chains.
-- Open → unbounded concurrent reads stay inside the transport's capacity → settled by the balance summary performance scenario.
+- Open → callback timing matches the policy's fit rule → settled by rerunning the policy's timing tests on callbacks.
+- Open → unbounded concurrent reads fit the transport's capacity → settled by the balance summary performance scenario.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Conditional | the callback timer must repeat the policy's attempt cut |
-| AC2 | Conditional | the retry rule is written again in callbacks |
-| AC3 | At risk | the fit check runs on a transport thread with variable start times |
-| AC4 | At risk | the cut-off depends on callback timing outside the shared policy |
-| AC5 | Holds | the shared cache answers a fresh entry with no remote call |
-| AC6 | Holds | a miss runs one call and writes one shared entry |
-| AC7 | Conditional | the stale fallback must be composed after the last callback |
-| AC8 | Holds | an expired or absent entry lets the final status through |
-| AC9 | Holds | the cross-reference read bypasses the shared cache |
-| AC10 | Holds | the not-found status ends the chain after one attempt |
-| AC11 | Holds | the shared cache treats its own failure as a miss |
-| AC12 | Holds | both credentials ride on each call with the frame logger silenced |
-| AC13 | Holds | the channel reads its target address from configuration |
-| AC14 | Breaks | the option holds no worker pool to fill |
-| AC15 | Holds | the account access guard denies the request before any callback chain starts |
+| AC1 | Conditional | callbacks must repeat the attempt cut |
+| AC2 | Conditional | callbacks repeat the retry rule |
+| AC3 | At risk | thread timing shifts fit checks |
+| AC4 | At risk | callback timing moves the cut-off |
+| AC5 | Holds | fresh entries skip the call |
+| AC6 | Holds | a miss writes one entry |
+| AC7 | Conditional | the fallback must follow the last callback |
+| AC8 | Holds | expired entries pass the status through |
+| AC9 | Holds | cross-references bypass the cache |
+| AC10 | Holds | not-found is never retried |
+| AC11 | Holds | cache failure means a miss |
+| AC12 | Holds | credentials ride each call unlogged |
+| AC13 | Holds | configuration sets the address |
+| AC14 | Breaks | no worker pool exists |
+| AC15 | Holds | the access guard denies first |
 
 ## Metadata
 

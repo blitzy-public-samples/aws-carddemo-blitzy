@@ -30,6 +30,8 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 >
 > > SCOPE-QUESTION (Resolved): The level hold above does not by itself keep credentials out of the log. A later application context in the same JVM, such as the container-mode test context started while loopback stubs run, initialises logging and applies its own `logging.level` settings when its environment is prepared, before `GrpcServerConfiguration` re-applies the hold, and during that interval the frame logger of every server already running reads DEBUG. `GrpcServerConfiguration` therefore also owns a credential guard that no logger level can lift: its nested class `GrpcServerConfiguration.ServerFrameLogGuard`, whose idempotent, synchronized static `install()` replaces the default logger factory of the shaded Netty transport, through `io.grpc.netty.shaded.io.netty.util.internal.logging.InternalLoggerFactory.setDefaultFactory`, with a wrapper around the factory it replaces. The wrapper hands every logger name to that factory unchanged except `io.grpc.netty.shaded.io.grpc.netty.NettyServerHandler`, for which it returns a logger that reports TRACE and DEBUG as disabled, discards every TRACE and DEBUG event and passes INFO and above to the delegate. The transport builds the frame logger of each connection it accepts from that factory and asks the logger whether DEBUG is enabled before it writes a frame, so no frame of a guarded connection reaches a log line, whatever level `LoggingSystem`, a `logging.level` setting, a later context's logging reset or a runtime level change gives the logger. `GrpcServerConfiguration` calls `install()` before its own server or the container-mode `StubServerHost` server starts, and `StubServerHost` calls it before it starts each server, so the guard is in place before any server of the JVM accepts its first connection. A second call finds the wrapper already installed and changes nothing, and nothing removes it, so it holds for as long as any server in the JVM accepts calls, across every later context start and close. The level hold stays, so the effective level AC7 reads is INFO in loopback mode and once a context has started, but the guard, not the level, is the never-log protection. The client frame logger `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` is passed through unchanged, because each client story owns its hold. The guard adds no file, no dependency, since the factory ships in the pinned `grpc-netty-shaded`, and no environment variable.
 >
+> > SCOPE-QUESTION (Resolved): Does a lock on the guard class's own monitor keep every guard installed? No. Every frame-log guard of the process replaces the one process-wide default factory of the shaded transport by reading it, wrapping it and publishing the wrapper, and each guard class has a monitor of its own, so separate monitors do not exclude each other: a server install and a client install running at the same time can both read the same factory and each publish a wrapper around it, which loses one wrapper and lets new connections of that end log credential frames once a later context resets the frame logger to DEBUG. Resolution: the synchronization of the "synchronized static `install()`" above is one shared monitor, not the guard class's. (a) One lock: every frame-log guard of the process, the server guard `GrpcServerConfiguration.ServerFrameLogGuard` and the client guards `AuthClient.ClientFrameLogGuard` (CS-12-002), `ConfigClient.ClientFrameLogGuard` (CS-11-006), `ReferenceDataClientConfiguration.ClientFrameLogGuard` (CS-13-003), `CardDataChannelConfiguration.ClientFrameLogGuard` (CS-09-005) and `TransactionActivityClient.ClientFrameLogGuard` (CS-10-006), runs its whole `install()` while holding the monitor of the shaded logger-factory class itself, `synchronized (InternalLoggerFactory.class)` on `io.grpc.netty.shaded.io.netty.util.internal.logging.InternalLoggerFactory`. The guard class's own monitor plays no part. That class object exists once per class loader, the same scope as the default-factory field every guard replaces, so every installer able to replace that factory shares it, and it needs no shared class, no new file and no story edge. (b) Sequence inside the lock: `install()` reads the guard's installed flag and returns at once when it is set. Otherwise it reads the current default factory with `InternalLoggerFactory.getDefaultFactory()`, builds its wrapper around exactly that factory, publishes the wrapper with `InternalLoggerFactory.setDefaultFactory`, and sets the installed flag only after that call returns. (c) Preservation: because the read and the publication happen under the same lock, no installer publishes over a factory it has not read. Each wrapper delegates to the factory it found, the wrappers of earlier guards included, so the chain keeps every guard installed before it, whatever the start order and the thread. No code of the service or its tests other than a guard that follows (a) and (b), the test-local client-side installer of AC7 included, replaces the default factory. `GrpcServerConfiguration`'s call and every call `StubServerHost` makes before it starts a server, in loopback mode and container mode alike, go through this same locked `install()`, so a stub start on one thread and an application context start or a client channel build on another never lose a wrapper. (d) Unchanged: the wrapper behaviour, the rule that the guard is installed before any server of the JVM accepts its first connection, the rule that nothing removes it, the level hold, and the statement that the guard adds no file, no dependency and no environment variable, so the 8 files touched stand.
+>
 > - `card-servicing-service/src/main/java/com/example/cardservicing/integration/stub/StubServerHost.java`:
 >   - A hosted stub is a stub name plus its `io.grpc.ServerServiceDefinition`, held in the nested record `StubServerHost.HostedStub`. The five stub names are `card-data`, `transaction-activity`, `config`, `reference-data` and `auth`.
 >   - Loopback mode: starts one server per hosted stub bound to `127.0.0.1` on port `0`, and reports each bound port so a test hands it to the client under test.
@@ -55,6 +57,8 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 >   - A thread-safe log holding one entry per call: a sequence number assigned at receipt, the full operation name (for example `cardservicing.config.v1.ConfigService/GetConfig`), the outcome status name (`OK`, `UNAVAILABLE`, `CANCELLED` or the stub's own status) and the duration in ms from receipt to close.
 >
 > > SCOPE-QUESTION (Resolved): Each entry also carries the account identifier of the call's request when that request is a protobuf message with a string field named `account_id` that is non-empty. `StubFailureInjector`, which wraps every call, reads that field from the request message when the message arrives and adds its value to the call's entry. An entry carries no account when the request has no such field, as the probe's string request has none, or when the call closes before its request message arrives. In container mode the JSON entry adds the value as `accountId` only on entries that have one, for example `{"sequence":1,"operation":"cardservicing.transactionactivity.v1.TransactionActivityService/ListTransactions","outcome":"OK","durationMs":3,"accountId":"10000000001"}`, and readers that do not use it ignore it: `E2eClient` (CS-01-002) and the performance harness (CS-01-003). An account identifier is not a credential, and no token, key or other call metadata enters an entry. The account lets the transaction list SLA scenario CS-03-003 take the durations of one account's calls from a window shared with other accounts. `StubFailureInjector` and `StubRequestLog` are already among the 8 files touched, so this story gains no file and the 8 files touched stand.
+>
+> > SCOPE-QUESTION (Resolved): Does a non-empty `account_id` field make its value safe to keep? No. A field name does not validate its contents, and the injector reads the field before the stub validates anything, so the rule above would keep a card number or a secret sent as `account_id` and return it from `GET /internal/stub/request-log`. Resolution: `StubFailureInjector` adds the field's value to the call's entry only when the value is a well-formed account number, exactly 11 ASCII digits and not all zeros (the pattern `^[0-9]{11}$` without `00000000000`, the rule every contract applies to `account_id`), which the injector checks itself before it adds the value. Any other value, for example the sample card number `9680294154603697`, a value carrying a carriage return or a line feed, a token or a key, a 10- or 12-digit value or `00000000000`, is never copied into the entry, held by the log or logged. The call's entry then keeps the sequence number, the operation, the outcome and the duration with no account, and its container-mode JSON entry has no `accountId` property. Retention never depends on call metadata. The stub still validates no token and authorizes no caller, and the stub's own answer to the call is unchanged. No file, dependency or story edge is added, so the 8 files touched stand.
 >
 >   - Entries are listed in receipt order, and injected answers sit beside real ones.
 >   - The log lives as long as its stub's server, so a Compose down clears it. An out-of-process reader takes the entries above the last sequence number it saw.
@@ -102,16 +106,22 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 >
 > > SCOPE-QUESTION (Resolved): The criterion also covers the account. The probe's request is a string with no `account_id` field, so none of the 5 entries carries an account. The account-bearing case is proven by CS-10-004 AC10.
 >
+> > SCOPE-QUESTION (Resolved): The criterion also covers which account values an entry keeps. `StubHarnessTest` nests a second test-only `StubRegistration`, `AccountProbeStub`, named `account-probe` and declared in `com.example.cardservicing.support`, so `StubHarness.allRegistered()` never discovers it. Its one unary method `probe.v1.ProbeService/EchoAccount` takes the generated Card Data request message `GetAccountRequest` (Java package `com.example.cardservicing.contract.carddata.v1`, string field `account_id`), generated from `card-servicing-service/src/main/proto/cardservicing/carddata/v1/card_data_service.proto` by the CS-05-001 build of both proto roots, and answers each request unchanged, so no `.proto` file, dependency or other file is added and the 8 files touched stand. The calls run against a second harness built with only that registration, so the probe-only harness of AC9 is unchanged. A call with `account_id` `10000000001` produces an entry carrying that account. Calls with `9680294154603697`, with `10000000001` followed by a line feed and `forged`, with `10000000001` followed by a carriage return, a line feed and `forged`, with `00000000000`, with the 10-digit `1234567890` and with a bearer-token-shaped value generated at runtime are each answered `OK`, and each produces an entry with its sequence number, operation, outcome and duration and no account.
+>
 > - AC7: With no Redis server reachable and no Auth stub registered, a call with no `x-api-key` metadata and a call with `x-api-key` set to `wrong` are both answered `OK`, and the probe's request log records both with outcome `OK`.
 >
 > > SCOPE-QUESTION (Resolved): The criterion also covers the transport frame loggers. With the root log level and the `io.grpc` log level at DEBUG, probe calls whose `authorization` metadata carries `Bearer ` and a token and whose `x-api-key` metadata carries a key, both generated at runtime so no credential literal is committed and `CommittedSecretScanTest` (CS-11-001) stays green, are answered `OK`, neither value appears in the captured log output, and the effective level of `io.grpc.netty.shaded.io.grpc.netty.NettyServerHandler` is INFO. The assertion runs in loopback mode, and again after the container-mode Spring Boot test context, which sets `logging.level.root`, `logging.level.io.grpc` and `logging.level.io.grpc.netty.shaded.io.grpc.netty.NettyServerHandler` to DEBUG, has started and re-applied its logging settings, against both the container-mode probe and the loopback probe. The capture covers every logger except the client frame logger `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` of the test's own probe channel, whose hold each client story owns (CS-11-006, CS-12-002, CS-13-003), so this test proves the server-side hold alone and never masks a client story's proof of its own.
 >
 > > SCOPE-QUESTION (Resolved): The criterion also covers servers already running while logger levels change. Two more cases run against the loopback probe that `StubHarness` started, each sending probe calls whose `authorization` and `x-api-key` values are generated at runtime, with output captured by Spring Boot's `OutputCaptureExtension`, which records standard output and standard error and so keeps recording across a logging reset, and with the client frame logger left out as above. First, with no application context running, the test sets the effective level of `io.grpc.netty.shaded.io.grpc.netty.NettyServerHandler` to DEBUG through `LoggingSystem`, the state a logging reset leaves before any re-application, sends 5 probe calls that are all answered `OK`, and then sets the level back to INFO. Second, the test starts a container-mode application for the probe through `SpringApplicationBuilder`, with the properties and nested test configuration of the container-mode test context, and adds a test listener ordered at `LoggingApplicationListener.DEFAULT_ORDER + 1`, directly after Spring Boot's logging listener. On `ApplicationEnvironmentPreparedEvent`, after that application has initialised logging and applied its DEBUG settings and before any of its beans exists, the listener reads the effective level of `NettyServerHandler` as DEBUG and then sends 5 probe calls to the already-running loopback probe, each with newly generated values, all answered `OK` before the listener returns. The application then reports ready and is closed. None of the values generated in either case appears in the captured output.
 >
+> > SCOPE-QUESTION (Resolved): The criterion also covers concurrent guard installation. Two more cases in `StubHarnessTest` prove the shared lock of the frame-log guard, so the 8 files touched stand. First, the shared-lock check runs in the test JVM: while the test thread holds the monitor of `io.grpc.netty.shaded.io.netty.util.internal.logging.InternalLoggerFactory`, a second thread calling `GrpcServerConfiguration.ServerFrameLogGuard.install()` reaches thread state `BLOCKED` within 1 s, and `InternalLoggerFactory.getDefaultFactory()` returns the same object as before. Once the test releases the monitor, the call returns within 1 s. The check holds whether or not the guard is already installed, because the installed flag is read inside the lock. Second, concurrent installation with later DEBUG resets runs in fresh JVMs: the test starts 5 child JVMs one after another through the JDK process API, `ProcessBuilder` with the running JVM's `java` command and the test class path, each running a `main` nested in `StubHarnessTest`, so no guard is installed when a child starts. In each child, two threads released together by one `CountDownLatch` call `GrpcServerConfiguration.ServerFrameLogGuard.install()` and the client-side installer, a test-local installer nested in `StubHarnessTest` that follows the same lock, sequence and preservation for `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` and stands in for the client guards that CS-12-002, CS-11-006, CS-13-003, CS-09-005 and CS-10-006 add. The child then starts a new probe server in loopback mode through `StubServerHost` and opens a new plain loopback channel to it, and the `install()` call that `StubServerHost` makes finds the guard already installed and changes nothing. Because `StubServerHost` applies its INFO hold when it starts a server, the child only then sets the root level, `io.grpc`, `io.grpc.netty.shaded.io.grpc.netty.NettyServerHandler` and `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` to DEBUG through `LoggingSystem.get(classLoader)`, the state a later context's logging reset leaves; a reset made before that start would be undone by the hold and would hide a lost server wrapper. It then sends 5 probe `Echo` calls, each answered `OK`, whose `authorization` metadata carries `Bearer ` and a token and whose `x-api-key` metadata carries a service key. The parent generates the token and the key at runtime and writes them to the child's standard input, so no credential literal is committed, `CommittedSecretScanTest` (CS-11-001) stays green and neither value appears on a command line. With both frame loggers still at DEBUG, the child prints that `InternalLoggerFactory.getInstance` reports DEBUG disabled for both frame-logger names and exits 0. The parent reads the child's merged standard output and standard error and finds neither value.
+>
 > - AC8: With the host started in container mode for the probe and 3 gRPC calls made, a `GET /internal/stub/request-log` from the JDK `java.net.http` client on the HTTP port, as `E2eClient` and the performance harness will use, returns status 200 and a JSON body naming stub `probe` with exactly 3 entries whose sequence numbers, operations and outcomes match the calls made.
 >   > SCOPE-QUESTION (Resolved): The criterion also covers the received mark: the same body carries `lastSequence` 3.
 >
 > > SCOPE-QUESTION (Resolved): The criterion also covers the account property. The probe's request names no account, so none of the 3 JSON entries has an `accountId` property. The account-bearing case is proven by CS-10-004 AC10.
+>
+> > SCOPE-QUESTION (Resolved): The criterion also covers malformed account values over HTTP. A second container-mode test context, with `card-servicing.stub.serve=account-probe`, `card-servicing.grpc.port=0` and a random HTTP port, whose nested test configuration declares the account probe of the AC6 note as a hosted stub, receives the seven `EchoAccount` calls of that note, each answered `OK`. `GET /internal/stub/request-log` then returns status 200 and 7 entries in call order, and only the entry of the `10000000001` call has an `accountId` property, with that value. Neither the response body nor any parsed entry contains any of the six malformed values.
 >
 > - AC9: A harness built with only the probe registration starts exactly one stub, and after the last test every port it bound is released: a new server socket binds to each recorded port on `127.0.0.1`.
 > - AC10: A call with a 100 ms client deadline under a per-test latency override of 300 ms ends with `DEADLINE_EXCEEDED` at the client. Once the 300 ms delay has elapsed, the request log holds exactly one entry for it, with outcome `CANCELLED`, and the probe's service is invoked 0 times.
@@ -143,7 +153,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. Cases: loopback start and answer, latency and failure-rate overrides at their boundaries, override isolation and rejection, request-log entries and order, the cancelled call, service-key indifference, the server frame-logger guard with runtime-generated credentials at root and `io.grpc` DEBUG in loopback mode, with the server frame logger forced to DEBUG on the running loopback probe, during a later container-mode application's logging initialisation against the already-running loopback probe, and after a container-mode context start, the container-mode log read over HTTP, port release, discovery, the unknown stub name, and the packed `ErrorObject` with code `UNAVAILABLE`, a distinct 32-character lower-case hexadecimal `traceId` and empty details on every injected failure.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. Cases: loopback start and answer, latency and failure-rate overrides at their boundaries, override isolation and rejection, request-log entries and order, the request-log account kept only for a well-formed account number and left out, in loopback entries and in the container-mode log read, for a card number, line-feed and carriage-return values, the all-zero and 10-digit values and a runtime-generated token-shaped value, the cancelled call, service-key indifference, the server frame-logger guard with runtime-generated credentials at root and `io.grpc` DEBUG in loopback mode, with the server frame logger forced to DEBUG on the running loopback probe, during a later container-mode application's logging initialisation against the already-running loopback probe, and after a container-mode context start, the shared installation lock of the frame-log guard, and its concurrent installation beside the other-end guard in five fresh JVMs with both frame loggers reset to DEBUG, the container-mode log read over HTTP, port release, discovery, the unknown stub name, and the packed `ErrorObject` with code `UNAVAILABLE`, a distinct 32-character lower-case hexadecimal `traceId` and empty details on every injected failure.
 - Integration: Not applicable — this story ships the hosting the external integration suites use, not an external suite. Threshold when it applies: `./gradlew :card-servicing-service:integrationTest` passes, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Not applicable — no request path; it applies to balance-retrieval and drill-down stories. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -157,74 +167,71 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — real remote procedure servers on loopback ports with injection as a server interceptor.
+Recommended: Design Option A — real servers on loopback ports with injection as a server interceptor.
 
-Rationale: a real server on a real port runs the generated contract code, the real serialization and the real deadline handling, so a failure reproduced against a stub is the failure a client meets in an outage.
+Rationale: real ports exercise the contract code and deadline handling of a real outage.
 
-- Rejected: Option B, the in-process transport, because its library is absent from the dependency table and it carries no real network channel.
-- Rejected: mock-provider objects with no remote procedure channel, already set aside in decision D3, because the contracts go unexercised.
+- Rejected: Option B, the in-process transport, for its unlisted library and missing network.
+- Rejected: mock providers (decision D3), which leave the contracts unexercised.
 
 Shared by both options:
 
-- Topology: one server per stub in the test process, and one container per stub in the shared stack.
-- Naming: each stub carries the name of the external system it mocks, and each log entry carries the full operation name.
-- Addressing: the harness hands each client under test the address of its stub when the stub starts, and a stub container listens on the port the shared stack sets.
-- Isolation: per-test overrides are cleared after each test, and request logs are cleared before each test.
-- Fallback: none, since a stopped stub answers with the unavailable status as a real outage would.
-- Provisioning: the test harness starts the registered stubs before the first test and stops them after the last.
-- Cut-over: the real-service swap changes only the address and credential source of each client.
-- Failures: injected delays and unavailable answers are recorded in the request log beside real answers, and every injected unavailable answer carries the standard error object with a trace identifier issued when the call arrives.
+- Topology: one server per stub, in tests or the shared stack.
+- Naming: stubs carry the mocked system's name.
+- Addressing: each client receives its stub's address.
+- Isolation: overrides and request logs reset around each test.
+- Fallback: none, since a stopped stub answers unavailable.
+- Provisioning: the harness starts and stops stubs around each test class.
+- Cut-over: a real-service swap changes only client addresses and credentials.
+- Failures: injected failures carry the standard error object and are logged.
 
 ### Design Option A
 
-Each stub runs as a real remote procedure server bound to a loopback port inside the test process, or alone in its own container in the shared stack. One server interceptor per stub holds each call for the configured delay and answers a configured share of calls with the unavailable status before the stub sees them. Every call, injected or answered, lands in that stub's request log, and in container mode the log is readable over HTTP from outside the container.
+Each stub is a real server on a loopback port or in its own container. One interceptor per stub delays calls and fails a configured share.
 
 How it behaves:
 
-- The harness starts each registered stub on a free loopback port before the first test and hands that port to the client under test.
-- A per-test override takes precedence over a per-stub value, which takes precedence over the latency setting and the failure-rate setting.
-- An override outside its range is refused when set, before any call is answered.
-- An injected unavailable answer carries the standard error object, with the unavailable code, a fixed message that names no credential, its own trace identifier issued before the delay and an empty field list, as every contract requires of an error.
-- A call the client abandons during the delay is logged as cancelled and never reaches the stub.
-- In container mode each stub serves a read-only log page on the web port of its container, which the end-to-end client and the performance harness read.
-- Before the first server of the process starts, the hosting layer fits the transport with a header-logging guard that stays in place for the life of the process, so no credential header reaches a log line at any log level, a later application start included.
-- After the last test every server shuts down and waits until its port is free.
+- Per-test overrides beat per-stub values and settings, and out-of-range overrides are refused.
+- An injected failure names no credential and carries its own trace identifier.
+- A call abandoned during the delay is logged as cancelled.
+- A log entry keeps an account number only when it is well formed.
+- A header-logging guard no log level lifts is fitted before the first server, under one lock shared by every such guard of the process, and keeps the guards installed before it.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Real loopback servers (vs in-process transport) | timeouts act on a real network channel | each stub takes one port on the runner |
-| 2 | Injection in a server interceptor (vs injection inside each stub) | every stub fails the same way with no stub code | the interceptor must notice cancellation during its delay |
-| 3 | Log read over HTTP in container mode (vs log files on a shared volume) | readers need only the web layer already in the build | the log page must stay out of the contracts |
-| 4 | Transport header logging switched off by a process-wide guard (vs relying on a logger level hold that an application start resets) | no logging reset or level change can reopen header logging while a server runs | server frame traces are lost to anyone debugging a stub for the life of the process |
+| 1 | Loopback servers (vs in-process transport) | timeouts act on a real channel | each stub takes a runner port |
+| 2 | Interceptor injection (vs per-stub injection) | stubs need no failure code | the interceptor must watch for cancellation |
+| 3 | Log read over HTTP (vs shared-volume log files) | the existing web layer serves it | the log page stays outside the contracts |
+| 4 | Process-wide header-logging guard (vs a resettable level hold) | header logging stays off for every server's life | server frame traces are lost to debugging |
 
-Effort and risk: one hosting layer, one interceptor, one log and a four-part test harness, with the risk in timing assertions on loaded runners.
+Effort and risk: a hosting layer, an interceptor, a log and a test harness, with timing assertions at risk on loaded runners.
 
 ### Design Option B
 
-Each stub runs on the in-process transport inside the test process, with injection at the same interceptor point and the same request log. Calls never leave the process, so no port is bound and no network channel is crossed. Container mode keeps a separate network server path, because the in-process transport cannot serve a client in another container.
+Each stub runs on the in-process transport with the same interceptor and log, binding no port. Container mode keeps a separate network server.
 
 How it differs:
 
-- The harness hands clients an in-process name instead of a port.
-- Deadlines and cancellation travel through in-process signalling rather than a network stream.
-- Container mode keeps a second hosting path with its own network server.
-- The build gains the in-process transport library, which the dependency table does not list.
+- Clients receive an in-process name instead of a port.
+- Cancellation travels by in-process signalling.
+- The container path needs its own header-logging guard.
+- The build gains an unlisted library.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | In-process transport (vs loopback servers) | no port is taken on shared runners | the channel is not the one a real outage breaks |
-| 2 | Same interceptor point for injection (vs a separate fault proxy) | injection code is shared with container mode | two hosting paths must stay in step |
-| 3 | Separate network path for containers (vs one hosting path) | unit tests avoid the network entirely | container behaviour is never proven by the unit stage |
+| 1 | In-process transport (vs loopback servers) | no runner port is taken | real outages never reach the channel |
+| 2 | Same interceptor point (vs a fault proxy) | injection code is shared | two hosting paths must stay in step |
+| 3 | Separate container network path (vs one hosting path) | unit tests avoid the network | the unit stage never proves containers |
 
-Effort and risk: a smaller harness but two hosting paths and an unlisted library, with the risk in container behaviour drifting from what the tests prove.
+Effort and risk: a smaller harness but two hosting paths, with container drift at risk.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: one hosting path serves tests and containers alike, and every failure mode is reproduced on the real channel a client uses.
-- Strongest argument against: each loopback stub binds a real port on shared build runners, where parallel suites compete for the free port range.
-- Shared items that do not decide the choice: the interceptor point, the request log, the per-test isolation, the stopped-stub behaviour and the address-only cut-over.
-- Flip condition: the in-process library enters the dependency table together with a separate container-mode path that the unit stage also proves.
+- Why: one hosting path serves tests and containers on the real client channel.
+- Strongest argument against: loopback stubs compete for ports on shared runners.
+- Shared items that do not decide the choice: the interceptor, the request log, test isolation and the cut-over.
+- Flip condition: the in-process library is listed, with a unit-proven container path.
 
 ## Design Validation
 
@@ -232,61 +239,57 @@ Effort and risk: a smaller harness but two hosting paths and an unlisted library
 
 Settled assumptions:
 
-- The remote procedure library already pinned hosts both the service and every stub, so the build gains no library.
-- The latency setting and the failure-rate setting default to zero and are bound and range-checked by the configuration-properties story.
-- The web layer already in the build serves the read-only log page.
-- A stopped stub answers its clients with the unavailable status.
-- The standard error message type is generated by the scaffold build, so packing it into an injected answer adds no library.
-- The transport writes header values only through its frame logger, which it takes from a replaceable logger factory for each new connection and which checks whether debug output is enabled before each frame.
+- The pinned library and existing web layer host stubs and log pages.
+- The configuration story range-checks the zero-default delay and failure-rate settings.
+- The transport takes each connection's header logger from a replaceable factory.
 
 Open assumptions:
 
-- Open → the Compose stack story settles the fixed remote procedure port and web port of each stub container.
-- Open → the end-to-end client story and the performance harness story settle that they read the log page and no other source.
+- Open → the Compose stack story settles each stub container's fixed ports.
+- Open → the end-to-end and performance stories settle the log page as their only source.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the harness binds a real loopback server before the first test |
-| AC2 | Conditional | a loaded runner stretches the delay but never shortens it |
-| AC3 | Holds | the interceptor answers with the standard error object before the stub at rate one and never at rate zero |
-| AC4 | Holds | the harness clears every override after each test |
-| AC5 | Holds | each override is checked when set, before any call |
-| AC6 | Holds | the log numbers each call at receipt |
-| AC7 | Holds | a stub carries only its injector, with a header-logging guard fitted before the first server starts and kept through every later logging reset |
-| AC8 | Holds | the web layer serves the log page on the web port of the container |
-| AC9 | Holds | stopping waits for each server to release its port |
-| AC10 | Conditional | the interceptor must check for cancellation when its delay ends |
-| AC11 | Holds | discovery reads only the integration test package |
-| AC12 | Holds | container start looks the stub name up before binding a port |
+| AC1 | Holds | a real loopback server answers |
+| AC2 | Conditional | a loaded runner only lengthens delays |
+| AC3 | Holds | injection precedes the stub |
+| AC4 | Holds | overrides clear between tests |
+| AC5 | Holds | overrides are checked at set time |
+| AC6 | Holds | the log numbers calls at receipt |
+| AC7 | Holds | a stub carries only its injector behind a lifetime header-logging guard |
+| AC8 | Holds | the web layer serves the log page |
+| AC9 | Holds | stopping waits for port release |
+| AC10 | Conditional | the interceptor must check cancellation at delay end |
+| AC11 | Holds | discovery reads only the integration package |
+| AC12 | Holds | the name lookup precedes port binding |
 
 ### Option B validation
 
 Settled assumptions:
 
-- The in-process transport library is absent from the dependency table and would have to be added.
-- The latency setting and the failure-rate setting default to zero and are bound and range-checked by the configuration-properties story.
+- The in-process library is absent from the dependency table.
 - Container mode still needs a network server.
-- The standard error message type is generated by the scaffold build, so packing it into an injected answer adds no library.
+- Option A's web-layer, range-check and header-logger assumptions hold.
 
 Open assumptions:
 
-- Open → a dependency decision settles whether the in-process library may join the dependency table.
-- Open → the Compose stack story settles how the second hosting path is proven.
+- Open → a dependency decision settles listing the in-process library.
+- Open → the Compose stack story settles how the second path is proven.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Breaks | an in-process stub binds no loopback port |
-| AC2 | Holds | the delay applies at the same interceptor point |
-| AC3 | Holds | the interceptor answers with the standard error object before the stub at the same rates |
+| AC1 | Breaks | an in-process stub binds no port |
+| AC2 | Holds | the delay point is unchanged |
+| AC3 | Holds | the injection point is unchanged |
 | AC4 | Holds | override clearing is unchanged |
 | AC5 | Holds | the override check is unchanged |
 | AC6 | Holds | the request log is unchanged |
-| AC7 | Conditional | the separate container path must fit its own header-logging guard before its server starts |
-| AC8 | At risk | container mode needs a separate network path the unit stage does not share |
-| AC9 | Conditional | only the separate container path binds ports to release |
-| AC10 | Conditional | in-process cancellation must reach the interceptor during its delay |
-| AC11 | Holds | discovery does not depend on the transport |
-| AC12 | Holds | the stub name lookup does not depend on the transport |
+| AC7 | Conditional | the separate container path needs its own header-logging guard |
+| AC8 | At risk | the unit stage skips the container network path |
+| AC9 | Conditional | only the container path binds ports |
+| AC10 | Conditional | cancellation must reach the delayed interceptor in process |
+| AC11 | Holds | discovery is transport-independent |
+| AC12 | Holds | the name lookup is transport-independent |
 
 ## Metadata
 

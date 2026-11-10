@@ -29,6 +29,8 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 >
 > > SCOPE-QUESTION (Resolved): The level hold above does not by itself keep the credentials out of the log. A later application context in the same JVM, such as a test context started while the client's channel is live, initialises logging and applies its own `logging.level` settings when its environment is prepared. Until a client of that context re-applies the hold, which a context that starts no client never does, the frame logger of every live client connection reads DEBUG. `ConfigClient` therefore also owns a credential guard that no logger level can lift: its nested class `ConfigClient.ClientFrameLogGuard`, built the same way as the server guard `GrpcServerConfiguration.ServerFrameLogGuard` of CS-11-002, whose idempotent, synchronized static `install()` replaces the default logger factory of the shaded Netty transport, through `io.grpc.netty.shaded.io.netty.util.internal.logging.InternalLoggerFactory.setDefaultFactory`, with a wrapper around the factory it replaces. The wrapper hands every logger name to that factory unchanged except `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler`, for which it returns a logger that reports TRACE and DEBUG as disabled, discards every TRACE and DEBUG event and passes INFO and above to the delegate. The transport builds the frame logger of each connection the channel opens from that factory and asks the logger whether DEBUG is enabled before it writes a frame, so no frame of a guarded connection reaches a log line, whatever level `LoggingSystem`, a `logging.level` setting, a later context's logging reset or a runtime level change gives the logger. `ConfigClient` calls `install()` before it builds its channel, in an application context and where a test builds the client with no application context alike, so the guard is in place before the channel opens its first connection. The guard records in a static field that it has installed its wrapper, so a second call changes nothing, and nothing removes the wrapper, so it holds for as long as the JVM runs, across every later context start and close. The Auth client (CS-12-002) and the Reference Data client (CS-13-003) each install a guard of their own in the same way, as a nested class of the class that applies their hold and builds their channel, and a guard installed after another wraps it and changes nothing observable, because both drop the same events. The level hold stays, so the effective level AC11 reads is INFO once the client has started, but the guard, not the level, is the never-log protection. The guard adds no file, no dependency, since the factory ships in the pinned `grpc-netty-shaded`, and no environment variable, so the 5 files touched stand.
 >
+> > SCOPE-QUESTION (Resolved): The synchronization of the idempotent, synchronized static `install()` above, of this guard and of the server guard it is built like, is one lock shared by every frame-log guard of the process, not the monitor of `ConfigClient.ClientFrameLogGuard`. Each guard class has a monitor of its own, and separate monitors do not exclude each other, so two guards that each held only their own could both read the same default factory and publish two wrappers around it, and the later publication would drop the earlier wrapper. Every frame-log guard of the process, the server guard `GrpcServerConfiguration.ServerFrameLogGuard` (CS-11-002) and the client guards `AuthClient.ClientFrameLogGuard` (CS-12-002), `ConfigClient.ClientFrameLogGuard` (this story), `ReferenceDataClientConfiguration.ClientFrameLogGuard` (CS-13-003), `CardDataChannelConfiguration.ClientFrameLogGuard` (CS-09-005) and `TransactionActivityClient.ClientFrameLogGuard` (CS-10-006), therefore runs its whole `install()` while holding the monitor of the shaded logger-factory class itself, `synchronized (InternalLoggerFactory.class)` on `io.grpc.netty.shaded.io.netty.util.internal.logging.InternalLoggerFactory`. The guard class's own monitor plays no part. That class object exists once per class loader, the same scope as the default-factory field every guard replaces, so every installer able to replace that factory shares it, and the lock needs no shared class, no new file and no story edge. Inside the lock, `install()` reads the guard's installed flag and returns at once when it is set. Otherwise it reads the current default factory with `InternalLoggerFactory.getDefaultFactory()`, builds its wrapper around exactly that factory, publishes the wrapper with `InternalLoggerFactory.setDefaultFactory`, and sets the installed flag only after that call returns. Because the read and the publication happen under the same lock, no installer publishes over a factory it has not read: each wrapper delegates to the factory it found, the wrappers of earlier guards included, so the chain keeps every guard installed before it, whatever the start order and the thread. A guard installed after another therefore wraps it and changes nothing observable in any order and on any thread, the server guard of CS-11-002 included. No code of the service or its tests replaces the default factory except an installer that holds this lock and follows this sequence, such as the test-local client-side installer of CS-11-002. The wrapper behaviour, the install before the channel is built, the never-removed wrapper and the level hold stay as stated above, and the lock adds no file, no dependency and no environment variable, so the 5 files touched stand.
+>
 > - `card-servicing-service/src/main/java/com/example/cardservicing/integration/config/ConfigSnapshot.java`:
 >   - Implements `UpstreamSettings` (CS-11-003) and implements its `accessAllowed(token)` hook. It is declared as the primary `UpstreamSettings` bean, so the call policy, the five clients and the access guard receive it with no change to their dependencies.
 >
@@ -107,6 +109,8 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 >
 > > SCOPE-QUESTION (Resolved): The criterion also covers live client channels while logger levels change. Two more cases run in `ConfigClientTest` against the Config stub that `StubHarness` started, on a `ConfigClient` built with a service key generated at runtime, as above, whose channel, the one the background refresh uses, a first `getConfig` call has opened. Each case sends `getConfig` calls, each with a bearer token generated at runtime, with output captured by Spring Boot's `OutputCaptureExtension`, which records standard output and standard error and so keeps recording across a logging reset. First, the test sets the effective level of `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` to DEBUG through `LoggingSystem`, the state a logging reset leaves before any re-application, sends 5 `getConfig` calls that each return the four checked values, and then sets the level back to INFO. Second, the test starts a further application through `SpringApplicationBuilder` from a test configuration that declares a second `ConfigClient` and its collaborators, with the client target set to the same stub and `logging.level.root`, `logging.level.io.grpc` and `logging.level.io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` set to DEBUG, and adds a test listener ordered at `LoggingApplicationListener.DEFAULT_ORDER + 1`, directly after Spring Boot's logging listener. On `ApplicationEnvironmentPreparedEvent`, after that application has initialised logging and applied its DEBUG settings and before any of its beans exists, the listener reads the effective level of `NettyClientHandler` as DEBUG and then sends 5 `getConfig` calls on the already-live client of the first case, each with a newly generated token, all returning the four checked values before the listener returns. The application then reports ready, with the effective level of `NettyClientHandler` back at INFO once its client has started, and is closed. None of the values generated in either case appears in the captured output, the lines of the stub's server frame logger included.
 >
+> > SCOPE-QUESTION (Resolved): The criterion also covers concurrent guard installation. Two more cases run in `ConfigClientTest`. Shared-lock check, in the test JVM: while the test thread holds the monitor of `InternalLoggerFactory`, a second thread calling `ConfigClient.ClientFrameLogGuard.install()` reaches thread state `BLOCKED` within 1 s, and `InternalLoggerFactory.getDefaultFactory()` returns the same object as before. Once the test releases the monitor, the call returns within 1 s. The check holds whether or not the guard is already installed, because the installed flag is read inside the lock. Concurrent installation with later DEBUG resets, in fresh JVMs: the test starts 5 child JVMs one after another through the JDK process API, `ProcessBuilder` with the running JVM's `java` command and the test class path, each running a `main` nested in `ConfigClientTest`, so no guard is installed when a child starts. In each child, two threads released together by one `CountDownLatch` call `GrpcServerConfiguration.ServerFrameLogGuard.install()` and `ConfigClient.ClientFrameLogGuard.install()`. The child then starts a new loopback server for the Config stub, the service definition of `ConfigStubRegistration` (CS-11-005) hosted as stub `config`, through `StubServerHost`, and builds a `ConfigClient` with no application context, its target set to that server's bound port, which starts the client with a new channel to that server that has opened no connection yet. The `install()` calls that `StubServerHost` and `ConfigClient` make find their guards already installed and change nothing. Because `StubServerHost` and the client each apply their INFO hold when they start, only after those starts does the child set the root level, `io.grpc`, `io.grpc.netty.shaded.io.grpc.netty.NettyServerHandler` and `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` to DEBUG through `LoggingSystem.get(classLoader)`, the state a later context's logging reset leaves. A reset made before the starts would be undone by the holds and would hide a lost wrapper. It then sends 5 `getConfig` calls that each return the four checked values, the first one opening the channel's first connection after the reset. The calls' bearer token and the client's service key are values the parent generated at runtime and wrote to the child's standard input, so no credential literal is committed, `CommittedSecretScanTest` (CS-11-001) stays green and neither value appears on a command line. With both frame loggers still at DEBUG, the child prints that `InternalLoggerFactory.getInstance` reports DEBUG disabled for both frame-logger names and exits 0. The parent reads the child's merged standard output and standard error, requires that line and exit status 0, and finds neither value. The cases add no file, so the 5 files touched stand.
+>
 > - AC12: Mirror seeding: with a built-in snapshot and a fresh `cs:v1:config` entry written 100 s earlier on the test clock by a second snapshot sharing the entry store, the first refresh applies the mirror values with 0 `GetConfig` calls, and the snapshot turns stale 200 s later. With every entry-store command failing, the first refresh calls `GetConfig` exactly once, applies its values and logs the failed mirror write without the values. With a built-in snapshot, a stale mirror entry and the Config stub failing, the refresh adopts the mirror values and the snapshot stays stale.
 >
 > > SCOPE-QUESTION (Resolved): An entry store that accepts every command and never answers, the one the CS-11-004 tests use, is handled like the failing one: the first refresh records a wait of at most 50 ms on its mirror read and on its mirror write, calls `GetConfig` exactly once within its 900 ms budget, applies its values with `GetConfig` as their source and logs the abandoned mirror write without the values.
@@ -143,7 +147,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. Cases: receipt reads with the stub and Redis stopped, the built-in defaults and their bound overrides, launch only through the hook, the single-flight refresh under 10 threads, the 299 s and 300 s fresh-period boundary, the non-blocking hook under 2,000 ms latency, the success rewrite and its mirror write, failure with no stale limit, each rejected answer, the attempt timeout and retry counts, the non-retried statuses, the forwarded credentials and their absence from every log line, transport frame loggers included, at root and `io.grpc` DEBUG with runtime-generated values, the client frame-logger guard with the client frame logger forced to DEBUG on a live channel and during a later application's logging initialisation against the already-live client, mirror seeding, a never-answering entry store that leaves the refresh exactly one `GetConfig` within its budget, and a request left unaffected by a slow refresh. Cases also cover a refresh applied during a request: that request keeps the four values it captured at receipt and gives an upstream answering `UNAVAILABLE` at once 3 attempts, while a request started after the refresh gives it 2.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. Cases: receipt reads with the stub and Redis stopped, the built-in defaults and their bound overrides, launch only through the hook, the single-flight refresh under 10 threads, the 299 s and 300 s fresh-period boundary, the non-blocking hook under 2,000 ms latency, the success rewrite and its mirror write, failure with no stale limit, each rejected answer, the attempt timeout and retry counts, the non-retried statuses, the forwarded credentials and their absence from every log line, transport frame loggers included, at root and `io.grpc` DEBUG with runtime-generated values, the client frame-logger guard with the client frame logger forced to DEBUG on a live channel and during a later application's logging initialisation against the already-live client, the shared installation lock of that guard and its concurrent installation beside the server guard in five fresh JVMs with both frame loggers reset to DEBUG, mirror seeding, a never-answering entry store that leaves the refresh exactly one `GetConfig` within its budget, and a request left unaffected by a slow refresh. Cases also cover a refresh applied during a request: that request keeps the four values it captured at receipt and gives an upstream answering `UNAVAILABLE` at once 3 attempts, while a request started after the refresh gives it 2.
 - Integration: Applies. This story adds no integration suite; the Config integration suite (CS-11-007) runs this client and snapshot against the Config stub with a real gRPC channel and the `cs:v1:config` mirror in a Testcontainers `redis:7.4.2` container. Command `./gradlew :card-servicing-service:integrationTest`; all pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Not applicable — the Config refresh runs off every request path and no request waits for it; it applies to balance-retrieval and drill-down stories. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -159,9 +163,9 @@ Completed during implementation.
 
 Recommended: Design Option A — an in-memory configuration snapshot with a background single-flight refresh.
 
-Rationale: requests read the four configuration values from memory, and one background refresh per instance keeps them current, so the configuration service never sits on a request path.
+Rationale: no request waits on the configuration service.
 
-- Rejected: Design Option B, a per-request read-through cache of the configuration, because a miss adds a serialized configuration read to the request path.
+- Rejected: Design Option B, a per-request cache read, because misses stall requests.
 
 ```mermaid
 sequenceDiagram
@@ -169,85 +173,77 @@ sequenceDiagram
     participant Snapshot as Configuration snapshot
     participant Cache as Shared cache
     participant Config as Configuration service
-    Guard->>Snapshot: Access-allowed hook with the caller token
+    Guard->>Snapshot: Allowed, caller token
     Snapshot-->>Guard: Return at once
-    Note over Guard,Snapshot: The request goes on to its data reads
-    opt Snapshot stale and no refresh in flight
-        Snapshot->>Cache: Read the mirror entry
-        Cache-->>Snapshot: Fresh entry, or a miss or stale entry
-        opt Mirror entry not fresh
-            Snapshot->>Config: Configuration read with the caller token and service key
-            Config-->>Snapshot: Four values, or a failure status
-            Snapshot->>Cache: Write the mirror entry on success
+    opt Stale, no refresh running
+        Snapshot->>Cache: Read mirror
+        Cache-->>Snapshot: Fresh, stale or miss
+        opt Mirror not fresh
+            Snapshot->>Config: Read with both credentials
+            Config-->>Snapshot: Values or failure
+            Snapshot->>Cache: Write mirror on success
         end
-        Snapshot->>Snapshot: Apply valid values,<br/>or keep the held values
+        Snapshot->>Snapshot: Apply or keep values
     end
 ```
 
 Shared by both options:
 
-- Topology: one mirror entry in the shared cache, which every service instance reads before it calls the configuration service.
-- Naming: the four values are the default page size, the maximum page size, the timeout value and the retry value, requested by the names the contract gives them.
-- Addressing: the configuration service address comes from service configuration, set by the test harness or by the shared stack.
-- Isolation: the mirror entry and every configuration value in use carry no caller identity, and a caller token lives only for one configuration read.
-- Fallback: the built-in defaults of 20, 100, 300 ms and 2 retries apply whenever no configuration value is usable.
-- Provisioning: the built-in timeout value and retry value come from the configuration-properties story, and the two page-size defaults are fixed in the service.
-- Cut-over: the real configuration service replaces the stub with only an address and credential change.
-- Failures: a failed or refused configuration read writes one log line, passes no error to the request and is never an input of the data status.
+- Topology: one shared-cache mirror entry serves every instance.
+- Naming: the four values keep their contract names.
+- Addressing: service configuration sets the configuration service address.
+- Isolation: configuration values and the mirror carry no caller identity.
+- Fallback: built-in defaults of 20, 100, 300 ms and 2 retries apply without a usable value.
+- Provisioning: the configuration-properties story supplies the timeout and retry defaults.
+- Cut-over: the real service needs only an address and credential change.
+- Failures: a failed read logs one line and passes no error to requests or data status.
 
 ### Design Option A
 
-Every request reads the configuration snapshot from memory at receipt and never calls the cache or the configuration service for it. When the access guard allows a request and the snapshot is past its 300 s fresh period, the access-allowed hook launches one background refresh and returns at once. The refresh reads the mirror entry first, calls the configuration service only when that entry is not fresh, and then applies valid values or keeps the held ones.
+Requests read the snapshot from memory. An allowed request on a stale snapshot launches one background refresh, which reads the mirror first.
 
 How it behaves:
 
-- Each service instance holds one configuration snapshot of its own, and only its refresh reads the mirror entry.
-- Ten callers reaching the hook together launch one refresh, and callers inside the fresh period launch none.
-- A request rejected before access is allowed never reaches the hook, so it starts no refresh.
-- The refresh runs under its own 900 ms budget, so a slow configuration service consumes no request time.
-- The refresh hands its time left to the cache, so a cache that stops answering costs it at most 50 ms on the mirror read and the configuration read keeps its attempts within the budget.
-- Each request takes one record of the four values at receipt for its page-size checks and every call it makes, and each refresh takes its own at launch, so a refresh that applies during a request changes only requests that start later.
-- A fresh mirror entry written by another instance is applied with no configuration read.
-- An answer missing a value or holding a value outside its bounds is refused, and the held values stay.
-- A failed refresh keeps the held values with no age limit, and the next allowed request after it launches another.
-- Until its first successful refresh the snapshot holds the built-in defaults, and a failed refresh adopts a stale mirror entry only while those defaults are held.
-- The held values carry no caller identity, and the refresh keeps the caller token only while it runs.
-- Before it builds its channel, the client fits the transport with a header-logging guard that stays in place for the life of the process, so neither credential reaches a log line at any log level, a later application start included.
+- Ten simultaneous hook callers launch one refresh, and rejected requests launch none.
+- The refresh has its own 900 ms budget and a 50 ms cache wait cap.
+- Requests keep their receipt values, and failures keep held values with no age limit.
+- A stale mirror entry replaces only built-in defaults.
+- The client's lifelong header-logging guard shares one install lock with every such guard and keeps earlier guards.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Values read from memory at receipt (vs a cache read on each request) | no request makes a network call for configuration | each instance holds its own copy of the values |
-| 2 | Refresh launched by the access-allowed hook (vs a timer on each instance) | only an allowed caller has its token forwarded | an idle instance keeps stale values until its next allowed request |
-| 3 | Held values kept with no age limit after a failure (vs a return to the built-in defaults after a limit) | a long configuration outage never changes page sizes or call settings | a broken configuration path shows only in the refresh log |
+| 1 | Memory read at receipt (vs per-request cache read) | no request-path network call | one copy per instance |
+| 2 | Refresh from the access-allowed hook (vs a timer) | only allowed callers' tokens travel | idle instances stay stale |
+| 3 | No age limit on held values (vs defaults after a limit) | long outages leave settings unchanged | broken configuration shows only in logs |
 
-Effort and risk: one client, one snapshot and three test classes, with the risk in the race between concurrent hook callers and a refresh that is finishing.
+Effort and risk: five files, with the risk in a hook-refresh race.
 
 ### Design Option B
 
-Every request reads the configuration through the read-through cache before its data reads. A fresh mirror entry is served with no configuration read, and a miss or stale entry calls the configuration service inside the request, bounded by the request's own deadline. A failed read serves the stale mirror entry, and the built-in defaults when no entry exists.
+Every request reads configuration through the cache. A miss calls the configuration service within the request deadline, and failures fall back to the stale entry, then built-in defaults.
 
 How it differs:
 
-- Every request makes one cache call for configuration, and a miss adds a configuration read in series with the request's other work.
-- The read must wait until access is allowed, or a rejected request would call the configuration service.
-- Concurrent misses on one instance each call the configuration service unless a separate guard joins them.
-- No access-allowed hook is used, and no background work runs.
+- A miss adds a serial configuration read to the request.
+- The read must follow authorization.
+- Concurrent misses each call the service without a joining guard.
+- No hook or background work runs.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Configuration read through the shared cache on each request (vs memory only) | every instance reads the same values | every request pays one cache call |
-| 2 | Configuration read on a miss inside the request (vs a background refresh) | each request that finds the mirror entry stale tries a new configuration read | a slow configuration service consumes the request budget |
-| 3 | Stale mirror entry, then built-in defaults, after a failure (vs held values in memory) | no in-memory state to manage | a cache outage during a configuration outage moves every request to the built-in defaults |
+| 1 | Cache read per request (vs memory only) | every instance reads the same values | a cache call per request |
+| 2 | In-request read on a miss (vs a background refresh) | stale entries prompt new reads | a slow service consumes request budget |
+| 3 | Stale entry, then defaults, after failure (vs held values) | no in-memory state | a joint outage forces built-in defaults |
 
-Effort and risk: less concurrency code but a configuration read on the request path, with the risk in cache misses that run out of budget while the configuration service is slow.
+Effort and risk: less concurrency code, with misses risking the request budget.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: only a memory read at receipt keeps configuration off every request path, so no request waits on the configuration service.
-- Strongest argument against: new values reach a busy instance only after an allowed request past the fresh period, and an idle instance serves stale values until its next allowed request.
-- Shared items that do not decide the choice: the mirror entry and its fresh period, the four value names, the address-only cut-over, the built-in defaults and the call policy that bounds each configuration read.
-- Flip condition: a push channel from the configuration service, or a requirement that every instance switch to new values at the same moment.
+- Why: memory reads keep configuration off every request path.
+- Strongest argument against: an idle instance serves stale values until its next allowed request.
+- Shared items that do not decide the choice: the mirror entry, value names, cut-over, built-in defaults and call policy.
+- Flip condition: a configuration push channel, or every instance switching values at once.
 
 ## Design Validation
 
@@ -255,63 +251,56 @@ Effort and risk: less concurrency code but a configuration read on the request p
 
 Settled assumptions:
 
-- The configuration service answers the four values as whole-number text, as the contract states.
-- The deadline setting is never a configuration value.
-- Each request takes one record of the four values from the snapshot at receipt, and the call policy reads the timeout value and retry value from that record on every call of the request.
-- The read-through cache serves a fresh mirror entry with no upstream read, treats a cache failure as a miss and ends each cache wait at 50 ms or the refresh's time left.
-- Configuration outcomes feed no part of the data status.
-- The stub hosting story fits the server end of the transport with its own header-logging guard, so a captured test log carries no credential from the test server either.
-- The transport writes header values only through its frame logger, which it takes from a replaceable logger factory for each new connection and which checks whether debug output is enabled before each frame.
+- The cache serves fresh entries without upstream reads and treats failures as misses.
+- The stub hosting story guards the server end, and only frame loggers log headers.
 
 Open assumptions:
 
-- Open → the access-guard story settles that the hook receives the caller token after every allow and never before one.
-- Open → the Config integration suite settles refresh timing on a real cache and a real remote procedure channel.
-- Open → the technical requirements settle the refresh budget and mirror seeding, which this story takes as a 900 ms budget of its own and a mirror read first.
+- Open → the access-guard story settles that the hook gets the caller token after every allow, never before.
+- Open → the Config integration suite settles refresh timing on a real cache and channel.
+- Open → the technical requirements settle the 900 ms refresh budget and mirror-first read.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | a receipt read touches only the values held in memory |
-| AC2 | Holds | the snapshot starts on the built-in defaults from the configuration-properties story |
-| AC3 | Holds | the in-flight flag and the second staleness check admit one refresh per stale period |
-| AC4 | Conditional | the under-50 ms return depends on thread scheduling on the test runner |
-| AC5 | Holds | only the access-allowed hook launches a refresh |
-| AC6 | Holds | a successful read replaces the held values and the mirror entry for requests that start after it |
-| AC7 | Holds | a failure leaves the held values in place with no age limit |
-| AC8 | Holds | the client refuses a bad answer ahead of the snapshot and the cache |
-| AC9 | Holds | the shared call policy bounds each attempt within the refresh budget left after a mirror read of at most 50 ms |
-| AC10 | Conditional | the cut-off time on the real clock depends on thread scheduling on the test runner |
-| AC11 | Holds | the client writes both credentials only into call metadata, with the header logging of both transport ends shut off by process-wide guards |
-| AC12 | Holds | the refresh reads the mirror entry before any configuration read and waits at most 50 ms on an unanswered cache |
+| AC1 | Holds | receipt reads touch only memory |
+| AC2 | Holds | the snapshot starts on built-in defaults |
+| AC3 | Holds | an in-flight flag admits one refresh |
+| AC4 | Conditional | test-runner scheduling decides the 50 ms margin |
+| AC5 | Holds | only the hook launches refreshes |
+| AC6 | Holds | successful reads replace held values and the mirror for later requests |
+| AC7 | Holds | failures keep held values indefinitely |
+| AC8 | Holds | the client refuses bad answers ahead of the snapshot |
+| AC9 | Holds | the call policy bounds each attempt |
+| AC10 | Conditional | test-runner scheduling decides the cut-off |
+| AC11 | Holds | only guarded call metadata carries credentials |
+| AC12 | Holds | a capped mirror read comes first |
 
 ### Option B validation
 
 Settled assumptions:
 
-- The configuration service answers the four values as whole-number text, as the contract states.
-- The read-through cache serves a fresh mirror entry with no upstream read and treats a cache failure as a miss.
-- The read-through cache joins no concurrent misses on its own.
-- The transport writes header values only through its frame logger, which it takes from a replaceable logger factory for each new connection and which checks whether debug output is enabled before each frame.
+- Option A's cache and transport assumptions hold.
+- The cache joins no concurrent misses on its own.
 
 Open assumptions:
 
-- Open → the endpoint stories settle where in the request the configuration read sits.
-- Open → a load run settles how often a busy instance misses the mirror entry.
+- Open → the endpoint stories settle where the configuration read sits.
+- Open → a load run settles how often a busy instance misses the mirror.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Breaks | a receipt read reaches the cache and, on a miss, the configuration service |
-| AC2 | Holds | the built-in defaults apply while no mirror entry exists |
-| AC3 | Conditional | concurrent misses join only behind a separate guard |
-| AC4 | Breaks | the request waits for the configuration read on a miss |
-| AC5 | At risk | rejected requests stay silent only with the read placed after authorization |
-| AC6 | Holds | a successful read writes the mirror entry that each later request reads once |
-| AC7 | Breaks | no access-allowed hook or background refresh exists to launch the next refresh |
-| AC8 | Holds | the same answer checks refuse a bad value |
-| AC9 | Conditional | the attempt count follows the request's remaining time after a mirror read of at most 50 ms |
-| AC10 | Breaks | a 2,000 ms configuration read consumes the request budget before its data reads |
-| AC11 | Holds | the same client forwards both credentials with the header logging of both transport ends shut off by process-wide guards |
-| AC12 | Breaks | no held snapshot exists to adopt the stale mirror values and stay stale |
+| AC1 | Breaks | receipt reads reach the cache |
+| AC2 | Holds | a missing mirror entry selects built-in defaults |
+| AC3 | Conditional | joining misses needs a separate guard |
+| AC4 | Breaks | a miss makes the request wait |
+| AC5 | At risk | rejected requests stay silent only with the read after authorization |
+| AC6 | Holds | successful reads populate the mirror for later requests |
+| AC7 | Breaks | nothing launches the next refresh |
+| AC8 | Holds | the same answer checks apply |
+| AC9 | Conditional | attempts follow the request's remaining time |
+| AC10 | Breaks | a slow read consumes the request budget |
+| AC11 | Holds | the same client and guards apply |
+| AC12 | Breaks | no held snapshot adopts stale values |
 
 ## Metadata
 

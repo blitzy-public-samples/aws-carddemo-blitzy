@@ -28,7 +28,13 @@ Parent epic: [CS-10 Transaction Activity Integration](../README.md)
 >   - Builds one plaintext gRPC channel per service instance to the Transaction Activity target address, and the blocking stub over it. The channel connects on first use, so a context starts with no Transaction Activity service reachable, and it shuts down when the application context closes.
 >   - Binds the target address from `card-servicing.clients.transaction-activity.target` through a `@ConfigurationProperties` record nested in this file, with the placeholder default `localhost:9090`. It is not a variable of the TRD environment-variable table, so `card-servicing-service/src/main/resources/application.yml` and `CardServicingProperties` stay unchanged and no environment variable is added. The unit suite sets it to the `127.0.0.1` port that `StubHarness` reports, the Compose stack (CS-01-001) sets the stub container address, and a deployed environment sets the real service address.
 >   - Holds the gRPC Netty transport's client frame logger `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` at INFO through Spring Boot's `LoggingSystem` when it starts, and installs, before it builds its channel, a nested `TransactionActivityClient.ClientFrameLogGuard` built the same way as the client frame-log guards of CS-12-002, CS-11-006, CS-13-003 and CS-09-005, because at DEBUG that shared logger writes every outbound header value, `authorization` and `x-api-key` included.
+>
+> > SCOPE-QUESTION (Resolved): Does "built the same way" give this guard a lock that excludes the other frame-log guards of the process? It does, because "built the same way" includes their one shared installation lock: the synchronization of the guard's static `install()` is that shared monitor, not the guard class's, since each guard class has a monitor of its own and separate monitors do not exclude each other, so a server install and a client install running at the same time could otherwise both read one factory and lose a wrapper. (a) One lock: the server guard `GrpcServerConfiguration.ServerFrameLogGuard` (CS-11-002) and the client guards `AuthClient.ClientFrameLogGuard` (CS-12-002), `ConfigClient.ClientFrameLogGuard` (CS-11-006), `ReferenceDataClientConfiguration.ClientFrameLogGuard` (CS-13-003), `CardDataChannelConfiguration.ClientFrameLogGuard` (CS-09-005) and `TransactionActivityClient.ClientFrameLogGuard` each run their whole `install()` while holding the monitor of the shaded logger-factory class itself, `synchronized (InternalLoggerFactory.class)` on `io.grpc.netty.shaded.io.netty.util.internal.logging.InternalLoggerFactory`. That class object exists once per class loader, the scope of the default-factory field every guard replaces, so every installer able to replace that factory shares it, with no shared class, no new file and no story edge. (b) Inside the lock, `install()` reads the guard's installed flag and returns at once when it is set. Otherwise it reads the current default factory with `InternalLoggerFactory.getDefaultFactory()`, builds its wrapper around exactly that factory, publishes the wrapper with `InternalLoggerFactory.setDefaultFactory`, and sets the installed flag only after that call returns. (c) Because the read and the publication happen under the same lock, no installer publishes over a factory it has not read: the wrapper delegates to the factory it found, the wrappers of earlier guards included, so the chain keeps every guard installed before it, whatever the start order and the thread. No code of the service or its tests replaces the default factory except an installer that holds this lock and follows this sequence, such as the test-local client-side installer of CS-11-002. The wrapper behaviour, the rule that the guard is installed before the channel is built, the rule that nothing removes it and the level hold stay as stated, and the lock adds no file, no dependency and no environment variable, so the 4 files touched stand.
+>
 >   - Writes one warning line per failed read and per stale result, naming the operation, the account identifier or transaction ID and the final gRPC status code, with the `traceId` of the logging context. No line carries the token, the service credential or any other call metadata.
+>
+> > SCOPE-QUESTION (Resolved): How does a warning line name an identifier that holds a carriage return, a line feed or another control character, which the contract lets a transaction ID hold, as the identifier-encoding rule below states? Each identifier, the account identifier or the transaction ID, appears in the warning line only in escaped form: one double-quoted value in which every character outside printable ASCII (U+0020–U+007E), and the double quote and the backslash, is replaced by `\u` and the four-digit lower-case hexadecimal value of its UTF-16 code unit, so a line feed becomes `\u000a`. A carriage return, line feed, other control character or delimiter in an accepted identifier therefore never ends the line or starts a forged record, and each failed or stale read writes exactly one log event. The escaping is for the log line only: the requests, the cache keys with their form encoding under the identifier-encoding rule below, and the contract's identifier domain, any 16 characters for a transaction ID, stay unchanged, and that form encoding is not what protects the log. The escaping is a private method of `TransactionActivityClient`, so no file is added and the 4 files touched stand.
+>
 >   - Adds no attempt, timeout, retry, backoff or freshness rule of its own, and holds no store connection and no Redis client: Redis is reached only through `ReadThroughCache`, and transactions only through this gRPC client.
 > - `card-servicing-service/src/main/java/com/example/cardservicing/integration/transactionactivity/TransactionCacheKeys.java`: the two `ReadThroughCache.KeyFamily` values of the rules below, each with a codec that writes the generated `ListTransactionsResponse` or `Transaction` as protobuf bytes, and the identifier builder of each family.
 > - `card-servicing-service/src/test/java/com/example/cardservicing/integration/transactionactivity/TransactionActivityClientTest.java`: policy, deadline, status-mapping, credential and swap-point cases against the registered Transaction Activity stub, `StubHarness.of(new TransactionActivityStubRegistration())` (CS-10-004 and CS-10-005; `card-servicing-service/src/test/java/com/example/cardservicing/support/StubHarness.java`, CS-11-002), with per-test latency and failure-rate overrides through `StubHarness.inject` on stub `transaction-activity` and attempts counted in the stub request log. A test-local `StubRegistration` under stub name `transaction-activity`, which `StubHarness.allRegistered()` never discovers, wraps the stub's service definition with a header-capturing server interceptor, because the stub itself ignores call metadata. The cache runs on an empty in-memory `EntryStore` unless a case seeds it. The test builds its token and service-key values at runtime, so the committed-secret scan of CS-11-001 finds no literal credential.
@@ -73,15 +79,24 @@ Parent epic: [CS-10 Transaction Activity Integration](../README.md)
 > - AC2: Retry: on `UNAVAILABLE` or `DEADLINE_EXCEEDED` only, the client retries at most 2 times (`UPSTREAM_MAX_RETRIES`), waiting 50 ms before the first retry and 100 ms before the second, and starts a retry only when its backoff plus a full 300 ms attempt fits in the remaining budget. With a per-test failure rate of 1.0 (`STUB_FAILURE_RATE`), one call of each operation shows exactly 3 attempts in the stub request log and returns no earlier than 150 ms after it starts, the 50 ms and 100 ms backoff waits between attempts that fail at once.
 > - AC3: Fail hard on unavailable: a test request starts a 900 ms `RequestDeadline`, places a test `traceId` in the logging context and marks the cut-off when the call returns. With failure rate 1.0 and no cached entry, one call of each operation shows exactly 3 attempts in the stub request log and ends with the `UNAVAILABLE` failure, which the standard error mapping renders as 503. The client's warning line carries that `traceId`, the completion line logs `cutoffMs` ≤ 900, and the time the test measures from the deadline's start to the outcome is below 1,000 ms.
 >   > SCOPE-QUESTION (Resolved): Which step writes the completion line whose `cutoffMs` AC3 and AC4 assert, when the AC3 test request only starts the `RequestDeadline` and marks its cut-off? CS-11-003 keeps the two steps apart: marking records the cut-off, and completion writes the one structured line carrying `traceId`, the outcome with its response status and `cutoffMs`, while no endpoint takes part in these direct-client tests. The test helper, in test code only, marks the cut-off when the call returns or throws and then completes the deadline exactly once per test request, in a cleanup step that also runs when the call throws, while the test `traceId` is still in the logging context and before the test reads the completion line. Each operation's call is its own test request, as the AC4 attempt arithmetic, which gives each call the full 900 ms, requires. The helper completes with outcome `full` and status 200 for a `FRESH` result, `degraded` and status 200 for a `STALE` result, and `error` with the status the standard error mapping (CS-05-002) gives the raised failure: 503 for `UNAVAILABLE` and 504 for `DEADLINE_EXCEEDED`. Each test request therefore yields exactly one completion line, carrying the test `traceId` and `cutoffMs`. The client writes no completion line and gains no completion step: completion stays with the endpoint stories (CS-07-002, CS-08-002) and, in these tests, with the test request.
+>
+> > SCOPE-QUESTION (Resolved): The criterion also covers an account identifier that carries a line break. With failure rate 1.0 and no cached entry, `transactions` for the account identifier made of a line feed and `WARN forged`, at page size 2 with no filters and no page token, ends with the `UNAVAILABLE` failure (503) after exactly 3 attempts. The AC3 test request yields exactly one warning line from the client, which carries its `traceId` and the escaped identifier `\u000aWARN forged`, and no captured line begins with `WARN forged`.
+>
 > - AC4: Fail hard on deadline: with a per-test stub latency of 400 ms and no cached entry, the AC3 test request shows exactly 2 attempts for one call of each operation (300 + 50 + 300 = 650 ms, then 100 + 300 > 250) and ends with the `DEADLINE_EXCEEDED` failure, rendered as 504, with a logged `cutoffMs` ≤ 900 and a test-measured outcome below 1,000 ms.
 > - AC5: List page never stale: with failure rate 1.0 and a page held under `cs:v1:transaction-page:00000000001:2:~:~:~` aged 60 s or 120 s on the test clock, `transactions` for account `00000000001` at page size 2 with no filters and no token ends with the `UNAVAILABLE` failure (503) after exactly 3 attempts, returns no page and leaves the held entry unrewritten. With the AC4 latency of 400 ms in place of the failure rate, it ends with the `DEADLINE_EXCEEDED` failure (504) in the same way.
 > - AC6: Detail degrade or fail hard, per the `GetTransaction` row of the TRD degradation table: with failure rate 1.0 and a detail entry for `0000000776200014` held aged 60 s or 299 s on the test clock, `transaction` returns the held transaction marked `STALE` with its original `cachedAt` after exactly 3 attempts, and the entry is not rewritten. With the 400 ms latency the same holds after exactly 2 attempts. With the entry aged 300 s or more, or none held, the call ends with the `UNAVAILABLE` failure (503) or the `DEADLINE_EXCEEDED` failure (504) and returns no transaction.
+>
+> > SCOPE-QUESTION (Resolved): The criterion also covers transaction IDs that carry line breaks. Two accepted 16-character IDs are read: a line feed, `WARN forged` and four spaces, and a carriage return, a line feed, `WARN forged` and three spaces. With failure rate 1.0, `transaction` for each ID ends with the `UNAVAILABLE` failure (503) with no entry held, and returns the held transaction `STALE` with an entry for that ID held aged 120 s on the test clock. Each of the 4 reads is its own AC3 test request with its own `traceId` and makes the client write exactly one warning line, which carries that `traceId` and the escaped identifier `\u000aWARN forged    ` or `\u000d\u000aWARN forged   `, and no captured line begins with `WARN forged`.
+>
 > - AC7: Not found: `NOT_FOUND` from `ListTransactions` for account `00000000099` and from `GetTransaction` for `9999999999999999` ends with the `NOT_FOUND` failure (404) after exactly 1 attempt and writes no entry, and a detail entry for `9999999999999999` aged 120 s is never returned in its place.
 > - AC8: Invalid page token: the first-page token that `transactions` returns for account `00000000001` at page size 2, with one character changed, makes the stub answer `INVALID_ARGUMENT`. The call ends with the `INVALID_ARGUMENT` failure (400), whose `details` hold exactly one entry with `field` `pageToken`, after exactly 1 attempt, and writes no entry.
 > - AC9: Fresh hit and write-back: with no entry, one `transaction` read for `0000000776200014` makes exactly 1 stub call, returns it `FRESH` with amount `985.22` and card number `9680294154603697`, and writes exactly one entry, key `cs:v1:transaction:0000000776200014`, with `cachedAt` equal to the read time and a Redis expiry of 300 s. One `transactions` read for `00000000001` at page size 2 returns `0000000776200014` and `0000000755736377` with a non-empty `next_page_token` and writes `cs:v1:transaction-page:00000000001:2:~:~:~` with a Redis expiry of 60 s. An entry of either family aged 0 s or 59 s, younger than its 60 s fresh TTL, is returned `FRESH` with its stored `cachedAt` and the stub request log stays empty. An entry aged 60 s, with the stub answering, causes exactly 1 stub call and returns `FRESH` with a new `cachedAt`.
 > - AC10: Keys: after a `transactions` read for `00000000001` at page size 20 with type filter `01`, a read with type filter `03` makes exactly 1 stub call and returns only `0000000532120892`, never the cached `01` page. Reads with type filter `0:` or `0 ` return the stub's empty page with no rejection by the cache, and any key they write holds the identifier `0%3A` or `0+`. No written key contains the caller's subject or token, and a second `transaction` read for `0000000776200014` within its fresh TTL with a different token is a fresh hit.
 > - AC11: Redis failure: with every entry-store command failing, each `transaction` and `transactions` read is treated as a miss: it reaches the stub exactly once, returns the stub's result `FRESH`, and no Redis error reaches the caller. With the stub failing as well, the stub's `UNAVAILABLE` is the failure returned.
 > - AC12: Credentials: every stub call of both operations carries `authorization` equal to `Bearer ` followed by the test token and `x-api-key` equal to the value bound from `AUTH_SERVICE_API_KEY`, or an empty value when the key is empty, as the header-capturing interceptor records. With the root log level and the client frame logger at DEBUG on a live channel, the log output captured across the AC1, AC3, AC6 and AC9 paths contains neither value, and no written cache key contains either.
+>
+> > SCOPE-QUESTION (Resolved): The criterion also covers concurrent guard installation. Two more cases run in `TransactionActivityClientTest`. Shared-lock check, in the test JVM: while the test thread holds the monitor of `InternalLoggerFactory`, a second thread calling `TransactionActivityClient.ClientFrameLogGuard.install()` reaches thread state `BLOCKED` within 1 s, and `InternalLoggerFactory.getDefaultFactory()` returns the same object as before. Once the test releases the monitor, the call returns within 1 s. The check holds whether or not the guard is already installed, because the installed flag is read inside the lock. Concurrent installation with later DEBUG resets, in fresh JVMs: the test starts 5 child JVMs one after another through the JDK process API, `ProcessBuilder` with the running JVM's `java` command and the test class path, each running a `main` nested in `TransactionActivityClientTest`, so no guard is installed when a child starts. In each child, two threads released together by one `CountDownLatch` call `GrpcServerConfiguration.ServerFrameLogGuard.install()` and `TransactionActivityClient.ClientFrameLogGuard.install()`. The child then starts a new loopback server for the Transaction Activity stub, the service definition of `TransactionActivityStubRegistration` (CS-10-004, CS-10-005) hosted as stub `transaction-activity`, through `StubServerHost`, and builds and starts a `TransactionActivityClient` the way the other cases of this class do, with its target set to that server's bound port, the parent's service key as its `x-api-key` value and its cache on an empty in-memory `EntryStore`. Its new channel has opened no connection yet, and the `install()` calls that `StubServerHost` and the client make find their guards already installed and change nothing. Because `StubServerHost` and the client each apply their INFO hold when they start, the child only then sets the root level, `io.grpc`, `io.grpc.netty.shaded.io.grpc.netty.NettyServerHandler` and `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` to DEBUG through `LoggingSystem.get(classLoader)`, the state a later context's logging reset leaves. It then sends 5 `transactions` reads for account `00000000001` at page sizes 1 to 5 with no filters and no page token, each in its own 900 ms `RequestDeadline` and carrying the parent's bearer token. Each read has a page key of its own, so it misses the cache and reaches the stub, the first one opening the channel's first connection after the reset, and the stub request log then holds at least 5 entries. The parent generates the bearer token and the service key at runtime and writes them to the child's standard input, so no credential literal is committed, `CommittedSecretScanTest` (CS-11-001) stays green and neither value appears on a command line. The child prints that `InternalLoggerFactory.getInstance` reports DEBUG disabled for both frame-logger names and exits 0. The parent reads the child's merged standard output and standard error, requires that line and exit status 0, and finds neither value. The cases add no file, so the 4 files touched stand.
+>
 > - AC13: Swap point: with `card-servicing.clients.transaction-activity.target` set to the port of a second `StubHarness` serving `TransactionActivityStubRegistration`, every call of both operations lands in that harness's request log and none in the first harness's log, with no change to any class. With the property not overridden, the bound target address is `localhost:9090`.
 > > SCOPE-QUESTION (Resolved): Which criterion carries the authorization constraint of this account-data access path? None of AC1–AC13 does. Resolution: AC14 below. The client adds no access check of its own, and its unit suite adds no case for AC14: the account access guard (CS-12-003) decides access before any caller invokes the client, so the proof sits with the guard and with the endpoint stories that call this client.
 > >
@@ -108,7 +123,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit — Applies: `TransactionActivityClientTest` and `TransactionActivityClientCacheTest` cover AC1–AC13 on the loopback stub harness with per-test latency and failure overrides: the attempt timeout, the retry waits, the fit rule, the fail-hard list read, the detail stale fallback and its expiry, the not-found and invalid-token statuses, fresh hit, miss and write-back, key separation and encoding, Redis failure, the forwarded credentials and their absence from logs, and the swap point. AC14 is proven where the account access guard runs, by CS-12-003, CS-12-005 and the endpoint stories that call this client. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass; at least 80% line coverage per module.
+- Unit — Applies: `TransactionActivityClientTest` and `TransactionActivityClientCacheTest` cover AC1–AC13 on the loopback stub harness with per-test latency and failure overrides: the attempt timeout, the retry waits, the fit rule, the fail-hard list read, the detail stale fallback and its expiry, the not-found and invalid-token statuses, fresh hit, miss and write-back, key separation and encoding, Redis failure, the forwarded credentials and their absence from logs, the shared installation lock of the frame-log guard and its concurrent installation beside the server guard in five fresh JVMs with both frame loggers reset to DEBUG, one escaped warning line for each failed or stale read of a transaction ID or account identifier carrying a carriage return or line feed, and the swap point. AC14 is proven where the account access guard runs, by CS-12-003, CS-12-005 and the endpoint stories that call this client. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass; at least 80% line coverage per module.
 - Integration — Applies, through the Transaction Activity integration suite CS-10-007, which runs this client against the stub on a real gRPC channel with Testcontainers `postgres:16.6` and `redis:7.4.2`; this story adds no integration suite. Command `./gradlew :card-servicing-service:integrationTest`; one suite per external epic (CS-10-007 for this epic) covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance — Applies, through the transaction list SLA scenario CS-03-003 and the transaction detail SLA scenario CS-04-002, whose endpoints call this client. `docker compose -f tests/docker-compose.yml up -d --wait`, `./gradlew :card-servicing-service:performanceTest`, `docker compose -f tests/docker-compose.yml down`; p50, p95 and p99 below 1,000 ms over successful requests with failure injection off at 10 users × 100 sequential calls, 100,000 category balances and 1,000,000 transactions; injected failures proven by a logged `cutoffMs` at most 900 and a client-measured response below 1,000 ms; applies to balance-retrieval and drill-down stories.
 - End-to-end — Not applicable — covered by CS-03-001 and CS-04-001 at the endpoint level. Where it applies: `docker compose -f tests/docker-compose.yml up -d --wait`, `./gradlew :card-servicing-service:e2eTest`, `docker compose -f tests/docker-compose.yml down`; the four-step flow for account `00000000001` returns the expected fixture values and each stub's request log shows at least one call.
@@ -121,88 +136,84 @@ Completed during implementation.
 
 Recommended: Design Option A — detail entries and list pages under separate key families.
 
-Rationale: repeat detail reads and repeat list pages skip the remote call, while each family keeps the outage rule of its own degradation row.
+Rationale: repeat reads of both kinds skip the remote call.
 
-- Rejected: Design Option B, caching detail entries only — every list page would reach the stub and spend the stage budget on repeat pages.
-- Rejected: one list entry per account without the filters, page size and page token — one filter's page would answer another.
+- Rejected: Design Option B, detail entries only — every repeat list page would reach the stub.
+- Rejected: one list entry per account — one filter's page would answer another.
 
 ```mermaid
 sequenceDiagram
-    participant Service as Card servicing service
+    participant Service
     participant Cache as Shared cache
-    participant Stub as Transaction activity stub
-    Service->>Cache: read list page entry
+    participant Stub as Transaction stub
+    Service->>Cache: read list page
     Cache-->>Service: miss
-    Service->>Stub: first attempt with the lesser of 300 ms and the remaining budget
-    Stub-->>Service: unavailable status
+    Service->>Stub: attempt capped at 300 ms or the budget left
+    Stub-->>Service: unavailable
     Service->>Service: wait 50 ms
-    Service->>Stub: second attempt
+    Service->>Stub: retry
     alt answer arrives
         Stub-->>Service: list page
-        Service->>Cache: store page with its cached time
-    else retries exhausted or deadline reached
-        Service->>Service: fail hard with unavailable or<br/>deadline-exceeded status,<br/>no stale page served
+        Service->>Cache: store page
+    else attempts exhausted
+        Service->>Service: fail hard, no stale page
     end
 ```
 
 ### Shared by both options
 
-- Topology: the client lives inside the card servicing service with one channel to the Transaction Activity stub, on a loopback port in unit suites or at its container in the shared stack.
-- Naming: key families sit under the versioned cache prefix, and every identifier is form-encoded so any character of a transaction identifier or type filter yields a valid key.
-- Addressing: the target address and the service credential come from configuration.
-- Isolation: keys carry no caller identity, and the service reaches the shared cache only through the read-through cache and never reads the store directly.
-- Fallback: list reads have no stale path, and a detail entry within its maximum stale age answers an unavailable or deadline-exceeded failure as stale, as the degradation table sets out.
-- Provisioning: the channel is built at service start and connects on first use, and the service credential comes from the environment, or from the key vault when deployed.
-- Cut-over: the real service replaces the stub by target address and credential source only.
-- Failures: only unavailable and deadline-exceeded statuses are retried, and every other status surfaces after one attempt.
+- Topology: one channel links the service to the stub at a loopback port or its container.
+- Naming: keys sit under the versioned cache prefix with form-encoded identifiers.
+- Addressing: configuration supplies the target address and the service credential.
+- Isolation: keys carry no caller identity, and only the read-through cache touches the store.
+- Fallback: lists never go stale, and a detail entry within its maximum stale age answers an outage as stale.
+- Provisioning: the channel is built at start and connects on first use.
+- Cut-over: the real service replaces the stub by address and credential source only.
+- Failures: only unavailable and deadline-exceeded statuses retry, and each failed or stale read logs one warning line with its identifier escaped.
 
 ### Design Option A — detail entries and list pages under separate key families
 
-The client keeps two key families in the shared cache. A detail entry is keyed by the transaction identifier alone, and a list page by the account, the page size, the page token and both filters. Both families stay fresh for one minute, and only the detail family keeps a four-minute stale window for outages, ending at its five-minute maximum stale age.
+Detail entries are keyed by transaction, and list pages by account, paging and both filters. Only detail entries outlive their one-minute freshness, for up to five minutes.
 
 How it behaves:
 
-- A repeat detail read or a repeat list page within one minute answers from the shared cache with no remote call.
-- A miss or an entry past its freshness window runs one call under the call policy and writes the answer back with a new cache time.
-- A list read that fails after the retry cap fails hard with the unavailable or deadline-exceeded status, even with a recent page held.
-- A detail read that fails after the retry cap returns a held entry younger than five minutes as stale, and otherwise fails hard.
-- A not-found or invalid-argument status surfaces after one attempt and writes no entry.
-- A detail read hits whether or not the page that listed the transaction was cached.
+- A repeat read within one minute answers from the cache.
+- A miss or aged entry runs one policy call and writes back.
+- A failed list read fails hard despite a recent page.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | List key of account, page size, page token and both filters (vs account alone) | one filter's page never answers another | more cache entries |
-| 2 | Detail entries in their own family (vs inside list pages) | a detail read hits whether or not its page was cached | one more key family |
-| 3 | List pages served only while fresh (vs a stale window) | the list keeps its fail-hard rule | an outage shows as an error even with a recent page |
+| 1 | List key with filters and paging (vs account alone) | one filter's page never answers another | more cache entries |
+| 2 | Separate detail family (vs inside list pages) | detail hits need no cached page | one more key family |
+| 3 | Fresh-only list pages (vs a stale window) | the list keeps its fail-hard rule | outages show errors despite recent pages |
 
 Effort and risk: moderate effort, low risk.
 
 ### Design Option B — detail entries only
 
-Only detail entries are cached, under the same family, freshness window and maximum stale age as Option A. Every list page, repeat pages included, calls the Transaction Activity stub. The cache footprint stays small.
+Only detail entries are cached, as in Option A. Every list page calls the stub.
 
 How it differs:
 
-- No list-page family exists.
-- Repeat pages spend a full upstream attempt and its share of the stage budget.
-- The cache footprint stays small.
-- A list outage fails hard exactly as in Option A.
+- No list-page family exists, keeping the cache small.
+- Each repeat page spends an upstream attempt from the stage budget.
+- Detail reads match Option A.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | No list-page cache (vs a list-page family) | the cache holds no page entries | every repeat page costs a remote call |
-| 2 | Detail entries in their own family (vs no cache) | a repeat detail read skips the remote call | one key family to maintain |
-| 3 | Detail stale window kept (vs fail hard) | a short outage still shows a transaction | a stale detail can be nearly five minutes old |
+| 1 | No list-page cache (vs a list-page family) | no page entries held | each repeat page costs a remote call |
+| 2 | Separate detail family (vs no cache) | repeat detail reads skip the call | one key family to maintain |
+| 3 | Detail stale window kept (vs fail hard) | short outages still show a transaction | stale details can be nearly five minutes old |
 
-Effort and risk: small effort, at risk on the stage budget for repeat paging.
+Effort and risk: small effort, at risk on the stage budget.
 
 ### Recommendation
 
 - Option: Design Option A
-- Why: repeat pages and repeat detail reads skip the upstream call while the fail-hard rule for the list still holds.
+- Why: repeat reads skip the upstream call, and the list keeps its fail-hard rule.
 - Strongest argument against: list-page entries multiply with filter and token combinations.
-- Shared items that do not decide the choice: the call policy, the request deadline, the fail-hard and stale outcomes, credential forwarding and a cache failure treated as a miss.
-- Flip conditions: a low list-page hit rate, or cache memory beyond the sizing recorded in the plan's recommendations.
+- Shared items that do not decide the choice: the call policy, the deadline, outage outcomes, credentials and the cache-failure miss.
+- Flip conditions: a low list-page hit rate, or cache memory beyond the plan's sizing.
 
 ## Design Validation
 
@@ -210,42 +221,36 @@ Effort and risk: small effort, at risk on the stage budget for repeat paging.
 
 Settled assumptions:
 
-- The call policy and the request deadline exist from the call policy story.
-- The read-through cache treats a cache failure as a miss and serves no stale entry for a family whose maximum stale age equals its freshness window, which leaves that family no stale window.
-- The degradation table gives the list no stale path and the detail a stale path within its maximum stale age.
-- This story fixes a one-minute freshness window for both families and a five-minute maximum stale age for detail entries.
-- The transport writes header values only through its frame logger, which a process-wide guard silences below the information level.
+- The call policy, deadline and read-through cache come from their stories, and a cache failure counts as a miss.
+- A process-wide guard silences header logging and installs under one lock shared by every header-logging guard, server or client, keeping those installed before it.
 
 Open assumptions:
 
 - The list-page hit rate at the planning baseline Open → the transaction list service-level scenario.
-- A one-minute freshness window suits the data owner once real postings replace the stub Open → the data owner at sign-off.
+- A one-minute freshness window suits real postings Open → the data owner at sign-off.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the call policy cuts each attempt to the time left |
-| AC2 | Holds | the call policy retries only the two retryable statuses after the fit check |
-| AC3 | Holds | with no usable entry the final unavailable status fails the call |
-| AC4 | Holds | the fit check stops the third attempt before the cut-off |
-| AC5 | Holds | the list family has no stale window |
-| AC6 | Holds | the detail family serves a held entry as stale until its five-minute maximum stale age |
-| AC7 | Holds | the not-found status ends the call after one attempt |
-| AC8 | Holds | the invalid-argument status keeps its page token field |
-| AC9 | Holds | both families answer fresh entries with no remote call |
-| AC10 | Holds | the list key carries both filters in encoded form |
-| AC11 | Holds | the read-through cache treats its own failure as a miss |
-| AC12 | Holds | both credentials ride on each call with the frame logger silenced |
-| AC13 | Holds | the channel reads its target address from configuration |
-| AC14 | Holds | the account access guard denies the request before any read reaches the client |
+| AC1 | Holds | the policy caps each attempt |
+| AC2 | Holds | only retryable statuses retry |
+| AC3 | Holds | the final unavailable status fails the call |
+| AC4 | Holds | the fit check stops attempt three |
+| AC5 | Holds | lists never go stale |
+| AC6 | Holds | details serve stale for five minutes |
+| AC7 | Holds | not-found ends the call immediately |
+| AC8 | Holds | the page token field survives |
+| AC9 | Holds | fresh entries skip the call |
+| AC10 | Holds | list keys carry both filters |
+| AC11 | Holds | cache failures count as misses |
+| AC12 | Holds | the guard silences credential logging |
+| AC13 | Holds | configuration supplies the target |
+| AC14 | Holds | the access guard denies ahead of any read |
 
 ### Option B
 
 Settled assumptions:
 
-- The call policy and the request deadline exist from the call policy story.
-- The read-through cache treats a cache failure as a miss.
-- The degradation table gives the list no stale path and the detail a stale path within its maximum stale age.
-- This story fixes a one-minute freshness window and a five-minute maximum stale age for detail entries.
+- The call policy, deadline and read-through cache come from their stories, and a cache failure counts as a miss.
 
 Open assumptions:
 
@@ -253,20 +258,20 @@ Open assumptions:
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the call policy cuts each attempt to the time left |
-| AC2 | Holds | the call policy retries only the two retryable statuses after the fit check |
-| AC3 | Holds | with no usable entry the final unavailable status fails the call |
-| AC4 | Holds | the fit check stops the third attempt before the cut-off |
-| AC5 | Holds | no list page is ever held |
+| AC1 | Holds | the policy caps each attempt |
+| AC2 | Holds | only retryable statuses retry |
+| AC3 | Holds | the final unavailable status fails the call |
+| AC4 | Holds | the fit check stops attempt three |
+| AC5 | Holds | no list page is held |
 | AC6 | Holds | the detail family matches Option A |
-| AC7 | Holds | the not-found status ends the call after one attempt |
-| AC8 | Holds | the invalid-argument status keeps its page token field |
+| AC7 | Holds | not-found ends the call immediately |
+| AC8 | Holds | the page token field survives |
 | AC9 | Conditional | it holds for detail entries only |
 | AC10 | Holds | no list keys exist |
-| AC11 | Holds | the read-through cache treats its own failure as a miss |
-| AC12 | Holds | both credentials ride on each call with the frame logger silenced |
-| AC13 | Holds | the channel reads its target address from configuration |
-| AC14 | Holds | the account access guard denies the request before any cache or remote read |
+| AC11 | Holds | cache failures count as misses |
+| AC12 | Holds | the guard silences credential logging |
+| AC13 | Holds | configuration supplies the target |
+| AC14 | Holds | the access guard denies ahead of any read |
 
 ## Metadata
 

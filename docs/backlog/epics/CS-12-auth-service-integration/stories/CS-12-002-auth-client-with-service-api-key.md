@@ -31,6 +31,8 @@ Parent epic: [CS-12 Auth Service Integration](../README.md)
 >
 > > SCOPE-QUESTION (Resolved): The level hold above does not by itself keep the credentials out of the log. A later application context in the same JVM, such as a test context started while the client's channel is live, initialises logging and applies its own `logging.level` settings when its environment is prepared. Until a client of that context re-applies the hold, which a context that starts no client never does, the frame logger of every live client connection reads DEBUG. `AuthClient` therefore also owns a credential guard that no logger level can lift: its nested class `AuthClient.ClientFrameLogGuard`, built the same way as the server guard `GrpcServerConfiguration.ServerFrameLogGuard` of CS-11-002, whose idempotent, synchronized static `install()` replaces the default logger factory of the shaded Netty transport, through `io.grpc.netty.shaded.io.netty.util.internal.logging.InternalLoggerFactory.setDefaultFactory`, with a wrapper around the factory it replaces. The wrapper hands every logger name to that factory unchanged except `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler`, for which it returns a logger that reports TRACE and DEBUG as disabled, discards every TRACE and DEBUG event and passes INFO and above to the delegate. The transport builds the frame logger of each connection the channel opens from that factory and asks the logger whether DEBUG is enabled before it writes a frame, so no frame of a guarded connection reaches a log line, whatever level `LoggingSystem`, a `logging.level` setting, a later context's logging reset or a runtime level change gives the logger. `AuthClient` calls `install()` before it builds its channel, so the guard is in place before the channel opens its first connection. The guard records in a static field that it has installed its wrapper, so a second call changes nothing, and nothing removes the wrapper, so it holds for as long as the JVM runs, across every later context start and close. The Config client (CS-11-006) and the Reference Data client (CS-13-003) each install a guard of their own in the same way, as a nested class of the class that applies their hold and builds their channel, and a guard installed after another wraps it and changes nothing observable, because both drop the same events. The level hold stays, but the guard, not the level, is the never-log protection AC10 relies on. The guard adds no file, no dependency, since the factory ships in the pinned `grpc-netty-shaded`, and no environment variable, so the 3 files touched stand.
 >
+> > SCOPE-QUESTION (Resolved): The guard stays in place only while no other installer publishes over it, and the class monitor of `AuthClient.ClientFrameLogGuard` cannot ensure that. Every frame-log guard of the process replaces the same process-wide default factory of the shaded transport by reading the factory, wrapping it and publishing the wrapper, so a server install and a client install running at the same time under separate class monitors could both read one factory and both publish a wrapper around it, and the wrapper published first would be lost. One lock: every frame-log guard of the process, the server guard `GrpcServerConfiguration.ServerFrameLogGuard` (CS-11-002) and the client guards `AuthClient.ClientFrameLogGuard` (this story), `ConfigClient.ClientFrameLogGuard` (CS-11-006), `ReferenceDataClientConfiguration.ClientFrameLogGuard` (CS-13-003), `CardDataChannelConfiguration.ClientFrameLogGuard` (CS-09-005) and `TransactionActivityClient.ClientFrameLogGuard` (CS-10-006), runs its whole `install()` while holding the monitor of the shaded logger-factory class itself, `synchronized (InternalLoggerFactory.class)` on `io.grpc.netty.shaded.io.netty.util.internal.logging.InternalLoggerFactory`. The synchronization of the synchronized static `install()` above, of this guard and of the server guard it is built like, is this shared monitor, not the guard class's. The guard class's own monitor plays no part, because each guard class has a monitor of its own and separate monitors do not exclude each other. That class object exists once per class loader, the same scope as the default-factory field every guard replaces, so every installer able to replace that factory shares it, and the lock needs no shared class, no new file and no story edge. Sequence inside the lock: `install()` reads the guard's installed flag and returns at once when it is set. Otherwise it reads the current default factory with `InternalLoggerFactory.getDefaultFactory()`, builds its wrapper around exactly that factory, publishes the wrapper with `InternalLoggerFactory.setDefaultFactory`, and sets the installed flag only after that call returns. Preservation: because the read and the publication happen under the same lock, no installer publishes over a factory it has not read. Each wrapper delegates to the factory it found, the wrappers of earlier guards included, so the chain keeps every guard installed before it, whatever the start order and the thread. No code of the service or its tests replaces the default factory except an installer that holds this lock and follows this sequence, such as the test-local client-side installer of CS-11-002. The statement above that a guard installed after another wraps it and changes nothing observable therefore holds in any order and on any thread, the server guard included, because every guard installs under the shared lock. The four sibling client guards named above, of the Config client (CS-11-006), the Reference Data client (CS-13-003), the Card Data client (CS-09-005) and the Transaction Activity client (CS-10-006), are built the same way as this one and take the same lock in the same sequence. Unchanged: the wrapper behaviour, the rule that `AuthClient` calls `install()` before it builds its channel, the rule that nothing removes the wrapper, the level hold, and the statement that the guard adds no file, no dependency and no environment variable, so the 3 files touched stand.
+>
 >   - Holds no cache, no store connection and no Redis client.
 > - `card-servicing-service/src/main/java/com/example/cardservicing/integration/auth/AuthCredentialsInterceptor.java`:
 >   - A gRPC `ClientInterceptor` on the Auth channel that adds `authorization: Bearer <caller token>` to every call, taking the token from a per-call `CallOptions` key that `AuthClient` sets.
@@ -90,6 +92,8 @@ Parent epic: [CS-12 Auth Service Integration](../README.md)
 >
 > > SCOPE-QUESTION (Resolved): The criterion also covers a live client channel while logger levels change. Two more cases run in `AuthClientTest` against the Auth stub that `StubHarness` started, on an `AuthClient` built with a service key generated at runtime, whose channel a first call has opened. Each case sends `authorizeAccountAccess` calls for subject `USER0001` and account `00000000001`, each with a bearer token generated at runtime, so no credential literal is committed and `CommittedSecretScanTest` (CS-11-001) stays green, with output captured by Spring Boot's `OutputCaptureExtension`, which records standard output and standard error and so keeps recording across a logging reset, and with the stub server's transport frame logger left out as above. First, the test sets the effective level of `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` to DEBUG through `LoggingSystem`, the state a logging reset leaves before any re-application, sends 5 calls that each return `allowed=true`, since the stub ignores the forwarded token, and then sets the level back to INFO. Second, the test starts a further application through `SpringApplicationBuilder` from a test configuration that declares a second `AuthClient` and its collaborators, with `card-servicing.auth.target` set to the same stub's loopback port and `logging.level.root`, `logging.level.io.grpc` and `logging.level.io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` set to DEBUG, and adds a test listener ordered at `LoggingApplicationListener.DEFAULT_ORDER + 1`, directly after Spring Boot's logging listener. On `ApplicationEnvironmentPreparedEvent`, after that application has initialised logging and applied its DEBUG settings and before any of its beans exists, the listener reads the effective level of `NettyClientHandler` as DEBUG and then sends 5 calls on the already-live client of the first case, each with a newly generated token, all returning `allowed=true` before the listener returns. The application then reports ready, with the effective level of `NettyClientHandler` back at INFO once its client has started, and is closed. None of the values generated in either case appears in the captured output.
 >
+> > SCOPE-QUESTION (Resolved): The criterion also covers concurrent guard installation. Two more cases run in `AuthClientTest`. Shared-lock check, in the test JVM: while the test thread holds the monitor of `InternalLoggerFactory`, a second thread calling `AuthClient.ClientFrameLogGuard.install()` reaches thread state `BLOCKED` within 1 s, and `InternalLoggerFactory.getDefaultFactory()` returns the same object as before. Once the test releases the monitor, the call returns within 1 s. The check holds whether or not the guard is already installed, because the installed flag is read inside the lock. Concurrent installation with later DEBUG resets, in fresh JVMs: the test starts 5 child JVMs one after another through the JDK process API, `ProcessBuilder` with the running JVM's `java` command and the test class path, each running a `main` nested in `AuthClientTest`, so no guard is installed when a child starts. In each child, two threads released together by one `CountDownLatch` call `GrpcServerConfiguration.ServerFrameLogGuard.install()` and `AuthClient.ClientFrameLogGuard.install()`. The child then starts a new loopback server for the Auth stub of `AuthStubRegistration` (CS-12-001) through `StubServerHost`, and builds and starts an `AuthClient` with that server's bound port as its target and the parent's service key, so the client opens a new channel to it. That channel has opened no connection yet, and the `install()` calls that `StubServerHost` and that `AuthClient` make find their guards already installed and change nothing. Because `StubServerHost` and the client each apply their INFO hold when they start, the child only then sets the root level, `io.grpc`, `io.grpc.netty.shaded.io.grpc.netty.NettyServerHandler` and `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` to DEBUG through `LoggingSystem.get(classLoader)`, the state a later context's logging reset leaves. A reset made before the starts would be undone by the holds and would hide a lost wrapper. It then sends 5 `authorizeAccountAccess` calls for subject `USER0001` and account `00000000001`, each carrying the parent's bearer token and each returning `allowed=true`, the first one opening the channel's first connection after the reset. The parent generates the bearer token and the service key at runtime and writes them to the child's standard input, so no credential literal is committed, `CommittedSecretScanTest` (CS-11-001) stays green and neither value appears on a command line. With both frame loggers still at DEBUG, the child prints that `InternalLoggerFactory.getInstance` reports DEBUG disabled for both frame-logger names and exits 0. The parent reads the child's merged standard output and standard error, sees that line and exit status 0, and finds neither value. Because the child installs the server guard as well, this case also covers the stub server's transport frame logger, and the other cases of the criterion keep leaving that logger to the stub hosting of CS-11-002.
+>
 > ### 3. Dependencies
 >
 > - CS-12-001 — the Auth stub, its test registration and the fixture tokens the client calls.
@@ -122,7 +126,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. Cases: both credentials on both calls with a set and an empty service key, the fixture answers, the 300 ms and 200 ms attempt bounds, the retry cap and fit rule under injected failure and latency, the one-attempt statuses, the 401, 503 and 504 mapping with the receipt `traceId`, the 2,000 ms deadline case, the settings override, a provider change between the two Auth calls of one request, which leaves that request on the settings it captured at receipt while the next request uses the new ones, the uncached repeat calls, the DEBUG log scan, and the client frame-logger guard with the client frame logger forced to DEBUG on a live channel and during a later application's logging initialisation against the already-live client.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass and line coverage is at least 80% per module. Cases: both credentials on both calls with a set and an empty service key, the fixture answers, the 300 ms and 200 ms attempt bounds, the retry cap and fit rule under injected failure and latency, the one-attempt statuses, the 401, 503 and 504 mapping with the receipt `traceId`, the 2,000 ms deadline case, the settings override, a provider change between the two Auth calls of one request, which leaves that request on the settings it captured at receipt while the next request uses the new ones, the uncached repeat calls, the DEBUG log scan, the client frame-logger guard with the client frame logger forced to DEBUG on a live channel and during a later application's logging initialisation against the already-live client, and the shared installation lock of the frame-log guard, with its concurrent installation beside the server guard in five fresh JVMs with both frame loggers reset to DEBUG.
 - Integration: Applies through the Auth integration suite (CS-12-005), which runs this client against the Auth stub behind the account access guard. Command `./gradlew :card-servicing-service:integrationTest`; all pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Not applicable — Auth latency is measured through the endpoint SLA scenarios; it applies to balance-retrieval and drill-down stories. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -136,73 +140,70 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — one client-side metadata interceptor adds the bearer token and the service key header to every Auth call.
+Recommended: Design Option A — one channel interceptor adds both credentials to every Auth call.
 
-Rationale: one interceptor on the Auth channel attaches both credentials in one place, so no Auth call leaves without them and only one place ever handles their values.
+Rationale: one interceptor attaches both credentials in one place.
 
-- Rejected: Option B, credentials attached at each call site, because two call sites must stay in step and each one is a place a credential could leak into a log.
-- Rejected: caching validation answers for a short time, because a revoked token would keep passing until its entry expired.
+- Rejected: Option B, per-call-site credentials, because two sites must stay in step.
+- Rejected: a short-lived answer cache, because a revoked token would keep passing.
 
 Shared by both options:
 
-- Topology: one long-lived remote procedure channel per service instance to the Auth service, shared by all concurrent requests.
-- Naming: calls go to the Auth service name of the contract, and log entries name the operation and outcome, never a credential.
-- Addressing: one configured target address, which together with the credential source is the only value the real-service swap changes.
-- Isolation: the client holds no cache and no store, so every token check and every access question reaches the Auth service.
-- Fallback: none, because the client fails closed and Auth has no degraded answer.
-- Provisioning: the service key comes from the environment locally and from the secret vault when deployed.
-- Cut-over: the real Auth service replaces the stub by a change of address and credential source only.
-- Failures: both calls of a request take the timeout setting and retry cap from the one settings record that request took at receipt, each attempt is cut to the lesser of that timeout and the time left, retries stay within the call policy's cap and fit rule, the cut-off time ends the wait, and every failure maps to 401, 503 or 504.
+- Topology: one long-lived channel per service instance, shared by all requests.
+- Naming: logs name operation and outcome, never a credential.
+- Addressing: one configured target address.
+- Isolation: no cache or store, so every check reaches Auth.
+- Fallback: none, because the client fails closed.
+- Provisioning: the key comes from the environment locally and the secret vault when deployed.
+- Cut-over: only address and credential source change.
+- Failures: attempts use the receipt settings and time left, and failures map to 401, 503 or 504.
 
 ### Design Option A
 
-A client-side metadata interceptor sits on the one Auth channel. For every call it adds the caller's bearer token, which the client hands over as a per-call option, and the service key header from the typed configuration. The client itself only builds requests, runs each attempt through the call policy and turns final statuses into the standard failures.
+An interceptor on the Auth channel adds the caller's token and the service key to every call. The client only builds requests and maps final statuses.
 
 How it behaves:
 
-- Both credentials ride on every token check and every access question, and no call site can skip them.
-- An empty service key is still sent as an empty header, so the stub phase runs with no secret.
-- The unauthenticated status and the invalid-argument status return after one attempt, and only the unavailable and deadline-exceeded statuses retry.
-- An invalid-argument answer to a token check means a missing or over-long token and maps to 401, and any other unexpected status maps to 503.
-- A denial comes back as an ordinary answer for the access guard story to turn into 403.
-- The trace identifier issued at receipt reaches every failure through the standard error object.
-- Neither credential value reaches a log line, and before it builds its channel the client fits the transport with a header-logging guard that stays in place for the life of the process, a later application start included.
+- No call site can skip a credential, and an empty key is still sent.
+- Only unavailable and deadline-exceeded statuses retry.
+- An invalid-argument token answer, for a missing or over-long token, maps to 401, other unexpected statuses to 503, and a denial is an ordinary answer.
+- Before its channel opens, the client fits a process-wide header-logging guard, which installs under one lock shared by every such guard and keeps the guards installed before it.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One metadata interceptor on the channel (vs headers set per call) | credentials are attached in one place | credential handling is hidden from the call site reader |
-| 2 | No retry on the unauthenticated status (vs uniform retry) | a rejected token is never retried into a pass | a transient fault reported as unauthenticated is not retried |
-| 3 | Never cache Auth answers (vs a short-lived cache) | a revoked token fails on the next request | every request pays for two Auth calls |
-| 4 | Empty service key still sent (vs call refused) | the stub phase runs with no secret | a missing deployed key shows only as rejection by the real service |
+| 1 | One channel interceptor (vs per-call headers) | one attachment point | credential handling hidden from call sites |
+| 2 | No retry on unauthenticated (vs uniform retry) | rejected tokens stay rejected | transient unauthenticated faults stay failed |
+| 3 | Never cache answers (vs a short-lived cache) | revocation applies from the next request | two Auth calls per request |
+| 4 | Empty key still sent (vs call refused) | the stub phase needs no secret | a missing deployed key shows only as rejection |
 
-Effort and risk: one client with its header-logging guard, one interceptor and one test class, with the risk in a channel that opens a connection before the guard is fitted.
+Effort and risk: one client, one interceptor and one test class, risking a connection opened before the guard.
 
 ### Design Option B
 
-Each of the two client operations builds its call metadata itself, adding the caller's bearer token and the service key header before the call policy runs the attempt. No interceptor sits on the channel. Behaviour toward the Auth service is the same as in Option A, but credential handling is repeated at each call site.
+Each client operation adds both credentials to its own call metadata, with no channel interceptor. Auth behaviour matches Option A.
 
 How it differs:
 
-- Each call site copies the bearer token and the service key into its own metadata.
-- A new Auth operation must repeat the same two headers by hand.
-- Credential values pass through two code paths, each of which could write them to a log.
-- Tests check both credentials at each call site rather than once on the channel.
+- Each call site copies both credentials.
+- A new operation must repeat both headers.
+- Credentials pass through two code paths, each able to log them.
+- Tests check credentials at each call site.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Headers set at each call site (vs one channel interceptor) | credential handling is visible where each call is made | two call sites must stay in step |
-| 2 | No retry on the unauthenticated status (vs uniform retry) | a rejected token is never retried into a pass | a transient fault reported as unauthenticated is not retried |
-| 3 | Never cache Auth answers (vs a short-lived cache) | a revoked token fails on the next request | every request pays for two Auth calls |
+| 1 | Per-call-site headers (vs one channel interceptor) | credential handling visible at each call | two call sites to keep in step |
+| 2 | No retry on unauthenticated (vs uniform retry) | rejected tokens stay rejected | transient unauthenticated faults stay failed |
+| 3 | Never cache answers (vs a short-lived cache) | revocation applies from the next request | two Auth calls per request |
 
-Effort and risk: one client and one test class with no interceptor, with the risk in a call site that omits or logs a credential.
+Effort and risk: one client and one test class, risking a call site omitting or logging a credential.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: one interceptor guarantees both credentials on every Auth call and keeps their values in one place that never logs them.
-- Strongest argument against: an interceptor hides credential handling from a reader of the call site.
-- Shared items that do not decide the choice: the channel and its target address, the call policy with its timeout, retries and cut-off, the fail-closed mapping, the absence of a cache and the address-only cut-over.
-- Flip conditions: the two Auth operations need different credentials, or the real Auth service requires a per-call signature built from the request body.
+- Why: one interceptor puts both credentials on every call.
+- Strongest argument against: the interceptor hides credential handling from call sites.
+- Shared items that do not decide the choice: the channel, call policy, fail-closed mapping, no cache and cut-over.
+- Flip conditions: the operations need different credentials, or the real service requires a per-call request signature.
 
 ## Design Validation
 
@@ -210,56 +211,52 @@ Effort and risk: one client and one test class with no interceptor, with the ris
 
 Settled assumptions:
 
-- The stub ignores the service key header and the forwarded bearer token and never re-checks access.
-- The call policy story supplies the timeout setting, the retry rule and the request deadline with its cut-off time, and the request deadline holds the settings record taken once at receipt.
-- The fixture tokens and their answers are fixed by the Auth stub story.
-- The error-object story maps the unauthenticated status to 401, the unavailable status to 503 and the deadline-exceeded status to 504, each with the receipt trace identifier.
-- The transport writes header values only through its frame logger, which it takes from a replaceable logger factory for each new connection and which checks whether debug output is enabled before each frame.
+- The stub ignores both credentials and never re-checks access.
+- The call policy story supplies the timeout, retry rule and a deadline holding the receipt settings.
+- The stub story fixes the fixture answers, and the error-object story the status mapping.
+- The transport takes each connection's header logger from a replaceable factory.
 
 Open assumptions:
 
-- Open → the real-service swap settles that the real Auth service accepts the forwarded bearer token together with the service key header.
+- Open → the real-service swap settles that real Auth accepts the forwarded token with the key.
 - Open → the Auth integration suite settles retry and cut-off timing on a loaded runner.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the interceptor adds both headers to every call |
-| AC2 | Holds | the client passes the stub's answers through unchanged |
-| AC3 | Holds | the call policy cuts each attempt to the time left |
-| AC4 | Conditional | attempt counts under latency depend on thread scheduling on the runner |
-| AC5 | Holds | only two statuses enter the retry path |
-| AC6 | Holds | every non-success status maps to a failure with no identity or permission |
-| AC7 | Conditional | the real-clock case depends on thread scheduling on the runner |
-| AC8 | Holds | both calls use the settings their request took once from the settings provider at receipt |
+| AC1 | Holds | the interceptor adds both headers |
+| AC2 | Holds | stub answers pass through unchanged |
+| AC3 | Holds | attempts stop at the time left |
+| AC4 | Conditional | attempt counts depend on runner scheduling |
+| AC5 | Holds | only two statuses retry |
+| AC6 | Holds | no failure carries identity or permission |
+| AC7 | Conditional | real-clock timing depends on runner scheduling |
+| AC8 | Holds | both calls use the receipt settings |
 | AC9 | Holds | the client holds no cache |
-| AC10 | Holds | a process-wide guard shuts off the transport's header logging at every log level |
+| AC10 | Holds | a process-wide guard blocks header logging |
 
 ### Validation of Option B
 
 Settled assumptions:
 
-- The stub ignores the service key header and the forwarded bearer token and never re-checks access.
-- The call policy story supplies the timeout setting, the retry rule and the request deadline with its cut-off time, and the request deadline holds the settings record taken once at receipt.
-- The fixture tokens and their answers are fixed by the Auth stub story.
-- The transport writes header values only through its frame logger, which it takes from a replaceable logger factory for each new connection and which checks whether debug output is enabled before each frame.
+- Option A's settled assumptions hold.
 
 Open assumptions:
 
-- Open → the real-service swap settles that the real Auth service accepts the forwarded bearer token together with the service key header.
-- Open → a review of both call sites settles that neither writes a credential value to a log.
+- Open → the real-service swap settles that real Auth accepts the forwarded token with the key.
+- Open → a review of both call sites settles that neither logs a credential.
 
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Conditional | each call site must add both credentials |
-| AC2 | Holds | the client passes the stub's answers through unchanged |
-| AC3 | Holds | the call policy cuts each attempt to the time left |
-| AC4 | Conditional | attempt counts under latency depend on thread scheduling on the runner |
-| AC5 | Holds | only two statuses enter the retry path |
-| AC6 | Holds | every non-success status maps to a failure with no identity or permission |
-| AC7 | Conditional | the real-clock case depends on thread scheduling on the runner |
-| AC8 | Holds | both calls use the settings their request took once from the settings provider at receipt |
+| AC2 | Holds | stub answers pass through unchanged |
+| AC3 | Holds | attempts stop at the time left |
+| AC4 | Conditional | attempt counts depend on runner scheduling |
+| AC5 | Holds | only two statuses retry |
+| AC6 | Holds | no failure carries identity or permission |
+| AC7 | Conditional | real-clock timing depends on runner scheduling |
+| AC8 | Holds | both calls use the receipt settings |
 | AC9 | Holds | the client holds no cache |
-| AC10 | At risk | two call sites could each log the token outside the transport guard |
+| AC10 | At risk | either call site could log the token outside the guard |
 
 ## Metadata
 

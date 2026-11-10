@@ -45,6 +45,8 @@ Parent epic: [CS-13 Reference Data Integration](../README.md)
 >
 > > SCOPE-QUESTION (Resolved): The level hold above does not by itself keep the credentials out of the log. A later application context in the same JVM, such as a test context started while the client's channel is live, initialises logging and applies its own `logging.level` settings when its environment is prepared. Until a client of that context re-applies the hold, which a context that starts no client never does, the frame logger of every live client connection reads DEBUG. `ReferenceDataClientConfiguration` therefore also owns a credential guard that no logger level can lift: its nested class `ReferenceDataClientConfiguration.ClientFrameLogGuard`, built the same way as the server guard `GrpcServerConfiguration.ServerFrameLogGuard` of CS-11-002, whose idempotent, synchronized static `install()` replaces the default logger factory of the shaded Netty transport, through `io.grpc.netty.shaded.io.netty.util.internal.logging.InternalLoggerFactory.setDefaultFactory`, with a wrapper around the factory it replaces. The wrapper hands every logger name to that factory unchanged except `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler`, for which it returns a logger that reports TRACE and DEBUG as disabled, discards every TRACE and DEBUG event and passes INFO and above to the delegate. The transport builds the frame logger of each connection the channel opens from that factory and asks the logger whether DEBUG is enabled before it writes a frame, so no frame of a guarded connection reaches a log line, whatever level `LoggingSystem`, a `logging.level` setting, a later context's logging reset or a runtime level change gives the logger. `ReferenceDataClientConfiguration` calls `install()` before it builds its channel, so the guard is in place before the channel opens its first connection. The guard records in a static field that it has installed its wrapper, so a second call changes nothing, and nothing removes the wrapper, so it holds for as long as the JVM runs, across every later context start and close. The Config client (CS-11-006) and the Auth client (CS-12-002) each install a guard of their own in the same way, as a nested class of the class that applies their hold and builds their channel, and a guard installed after another wraps it and changes nothing observable, because both drop the same events. The level hold stays, but the guard, not the level, is the never-log protection AC9 relies on. The guard adds no file, no dependency, since the factory ships in the pinned `grpc-netty-shaded`, and no environment variable, so the 5 files touched stand.
 >
+> > SCOPE-QUESTION (Resolved): The synchronization of the idempotent, synchronized static `install()` above is one lock shared by every frame-log guard of the process, not the guard class's own monitor. Each guard class has a monitor of its own, and separate monitors do not exclude each other, so a server install and a client install running at once could both read the same default factory and each publish a wrapper around it, losing one wrapper, and new connections could then log credential frames once a later context resets the frame logger to DEBUG. Every frame-log guard of the process, the server guard `GrpcServerConfiguration.ServerFrameLogGuard` (CS-11-002) and the client guards `AuthClient.ClientFrameLogGuard` (CS-12-002), `ConfigClient.ClientFrameLogGuard` (CS-11-006), `ReferenceDataClientConfiguration.ClientFrameLogGuard` (this story), `CardDataChannelConfiguration.ClientFrameLogGuard` (CS-09-005) and `TransactionActivityClient.ClientFrameLogGuard` (CS-10-006), therefore runs its whole `install()` while holding the monitor of the shaded logger-factory class itself, `synchronized (InternalLoggerFactory.class)` on `io.grpc.netty.shaded.io.netty.util.internal.logging.InternalLoggerFactory`, and the guard class's own monitor plays no part. That class object exists once per class loader, the same scope as the default-factory field every guard replaces, so every installer able to replace that factory shares it, and the lock needs no shared class, no new file and no story edge. Inside the lock, `install()` reads the guard's installed flag and returns at once when it is set. Otherwise it reads the current default factory with `InternalLoggerFactory.getDefaultFactory()`, builds its wrapper around exactly that factory, publishes the wrapper with `InternalLoggerFactory.setDefaultFactory`, and sets the installed flag only after that call returns. Because the read and the publication happen under the same lock, no installer publishes over a factory it has not read: each wrapper delegates to the factory it found, the wrappers of earlier guards included, so the chain keeps every guard installed before it, whatever the start order and the thread. The composition stated above, a guard installed after another wrapping it, therefore holds in any order and on any thread. No code of the service or its tests replaces the default factory except an installer that holds this lock and follows this sequence, such as the test-local client-side installer of CS-11-002. The wrapper behaviour, the install before the channel is built, the never-removed wrapper, the level hold and the per-call credentials stay as stated above, and the guard still adds no file, no dependency and no environment variable, so the 5 files touched stand.
+>
 > - `card-servicing-service/src/test/java/com/example/cardservicing/integration/referencedata/ReferenceDataClientTest.java`: the client tests of section 2 on the loopback stub harness of CS-11-002 (`card-servicing-service/src/test/java/com/example/cardservicing/support/StubHarness.java`):
 >   - `StubHarness.of(new ReferenceDataStubRegistration())` (CS-13-002) serves the stub answers, with per-test latency and failure-rate overrides through `StubHarness.inject` on stub `reference-data` and attempts counted in the stub request log.
 >   - A test-local anonymous `StubRegistration` under stub name `reference-data`, which `StubHarness.allRegistered()` never discovers, wraps the stub's service definition with a header-capturing server interceptor, fails one operation while answering the other, and serves the `UNAUTHENTICATED` and `INTERNAL` answers the stub never gives.
@@ -91,6 +93,8 @@ Parent epic: [CS-13 Reference Data Integration](../README.md)
 >
 > > SCOPE-QUESTION (Resolved): The criterion also covers a live client channel while logger levels change. Two more cases run in `ReferenceDataClientTest` against the Reference Data stub that `StubHarness` started, with every entry-store command failing so that each call reaches the stub, on a client built with a service key generated at runtime, whose channel a first call has opened. Each case sends `transactionTypes` calls, each with a bearer token generated at runtime, so no credential literal is committed and `CommittedSecretScanTest` (CS-11-001) stays green, with output captured by Spring Boot's `OutputCaptureExtension`, which records standard output and standard error and so keeps recording across a logging reset. First, the test sets the effective level of `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` to DEBUG through `LoggingSystem`, the state a logging reset leaves before any re-application, sends 5 calls that each return `FRESH` with the 7 type descriptions, and then sets the level back to INFO. Second, the test starts a further application through `SpringApplicationBuilder` from a test configuration that imports `ReferenceDataClientConfiguration` and declares the client's collaborators, with `card-servicing.clients.reference-data.target` set to the same stub's loopback port and `logging.level.root`, `logging.level.io.grpc` and `logging.level.io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` set to DEBUG, and adds a test listener ordered at `LoggingApplicationListener.DEFAULT_ORDER + 1`, directly after Spring Boot's logging listener. On `ApplicationEnvironmentPreparedEvent`, after that application has initialised logging and applied its DEBUG settings and before any of its beans exists, the listener reads the effective level of `NettyClientHandler` as DEBUG and then sends 5 calls on the already-live client of the first case, each with a newly generated token, all returning `FRESH` with the 7 type descriptions before the listener returns. The application then reports ready, with the effective level of `NettyClientHandler` back at INFO once its client configuration has started, and is closed. None of the values generated in either case appears in the captured output.
 >
+> > SCOPE-QUESTION (Resolved): The criterion also covers concurrent guard installation. Two more cases run in `ReferenceDataClientTest`. First, the shared-lock check, in the test JVM: while the test thread holds the monitor of `InternalLoggerFactory`, a second thread calling `ReferenceDataClientConfiguration.ClientFrameLogGuard.install()` reaches thread state `BLOCKED` within 1 s, and `InternalLoggerFactory.getDefaultFactory()` returns the same object as before. Once the test releases the monitor, the call returns within 1 s. The check holds whether or not the guard is already installed, because the installed flag is read inside the lock. Second, concurrent installation with later DEBUG resets, in fresh JVMs: the test starts 5 child JVMs one after another through the JDK process API, `ProcessBuilder` with the running JVM's `java` command and the test class path, each running a `main` nested in `ReferenceDataClientTest`, so no guard is installed when a child starts. In each child, two threads released together by one `CountDownLatch` call `GrpcServerConfiguration.ServerFrameLogGuard.install()` and `ReferenceDataClientConfiguration.ClientFrameLogGuard.install()`. The child then sets the root level, `io.grpc`, `io.grpc.netty.shaded.io.grpc.netty.NettyServerHandler` and `io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler` to DEBUG through `LoggingSystem.get(classLoader)`, the state a later context's logging reset leaves, starts a new loopback server for the Reference Data stub, built from `ReferenceDataStubRegistration` (CS-13-002), through `StubServerHost`, opens a new channel to it, builds the client over that channel with every entry-store command failing, so that each call reaches the stub as in the cases above, and sets the same four loggers to DEBUG again, since `StubServerHost` holds the server frame logger at INFO when it starts a server. The `install()` call that `StubServerHost` makes finds the server guard already installed and changes nothing. The child then sends 5 `transactionTypes` calls, each returning `FRESH` with the 7 type descriptions and carrying a bearer token and a service key that the parent generated at runtime and wrote to the child's standard input, so no credential literal is committed, `CommittedSecretScanTest` (CS-11-001) stays green and neither value appears on a command line. The child prints that `InternalLoggerFactory.getInstance` reports DEBUG disabled for both frame-logger names and exits 0. The parent reads the child's merged standard output and standard error, requires that line and exit status 0, and finds neither value.
+>
 > - AC10: Types and categories resolve independently. A failing categories call leaves a fresh types result `FRESH`, and the reverse holds too. With the test-local server failing only `ListTransactionCategories`, `transactionTypes` returns `FRESH` from the stub while `transactionCategories` returns `PARTIAL`, the outcomes swap when only `ListTransactionTypes` fails, and a held `cs:v1:refcats` entry never answers a types call.
 >
 > ### 3. Dependencies
@@ -122,7 +126,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass with ≥80% line coverage per module. `ReferenceDataClientTest` and `ReferenceDataResultTest` cover AC1–AC10 on the loopback stub harness with per-test latency and failure overrides: fresh hit, miss and write-back, the attempt timeout, the retry counts and the non-retried statuses, the 2,000 ms deadline case, stale fallback at 3,600 s and 86,399 s, partial fallback at 86,400 s and with no entry, Redis failure, the forwarded credentials and their absence from logs, the client frame-logger guard with the client frame logger forced to DEBUG on a live channel and during a later application's logging initialisation against the already-live client, and independent lists.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass with ≥80% line coverage per module. `ReferenceDataClientTest` and `ReferenceDataResultTest` cover AC1–AC10 on the loopback stub harness with per-test latency and failure overrides: fresh hit, miss and write-back, the attempt timeout, the retry counts and the non-retried statuses, the 2,000 ms deadline case, stale fallback at 3,600 s and 86,399 s, partial fallback at 86,400 s and with no entry, Redis failure, the forwarded credentials and their absence from logs, the client frame-logger guard with the client frame logger forced to DEBUG on a live channel and during a later application's logging initialisation against the already-live client, the shared installation lock of the frame-log guard in the test JVM, and its concurrent installation beside the server guard in five fresh JVMs with both frame loggers reset to DEBUG, and independent lists.
 - Integration: Applies. This story adds no integration suite; the Reference Data integration suite (CS-13-004) runs this client against the Reference Data stub on a real gRPC channel with Testcontainers `postgres:16.6` and `redis:7.4.2`. Command `./gradlew :card-servicing-service:integrationTest`; all pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Applies through the balance summary SLA scenario (CS-01-005) and the category balance SLA scenario (CS-02-002), whose endpoints call this client:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -138,67 +142,66 @@ Completed during implementation.
 
 Recommended: Option A — two whole-list cache entries.
 
-Rationale: the client caches the full type list and the full category list as two entries, so each list carries one freshness and one as-of time.
+Rationale: whole-list entries give each list one freshness and one as-of time.
 
-- Rejected: Option B, one cache entry per code, because one response needs up to 25 lookups and can mix freshness within itself.
-- Rejected: no cache with a stub call on every request, because every request then spends budget on reference data.
+- Rejected: Option B, per-code entries, for up to 25 lookups and mixed freshness.
+- Rejected: no cache, for a stub call on every request.
 
 ### Shared by both options
 
-- Topology: the client runs inside the service, the stub sits behind the call policy, and the entries live in the shared cache.
-- Naming: every entry name is versioned and carries no caller identity.
-- Addressing: the stub is reached by its configured target address.
+- Topology: the in-service client uses the shared cache and the stub behind the call policy.
+- Naming: versioned entry names carry no caller identity.
+- Addressing: the stub has a configured target address.
 - Isolation: types and categories resolve independently.
-- Fallback: an unavailable or deadline-exceeded failure falls back to a stale entry within the max stale age, and any other failed status, or no usable entry, gives the partial status with descriptions absent and no error.
-- Provisioning: the channel is built at service start, after the transport is fitted with a header-logging guard that stays in place for the life of the process.
-- Cut-over: the real service swap changes only the target address and the credential source.
-- Failures: unavailable and deadline-exceeded statuses are retried inside the budget, and a cache failure is treated as a miss.
+- Fallback: an unavailable or deadline-exceeded failure uses a stale entry within the max stale age, and otherwise the result is partial.
+- Provisioning: the channel is built at service start, behind a permanent header-logging guard.
+- Cut-over: the real service swap changes only the target address and credential source.
+- Failures: only those two statuses are retried in budget, and cache failures count as misses.
 
 ### Design Option A — two whole-list cache entries
 
-The client keeps one cache entry for the full type list and one for the full category list. A request reads at most one entry per list and calls the stub only when that entry is missing or past its freshness window. An unavailable or deadline-exceeded failure falls back to the held list while it is within the max stale age, and any other failed status, or no usable list, gives the partial status with no descriptions and no error.
+Two entries hold the full type list and the full category list. Freshness and fallback work on whole lists.
 
 How it behaves:
 
-- Fresh hit: the held list answers with its stored time, and the stub sees no call.
-- Miss: one stub call fills the whole list and its entry in one step.
-- Stale fallback: an unavailable or deadline-exceeded failure with the held list within the max stale age returns that list with the stale status.
-- Partial fallback: a failure with no usable list, or any other failed status even with a list held, returns the partial status with every description absent and no error.
-- Independent lists: a failure on one list leaves the other list's status unchanged.
+- Fresh hit: the held list answers with its stored time.
+- Miss: one stub call fills the whole entry.
+- Stale fallback: the whole held list answers as stale.
+- Partial fallback: the whole list turns partial, also after a non-retryable status with a list held.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Whole list per entry (vs one entry per code) | one cache read and one as-of time per list | every cache read carries the whole list even for one label |
-| 2 | Degrade to the partial status (vs fail the request) | balances stay visible during a reference outage | labels stay missing until the service recovers |
-| 3 | Independent lists (vs one combined entry) | one failing operation never hides the other list | the two entries age apart |
+| 1 | Whole list per entry (vs one entry per code) | one read and as-of time per list | every read carries the whole list |
+| 2 | Degrade to partial (vs fail the request) | balances stay visible in an outage | labels stay missing meanwhile |
+| 3 | Independent lists (vs one combined entry) | one failure never hides the other list | the entries age apart |
 
-Effort and risk: low effort on top of the call policy and cache stories, with the risk in day-old labels during a long reference outage.
+Effort and risk: low effort, risking day-old labels in a long outage.
 
 ### Design Option B — one cache entry per code
 
-The client keeps one cache entry per type code and one per type-and-category pair. A response looks up the entry of each code it labels, and when any of them is missing or past its freshness window it calls the stub for the full list and writes one entry per code. An unavailable or deadline-exceeded failure falls back code by code to held entries within the max stale age, and any other failed status gives the partial status with every description absent and no error.
+One entry holds each type code and each type-and-category pair. Freshness and fallback work code by code.
 
 How it differs:
 
-- A balance summary or category balance response reads up to 25 entries instead of one.
-- One miss fills up to 25 entries in one pass.
-- Entries written at different times give one response mixed ages, so one as-of time stands for the oldest of them.
-- An unavailable or deadline-exceeded failure can leave some codes labelled and others absent within one response.
+- A response reads up to 25 entries, not one.
+- One miss rewrites up to 25 entries from one full-list call.
+- One response mixes entry ages under the oldest as-of time.
+- A retryable failure can leave some codes labelled and others absent.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One entry per code (vs whole list per entry) | each cache read carries only one label | each response pays one cache read per code |
-| 2 | Code-by-code fallback (vs list-level fallback) | a partial outage keeps the labels still held | one response can mix fresh, stale and absent labels |
+| 1 | One entry per code (vs whole list per entry) | each read carries one label | one read per labelled code |
+| 2 | Code-by-code fallback (vs list-level fallback) | held labels survive a partial outage | one response mixes fresh, stale and absent labels |
 
-Effort and risk: more effort, with the risk of mixed freshness within one response.
+Effort and risk: more effort, risking mixed freshness in one response.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: each list resolves in one cache read with one freshness and one as-of time, which leaves the budget to the balance reads.
-- Strongest argument against: every cache read carries the whole list even when a response needs few labels.
-- Shared items that do not decide the choice: the call policy, the deadline, the credentials, the fallback rule and the freshness window.
-- Flip conditions: the lists grow to thousands of codes, so a whole-list read costs more than per-code lookups.
+- Why: one read per list gives one freshness and as-of time within budget.
+- Strongest argument against: one label still costs a whole-list read.
+- Shared items that do not decide the choice: call policy, deadline, credentials, fallback rule and freshness window.
+- Flip conditions: lists of thousands of codes, making per-code lookups cheaper.
 
 ## Design Validation
 
@@ -207,54 +210,52 @@ Effort and risk: more effort, with the risk of mixed freshness within one respon
 Settled assumptions:
 
 - The 7 types and 18 categories fit one entry each.
-- Reference data carries no account data, so the shared entries are safe across callers.
-- The call policy and cache stories supply the timeout, retry and stale mechanics.
-- The transport writes header values only through its frame logger, which it takes from a replaceable logger factory for each new connection and which checks whether debug output is enabled before each frame.
+- Reference data holds no account data, so entries are safe to share.
+- The transport writes headers only through a per-connection frame logger from a replaceable factory, checked for debug output per frame.
+- Every header-logging guard of the process, server or client, installs under one shared lock and keeps every earlier guard.
 
 Open assumptions:
 
-- The one-day max stale age suits the data owner's change rhythm. Open → settled by the data owner at sign-off.
-- The cold-path budget leaves room for one full reference attempt. Open → settled by the integration suite's deadline scenario.
+- The one-day max stale age fits the data owner's change rhythm. Open → settled at the data owner's sign-off.
+- The cold-path budget fits one full reference attempt. Open → settled by the integration suite's deadline scenario.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | a fresh list entry answers with no stub call |
-| AC2 | Holds | one stub call fills the whole list entry |
-| AC3 | Holds | the call policy cuts each attempt to the remaining budget |
-| AC4 | Holds | the call policy retries only the two retryable statuses |
-| AC5 | Holds | one cache read per list leaves the budget to the stub attempts |
-| AC6 | Holds | the held list carries one stored time for the as-of value |
-| AC7 | Holds | a failure with no permitted stale fallback yields the partial status |
-| AC8 | Holds | the cache treats its own failure as a miss |
-| AC9 | Holds | no log line or entry name carries the credentials, with the transport's header logging shut off by a process-wide guard |
-| AC10 | Holds | each list has its own entry and its own call |
+| AC1 | Holds | a fresh entry spares the stub |
+| AC2 | Holds | one call fills the entry |
+| AC3 | Holds | the call policy cuts attempts to the budget |
+| AC4 | Holds | only retryable statuses are retried |
+| AC5 | Holds | one read per list spares the budget |
+| AC6 | Holds | the list keeps one stored time |
+| AC7 | Holds | a failure without stale fallback ends partial |
+| AC8 | Holds | cache failures count as misses |
+| AC9 | Holds | no log or entry name carries credentials under the guard |
+| AC10 | Holds | each list has its own entry and call |
 
 ### Option B validation
 
 Settled assumptions:
 
 - The 7 types and 18 categories give at most 25 entries.
-- Reference data carries no account data, so the shared entries are safe across callers.
-- The call policy and cache stories supply the timeout, retry and stale mechanics.
-- The transport writes header values only through its frame logger, which it takes from a replaceable logger factory for each new connection and which checks whether debug output is enabled before each frame.
+- Option A's account-data, transport and guard assumptions hold too.
 
 Open assumptions:
 
-- Per-code cache reads stay inside the stage budget at the planning load. Open → settled by the balance summary and category balance service-level scenarios.
-- Mixed label ages within one response suit the data owner. Open → settled by the data owner at sign-off.
+- Per-code reads fit the stage budget at planning load. Open → settled by the balance summary and category balance service-level scenarios.
+- Mixed label ages in one response suit the data owner. Open → settled at the data owner's sign-off.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | At risk | a response needs up to 25 entry reads |
+| AC1 | At risk | a response needs up to 25 reads |
 | AC2 | At risk | one miss fills many entries |
-| AC3 | Holds | the call policy cuts each attempt to the remaining budget |
-| AC4 | Holds | the call policy retries only the two retryable statuses |
-| AC5 | At risk | per-code lookups eat into the budget |
-| AC6 | Conditional | mixed entry ages blur one as-of time |
-| AC7 | Holds | codes with no permitted stale fallback yield the partial status |
-| AC8 | Holds | the cache treats its own failure as a miss |
-| AC9 | Holds | no log line or entry name carries the credentials, with the transport's header logging shut off by a process-wide guard |
-| AC10 | Holds | type entries and category entries stay separate |
+| AC3 | Holds | the call policy cuts attempts to the budget |
+| AC4 | Holds | only retryable statuses are retried |
+| AC5 | At risk | per-code lookups eat the budget |
+| AC6 | Conditional | mixed ages blur the as-of time |
+| AC7 | Holds | codes without stale fallback end partial |
+| AC8 | Holds | cache failures count as misses |
+| AC9 | Holds | no log or entry name carries credentials under the guard |
+| AC10 | Holds | type and category entries stay separate |
 
 ## Metadata
 
