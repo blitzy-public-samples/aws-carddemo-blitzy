@@ -1,0 +1,2154 @@
+# Gap register source: every open question about the inventory, rendered by tests/harness/report.py into
+# tests/reports/gap-register.csv and into each inventory item's gap_ids. Entries are never deleted. An entry
+# closes only on evidence: status closed, resolving_evidence set to an execution_id with its evidence path
+# (or a commit), the inventory, scenarios and baselines updated with their semver bump, and the reports
+# regenerated; contrary evidence reopens it. Closing a suspected-defect never changes app/.
+#
+# An entry's resolved items are affected_inventory_ids (ids of the frozen tests/inventory/inventory.yaml)
+# united with the items matching any clause of `affected`; within a clause every key must match, and a
+# list-valued key matches any of its values (grammar in selector_keys). Every set the frozen inventory
+# fixes is listed as explicit ids; `affected` carries only the clauses that depend on scenarios. When the UniKix
+# importer narrows a GAP-INF entry it sets affected_inventory_ids to the items still unverified and drops
+# `affected`.
+schema_version: 1
+categories:
+  DOC: doc-conflict
+  MIS: missing-input
+  STB: stub-limitation
+  DEF: suspected-defect
+  UNC: uncertain-purpose
+  INF: inferred-not-observed
+selector_keys:
+  area: list of area codes; matches an item whose id is INV-<AREA>-<nnn>
+  kind: list of inventory kinds; matches the item's kind
+  level: list of levels (unit, integration, e2e); matches the item's level
+  activation: list of activation values; matches the item's activation
+  owner: list of program, job or resource names; matches the first token of the item's name
+  source_path: list of paths; an entry ending in '/' is a prefix, any other must equal the item's source with its trailing ':<lines>' removed
+  unikix_dependent: true; matches items listed by at least one scenario that only the unikix adapter can run
+  via_scenarios: true; matches items listed by any scenario whose gap_ids contain this entry's gap_id
+gaps:
+- gap_id: GAP-DEF-001
+  category: suspected-defect
+  unknown: Every CB* abend path ends in 9999-ABEND-PROGRAM, which moves 0 to TIMING and 999 to ABCODE and then issues CALL 'CEE3ABD' with no parameters [app/cbl/CBTRN02C.cbl:707-711]; CBACT01C-03C, CBCUS01C, CBTRN01C, CBTRN03C, CBACT04C and CBSTM03A end the same way (for example [app/cbl/CBACT01C.cbl:169-173]). Whether an abend code, dump or condition handling was intended is unknown; the abend is pinned as observed.
+  affected_inventory_ids:
+  - INV-DAT-029
+  - INV-DAT-030
+  - INV-DAT-032
+  - INV-DAT-033
+  - INV-DAT-035
+  - INV-DAT-036
+  - INV-DAT-038
+  - INV-DAT-039
+  - INV-FIN-009
+  - INV-FIN-010
+  - INV-FIN-011
+  - INV-RPT-042
+  - INV-RPT-043
+  - INV-RPT-044
+  - INV-RPT-051
+  - INV-RPT-052
+  - INV-TRN-072
+  - INV-TRN-073
+  - INV-TRN-087
+  - INV-TRN-088
+  needed: The owner's confirmation of intent. The behaviour is pinned as observed and never fixed under app/.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DEF-002
+  category: suspected-defect
+  unknown: 9300-DALYREJS-CLOSE displays 'ERROR CLOSING DAILY REJECTS FILE' and then moves XREFFILE-STATUS, not DALYREJS-STATUS, to IO-STATUS, so the status it shows belongs to the cross-reference file [app/cbl/CBTRN02C.cbl:637-654]. Pinned by TRN-CBTRN02C-recovery-05.
+  affected_inventory_ids:
+  - INV-TRN-088
+  needed: The owner's confirmation of intent. The behaviour is pinned as observed and never fixed under app/.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DEF-003
+  category: suspected-defect
+  unknown: CBACT04C rewrites an account (1050-UPDATE-ACCOUNT) only when the next TCATBAL record belongs to another account; the ELSE branch that would rewrite the last account at end of file is unreachable, because the PERFORM UNTIL END-OF-FILE = 'Y' loop is never re-entered once end of file is set [app/cbl/CBACT04C.cbl:188-221]. The last account's interest is never added to its balance (account 00000000050 stays unchanged with the repository data).
+  affected_inventory_ids:
+  - INV-FIN-004
+  needed: The owner's confirmation of intent. The behaviour is pinned as observed and never fixed under app/. The UniKix outcome of FIN-INTCALC-normal-01 would show whether another runtime behaves alike.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DEF-004
+  category: suspected-defect
+  unknown: 0200-DISCGRP-OPEN reports a DISCGRP open failure as 'ERROR OPENING DALY REJECTS FILE' [app/cbl/CBACT04C.cbl:270-288].
+  affected_inventory_ids:
+  - INV-FIN-010
+  needed: The owner's confirmation of intent. The behaviour is pinned as observed and never fixed under app/.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DEF-005
+  category: suspected-defect
+  unknown: In app/data/ASCII/acctdata.txt every account's disclosure group id sits in ACCT-ADDR-ZIP (columns 103-112) and ACCT-GROUP-ID (columns 113-122) is blank in all 50 records, so every DISCGRP lookup of INTCALC fails and falls back to the DEFAULT group ('DISCLOSURE GROUP RECORD MISSING' appears 100 times) [app/cbl/CBACT04C.cbl:415-440].
+  affected_inventory_ids:
+  - INV-DTA-001
+  - INV-FIN-002
+  - INV-FIN-006
+  needed: The owner's confirmation of intent. The behaviour is pinned as observed and never fixed under app/.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DEF-006
+  category: suspected-defect
+  unknown: CBTRN01C performs the XREF lookup, the account read and their displays after the read that sets end of file, so the last daily transaction is verified and displayed twice [app/cbl/CBTRN01C.cbl:154-200].
+  affected_inventory_ids:
+  - INV-TRN-069
+  needed: The owner's confirmation of intent. The behaviour is pinned as observed and never fixed under app/.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DEF-007
+  category: suspected-defect
+  unknown: CBSTM03A holds the statement data in WS-CARD-TBL OCCURS 51 with WS-TRAN-TBL OCCURS 10 and never checks either bound, so a 52nd card or an 11th transaction on one card overruns the table [app/cbl/CBSTM03A.CBL:226-233].
+  affected_inventory_ids:
+  - INV-RPT-050
+  needed: The owner's confirmation of intent. The behaviour is pinned as observed and never fixed under app/.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DEF-008
+  category: suspected-defect
+  unknown: The proc app/proc/TRANREPT.prc begins '//REPROC PROC' [app/proc/TRANREPT.prc:1] while the job that CORPT00C submits runs 'EXEC PROC=TRANREPT' [app/cbl/CORPT00C.cbl:84-127], so how the scheduler resolves the proc decides what runs.
+  affected_inventory_ids:
+  - INV-RPT-009
+  - INV-RPT-054
+  needed: The owner's confirmation of intent. The behaviour is pinned as observed and never fixed under app/.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DEF-009
+  category: suspected-defect
+  unknown: DEFCUST deletes AWS.CCDA.CUSTDATA.CLUSTER but defines AWS.CUSTDATA.CLUSTER, in two steps that are both named STEP05 [app/jcl/DEFCUST.jcl:22,32]; TRANREPT likewise names both its REPROC and SORT steps STEP05R [app/jcl/TRANREPT.jcl:23,37].
+  affected_inventory_ids:
+  - INV-DAT-010
+  - INV-RPT-006
+  needed: The owner's confirmation of intent. The behaviour is pinned as observed and never fixed under app/.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DEF-010
+  category: suspected-defect
+  unknown: After an invalid option (not numeric, zero, or above CDEMO-MENU-OPT-COUNT) COMEN01C sets the error flag but still evaluates CDEMO-MENU-OPT-USRTYPE(WS-OPTION), subscripting the option table with the invalid value [app/cbl/COMEN01C.cbl:127-140].
+  affected_inventory_ids:
+  - INV-MNU-006
+  needed: The owner's confirmation of intent. The behaviour is pinned as observed and never fixed under app/.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DEF-011
+  category: suspected-defect
+  unknown: When the USRSEC DELETE fails with a response other than NORMAL or NOTFND, COUSR03C shows 'Unable to Update User...' rather than a delete message [app/cbl/COUSR03C.cbl:307-333].
+  affected_inventory_ids:
+  - INV-USR-055
+  needed: The owner's confirmation of intent. The behaviour is pinned as observed and never fixed under app/.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DEF-012
+  category: suspected-defect
+  unknown: 'CBTRN03C report control: at the first TRANSACT record outside the DATEPARM window NEXT SENTENCE leaves the inline PERFORM, so later records and all totals are lost [app/cbl/CBTRN03C.cbl:170-206]; at end of file the last amount is added to the page and account totals a second time and no final account total is written [app/cbl/CBTRN03C.cbl:197-203]; account-total lines count toward the 20-line page counter, so a page break can be skipped [app/cbl/CBTRN03C.cbl:274-316]. The first two were observed on GnuCOBOL during planning.'
+  affected_inventory_ids:
+  - INV-RPT-036
+  - INV-RPT-039
+  - INV-RPT-040
+  - INV-RPT-041
+  needed: The owner's confirmation of intent. The behaviour is pinned as observed and never fixed under app/.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-001
+  category: doc-conflict
+  unknown: 'The tech spec counts 18 online programs ("eighteen CICS programs", Section 1.2.2.1; "Online Programs (18 CICS Programs)", Section 1.2.2.2; "Online Programs (app/cbl/CO*.cbl): 18 programs", Section 6.6.2.1.2), but app/cbl holds 17 online sources. COCRDSEC (''CREDIT CARD SEARCH'') exists only as a CSD definition [app/csd/CARDDEMO.CSD:211-218], started by transaction CDV1 ''DEVELOPER TRANSACTION - 1'' [app/csd/CARDDEMO.CSD:388-390]; neither app/cbl nor the UniKix copy''s migrated_app/cbl holds its source, so both items are unreachable.'
+  affected_inventory_ids:
+  - INV-CFG-017
+  - INV-CRD-080
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-002
+  category: doc-conflict
+  unknown: The tech spec counts "10 batch jobs" (Section 6.6.1.2), "Batch Programs - 10+ Batch Jobs" (Section 1.2.2.2) and "19+ batch jobs" (Section 2.1.9.2); app/jcl holds 29 jobs.
+  affected_inventory_ids:
+  - INV-CFG-030
+  - INV-CFG-031
+  - INV-CFG-032
+  - INV-DAT-005
+  - INV-DAT-006
+  - INV-DAT-007
+  - INV-DAT-008
+  - INV-DAT-009
+  - INV-DAT-010
+  - INV-DAT-011
+  - INV-DAT-012
+  - INV-DAT-013
+  - INV-DAT-014
+  - INV-DAT-015
+  - INV-DAT-016
+  - INV-DAT-017
+  - INV-DAT-018
+  - INV-DAT-019
+  - INV-DAT-020
+  - INV-DAT-021
+  - INV-DAT-022
+  - INV-DAT-023
+  - INV-DAT-024
+  - INV-DAT-025
+  - INV-FIN-002
+  - INV-RPT-006
+  - INV-RPT-007
+  - INV-RPT-008
+  - INV-TRN-009
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-003
+  category: doc-conflict
+  unknown: The tech spec describes the "User Security file (USRSEC, 80 bytes, CVACT03Y)" (Section 1.2.2.2); the USRSEC record layout is CSUSR01Y [app/cpy/CSUSR01Y.cpy:1-26], and CVACT03Y is the 50-byte card cross-reference record [app/cpy/CVACT03Y.cpy:1-11].
+  affected_inventory_ids:
+  - INV-CFG-008
+  - INV-LAY-012
+  - INV-LAY-018
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-004
+  category: doc-conflict
+  unknown: The tech spec says the "account refresh programs (CBACT01C, CBACT02C, CBACT03C) populate the account master file" and that CBCUS01C "loads customer demographic data" (Section 1.2.2.1); each opens its file INPUT and only DISPLAYs every record [app/cbl/CBACT01C.cbl:29-32,119-130].
+  affected_inventory_ids:
+  - INV-DAT-001
+  - INV-DAT-002
+  - INV-DAT-003
+  - INV-DAT-004
+  - INV-DAT-028
+  - INV-DAT-031
+  - INV-DAT-034
+  - INV-DAT-037
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-005
+  category: doc-conflict
+  unknown: The tech spec says CBACT04C "calculates interest based on current balance ... updates transaction category balances" (Section 1.2.2.1) and "updates TCATBAL category balances" (Section 2.1.8.2); the program computes TRAN-CAT-BAL * DIS-INT-RATE / 1200 per category balance and opens TCATBAL INPUT only [app/cbl/CBACT04C.cbl:236,464-465].
+  affected_inventory_ids:
+  - INV-FIN-001
+  - INV-FIN-003
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-006
+  category: doc-conflict
+  unknown: 'For CBTRN02C the tech spec states "DISPLAY error and SET RETURN-CODE = 16 if open fails", "STOP RUN if critical files unavailable", "Return code: 0=success, 4=rejections, 8=errors" and "DISPLAY reject count with breakdown" (Section 6.6.2.1.3). Open failures call CEE3ABD, the only return code set is MOVE 4 TO RETURN-CODE, the counts are displayed without a breakdown [app/cbl/CBTRN02C.cbl:227-231,707-711], and the latent reason 109 is undocumented [app/cbl/CBTRN02C.cbl:554-559]. Reason codes 100 to 103 and return codes 0 and 4 are observed; return code 8 never is.'
+  affected_inventory_ids:
+  - INV-TRN-079
+  - INV-TRN-080
+  - INV-TRN-086
+  - INV-TRN-087
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-007
+  category: doc-conflict
+  unknown: The tech spec says CBTRN02C validates against the "account file, card file, cross-reference file" (Section 1.2.2.2); the program has no card file [app/cbl/CBTRN02C.cbl:29-61].
+  affected_inventory_ids:
+  - INV-TRN-008
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-008
+  category: doc-conflict
+  unknown: The tech spec's diagram has the edges SIGNIN --> DTUTIL and ACCTS --> DTUTIL (Section 1.2.2.2). The sign-on program COSGN00C issues no CALL [app/cbl/COSGN00C.cbl:1-260]; CSUTLDTC is called by CORPT00C and COTRN02C with mask YYYY-MM-DD and by COACTUPC through CSUTLDPY with mask YYYYMMDD [app/cpy/CSUTLDPY.cpy:284-296], so only the ACCTS --> DTUTIL edge has a counterpart.
+  affected_inventory_ids:
+  - INV-SEC-001
+  - INV-UTL-003
+  - INV-UTL-004
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-009
+  category: doc-conflict
+  unknown: The tech spec has "CLOSEFIL/OPENFIL using IEFBR14" (Section 2.1.9.2) and the README batch table lists IEFBR14 for both [README.md:247,252]; both jobs run SDSF steps that issue /F CICSAWSA,'CEMT SET FIL(...) CLO' or 'OPE' [app/jcl/CLOSEFIL.jcl:22-28] [app/jcl/OPENFIL.jcl:22-30], and the CLCIFIL/OPCIFIL steps of CARDFILE, CUSTFILE and TRANFILE act on the region as well [app/jcl/CARDFILE.jcl:22,118] [app/jcl/CUSTFILE.jcl:22,76] [app/jcl/TRANFILE.jcl:22,116].
+  affected_inventory_ids:
+  - INV-CFG-031
+  - INV-CFG-032
+  - INV-CFG-033
+  - INV-DAT-006
+  - INV-DAT-008
+  - INV-DAT-022
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-010
+  category: doc-conflict
+  unknown: 'The tech spec''s test-data table (Section 6.6.2.3.3) gives cardxref.txt as "50 bytes", dailytran.txt as "Variable", the trancatg key as "Category Code (bytes 1-2)" and DUSRSECJ as "Loads test users: ADMIN001, USER0001". cardxref.txt holds 36-character lines with trailing spaces trimmed (padded to the 50-byte record), dailytran.txt 300 fixed 350-byte records, the TRANCATG key is 6 bytes [app/catlg/LISTCAT.txt:1475], and DUSRSECJ loads 10 users [app/jcl/DUSRSECJ.jcl:25-90].'
+  affected_inventory_ids:
+  - INV-DAT-013
+  - INV-DTA-003
+  - INV-DTA-005
+  - INV-DTA-008
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-011
+  category: doc-conflict
+  unknown: The tech spec's scenario values, accounts 00000123456 and 00000234567, card 4111111111111111 and the balance "$1,234.56" (Section 6.6.2.3.1), exist nowhere in app/data; the accounts run from 00000000001 to 00000000050, so scenarios use repository accounts and cards instead.
+  affected_inventory_ids:
+  - INV-DTA-001
+  - INV-DTA-002
+  - INV-DTA-003
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-012
+  category: doc-conflict
+  unknown: The README's transfer modes present the ASCII and EBCDIC data files as the same data, but acctdata.txt record 49 holds ACCT-ADDR-ZIP (columns 103-112) 'A000000000' while app/data/EBCDIC/AWS.M2.CARDDEMO.ACCTDATA.PS record 49 holds 'ZEROAPR'. Registered as a fixture cross-check mismatch in tests/fixtures/datasets.yaml.
+  affected_inventory_ids:
+  - INV-DTA-001
+  - INV-DTA-011
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-013
+  category: doc-conflict
+  unknown: 'As GAP-DOC-012: discgrp.txt record 34 holds DIS-INT-RATE (columns 17-22) ''00000{'' (0.00) while app/data/EBCDIC/AWS.M2.CARDDEMO.DISCGRP.PS record 34 holds ''00150{'' (15.00). Registered as a fixture cross-check mismatch in tests/fixtures/datasets.yaml.'
+  affected_inventory_ids:
+  - INV-DTA-006
+  - INV-DTA-017
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-014
+  category: doc-conflict
+  unknown: The request describes the UniKix copy as "30 sources including SDSF, 18 BMS maps"; [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/cbl] holds 29 files (the 28 programs plus SDSF.cbl) and migrated_app/bms 17 maps, the same 17 as app/bms.
+  affected_inventory_ids:
+  - INV-ACT-001
+  - INV-ACT-002
+  - INV-ACT-003
+  - INV-ACT-004
+  - INV-BIL-001
+  - INV-BIL-002
+  - INV-CRD-001
+  - INV-CRD-002
+  - INV-CRD-003
+  - INV-CRD-004
+  - INV-CRD-005
+  - INV-CRD-006
+  - INV-DAT-001
+  - INV-DAT-002
+  - INV-DAT-003
+  - INV-DAT-004
+  - INV-FIN-001
+  - INV-MNU-001
+  - INV-MNU-002
+  - INV-MNU-003
+  - INV-MNU-004
+  - INV-RPT-001
+  - INV-RPT-002
+  - INV-RPT-003
+  - INV-RPT-004
+  - INV-RPT-005
+  - INV-SEC-001
+  - INV-SEC-002
+  - INV-TRN-001
+  - INV-TRN-002
+  - INV-TRN-003
+  - INV-TRN-004
+  - INV-TRN-005
+  - INV-TRN-006
+  - INV-TRN-007
+  - INV-TRN-008
+  - INV-USR-001
+  - INV-USR-002
+  - INV-USR-003
+  - INV-USR-004
+  - INV-USR-005
+  - INV-USR-006
+  - INV-USR-007
+  - INV-USR-008
+  - INV-UTL-001
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-015
+  category: doc-conflict
+  unknown: The request's chain runs POSTTRAN -> INTCALC -> COMBTRAN -> CREASTMT -> TRANREPT, but the README runs TRANBKP between INTCALC and COMBTRAN [README.md:177-180], and COMBTRAN reads TRANSACT.BKUP(0), which TRANBKP writes [app/jcl/COMBTRAN.jcl:23-26]. The daily-cycle scenario includes TRANBKP.
+  affected_inventory_ids:
+  - INV-BAT-001
+  - INV-DAT-007
+  - INV-DAT-020
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-016
+  category: doc-conflict
+  unknown: The CSD defines PROGRAM(COCRDLIC) with TRANSID(CC00) [app/csd/CARDDEMO.CSD:207], while its transaction is CCLI [app/csd/CARDDEMO.CSD:357-358] and CC00 starts COSGN00C.
+  affected_inventory_ids:
+  - INV-CFG-014
+  - INV-CFG-016
+  - INV-CRD-001
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-017
+  category: doc-conflict
+  unknown: CBADMCDJ defines LIBRARY(COM2DOLL) and the mapsets COSGN00M, COACT00S, COACTVWS, COACTUPS, COACTDES and COTRN00S [app/jcl/CBADMCDJ.jcl:33-74], none of which app/csd/CARDDEMO.CSD defines as a mapset; which definition set is authoritative is unknown.
+  affected_inventory_ids:
+  - INV-CFG-028
+  - INV-CFG-030
+  - INV-CFG-034
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-018
+  category: doc-conflict
+  unknown: The 12 EBCDIC data files are not described by the tech spec (Sections 6.6.2.3.3, 6.6.8.1). AWS.M2.CARDDEMO.ACCDATA.PS is byte-identical to AWS.M2.CARDDEMO.ACCTDATA.PS, AWS.M2.CARDDEMO.DALYTRAN.PS.INIT is one 350-byte record whose first 342 bytes are x'00' and whose last 8, inside the trailing FILLER of CVTRA06Y, read '00000100' in cp037, and AWS.M2.CARDDEMO.USRSEC.PS holds 10 users.
+  affected_inventory_ids:
+  - INV-DTA-010
+  - INV-DTA-011
+  - INV-DTA-012
+  - INV-DTA-013
+  - INV-DTA-014
+  - INV-DTA-015
+  - INV-DTA-016
+  - INV-DTA-017
+  - INV-DTA-018
+  - INV-DTA-019
+  - INV-DTA-020
+  - INV-DTA-021
+  needed: The documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-019
+  category: doc-conflict
+  unknown: 'The tech spec expects "USER0001 accessing CA00" to give "No access - Admin Only" (Section 6.6.9.1) and the README says "the Admin users can only perform Admin functions" [README.md:193]. The COMEN01C guard needs an option of user type ''A'' [app/cbl/COMEN01C.cbl:136-140] but all 10 options are type ''U'' [app/cpy/COMEN02Y.cpy:28-84], so ''No access - Admin Only option...'' is unreachable, and COADM01C checks no user type: entered without a COMMAREA it returns to sign-on [app/cbl/COADM01C.cbl:82-84].'
+  affected_inventory_ids:
+  - INV-MNU-001
+  - INV-MNU-002
+  - INV-MNU-007
+  - INV-MNU-029
+  needed: A UniKix run of MNU-COADM01C-alternate-02, plus the documentation owner's decision on which source is authoritative; until then the repository behaviour stays pinned.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-020
+  category: doc-conflict
+  unknown: 'The UniKix copy of CBSTM03A comments out the PSA/TCB/TIOT walk [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/cbl/CBSTM03A.cbl:266-291] that app/ performs [app/cbl/CBSTM03A.CBL:235-291], so the ''Running JCL : <job> Step <step>'' line and the DD list are absent on UniKix.'
+  affected_inventory_ids:
+  - INV-RPT-047
+  needed: The documentation owner's decision on which source is authoritative, and an app/ build run on a platform that observes the affected items (GAP-MIS-008). Until then the repository behaviour stays pinned, and UniKix records never verify these items.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-021
+  category: doc-conflict
+  unknown: The UniKix copy of CSUTLDTC passes CEEDAYS Vstring lengths trimmed of trailing spaces [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/cbl/CSUTLDTC.cbl:82-126] where app/ passes the full field lengths [app/cbl/CSUTLDTC.cbl:105-113], which changes the validation of dates and masks with trailing spaces in CSUTLDTC and in the online date checks that call it (COTRN02C Orig and Proc Date, CORPT00C Start and End Date, the COACTUPC CSUTLDTC-severity predicates).
+  affected_inventory_ids:
+  - INV-ACT-082
+  - INV-ACT-097
+  - INV-ACT-112
+  - INV-ACT-141
+  - INV-RPT-023
+  - INV-RPT-024
+  - INV-TRN-052
+  - INV-TRN-053
+  - INV-UTL-001
+  - INV-UTL-002
+  - INV-UTL-003
+  - INV-UTL-004
+  needed: The documentation owner's decision on which source is authoritative, and an app/ build run on a platform that observes the affected items (GAP-MIS-008). Until then the repository behaviour stays pinned, and UniKix records never verify these items.
+  resolving_evidence: null
+  status: open
+# Lists every COACTUPC field edit of 1215-1275, not only the amount and blank checks: the UniKix copy drops
+# FUNCTION TRIM from all their composed messages, so each passes through changed code.
+- gap_id: GAP-DOC-022
+  category: doc-conflict
+  unknown: The UniKix copy of COACTUPC (migrated_app/cbl/COACTUPC.cl2) comments out the TEST-NUMVAL-C checks of the credit limit, cash credit limit, current balance and cycle credit and debit fields (from line 1078) and the ' is not valid' edit of 1250-EDIT-SIGNED-9V2 (2201-2215), removes the TRIM-length blank checks of 1215-EDIT-MANDATORY and 1225-EDIT-ALPHA-REQD (1833, 1907), rewrites those of the alphanumeric and optional edits as = SPACES, drops FUNCTION TRIM from the field name in every composed edit message of 1215-EDIT-MANDATORY through 1275-EDIT-FICO-SCORE [app/cbl/COACTUPC.cbl:1824-2531], and drops it from the change-detection comparisons [app/cbl/COACTUPC.cbl:1698-1766]. Non-numeric amounts are accepted and every field-edit message differs on UniKix; the state/zip cross-check (2536-2558) is unchanged.
+  affected_inventory_ids:
+  - INV-ACT-039
+  - INV-ACT-068
+  - INV-ACT-069
+  - INV-ACT-083
+  - INV-ACT-084
+  - INV-ACT-098
+  - INV-ACT-099
+  - INV-ACT-113
+  - INV-ACT-114
+  - INV-ACT-115
+  - INV-ACT-116
+  - INV-ACT-117
+  - INV-ACT-118
+  - INV-ACT-119
+  - INV-ACT-120
+  - INV-ACT-121
+  - INV-ACT-122
+  - INV-ACT-123
+  - INV-ACT-124
+  - INV-ACT-125
+  - INV-ACT-126
+  - INV-ACT-127
+  - INV-ACT-128
+  - INV-ACT-143
+  - INV-ACT-144
+  - INV-ACT-145
+  - INV-ACT-146
+  - INV-ACT-147
+  - INV-ACT-148
+  - INV-ACT-149
+  - INV-ACT-150
+  - INV-ACT-151
+  - INV-ACT-152
+  - INV-ACT-153
+  - INV-ACT-154
+  - INV-ACT-155
+  - INV-ACT-156
+  - INV-ACT-157
+  - INV-ACT-158
+  - INV-ACT-159
+  - INV-ACT-160
+  - INV-ACT-161
+  - INV-ACT-162
+  - INV-ACT-163
+  - INV-ACT-164
+  - INV-ACT-165
+  - INV-ACT-166
+  - INV-ACT-167
+  - INV-ACT-168
+  - INV-ACT-169
+  - INV-ACT-170
+  - INV-ACT-171
+  - INV-ACT-172
+  - INV-ACT-173
+  - INV-ACT-174
+  - INV-ACT-175
+  - INV-ACT-176
+  - INV-ACT-177
+  - INV-ACT-178
+  - INV-ACT-179
+  - INV-ACT-180
+  - INV-ACT-181
+  - INV-ACT-182
+  - INV-ACT-183
+  - INV-ACT-184
+  - INV-ACT-185
+  - INV-ACT-186
+  - INV-ACT-187
+  - INV-ACT-189
+  - INV-ACT-190
+  - INV-ACT-191
+  needed: The documentation owner's decision on which source is authoritative, and an app/ build run on a platform that observes the affected items (GAP-MIS-008). Until then the repository behaviour stays pinned, and UniKix records never verify these items.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-023
+  category: doc-conflict
+  unknown: The UniKix copy of COCRDUPC replaces the alphabets-only test of 1230-EDIT-NAME, FUNCTION LENGTH(FUNCTION TRIM(CARD-NAME-CHECK)) = 0, with CARD-NAME-CHECK = SPACES OR LOW-VALUES [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/cbl/COCRDUPC.cl2:828-829] [app/cbl/COCRDUPC.cbl:828]; the 'Card name not provided' check before it is unchanged.
+  affected_inventory_ids:
+  - INV-CRD-057
+  needed: The documentation owner's decision on which source is authoritative, and an app/ build run on a platform that observes the affected items (GAP-MIS-008). Until then the repository behaviour stays pinned, and UniKix records never verify these items.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-024
+  category: doc-conflict
+  unknown: The UniKix copy of CSUTLDPY (migrated_app/cpy/CSUTLDPY) replaces FUNCTION TEST-NUMVAL with IS NUMERIC in the month and day checks (lines 126, 170) and drops FUNCTION TRIM from the field name in every composed date-edit message [app/cpy/CSUTLDPY.cpy:18-365], so every COACTUPC date edit (Open, Expiry and Reissue Date, Date of Birth) differs on UniKix.
+  affected_inventory_ids:
+  - INV-ACT-070
+  - INV-ACT-071
+  - INV-ACT-072
+  - INV-ACT-073
+  - INV-ACT-074
+  - INV-ACT-075
+  - INV-ACT-076
+  - INV-ACT-077
+  - INV-ACT-078
+  - INV-ACT-079
+  - INV-ACT-080
+  - INV-ACT-081
+  - INV-ACT-082
+  - INV-ACT-085
+  - INV-ACT-086
+  - INV-ACT-087
+  - INV-ACT-088
+  - INV-ACT-089
+  - INV-ACT-090
+  - INV-ACT-091
+  - INV-ACT-092
+  - INV-ACT-093
+  - INV-ACT-094
+  - INV-ACT-095
+  - INV-ACT-096
+  - INV-ACT-097
+  - INV-ACT-100
+  - INV-ACT-101
+  - INV-ACT-102
+  - INV-ACT-103
+  - INV-ACT-104
+  - INV-ACT-105
+  - INV-ACT-106
+  - INV-ACT-107
+  - INV-ACT-108
+  - INV-ACT-109
+  - INV-ACT-110
+  - INV-ACT-111
+  - INV-ACT-112
+  - INV-ACT-129
+  - INV-ACT-130
+  - INV-ACT-131
+  - INV-ACT-132
+  - INV-ACT-133
+  - INV-ACT-134
+  - INV-ACT-135
+  - INV-ACT-136
+  - INV-ACT-137
+  - INV-ACT-138
+  - INV-ACT-139
+  - INV-ACT-140
+  - INV-ACT-141
+  - INV-ACT-142
+  - INV-LAY-013
+  needed: The documentation owner's decision on which source is authoritative, and an app/ build run on a platform that observes the affected items (GAP-MIS-008). Until then the repository behaviour stays pinned, and UniKix records never verify these items.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-025
+  category: doc-conflict
+  unknown: The UniKix copies of COACTUP.bms and COACTVW.bms drop the unnamed DFHMDF LENGTH=9,POS=(1,1) field [app/bms/COACTUP.bms:487-488] [app/bms/COACTVW.bms:363-364], which changes screen row 1, columns 1-9.
+  affected_inventory_ids:
+  - INV-ACT-003
+  - INV-ACT-004
+  needed: The documentation owner's decision on which source is authoritative, and an app/ build run on a platform that observes the affected items (GAP-MIS-008). Until then the repository behaviour stays pinned, and UniKix records never verify these items.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-026
+  category: doc-conflict
+  unknown: The UniKix copy of CREASTMT replaces the SORT FIELDS=(263,16,CH,A,1,16,CH,A) and OUTREC statements [app/jcl/CREASTMT.JCL:53-54] with KEYS=(263 16)(1 16) ARRANGE=(263 16)(1 262)(279 50) followed by 22 spaces, and adds FCTNAME(TRXFL) to the TRXFL define [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/jcl/CREASTMT:30,57-60], which pads the TRXFL records that CBSTM03A reads to 350 bytes.
+  affected_inventory_ids:
+  - INV-RPT-007
+  - INV-RPT-045
+  - INV-RPT-046
+  - INV-RPT-048
+  needed: The documentation owner's decision on which source is authoritative, and an app/ build run on a platform that observes the affected items (GAP-MIS-008). Until then the repository behaviour stays pinned, and UniKix records never verify these items.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-027
+  category: doc-conflict
+  unknown: The UniKix copy of the TRANREPT job sorts with INCLUDE=(305 10 GE '2022-01-01') AND (305 10 LE '2022-07-06') and KEYS=(263 16 UDEC) and supplies DATEPARM in-stream as '2022-01-01 2023-04-01' [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/jcl/TRANREPT:50-53,79-82], where app/ uses SYMNAMES INCLUDE and SORT statements and DSN=AWS.M2.CARDDEMO.DATEPARM [app/jcl/TRANREPT.jcl:46-48,73-74]; the report date window and sort order differ.
+  affected_inventory_ids:
+  - INV-RPT-006
+  - INV-RPT-036
+  needed: The documentation owner's decision on which source is authoritative, and an app/ build run on a platform that observes the affected items (GAP-MIS-008). Until then the repository behaviour stays pinned, and UniKix records never verify these items.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-028
+  category: doc-conflict
+  unknown: The UniKix copy of the TRANREPT proc begins '//TRANREPT PROC' and runs 'EXEC REPROC', and its SORTOUT carries DCB=(LRECL=350,RECFM=FB,BLKSIZE=0) [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/proc/TRANREPT:1,21,51-52], where app/ has '//REPROC PROC' and 'EXEC PROC=REPROC' [app/proc/TRANREPT.prc:1,21]; proc resolution differs.
+  affected_inventory_ids:
+  - INV-RPT-009
+  - INV-RPT-054
+  needed: The documentation owner's decision on which source is authoritative, and an app/ build run on a platform that observes the affected items (GAP-MIS-008). Until then the repository behaviour stays pinned, and UniKix records never verify these items.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-029
+  category: doc-conflict
+  unknown: The UniKix copy of COMBTRAN gives SORTOUT DCB=(LRECL=350,RECFM=FB,BLKSIZE=0) [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/jcl/COMBTRAN:35-37] instead of DCB=(*.SORTIN) [app/jcl/COMBTRAN.jcl:35], so the combined file's attributes differ.
+  affected_inventory_ids:
+  - INV-DAT-007
+  needed: The documentation owner's decision on which source is authoritative, and an app/ build run on a platform that observes the affected items (GAP-MIS-008). Until then the repository behaviour stays pinned, and UniKix records never verify these items.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-030
+  category: doc-conflict
+  unknown: 'The UniKix fct.lst [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/catlg/tpe/fct.lst:1-14] defines 14 region files: the CSD''s 8 [app/csd/CARDDEMO.CSD:1-99] plus DISCGRP, TCATBALF, TRANCATG, TRANSAIX, TRANTYPE and TRXFL, so the online region can open 6 files the CSD never defines.'
+  affected_inventory_ids:
+  - INV-CFG-035
+  - INV-CFG-036
+  - INV-CFG-037
+  - INV-CFG-038
+  - INV-CFG-039
+  - INV-CFG-040
+  needed: The documentation owner's decision on which resource definition is authoritative. The 6 items have no app/ counterpart and are verified on the UniKix copy by CFG-FCT-normal-01, so no app/ build is needed.
+  resolving_evidence: null
+  status: open
+# The 8 CSD FILE items are left out: their behaviour (online reads and updates) does not pass through
+# SDSF.cbl, and listing them would bar every online scenario's UniKix record from verifying anything. Their
+# open/close observation is registered under GAP-MIS-011.
+- gap_id: GAP-DOC-031
+  category: doc-conflict
+  unknown: The job MFCATLG1 and the program SDSF.cbl exist only in the UniKix copy, and SDSF.cbl only displays 'DUMMY PROGRAM FOR SDSF' [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/cbl/SDSF.cbl:13]. On UniKix the CEMT SET FIL(...) OPE/CLO commands of OPENFIL and CLOSEFIL and of the CLCIFIL/OPCIFIL steps of CARDFILE, CUSTFILE and TRANFILE [app/jcl/OPENFIL.jcl:22-30] [app/jcl/CLOSEFIL.jcl:22-28] are never performed, so a completed SDSF step is no evidence that a region file was opened or closed; that is observed only through a region file inquiry (GAP-MIS-011).
+  affected_inventory_ids:
+  - INV-BAT-002
+  - INV-CFG-031
+  - INV-CFG-032
+  - INV-CFG-033
+  - INV-DAT-006
+  - INV-DAT-008
+  - INV-DAT-022
+  needed: The documentation owner's decision on which source is authoritative, and an app/ build run on a platform that observes the affected items (GAP-MIS-008). Until then the repository behaviour stays pinned, and UniKix records never verify these items.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DOC-032
+  category: doc-conflict
+  unknown: The UniKix copy's data [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/data/seqfiles] equals the cp037-decoded EBCDIC files, so it carries the GAP-DOC-012 and GAP-DOC-013 values; deploying it instead of the scenario fixtures changes the account zip and the disclosure-group rate of those records.
+  affected_inventory_ids:
+  - INV-DTA-001
+  - INV-DTA-006
+  - INV-DTA-011
+  - INV-DTA-017
+  needed: The documentation owner's decision on which source is authoritative, and an app/ build run on a platform that observes the affected items (GAP-MIS-008). Until then the repository behaviour stays pinned, and UniKix records never verify these items.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-INF-001
+  category: inferred-not-observed
+  unknown: 'Which dates CEEDAYS accepts is known only through tests/stubs/ceedays.c: the stub computes Lilian days for the masks the callers pass, so the CSUTLDTC scenarios'' expected acceptance of a date is inferred, not observed [app/cbl/CSUTLDTC.cbl:103-151].'
+  affected_inventory_ids:
+  - INV-UTL-003
+  needed: 'app/''s CSUTLDTC observed against a real CEEDAYS for both masks: the COTRN02C and CORPT00C date validations (YYYY-MM-DD) and the COACTUPC date edits (YYYYMMDD). The UniKix copy''s CSUTLDTC and CSUTLDPY differ (GAP-DOC-021, GAP-DOC-024), so this needs the app/ build of GAP-MIS-008.'
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-INF-002
+  category: inferred-not-observed
+  unknown: 'The sign-on (SEC) end-to-end baselines are derived from the source and the tech-spec statements that agree with it, never observed: no TPE region runs in CI. Affects the area''s online programs, maps and behaviour items, and every item listed by a scenario that cites this entry (its transactions and files).'
+  affected_inventory_ids:
+  - INV-SEC-001
+  - INV-SEC-002
+  - INV-SEC-003
+  - INV-SEC-004
+  - INV-SEC-005
+  - INV-SEC-006
+  - INV-SEC-007
+  - INV-SEC-008
+  - INV-SEC-009
+  - INV-SEC-010
+  - INV-SEC-011
+  affected:
+  - via_scenarios: true
+  needed: An imported, eligible unikix run of the area's scenarios whose decoded outcomes are compared with the derived baselines.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-INF-003
+  category: inferred-not-observed
+  unknown: 'The menu (MNU) end-to-end baselines are derived from the source and the tech-spec statements that agree with it, never observed: no TPE region runs in CI. Affects the area''s online programs, maps and behaviour items, and every item listed by a scenario that cites this entry (its transactions and files).'
+  affected_inventory_ids:
+  - INV-MNU-001
+  - INV-MNU-002
+  - INV-MNU-003
+  - INV-MNU-004
+  - INV-MNU-005
+  - INV-MNU-006
+  - INV-MNU-009
+  - INV-MNU-010
+  - INV-MNU-011
+  - INV-MNU-012
+  - INV-MNU-013
+  - INV-MNU-014
+  - INV-MNU-015
+  - INV-MNU-016
+  - INV-MNU-017
+  - INV-MNU-018
+  - INV-MNU-019
+  - INV-MNU-020
+  - INV-MNU-021
+  - INV-MNU-022
+  - INV-MNU-024
+  - INV-MNU-025
+  - INV-MNU-026
+  - INV-MNU-027
+  - INV-MNU-028
+  - INV-MNU-029
+  affected:
+  - via_scenarios: true
+  needed: An imported, eligible unikix run of the area's scenarios whose decoded outcomes are compared with the derived baselines.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-INF-004
+  category: inferred-not-observed
+  unknown: 'The user administration (USR) end-to-end baselines are derived from the source and the tech-spec statements that agree with it, never observed: no TPE region runs in CI. Affects the area''s online programs, maps and behaviour items, and every item listed by a scenario that cites this entry (its transactions and files).'
+  affected_inventory_ids:
+  - INV-USR-001
+  - INV-USR-002
+  - INV-USR-003
+  - INV-USR-004
+  - INV-USR-005
+  - INV-USR-006
+  - INV-USR-007
+  - INV-USR-008
+  - INV-USR-009
+  - INV-USR-010
+  - INV-USR-011
+  - INV-USR-012
+  - INV-USR-013
+  - INV-USR-014
+  - INV-USR-015
+  - INV-USR-016
+  - INV-USR-017
+  - INV-USR-018
+  - INV-USR-019
+  - INV-USR-020
+  - INV-USR-021
+  - INV-USR-022
+  - INV-USR-023
+  - INV-USR-024
+  - INV-USR-025
+  - INV-USR-026
+  - INV-USR-027
+  - INV-USR-028
+  - INV-USR-029
+  - INV-USR-030
+  - INV-USR-031
+  - INV-USR-032
+  - INV-USR-033
+  - INV-USR-034
+  - INV-USR-035
+  - INV-USR-036
+  - INV-USR-037
+  - INV-USR-038
+  - INV-USR-039
+  - INV-USR-040
+  - INV-USR-041
+  - INV-USR-042
+  - INV-USR-043
+  - INV-USR-044
+  - INV-USR-045
+  - INV-USR-046
+  - INV-USR-047
+  - INV-USR-048
+  - INV-USR-049
+  - INV-USR-050
+  - INV-USR-051
+  - INV-USR-052
+  - INV-USR-053
+  - INV-USR-054
+  - INV-USR-055
+  - INV-USR-056
+  - INV-USR-057
+  - INV-USR-058
+  affected:
+  - via_scenarios: true
+  needed: An imported, eligible unikix run of the area's scenarios whose decoded outcomes are compared with the derived baselines.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-INF-005
+  category: inferred-not-observed
+  unknown: 'The account view and update (ACT) end-to-end baselines are derived from the source and the tech-spec statements that agree with it, never observed: no TPE region runs in CI. Affects the area''s online programs, maps and behaviour items, and every item listed by a scenario that cites this entry (its transactions and files).'
+  affected_inventory_ids:
+  - INV-ACT-001
+  - INV-ACT-002
+  - INV-ACT-003
+  - INV-ACT-004
+  - INV-ACT-005
+  - INV-ACT-008
+  - INV-ACT-009
+  - INV-ACT-012
+  - INV-ACT-013
+  - INV-ACT-016
+  - INV-ACT-017
+  - INV-ACT-018
+  - INV-ACT-019
+  - INV-ACT-020
+  - INV-ACT-021
+  - INV-ACT-022
+  - INV-ACT-023
+  - INV-ACT-024
+  - INV-ACT-025
+  - INV-ACT-026
+  - INV-ACT-027
+  - INV-ACT-028
+  - INV-ACT-029
+  - INV-ACT-030
+  - INV-ACT-031
+  - INV-ACT-032
+  - INV-ACT-033
+  - INV-ACT-035
+  - INV-ACT-038
+  - INV-ACT-039
+  - INV-ACT-042
+  - INV-ACT-043
+  - INV-ACT-051
+  - INV-ACT-052
+  - INV-ACT-053
+  - INV-ACT-054
+  - INV-ACT-057
+  - INV-ACT-058
+  - INV-ACT-059
+  - INV-ACT-060
+  - INV-ACT-061
+  - INV-ACT-062
+  - INV-ACT-063
+  - INV-ACT-064
+  - INV-ACT-065
+  - INV-ACT-066
+  - INV-ACT-067
+  - INV-ACT-068
+  - INV-ACT-069
+  - INV-ACT-070
+  - INV-ACT-071
+  - INV-ACT-072
+  - INV-ACT-073
+  - INV-ACT-074
+  - INV-ACT-075
+  - INV-ACT-076
+  - INV-ACT-077
+  - INV-ACT-078
+  - INV-ACT-079
+  - INV-ACT-080
+  - INV-ACT-081
+  - INV-ACT-082
+  - INV-ACT-083
+  - INV-ACT-084
+  - INV-ACT-085
+  - INV-ACT-086
+  - INV-ACT-087
+  - INV-ACT-088
+  - INV-ACT-089
+  - INV-ACT-090
+  - INV-ACT-091
+  - INV-ACT-092
+  - INV-ACT-093
+  - INV-ACT-094
+  - INV-ACT-095
+  - INV-ACT-096
+  - INV-ACT-097
+  - INV-ACT-098
+  - INV-ACT-099
+  - INV-ACT-100
+  - INV-ACT-101
+  - INV-ACT-102
+  - INV-ACT-103
+  - INV-ACT-104
+  - INV-ACT-105
+  - INV-ACT-106
+  - INV-ACT-107
+  - INV-ACT-108
+  - INV-ACT-109
+  - INV-ACT-110
+  - INV-ACT-111
+  - INV-ACT-112
+  - INV-ACT-113
+  - INV-ACT-114
+  - INV-ACT-115
+  - INV-ACT-116
+  - INV-ACT-117
+  - INV-ACT-118
+  - INV-ACT-119
+  - INV-ACT-120
+  - INV-ACT-121
+  - INV-ACT-122
+  - INV-ACT-123
+  - INV-ACT-124
+  - INV-ACT-125
+  - INV-ACT-126
+  - INV-ACT-127
+  - INV-ACT-128
+  - INV-ACT-129
+  - INV-ACT-130
+  - INV-ACT-131
+  - INV-ACT-132
+  - INV-ACT-133
+  - INV-ACT-134
+  - INV-ACT-135
+  - INV-ACT-136
+  - INV-ACT-137
+  - INV-ACT-138
+  - INV-ACT-139
+  - INV-ACT-140
+  - INV-ACT-141
+  - INV-ACT-142
+  - INV-ACT-143
+  - INV-ACT-144
+  - INV-ACT-145
+  - INV-ACT-146
+  - INV-ACT-147
+  - INV-ACT-148
+  - INV-ACT-149
+  - INV-ACT-150
+  - INV-ACT-151
+  - INV-ACT-152
+  - INV-ACT-153
+  - INV-ACT-154
+  - INV-ACT-155
+  - INV-ACT-156
+  - INV-ACT-157
+  - INV-ACT-158
+  - INV-ACT-159
+  - INV-ACT-160
+  - INV-ACT-161
+  - INV-ACT-162
+  - INV-ACT-163
+  - INV-ACT-164
+  - INV-ACT-165
+  - INV-ACT-166
+  - INV-ACT-167
+  - INV-ACT-168
+  - INV-ACT-169
+  - INV-ACT-170
+  - INV-ACT-171
+  - INV-ACT-172
+  - INV-ACT-173
+  - INV-ACT-174
+  - INV-ACT-175
+  - INV-ACT-176
+  - INV-ACT-177
+  - INV-ACT-178
+  - INV-ACT-179
+  - INV-ACT-180
+  - INV-ACT-181
+  - INV-ACT-182
+  - INV-ACT-183
+  - INV-ACT-184
+  - INV-ACT-185
+  - INV-ACT-186
+  - INV-ACT-187
+  - INV-ACT-188
+  - INV-ACT-192
+  - INV-ACT-193
+  affected:
+  - via_scenarios: true
+  needed: An imported, eligible unikix run of the area's scenarios whose decoded outcomes are compared with the derived baselines.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-INF-006
+  category: inferred-not-observed
+  unknown: 'The card list, view and update (CRD) end-to-end baselines are derived from the source and the tech-spec statements that agree with it, never observed: no TPE region runs in CI. Affects the area''s online programs, maps and behaviour items, and every item listed by a scenario that cites this entry (its transactions and files).'
+  affected_inventory_ids:
+  - INV-CRD-001
+  - INV-CRD-002
+  - INV-CRD-003
+  - INV-CRD-004
+  - INV-CRD-005
+  - INV-CRD-006
+  - INV-CRD-007
+  - INV-CRD-008
+  - INV-CRD-009
+  - INV-CRD-010
+  - INV-CRD-011
+  - INV-CRD-012
+  - INV-CRD-013
+  - INV-CRD-014
+  - INV-CRD-015
+  - INV-CRD-016
+  - INV-CRD-017
+  - INV-CRD-018
+  - INV-CRD-019
+  - INV-CRD-020
+  - INV-CRD-021
+  - INV-CRD-022
+  - INV-CRD-023
+  - INV-CRD-024
+  - INV-CRD-025
+  - INV-CRD-026
+  - INV-CRD-027
+  - INV-CRD-029
+  - INV-CRD-030
+  - INV-CRD-031
+  - INV-CRD-034
+  - INV-CRD-035
+  - INV-CRD-038
+  - INV-CRD-039
+  - INV-CRD-040
+  - INV-CRD-041
+  - INV-CRD-042
+  - INV-CRD-043
+  - INV-CRD-044
+  - INV-CRD-045
+  - INV-CRD-046
+  - INV-CRD-047
+  - INV-CRD-048
+  - INV-CRD-049
+  - INV-CRD-050
+  - INV-CRD-051
+  - INV-CRD-052
+  - INV-CRD-054
+  - INV-CRD-055
+  - INV-CRD-056
+  - INV-CRD-057
+  - INV-CRD-058
+  - INV-CRD-059
+  - INV-CRD-062
+  - INV-CRD-063
+  - INV-CRD-064
+  - INV-CRD-066
+  - INV-CRD-067
+  - INV-CRD-068
+  - INV-CRD-069
+  - INV-CRD-072
+  - INV-CRD-073
+  - INV-CRD-074
+  - INV-CRD-075
+  - INV-CRD-076
+  - INV-CRD-077
+  - INV-CRD-078
+  - INV-CRD-079
+  affected:
+  - via_scenarios: true
+  needed: An imported, eligible unikix run of the area's scenarios whose decoded outcomes are compared with the derived baselines.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-INF-007
+  category: inferred-not-observed
+  unknown: 'The online transaction (TRN) end-to-end baselines are derived from the source and the tech-spec statements that agree with it, never observed: no TPE region runs in CI. Affects the area''s online programs, maps and behaviour items, and every item listed by a scenario that cites this entry (its transactions and files).'
+  affected_inventory_ids:
+  - INV-TRN-001
+  - INV-TRN-002
+  - INV-TRN-003
+  - INV-TRN-004
+  - INV-TRN-005
+  - INV-TRN-006
+  - INV-TRN-010
+  - INV-TRN-011
+  - INV-TRN-012
+  - INV-TRN-013
+  - INV-TRN-014
+  - INV-TRN-015
+  - INV-TRN-016
+  - INV-TRN-017
+  - INV-TRN-018
+  - INV-TRN-019
+  - INV-TRN-020
+  - INV-TRN-021
+  - INV-TRN-022
+  - INV-TRN-023
+  - INV-TRN-024
+  - INV-TRN-025
+  - INV-TRN-026
+  - INV-TRN-027
+  - INV-TRN-028
+  - INV-TRN-029
+  - INV-TRN-030
+  - INV-TRN-031
+  - INV-TRN-032
+  - INV-TRN-033
+  - INV-TRN-034
+  - INV-TRN-035
+  - INV-TRN-036
+  - INV-TRN-037
+  - INV-TRN-038
+  - INV-TRN-039
+  - INV-TRN-040
+  - INV-TRN-041
+  - INV-TRN-042
+  - INV-TRN-043
+  - INV-TRN-044
+  - INV-TRN-045
+  - INV-TRN-046
+  - INV-TRN-047
+  - INV-TRN-048
+  - INV-TRN-049
+  - INV-TRN-050
+  - INV-TRN-051
+  - INV-TRN-052
+  - INV-TRN-053
+  - INV-TRN-054
+  - INV-TRN-055
+  - INV-TRN-056
+  - INV-TRN-057
+  - INV-TRN-058
+  - INV-TRN-059
+  - INV-TRN-060
+  - INV-TRN-061
+  - INV-TRN-062
+  - INV-TRN-063
+  - INV-TRN-064
+  - INV-TRN-065
+  - INV-TRN-066
+  - INV-TRN-067
+  - INV-TRN-068
+  affected:
+  - via_scenarios: true
+  needed: An imported, eligible unikix run of the area's scenarios whose decoded outcomes are compared with the derived baselines.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-INF-008
+  category: inferred-not-observed
+  unknown: 'The bill payment (BIL) end-to-end baselines are derived from the source and the tech-spec statements that agree with it, never observed: no TPE region runs in CI. Affects the area''s online programs, maps and behaviour items, and every item listed by a scenario that cites this entry (its transactions and files).'
+  affected_inventory_ids:
+  - INV-BIL-001
+  - INV-BIL-002
+  - INV-BIL-003
+  - INV-BIL-004
+  - INV-BIL-005
+  - INV-BIL-006
+  - INV-BIL-007
+  - INV-BIL-008
+  - INV-BIL-009
+  - INV-BIL-010
+  - INV-BIL-011
+  - INV-BIL-012
+  - INV-BIL-013
+  - INV-BIL-014
+  - INV-BIL-015
+  - INV-BIL-016
+  - INV-BIL-017
+  - INV-BIL-018
+  - INV-BIL-019
+  - INV-BIL-020
+  - INV-BIL-021
+  affected:
+  - via_scenarios: true
+  needed: An imported, eligible unikix run of the area's scenarios whose decoded outcomes are compared with the derived baselines.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-INF-009
+  category: inferred-not-observed
+  unknown: 'The report submission (RPT) end-to-end baselines are derived from the source and the tech-spec statements that agree with it, never observed: no TPE region runs in CI. Affects the area''s online programs, maps and behaviour items, and every item listed by a scenario that cites this entry (its transactions and files).'
+  affected_inventory_ids:
+  - INV-RPT-001
+  - INV-RPT-002
+  - INV-RPT-010
+  - INV-RPT-011
+  - INV-RPT-012
+  - INV-RPT-013
+  - INV-RPT-014
+  - INV-RPT-015
+  - INV-RPT-016
+  - INV-RPT-017
+  - INV-RPT-018
+  - INV-RPT-019
+  - INV-RPT-020
+  - INV-RPT-021
+  - INV-RPT-022
+  - INV-RPT-023
+  - INV-RPT-024
+  - INV-RPT-025
+  - INV-RPT-026
+  - INV-RPT-027
+  - INV-RPT-028
+  - INV-RPT-029
+  - INV-RPT-030
+  - INV-RPT-031
+  - INV-RPT-032
+  - INV-RPT-033
+  - INV-RPT-034
+  - INV-RPT-035
+  affected:
+  - via_scenarios: true
+  needed: An imported, eligible unikix run of the area's scenarios whose decoded outcomes are compared with the derived baselines.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-INF-010
+  category: inferred-not-observed
+  unknown: 'The CFG baselines are derived, never observed: the CSD transactions (except CDV1), the 8 CSD files, TDQ JOBS, the 6 UniKix-only fct.lst files, the jobs CBADMCDJ, OPENFIL and CLOSEFIL, and the CEMT and DFHCSDUP JCL items act only in a CICS region, which CI does not have.'
+  affected_inventory_ids:
+  - INV-CFG-001
+  - INV-CFG-002
+  - INV-CFG-003
+  - INV-CFG-004
+  - INV-CFG-005
+  - INV-CFG-006
+  - INV-CFG-007
+  - INV-CFG-008
+  - INV-CFG-009
+  - INV-CFG-010
+  - INV-CFG-011
+  - INV-CFG-012
+  - INV-CFG-013
+  - INV-CFG-014
+  - INV-CFG-015
+  - INV-CFG-016
+  - INV-CFG-018
+  - INV-CFG-019
+  - INV-CFG-020
+  - INV-CFG-021
+  - INV-CFG-022
+  - INV-CFG-023
+  - INV-CFG-024
+  - INV-CFG-025
+  - INV-CFG-026
+  - INV-CFG-029
+  - INV-CFG-030
+  - INV-CFG-031
+  - INV-CFG-032
+  - INV-CFG-033
+  - INV-CFG-034
+  - INV-CFG-035
+  - INV-CFG-036
+  - INV-CFG-037
+  - INV-CFG-038
+  - INV-CFG-039
+  - INV-CFG-040
+  needed: Imported, eligible unikix runs of the scenarios that list these items.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-INF-011
+  category: inferred-not-observed
+  unknown: 'The JCL-semantics baselines are derived, never observed: MAXCC reset after DELETE, DISP=(NEW,CATLG,DELETE) on step failure, COND=(4,LT) in TRANBKP, GDG generation roll, AIX/PATH access, COND=(0,NE) in CREASTMT and the resolution of EXEC PROC=TRANREPT, plus the README full batch order; only a real job scheduler (BPE) evaluates them.'
+  affected_inventory_ids:
+  - INV-BAT-002
+  - INV-DAT-040
+  - INV-DAT-041
+  - INV-DAT-042
+  - INV-DAT-043
+  - INV-DAT-044
+  - INV-RPT-053
+  - INV-RPT-054
+  needed: Imported, eligible unikix runs of the scenarios that list these items.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-INF-012
+  category: inferred-not-observed
+  unknown: The 13 online-only copybooks are covered only through the derived end-to-end baselines of the programs that copy them.
+  affected_inventory_ids:
+  - INV-LAY-001
+  - INV-LAY-002
+  - INV-LAY-003
+  - INV-LAY-005
+  - INV-LAY-006
+  - INV-LAY-007
+  - INV-LAY-008
+  - INV-LAY-009
+  - INV-LAY-010
+  - INV-LAY-011
+  - INV-LAY-013
+  - INV-LAY-014
+  - INV-LAY-019
+  needed: The imported, eligible e2e runs that cover them.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-INF-013
+  category: inferred-not-observed
+  unknown: The 23 unit scenarios with a read, write, rewrite or close fault after a successful open have derived baselines (the error display, the status display, no return code), because no fault can be injected (GAP-MIS-013) and nothing could be captured for them.
+  affected_inventory_ids:
+  - INV-DAT-030
+  - INV-DAT-033
+  - INV-DAT-036
+  - INV-DAT-039
+  - INV-FIN-011
+  - INV-RPT-044
+  - INV-RPT-052
+  - INV-TRN-073
+  - INV-TRN-088
+  affected:
+  - via_scenarios: true
+  needed: Observed baselines captured on gnucobol-batch once a fault mechanism resolves GAP-MIS-013.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-001
+  category: missing-input
+  unknown: The dataset AWS.M2.CARDDEMO.DATEPARM that CBTRN03C reads through DDNAME DATEPARM, named by the TRANREPT job [app/jcl/TRANREPT.jcl:73-74] and the TRANREPT proc, is created by no job and supplied by no data file; scenarios supply DATEPARM as a parameter file.
+  affected_inventory_ids:
+  - INV-RPT-003
+  - INV-RPT-006
+  - INV-RPT-009
+  - INV-RPT-036
+  needed: The production DATEPARM dataset, or the job that creates it.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-002
+  category: missing-input
+  unknown: Whether the hosted CI runner lets tests/stubs/psa_tiot_shim.c map page zero is unknown (vm.mmap_min_addr and the runner's capabilities are not documented). Without it CBSTM03A faults on its control-block walk [app/cbl/CBSTM03A.CBL:235-291] and its scenarios, CREASTMT and the daily cycle are blocked.
+  affected_inventory_ids:
+  - INV-BAT-001
+  - INV-LAY-004
+  - INV-LAY-015
+  - INV-RPT-004
+  - INV-RPT-005
+  - INV-RPT-007
+  - INV-RPT-045
+  - INV-RPT-046
+  - INV-RPT-047
+  - INV-RPT-048
+  - INV-RPT-049
+  - INV-RPT-050
+  - INV-RPT-051
+  - INV-RPT-052
+  affected:
+  - via_scenarios: true
+  needed: A CI record of a successful page-zero probe with the CBSTM03A scenarios passing.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-003
+  category: missing-input
+  unknown: 'The UniKix region-creation commands are unconfirmed: kixregion createRegion "$KIXSYS" "$JAVA_HOME" "$KIXLICDIR", kixregion createScript "$KIXSYS", . $KIXSYS/bin/userenv and kixinstall2 (installing the catlg/tpe resource lists) come from the AWS CardDemo-on-UniKix tutorial, and the zip holds no command that creates the kixsys region.'
+  affected_inventory_ids: []
+  affected:
+  - unikix_dependent: true
+  needed: 'The operator''s confirmed command (status: confirmed in tests/adapters/unikix/commands.yaml) and a run record that uses it.'
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-004
+  category: missing-input
+  unknown: 'The UniKix start, stop and quiescence commands are unconfirmed: kixregion start "$KIXSYS" for TPE, bam start for BPE, the legacy Sun MTP kixstart/kixstop or the release''s equivalent, and a query that the region has no active task.'
+  affected_inventory_ids: []
+  affected:
+  - unikix_dependent: true
+  needed: 'The operator''s confirmed command (status: confirmed in tests/adapters/unikix/commands.yaml) and a run record that uses it.'
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-005
+  category: missing-input
+  unknown: 'The TPE 3270 listener is unconfirmed: unikixtnemux with TNServer*ListenPort in $KIXSYS/unikixrc.cfg (legacy default 2001; the AWS examples use 15440 and 4444), which must equal the loopback port of CARDDEMO_TN3270_ADDR. A formatted screen that matches no single map of tests/inventory/layouts.yaml is reported under this entry too.'
+  affected_inventory_ids: []
+  affected:
+  - unikix_dependent: true
+  needed: 'The operator''s confirmed command (status: confirmed in tests/adapters/unikix/commands.yaml) and a run record that uses it.'
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-006
+  category: missing-input
+  unknown: 'BPE job submission and cancellation are unconfirmed: . $EBMHOME/batchenv sys1, ebmsys -t, mvstrans and BPESUB <job> from $MBMSUB, with completion, job number and step return codes read from $PROJECT_ROOT/sysoutdir (legacy Sun MTP: subjob $JOB -t j), and the cancellation of an unfinished job.'
+  affected_inventory_ids: []
+  affected:
+  - unikix_dependent: true
+  needed: 'The operator''s confirmed command (status: confirmed in tests/adapters/unikix/commands.yaml) and a run record that uses it.'
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-007
+  category: missing-input
+  unknown: 'Dataset load, unload and catalog listing on UniKix are unconfirmed: the IDCAMS REPRO and LISTCAT jobs the adapter generates from the copy''s REPROC/REPROCT, submitted through BPE while the region files are closed, produce the post-run unloads, @CATALOG and @AIX:<path>.'
+  affected_inventory_ids: []
+  affected:
+  - unikix_dependent: true
+  needed: 'The operator''s confirmed command (status: confirmed in tests/adapters/unikix/commands.yaml) and a run record that uses it.'
+  resolving_evidence: null
+  status: open
+# Lists the program items with an app/ source and the items of GAP-DOC-020..029 and 031; the GAP-DOC-030 files
+# have no app/ counterpart, so an app/ build cannot bear on them.
+- gap_id: GAP-MIS-008
+  category: missing-input
+  unknown: 'The app/ sources have not been built or run on UniKix: the adapter deploys the UniKix copy (migrated_app) instead, whose units differ from app/ (GAP-DOC-020 to GAP-DOC-029, GAP-DOC-031) and whose CUSTREC replaces the tab characters of app/cpy/CUSTREC.cpy [app/cpy/CUSTREC.cpy:1-26].'
+  affected_inventory_ids:
+  - INV-ACT-001
+  - INV-ACT-002
+  - INV-ACT-003
+  - INV-ACT-004
+  - INV-ACT-039
+  - INV-ACT-068
+  - INV-ACT-069
+  - INV-ACT-070
+  - INV-ACT-071
+  - INV-ACT-072
+  - INV-ACT-073
+  - INV-ACT-074
+  - INV-ACT-075
+  - INV-ACT-076
+  - INV-ACT-077
+  - INV-ACT-078
+  - INV-ACT-079
+  - INV-ACT-080
+  - INV-ACT-081
+  - INV-ACT-082
+  - INV-ACT-083
+  - INV-ACT-084
+  - INV-ACT-085
+  - INV-ACT-086
+  - INV-ACT-087
+  - INV-ACT-088
+  - INV-ACT-089
+  - INV-ACT-090
+  - INV-ACT-091
+  - INV-ACT-092
+  - INV-ACT-093
+  - INV-ACT-094
+  - INV-ACT-095
+  - INV-ACT-096
+  - INV-ACT-097
+  - INV-ACT-098
+  - INV-ACT-099
+  - INV-ACT-100
+  - INV-ACT-101
+  - INV-ACT-102
+  - INV-ACT-103
+  - INV-ACT-104
+  - INV-ACT-105
+  - INV-ACT-106
+  - INV-ACT-107
+  - INV-ACT-108
+  - INV-ACT-109
+  - INV-ACT-110
+  - INV-ACT-111
+  - INV-ACT-112
+  - INV-ACT-113
+  - INV-ACT-114
+  - INV-ACT-115
+  - INV-ACT-116
+  - INV-ACT-117
+  - INV-ACT-118
+  - INV-ACT-119
+  - INV-ACT-120
+  - INV-ACT-121
+  - INV-ACT-122
+  - INV-ACT-123
+  - INV-ACT-124
+  - INV-ACT-125
+  - INV-ACT-126
+  - INV-ACT-127
+  - INV-ACT-128
+  - INV-ACT-129
+  - INV-ACT-130
+  - INV-ACT-131
+  - INV-ACT-132
+  - INV-ACT-133
+  - INV-ACT-134
+  - INV-ACT-135
+  - INV-ACT-136
+  - INV-ACT-137
+  - INV-ACT-138
+  - INV-ACT-139
+  - INV-ACT-140
+  - INV-ACT-141
+  - INV-ACT-142
+  - INV-ACT-143
+  - INV-ACT-144
+  - INV-ACT-145
+  - INV-ACT-146
+  - INV-ACT-147
+  - INV-ACT-148
+  - INV-ACT-149
+  - INV-ACT-150
+  - INV-ACT-151
+  - INV-ACT-152
+  - INV-ACT-153
+  - INV-ACT-154
+  - INV-ACT-155
+  - INV-ACT-156
+  - INV-ACT-157
+  - INV-ACT-158
+  - INV-ACT-159
+  - INV-ACT-160
+  - INV-ACT-161
+  - INV-ACT-162
+  - INV-ACT-163
+  - INV-ACT-164
+  - INV-ACT-165
+  - INV-ACT-166
+  - INV-ACT-167
+  - INV-ACT-168
+  - INV-ACT-169
+  - INV-ACT-170
+  - INV-ACT-171
+  - INV-ACT-172
+  - INV-ACT-173
+  - INV-ACT-174
+  - INV-ACT-175
+  - INV-ACT-176
+  - INV-ACT-177
+  - INV-ACT-178
+  - INV-ACT-179
+  - INV-ACT-180
+  - INV-ACT-181
+  - INV-ACT-182
+  - INV-ACT-183
+  - INV-ACT-184
+  - INV-ACT-185
+  - INV-ACT-186
+  - INV-ACT-187
+  - INV-ACT-189
+  - INV-ACT-190
+  - INV-ACT-191
+  - INV-BAT-002
+  - INV-BIL-001
+  - INV-CFG-031
+  - INV-CFG-032
+  - INV-CFG-033
+  - INV-CRD-001
+  - INV-CRD-002
+  - INV-CRD-003
+  - INV-CRD-057
+  - INV-DAT-001
+  - INV-DAT-002
+  - INV-DAT-003
+  - INV-DAT-004
+  - INV-DAT-006
+  - INV-DAT-007
+  - INV-DAT-008
+  - INV-DAT-022
+  - INV-FIN-001
+  - INV-LAY-013
+  - INV-MNU-001
+  - INV-MNU-002
+  - INV-RPT-001
+  - INV-RPT-003
+  - INV-RPT-004
+  - INV-RPT-005
+  - INV-RPT-006
+  - INV-RPT-007
+  - INV-RPT-009
+  - INV-RPT-023
+  - INV-RPT-024
+  - INV-RPT-036
+  - INV-RPT-045
+  - INV-RPT-046
+  - INV-RPT-047
+  - INV-RPT-048
+  - INV-RPT-054
+  - INV-SEC-001
+  - INV-TRN-001
+  - INV-TRN-002
+  - INV-TRN-003
+  - INV-TRN-007
+  - INV-TRN-008
+  - INV-TRN-052
+  - INV-TRN-053
+  - INV-USR-001
+  - INV-USR-002
+  - INV-USR-003
+  - INV-USR-004
+  - INV-UTL-001
+  - INV-UTL-002
+  - INV-UTL-003
+  - INV-UTL-004
+  needed: A bin/compile log of the app/ sources on a UniKix host, with run records of the affected scenarios.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-009
+  category: missing-input
+  unknown: 'No UniKix installation is available to this suite: whether one exists, and its TPE, BPE, Visual COBOL, licence and Java versions, are unknown (CARDDEMO_UNIKIX_ENV is unset in CI).'
+  affected_inventory_ids: []
+  affected:
+  - unikix_dependent: true
+  needed: environment.yaml from the first operator run, recording each installed version.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-010
+  category: missing-input
+  unknown: Whether UniKix supplies the LE services CEE3ABD and CEEDAYS, which the batch abend paths [app/cbl/CBTRN02C.cbl:707-711] and CSUTLDTC [app/cbl/CSUTLDTC.cbl:116] call, is unknown.
+  affected_inventory_ids:
+  - INV-DAT-029
+  - INV-DAT-030
+  - INV-DAT-032
+  - INV-DAT-033
+  - INV-DAT-035
+  - INV-DAT-036
+  - INV-DAT-038
+  - INV-DAT-039
+  - INV-FIN-009
+  - INV-FIN-010
+  - INV-FIN-011
+  - INV-RPT-042
+  - INV-RPT-043
+  - INV-RPT-044
+  - INV-RPT-051
+  - INV-RPT-052
+  - INV-TRN-072
+  - INV-TRN-073
+  - INV-TRN-087
+  - INV-TRN-088
+  - INV-UTL-003
+  needed: UniKix run records of DAT-POSTTRAN-recovery-01 and of the COTRN02C date validations.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-011
+  category: missing-input
+  unknown: No confirmed UniKix command closes, opens, disables or inquires a region file or controls TDQ JOBS (the CEMT SET FIL and CEMT INQUIRE FILE equivalents), and SDSF.cbl is a no-op (GAP-DOC-031); OPENFIL, CLOSEFIL, the README run order, the region files' open state and every online case with condition unavailable depend on it.
+  affected_inventory_ids:
+  - INV-BAT-002
+  - INV-CFG-001
+  - INV-CFG-002
+  - INV-CFG-003
+  - INV-CFG-004
+  - INV-CFG-005
+  - INV-CFG-006
+  - INV-CFG-007
+  - INV-CFG-008
+  - INV-CFG-031
+  - INV-CFG-032
+  - INV-CFG-033
+  - INV-CFG-035
+  - INV-CFG-036
+  - INV-CFG-037
+  - INV-CFG-038
+  - INV-CFG-039
+  - INV-CFG-040
+  affected:
+  - via_scenarios: true
+  needed: A confirmed region file control entry in tests/adapters/unikix/commands.yaml and a run record that uses it.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-012
+  category: missing-input
+  unknown: No UniKix resource corresponds to the CSD LIBRARY definitions CARDDLIB and COM2DOLL [app/csd/CARDDEMO.CSD:489-498]; the deployed resource lists define no libraries, and a program running online is no evidence for a library definition.
+  affected_inventory_ids:
+  - INV-CFG-027
+  - INV-CFG-028
+  needed: An operator-confirmed UniKix equivalent and an observation of it.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-013
+  category: missing-input
+  unknown: No adapter injects a read, write, rewrite or close failure after a successful open, so the I/O-failure paths of CBACT01C, CBACT02C, CBACT03C, CBCUS01C, CBTRN01C, CBTRN02C (including the DALYREJS close diagnostic of GAP-DEF-002), CBACT04C, CBTRN03C and CBSTM03A cannot run; their 23 scenarios raise MissingPrerequisite and stay implemented-unexecuted.
+  affected_inventory_ids:
+  - INV-DAT-030
+  - INV-DAT-033
+  - INV-DAT-036
+  - INV-DAT-039
+  - INV-FIN-011
+  - INV-RPT-044
+  - INV-RPT-052
+  - INV-TRN-073
+  - INV-TRN-088
+  affected:
+  - via_scenarios: true
+  needed: A fault-injection seam in the test tree for gnucobol-batch, registered as a stub limitation, or UniKix runs with injected faults.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-014
+  category: missing-input
+  unknown: No mechanism is known to hold a record lock, return IOERR or force an abend in the TPE region, so the online lock, I/O-error and HANDLE ABEND cases ('Could not lock ... for update', 'UNEXPECTED ABEND OCCURRED.') cannot be produced.
+  affected_inventory_ids:
+  - INV-ACT-024
+  - INV-ACT-051
+  - INV-ACT-052
+  - INV-ACT-065
+  - INV-CRD-043
+  - INV-CRD-067
+  - INV-CRD-076
+  affected:
+  - via_scenarios: true
+  needed: A confirmed mechanism and run records of the affected scenarios.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-015
+  category: missing-input
+  unknown: 'No confirmed command sets the UniKix clock, so scenarios with clock_mode: fixed cannot run there; BAT-CHAIN-normal-01 is one, because the TRANREPT INCLUDE window 2022-01-01 to 2022-07-06 filters the transactions POSTTRAN has just stamped.'
+  affected_inventory_ids:
+  - INV-BAT-001
+  affected:
+  - via_scenarios: true
+  needed: A confirmed clock_set entry in tests/adapters/unikix/commands.yaml and a run record that uses it.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-016
+  category: missing-input
+  unknown: CBADMCDJ runs the z/OS utility DFHCSDUP from OEM.CICSTS.V05R06M0.CICS.SDFHLOAD against OEM.CICSTS.DFHCSD [app/jcl/CBADMCDJ.jcl:27-30]; no UniKix equivalent is known, and the test-owned region takes its resources from the catlg/tpe lists instead.
+  affected_inventory_ids:
+  - INV-CFG-030
+  - INV-CFG-034
+  needed: An operator-confirmed equivalent, or a statement that UniKix installs CSD resources only from its resource lists.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-MIS-017
+  category: missing-input
+  unknown: No confirmed way captures the 80-byte records the region writes to TDQ JOBS [app/cbl/CORPT00C.cbl:517-523] and correlates them with the BPE job TRNRPT00 they submit (job number, submission time).
+  affected_inventory_ids:
+  - INV-CFG-029
+  - INV-RPT-032
+  affected:
+  - via_scenarios: true
+  needed: A confirmed JOBS capture entry in tests/adapters/unikix/commands.yaml and a run record that uses it.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-STB-001
+  category: stub-limitation
+  unknown: 'tests/stubs/CEE3ABD.cbl stands in for the LE abend service: it writes the marker CARDDEMO-ABEND CEE3ABD and ends the run, so the adapter reports return_code null. It produces no abend code, dump or LE condition handling [app/cbl/CBTRN02C.cbl:707-711].'
+  seam:
+    files:
+    - tests/stubs/CEE3ABD.cbl
+    replaces: LE callable service CEE3ABD
+  affected_inventory_ids:
+  - INV-DAT-029
+  - INV-DAT-030
+  - INV-DAT-032
+  - INV-DAT-033
+  - INV-DAT-035
+  - INV-DAT-036
+  - INV-DAT-038
+  - INV-DAT-039
+  - INV-FIN-009
+  - INV-FIN-010
+  - INV-FIN-011
+  - INV-RPT-042
+  - INV-RPT-043
+  - INV-RPT-044
+  - INV-RPT-051
+  - INV-RPT-052
+  - INV-TRN-072
+  - INV-TRN-073
+  - INV-TRN-087
+  - INV-TRN-088
+  affected:
+  - via_scenarios: true
+  needed: An eligible UniKix run of the same scenario, or of its unikix counterpart, whose decoded outcome agrees with the gnucobol-batch baseline.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-STB-002
+  category: stub-limitation
+  unknown: tests/stubs/ceedays.c computes Lilian days (day 1 = 1582-10-15) only for the picture strings YYYY-MM-DD and YYYYMMDD and returns the feedback tokens that CSUTLDTC checks; era-based pictures are not implemented, so the tokens 09CD and 09D9 arise only by injection (ceedays_feedback), which verifies CSUTLDTC's mapping but not which dates CEEDAYS refuses [app/cbl/CSUTLDTC.cbl:20-157].
+  seam:
+    files:
+    - tests/stubs/ceedays.c
+    replaces: LE callable service CEEDAYS
+  affected_inventory_ids:
+  - INV-UTL-001
+  - INV-UTL-002
+  - INV-UTL-003
+  - INV-UTL-004
+  affected:
+  - via_scenarios: true
+  needed: An eligible UniKix run of the same scenario, or of its unikix counterpart, whose decoded outcome agrees with the gnucobol-batch baseline.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-STB-003
+  category: stub-limitation
+  unknown: tests/stubs/psa_tiot_shim.c maps page zero with a synthetic PSA (+536 -> TCB), TCB (+12 -> TIOT) and TIOT built from the scenario's job, step and ddnames, and CBSTM03A/CBSTM03B are compiled with -fbinary-byteorder=native for it; the real z/OS control blocks, UCB state and DD concatenations are not reproduced [app/cbl/CBSTM03A.CBL:235-291].
+  seam:
+    files:
+    - tests/stubs/psa_tiot_shim.c
+    replaces: z/OS PSA, TCB and TIOT control-block chain
+  affected_inventory_ids:
+  - INV-RPT-004
+  - INV-RPT-005
+  - INV-RPT-047
+  affected:
+  - via_scenarios: true
+  needed: An eligible UniKix run of the same scenario, or of its unikix counterpart, whose decoded outcome agrees with the gnucobol-batch baseline.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-STB-004
+  category: stub-limitation
+  unknown: tests/stubs/PARMDRV.cbl emulates the z/OS PARM linkage of CBACT04C (a halfword length followed by the text) [app/cbl/CBACT04C.cbl:175-180], and tests/stubs/DTCDRV.cbl emulates CSUTLDTC's callers by passing the date, mask and result areas and recording RETURN-CODE [app/cbl/CSUTLDTC.cbl:20-157]; the job step and online CALL linkages themselves are not exercised.
+  seam:
+    files:
+    - tests/stubs/PARMDRV.cbl
+    - tests/stubs/DTCDRV.cbl
+    replaces: z/OS PARM linkage and the CSUTLDTC CALL interface
+  affected_inventory_ids:
+  - INV-FIN-001
+  - INV-FIN-003
+  - INV-FIN-004
+  - INV-FIN-005
+  - INV-FIN-006
+  - INV-FIN-007
+  - INV-FIN-008
+  - INV-FIN-009
+  - INV-FIN-010
+  - INV-FIN-011
+  - INV-UTL-001
+  - INV-UTL-002
+  - INV-UTL-003
+  - INV-UTL-004
+  affected:
+  - via_scenarios: true
+  needed: An eligible UniKix run of the same scenario, or of its unikix counterpart, whose decoded outcome agrees with the gnucobol-batch baseline.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-STB-005
+  category: stub-limitation
+  unknown: The IDCAMS replacement in tests/adapters/gnucobol_batch/utilities.py emulates DELETE, DEFINE CLUSTER/AIX/PATH/GDG, REPRO (with REPROCT), BLDINDEX and IF MAXCC/SET MAXCC through COBOL loaders and unloaders generated from tests/inventory/layouts.yaml; it has no CI/CA, FREESPACE or SHAREOPTIONS, and its return codes and messages are emulated [app/ctl/REPROCT.ctl:15].
+  seam:
+    files:
+    - tests/adapters/gnucobol_batch/utilities.py
+    replaces: IDCAMS
+  affected_inventory_ids:
+  - INV-DAT-005
+  - INV-DAT-006
+  - INV-DAT-007
+  - INV-DAT-008
+  - INV-DAT-009
+  - INV-DAT-010
+  - INV-DAT-011
+  - INV-DAT-012
+  - INV-DAT-013
+  - INV-DAT-018
+  - INV-DAT-019
+  - INV-DAT-020
+  - INV-DAT-021
+  - INV-DAT-022
+  - INV-DAT-023
+  - INV-DAT-024
+  - INV-DAT-025
+  - INV-DAT-026
+  - INV-DAT-027
+  - INV-RPT-006
+  - INV-RPT-007
+  - INV-RPT-008
+  - INV-RPT-009
+  affected:
+  - via_scenarios: true
+  needed: An eligible UniKix run of the same scenario, or of its unikix counterpart, whose decoded outcome agrees with the gnucobol-batch baseline.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-STB-006
+  category: stub-limitation
+  unknown: The SORT replacement in tests/adapters/gnucobol_batch/utilities.py implements only the DFSORT subset the jobs use (FIELDS with CH and ZD, INCLUDE, OUTREC with EDIT, SYMNAMES), transcribed into jobs.yaml, and collates in ASCII, not EBCDIC; records it shortens are padded with spaces to the output record length.
+  seam:
+    files:
+    - tests/adapters/gnucobol_batch/utilities.py
+    replaces: SORT (DFSORT)
+  affected_inventory_ids:
+  - INV-DAT-007
+  - INV-RPT-006
+  - INV-RPT-007
+  - INV-RPT-008
+  - INV-RPT-009
+  affected:
+  - via_scenarios: true
+  needed: An eligible UniKix run of the same scenario, or of its unikix counterpart, whose decoded outcome agrees with the gnucobol-batch baseline.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-STB-007
+  category: stub-limitation
+  unknown: The IEBGENER, IEFBR14 and DISP replacements in tests/adapters/gnucobol_batch/utilities.py copy data, run empty steps and apply DISP=(NEW,CATLG,DELETE) dispositions without the z/OS allocation, space and catalog semantics.
+  seam:
+    files:
+    - tests/adapters/gnucobol_batch/utilities.py
+    replaces: IEBGENER, IEFBR14 and DISP
+  affected_inventory_ids:
+  - INV-DAT-013
+  - INV-RPT-007
+  - INV-RPT-008
+  affected:
+  - via_scenarios: true
+  needed: An eligible UniKix run of the same scenario, or of its unikix counterpart, whose decoded outcome agrees with the gnucobol-batch baseline.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-STB-008
+  category: stub-limitation
+  unknown: The SDSF replacement in tests/adapters/gnucobol_batch/utilities.py is a no-op with RC 0 for the CLCIFIL/OPCIFIL steps of CARDFILE, CUSTFILE and TRANFILE, so the CICS region state those steps change is not exercised.
+  seam:
+    files:
+    - tests/adapters/gnucobol_batch/utilities.py
+    replaces: SDSF
+  affected_inventory_ids:
+  - INV-DAT-006
+  - INV-DAT-008
+  - INV-DAT-022
+  affected:
+  - via_scenarios: true
+  needed: An eligible UniKix run of the same scenario, or of its unikix counterpart, whose decoded outcome agrees with the gnucobol-batch baseline.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-STB-009
+  category: stub-limitation
+  unknown: The per-scenario catalog of tests/adapters/gnucobol_batch/datasets.py emulates GDG bases and the (+1)/(0) generation references and DSN cataloguing; LIMIT, SCRATCH and EMPTY are only partly emulated.
+  seam:
+    files:
+    - tests/adapters/gnucobol_batch/datasets.py
+    replaces: z/OS catalog and GDG
+  affected_inventory_ids:
+  - INV-DAT-007
+  - INV-DAT-009
+  - INV-DAT-011
+  - INV-DAT-018
+  - INV-DAT-020
+  - INV-FIN-002
+  - INV-RPT-006
+  - INV-TRN-009
+  affected:
+  - via_scenarios: true
+  needed: An eligible UniKix run of the same scenario, or of its unikix counterpart, whose decoded outcome agrees with the gnucobol-batch baseline.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-STB-010
+  category: stub-limitation
+  unknown: 'GnuCOBOL indexed files (Berkeley DB), loaded and unloaded by tests/adapters/gnucobol_batch/datasets.py, stand in for VSAM KSDS, AIX and PATH: OPEN OUTPUT recreates a loaded file, as CBTRN02C does to TRANFILE [app/cbl/CBTRN02C.cbl:81-84] where VSAM would refuse it, and file status 37 differs.'
+  seam:
+    files:
+    - tests/adapters/gnucobol_batch/datasets.py
+    replaces: VSAM KSDS, AIX and PATH (GnuCOBOL Berkeley DB indexed files)
+  affected_inventory_ids:
+  - INV-DAT-001
+  - INV-DAT-002
+  - INV-DAT-003
+  - INV-DAT-004
+  - INV-DAT-005
+  - INV-DAT-006
+  - INV-DAT-007
+  - INV-DAT-008
+  - INV-DAT-010
+  - INV-DAT-012
+  - INV-DAT-013
+  - INV-DAT-014
+  - INV-DAT-015
+  - INV-DAT-016
+  - INV-DAT-017
+  - INV-DAT-019
+  - INV-DAT-020
+  - INV-DAT-021
+  - INV-DAT-022
+  - INV-DAT-023
+  - INV-DAT-024
+  - INV-DAT-025
+  - INV-DAT-026
+  - INV-FIN-001
+  - INV-FIN-002
+  - INV-RPT-003
+  - INV-RPT-005
+  - INV-RPT-006
+  - INV-RPT-007
+  - INV-RPT-008
+  - INV-RPT-009
+  - INV-TRN-007
+  - INV-TRN-008
+  - INV-TRN-009
+  affected:
+  - via_scenarios: true
+  needed: An eligible UniKix run of the same scenario, or of its unikix counterpart, whose decoded outcome agrees with the gnucobol-batch baseline.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-STB-011
+  category: stub-limitation
+  unknown: tests/adapters/gnucobol_batch/build.py compiles with cobc -std=ibm -fsign=EBCDIC -ftab-width=4 -fbinary-truncate to reproduce Enterprise COBOL PARM=(APOST,LIST,MAP,NUMBER,NOSEQ) with the default TRUNC(STD) [samples/proc/BUILDBAT.prc:36]; defaultbyte 0 produces the x'00' fill after 'Int. for a/c <acct>' in CBACT04C, and the runtime collates in ASCII.
+  seam:
+    files:
+    - tests/adapters/gnucobol_batch/build.py
+    replaces: Enterprise COBOL compile and LE runtime options
+  affected_inventory_ids:
+  - INV-DAT-001
+  - INV-DAT-002
+  - INV-DAT-003
+  - INV-DAT-004
+  - INV-FIN-001
+  - INV-FIN-008
+  - INV-RPT-003
+  - INV-RPT-004
+  - INV-RPT-005
+  - INV-TRN-007
+  - INV-TRN-008
+  - INV-UTL-001
+  affected:
+  - via_scenarios: true
+  needed: An eligible UniKix run of the same scenario, or of its unikix counterpart, whose decoded outcome agrees with the gnucobol-batch baseline.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-UNC-001
+  category: uncertain-purpose
+  unknown: The copybook UNUSED1Y, an 80-byte record shaped like the user security record, is copied by no program [app/cpy/UNUSED1Y.cpy:1-7].
+  affected_inventory_ids:
+  - INV-LAY-028
+  needed: The owner's statement of purpose, or a job, caller or configuration that activates it.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-UNC-002
+  category: uncertain-purpose
+  unknown: app/data/EBCDIC/AWS.M2.CARDDEMO.ACCDATA.PS is byte-identical to AWS.M2.CARDDEMO.ACCTDATA.PS and no job or proc names its data set.
+  affected_inventory_ids:
+  - INV-DTA-010
+  needed: The owner's statement of purpose, or a job, caller or configuration that activates it.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-UNC-003
+  category: uncertain-purpose
+  unknown: CBTRN01C, which verifies daily transactions against the cross-reference and account files without posting them, is executed by no step in app/jcl or app/proc [app/cbl/CBTRN01C.cbl:1-491].
+  affected_inventory_ids:
+  - INV-TRN-007
+  - INV-TRN-069
+  - INV-TRN-070
+  - INV-TRN-071
+  - INV-TRN-072
+  - INV-TRN-073
+  needed: The owner's statement of purpose, or a job, caller or configuration that activates it.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-UNC-004
+  category: uncertain-purpose
+  unknown: CBTRN02C sets reason 109 'ACCOUNT RECORD NOT FOUND' only on REWRITE INVALID KEY of an account it has just read by key in the same run, and never writes it to DALYREJS [app/cbl/CBTRN02C.cbl:554-559], so the code cannot be produced.
+  affected_inventory_ids:
+  - INV-TRN-079
+  needed: The owner's statement of purpose, or a job, caller or configuration that activates it.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-UNC-005
+  category: uncertain-purpose
+  unknown: '''This option ... is coming soon ...'' is reached only for an option whose program name begins ''DUMMY'', and no option has one [app/cbl/COMEN01C.cbl:146-162] [app/cbl/COADM01C.cbl:138-152].'
+  affected_inventory_ids:
+  - INV-MNU-008
+  - INV-MNU-023
+  needed: The owner's statement of purpose, or a job, caller or configuration that activates it.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-UNC-006
+  category: uncertain-purpose
+  unknown: The CSD LIBRARY COM2DOLL is defined with STATUS(DISABLED) on the same DSNAME as CARDDLIB [app/csd/CARDDEMO.CSD:494-498], so nothing loads from it.
+  affected_inventory_ids:
+  - INV-CFG-028
+  needed: The owner's statement of purpose, or a job, caller or configuration that activates it.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-UNC-007
+  category: uncertain-purpose
+  unknown: 1400-COMPUTE-FEES is performed after every interest computation but holds only the comment 'To be implemented' [app/cbl/CBACT04C.cbl:518-520], so no fee is ever charged.
+  affected_inventory_ids:
+  - INV-FIN-005
+  needed: The owner's statement of purpose, or a job, caller or configuration that activates it.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-UNC-008
+  category: uncertain-purpose
+  unknown: Monthly interest is computed as (TRAN-CAT-BAL * DIS-INT-RATE) / 1200 without ROUNDED [app/cbl/CBACT04C.cbl:464-465], so the remainder is truncated; whether truncation is intended is unknown.
+  affected_inventory_ids:
+  - INV-FIN-003
+  needed: The owner's statement of the intended rounding, or the UniKix outcome of FIN-INTCALC-normal-01.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-UNC-009
+  category: uncertain-purpose
+  unknown: The interest transaction's TRAN-DESC is built by STRING 'Int. for a/c ' ACCT-ID into a field that is never initialized [app/cbl/CBACT04C.cbl:485-489], so the bytes after the account id are whatever the runtime's working storage holds (x'00' on gnucobol-batch).
+  affected_inventory_ids:
+  - INV-FIN-008
+  needed: The UniKix outcome of FIN-INTCALC-normal-01.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-UNC-010
+  category: uncertain-purpose
+  unknown: The transactions CAVW, CAUP, CCLI, CCDL and CCUP start a fresh screen without any sign-on check when entered directly without a COMMAREA [app/cbl/COACTVWC.cbl:282-286] [app/cbl/COACTUPC.cbl:880] [app/cbl/COCRDLIC.cbl:315] [app/cbl/COCRDSLC.cbl:268] [app/cbl/COCRDUPC.cbl:388], while the other 11 online programs return to sign-on.
+  affected_inventory_ids:
+  - INV-ACT-026
+  - INV-ACT-067
+  - INV-CRD-024
+  - INV-CRD-045
+  - INV-CRD-078
+  needed: The owner's statement of purpose, or a job, caller or configuration that activates it. UniKix runs of the direct-entry scenarios would show the behaviour on a live region.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-UNC-011
+  category: uncertain-purpose
+  unknown: The over-limit test compares ACCT-CREDIT-LIMIT with CYC-CREDIT - CYC-DEBIT + DALYTRAN-AMT, using cycle totals that accumulate through the run, and the expiry test that follows overwrites reason 102 with 103 when both fail [app/cbl/CBTRN02C.cbl:403-420]; whether either is intended is unknown.
+  affected_inventory_ids:
+  - INV-TRN-076
+  - INV-TRN-077
+  - INV-TRN-078
+  needed: The owner's statement of purpose, or a job, caller or configuration that activates it.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-UNC-012
+  category: uncertain-purpose
+  unknown: 'Whether the inventory is complete is unknown: literal and STRING extraction cannot see a message built wholly from run-time variables, and the 88-level reference check cannot see a condition set through a REDEFINES or a group move. Every ERRMSG and @text value a unikix run observes that matches no inventory item becomes an addition.'
+  affected_inventory_ids:
+  - INV-ACT-001
+  - INV-ACT-002
+  - INV-BIL-001
+  - INV-CRD-001
+  - INV-CRD-002
+  - INV-CRD-003
+  - INV-MNU-001
+  - INV-MNU-002
+  - INV-RPT-001
+  - INV-SEC-001
+  - INV-TRN-001
+  - INV-TRN-002
+  - INV-TRN-003
+  - INV-USR-001
+  - INV-USR-002
+  - INV-USR-003
+  - INV-USR-004
+  needed: A full unikix run that reports no unmatched screen message.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-UNC-013
+  category: uncertain-purpose
+  unknown: 'Online code is defined but never executed: the 3 predicates of 1230-EDIT-ALPHANUM-REQD and 1240-EDIT-ALPHANUM-OPT are performed for no field [app/cbl/COACTUPC.cbl:1955-2105], and 31 message 88-levels are never set or tested (14 in COACTUPC [app/cbl/COACTUPC.cbl:479-528], 6 in COACTVWC [app/cbl/COACTVWC.cbl:117-138], 5 in COCRDSLC [app/cbl/COCRDSLC.cbl:134-158], 6 in COCRDUPC [app/cbl/COCRDUPC.cbl:173-214]).'
+  affected_inventory_ids:
+  - INV-ACT-006
+  - INV-ACT-007
+  - INV-ACT-010
+  - INV-ACT-011
+  - INV-ACT-014
+  - INV-ACT-015
+  - INV-ACT-034
+  - INV-ACT-036
+  - INV-ACT-037
+  - INV-ACT-040
+  - INV-ACT-041
+  - INV-ACT-044
+  - INV-ACT-045
+  - INV-ACT-046
+  - INV-ACT-047
+  - INV-ACT-048
+  - INV-ACT-049
+  - INV-ACT-050
+  - INV-ACT-055
+  - INV-ACT-056
+  - INV-ACT-189
+  - INV-ACT-190
+  - INV-ACT-191
+  - INV-CRD-028
+  - INV-CRD-032
+  - INV-CRD-033
+  - INV-CRD-036
+  - INV-CRD-037
+  - INV-CRD-053
+  - INV-CRD-060
+  - INV-CRD-061
+  - INV-CRD-065
+  - INV-CRD-070
+  - INV-CRD-071
+  needed: The owner's statement of purpose, or a job, caller or configuration that activates it.
+  resolving_evidence: null
+  status: open
