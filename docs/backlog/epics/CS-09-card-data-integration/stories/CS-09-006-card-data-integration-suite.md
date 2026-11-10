@@ -123,75 +123,71 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A, one test file with one group per failure mode sharing one container pair.
+Recommended: Option A, one test file with a group per failure mode.
 
-Rationale: each failure mode gets a group that states its own setup, while every group reuses the container pair and the sample loaded once.
+Rationale: each group states its own setup over a shared container pair and sample load.
 
-- Rejected: Option B, one parameterized table of failure modes, because a table row cannot express the setup steps that the stale and cache-outage cases need: a warm read, ageing, and stopping the cache.
+- Rejected: Option B, a parameterized table, as a row cannot warm, age or stop the cache.
 
 Shared by both options:
 
-- Topology: the relational store and cache containers come from the shared integration base, and the stub runs on a loopback port inside the test process.
-- Naming: groups are named after the failure mode they prove.
-- Addressing: the client is pointed at the loopback stub through its target address.
-- Isolation: the suite never runs beside another test class, each group resets injection and clears cache entries, and only the cache-outage case stops a cache, its own dedicated one.
-- Fallback: the stale path is tested only against the real cache.
-- Provisioning: before its one load, the suite drops every table that an earlier suite left in the shared relational store and checks that none remain, so the fixture loader rebuilds the schema and loads the sample, with the synthetic volume it always adds, into an empty store.
-- Cut-over: pointing the client at a real card data service changes only its target address and credential source, and a suite run against that service needs its own data setup, fault injection and call observation, because the sample rows loaded into the local relational store, the injected failures and the request log exist only beside the local stub.
+- Topology: the store and cache are shared containers, and a stub reads the store per call.
+- Naming: each group or row is named after the failure mode it proves.
+- Addressing: the client's target address names the loopback stub.
+- Isolation: no test class runs beside the suite, each group or row resets injection and clears cache entries, and only the cache-outage case stops a cache, its own dedicated one.
+- Fallback: the stale path runs only against the real cache.
+- Provisioning: the suite drops earlier suites' tables and checks the store empty, then the loader rebuilds the schema and loads the sample with its synthetic volume.
+- Cut-over: a real service changes only the client's target address and credential source, and needs its own data setup, fault injection and call observation.
 - Failures: unavailable, slow, not-found and cache outage.
 
 ### Design Option A — one file with a group per failure mode
 
-The suite is one test file holding one nested group per failure mode, all sharing the container pair that the integration base starts once per test process. The relational store is emptied and the sample loaded into it before the first group, and the stub reads that store on every call. Each group takes its injected delay, failure rate and entry ages from the suite settings, prepares the cache state it needs and reads the stub's request log.
+One file holds a group per failure mode. Each group sets its own injection and cache state.
 
 How it behaves:
 
-- The fresh group reads once on an empty cache and again inside the freshness window.
-- The unavailable and slow groups start on an empty cache and count attempts in the request log.
-- The stale groups warm the cache, move the entry's cache timestamp back and then fail the stub.
-- The cross-reference group warms first and then shows that the read still fails hard with nothing cached.
+- The fresh group reads on an empty cache, then within the freshness window.
+- The unavailable and slow groups count attempts from an empty cache.
+- The stale groups warm the cache, move the entry's timestamp back, then fail the stub.
+- After a warm read, the cross-reference read still fails hard with nothing cached.
 - The cache-outage group warms its own cache container, stops it and reads again.
-- Each failure call runs under its own request budget and records the cut-off and the caller's elapsed time.
-- Before the load, the suite drops every table an earlier suite left and checks that the store holds none.
-- The schema checks run on scratch databases in the same relational container, and the load and provider checks read the loaded sample.
-- The load check counts only the sample account range, so the synthetic rows never change its counts.
+- Each failure call records its cut-off and the caller's elapsed time under a fresh budget.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One file for every failure mode (vs one file per failure mode) | the story stays at two files | the file grows with each failure mode |
-| 2 | Shared container pair (vs containers per group) | one container start serves every group | a missed cleanup carries state into the next group |
-| 3 | Lower-bound timing assertions (vs exact times) | a loaded runner stretches durations without failing the suite | a slowdown below the deadline ceiling goes unseen |
-| 4 | Suite settings file for overrides (vs inline values) | every injected value sits in one place | a reader opens two files to follow a group |
-| 5 | Ageing by moving the cache timestamp (vs waiting out the freshness window) | the stale groups run with no real wait | the suite depends on the stored entry layout |
+| 1 | One file (vs one per mode) | two files suffice | the file grows per mode |
+| 2 | Shared containers (vs per group) | one start serves all | a missed reset leaks state |
+| 3 | Lower bounds (vs exact times) | loaded runners pass | small slowdowns go unseen |
+| 4 | Settings file (vs inline values) | values sit together | a group spans two files |
+| 5 | Timestamp ageing (vs waiting) | no stale group waits | tests rely on entry layout |
 
-Effort and risk: one suite file and one settings file, with the risk in timing bounds on loaded runners.
+Effort and risk: two files, at risk from timing on loaded runners.
 
 ### Design Option B — one parameterized table of failure modes
 
-The suite drives one parameterized case over a table whose rows hold the injected delay, the failure rate, the expected attempt count and the expected outcome. Every row starts from an empty cache and the loaded sample. The cases that need a warm read, an aged entry or a stopped cache sit beside the table as separate cases or as a setup column.
+One case runs over rows of delay, failure rate, attempts and outcome. Stateful cases sit apart.
 
 How it differs:
 
 - The unavailable, slow and not-found rows share one setup and one assertion.
-- A plain row cannot warm the cache, age an entry or stop the cache container.
-- The stale, stale-expiry and cache-outage proofs need hand-written cases or a setup column per row.
+- Stale, stale-expiry and cache-outage proofs need hand-written cases or a setup column.
 - A new failure mode with plain setup costs one row.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One parameterized table (vs one group per failure mode) | plain failure modes read as one grid | stateful setups fall outside the grid |
-| 2 | Setup column per row (vs separate stateful cases) | every failure mode stays in the grid | the column hides the steps a case depends on |
-| 3 | Empty cache for every row (vs per-row cache state) | rows stay independent | the stale paths need cache state a row cannot hold |
+| 1 | One table (vs groups) | plain modes share a grid | stateful setups fall outside |
+| 2 | Setup column (vs own cases) | the grid holds every mode | the column hides steps |
+| 3 | Empty cache (vs row state) | rows stay independent | no row holds stale state |
 
-Effort and risk: similar effort, with the risk that the stale and cache-outage proofs drift into hidden setup.
+Effort and risk: similar effort, with stateful proofs at risk of hidden setup.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: stateful setups stay readable, because each group states its warm read, ageing or cache stop as its own steps.
-- Strongest argument against: one file grows long as the failure modes accumulate.
-- Shared items that do not decide the choice: the container pair, the store reset, the fixture loader and the deadline assertions.
-- Flip conditions: every failure mode needs identical setup, or the file passes one to two screens per group.
+- Why: each group spells out its own warm read, ageing or cache stop.
+- Strongest argument against: the one file grows with every failure mode.
+- Shared items that do not decide the choice: containers, store reset, loader and deadlines.
+- Flip conditions: every mode needs the same setup, or each group outgrows two screens.
 
 ## Design Validation
 
@@ -199,68 +195,59 @@ Effort and risk: similar effort, with the risk that the stale and cache-outage p
 
 Settled assumptions:
 
-- Each attempt times out at 300 ms, the retry cap is two with waits of 50 ms and then 100 ms, and a retry starts only when its wait plus a full attempt fits the 900 ms budget.
-- Immediate unavailable answers give three attempts, and a 400 ms injected delay gives two, ending at 650 ms.
-- The first sample account holds a current balance of 194.00 and a credit limit of 2020.00.
-- The shared integration base supplies the container pair and empties the cache before each test.
-- The account entry has a 60-second freshness window and a 300-second maximum stale age.
-- Test classes run one at a time, and this suite never runs beside another class.
-- The store is emptied before the load, so every entity load starts from an empty store whichever suite ran before.
-- The synthetic volume that the loader always adds sits outside the sample account range, so the sample read-back never counts it.
-- The shared base gives every suite the same store address, so a suite cannot move to a database of its own without a change to the base.
+- A 300 ms attempt is retried after 50 then 100 ms if each retry fits the 900 ms budget.
+- Immediate failures give three attempts, a 400 ms delay two, ending at 650 ms.
+- The first sample account holds balance 194.00 and credit limit 2020.00.
+- Entries stay fresh for 60 s, with a 300 s maximum stale age.
+- The shared base gives the container pair, one store address and a per-test empty cache.
+- Classes run singly from an empty store, with synthetic rows outside the sample range.
 
 Open assumptions:
 
-- Open → timing headroom on shared build runners → settled by the first integration stage runs.
-- Open → a stopped cache container ends each cache wait within its bound → settled by the first runs of the cache-outage group.
+- Open → runner timing headroom → settled by the first integration runs.
+- Open → each wait on a stopped cache ends in time → settled by the first outage runs.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | a miss writes one shared entry that the repeat read finds fresh |
-| AC2 | Holds | immediate unavailable answers leave room for both retries |
-| AC3 | Holds | a second retry would not fit the budget after two timed-out attempts |
-| AC4 | Holds | the call policy caps retries at two and retries only the two retryable statuses |
-| AC5 | Holds | the not-found status ends the call after one attempt |
-| AC6 | Holds | the moved cache timestamp puts the entry inside its stale window |
-| AC7 | Holds | the age rule rejects an entry past its maximum stale age while the cache still holds it |
-| AC8 | Holds | the cross-reference read never touches the cache |
-| AC9 | Holds | the dedicated cache container stops without touching the shared pair |
-| AC10 | Holds | every failure path reaches its cut-off before the response bound |
-| AC11 | Holds | the inherited integration tag routes the suite to the integration task alone |
-| AC12 | Holds | one load into the emptied store precedes any group, with the read-back held to the sample range |
-| AC13 | Holds | scratch databases keep the schema checks apart from the loaded sample |
-| AC14 | Holds | a second harness serves the in-memory set beside the relational stub |
+| AC1 | Holds | the repeat read finds the fresh entry |
+| AC2 | Holds | immediate failures leave room for both retries |
+| AC3 | Holds | a third attempt would overrun the budget |
+| AC4 | Holds | two statuses retry, at most twice |
+| AC5 | Holds | not-found ends the call at once |
+| AC6 | Holds | the aged entry stays within stale age |
+| AC7 | Holds | the age rule rejects held over-age entries |
+| AC8 | Holds | the cross-reference read skips the cache |
+| AC9 | Holds | only the dedicated cache stops |
+| AC10 | Holds | each failure cuts off within the deadline |
+| AC11 | Holds | the inherited tag keeps the suite integration-only |
+| AC12 | Holds | one emptied-store load precedes the sample-range count |
+| AC13 | Holds | scratch databases isolate the schema checks |
+| AC14 | Holds | a second harness serves the in-memory set |
 
 ### Option B
 
-Settled assumptions:
-
-- Each attempt times out at 300 ms, the retry cap is two with waits of 50 ms and then 100 ms, and a retry starts only when its wait plus a full attempt fits the 900 ms budget.
-- Immediate unavailable answers give three attempts, and a 400 ms injected delay gives two, ending at 650 ms.
-- The first sample account holds a current balance of 194.00 and a credit limit of 2020.00.
-- The shared integration base supplies the container pair and empties the cache before each test.
-- Test classes run one at a time, the store is emptied before the load, the synthetic volume sits outside the sample account range and every suite shares one store address, as in Option A.
+Settled assumptions: every Option A settled assumption holds.
 
 Open assumptions:
 
-- Open → timing headroom on shared build runners → settled by the first integration stage runs.
-- Open → a setup column can express a warm read, ageing and a cache stop → settled by a trial of the stale rows.
+- Open → runner timing headroom → settled by the first integration runs.
+- Open → a setup column can warm, age and stop the cache → settled by a stale-row trial.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Conditional | the repeat read needs a second step that a plain row lacks |
-| AC2 | Holds | one row with full failure rate gives three attempts |
-| AC3 | Holds | one row with the 400 ms delay gives two attempts |
-| AC4 | Holds | the attempt column caps every row at three |
-| AC5 | Holds | one row with the unknown account gives one attempt |
-| AC6 | At risk | the warm read and ageing sit outside the table |
-| AC7 | At risk | the expired entry needs the same setup outside the table |
-| AC8 | Conditional | the warm cross-reference read needs a setup step |
-| AC9 | At risk | stopping a dedicated cache container cannot be a table row |
-| AC10 | Holds | every row records its cut-off and elapsed time |
-| AC11 | Holds | the integration tag routes the suite to the integration task alone |
-| AC12 | Holds | one load into the emptied store precedes the table, with the read-back held to the sample range |
-| AC13 | Holds | the schema checks run outside the table on scratch databases |
+| AC1 | Conditional | a plain row holds no repeat read |
+| AC2 | Holds | a full failure-rate row gives three attempts |
+| AC3 | Holds | the 400 ms row gives two attempts |
+| AC4 | Holds | the attempt column caps rows at three |
+| AC5 | Holds | an unknown-account row gives one attempt |
+| AC6 | At risk | warming and ageing sit outside the table |
+| AC7 | At risk | the expired entry needs that outside setup |
+| AC8 | Conditional | the warm cross-reference read needs setup |
+| AC9 | At risk | a cache stop cannot be a row |
+| AC10 | Holds | each row records cut-off and elapsed time |
+| AC11 | Holds | the inherited tag keeps the suite integration-only |
+| AC12 | Holds | one emptied-store load precedes the sample-range count |
+| AC13 | Holds | schema checks run apart on scratch databases |
 | AC14 | Holds | the provider comparison runs outside the table |
 
 ## Metadata

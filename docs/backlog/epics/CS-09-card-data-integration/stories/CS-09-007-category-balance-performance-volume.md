@@ -106,71 +106,67 @@ Completed during implementation.
 
 Recommended: Option A, batched set-based inserts from a deterministic sequence.
 
-Rationale: a generator inside the loader derives every synthetic row from its position in a fixed sequence, so the volume needs no stored data and reads the same on every run.
+Rationale: rows derive from sequence positions, so every run writes the same rows.
 
-- Rejected: Option B, pre-generated fixture files, because they put one hundred and twenty thousand rows of checked-in data into the repository and must be regenerated whenever the shape changes.
+- Rejected: Option B, pre-generated fixture files, because a new shape forces regeneration.
 
-### Shared by both options
+Shared by both options:
 
-- Topology: the step runs inside the one-shot loader job, after the sample load and outside every request path.
-- Naming: synthetic identifiers sit in a range disjoint from the sample's, with each card and customer number derived from its account's position.
-- Addressing: the relational store is reached through the loader's connection settings only.
-- Isolation: one transaction per entity, with each load report entry written after its commit.
-- Fallback: none, because a failure fails the loader and the stack's readiness wait.
+- Topology: a one-shot loader step runs after the sample load, outside every request path.
+- Naming: identifiers derive from the account position and avoid the sample's range.
+- Addressing: only the loader's connection settings reach the store.
+- Isolation: each entity commits in one transaction before its report entry is written.
+- Fallback: none exists, because a failure fails the loader and the stack's readiness wait.
 - Provisioning: the step always runs, and both suites share one stack and one store.
-- Cut-over: the step retires with the stubs, because the real card data owner holds the real volume.
-- Failures: a failed batch rolls back its entity, and no later loader step starts.
+- Cut-over: the step retires with the stubs, because the card data owner holds real volume.
+- Failures: a failed write rolls back its entity, and no later loader step starts.
 
-### Design Option A — deterministic generator with batched inserts
+### Design Option A — deterministic generator
 
-A generator walks positions one to ten thousand and derives each synthetic account, its one synthetic card and its ten category balances from the position and the fixed seed pair list. Rows stream through the loader core's parent-key check into the row writer, which saves them in batches of one thousand inside one transaction per entity. Every synthetic account copies the field values of the first sample account, so row width and empty fields match the sample.
+Positions 1 to 10,000 and the pair list yield each account, its card and ten balances. Accounts copy the first sample account, and rows pass the parent-key check in 1,000-row batches, one transaction per entity.
 
 How it behaves:
 
-- Three loader steps run in the order account, card, category balance, each above every sample loader step.
-- Each card number and customer number is a fixed offset from the account's position, so the transaction volume story derives the same cards without reading them.
-- Each category balance takes a value from its account position and its pair position, so every row is distinct and reproducible.
-- The generator holds at most one batch in memory.
-- A rejected batch rolls back its entity, leaves no load report entry for it and stops the loader with a failure status.
-- The seed pairs pass the core's parent-key rule, so a pair missing from the seed is skipped and counted.
+- Steps run account, card, then category balance, each above every sample step.
+- Card and customer numbers are position offsets the transaction volume story derives.
+- Balances derive from account and pair positions, so rows are distinct and reproducible.
+- A balance whose pair the seed lacks is skipped and counted.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Sequence-derived identifiers (vs random identifiers) | every run writes the same rows | the identifier pattern is visibly artificial |
-| 2 | Batched inserts (vs row-by-row inserts) | the volume load adds far fewer round trips to every stack start | a rejected batch discards the whole entity |
-| 3 | Always run (vs a data-set switch) | one start command yields one data set everywhere | every stack start pays the volume load |
-| 4 | Fixed pair order (vs per-account variation) | every synthetic account carries the same ten balance rows | the volume never exercises an uneven category spread |
+| 1 | Sequence identifiers (vs random) | every run matches | rows look artificial |
+| 2 | Batched inserts (vs single rows) | round trips drop | a failed batch voids the entity |
+| 3 | Always run (vs data-set switch) | every stack matches | every start pays the load |
+| 4 | Fixed pairs (vs varied pairs) | accounts share pairs | the spread never varies |
 
-Effort and risk: low effort with one generator and one registration, with the risk confined to the load time added to every stack start.
+Effort and risk: low effort, and added start time is the only risk.
 
 ### Design Option B — pre-generated fixture files
 
-The same rows are generated once by a separate tool and checked in as three fixed-width fixture files beside the sample copies. The loader core reads them through the same parser, record layouts and parent-key rule as the sample. The load order, identifier range and pair set are the same as in Option A.
+A separate tool writes the same rows once into three checked-in files beside the sample copies. The loader reads them like the sample, in the same order, range and pair set.
 
 How it differs:
 
-- One hundred and twenty thousand lines of checked-in data enter the repository.
-- Any change to the shape, the range or the pair set needs the files regenerated and checked in again.
-- A reviewer can read every row directly.
-- The file loaders write rows one at a time unless they gain the batched writer.
+- The 120,000 checked-in lines must be regenerated on any shape, range or pair change.
+- The file loaders write one row at a time unless they gain the batched writer.
 - Determinism rests on the regeneration tool staying unchanged.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Checked-in fixture files (vs generation at load time) | every row is open to direct review | the repository carries bulk data that drifts with the shape |
-| 2 | Same parser as the sample (vs a dedicated generator) | no new parsing rule is written | every stack start parses one hundred and twenty thousand lines |
-| 3 | Always run (vs a data-set switch) | one start command yields one data set everywhere | every stack start pays the volume load |
-| 4 | Fixed pair order (vs per-account variation) | every synthetic account carries the same ten balance rows | the volume never exercises an uneven category spread |
+| 1 | Checked-in files (vs generation) | reviewers see every row | files lag shape changes |
+| 2 | Sample parser (vs a generator) | no parser is added | starts parse every line |
+| 3 | Always run (vs data-set switch) | every stack matches | every start pays the load |
+| 4 | Fixed pairs (vs varied pairs) | accounts share pairs | the spread never varies |
 
-Effort and risk: moderate effort with a separate generation tool, with the risk that a regenerated file changes rows unnoticed.
+Effort and risk: moderate effort for a tool, and regeneration can alter rows unnoticed.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: deterministic rows with no checked-in bulk data.
-- Strongest argument against: the generation rule lives in code, so a reviewer cannot inspect the rows directly.
-- Shared items that do not decide the choice: the identifier range, the seed pair set and the load order.
-- Flip conditions: the volume shape must be hand-curated, or another consumer needs the rows outside the loader.
+- Why: every run writes the same rows without checked-in bulk data.
+- Strongest argument against: a reviewer sees only the generation rule, never the rows.
+- Shared items that do not decide the choice: the identifier range, pair set and load order.
+- Flip conditions: the volume must be hand-curated, or rows are needed outside the loader.
 
 ## Design Validation
 
@@ -178,57 +174,55 @@ Effort and risk: moderate effort with a separate generation tool, with the risk 
 
 Settled assumptions:
 
-- The sample has fifty accounts, each with one card, and no sample identifier falls in the synthetic ranges.
-- At least ten category seed rows exist, and the first ten form the seed pair list.
-- The planning baseline is one hundred thousand category balances on ten thousand synthetic accounts.
-- The loader core runs steps in ascending order and stops at the first failed step.
+- The sample has 50 single-card accounts, with no identifier in the synthetic ranges.
+- At least ten category seed rows exist, the first ten forming the pair list.
+- The planning baseline is 100,000 balances on 10,000 synthetic accounts.
+- The loader core runs steps in ascending order, stopping at the first failure.
 
 Open assumptions:
 
-- Open → load time added to the stack start → settled by the transaction performance volume story's measurement.
-- Open → whether batches of one thousand rows keep the load inside the loader's time limit → settled by the transaction performance volume story's load-time measurement against the test stack story's loader time limit.
+- Open → added start time → settled by the transaction volume story's load timing.
+- Open → whether 1,000-row batches fit the stack's loader limit → settled by that timing.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the generator walks exactly ten thousand positions with ten pairs each |
-| AC2 | Holds | every identifier is a fixed offset from a position between one and ten thousand |
-| AC3 | Holds | every synthetic account copies the first sample account's field values |
-| AC4 | Holds | the pair list is fixed in ascending key order with one value per pair position |
-| AC5 | Holds | no random source, clock or environment value enters a row |
-| AC6 | Holds | the synthetic ranges share no value with the sample's |
-| AC7 | Holds | every parent row commits before its child step starts |
-| AC8 | Holds | the core's parent-key rule checks every pair against the seed |
-| AC9 | Holds | the synthetic steps carry orders above every sample step |
-| AC10 | Holds | the core rolls back the entity at its first failed batch |
-| AC11 | Holds | the row writer saves exactly one thousand rows per batch |
+| AC1 | Holds | each of 10,000 positions yields ten balances |
+| AC2 | Holds | every identifier is a fixed offset |
+| AC3 | Holds | accounts copy the first sample account's values |
+| AC4 | Holds | the pair list keeps ascending key order |
+| AC5 | Holds | no random, clock or environment value enters |
+| AC6 | Holds | synthetic ranges share no sample value |
+| AC7 | Holds | parents commit before child steps start |
+| AC8 | Holds | every pair is checked against the seed |
+| AC9 | Holds | synthetic orders exceed every sample order |
+| AC10 | Holds | a failed batch rolls back the entity |
+| AC11 | Holds | the writer saves 1,000 rows per batch |
 
 ### Option B
 
 Settled assumptions:
 
-- The sample has fifty accounts, each with one card, and no sample identifier falls in the synthetic ranges.
-- At least ten category seed rows exist, and the first ten form the seed pair list.
-- The planning baseline is one hundred thousand category balances on ten thousand synthetic accounts.
+- Option A's first three settled assumptions hold.
 - The generation tool's output is checked in once beside the sample copies.
 
 Open assumptions:
 
-- Open → load time added to the stack start → settled by the transaction performance volume story's measurement.
-- Open → whether the generation tool is kept and versioned with the files → settled by the review of the checked-in data.
+- Open → added start time → settled by the same timing as Option A.
+- Open → whether the tool is versioned with the files → settled by checked-in data review.
 
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Holds | the files hold exactly the generated counts |
 | AC2 | Holds | the files carry the same identifier range |
-| AC3 | Holds | every file line carries the first sample account's field values |
-| AC4 | Holds | the files list the ten pairs in the same order |
+| AC3 | Holds | files copy the first sample account's values |
+| AC4 | Holds | the files keep the same pair order |
 | AC5 | At risk | a regenerated file can change rows unnoticed |
 | AC6 | Holds | the files carry the same disjoint ranges |
-| AC7 | Holds | every parent file commits before its child file loads |
-| AC8 | Holds | the core's parent-key rule checks every pair against the seed |
-| AC9 | Holds | the file steps carry the same orders above every sample step |
-| AC10 | At risk | a rejected batch needs the file loaders to gain the batched writer |
-| AC11 | At risk | the file loaders write row by row unless they gain the batched writer |
+| AC7 | Holds | parent files commit before child files load |
+| AC8 | Holds | every pair is checked against the seed |
+| AC9 | Holds | file steps keep Option A's orders |
+| AC10 | At risk | batch rollback needs a batched file loader |
+| AC11 | At risk | file loaders write row by row |
 
 ## Metadata
 
