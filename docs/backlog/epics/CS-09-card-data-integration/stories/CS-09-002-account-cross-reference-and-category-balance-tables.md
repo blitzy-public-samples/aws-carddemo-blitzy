@@ -105,13 +105,13 @@ Rationale: a hand-written script copied from the data model and applied by the l
 ### Shared by both options
 
 - Topology: one relational store shared by the loader and the stubs.
-- Naming: lower-case names copied from the data model.
+- Naming: lower-case table and column names copied from the data model.
 - Addressing: the store is reached only by the loader and the stubs, never by the service.
 - Isolation: these three tables only, with the reference tables owned by the reference data tables story.
 - Fallback: none, because a stub has nothing to read until the tables exist.
-- Provisioning: schema in a fixed order of reference, card data, then transactions.
-- Cut-over: the real card data owner keeps its own store, and the scripts stay test-only.
-- Failures: a script error stops the loader before any row loads.
+- Provisioning: the three tables exist before the first card data row loads, and the options differ in which step creates them and in what order.
+- Cut-over: the real card data service replaces the stub by a change of target address and credential source alone, and ownership of these tables after that swap stays an open question in the plan's recommendations.
+- Failures: a row the store refuses rolls back its entity and stops the loader, and every entity committed before it stays.
 
 ### Design Option A — hand-written schema scripts applied before the load
 
@@ -119,7 +119,8 @@ A hand-written script creates the account, card cross-reference and category bal
 
 How it behaves:
 
-- The loader applies the reference script, then this script, then the transaction script, inside its first load transaction.
+- The loader applies the reference script, then this script, then the transaction script, inside its first load transaction, so the creation order is fixed by script name rather than by which process starts first.
+- A script error stops the loader before any row loads.
 - A table or index that already exists is left as it is, so a rerun changes no definition and no row.
 - The store enforces every key, so a row whose parent is missing is refused even if it slips past the loader's skip rule.
 - Each amount column carries the source precision, so an amount one digit too long is refused.
@@ -146,6 +147,7 @@ How it differs:
 - A start against an empty store creates the tables, and a start against an existing store may add columns.
 - A foreign key exists only where an entity declares a link, and the reference category has no entity in this story.
 - The order of reference, card data and transaction tables follows stub start order, not a fixed sequence.
+- A table the mapper cannot generate fails that stub's start, and the loader then finds no table to write.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
@@ -159,9 +161,9 @@ Effort and risk: lowest effort, with high risk of type drift and of schema chang
 ### Recommendation
 
 - Option: Option A.
-- Why: the data model stays the single schema source, and no stub start changes the schema.
+- Why: the data model stays the single schema source, the loader fixes the creation order, and no stub start changes the schema.
 - Strongest argument against: the script and the entities describe the same columns twice, and only the mapping test keeps them in step.
-- Shared items that do not decide the choice: the table set, the keys, the fixed order and the test-only scope.
+- Shared items that do not decide the choice: the table set, the table and column names, the one shared store and the test-only scope.
 - Flip conditions: the data model is generated from the entities, or a schema migration tool joins the dependency table.
 
 ## Design Validation
@@ -179,6 +181,7 @@ Open assumptions:
 
 - Whether a later real store needs migrations. Open → settled when the real card data owner is named.
 - Whether the catalogue checks run before the first stub read depends on them. Open → settled by the card data integration suite story.
+- Who owns these tables once the real card data service replaces the stub. Open → settled by the data store ownership decision recorded in the plan's recommendations.
 
 | AC | Verdict | Why |
 |---|---|---|
@@ -205,6 +208,7 @@ Open assumptions:
 
 - Whether a stub always starts before the loader. Open → settled by the compose test stack story.
 - Whether each mapper default matches its data-model type. Open → settled by comparing the generated catalogue with the data model.
+- Who owns these tables once the real card data service replaces the stub. Open → settled by the data store ownership decision recorded in the plan's recommendations.
 
 | AC | Verdict | Why |
 |---|---|---|
@@ -217,7 +221,7 @@ Open assumptions:
 | AC7 | Conditional | the length and not-null bounds hold only where each attribute restates them |
 | AC8 | At risk | each update start may add columns to an existing store |
 | AC9 | Breaks | schema generation at stub start-up is the design itself |
-| AC10 | Holds | the entities and the tables come from one description |
+| AC10 | Conditional | the exact round trip holds only where each attribute restates its length, precision and nullability |
 
 ## Metadata
 

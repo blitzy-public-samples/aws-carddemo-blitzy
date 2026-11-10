@@ -120,7 +120,7 @@ Rationale: the data owner changes a description by editing a seed data file and 
 - Isolation: reference rows reach the store ahead of every card data row.
 - Fallback: none at load time beyond rejecting a row, because the description fallback belongs to the client story.
 - Provisioning: the loader applies the schema scripts in name order before the first entity loads.
-- Cut-over: the real reference data service keeps its own data, so these tables and seed sets retire with the stub.
+- Cut-over: the real reference data service replaces the stub by a change of target address and credential source alone, and ownership of these tables and seed sets after that swap stays an open question in the plan's recommendations.
 - Failures: a bad row never becomes a stored row, and a missing seed set or script stops the load.
 
 ### Design Option A — seed data files loaded by the fixture loader
@@ -189,6 +189,7 @@ Open assumptions:
 - The form in which the reference entities appear in the load report. Open → settled by the report format of the loader core story.
 - Whether files stay the data owner's delivery form. Open → settled by the data owner's first change request.
 - Whether a rerun of the whole load job is safe for the card data entities. Open → settled by the card data fixture load story.
+- Who owns these tables and seed sets once the real reference data service replaces the stub. Open → settled by the data store ownership decision recorded in the plan's recommendations.
 
 | AC | Verdict | Why |
 |---|---|---|
@@ -212,6 +213,7 @@ Open assumptions:
 
 - Whether the data owner accepts a service build for each description change. Open → settled by the data owner's first change request.
 - Whether the load report can count rows that a schema script wrote. Open → settled by the report format of the loader core story.
+- Who owns these tables and seed sets once the real reference data service replaces the stub. Open → settled by the data store ownership decision recorded in the plan's recommendations.
 
 | AC | Verdict | Why |
 |---|---|---|

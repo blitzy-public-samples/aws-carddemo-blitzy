@@ -59,4 +59,4 @@ flowchart LR
     class LegendNetworking networking
 
     style Legend fill:#ffffff,stroke:#333333
-    Description["The Card Servicing service answers UI balance and drill-down requests by calling five stubbed external systems over gRPC and caching their answers in Redis. The Card Data, Transaction Activity and Reference Data stubs read the fixture data that the loader writes to PostgreSQL."]
+    Description["The Card Servicing service answers UI balance and drill-down requests by calling five stubbed external systems over gRPC, asking the Auth stub for every token and account-access decision and caching in Redis only account, category-balance, transaction and reference-data answers plus the Config snapshot mirror. The Card Data, Transaction Activity and Reference Data stubs read the fixture data that the loader writes to PostgreSQL."]

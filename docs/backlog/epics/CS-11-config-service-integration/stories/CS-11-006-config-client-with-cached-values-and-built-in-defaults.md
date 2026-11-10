@@ -229,7 +229,7 @@ How it differs:
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
 | 1 | Configuration read through the shared cache on each request (vs memory only) | every instance reads the same values | every request pays one cache call |
-| 2 | Configuration read on a miss inside the request (vs a background refresh) | values are never older than the fresh period | a slow configuration service consumes the request budget |
+| 2 | Configuration read on a miss inside the request (vs a background refresh) | each request that finds the mirror entry stale tries a new configuration read | a slow configuration service consumes the request budget |
 | 3 | Stale mirror entry, then built-in defaults, after a failure (vs held values in memory) | no in-memory state to manage | a cache outage during a configuration outage moves every request to the built-in defaults |
 
 Effort and risk: less concurrency code but a configuration read on the request path, with the risk in cache misses that run out of budget while the configuration service is slow.
@@ -302,7 +302,7 @@ Open assumptions:
 | AC9 | Conditional | the attempt count follows the request's remaining time after a mirror read of at most 50 ms |
 | AC10 | Breaks | a 2,000 ms configuration read consumes the request budget before its data reads |
 | AC11 | Holds | the same client forwards both credentials with the header logging of both transport ends held above debug level |
-| AC12 | Holds | the cache serves a fresh mirror entry with no configuration read and ends an unanswered wait at 50 ms |
+| AC12 | Breaks | no held snapshot exists to adopt the stale mirror values and stay stale |
 
 ## Metadata
 

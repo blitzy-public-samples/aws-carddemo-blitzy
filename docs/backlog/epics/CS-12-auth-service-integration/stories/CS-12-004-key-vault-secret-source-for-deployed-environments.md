@@ -142,7 +142,7 @@ Effort and risk: one dependency line, one settings block and one test class, wit
 
 ### Design Option B
 
-A startup component fetches the three secrets with the vault client and writes them into the configuration as the highest-priority source before other components start. It checks the vault address itself and does nothing when the address is empty. The framework vault source stays off, and the component uses only the client that the same managed starter brings.
+A startup component fetches the three secrets with the vault client and writes them into the configuration as a source ranked below environment values before other components start. It checks the vault address itself and does nothing when the address is empty. The framework vault source stays off, and the component uses only the client that the same managed starter brings.
 
 How it differs:
 

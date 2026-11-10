@@ -104,7 +104,7 @@ Rationale: copying each transaction's account onto its row lets one composite ke
 - Isolation: the card servicing service never connects to the store and reaches transactions only through the transaction activity stub.
 - Fallback: none at schema level, because the fixture loader skips and counts a row whose parent is missing before it reaches the table.
 - Provisioning: the script runs after the reference, account and cross-reference tables, and each statement is skipped when its object already exists.
-- Cut-over: the real transaction activity service keeps its own store, so this table retires with the stub.
+- Cut-over: the real transaction activity service replaces the stub by a change of target address and credential source alone, and ownership of this table after that swap stays an open question in the plan's recommendations.
 - Failures: a key violation rejects the insert and leaves every stored row untouched.
 
 ### Design Option A — account column with a composite keyset index
@@ -168,6 +168,7 @@ Open assumptions:
 
 - Whether a later iteration adds writes that change a card's account Open → the Requirements Analysis author fixes the write scope.
 - Whether the container-backed catalog checks run before the listing stub relies on the keyset index Open → the integration suite story.
+- Who owns this table once the real transaction activity service replaces the stub Open → the data store ownership decision recorded in the plan's recommendations.
 
 | AC | Verdict | Why |
 |---|---|---|
@@ -191,6 +192,7 @@ Settled assumptions:
 Open assumptions:
 
 - Whether a page sort stays within the per-attempt timeout on the large-history account Open → the transaction list performance scenario.
+- Who owns this table once the real transaction activity service replaces the stub Open → the data store ownership decision recorded in the plan's recommendations.
 
 | AC | Verdict | Why |
 |---|---|---|

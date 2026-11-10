@@ -120,7 +120,7 @@ Shared by both options:
 - Isolation: per-test failure overrides, fresh request logs, an emptied cache and a new application context for every test.
 - Fallback: none, because the Auth path fails closed and has no degraded answer.
 - Provisioning: the shared container base starts the relational store and the cache once per test runtime.
-- Cut-over: the real Auth service replaces the stub only at the address the suite binds, so the cases stay unchanged.
+- Cut-over: the suite stays on the Auth stub and its fixture tokens, because its cases rely on injected failures and stub request logs that a real Auth service does not offer, while the service itself moves to the real Auth service by a change of client address and credential source only.
 - Failures: unavailable answers, injected latency and deadline exhaustion, each asserted through the stub request logs and the cut-off time.
 
 ### Design Option A
@@ -150,7 +150,7 @@ The suite sends its requests to the four production endpoints on the account pat
 
 How it differs:
 
-- The suite cannot run until the endpoint stories and the card data stub land in the next wave.
+- The suite cannot run until the card data stub lands later in this wave and the endpoint stories land in the next wave.
 - Every case runs once per endpoint, four times the cases of Option A.
 - The production parameter check proves the real order of checks ahead of the guard.
 - The no-read proof covers real account data in the cache and the card data stub.
@@ -168,7 +168,7 @@ Effort and risk: no test configuration but four endpoint variants of every case,
 - Option: Design Option A.
 - Why: it proves the fail-closed path, the timeout, the retry cap, the cut-off and the configuration launch point in the same wave as the guard.
 - Strongest argument against: the stand-in parameter check can differ from the order that the production endpoints use.
-- Shared items that do not decide the choice: the in-runtime stubs, the throwaway containers, the per-test overrides, the request-log assertions and the address-only cut-over.
+- Shared items that do not decide the choice: the in-runtime stubs, the throwaway containers, the per-test overrides, the request-log assertions and a cut-over that keeps the suite on the stubs.
 - Flip conditions: the endpoint stories landing in the same wave as this suite, or the production parameter check differing from the stand-in in a way the endpoint order tests cannot catch.
 
 ## Design Validation
@@ -218,7 +218,7 @@ Open assumptions:
 |---|---|---|
 | AC1 | Conditional | the guard rejects on the path family ahead of the missing endpoints |
 | AC2 | Conditional | the guard rejects on the path family ahead of the missing endpoints |
-| AC3 | Conditional | the no-read proof has no data source in this wave |
+| AC3 | Conditional | no endpoint reads account data in this wave |
 | AC4 | Breaks | the production parameter check lands in the next wave |
 | AC5 | Breaks | no production endpoint returns a 200 in this wave |
 | AC6 | Breaks | no production endpoint returns a 200 in this wave |

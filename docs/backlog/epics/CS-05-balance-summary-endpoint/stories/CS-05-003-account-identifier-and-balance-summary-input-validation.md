@@ -99,13 +99,13 @@ Rationale: one receipt stage reading one rule set rejects a malformed account nu
 
 ### Shared by both options
 
-- Topology: validation runs inside the service before any network call.
+- Topology: validation runs inside the service process, and no check makes a network call of its own.
 - Naming: field names in error details match the HTTP field names on both protocols.
 - Addressing: the account number comes from the path on HTTP and from the request message on remote procedure calls.
-- Isolation: rejected requests touch neither the cache nor upstream services.
-- Fallback: none, since a rejected request ends at 400.
+- Isolation: the checks themselves read no cache or store.
+- Fallback: none, since a value that fails a check ends the request at 400.
 - Provisioning: none.
-- Cut-over: later validation stories add rules to the same place.
+- Cut-over: unchanged when real services replace the stubs, because the checks make no upstream call.
 - Failures: every rejection passes through the standard error object with its trace identifier.
 
 ### Design Option A — shared validator at receipt
