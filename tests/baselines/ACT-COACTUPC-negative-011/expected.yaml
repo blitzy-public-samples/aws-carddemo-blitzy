@@ -1,0 +1,1753 @@
+# Derived baseline of scenario ACT-COACTUPC-negative-011: USER0001 fetches
+# account 00000000001 on COACTUP and types X over the account status.
+# Authored from the source, never captured: app/cbl/COMEN01C.cbl:236-275 (the
+# menu option text), app/cbl/COACTUPC.cbl:878-886,964-973 (the fresh entry
+# from the menu), 2562-2580,2787-2865 (the fetch and the fetched values),
+# 1460-1476,1856-1891 (1220-EDIT-YESNO refuses X with the trimmed field name
+# and ' must be Y or N.'), 1671-1675,2596-2597 (no READ UPDATE or REWRITE),
+# 2870-2872,2955-2981 (the X kept, the change prompt and the message),
+# 3566-3576 (F12=Cancel bright once changes are made), app/bms/COACTUP.bms,
+# app/cpy/COTTL01Y.cpy, and the fixtures app/data/ASCII/acctdata.txt and
+# custdata.txt with the scenario's invented customer 000000001. It pins the
+# app/ COACTUPC; the UniKix copy composes the message without TRIM
+# (GAP-DOC-022). Open until a UniKix run is imported: GAP-INF-005 and
+# GAP-INF-012.
+# One screen per step, each the screen shown after the step's AID; values are
+# full BMS field width with trailing spaces kept. CURDATE and CURTIME come
+# from the region clock, hence the matchers. ERRMSG is the 30-character
+# message padded to the 78 bytes of ERRMSGO, INFOMSG the 40-byte WS-INFO-MSG
+# in the 45-byte field. The refused change writes nothing, so file_state
+# lists every record of ACCTDATA and CUSTDATA as materialized, in key order,
+# decoded field by field with CVACT01Y and CVCUS01Y, FILLER included, so every
+# byte of each record is asserted unchanged.
+file_state:
+  ACCTDATA:
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '1020.00'
+    ACCT-CREDIT-LIMIT: '2020.00'
+    ACCT-CURR-BAL: '194.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-05-20'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '1'
+    ACCT-OPEN-DATE: '2014-11-20'
+    ACCT-REISSUE-DATE: '2025-05-20'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '5448.00'
+    ACCT-CREDIT-LIMIT: '6130.00'
+    ACCT-CURR-BAL: '158.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2024-08-11'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '2'
+    ACCT-OPEN-DATE: '2013-06-19'
+    ACCT-REISSUE-DATE: '2024-08-11'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '538.00'
+    ACCT-CREDIT-LIMIT: '4909.00'
+    ACCT-CURR-BAL: '147.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2024-01-10'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '3'
+    ACCT-OPEN-DATE: '2013-08-23'
+    ACCT-REISSUE-DATE: '2024-01-10'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '2789.00'
+    ACCT-CREDIT-LIMIT: '3503.00'
+    ACCT-CURR-BAL: '40.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2023-12-16'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '4'
+    ACCT-OPEN-DATE: '2012-11-17'
+    ACCT-REISSUE-DATE: '2023-12-16'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '2430.00'
+    ACCT-CREDIT-LIMIT: '3819.00'
+    ACCT-CURR-BAL: '345.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-03-09'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '5'
+    ACCT-OPEN-DATE: '2012-10-03'
+    ACCT-REISSUE-DATE: '2025-03-09'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '2948.00'
+    ACCT-CREDIT-LIMIT: '3584.00'
+    ACCT-CURR-BAL: '218.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-10-08'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '6'
+    ACCT-OPEN-DATE: '2017-12-23'
+    ACCT-REISSUE-DATE: '2025-10-08'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '264.00'
+    ACCT-CREDIT-LIMIT: '2065.00'
+    ACCT-CURR-BAL: '193.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2024-12-13'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '7'
+    ACCT-OPEN-DATE: '2012-10-12'
+    ACCT-REISSUE-DATE: '2024-12-13'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '1318.00'
+    ACCT-CREDIT-LIMIT: '6104.00'
+    ACCT-CURR-BAL: '605.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2024-05-20'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '8'
+    ACCT-OPEN-DATE: '2012-01-04'
+    ACCT-REISSUE-DATE: '2024-05-20'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '2065.00'
+    ACCT-CREDIT-LIMIT: '8201.00'
+    ACCT-CURR-BAL: '560.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2024-12-27'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '9'
+    ACCT-OPEN-DATE: '2016-08-27'
+    ACCT-REISSUE-DATE: '2024-12-27'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '4442.00'
+    ACCT-CREDIT-LIMIT: '5401.00'
+    ACCT-CURR-BAL: '159.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2023-01-27'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '10'
+    ACCT-OPEN-DATE: '2015-09-13'
+    ACCT-REISSUE-DATE: '2023-01-27'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '3175.00'
+    ACCT-CREDIT-LIMIT: '4998.00'
+    ACCT-CURR-BAL: '212.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-03-12'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '11'
+    ACCT-OPEN-DATE: '2014-09-12'
+    ACCT-REISSUE-DATE: '2025-03-12'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '388.00'
+    ACCT-CREDIT-LIMIT: '4636.00'
+    ACCT-CURR-BAL: '176.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2023-07-07'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '12'
+    ACCT-OPEN-DATE: '2009-06-17'
+    ACCT-REISSUE-DATE: '2023-07-07'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '4922.00'
+    ACCT-CREDIT-LIMIT: '7542.00'
+    ACCT-CURR-BAL: '41.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2024-08-04'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '13'
+    ACCT-OPEN-DATE: '2017-10-01'
+    ACCT-REISSUE-DATE: '2024-08-04'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '212.00'
+    ACCT-CREDIT-LIMIT: '2254.00'
+    ACCT-CURR-BAL: '15.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-12-11'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '14'
+    ACCT-OPEN-DATE: '2010-12-04'
+    ACCT-REISSUE-DATE: '2025-12-11'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '3833.00'
+    ACCT-CREDIT-LIMIT: '8441.00'
+    ACCT-CURR-BAL: '489.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-06-09'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '15'
+    ACCT-OPEN-DATE: '2009-10-06'
+    ACCT-REISSUE-DATE: '2025-06-09'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '2632.00'
+    ACCT-CREDIT-LIMIT: '8922.00'
+    ACCT-CURR-BAL: '733.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2024-01-25'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '16'
+    ACCT-OPEN-DATE: '2014-09-11'
+    ACCT-REISSUE-DATE: '2024-01-25'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '510.00'
+    ACCT-CREDIT-LIMIT: '568.00'
+    ACCT-CURR-BAL: '33.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-03-01'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '17'
+    ACCT-OPEN-DATE: '2014-05-17'
+    ACCT-REISSUE-DATE: '2025-03-01'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '1496.00'
+    ACCT-CREDIT-LIMIT: '2903.00'
+    ACCT-CURR-BAL: '144.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2023-09-10'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '18'
+    ACCT-OPEN-DATE: '2018-11-15'
+    ACCT-REISSUE-DATE: '2023-09-10'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '3723.00'
+    ACCT-CREDIT-LIMIT: '6986.00'
+    ACCT-CURR-BAL: '480.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-07-23'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '19'
+    ACCT-OPEN-DATE: '2011-12-14'
+    ACCT-REISSUE-DATE: '2025-07-23'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '1040.00'
+    ACCT-CREDIT-LIMIT: '3767.00'
+    ACCT-CURR-BAL: '369.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2024-03-13'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '20'
+    ACCT-OPEN-DATE: '2014-02-27'
+    ACCT-REISSUE-DATE: '2024-03-13'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '180.00'
+    ACCT-CREDIT-LIMIT: '1264.00'
+    ACCT-CURR-BAL: '112.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2023-01-06'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '21'
+    ACCT-OPEN-DATE: '2011-10-19'
+    ACCT-REISSUE-DATE: '2023-01-06'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '4712.00'
+    ACCT-CREDIT-LIMIT: '8599.00'
+    ACCT-CURR-BAL: '55.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-12-28'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '22'
+    ACCT-OPEN-DATE: '2016-11-21'
+    ACCT-REISSUE-DATE: '2025-12-28'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '2904.00'
+    ACCT-CREDIT-LIMIT: '3377.00'
+    ACCT-CURR-BAL: '104.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-03-18'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '23'
+    ACCT-OPEN-DATE: '2012-03-15'
+    ACCT-REISSUE-DATE: '2025-03-18'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '4129.00'
+    ACCT-CREDIT-LIMIT: '5174.00'
+    ACCT-CURR-BAL: '400.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-02-11'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '24'
+    ACCT-OPEN-DATE: '2015-08-08'
+    ACCT-REISSUE-DATE: '2025-02-11'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '6582.00'
+    ACCT-CREDIT-LIMIT: '8194.00'
+    ACCT-CURR-BAL: '61.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-07-10'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '25'
+    ACCT-OPEN-DATE: '2012-10-26'
+    ACCT-REISSUE-DATE: '2025-07-10'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '1375.00'
+    ACCT-CREDIT-LIMIT: '2181.00'
+    ACCT-CURR-BAL: '46.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2024-12-19'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '26'
+    ACCT-OPEN-DATE: '2009-04-20'
+    ACCT-REISSUE-DATE: '2024-12-19'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '2075.00'
+    ACCT-CREDIT-LIMIT: '5572.00'
+    ACCT-CURR-BAL: '284.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-07-13'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '27'
+    ACCT-OPEN-DATE: '2012-09-30'
+    ACCT-REISSUE-DATE: '2025-07-13'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '547.00'
+    ACCT-CREDIT-LIMIT: '868.00'
+    ACCT-CURR-BAL: '68.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2024-05-09'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '28'
+    ACCT-OPEN-DATE: '2015-05-20'
+    ACCT-REISSUE-DATE: '2024-05-09'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '4361.00'
+    ACCT-CREDIT-LIMIT: '5511.00'
+    ACCT-CURR-BAL: '339.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2024-06-04'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '29'
+    ACCT-OPEN-DATE: '2015-11-03'
+    ACCT-REISSUE-DATE: '2024-06-04'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '93.00'
+    ACCT-CREDIT-LIMIT: '120.00'
+    ACCT-CURR-BAL: '2.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2024-06-27'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '30'
+    ACCT-OPEN-DATE: '2011-08-26'
+    ACCT-REISSUE-DATE: '2024-06-27'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '1077.00'
+    ACCT-CREDIT-LIMIT: '1140.00'
+    ACCT-CURR-BAL: '31.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-06-08'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '31'
+    ACCT-OPEN-DATE: '2017-02-25'
+    ACCT-REISSUE-DATE: '2025-06-08'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '846.00'
+    ACCT-CREDIT-LIMIT: '1175.00'
+    ACCT-CURR-BAL: '30.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-05-19'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '32'
+    ACCT-OPEN-DATE: '2013-11-10'
+    ACCT-REISSUE-DATE: '2025-05-19'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '951.00'
+    ACCT-CREDIT-LIMIT: '6404.00'
+    ACCT-CURR-BAL: '410.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-10-07'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '33'
+    ACCT-OPEN-DATE: '2012-10-11'
+    ACCT-REISSUE-DATE: '2025-10-07'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '2770.00'
+    ACCT-CREDIT-LIMIT: '3642.00'
+    ACCT-CURR-BAL: '253.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-10-06'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '34'
+    ACCT-OPEN-DATE: '2009-05-10'
+    ACCT-REISSUE-DATE: '2025-10-06'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '1525.00'
+    ACCT-CREDIT-LIMIT: '1947.00'
+    ACCT-CURR-BAL: '166.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-09-23'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '35'
+    ACCT-OPEN-DATE: '2018-02-02'
+    ACCT-REISSUE-DATE: '2025-09-23'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '839.00'
+    ACCT-CREDIT-LIMIT: '3328.00'
+    ACCT-CURR-BAL: '110.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2024-12-23'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '36'
+    ACCT-OPEN-DATE: '2018-07-18'
+    ACCT-REISSUE-DATE: '2024-12-23'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '166.00'
+    ACCT-CREDIT-LIMIT: '446.00'
+    ACCT-CURR-BAL: '7.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2023-10-24'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '37'
+    ACCT-OPEN-DATE: '2016-09-10'
+    ACCT-REISSUE-DATE: '2023-10-24'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '3476.00'
+    ACCT-CREDIT-LIMIT: '6505.00'
+    ACCT-CURR-BAL: '612.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2023-07-23'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '38'
+    ACCT-OPEN-DATE: '2010-08-12'
+    ACCT-REISSUE-DATE: '2023-07-23'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '6212.00'
+    ACCT-CREDIT-LIMIT: '9750.00'
+    ACCT-CURR-BAL: '843.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-09-08'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '39'
+    ACCT-OPEN-DATE: '2018-08-26'
+    ACCT-REISSUE-DATE: '2025-09-08'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '1674.00'
+    ACCT-CREDIT-LIMIT: '5823.00'
+    ACCT-CURR-BAL: '43.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2023-10-27'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '40'
+    ACCT-OPEN-DATE: '2010-02-13'
+    ACCT-REISSUE-DATE: '2023-10-27'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '3429.00'
+    ACCT-CREDIT-LIMIT: '6721.00'
+    ACCT-CURR-BAL: '375.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2023-04-24'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '41'
+    ACCT-OPEN-DATE: '2015-02-07'
+    ACCT-REISSUE-DATE: '2023-04-24'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '5103.00'
+    ACCT-CREDIT-LIMIT: '6563.00'
+    ACCT-CURR-BAL: '302.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-09-19'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '42'
+    ACCT-OPEN-DATE: '2016-09-19'
+    ACCT-REISSUE-DATE: '2025-09-19'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '1206.00'
+    ACCT-CREDIT-LIMIT: '6168.00'
+    ACCT-CURR-BAL: '610.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-08-29'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '43'
+    ACCT-OPEN-DATE: '2012-04-09'
+    ACCT-REISSUE-DATE: '2025-08-29'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '4432.00'
+    ACCT-CREDIT-LIMIT: '6899.00'
+    ACCT-CURR-BAL: '263.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2024-01-17'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '44'
+    ACCT-OPEN-DATE: '2018-12-01'
+    ACCT-REISSUE-DATE: '2024-01-17'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '688.00'
+    ACCT-CREDIT-LIMIT: '2719.00'
+    ACCT-CURR-BAL: '186.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-07-09'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '45'
+    ACCT-OPEN-DATE: '2010-12-31'
+    ACCT-REISSUE-DATE: '2025-07-09'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '5438.00'
+    ACCT-CREDIT-LIMIT: '7007.00'
+    ACCT-CURR-BAL: '396.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-06-20'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '46'
+    ACCT-OPEN-DATE: '2013-09-06'
+    ACCT-REISSUE-DATE: '2025-06-20'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '159.00'
+    ACCT-CREDIT-LIMIT: '2338.00'
+    ACCT-CURR-BAL: '32.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-08-23'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '47'
+    ACCT-OPEN-DATE: '2014-04-03'
+    ACCT-REISSUE-DATE: '2025-08-23'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '612.00'
+    ACCT-CREDIT-LIMIT: '2306.00'
+    ACCT-CURR-BAL: '226.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2025-02-06'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '48'
+    ACCT-OPEN-DATE: '2017-03-18'
+    ACCT-REISSUE-DATE: '2025-02-06'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '4807.00'
+    ACCT-CREDIT-LIMIT: '9048.00'
+    ACCT-CURR-BAL: '100.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2023-09-17'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '49'
+    ACCT-OPEN-DATE: '2019-04-06'
+    ACCT-REISSUE-DATE: '2023-09-17'
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: A000000000
+    ACCT-CASH-CREDIT-LIMIT: '4587.00'
+    ACCT-CREDIT-LIMIT: '6169.00'
+    ACCT-CURR-BAL: '492.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2023-03-09'
+    ACCT-GROUP-ID: '          '
+    ACCT-ID: '50'
+    ACCT-OPEN-DATE: '2011-04-22'
+    ACCT-REISSUE-DATE: '2023-03-09'
+  CUSTDATA:
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '100 Test Street                                   '
+    CUST-ADDR-LINE-2: 'Suite 1                                           '
+    CUST-ADDR-LINE-3: 'Raleigh                                           '
+    CUST-ADDR-STATE-CD: NC
+    CUST-ADDR-ZIP: '27601     '
+    CUST-DOB-YYYY-MM-DD: '1961-06-08'
+    CUST-EFT-ACCOUNT-ID: 0053581756
+    CUST-FICO-CREDIT-SCORE: '700'
+    CUST-FIRST-NAME: 'Testfirst                '
+    CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+    CUST-ID: '1'
+    CUST-LAST-NAME: 'Testlast                 '
+    CUST-MIDDLE-NAME: 'Testmiddle               '
+    CUST-PHONE-NUM-1: '(919)555-0101  '
+    CUST-PHONE-NUM-2: '(919)555-0102  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '123456789'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '4917 Myrna Flats                                  '
+    CUST-ADDR-LINE-2: 'Apt. 453                                          '
+    CUST-ADDR-LINE-3: 'West Bernita                                      '
+    CUST-ADDR-STATE-CD: IN
+    CUST-ADDR-ZIP: '22770     '
+    CUST-DOB-YYYY-MM-DD: '1961-10-08'
+    CUST-EFT-ACCOUNT-ID: 0069194009
+    CUST-FICO-CREDIT-SCORE: '268'
+    CUST-FIRST-NAME: 'Enrico                   '
+    CUST-GOVT-ISSUED-ID: '00000000000506210371'
+    CUST-ID: '2'
+    CUST-LAST-NAME: 'Rosenbaum                '
+    CUST-MIDDLE-NAME: 'April                    '
+    CUST-PHONE-NUM-1: '(429)706-9510  '
+    CUST-PHONE-NUM-2: '(744)950-5272  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '587518382'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '362 Esta Parks                                    '
+    CUST-ADDR-LINE-2: 'Apt. 390                                          '
+    CUST-ADDR-LINE-3: 'New Gladys                                        '
+    CUST-ADDR-STATE-CD: GA
+    CUST-ADDR-ZIP: 19852-6716
+    CUST-DOB-YYYY-MM-DD: '1987-11-30'
+    CUST-EFT-ACCOUNT-ID: 0006465789
+    CUST-FICO-CREDIT-SCORE: '616'
+    CUST-FIRST-NAME: 'Larry                    '
+    CUST-GOVT-ISSUED-ID: 00000000000052419303
+    CUST-ID: '3'
+    CUST-LAST-NAME: 'Homenick                 '
+    CUST-MIDDLE-NAME: 'Cody                     '
+    CUST-PHONE-NUM-1: '(950)396-9024  '
+    CUST-PHONE-NUM-2: '(685)168-8826  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '317460867'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '638 Blanda Gateway                                '
+    CUST-ADDR-LINE-2: 'Apt. 076                                          '
+    CUST-ADDR-LINE-3: 'Lake Virginie                                     '
+    CUST-ADDR-STATE-CD: MI
+    CUST-ADDR-ZIP: 39035-0455
+    CUST-DOB-YYYY-MM-DD: '1985-01-13'
+    CUST-EFT-ACCOUNT-ID: 0040802739
+    CUST-FICO-CREDIT-SCORE: '776'
+    CUST-FIRST-NAME: 'Delbert                  '
+    CUST-GOVT-ISSUED-ID: 00000000000068579249
+    CUST-ID: '4'
+    CUST-LAST-NAME: 'Parisian                 '
+    CUST-MIDDLE-NAME: 'Kaia                     '
+    CUST-PHONE-NUM-1: '(801)603-4121  '
+    CUST-PHONE-NUM-2: '(156)074-6837  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '660354258'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '5653 Legros Plaza                                 '
+    CUST-ADDR-LINE-2: 'Apt. 968                                          '
+    CUST-ADDR-LINE-3: 'Alvinaport                                        '
+    CUST-ADDR-STATE-CD: MI
+    CUST-ADDR-ZIP: 02251-1698
+    CUST-DOB-YYYY-MM-DD: '1971-09-29'
+    CUST-EFT-ACCOUNT-ID: '0006365573'
+    CUST-FICO-CREDIT-SCORE: '529'
+    CUST-FIRST-NAME: 'Treva                    '
+    CUST-GOVT-ISSUED-ID: 00000000000639799754
+    CUST-ID: '5'
+    CUST-LAST-NAME: 'Schowalter               '
+    CUST-MIDDLE-NAME: 'Manley                   '
+    CUST-PHONE-NUM-1: '(978)775-4633  '
+    CUST-PHONE-NUM-2: '(439)943-7644  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '611264288'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '3963 Yasmin Port                                  '
+    CUST-ADDR-LINE-2: 'Suite 756                                         '
+    CUST-ADDR-LINE-3: 'Port Josephstad                                   '
+    CUST-ADDR-STATE-CD: VI
+    CUST-ADDR-ZIP: 46713-5148
+    CUST-DOB-YYYY-MM-DD: '1994-11-29'
+    CUST-EFT-ACCOUNT-ID: 0067163009
+    CUST-FICO-CREDIT-SCORE: '753'
+    CUST-FIRST-NAME: 'Ignacio                  '
+    CUST-GOVT-ISSUED-ID: 00000000000975535496
+    CUST-ID: '6'
+    CUST-LAST-NAME: 'Douglas                  '
+    CUST-MIDDLE-NAME: 'Emery                    '
+    CUST-PHONE-NUM-1: '(277)743-4266  '
+    CUST-PHONE-NUM-2: '(519)010-8739  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '880329521'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '6490 Zakary Locks                                 '
+    CUST-ADDR-LINE-2: 'Apt. 765                                          '
+    CUST-ADDR-LINE-3: 'Madieport                                         '
+    CUST-ADDR-STATE-CD: AL
+    CUST-ADDR-ZIP: 34206-2974
+    CUST-DOB-YYYY-MM-DD: '1977-05-06'
+    CUST-EFT-ACCOUNT-ID: '0024571415'
+    CUST-FICO-CREDIT-SCORE: '499'
+    CUST-FIRST-NAME: 'Cooper                   '
+    CUST-GOVT-ISSUED-ID: 00000000000959013170
+    CUST-ID: '7'
+    CUST-LAST-NAME: 'Mayert                   '
+    CUST-MIDDLE-NAME: 'Dennis                   '
+    CUST-PHONE-NUM-1: '(698)282-4096  '
+    CUST-PHONE-NUM-2: '(458)199-0016  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '835138951'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '0925 Welch Streets                                '
+    CUST-ADDR-LINE-2: 'Apt. 152                                          '
+    CUST-ADDR-LINE-3: 'North Nanniestad                                  '
+    CUST-ADDR-STATE-CD: SC
+    CUST-ADDR-ZIP: '27610     '
+    CUST-DOB-YYYY-MM-DD: '1964-03-25'
+    CUST-EFT-ACCOUNT-ID: '0033132723'
+    CUST-FICO-CREDIT-SCORE: '51'
+    CUST-FIRST-NAME: 'Kelsie                   '
+    CUST-GOVT-ISSUED-ID: 00000000000109746991
+    CUST-ID: '8'
+    CUST-LAST-NAME: 'Dicki                    '
+    CUST-MIDDLE-NAME: 'Jordyn                   '
+    CUST-PHONE-NUM-1: '(345)563-7159  '
+    CUST-PHONE-NUM-2: '(443)197-1271  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '295270759'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '87893 Samson Flats                                '
+    CUST-ADDR-LINE-2: 'Apt. 135                                          '
+    CUST-ADDR-LINE-3: 'New Braden                                        '
+    CUST-ADDR-STATE-CD: VI
+    CUST-ADDR-ZIP: '21113     '
+    CUST-DOB-YYYY-MM-DD: '1975-11-07'
+    CUST-EFT-ACCOUNT-ID: 0039446039
+    CUST-FICO-CREDIT-SCORE: '699'
+    CUST-FIRST-NAME: 'Melvin                   '
+    CUST-GOVT-ISSUED-ID: 00000000000568299451
+    CUST-ID: '9'
+    CUST-LAST-NAME: 'Ondricka                 '
+    CUST-MIDDLE-NAME: 'Regan                    '
+    CUST-PHONE-NUM-1: '(035)456-1404  '
+    CUST-PHONE-NUM-2: '(412)440-3130  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '842035847'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '77933 Adah Dale                                   '
+    CUST-ADDR-LINE-2: 'Suite 343                                         '
+    CUST-ADDR-LINE-3: 'Andersonfurt                                      '
+    CUST-ADDR-STATE-CD: CT
+    CUST-ADDR-ZIP: 44803-4279
+    CUST-DOB-YYYY-MM-DD: '1980-06-11'
+    CUST-EFT-ACCOUNT-ID: 0093803568
+    CUST-FICO-CREDIT-SCORE: '476'
+    CUST-FIRST-NAME: 'Maybell                  '
+    CUST-GOVT-ISSUED-ID: 00000000000212824755
+    CUST-ID: '10'
+    CUST-LAST-NAME: 'Mann                     '
+    CUST-MIDDLE-NAME: 'Creola                   '
+    CUST-PHONE-NUM-1: '(614)594-2619  '
+    CUST-PHONE-NUM-2: '(667)057-0235  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '754755746'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '14895 Everette Ridges                             '
+    CUST-ADDR-LINE-2: 'Apt. 443                                          '
+    CUST-ADDR-LINE-3: 'Julianneburgh                                     '
+    CUST-ADDR-STATE-CD: WA
+    CUST-ADDR-ZIP: '24984     '
+    CUST-DOB-YYYY-MM-DD: '1986-11-03'
+    CUST-EFT-ACCOUNT-ID: '0002650577'
+    CUST-FICO-CREDIT-SCORE: '209'
+    CUST-FIRST-NAME: 'Hayden                   '
+    CUST-GOVT-ISSUED-ID: 00000000000111190855
+    CUST-ID: '11'
+    CUST-LAST-NAME: 'Pfannerstill             '
+    CUST-MIDDLE-NAME: 'Ressie                   '
+    CUST-PHONE-NUM-1: '(002)533-6980  '
+    CUST-PHONE-NUM-2: '(553)586-7718  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '493538586'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '80501 Isac Cliffs                                 '
+    CUST-ADDR-LINE-2: 'Suite 623                                         '
+    CUST-ADDR-LINE-3: 'Predovicton                                       '
+    CUST-ADDR-STATE-CD: MN
+    CUST-ADDR-ZIP: '78861     '
+    CUST-DOB-YYYY-MM-DD: '1984-02-18'
+    CUST-EFT-ACCOUNT-ID: 0061317348
+    CUST-FICO-CREDIT-SCORE: '688'
+    CUST-FIRST-NAME: 'Maci                     '
+    CUST-GOVT-ISSUED-ID: 00000000000902143351
+    CUST-ID: '12'
+    CUST-LAST-NAME: 'Robel                    '
+    CUST-MIDDLE-NAME: 'Alan                     '
+    CUST-PHONE-NUM-1: '(584)045-5200  '
+    CUST-PHONE-NUM-2: '(610)244-0407  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '666114218'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '2689 Derick Mission                               '
+    CUST-ADDR-LINE-2: 'Suite 055                                         '
+    CUST-ADDR-LINE-3: 'Bruenfurt                                         '
+    CUST-ADDR-STATE-CD: OR
+    CUST-ADDR-ZIP: '02322     '
+    CUST-DOB-YYYY-MM-DD: '1999-03-09'
+    CUST-EFT-ACCOUNT-ID: 0044807431
+    CUST-FICO-CREDIT-SCORE: '53'
+    CUST-FIRST-NAME: 'Mariane                  '
+    CUST-GOVT-ISSUED-ID: 00000000000181377220
+    CUST-ID: '13'
+    CUST-LAST-NAME: 'Fadel                    '
+    CUST-MIDDLE-NAME: 'Oma                      '
+    CUST-PHONE-NUM-1: '(875)943-7287  '
+    CUST-PHONE-NUM-2: '(075)550-6435  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '757924569'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '747 Dino Lodge                                    '
+    CUST-ADDR-LINE-2: 'Apt. 850                                          '
+    CUST-ADDR-LINE-3: 'West Chase                                        '
+    CUST-ADDR-STATE-CD: RI
+    CUST-ADDR-ZIP: 12914-8465
+    CUST-DOB-YYYY-MM-DD: '1974-11-29'
+    CUST-EFT-ACCOUNT-ID: 0048306401
+    CUST-FICO-CREDIT-SCORE: '243'
+    CUST-FIRST-NAME: 'Chelsea                  '
+    CUST-GOVT-ISSUED-ID: 00000000000525955222
+    CUST-ID: '14'
+    CUST-LAST-NAME: 'Marks                    '
+    CUST-MIDDLE-NAME: 'Ignacio                  '
+    CUST-PHONE-NUM-1: '(141)807-6571  '
+    CUST-PHONE-NUM-2: '(284)088-9052  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '655128548'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '36365 Ledner Drives                               '
+    CUST-ADDR-LINE-2: 'Suite 882                                         '
+    CUST-ADDR-LINE-3: 'Port Efrainland                                   '
+    CUST-ADDR-STATE-CD: DE
+    CUST-ADDR-ZIP: 63205-7014
+    CUST-DOB-YYYY-MM-DD: '1964-12-06'
+    CUST-EFT-ACCOUNT-ID: '0000634612'
+    CUST-FICO-CREDIT-SCORE: '681'
+    CUST-FIRST-NAME: 'Aubree                   '
+    CUST-GOVT-ISSUED-ID: 00000000000230369941
+    CUST-ID: '15'
+    CUST-LAST-NAME: 'Hermann                  '
+    CUST-MIDDLE-NAME: 'Elliot                   '
+    CUST-PHONE-NUM-1: '(769)100-7971  '
+    CUST-PHONE-NUM-2: '(366)310-2061  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '33922034'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '06988 Thiel Falls                                 '
+    CUST-ADDR-LINE-2: 'Suite 148                                         '
+    CUST-ADDR-LINE-3: 'Concepcionland                                    '
+    CUST-ADDR-STATE-CD: VT
+    CUST-ADDR-ZIP: '84390     '
+    CUST-DOB-YYYY-MM-DD: '1983-04-27'
+    CUST-EFT-ACCOUNT-ID: 0012556599
+    CUST-FICO-CREDIT-SCORE: '326'
+    CUST-FIRST-NAME: 'Carroll                  '
+    CUST-GOVT-ISSUED-ID: 00000000000293265752
+    CUST-ID: '16'
+    CUST-LAST-NAME: 'Bergstrom                '
+    CUST-MIDDLE-NAME: 'Cicero                   '
+    CUST-PHONE-NUM-1: '(631)343-8667  '
+    CUST-PHONE-NUM-2: '(938)648-3716  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '649827971'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '95666 Dare Isle                                   '
+    CUST-ADDR-LINE-2: 'Suite 286                                         '
+    CUST-ADDR-LINE-3: 'New Presley                                       '
+    CUST-ADDR-STATE-CD: FM
+    CUST-ADDR-ZIP: 56181-0584
+    CUST-DOB-YYYY-MM-DD: '1979-01-26'
+    CUST-EFT-ACCOUNT-ID: '0052356071'
+    CUST-FICO-CREDIT-SCORE: '54'
+    CUST-FIRST-NAME: 'Sigrid                   '
+    CUST-GOVT-ISSUED-ID: 00000000000497606357
+    CUST-ID: '17'
+    CUST-LAST-NAME: 'Mann                     '
+    CUST-MIDDLE-NAME: 'Angeline                 '
+    CUST-PHONE-NUM-1: '(087)314-2070  '
+    CUST-PHONE-NUM-2: '(541)003-6606  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '303334693'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '133 Bergnaum Square                               '
+    CUST-ADDR-LINE-2: 'Apt. 328                                          '
+    CUST-ADDR-LINE-3: 'Hansenville                                       '
+    CUST-ADDR-STATE-CD: AP
+    CUST-ADDR-ZIP: 96003-5867
+    CUST-DOB-YYYY-MM-DD: '1987-03-25'
+    CUST-EFT-ACCOUNT-ID: 0086459831
+    CUST-FICO-CREDIT-SCORE: '340'
+    CUST-FIRST-NAME: 'Emile                    '
+    CUST-GOVT-ISSUED-ID: 00000000000088341821
+    CUST-ID: '18'
+    CUST-LAST-NAME: 'White                    '
+    CUST-MIDDLE-NAME: 'Jairo                    '
+    CUST-PHONE-NUM-1: '(303)654-3323  '
+    CUST-PHONE-NUM-2: '(520)186-2176  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '385849271'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '6273 Ondricka Meadows                             '
+    CUST-ADDR-LINE-2: 'Apt. 130                                          '
+    CUST-ADDR-LINE-3: 'New Arturoshire                                   '
+    CUST-ADDR-STATE-CD: RI
+    CUST-ADDR-ZIP: '48161     '
+    CUST-DOB-YYYY-MM-DD: '1991-01-07'
+    CUST-EFT-ACCOUNT-ID: 0036492057
+    CUST-FICO-CREDIT-SCORE: '259'
+    CUST-FIRST-NAME: 'Hadley                   '
+    CUST-GOVT-ISSUED-ID: 00000000000270176387
+    CUST-ID: '19'
+    CUST-LAST-NAME: 'Hamill                   '
+    CUST-MIDDLE-NAME: 'Sigrid                   '
+    CUST-PHONE-NUM-1: '(817)452-4986  '
+    CUST-PHONE-NUM-2: '(724)901-6019  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '439569907'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '5845 Allison Valleys                              '
+    CUST-ADDR-LINE-2: 'Suite 934                                         '
+    CUST-ADDR-LINE-3: 'Mitchellmouth                                     '
+    CUST-ADDR-STATE-CD: MH
+    CUST-ADDR-ZIP: '72362     '
+    CUST-DOB-YYYY-MM-DD: '1996-04-14'
+    CUST-EFT-ACCOUNT-ID: 0036749754
+    CUST-FICO-CREDIT-SCORE: '493'
+    CUST-FIRST-NAME: 'Carter                   '
+    CUST-GOVT-ISSUED-ID: 00000000000342661293
+    CUST-ID: '20'
+    CUST-LAST-NAME: 'Veum                     '
+    CUST-MIDDLE-NAME: 'Oren                     '
+    CUST-PHONE-NUM-1: '(618)994-0531  '
+    CUST-PHONE-NUM-2: '(571)695-4136  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '717778238'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '401 Haylie Crest                                  '
+    CUST-ADDR-LINE-2: 'Apt. 320                                          '
+    CUST-ADDR-LINE-3: 'North Myrnaton                                    '
+    CUST-ADDR-STATE-CD: CA
+    CUST-ADDR-ZIP: '72407     '
+    CUST-DOB-YYYY-MM-DD: '1977-11-15'
+    CUST-EFT-ACCOUNT-ID: '0011744660'
+    CUST-FICO-CREDIT-SCORE: '163'
+    CUST-FIRST-NAME: 'Jerrold                  '
+    CUST-GOVT-ISSUED-ID: '00000000000027656260'
+    CUST-ID: '21'
+    CUST-LAST-NAME: 'Maggio                   '
+    CUST-MIDDLE-NAME: 'Adolphus                 '
+    CUST-PHONE-NUM-1: '(399)526-3254  '
+    CUST-PHONE-NUM-2: '(326)193-1118  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '336490822'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '4467 Donnie Crossroad                             '
+    CUST-ADDR-LINE-2: 'Apt. 437                                          '
+    CUST-ADDR-LINE-3: 'Anabelton                                         '
+    CUST-ADDR-STATE-CD: MD
+    CUST-ADDR-ZIP: 01993-9116
+    CUST-DOB-YYYY-MM-DD: '1994-02-20'
+    CUST-EFT-ACCOUNT-ID: 0024791470
+    CUST-FICO-CREDIT-SCORE: '597'
+    CUST-FIRST-NAME: 'Allene                   '
+    CUST-GOVT-ISSUED-ID: 00000000000691159853
+    CUST-ID: '22'
+    CUST-LAST-NAME: 'Brown                    '
+    CUST-MIDDLE-NAME: 'Icie                     '
+    CUST-PHONE-NUM-1: '(231)251-5792  '
+    CUST-PHONE-NUM-2: '(494)652-0009  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '292059024'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '2433 Jacobi Forks                                 '
+    CUST-ADDR-LINE-2: 'Apt. 845                                          '
+    CUST-ADDR-LINE-3: 'Hendersonbury                                     '
+    CUST-ADDR-STATE-CD: KS
+    CUST-ADDR-ZIP: 78239-9466
+    CUST-DOB-YYYY-MM-DD: '1998-12-07'
+    CUST-EFT-ACCOUNT-ID: 0075158529
+    CUST-FICO-CREDIT-SCORE: '337'
+    CUST-FIRST-NAME: 'Johnson                  '
+    CUST-GOVT-ISSUED-ID: 00000000000268967122
+    CUST-ID: '23'
+    CUST-LAST-NAME: 'Ruecker                  '
+    CUST-MIDDLE-NAME: 'Blanca                   '
+    CUST-PHONE-NUM-1: '(981)873-1589  '
+    CUST-PHONE-NUM-2: '(131)638-5974  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '944154289'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '6367 Stracke River                                '
+    CUST-ADDR-LINE-2: 'Apt. 444                                          '
+    CUST-ADDR-LINE-3: 'East Otho                                         '
+    CUST-ADDR-STATE-CD: KS
+    CUST-ADDR-ZIP: '15414     '
+    CUST-DOB-YYYY-MM-DD: '1996-01-24'
+    CUST-EFT-ACCOUNT-ID: 0005459662
+    CUST-FICO-CREDIT-SCORE: '711'
+    CUST-FIRST-NAME: 'Stefanie                 '
+    CUST-GOVT-ISSUED-ID: 00000000000439244633
+    CUST-ID: '24'
+    CUST-LAST-NAME: 'Dickinson                '
+    CUST-MIDDLE-NAME: 'Verla                    '
+    CUST-PHONE-NUM-1: '(617)348-9142  '
+    CUST-PHONE-NUM-2: '(330)116-5634  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '17590544'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '9524 McKenzie Lakes                               '
+    CUST-ADDR-LINE-2: 'Suite 245                                         '
+    CUST-ADDR-LINE-3: 'West Alexa                                        '
+    CUST-ADDR-STATE-CD: NH
+    CUST-ADDR-ZIP: 75721-7382
+    CUST-DOB-YYYY-MM-DD: '1989-03-27'
+    CUST-EFT-ACCOUNT-ID: 0032297533
+    CUST-FICO-CREDIT-SCORE: '355'
+    CUST-FIRST-NAME: 'Elliott                  '
+    CUST-GOVT-ISSUED-ID: 00000000000548223048
+    CUST-ID: '25'
+    CUST-LAST-NAME: 'Howell                   '
+    CUST-MIDDLE-NAME: 'Fermin                   '
+    CUST-PHONE-NUM-1: '(092)336-8599  '
+    CUST-PHONE-NUM-2: '(311)969-1460  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '788820436'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '30161 Bogan Canyon                                '
+    CUST-ADDR-LINE-2: 'Suite 916                                         '
+    CUST-ADDR-LINE-3: 'Walshberg                                         '
+    CUST-ADDR-STATE-CD: IL
+    CUST-ADDR-ZIP: '59945     '
+    CUST-DOB-YYYY-MM-DD: '1990-03-17'
+    CUST-EFT-ACCOUNT-ID: 0060808858
+    CUST-FICO-CREDIT-SCORE: '1'
+    CUST-FIRST-NAME: 'Marjory                  '
+    CUST-GOVT-ISSUED-ID: 00000000000947411626
+    CUST-ID: '26'
+    CUST-LAST-NAME: 'Stracke                  '
+    CUST-MIDDLE-NAME: 'Damien                   '
+    CUST-PHONE-NUM-1: '(584)772-2867  '
+    CUST-PHONE-NUM-2: '(819)733-9809  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '840478806'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '210 Amaya Turnpike                                '
+    CUST-ADDR-LINE-2: 'Suite 180                                         '
+    CUST-ADDR-LINE-3: 'Port Dwight                                       '
+    CUST-ADDR-STATE-CD: GU
+    CUST-ADDR-ZIP: 07923-8822
+    CUST-DOB-YYYY-MM-DD: '1986-11-08'
+    CUST-EFT-ACCOUNT-ID: 0050024139
+    CUST-FICO-CREDIT-SCORE: '78'
+    CUST-FIRST-NAME: 'Ward                     '
+    CUST-GOVT-ISSUED-ID: 00000000000881558757
+    CUST-ID: '27'
+    CUST-LAST-NAME: 'Jones                    '
+    CUST-MIDDLE-NAME: 'Henri                    '
+    CUST-PHONE-NUM-1: '(935)027-1145  '
+    CUST-PHONE-NUM-2: '(103)537-5007  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '980161210'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '06816 Ursula Meadows                              '
+    CUST-ADDR-LINE-2: 'Suite 605                                         '
+    CUST-ADDR-LINE-3: 'South Aurore                                      '
+    CUST-ADDR-STATE-CD: AS
+    CUST-ADDR-ZIP: 77442-7954
+    CUST-DOB-YYYY-MM-DD: '1991-06-05'
+    CUST-EFT-ACCOUNT-ID: 0026946180
+    CUST-FICO-CREDIT-SCORE: '114'
+    CUST-FIRST-NAME: 'Hester                   '
+    CUST-GOVT-ISSUED-ID: 00000000000514187796
+    CUST-ID: '28'
+    CUST-LAST-NAME: 'Hane                     '
+    CUST-MIDDLE-NAME: 'Vesta                    '
+    CUST-PHONE-NUM-1: '(122)357-7257  '
+    CUST-PHONE-NUM-2: '(050)352-6579  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '677986013'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '676 Funk Curve                                    '
+    CUST-ADDR-LINE-2: 'Apt. 375                                          '
+    CUST-ADDR-LINE-3: 'Hayesstad                                         '
+    CUST-ADDR-STATE-CD: NH
+    CUST-ADDR-ZIP: '01226     '
+    CUST-DOB-YYYY-MM-DD: '1973-04-05'
+    CUST-EFT-ACCOUNT-ID: 0067736493
+    CUST-FICO-CREDIT-SCORE: '552'
+    CUST-FIRST-NAME: 'Rickie                   '
+    CUST-GOVT-ISSUED-ID: '00000000000062745655'
+    CUST-ID: '29'
+    CUST-LAST-NAME: 'Daugherty                '
+    CUST-MIDDLE-NAME: 'Otho                     '
+    CUST-PHONE-NUM-1: '(418)291-9023  '
+    CUST-PHONE-NUM-2: '(795)634-7776  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '15027332'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '269 Eleazar Circle                                '
+    CUST-ADDR-LINE-2: 'Apt. 817                                          '
+    CUST-ADDR-LINE-3: 'Kutchland                                         '
+    CUST-ADDR-STATE-CD: AK
+    CUST-ADDR-ZIP: '64266     '
+    CUST-DOB-YYYY-MM-DD: '1965-11-28'
+    CUST-EFT-ACCOUNT-ID: '0050520060'
+    CUST-FICO-CREDIT-SCORE: '133'
+    CUST-FIRST-NAME: 'Layla                    '
+    CUST-GOVT-ISSUED-ID: 00000000000492021686
+    CUST-ID: '30'
+    CUST-LAST-NAME: 'Ullrich                  '
+    CUST-MIDDLE-NAME: 'Dannie                   '
+    CUST-PHONE-NUM-1: '(330)408-6966  '
+    CUST-PHONE-NUM-2: '(413)347-7306  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '866102152'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '919 Swift Valleys                                 '
+    CUST-ADDR-LINE-2: 'Suite 548                                         '
+    CUST-ADDR-LINE-3: 'Hermanborough                                     '
+    CUST-ADDR-STATE-CD: MS
+    CUST-ADDR-ZIP: 56133-5636
+    CUST-DOB-YYYY-MM-DD: '1976-08-03'
+    CUST-EFT-ACCOUNT-ID: 0092999757
+    CUST-FICO-CREDIT-SCORE: '58'
+    CUST-FIRST-NAME: 'Lucious                  '
+    CUST-GOVT-ISSUED-ID: 00000000000618310539
+    CUST-ID: '31'
+    CUST-LAST-NAME: 'O''Connell                '
+    CUST-MIDDLE-NAME: 'Otto                     '
+    CUST-PHONE-NUM-1: '(259)414-9625  '
+    CUST-PHONE-NUM-2: '(118)946-9264  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '357462348'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '63452 Kenny Streets                               '
+    CUST-ADDR-LINE-2: 'Apt. 116                                          '
+    CUST-ADDR-LINE-3: 'Predovicburgh                                     '
+    CUST-ADDR-STATE-CD: AK
+    CUST-ADDR-ZIP: 85943-7605
+    CUST-DOB-YYYY-MM-DD: '1980-11-19'
+    CUST-EFT-ACCOUNT-ID: 0035970593
+    CUST-FICO-CREDIT-SCORE: '221'
+    CUST-FIRST-NAME: 'Stephany                 '
+    CUST-GOVT-ISSUED-ID: '00000000000206200341'
+    CUST-ID: '32'
+    CUST-LAST-NAME: 'Fisher                   '
+    CUST-MIDDLE-NAME: 'Meda                     '
+    CUST-PHONE-NUM-1: '(202)436-5156  '
+    CUST-PHONE-NUM-2: '(246)296-3533  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '146204208'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '877 Kassandra Ranch                               '
+    CUST-ADDR-LINE-2: 'Suite 956                                         '
+    CUST-ADDR-LINE-3: 'Haleyport                                         '
+    CUST-ADDR-STATE-CD: AR
+    CUST-ADDR-ZIP: 19113-4329
+    CUST-DOB-YYYY-MM-DD: '1988-05-19'
+    CUST-EFT-ACCOUNT-ID: '0065245171'
+    CUST-FICO-CREDIT-SCORE: '469'
+    CUST-FIRST-NAME: 'Bernice                  '
+    CUST-GOVT-ISSUED-ID: 00000000000400605429
+    CUST-ID: '33'
+    CUST-LAST-NAME: 'Herman                   '
+    CUST-MIDDLE-NAME: 'Norbert                  '
+    CUST-PHONE-NUM-1: '(836)743-5487  '
+    CUST-PHONE-NUM-2: '(640)208-1176  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '144195105'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '44132 Michel Square                               '
+    CUST-ADDR-LINE-2: 'Suite 007                                         '
+    CUST-ADDR-LINE-3: 'South Margarettaburgh                             '
+    CUST-ADDR-STATE-CD: ME
+    CUST-ADDR-ZIP: 49544-2869
+    CUST-DOB-YYYY-MM-DD: '1994-03-21'
+    CUST-EFT-ACCOUNT-ID: 0067445089
+    CUST-FICO-CREDIT-SCORE: '104'
+    CUST-FIRST-NAME: 'Faustino                 '
+    CUST-GOVT-ISSUED-ID: 00000000000159882533
+    CUST-ID: '34'
+    CUST-LAST-NAME: 'Schmidt                  '
+    CUST-MIDDLE-NAME: 'Jess                     '
+    CUST-PHONE-NUM-1: '(179)036-5135  '
+    CUST-PHONE-NUM-2: '(986)905-0112  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '548088300'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '396 Pearl Loop                                    '
+    CUST-ADDR-LINE-2: 'Suite 383                                         '
+    CUST-ADDR-LINE-3: 'Pfefferhaven                                      '
+    CUST-ADDR-STATE-CD: LA
+    CUST-ADDR-ZIP: '46142     '
+    CUST-DOB-YYYY-MM-DD: '1987-06-23'
+    CUST-EFT-ACCOUNT-ID: '0047435332'
+    CUST-FICO-CREDIT-SCORE: '793'
+    CUST-FIRST-NAME: 'Angelica                 '
+    CUST-GOVT-ISSUED-ID: 00000000000977144839
+    CUST-ID: '35'
+    CUST-LAST-NAME: 'Dach                     '
+    CUST-MIDDLE-NAME: 'Damaris                  '
+    CUST-PHONE-NUM-1: '(303)480-9098  '
+    CUST-PHONE-NUM-2: '(637)710-7367  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '220547115'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '35943 Raleigh Harbor                              '
+    CUST-ADDR-LINE-2: 'Apt. 116                                          '
+    CUST-ADDR-LINE-3: 'Lake Derekburgh                                   '
+    CUST-ADDR-STATE-CD: AL
+    CUST-ADDR-ZIP: 10932-0480
+    CUST-DOB-YYYY-MM-DD: '1991-03-31'
+    CUST-EFT-ACCOUNT-ID: 0066461979
+    CUST-FICO-CREDIT-SCORE: '266'
+    CUST-FIRST-NAME: 'Toney                    '
+    CUST-GOVT-ISSUED-ID: 00000000000942029210
+    CUST-ID: '36'
+    CUST-LAST-NAME: 'Gerhold                  '
+    CUST-MIDDLE-NAME: 'Emerald                  '
+    CUST-PHONE-NUM-1: '(034)271-9180  '
+    CUST-PHONE-NUM-2: '(507)529-4523  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '420360688'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '91196 Heaney Turnpike                             '
+    CUST-ADDR-LINE-2: 'Suite 814                                         '
+    CUST-ADDR-LINE-3: 'Lubowitzberg                                      '
+    CUST-ADDR-STATE-CD: NV
+    CUST-ADDR-ZIP: 11857-8177
+    CUST-DOB-YYYY-MM-DD: '1984-12-09'
+    CUST-EFT-ACCOUNT-ID: '0066111704'
+    CUST-FICO-CREDIT-SCORE: '653'
+    CUST-FIRST-NAME: 'Shany                    '
+    CUST-GOVT-ISSUED-ID: '00000000000524312632'
+    CUST-ID: '37'
+    CUST-LAST-NAME: 'Walker                   '
+    CUST-MIDDLE-NAME: 'Darby                    '
+    CUST-PHONE-NUM-1: '(052)759-5167  '
+    CUST-PHONE-NUM-2: '(706)896-1282  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '891897974'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '65482 Zoila Skyway                                '
+    CUST-ADDR-LINE-2: 'Apt. 054                                          '
+    CUST-ADDR-LINE-3: 'East Malachi                                      '
+    CUST-ADDR-STATE-CD: VA
+    CUST-ADDR-ZIP: 63928-0008
+    CUST-DOB-YYYY-MM-DD: '1990-05-28'
+    CUST-EFT-ACCOUNT-ID: 0018048939
+    CUST-FICO-CREDIT-SCORE: '446'
+    CUST-FIRST-NAME: 'Angela                   '
+    CUST-GOVT-ISSUED-ID: '00000000000335562141'
+    CUST-ID: '38'
+    CUST-LAST-NAME: 'Ankunding                '
+    CUST-MIDDLE-NAME: 'Ceasar                   '
+    CUST-PHONE-NUM-1: '(316)640-2650  '
+    CUST-PHONE-NUM-2: '(148)111-1148  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '764307306'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '5761 Pasquale Trail                               '
+    CUST-ADDR-LINE-2: 'Apt. 616                                          '
+    CUST-ADDR-LINE-3: 'New Sabryna                                       '
+    CUST-ADDR-STATE-CD: IA
+    CUST-ADDR-ZIP: '74267     '
+    CUST-DOB-YYYY-MM-DD: '1972-08-26'
+    CUST-EFT-ACCOUNT-ID: 0061869530
+    CUST-FICO-CREDIT-SCORE: '475'
+    CUST-FIRST-NAME: 'Aliyah                   '
+    CUST-GOVT-ISSUED-ID: '00000000000553254403'
+    CUST-ID: '39'
+    CUST-LAST-NAME: 'Berge                    '
+    CUST-MIDDLE-NAME: 'Horace                   '
+    CUST-PHONE-NUM-1: '(089)096-3287  '
+    CUST-PHONE-NUM-2: '(768)959-4733  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '510793388'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '23499 Beer Views                                  '
+    CUST-ADDR-LINE-2: 'Suite 816                                         '
+    CUST-ADDR-LINE-3: 'Erniechester                                      '
+    CUST-ADDR-STATE-CD: TX
+    CUST-ADDR-ZIP: 87156-8689
+    CUST-DOB-YYYY-MM-DD: '1992-01-26'
+    CUST-EFT-ACCOUNT-ID: 0087069976
+    CUST-FICO-CREDIT-SCORE: '284'
+    CUST-FIRST-NAME: 'Davon                    '
+    CUST-GOVT-ISSUED-ID: 00000000000398353299
+    CUST-ID: '40'
+    CUST-LAST-NAME: 'Emmerich                 '
+    CUST-MIDDLE-NAME: 'Demond                   '
+    CUST-PHONE-NUM-1: '(463)762-3017  '
+    CUST-PHONE-NUM-2: '(419)414-2177  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '54960660'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '3220 Yolanda Corner                               '
+    CUST-ADDR-LINE-2: 'Suite 649                                         '
+    CUST-ADDR-LINE-3: 'East Harmonystad                                  '
+    CUST-ADDR-STATE-CD: VT
+    CUST-ADDR-ZIP: 72971-7481
+    CUST-DOB-YYYY-MM-DD: '1967-02-20'
+    CUST-EFT-ACCOUNT-ID: 0007315287
+    CUST-FICO-CREDIT-SCORE: '725'
+    CUST-FIRST-NAME: 'Lucinda                  '
+    CUST-GOVT-ISSUED-ID: 00000000000919653442
+    CUST-ID: '41'
+    CUST-LAST-NAME: 'Dach                     '
+    CUST-MIDDLE-NAME: 'Kiana                    '
+    CUST-PHONE-NUM-1: '(284)052-5831  '
+    CUST-PHONE-NUM-2: '(091)234-2144  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '643942675'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '5523 Archibald Club                               '
+    CUST-ADDR-LINE-2: 'Apt. 358                                          '
+    CUST-ADDR-LINE-3: 'Reillyland                                        '
+    CUST-ADDR-STATE-CD: FM
+    CUST-ADDR-ZIP: '83589     '
+    CUST-DOB-YYYY-MM-DD: '1964-11-03'
+    CUST-EFT-ACCOUNT-ID: 0079262985
+    CUST-FICO-CREDIT-SCORE: '44'
+    CUST-FIRST-NAME: 'Heather                  '
+    CUST-GOVT-ISSUED-ID: 00000000000997029966
+    CUST-ID: '42'
+    CUST-LAST-NAME: 'Nienow                   '
+    CUST-MIDDLE-NAME: 'Ericka                   '
+    CUST-PHONE-NUM-1: '(640)954-4538  '
+    CUST-PHONE-NUM-2: '(565)873-6897  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '800455633'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '97765 Bernhard Fort                               '
+    CUST-ADDR-LINE-2: 'Apt. 666                                          '
+    CUST-ADDR-LINE-3: 'South Marisaview                                  '
+    CUST-ADDR-STATE-CD: OK
+    CUST-ADDR-ZIP: 10050-7980
+    CUST-DOB-YYYY-MM-DD: '1966-10-16'
+    CUST-EFT-ACCOUNT-ID: 0053043599
+    CUST-FICO-CREDIT-SCORE: '558'
+    CUST-FIRST-NAME: 'Britney                  '
+    CUST-GOVT-ISSUED-ID: 00000000000244555805
+    CUST-ID: '43'
+    CUST-LAST-NAME: 'Waters                   '
+    CUST-MIDDLE-NAME: 'Jermain                  '
+    CUST-PHONE-NUM-1: '(407)042-6952  '
+    CUST-PHONE-NUM-2: '(438)659-6397  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '262568593'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '978 Fatima Stream                                 '
+    CUST-ADDR-LINE-2: 'Apt. 110                                          '
+    CUST-ADDR-LINE-3: 'Lake King                                         '
+    CUST-ADDR-STATE-CD: ID
+    CUST-ADDR-ZIP: 05704-0501
+    CUST-DOB-YYYY-MM-DD: '1984-04-04'
+    CUST-EFT-ACCOUNT-ID: 0032076778
+    CUST-FICO-CREDIT-SCORE: '145'
+    CUST-FIRST-NAME: 'Irving                   '
+    CUST-GOVT-ISSUED-ID: 00000000000934420974
+    CUST-ID: '44'
+    CUST-LAST-NAME: 'Emard                    '
+    CUST-MIDDLE-NAME: 'Kiera                    '
+    CUST-PHONE-NUM-1: '(703)484-5840  '
+    CUST-PHONE-NUM-2: '(537)392-5569  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '318104527'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '441 Levi Prairie                                  '
+    CUST-ADDR-LINE-2: 'Suite 749                                         '
+    CUST-ADDR-LINE-3: 'Abbottshire                                       '
+    CUST-ADDR-STATE-CD: NV
+    CUST-ADDR-ZIP: '09048     '
+    CUST-DOB-YYYY-MM-DD: '2001-12-12'
+    CUST-EFT-ACCOUNT-ID: 0027833000
+    CUST-FICO-CREDIT-SCORE: '629'
+    CUST-FIRST-NAME: 'Dixie                    '
+    CUST-GOVT-ISSUED-ID: 00000000000885743286
+    CUST-ID: '45'
+    CUST-LAST-NAME: 'Beier                    '
+    CUST-MIDDLE-NAME: 'Norris                   '
+    CUST-PHONE-NUM-1: '(697)143-3221  '
+    CUST-PHONE-NUM-2: '(499)287-7255  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '352819961'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '494 Lang Avenue                                   '
+    CUST-ADDR-LINE-2: 'Apt. 937                                          '
+    CUST-ADDR-LINE-3: 'Alexandroview                                     '
+    CUST-ADDR-STATE-CD: PW
+    CUST-ADDR-ZIP: 63082-4520
+    CUST-DOB-YYYY-MM-DD: '1987-12-14'
+    CUST-EFT-ACCOUNT-ID: 0017535749
+    CUST-FICO-CREDIT-SCORE: '514'
+    CUST-FIRST-NAME: 'Cindy                    '
+    CUST-GOVT-ISSUED-ID: 00000000000762699577
+    CUST-ID: '46'
+    CUST-LAST-NAME: 'Cremin                   '
+    CUST-MIDDLE-NAME: 'Kira                     '
+    CUST-PHONE-NUM-1: '(358)349-2574  '
+    CUST-PHONE-NUM-2: '(077)525-9966  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '656405528'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '00097 Gleichner Spur                              '
+    CUST-ADDR-LINE-2: 'Apt. 932                                          '
+    CUST-ADDR-LINE-3: 'Port Aidanborough                                 '
+    CUST-ADDR-STATE-CD: GU
+    CUST-ADDR-ZIP: 31329-6973
+    CUST-DOB-YYYY-MM-DD: '1979-02-25'
+    CUST-EFT-ACCOUNT-ID: '0022102472'
+    CUST-FICO-CREDIT-SCORE: '722'
+    CUST-FIRST-NAME: 'Rigoberto                '
+    CUST-GOVT-ISSUED-ID: '00000000000567601472'
+    CUST-ID: '47'
+    CUST-LAST-NAME: 'Hoeger                   '
+    CUST-MIDDLE-NAME: 'Savanna                  '
+    CUST-PHONE-NUM-1: '(946)322-6160  '
+    CUST-PHONE-NUM-2: '(973)443-8438  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '29222192'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '453 Rosina Mountain                               '
+    CUST-ADDR-LINE-2: 'Apt. 011                                          '
+    CUST-ADDR-LINE-3: 'Albertville                                       '
+    CUST-ADDR-STATE-CD: OR
+    CUST-ADDR-ZIP: 83985-4937
+    CUST-DOB-YYYY-MM-DD: '1986-08-17'
+    CUST-EFT-ACCOUNT-ID: 0046317382
+    CUST-FICO-CREDIT-SCORE: '746'
+    CUST-FIRST-NAME: 'Lyric                    '
+    CUST-GOVT-ISSUED-ID: 00000000000265392832
+    CUST-ID: '48'
+    CUST-LAST-NAME: 'Pacocha                  '
+    CUST-MIDDLE-NAME: 'Mackenzie                '
+    CUST-PHONE-NUM-1: '(950)497-1005  '
+    CUST-PHONE-NUM-2: '(004)244-7955  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '635734407'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '5423 Esther Locks                                 '
+    CUST-ADDR-LINE-2: 'Apt. 142                                          '
+    CUST-ADDR-LINE-3: 'Langoshstad                                       '
+    CUST-ADDR-STATE-CD: GA
+    CUST-ADDR-ZIP: 12288-3495
+    CUST-DOB-YYYY-MM-DD: '2000-01-05'
+    CUST-EFT-ACCOUNT-ID: 0058726120
+    CUST-FICO-CREDIT-SCORE: '148'
+    CUST-FIRST-NAME: 'Immanuel                 '
+    CUST-GOVT-ISSUED-ID: 00000000000424495981
+    CUST-ID: '49'
+    CUST-LAST-NAME: 'Bednar                   '
+    CUST-MIDDLE-NAME: 'Ellie                    '
+    CUST-PHONE-NUM-1: '(843)095-2553  '
+    CUST-PHONE-NUM-2: '(615)988-9038  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '813044111'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+  - CUST-ADDR-COUNTRY-CD: USA
+    CUST-ADDR-LINE-1: '1588 Nienow Cape                                  '
+    CUST-ADDR-LINE-2: 'Suite 187                                         '
+    CUST-ADDR-LINE-3: 'New Aricchester                                   '
+    CUST-ADDR-STATE-CD: OR
+    CUST-ADDR-ZIP: '04257     '
+    CUST-DOB-YYYY-MM-DD: '1960-12-01'
+    CUST-EFT-ACCOUNT-ID: 0074883577
+    CUST-FICO-CREDIT-SCORE: '623'
+    CUST-FIRST-NAME: 'Aniya                    '
+    CUST-GOVT-ISSUED-ID: 00000000000030387824
+    CUST-ID: '50'
+    CUST-LAST-NAME: 'Von                      '
+    CUST-MIDDLE-NAME: 'Alba                     '
+    CUST-PHONE-NUM-1: '(325)301-0827  '
+    CUST-PHONE-NUM-2: '(493)985-9283  '
+    CUST-PRI-CARD-HOLDER-IND: Y
+    CUST-SSN: '931248469'
+    CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN002: '02. Account Update                      '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
+  ACSADL1: '100 Test Street                                   '
+  ACSADL2: 'Suite 1                                           '
+  ACSCITY: 'Raleigh                                           '
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
+  ACSFNAM: 'Testfirst                '
+  ACSGOVT: 'TESTGOVT0001        '
+  ACSHLIM: +      1,020.00
+  ACSLNAM: 'Testlast                 '
+  ACSMNAM: 'Testmiddle               '
+  ACSPFLG: Y
+  ACSPH1A: '919'
+  ACSPH1B: '555'
+  ACSPH1C: '0101'
+  ACSPH2A: '919'
+  ACSPH2B: '555'
+  ACSPH2C: '0102'
+  ACSSTTE: NC
+  ACSTFCO: '700'
+  ACSTNUM: '000000001'
+  ACSTTUS: Y
+  ACSZIPC: '27601'
+  ACTSSN1: '123'
+  ACTSSN2: '45'
+  ACTSSN3: '6789'
+  ACURBAL: +        194.00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  DOBDAY: 08
+  DOBMON: '06'
+  DOBYEAR: '1961'
+  ERRMSG: '                                                                              '
+  EXPDAY: '20'
+  EXPMON: '05'
+  EXPYEAR: '2025'
+  FKEY05: '       '
+  FKEY12: '          '
+  FKEYS: ENTER=Process F3=Exit
+  INFOMSG: 'Update account details presented above.      '
+  OPNDAY: '20'
+  OPNMON: '11'
+  OPNYEAR: '2014'
+  PGMNAME: COACTUPC
+  RISDAY: '20'
+  RISMON: '05'
+  RISYEAR: '2025'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP
+- '@map': COACTUP
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
+  ACSADL1: '100 Test Street                                   '
+  ACSADL2: 'Suite 1                                           '
+  ACSCITY: 'Raleigh                                           '
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
+  ACSFNAM: 'Testfirst                '
+  ACSGOVT: 'TESTGOVT0001        '
+  ACSHLIM: +      1,020.00
+  ACSLNAM: 'Testlast                 '
+  ACSMNAM: 'Testmiddle               '
+  ACSPFLG: Y
+  ACSPH1A: '919'
+  ACSPH1B: '555'
+  ACSPH1C: '0101'
+  ACSPH2A: '919'
+  ACSPH2B: '555'
+  ACSPH2C: '0102'
+  ACSSTTE: NC
+  ACSTFCO: '700'
+  ACSTNUM: '000000001'
+  ACSTTUS: X
+  ACSZIPC: '27601'
+  ACTSSN1: '123'
+  ACTSSN2: '45'
+  ACTSSN3: '6789'
+  ACURBAL: +        194.00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  DOBDAY: 08
+  DOBMON: '06'
+  DOBYEAR: '1961'
+  ERRMSG: 'Account Status must be Y or N.                                                '
+  EXPDAY: '20'
+  EXPMON: '05'
+  EXPYEAR: '2025'
+  FKEY05: '       '
+  FKEY12: F12=Cancel
+  FKEYS: ENTER=Process F3=Exit
+  INFOMSG: 'Update account details presented above.      '
+  OPNDAY: '20'
+  OPNMON: '11'
+  OPNYEAR: '2014'
+  PGMNAME: COACTUPC
+  RISDAY: '20'
+  RISMON: '05'
+  RISYEAR: '2025'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP
