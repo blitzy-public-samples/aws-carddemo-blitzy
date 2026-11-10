@@ -49,17 +49,24 @@ key lock ``_build/<key>.lock``, an ``fcntl.flock`` that excludes other
 processes and threads and is never deleted, serializes everything that
 inspects or renames the key's directories: the check of ``_build/<key>/`` with
 the removal of an unfinished or mismatched one, its publication and the check
-after it, the set-aside of a failed build or profile, and the publication of
-an on-demand profile. The compiles run outside it, so the first session to
-publish wins. A failed build, whether a compile or the clock probe failed, is
-kept as ``_build/<key>.failed`` and the ``BuildError`` names the unit or the
-probe and its log there. A failed build is a harness error, never a gap.
+after it, the set-aside of a failed or interrupted build or profile, and the
+publication of an on-demand profile. The compiles run outside it, so the
+first session to publish wins. A failed build, whether a compile or the clock
+probe failed, is kept as ``_build/<key>.failed`` and the ``BuildError`` names
+the unit or the probe and its log there. A build interrupted by
+``KeyboardInterrupt``, SIGTERM, SIGHUP or any other exception is kept there
+too, with the logs its compiles wrote, before the exception goes on or the
+signal is acted on; an on-demand profile is kept as
+``profiles/<profile>.failed`` in either case. A ``.failed`` directory is never
+complete, so the next session rebuilds. A failed build is a harness error,
+never a gap.
 
 Indexed files. GnuCOBOL 3.2 with Berkeley DB keeps alternate key *i* in
-``<file>.i``. ``OPEN`` fails with status 35 when a declared alternate's file
-is absent, and with status 30 when the reader declares ``WITH DUPLICATES`` on a
-key built without them, so each file is built with exactly the keys its reader
-declares: a ``KeyProfile``. One
+``<file>.i``. ``OPEN INPUT`` fails with status 35 when a declared alternate's
+file is absent, where ``OPEN I-O`` creates it holding only the records written
+after it, and ``OPEN`` fails with status 30 when the reader declares ``WITH
+DUPLICATES`` on a key built without them, so each file is built with exactly
+the keys its reader declares: a ``KeyProfile``. One
 loader and one unloader are generated per profile; ``static_profiles`` lists
 the profiles compiled up front, and ``BuildCache.loader``/``unloader`` build
 any other profile on demand. Both programs assign the indexed file to
@@ -69,21 +76,31 @@ any other profile on demand. Both programs assign the indexed file to
 Loader ``KSLOAD <mode>``:
 
 * ``LOAD``: ``OPEN OUTPUT``, then write every SEQIN record.
-* ``APPEND``: ``OPEN I-O`` (``OPEN OUTPUT`` when the file is absent), then
-  write every SEQIN record.
+* ``APPEND``: ``OPEN OUTPUT`` when the file is absent; otherwise ``OPEN
+  INPUT``, which needs the file of every declared alternate, then ``OPEN
+  I-O``; then write every SEQIN record. A present file without one is refused
+  and left untouched: re-key a file by unloading it and running ``LOAD`` with
+  the new profile.
 * ``CREATE``: ``OPEN OUTPUT`` and ``CLOSE``, an empty file; prints ``CREATED``.
 
-A record whose key is already present (status 22) prints ``DUPKEY <n>`` and the
-load goes on; a load ends with ``LOADED <count>``. Unloader ``KSUNLOAD PRIMARY``
-or ``KSUNLOAD ALT <n>`` writes every record in primary-key order, or in the
-order of the profile's 1-based alternate key ``n``, and ends with
-``UNLOADED <count>``; an absent file prints ``NOFILE``. Record numbers and
-counts are 9 zero-padded digits. SEQIN must hold whole records: libcob reads
-a short final record with status 00 and keeps the rest of the previous
-record. Failures print ``STATUS <xx> AT <n>``,
-``SEQIN STATUS <xx> AT <n>``, ``<FILE> <verb> STATUS <xx>`` or ``USAGE: ...``.
-Exit statuses are ``EXIT_OK``, ``EXIT_FAILED``, ``EXIT_USAGE`` and
-``EXIT_NOFILE``.
+SEQIN must hold whole records: before LOAD or APPEND opens the indexed file, a
+SEQIN whose size is not a multiple of the record length prints ``SEQIN SIZE
+<bytes> NOT A MULTIPLE OF <length>`` and nothing is loaded; an empty SEQIN
+loads nothing. A record whose key is already present (status 22) prints
+``DUPKEY <n>`` and the load goes on; a load ends with ``LOADED <count>``.
+Unloader ``KSUNLOAD PRIMARY`` or ``KSUNLOAD ALT <n>`` writes every record in
+primary-key order, or in the order of the profile's 1-based alternate key
+``n``, and ends with ``UNLOADED <count>``; ``NOFILE`` means that the file
+itself is absent. When ``OPEN INPUT`` gives status 35 for a present file, both
+programs print ``KSDSOUT OPEN STATUS 35 ALTERNATE INDEX MISSING``, or
+``KSDSOUT OPEN STATUS 35`` for a profile without alternates. Record numbers
+and counts are 9 zero-padded digits, ``<bytes>`` 20. Failures print ``STATUS
+<xx> AT <n>``, ``SEQIN STATUS <xx> AT <n>``, ``<FILE> <verb> STATUS <xx>``,
+the lines above, ``<FILE> CHECK STATUS <rc>`` when ``CBL_CHECK_FILE_EXIST``
+cannot size SEQIN or tell whether the indexed file exists (``<rc>`` its
+signed 9-digit return code), or ``USAGE: ...``.
+Exit statuses are ``EXIT_OK``, ``EXIT_FAILED`` after a failure line,
+``EXIT_USAGE`` after ``USAGE:`` and ``EXIT_NOFILE`` after ``NOFILE``.
 
 Clock. ``clock_fraction_mode`` says how libcob reads the fraction of
 ``COB_CURRENT_DATE``: ``hundredths`` or ``nanoseconds``, as
@@ -99,15 +116,18 @@ module starts no process and reads no file.
 from __future__ import annotations
 
 import fcntl
+import inspect
 import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
+import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -156,10 +176,12 @@ COPYBOOK_DIR = "app/cpy"
 # Changed whenever the generated loader, unloader or clock-probe programs, or
 # the layout of the build directory, change in a way the hashed sources do not
 # show.
-TEMPLATE_VERSION = "2"
+TEMPLATE_VERSION = "3"
 
 # Seconds one compile or probe may take. The build is session-level, so no
-# scenario deadline bounds it.
+# scenario deadline bounds it. A compile that overruns COMPILE_TIMEOUT_S is
+# killed with its whole process group, the C compiler, assembler and linker
+# cobc started.
 COMPILE_TIMEOUT_S = 600
 _TOOL_PROBE_TIMEOUT_S = 60
 
@@ -217,7 +239,8 @@ _PARALLEL_COMPILES = max(1, min(4, os.cpu_count() or 1))
 
 class BuildError(HarnessError):
     """The toolchain is missing or unsuitable, the build configuration is
-    inconsistent, or a compile or the clock probe failed.
+    inconsistent, a compile or the clock probe failed, or a SIGTERM or SIGHUP
+    stopped the compiles and the caller's handler let the process go on.
 
     ``unit`` names the compilation unit and ``log_path`` its compile log when
     the error comes from a compile, or ``CLOCKCHK`` and its probe log when the
@@ -630,6 +653,13 @@ _COMMON_WORKING_STORAGE = [
     "       01  WS-EOF                  PIC X VALUE 'N'.",
     "       01  WS-KOPEN                PIC X VALUE 'N'.",
     "       01  WS-SOPEN                PIC X VALUE 'N'.",
+    "       01  WS-CHECK-NAME           PIC X(8) VALUE SPACES.",
+    "       01  WS-CHECK-DETAILS.",
+    "           05  WS-CHECK-SIZE       PIC X(8) COMP-X.",
+    "           05  WS-CHECK-DATE       PIC X(4) COMP-X.",
+    "           05  WS-CHECK-TIME       PIC X(4) COMP-X.",
+    "       01  WS-CHECK-RC             PIC S9(9) VALUE 0",
+    "                                   SIGN LEADING SEPARATE.",
 ]
 
 _PARSE_ARGUMENTS = [
@@ -654,6 +684,30 @@ _FAIL_PARAGRAPH = [
     f"           MOVE {EXIT_USAGE} TO RETURN-CODE",
     "           STOP RUN.",
 ]
+
+
+def _check_paragraphs(profile: KeyProfile) -> list[str]:
+    """``8000-CHECK-FILE`` and ``8100-KFILE-PRESENT-35`` of both programs.
+
+    ``CBL_CHECK_FILE_EXIST`` maps the ASSIGN name in WS-CHECK-NAME as OPEN
+    does and sets WS-CHECK-SIZE; its RETURN-CODE (0 present, 35 absent) is
+    kept in WS-CHECK-RC and reset, so it never becomes the exit status.
+    ``OPEN INPUT`` gives status 35 for an absent file and for a present one
+    without a declared alternate's file; 8100 reports the second case, which
+    a profile without alternates cannot attribute to a missing index."""
+    missing_index = ["               ' ALTERNATE INDEX MISSING'"] if profile.alternates else []
+    return [
+        "       8000-CHECK-FILE.",
+        "           CALL 'CBL_CHECK_FILE_EXIST' USING WS-CHECK-NAME",
+        "               WS-CHECK-DETAILS",
+        "           END-CALL",
+        "           MOVE RETURN-CODE TO WS-CHECK-RC",
+        "           MOVE 0 TO RETURN-CODE.",
+        "       8100-KFILE-PRESENT-35.",
+        f"           DISPLAY '{KSDS_DD} OPEN STATUS 35'",
+        *missing_index,
+        "           PERFORM 9000-FAIL.",
+    ]
 
 
 def _loader_source(profile: KeyProfile) -> str:
@@ -685,10 +739,7 @@ def _loader_source(profile: KeyProfile) -> str:
         "                   PERFORM 2000-COPY-RECORDS",
         "               WHEN 'APPEND'",
         "                   PERFORM 1000-OPEN-SEQIN",
-        "                   OPEN I-O KFILE",
-        "                   IF WS-KSTAT = '35'",
-        "                       OPEN OUTPUT KFILE",
-        "                   END-IF",
+        "                   PERFORM 1200-OPEN-KFILE-APPEND",
         "                   PERFORM 1100-CHECK-KFILE-OPEN",
         "                   PERFORM 2000-COPY-RECORDS",
         "               WHEN 'CREATE'",
@@ -700,19 +751,55 @@ def _loader_source(profile: KeyProfile) -> str:
         "                   PERFORM 9100-USAGE",
         "           END-EVALUATE",
         "           STOP RUN.",
+        # libcob reads a short final record with status 00 and keeps the rest
+        # of the previous one, so SEQIN must hold whole records; this runs
+        # before KFILE is opened, which OPEN OUTPUT would recreate.
         "       1000-OPEN-SEQIN.",
         "           OPEN INPUT SFILE",
         "           IF WS-SSTAT NOT = '00'",
         "               DISPLAY 'SEQIN OPEN STATUS ' WS-SSTAT",
         "               PERFORM 9000-FAIL",
         "           END-IF",
-        "           MOVE 'Y' TO WS-SOPEN.",
+        "           MOVE 'Y' TO WS-SOPEN",
+        f"           MOVE '{SEQIN_DD}' TO WS-CHECK-NAME",
+        "           PERFORM 8000-CHECK-FILE",
+        "           IF WS-CHECK-RC NOT = 0",
+        f"               DISPLAY '{SEQIN_DD} CHECK STATUS ' WS-CHECK-RC",
+        "               PERFORM 9000-FAIL",
+        "           END-IF",
+        f"           IF FUNCTION MOD(WS-CHECK-SIZE, {length}) NOT = 0",
+        f"               DISPLAY '{SEQIN_DD} SIZE ' WS-CHECK-SIZE",
+        f"                   ' NOT A MULTIPLE OF {length}'",
+        "               PERFORM 9000-FAIL",
+        "           END-IF.",
         "       1100-CHECK-KFILE-OPEN.",
         "           IF WS-KSTAT NOT = '00'",
         f"               DISPLAY '{KSDS_DD} OPEN STATUS ' WS-KSTAT",
         "               PERFORM 9000-FAIL",
         "           END-IF",
         "           MOVE 'Y' TO WS-KOPEN.",
+        # OPEN I-O on a present file would create a missing alternate's file
+        # holding only the appended records, so OPEN INPUT probes it first.
+        "       1200-OPEN-KFILE-APPEND.",
+        f"           MOVE '{KSDS_DD}' TO WS-CHECK-NAME",
+        "           PERFORM 8000-CHECK-FILE",
+        "           EVALUATE WS-CHECK-RC",
+        "               WHEN 35",
+        "                   OPEN OUTPUT KFILE",
+        "               WHEN 0",
+        "                   OPEN INPUT KFILE",
+        "                   EVALUATE WS-KSTAT",
+        "                       WHEN '00'",
+        "                           MOVE 'Y' TO WS-KOPEN",
+        "                           PERFORM 3000-CLOSE-KFILE",
+        "                           OPEN I-O KFILE",
+        "                       WHEN '35'",
+        "                           PERFORM 8100-KFILE-PRESENT-35",
+        "                   END-EVALUATE",
+        "               WHEN OTHER",
+        f"                   DISPLAY '{KSDS_DD} CHECK STATUS ' WS-CHECK-RC",
+        "                   PERFORM 9000-FAIL",
+        "           END-EVALUATE.",
         "       2000-COPY-RECORDS.",
         "           PERFORM UNTIL WS-EOF = 'Y'",
         "               READ SFILE",
@@ -756,6 +843,7 @@ def _loader_source(profile: KeyProfile) -> str:
         f"               DISPLAY '{KSDS_DD} CLOSE STATUS ' WS-KSTAT",
         "               PERFORM 9000-FAIL",
         "           END-IF.",
+        *_check_paragraphs(profile),
         *_FAIL_PARAGRAPH,
     ])
 
@@ -812,9 +900,7 @@ def _unloader_source(profile: KeyProfile) -> str:
         "               WHEN '00'",
         "                   MOVE 'Y' TO WS-KOPEN",
         "               WHEN '35'",
-        "                   DISPLAY 'NOFILE'",
-        f"                   MOVE {EXIT_NOFILE} TO RETURN-CODE",
-        "                   STOP RUN",
+        "                   PERFORM 1000-CHECK-NOFILE",
         "               WHEN OTHER",
         f"                   DISPLAY '{KSDS_DD} OPEN STATUS ' WS-KSTAT",
         "                   PERFORM 9000-FAIL",
@@ -869,6 +955,21 @@ def _unloader_source(profile: KeyProfile) -> str:
         "           END-IF",
         "           DISPLAY 'UNLOADED ' WS-COUNT",
         "           STOP RUN.",
+        # NOFILE only when the file itself is absent.
+        "       1000-CHECK-NOFILE.",
+        f"           MOVE '{KSDS_DD}' TO WS-CHECK-NAME",
+        "           PERFORM 8000-CHECK-FILE",
+        "           EVALUATE WS-CHECK-RC",
+        "               WHEN 35",
+        "                   DISPLAY 'NOFILE'",
+        f"                   MOVE {EXIT_NOFILE} TO RETURN-CODE",
+        "                   STOP RUN",
+        "               WHEN 0",
+        "                   PERFORM 8100-KFILE-PRESENT-35",
+        "               WHEN OTHER",
+        f"                   DISPLAY '{KSDS_DD} CHECK STATUS ' WS-CHECK-RC",
+        "                   PERFORM 9000-FAIL",
+        "           END-EVALUATE.",
         "       2000-WRITE-RECORD.",
         "           WRITE S-REC FROM K0-REC",
         "           IF WS-SSTAT NOT = '00'",
@@ -876,6 +977,7 @@ def _unloader_source(profile: KeyProfile) -> str:
         "               PERFORM 9000-FAIL",
         "           END-IF",
         "           ADD 1 TO WS-COUNT.",
+        *_check_paragraphs(profile),
         *_FAIL_PARAGRAPH,
     ])
 
@@ -1287,34 +1389,60 @@ class _Task:
     log: Path
 
 
-def _run_compile(
-    task: _Task, toolchain: _Toolchain, repo_root: Path, workspace: Path
-) -> str | None:
-    """Run one compile with ``cwd`` and ``TMPDIR`` inside ``workspace``;
-    return ``None`` on success or the failure detail. The log always gets the
-    command line, exit status, stdout and stderr."""
-    artifact = task.base / task.job.artifact
-    artifact.parent.mkdir(parents=True, exist_ok=True)
-    argv = task.job.argv(toolchain, repo_root, task.base)
-    env = toolchain.env(workspace, TMPDIR=str(workspace / "tmp"))
-    stdout = stderr = b""
-    detail: str | None = None
+# How often a running compile checks its deadline and its cancellation, and
+# how long the output of a killed compile may stay open before it is closed
+# unread.
+_COMPILE_POLL_S = 0.1
+_REAP_TIMEOUT_S = 10
+
+
+class _Cancel:
+    """The stop request of one compile. Once set, a compile that has not
+    started runs nothing and a running one has its process group killed;
+    ``reason`` is what its log gives."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self.reason = ""
+
+    def set(self, reason: str) -> None:
+        """Request the stop; the first reason stays."""
+        if not self._event.is_set():
+            self.reason = reason
+            self._event.set()
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+
+def _kill_group(process: subprocess.Popen[bytes]) -> tuple[bytes, bytes, str]:
+    """Kill the process group of ``process``, which it leads, reap it, and
+    return the stdout and stderr written until then with a note for the log
+    status, empty unless the output had to be closed unread.
+
+    The group is signalled only while its leader is unreaped: until then the
+    leader's pid, the group id, cannot be reused, so no other group is hit."""
+    if process.returncode is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # the group has already gone
+    process.wait()
     try:
-        completed = subprocess.run(
-            argv, cwd=workspace, env=env, stdin=subprocess.DEVNULL, capture_output=True,
-            timeout=COMPILE_TIMEOUT_S, check=False,
-        )
-        stdout, stderr = completed.stdout, completed.stderr
-        status = f"exit {completed.returncode}"
-        if completed.returncode != 0:
-            detail = f"{task.job.tool} exited {completed.returncode}"
+        stdout, stderr = process.communicate(timeout=_REAP_TIMEOUT_S)
     except subprocess.TimeoutExpired as exc:
-        stdout, stderr = exc.stdout or b"", exc.stderr or b""
-        status = detail = f"timed out after {COMPILE_TIMEOUT_S} s"
-    except OSError as exc:
-        status = detail = f"cannot start {argv[0]}: {exc}"
-    if detail is None and not artifact.is_file():
-        detail = f"{task.job.tool} produced no {task.job.artifact}"
+        # A process that left the group still holds the pipes.
+        for pipe in (process.stdout, process.stderr):
+            if pipe is not None:
+                pipe.close()
+        note = f"; output still open {_REAP_TIMEOUT_S} s after the kill was closed unread"
+        return exc.stdout or b"", exc.stderr or b"", note
+    return stdout or b"", stderr or b"", ""
+
+
+def _write_compile_log(
+    task: _Task, argv: Sequence[str], status: str, stdout: bytes, stderr: bytes, workspace: Path
+) -> None:
     text = "\n".join([
         f"command: {shlex.join(argv)}",
         f"status: {status}",
@@ -1327,21 +1455,194 @@ def _run_compile(
     # The workspace is renamed when complete, so the log names it <build>.
     task.log.parent.mkdir(parents=True, exist_ok=True)
     task.log.write_text(text.replace(str(workspace), "<build>"), encoding="utf-8")
+
+
+def _run_compile(
+    task: _Task, toolchain: _Toolchain, repo_root: Path, workspace: Path, cancel: _Cancel
+) -> str | None:
+    """Run one compile with ``cwd`` and ``TMPDIR`` inside ``workspace``;
+    return ``None`` on success or the failure detail. The log always gets the
+    command line, status, stdout and stderr.
+
+    The compiler starts a new session, so it and every process it starts form
+    a process group of their own. When ``COMPILE_TIMEOUT_S`` passes or
+    ``cancel`` is set, that group is killed and reaped, and the log keeps the
+    output written until then. An exception while waiting, such as
+    ``KeyboardInterrupt``, does the same and is re-raised once the log is
+    written. A compile cancelled before it starts runs nothing and logs why."""
+    artifact = task.base / task.job.artifact
+    argv = task.job.argv(toolchain, repo_root, task.base)
+    if cancel.is_set():
+        skipped = f"not run: {cancel.reason}"
+        _write_compile_log(task, argv, skipped, b"", b"", workspace)
+        return skipped
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    env = toolchain.env(workspace, TMPDIR=str(workspace / "tmp"))
+    stdout = stderr = b""
+    detail: str | None = None
+    try:
+        process = subprocess.Popen(
+            argv, cwd=workspace, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, start_new_session=True,
+        )
+    except OSError as exc:
+        status = detail = f"cannot start {argv[0]}: {exc}"
+    else:
+        deadline = time.monotonic() + COMPILE_TIMEOUT_S
+        try:
+            while True:
+                try:
+                    stdout, stderr = process.communicate(
+                        timeout=min(_COMPILE_POLL_S, max(0.0, deadline - time.monotonic()))
+                    )
+                except subprocess.TimeoutExpired:
+                    if cancel.is_set():
+                        detail = f"cancelled: {cancel.reason}"
+                    elif time.monotonic() >= deadline:
+                        detail = f"timed out after {COMPILE_TIMEOUT_S} s"
+                    else:
+                        continue
+                    stdout, stderr, note = _kill_group(process)
+                    status = detail + note
+                else:
+                    status = f"exit {process.returncode}"
+                    if process.returncode != 0:
+                        detail = f"{task.job.tool} exited {process.returncode}"
+                break
+        except BaseException as exc:
+            stdout, stderr, note = _kill_group(process)
+            _write_compile_log(
+                task, argv, f"interrupted by {type(exc).__name__}{note}", stdout, stderr,
+                workspace,
+            )
+            raise
+    if detail is None and not artifact.is_file():
+        detail = f"{task.job.tool} produced no {task.job.artifact}"
+    _write_compile_log(task, argv, status, stdout, stderr, workspace)
     return detail
+
+
+class _Terminated(BaseException):
+    """SIGTERM or SIGHUP, raised in the main thread while ``_compile_all``
+    waits; ``disposition`` is the signal's action before the build."""
+
+    def __init__(self, signum: int, disposition: Any) -> None:
+        super().__init__(signum, disposition)
+        self.signum, self.disposition = signum, disposition
+
+
+_STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+
+@contextmanager
+def _stop_signals_raise() -> Iterator[None]:
+    """While the body runs, turn the first SIGTERM or SIGHUP into
+    ``_Terminated`` and restore the replaced dispositions on exit.
+
+    The compiles run in sessions of their own, so a termination signal sent
+    to the caller's process group no longer reaches them, and the default
+    action would end the interpreter before it kills their groups. A signal
+    that is ignored, or whose handler was set outside Python (``None``), is
+    left alone. Only the main thread may set handlers, so in any other thread
+    nothing changes. A repeat during the cleanup the first one starts is
+    dropped; a signal caught while the dispositions are being restored is sent
+    again once they are."""
+    previous: dict[int, Any] = {}
+    raised: list[int] = []
+    late: list[int] = []
+    restoring = False
+
+    def handler(signum: int, frame: Any) -> None:
+        if restoring:
+            late.append(signum)
+        elif not raised:
+            raised.append(signum)
+            raise _Terminated(signum, previous[signum])
+
+    try:
+        if threading.current_thread() is threading.main_thread():
+            for signum in _STOP_SIGNALS:
+                disposition = signal.getsignal(signum)
+                if disposition is not None and disposition is not signal.SIG_IGN:
+                    previous[signum] = disposition
+                    signal.signal(signum, handler)
+        yield
+    finally:
+        restoring = True
+        for signum, disposition in previous.items():
+            signal.signal(signum, disposition)
+        if late and not raised:
+            os.kill(os.getpid(), late[0])
+
+
+def _resume_signal(signum: int, disposition: Any) -> None:
+    """Act on ``signum``, which stopped a build, as ``disposition``, its
+    restored action from before the build, would have: under ``SIG_DFL`` the
+    process dies by the signal, and a Python handler is called and decides.
+    When the process survives, ``BuildError`` reports the stopped build."""
+    if disposition is signal.SIG_DFL:
+        os.kill(os.getpid(), signum)
+    else:
+        disposition(signum, inspect.currentframe())
+    raise BuildError(f"the build stopped on {signal.Signals(signum).name}")
 
 
 def _compile_all(
     tasks: Sequence[_Task], toolchain: _Toolchain, repo_root: Path, workspace: Path
 ) -> None:
+    """Run ``tasks`` on ``_PARALLEL_COMPILES`` threads and raise
+    ``_CompileFailure`` for the first failed task in task order.
+
+    Once a task fails, every later task is cancelled: one not yet started runs
+    nothing, and a running one has its process group killed, each logging
+    why. Earlier tasks still finish, so the failure reported is the one a run
+    without cancellation would report. An exception in the calling thread,
+    such as ``KeyboardInterrupt``, cancels every task and is re-raised once no
+    compiler process is left. In the main thread SIGTERM and SIGHUP do the
+    same as ``_Terminated`` (``_stop_signals_raise``), raised once the
+    previous dispositions are restored. Every log a task wrote stays in
+    ``workspace``; the caller keeps it and then acts on a ``_Terminated`` as
+    the signal's disposition would have (``_resume_signal``)."""
     (workspace / "tmp").mkdir(parents=True, exist_ok=True)
-    with ThreadPoolExecutor(max_workers=_PARALLEL_COMPILES) as pool:
-        details = list(
-            pool.map(lambda task: _run_compile(task, toolchain, repo_root, workspace), tasks)
-        )
-    shutil.rmtree(workspace / "tmp", ignore_errors=True)
-    for task, detail in zip(tasks, details):
-        if detail is not None:
-            raise _CompileFailure(task.label, task.log.relative_to(workspace).as_posix(), detail)
+    cancels = [_Cancel() for _ in tasks]
+    first: int | None = None
+    first_detail = ""
+    try:
+        with _stop_signals_raise(), ThreadPoolExecutor(max_workers=_PARALLEL_COMPILES) as pool:
+            try:
+                futures = [
+                    pool.submit(_run_compile, task, toolchain, repo_root, workspace, cancel)
+                    for task, cancel in zip(tasks, cancels)
+                ]
+                indexes = {future: index for index, future in enumerate(futures)}
+                pending = set(futures)
+                while pending:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        index = indexes[future]
+                        detail = future.result()
+                        # Only tasks after an earlier failure are cancelled, so
+                        # a cancelled task's failure is never the one reported.
+                        if detail is None or cancels[index].is_set():
+                            continue
+                        if first is None or index < first:
+                            first, first_detail = index, detail
+                            reason = f"the build failed at {tasks[index].label}"
+                            for later in cancels[index + 1:]:
+                                later.set(reason)
+            except BaseException as exc:
+                cause = (signal.Signals(exc.signum).name if isinstance(exc, _Terminated)
+                         else type(exc).__name__)
+                reason = f"the build stopped on {cause}"
+                for cancel in cancels:
+                    cancel.set(reason)
+                pool.shutdown(wait=True, cancel_futures=True)
+                raise
+    finally:
+        shutil.rmtree(workspace / "tmp", ignore_errors=True)
+    if first is not None:
+        task = tasks[first]
+        raise _CompileFailure(task.label, task.log.relative_to(workspace).as_posix(), first_detail)
 
 
 def _profile_tasks(profile: KeyProfile, directory: Path) -> list[_Task]:
@@ -1495,6 +1796,22 @@ def _build_failure(failure: _CompileFailure, workspace: Path, target: Path) -> B
     return BuildError(failure.message(log), unit=failure.unit, log_path=log)
 
 
+def _keep_unfinished(workspace: Path, target: Path, build_root: Path, key: str) -> None:
+    """Keep ``workspace``, which an exception other than a compile failure
+    stopped, as ``target`` with the logs its compiles wrote, taking the key
+    lock for the rename. ``target`` is never complete, so it is never
+    published or reused. When the lock or the rename fails, the workspace is
+    removed instead and nothing is raised: the caller re-raises the exception
+    that stopped the build."""
+    try:
+        with _key_lock(build_root, key):
+            kept = _set_aside(workspace, target)
+    except Exception:  # BuildError from the lock; the stopping exception goes on
+        kept = workspace
+    if kept != target:
+        _remove_tree(workspace)
+
+
 def _populate(
     workspace: Path, key: str, plan: _Plan, toolchain: _Toolchain, repo_root: Path
 ) -> None:
@@ -1640,18 +1957,26 @@ class BuildCache:
     def _build_profile(self, profile: KeyProfile, directory: Path) -> None:
         directory.parent.mkdir(parents=True, exist_ok=True)
         workspace = Path(tempfile.mkdtemp(prefix=f".{profile.name}-", dir=directory.parent))
+        target = directory.with_name(f"{profile.name}.failed")
+        stopped: tuple[int, Any] | None = None
         try:
             tasks = _profile_tasks(profile, workspace)
             _compile_all(tasks, self._toolchain, self._repo_root, workspace)
             (workspace / _COMPLETE).write_text("", encoding="utf-8")
         except _CompileFailure as failure:
-            target = directory.with_name(f"{profile.name}.failed")
             with _key_lock(self.dir.parent, self.key):
                 error = _build_failure(failure, workspace, target)
             raise error from None
-        except BaseException:
-            _remove_tree(workspace)
-            raise
+        except BaseException as exc:
+            # KeyboardInterrupt, SIGTERM or SIGHUP (_Terminated), or any other
+            # exception: keep the logs written so far, then let it go on.
+            _keep_unfinished(workspace, target, self.dir.parent, self.key)
+            if not isinstance(exc, _Terminated):
+                raise
+            stopped = exc.signum, exc.disposition
+        if stopped is not None:
+            # Outside the handler, so what follows does not chain _Terminated.
+            _resume_signal(*stopped)
         # The compiles ran unlocked; only the rename is serialized, so the first
         # session to publish the profile wins and the others use its copy.
         try:
@@ -1695,15 +2020,24 @@ def ensure_built(repo_root: Path | str, work_root: Path | str) -> BuildCache:
             # The compiles run unlocked in a private workspace, so concurrent
             # sessions build side by side and the first to publish wins.
             workspace = Path(tempfile.mkdtemp(prefix=f".{key[:16]}-", dir=build_root))
+            failed = build_root / f"{key}.failed"
+            stopped: tuple[int, Any] | None = None
             try:
                 _populate(workspace, key, plan, toolchain, root)
             except _CompileFailure as failure:
                 with _key_lock(build_root, key):
-                    error = _build_failure(failure, workspace, build_root / f"{key}.failed")
+                    error = _build_failure(failure, workspace, failed)
                 raise error from None
-            except BaseException:
-                _remove_tree(workspace)
-                raise
+            except BaseException as exc:
+                # KeyboardInterrupt, SIGTERM or SIGHUP (_Terminated), or any other
+                # exception: keep the logs written so far, then let it go on.
+                _keep_unfinished(workspace, failed, build_root, key)
+                if not isinstance(exc, _Terminated):
+                    raise
+                stopped = exc.signum, exc.disposition
+            if stopped is not None:
+                # Outside the handler, so what follows does not chain _Terminated.
+                _resume_signal(*stopped)
             try:
                 with _key_lock(build_root, key):
                     _publish(workspace, final)

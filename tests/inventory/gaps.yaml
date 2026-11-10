@@ -2034,7 +2034,7 @@ gaps:
     - tests/adapters/gnucobol_batch/datasets.py
     replaces: VSAM KSDS, AIX and PATH (GnuCOBOL Berkeley DB indexed files)
   status: open
-  unknown: 'GnuCOBOL indexed files (Berkeley DB), loaded and unloaded by tests/adapters/gnucobol_batch/datasets.py, stand in for VSAM KSDS, AIX and PATH: OPEN OUTPUT recreates a loaded file, as CBTRN02C does to TRANFILE [app/cbl/CBTRN02C.cbl:34-38,254-256] where VSAM would refuse it, and file status 37 differs.'
+  unknown: 'GnuCOBOL indexed files (Berkeley DB), loaded and unloaded by tests/adapters/gnucobol_batch/datasets.py, stand in for VSAM KSDS, AIX and PATH: OPEN OUTPUT recreates a loaded file, as CBTRN02C does to TRANFILE [app/cbl/CBTRN02C.cbl:34-38,254-256] where VSAM would refuse it, and file status 37 differs. Berkeley DB does not verify the primary key position and length at OPEN, where VSAM fails such an OPEN with file status 39, so a file built with other keys than the program declares opens with status 00 and silently gives wrong results: ACCTDATA loaded with its primary key at offset 0 length 10, against the offset 0 length 11 CBTRN02C declares [app/cbl/CBTRN02C.cbl:51-55,86-89], passes the OPEN I-O status check [app/cbl/CBTRN02C.cbl:311-312], and the run then ends RC 4 with all 300 transactions of dailytran.txt rejected 0101 ACCOUNT RECORD NOT FOUND [app/cbl/CBTRN02C.cbl:394-399] and TRANSACT empty.'
 - affected:
   - via_scenarios: true
   affected_inventory_ids:
@@ -2059,7 +2059,7 @@ gaps:
     - tests/adapters/gnucobol_batch/build.py
     replaces: Enterprise COBOL compile and LE runtime options
   status: open
-  unknown: tests/adapters/gnucobol_batch/build.py compiles with cobc -std=ibm -fsign=EBCDIC -ftab-width=4 -fbinary-truncate to reproduce Enterprise COBOL PARM=(APOST,LIST,MAP,NUMBER,NOSEQ) with the default TRUNC(STD) [samples/proc/BUILDBAT.prc:36]; defaultbyte 0 produces the x'00' fill after 'Int. for a/c <acct>' in CBACT04C, and the runtime collates in ASCII.
+  unknown: tests/adapters/gnucobol_batch/build.py compiles with cobc -std=ibm -fsign=EBCDIC -ftab-width=4 -fbinary-truncate to reproduce Enterprise COBOL PARM=(APOST,LIST,MAP,NUMBER,NOSEQ) with the default TRUNC(STD) [samples/proc/BUILDBAT.prc:36]; defaultbyte 0 produces the x'00' fill after 'Int. for a/c <acct>' in CBACT04C, and the runtime collates in ASCII. Arithmetic on non-numeric zoned DISPLAY data does not abend under GnuCOBOL, where Enterprise COBOL raises a data exception (S0C7); the runtime computes on the bytes as found and the run ends normally, so CBTRN02C posts records whose DALYTRAN-AMT [app/cpy/CVTRA06Y.cpy:10] holds spaces or x'FF' bytes through its COMPUTE and ADD statements [app/cbl/CBTRN02C.cbl:403-405,547-552] without a reject and ends RC 0. The runtime also DISPLAYs a signed zoned item as its digits followed by a separate trailing sign, where Enterprise COBOL shows the sign overpunched in the last digit, so CBACT01C shows the ACCT-CURR-BAL PIC S9(10)V99 [app/cpy/CVACT01Y.cpy:7] stored as 00000001940{ for account 1 as the line 'ACCT-CURR-BAL           :000000019400+' [app/cbl/CBACT01C.cbl:121].
 - affected_inventory_ids:
   - INV-LAY-028
   category: uncertain-purpose
