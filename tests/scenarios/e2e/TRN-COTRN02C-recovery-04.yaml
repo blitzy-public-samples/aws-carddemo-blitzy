@@ -1,0 +1,183 @@
+# COTRN02C cannot add a valid, confirmed transaction when the TRANSACT WRITE
+# fails with an I/O error.
+#
+# Steps 1-2 reach the empty Add Transaction screen as TRN-COTRN02C-normal-01
+# does: USER0001 (type U) is routed to COMEN01C, and option 8 transfers control
+# to COTRN02C with the program context reset, so COTRN02C sets the re-enter
+# flag, finds no transaction selected and sends COTRN02 with a blank ERRMSG
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:115-156]
+# [app/cbl/COTRN02C.cbl:119-130,516-528].
+# Step 3 enters the valid field set of TRN-COTRN02C-normal-01, card number
+# only, with CONFIRM Y, under the CT02 that step 2 returned with
+# [app/cbl/COTRN02C.cbl:131-135,164-172]:
+# - ACTIDIN holds only its INITIAL blank, so the card branch runs: the card is
+#   numeric, moves back through WS-CARD-NUM-N unchanged, READ CCXREF by card is
+#   NORMAL, and XREF-ACCT-ID 00000000050 (record 1 of the CARDXREF fixture) is
+#   moved into ACTIDIN [app/cbl/COTRN02C.cbl:195-223,609-623].
+# - VALIDATE-INPUT-DATA-FIELDS finds every field supplied and well formed, and
+#   CSUTLDTC accepts both dates with mask YYYY-MM-DD; NUMVAL-C turns
+#   +00000012.34 into 12.34 and WS-TRAN-AMT-E (PIC +99999999.99) edits it back
+#   into TRNAMT as +00000012.34 [app/cbl/COTRN02C.cbl:235-437].
+# - CONFIRM Y performs ADD-TRANSACTION: STARTBR TRANSACT at HIGH-VALUES,
+#   READPREV of 0000000996722787 and ENDBR succeed, and the record for
+#   0000000996722788 is built from the screen [app/cbl/COTRN02C.cbl:442-466].
+# - The WRITE answers IOERR, which is neither NORMAL nor DUPKEY/DUPREC, so WHEN
+#   OTHER displays RESP and RESP2 to the region log (not asserted), sets the
+#   error flag, moves 'Unable to Add Transaction...' to WS-MESSAGE, puts the
+#   cursor on ACTIDIN and performs SEND-TRNADD-SCREEN, whose RETURN TRANSID CT02
+#   ends the task [app/cbl/COTRN02C.cbl:711-748,516-534].
+#   INITIALIZE-ALL-FIELDS runs only after a NORMAL WRITE, and COTRN2AO
+#   redefines COTRN2AI, so the entered values are sent back as received, with
+#   ACTIDIN filled in from the cross-reference and CONFIRM still Y.
+# The failed WRITE adds no record, so TRANSACT keeps the 300 fixture records.
+#
+# Expected values are derived from the source; no TPE region runs in CI. BMS
+# pads each received field with blanks to its length, so expected text values
+# are full field width with their trailing spaces; ERRMSG is the first 78 bytes
+# of WS-MESSAGE. CURDATE and CURTIME come from the region clock, so they are
+# matchers and the clock is relative.
+id: TRN-COTRN02C-recovery-04
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and enters a
+  valid transaction for repository card 0500024453765740 on COTRN02 with
+  CONFIRM Y while the TRANSACT WRITE fails with an I/O error. COTRN02C shows
+  'Unable to Add Transaction...' on COTRN02 with the entered values kept and
+  account 00000000050 filled in, and TRANSACT still holds only the 300 fixture
+  records.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the CSD files COTRN02C touches on this path (CCXREF read
+# by card number, TRANSACT browsed and written; CXACAIX is not read), and the
+# online-only copybooks it copies. The TRANSACT WRITE interface and the
+# next-TRAN-ID calculation are verified by the scenarios that see a record
+# written; sign-on and the menu (CC00, CM00, COSGN00, USRSEC) by the SEC and MNU
+# scenarios; the batch record copybooks and data files at the lowest level that
+# executes them.
+inventory_ids:
+- INV-TRN-063  # COTRN02C message 'Unable to Add Transaction...' (recovery)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives step 3
+- INV-CFG-004  # CCXREF CSD file, read by card number to fill in the account
+- INV-CFG-007  # TRANSACT CSD file, browsed backwards, then the failing WRITE
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-014  # no known mechanism to make the region return IOERR
+# TRANSACT is loaded from the repository's 300 daily transactions (the same
+# 350-byte shape as TRAN-RECORD): TRANSACT itself is built, with no repository
+# data of its own, so it cannot be a base. The load gives the backward browse
+# a highest key and the file_state assertion a known starting content.
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  # The fault is io-error on the WRITE alone, not the 'unavailable' class of
+  # region file control: a closed or disabled TRANSACT would already fail the
+  # STARTBR of ADD-TRANSACTION and show 'Unable to lookup Transaction...'
+  # (INV-TRN-060) instead [app/cbl/COTRN02C.cbl:445,642-668], so only a
+  # failure of the WRITE itself reaches this WHEN OTHER. No adapter can make
+  # the region return IOERR, so the scenario raises MissingPrerequisite under
+  # GAP-MIS-014 and stays implemented-unexecuted.
+  faults:
+  - target: TRANSACT
+    operation: write
+    condition: io-error
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left as sent, so the card number selects the cross-reference.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+    OPTN008: '08. Transaction Add                     '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    PGMNAME: 'COTRN02C'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: 'Y'
+    ERRMSG: 'Unable to Add Transaction...                                                  '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Unable to Add Transaction...                                                  '
+  file_state:
+    # The failed WRITE adds no record: TRANSACT still holds the 300 fixture
+    # records, with no 0000000996722788, and the highest of them, the record
+    # the backward browse read, is unchanged.
+    TRANSACT:
+      count: 300
+      contains:
+      - TRAN-ID: '0000000996722787'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+        TRAN-AMT: '603.22'
+        TRAN-MERCHANT-ID: '800000000'
+        TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+        TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+        TRAN-MERCHANT-ZIP: '53200-7529'
+        TRAN-CARD-NUM: '3260763612337560'
+        TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+        TRAN-PROC-TS: '                          '
