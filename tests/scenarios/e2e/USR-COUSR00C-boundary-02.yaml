@@ -1,0 +1,198 @@
+# Page-size boundary of the COUSR00C user list: 11 USRSEC records give a second
+# page, where 10 (USR-COUSR00C-boundary-01) give one.
+#
+# ADMIN001 signs on (CC00) and COSGN00C routes the type-A user to COADM01C,
+# whose COADM01 menu is the first screen. Option 1 is the COADM02Y entry
+# 'User List (Security)', program COUSR00C, so COADM01C sets the program
+# context to 0 and transfers control to it [app/cbl/COADM01C.cbl:115-146]
+# [app/cpy/COADM02Y.cpy:24-27].
+#
+# First entry, under the ENTER that started the task: COUSR00C clears its
+# output map, starts a browse of USRSEC at LOW-VALUES (STARTBR defaults to
+# GTEQ) and READNEXTs rows 1-10 in key order [app/cbl/COUSR00C.cbl:113-119,
+# 218-232,282-306,384-441]. Its eleventh READNEXT finds a record, so page 1 is
+# number 1 with NEXT-PAGE-YES and WS-MESSAGE stays blank
+# [app/cbl/COUSR00C.cbl:308-316]. PAGENUM is the PIC 9(08) page number moved to
+# the 8-byte PAGENUMI, hence '00000001' [app/cbl/COUSR00C.cbl:70,327]
+# [app/cpy-bms/COUSR00.CPY:60]. The map is sent with ERASE twice in this task
+# (PROCESS-PAGE-FORWARD, then MAIN-PARA), both times with the same content.
+#
+# PF8 restarts the browse at CDEMO-CU00-USRID-LAST (row 10), skips that record
+# with one READNEXT, and puts the eleventh key alone in row 1 after blanking
+# rows 1-10 [app/cbl/COUSR00C.cbl:260-306]. The next READNEXT returns ENDFILE:
+# 'You have reached the bottom of the page...' goes to WS-MESSAGE and the map
+# is sent once still showing the received PAGENUM '00000001'
+# [app/cbl/COUSR00C.cbl:634-640]; then, with WS-IDX at 2, the page number
+# becomes 2 and the map is sent again, keeping the message
+# [app/cbl/COUSR00C.cbl:317-329]. The asserted third screen is that final send.
+#
+# Key order: the synthetic user TESTU003 is the sixth key, between ADMIN005 and
+# USER0001, because T precedes U in ASCII and in cp037 alike. Page 1 therefore
+# lists ADMIN001-ADMIN005, TESTU003 and USER0001-USER0004, and the eleventh key
+# on page 2 is the fixture user USER0005, not TESTU003. TESTU003 is invented
+# data and never signs on.
+#
+# Field values are full field width with their trailing spaces; the
+# clock-derived CURDATE and CURTIME are matchers, so the clock is relative.
+id: USR-COUSR00C-boundary-02
+level: e2e
+type: boundary
+description: >-
+  With 11 users in USRSEC (the 10 fixture users plus the invented TESTU003),
+  ADMIN001 opens the user list from the admin menu: page 1 shows ten users in
+  key order with no message, and PF8 shows page 2 holding only the eleventh
+  key, USER0005, with 'You have reached the bottom of the page...'.
+inventory_ids:
+- INV-USR-021  # COUSR00C user list content (report), 10 rows per page
+- INV-USR-001  # COUSR00C program
+- INV-MNU-004  # COADM01 map, the screen sign-on lands on
+- INV-USR-005  # COUSR00 map, both list pages
+- INV-CFG-023  # CU00 transaction, the list's pseudo-conversation
+- INV-CFG-008  # USRSEC CSD file, browsed by user id
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the paging keys
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # derived USR end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+      records:
+      - SEC-USR-ID: TESTU003
+        SEC-USR-FNAME: TESTFIRST
+        SEC-USR-LNAME: TESTLAST
+        SEC-USR-PWD: TESTPWD3
+        SEC-USR-TYPE: U
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    '@map': COSGN00
+    fields:
+      USERID: ADMIN001
+      PASSWD: PASSWORD
+    aid: ENTER
+  - '@map': COADM01
+    fields:
+      OPTION: '1'
+    aid: ENTER
+  - '@map': COUSR00
+    fields: {}
+    aid: PF8
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: 'CA00'
+    PGMNAME: 'COADM01C'
+    ERRMSG: '                                                                              '
+  - '@map': COUSR00
+    TRNNAME: 'CU00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COUSR00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '00000001'
+    USRIDIN: '        '
+    USRID01: 'ADMIN001'
+    FNAME01: 'MARGARET            '
+    LNAME01: 'GOLD                '
+    UTYPE01: 'A'
+    USRID02: 'ADMIN002'
+    FNAME02: 'RUSSELL             '
+    LNAME02: 'RUSSELL             '
+    UTYPE02: 'A'
+    USRID03: 'ADMIN003'
+    FNAME03: 'RAYMOND             '
+    LNAME03: 'WHITMORE            '
+    UTYPE03: 'A'
+    USRID04: 'ADMIN004'
+    FNAME04: 'EMMANUEL            '
+    LNAME04: 'CASGRAIN            '
+    UTYPE04: 'A'
+    USRID05: 'ADMIN005'
+    FNAME05: 'GRANVILLE           '
+    LNAME05: 'LACHAPELLE          '
+    UTYPE05: 'A'
+    USRID06: 'TESTU003'
+    FNAME06: 'TESTFIRST           '
+    LNAME06: 'TESTLAST            '
+    UTYPE06: 'U'
+    USRID07: 'USER0001'
+    FNAME07: 'LAWRENCE            '
+    LNAME07: 'THOMAS              '
+    UTYPE07: 'U'
+    USRID08: 'USER0002'
+    FNAME08: 'AJITH               '
+    LNAME08: 'KUMAR               '
+    UTYPE08: 'U'
+    USRID09: 'USER0003'
+    FNAME09: 'LAURITZ             '
+    LNAME09: 'ALME                '
+    UTYPE09: 'U'
+    USRID10: 'USER0004'
+    FNAME10: 'AVERARDO            '
+    LNAME10: 'MAZZI               '
+    UTYPE10: 'U'
+    ERRMSG: '                                                                              '
+  - '@map': COUSR00
+    TRNNAME: 'CU00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COUSR00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '00000002'
+    USRIDIN: '        '
+    USRID01: 'USER0005'
+    FNAME01: 'LEE                 '
+    LNAME01: 'TING                '
+    UTYPE01: 'U'
+    USRID02: '        '
+    FNAME02: '                    '
+    LNAME02: '                    '
+    UTYPE02: ' '
+    USRID03: '        '
+    FNAME03: '                    '
+    LNAME03: '                    '
+    UTYPE03: ' '
+    USRID04: '        '
+    FNAME04: '                    '
+    LNAME04: '                    '
+    UTYPE04: ' '
+    USRID05: '        '
+    FNAME05: '                    '
+    LNAME05: '                    '
+    UTYPE05: ' '
+    USRID06: '        '
+    FNAME06: '                    '
+    LNAME06: '                    '
+    UTYPE06: ' '
+    USRID07: '        '
+    FNAME07: '                    '
+    LNAME07: '                    '
+    UTYPE07: ' '
+    USRID08: '        '
+    FNAME08: '                    '
+    LNAME08: '                    '
+    UTYPE08: ' '
+    USRID09: '        '
+    FNAME09: '                    '
+    LNAME09: '                    '
+    UTYPE09: ' '
+    USRID10: '        '
+    FNAME10: '                    '
+    LNAME10: '                    '
+    UTYPE10: ' '
+    ERRMSG: 'You have reached the bottom of the page...                                    '
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'You have reached the bottom of the page...                                    '

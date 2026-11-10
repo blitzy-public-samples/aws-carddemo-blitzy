@@ -1,0 +1,222 @@
+# Boundary of the COUSR00C user list's 10-row page: USRSEC holds exactly the 10
+# fixture users, which fill page 1 and leave nothing for a second page
+# (USR-COUSR00C-boundary-02 adds an 11th user, which does get one).
+#
+# ADMIN001 signs on; COSGN00C transfers the type-A user to COADM01C with
+# CDEMO-PGM-CONTEXT 0 [app/cbl/COSGN00C.cbl:222-234], which sends the admin menu
+# COADM01 with a blank ERRMSG. Option 1, right-justified into WS-OPTION as 01,
+# selects COADM02Y's 'User List (Security)', program COUSR00C, and COADM01C
+# transfers control there with the context reset to 0
+# [app/cbl/COADM01C.cbl:115-145] [app/cpy/COADM02Y.cpy:24-27].
+#
+# On that first entry COUSR00C [app/cbl/COUSR00C.cbl:110-119,149-232,282-331]:
+# - starts a USRSEC browse at LOW-VALUES (STARTBR without EQUAL positions at or
+#   after the key, so at the first user) and, the task's AID being ENTER, issues
+#   no extra READNEXT before filling rows 1-10 with ten READNEXTs in key order,
+#   ADMIN001-ADMIN005 then USER0001-USER0005; row 10 keeps USER0005 as
+#   CDEMO-CU00-USRID-LAST [app/cbl/COUSR00C.cbl:384-441] [app/jcl/DUSRSECJ.jcl:35-44];
+# - counts page 1 and reads one record ahead; with exactly 10 users that
+#   READNEXT returns ENDFILE, which moves 'You have reached the bottom of the
+#   page...' to WS-MESSAGE, and NEXT-PAGE-NO is set
+#   [app/cbl/COUSR00C.cbl:308-318,634-640];
+# - moves the page number, PIC 9(8), to the 8-byte PAGENUM as 00000001, and
+#   clears the search field USRIDIN [app/cbl/COUSR00C.cbl:327-328].
+# The task sends COUSR00 with ERASE three times (from the ENDFILE branch, after
+# ENDBR, and from MAIN-PARA), the message unchanged in WS-MESSAGE throughout; the
+# expected screen is the last send (only the first still has PAGENUM blank).
+#
+# PF8 then finds NEXT-PAGE-NO and USER0005 in the COMMAREA the task returned
+# with TRANSID CU00 [app/cbl/COUSR00C.cbl:66-75,141-144] and, without browsing,
+# moves 'You are already at the bottom of the page...' to WS-MESSAGE and sends the
+# map without ERASE [app/cbl/COUSR00C.cbl:130-131,260-277,522-544]. Every named
+# COUSR00 field is FSET, PAGENUM to ERRMSG among them [app/bms/COUSR00.bms:85-449],
+# so RECEIVE MAP returns the rows, page number and search field as displayed into
+# COUSR0AI, which COUSR0AO redefines, and the same send writes them back
+# unchanged: the screen stays on page 1 with the same ten rows.
+# POPULATE-HEADER-INFO rewrites the titles, transaction, program, date and time
+# on every send [app/cbl/COUSR00C.cbl:562-581].
+#
+# Expected values are derived from the source (no TPE region runs in CI) and are
+# full field width with their trailing spaces: FNAME and LNAME are the 20-byte
+# SEC-USR-FNAME and SEC-USR-LNAME, ERRMSG the 78-byte ERRMSGO fed from the 80-byte
+# WS-MESSAGE, and SEL0001-SEL0010 show their INITIAL blank because no selection
+# is ever moved to them. messages holds the ERRMSG of each step. The admin menu
+# is asserted only by its identification fields and message: its content is the
+# SEC-COSGN00C-normal-01 item. CURDATE and CURTIME come from the run clock, so they
+# are matchers and the clock is relative.
+id: USR-COUSR00C-boundary-01
+level: e2e
+type: boundary
+description: >-
+  With exactly the 10 fixture users in USRSEC, ADMIN001 opens the user list
+  (admin option 1, transaction CU00): COUSR00C fills all ten rows, ADMIN001 to
+  USER0005, on page 1 and its look-ahead read reaches end of file, so ERRMSG reads
+  'You have reached the bottom of the page...'. PF8 shows no second page: the same
+  page and rows stay, with 'You are already at the bottom of the page...'.
+inventory_ids:
+- INV-USR-021  # COUSR00C user list content (report): the 10-row page size
+- INV-USR-001  # COUSR00C program
+- INV-USR-005  # COUSR00 map, the list screen asserted after both steps
+- INV-MNU-004  # COADM01 map, where option 1 is entered
+- INV-CFG-023  # CU00 transaction, the list's TRNNAME and its RETURN TRANSID
+- INV-CFG-008  # USRSEC CSD file, browsed by user id
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the CU00 paging state
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # derived USR end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    '@map': COSGN00
+    aid: ENTER
+    fields:
+      USERID: ADMIN001
+      PASSWD: PASSWORD
+  - '@map': COADM01
+    aid: ENTER
+    fields:
+      OPTION: '1'
+  - '@map': COUSR00
+    aid: PF8
+    fields: {}
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR00
+    TRNNAME: CU00
+    PGMNAME: COUSR00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    PAGENUM: '00000001'
+    USRIDIN: '        '
+    SEL0001: ' '
+    USRID01: ADMIN001
+    FNAME01: 'MARGARET            '
+    LNAME01: 'GOLD                '
+    UTYPE01: A
+    SEL0002: ' '
+    USRID02: ADMIN002
+    FNAME02: 'RUSSELL             '
+    LNAME02: 'RUSSELL             '
+    UTYPE02: A
+    SEL0003: ' '
+    USRID03: ADMIN003
+    FNAME03: 'RAYMOND             '
+    LNAME03: 'WHITMORE            '
+    UTYPE03: A
+    SEL0004: ' '
+    USRID04: ADMIN004
+    FNAME04: 'EMMANUEL            '
+    LNAME04: 'CASGRAIN            '
+    UTYPE04: A
+    SEL0005: ' '
+    USRID05: ADMIN005
+    FNAME05: 'GRANVILLE           '
+    LNAME05: 'LACHAPELLE          '
+    UTYPE05: A
+    SEL0006: ' '
+    USRID06: USER0001
+    FNAME06: 'LAWRENCE            '
+    LNAME06: 'THOMAS              '
+    UTYPE06: U
+    SEL0007: ' '
+    USRID07: USER0002
+    FNAME07: 'AJITH               '
+    LNAME07: 'KUMAR               '
+    UTYPE07: U
+    SEL0008: ' '
+    USRID08: USER0003
+    FNAME08: 'LAURITZ             '
+    LNAME08: 'ALME                '
+    UTYPE08: U
+    SEL0009: ' '
+    USRID09: USER0004
+    FNAME09: 'AVERARDO            '
+    LNAME09: 'MAZZI               '
+    UTYPE09: U
+    SEL0010: ' '
+    USRID10: USER0005
+    FNAME10: 'LEE                 '
+    LNAME10: 'TING                '
+    UTYPE10: U
+    ERRMSG: 'You have reached the bottom of the page...                                    '
+  - '@map': COUSR00
+    TRNNAME: CU00
+    PGMNAME: COUSR00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    PAGENUM: '00000001'
+    USRIDIN: '        '
+    SEL0001: ' '
+    USRID01: ADMIN001
+    FNAME01: 'MARGARET            '
+    LNAME01: 'GOLD                '
+    UTYPE01: A
+    SEL0002: ' '
+    USRID02: ADMIN002
+    FNAME02: 'RUSSELL             '
+    LNAME02: 'RUSSELL             '
+    UTYPE02: A
+    SEL0003: ' '
+    USRID03: ADMIN003
+    FNAME03: 'RAYMOND             '
+    LNAME03: 'WHITMORE            '
+    UTYPE03: A
+    SEL0004: ' '
+    USRID04: ADMIN004
+    FNAME04: 'EMMANUEL            '
+    LNAME04: 'CASGRAIN            '
+    UTYPE04: A
+    SEL0005: ' '
+    USRID05: ADMIN005
+    FNAME05: 'GRANVILLE           '
+    LNAME05: 'LACHAPELLE          '
+    UTYPE05: A
+    SEL0006: ' '
+    USRID06: USER0001
+    FNAME06: 'LAWRENCE            '
+    LNAME06: 'THOMAS              '
+    UTYPE06: U
+    SEL0007: ' '
+    USRID07: USER0002
+    FNAME07: 'AJITH               '
+    LNAME07: 'KUMAR               '
+    UTYPE07: U
+    SEL0008: ' '
+    USRID08: USER0003
+    FNAME08: 'LAURITZ             '
+    LNAME08: 'ALME                '
+    UTYPE08: U
+    SEL0009: ' '
+    USRID09: USER0004
+    FNAME09: 'AVERARDO            '
+    LNAME09: 'MAZZI               '
+    UTYPE09: U
+    SEL0010: ' '
+    USRID10: USER0005
+    FNAME10: 'LEE                 '
+    LNAME10: 'TING                '
+    UTYPE10: U
+    ERRMSG: 'You are already at the bottom of the page...                                  '
+  messages:
+  - '                                                                              '
+  - 'You have reached the bottom of the page...                                    '
+  - 'You are already at the bottom of the page...                                  '
