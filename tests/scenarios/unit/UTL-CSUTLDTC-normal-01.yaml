@@ -1,0 +1,56 @@
+# The valid-date path of CSUTLDTC with the mask CORPT00C and COTRN02C pass,
+# YYYY-MM-DD [app/cbl/CORPT00C.cbl:388-394] [app/cbl/COTRN02C.cbl:389-395].
+# DTCDRV calls CSUTLDTC once with the date 2022-07-18 (GAP-STB-004), and
+# CSUTLDTC's CALL "CEEDAYS" reaches tests/stubs/ceedays.c, which answers a valid
+# date with a feedback token of 12 zero bytes (GAP-STB-002). CSUTLDTC then
+# [app/cbl/CSUTLDTC.cbl:88-151]:
+# - maps the zero token (FC-INVALID-DATE, whose VALUE is all zeros) to
+#   'Date is valid', with severity 0000 and message number 0000;
+# - builds the 80-byte result: severity, 'Mesg Code: ', message number, a
+#   space, the 15-character text, a space, 'TstDate: ', the 10-byte WS-DATE,
+#   a space, 'Mask used:', the mask, a space and three spaces;
+# - sets RETURN-CODE to the severity, which DTCDRV prints as RC=0000.
+# MOVE WS-DATE-TO-TEST TO WS-DATE moves the whole 12-byte Vstring group, so
+# WS-DATE (result bytes 46-55) holds the binary length x'000A' followed by only
+# '2022-07-'. DTCDRV shows those two bytes as '..' in RESULT and as 000A in HEX;
+# they are pinned as observed. The expected line is the captured DTCDRV output
+# byte for byte. That CEEDAYS accepts this date comes from the stub, not from
+# Language Environment, hence inferred-not-observed (GAP-INF-001).
+# The call list is the DTCIN record '2022-07-18YYYY-MM-DD', padded with spaces
+# to 80 bytes when written. return_code is DTCDRV's exit status after its last
+# record; neither program reads the clock, which is the unit default.
+id: UTL-CSUTLDTC-normal-01
+level: unit
+type: normal
+description: >-
+  CSUTLDTC validates 2022-07-18 with the mask YYYY-MM-DD: the stubbed CEEDAYS
+  accepts it, the result reads severity 0000, message number 0000 and 'Date is
+  valid' with the tested date and the mask, RETURN-CODE is 0, and the date field
+  of the result begins with the Vstring length x'000A'.
+inventory_ids:
+- INV-UTL-004  # CSUTLDTC result message layout and RETURN-CODE (interface)
+- INV-UTL-001  # CSUTLDTC program
+- INV-UTL-002  # CSUTLDTC CEEDAYS feedback-token mapping (rule): the zero token
+- INV-UTL-003  # CSUTLDTC date acceptance (rule): mask YYYY-MM-DD
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-STB-002  # CEEDAYS stub: its answer stands in for Language Environment's
+- GAP-INF-001  # which dates CEEDAYS accepts is inferred from the stub
+- GAP-STB-004  # DTCDRV emulates the CALL interface of CSUTLDTC's callers
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets: {}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  param_files:
+    DTCIN:
+    - '2022-07-18YYYY-MM-DD'
+expected:
+  return_code: 0
+  messages:
+  - 'DTCDRV DATE=2022-07-18 MASK=YYYY-MM-DD RC=0000 RESULT=0000Mesg Code: 0000 Date is valid   TstDate: ..2022-07- Mask used:YYYY-MM-DD     HEX=303030304D65736720436F64653A203030303020446174652069732076616C6964202020547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D4D4D2D444420202020'

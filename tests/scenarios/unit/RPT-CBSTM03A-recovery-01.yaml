@@ -1,0 +1,72 @@
+id: RPT-CBSTM03A-recovery-01
+level: unit
+type: recovery
+description: >-
+  CBSTM03A runs as CREASTMT STEP040 with no transaction work file. The page-zero
+  shim supplies the control blocks, so the program first displays the job and
+  step and the nine STEP040 DD names, then opens STMTFILE and HTMLFILE OUTPUT
+  and asks CBSTM03B to open TRNXFILE, the first of its four input files. OPEN
+  INPUT fails with file status 35, which CBSTM03B returns in LK-M03B-RC; CBSTM03A
+  displays 'ERROR OPENING TRNXFILE' and the code as 'RETURN CODE: 35' (it has no
+  'FILE STATUS IS:' line), then 'ABENDING PROGRAM', and calls CEE3ABD
+  [app/cbl/CBSTM03A.CBL:266-301,726-742,921-923] [app/cbl/CBSTM03B.CBL:116-120,133-154].
+  The cross-reference, customer and account files are never opened and no
+  statement line is written, so both statement outputs are left empty.
+inventory_ids:
+- INV-RPT-051  # CBSTM03A abend on open failure (recovery)
+- INV-RPT-004  # CBSTM03A program
+- INV-RPT-005  # CBSTM03B program, whose open of TRNXFILE returns the status
+# No layout or data-file item is listed: TRNXFILE is opened first and the run
+# ends there, so no record is read and no fixture is built.
+# Untagged by design: GAP-DEF-001 (the parameterless CALL 'CEE3ABD' that ends
+# every CB* abend path) is cited as the gap this abend passes through, as in
+# every batch open-failure case; suspected-defect marks the cases that pin a
+# program's own defect.
+tags: []
+gap_ids:
+- GAP-STB-003  # page-zero PSA/TCB/TIOT shim in place of the z/OS control blocks
+- GAP-MIS-002  # whether page zero can be mapped; blocked when the probe fails
+- GAP-STB-001  # CEE3ABD stub: no abend code, dump or LE condition handling
+- GAP-DEF-001  # CALL 'CEE3ABD' without parameters
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  # TRXFL is deliberately not provided: on gnucobol-batch the open fault below is
+  # produced by leaving the dataset out. CARDXREF, ACCTDATA and CUSTDATA are not
+  # needed, because the run abends before CBSTM03B is asked to open them.
+  datasets: {}
+  parameters:
+    clock_mode: fixed
+  faults:
+  - target: TRXFL
+    operation: open
+    condition: unavailable
+inputs:
+  program: CBSTM03A
+expected:
+  return_code: null
+  # TIOTJSTP is an 8-byte field, so the step name 'STEP040' keeps one trailing
+  # space; every DD name is padded to 8 and every UCB the shim supplies is valid.
+  # The last DD is shown by the display after the TIOT loop, in the same form.
+  messages:
+  - 'Running JCL : CREASTMT Step STEP040 '
+  - 'DD Names from TIOT: '
+  - ': STEPLIB  -- valid UCB'
+  - ': SYSPRINT -- valid UCB'
+  - ': SYSOUT   -- valid UCB'
+  - ': TRNXFILE -- valid UCB'
+  - ': XREFFILE -- valid UCB'
+  - ': ACCTFILE -- valid UCB'
+  - ': CUSTFILE -- valid UCB'
+  - ': STMTFILE -- valid UCB'
+  - ': HTMLFILE -- valid UCB'
+  - ERROR OPENING TRNXFILE
+  - 'RETURN CODE: 35'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD
+  # Opened OUTPUT before the TRNXFILE open, so both exist, and empty.
+  datasets:
+    STMTFILE:
+      count: 0
+    HTMLFILE:
+      count: 0

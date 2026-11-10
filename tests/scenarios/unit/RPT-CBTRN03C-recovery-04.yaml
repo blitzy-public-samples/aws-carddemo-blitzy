@@ -1,0 +1,131 @@
+# The close-failure path of CBTRN03C. One in-window synthetic transaction is
+# reported in full: the record is displayed, the four header lines and its
+# detail line are written, and at end of file the last amount is added a second
+# time before the page total, separator and grand total, both +20.00 for the one
+# 10.00 amount [app/cbl/CBTRN03C.cbl:170-206,274-374]. The main line then closes
+# TRANFILE first, and that CLOSE fails: 9000-TRANFILE-CLOSE displays 'ERROR
+# CLOSING POSTED TRANSACTION FILE' and the status through 9910-DISPLAY-IO-STATUS,
+# and 9999-ABEND-PROGRAM calls CEE3ABD, which never returns, so the five other
+# closes and the end-of-execution line are never reached
+# [app/cbl/CBTRN03C.cbl:208-215,514-530,626-646].
+#
+# Derived, never observed. No adapter injects a close failure after a
+# successful open (GAP-MIS-013), so gnucobol-batch raises MissingPrerequisite
+# and the scenario stays implemented-unexecuted; its baseline is derived from
+# the source (GAP-INF-013) and capture.py refuses to capture it.
+#
+# How the expected outcome was derived:
+# - Every line up to the close is what a GnuCOBOL 3.2 run of the app/ source,
+#   under the suite's compile options, writes for this input when no fault is
+#   injected: the 350-byte TRAN-RECORD line (TRAN-AMT as the overpunch-signed
+#   0000000100{, the FILLER as trailing spaces), and the end-of-file DISPLAYs of
+#   TRAN-AMT and WS-PAGE-TOTAL as digits with a separate trailing sign.
+# - The fault condition io-error is taken as IBM file status 30 (inferred):
+#   numeric and not 9x, so 9910-DISPLAY-IO-STATUS shows it as NNNN0030.
+# - The CEE3ABD stub ends the run (GAP-STB-001, GAP-DEF-001): the adapter
+#   reports return_code null and appends the stub's marker. The stub's STOP RUN
+#   closes REPORT-FILE implicitly, so the eight report lines stand as written;
+#   a z/OS abend would instead leave the report to its abnormal disposition
+#   (GAP-STB-001). The libcob implicit-CLOSE warnings go to the raw evidence only.
+#
+# The doubled last amount in the end-of-file totals is GAP-DEF-012, which
+# RPT-CBTRN03C-normal-01 and -boundary-02 to -04 carry; here it is only the
+# ending every report has. DATEPARM is built from the parameter, because no job
+# or data file creates it (GAP-MIS-001).
+id: RPT-CBTRN03C-recovery-04
+level: unit
+type: recovery
+description: >-
+  CBTRN03C reports one synthetic 10.00 purchase for account 00000000001 and
+  writes its end-of-file page and grand totals of +20.00, then the close of the
+  transaction file fails: the program displays 'ERROR CLOSING POSTED
+  TRANSACTION FILE', the status as 'FILE STATUS IS: NNNN0030' and 'ABENDING
+  PROGRAM', and abends through CEE3ABD with no end-of-execution line and no
+  return code.
+# Only the failure item. This case cannot run (GAP-MIS-013), and listing the
+# program, its report items, its copybooks or the data files here would hold
+# those items at implemented-unexecuted although their other scenarios verify
+# them.
+inventory_ids:
+- INV-RPT-044  # CBTRN03C abend on read, write or close failure after open (recovery)
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013  # no adapter injects a failure after a successful open
+- GAP-INF-013  # the derived baselines of the post-open fault unit scenarios
+- GAP-MIS-001  # DATEPARM is supplied by the scenario: no job or data file creates it
+- GAP-STB-001  # the CEE3ABD stub: no abend code, dump or LE condition handling
+- GAP-DEF-001  # CALL 'CEE3ABD' without parameters
+# CBTRN03C reads its three lookup files as Berkeley DB indexed files and is
+# compiled with the mapped options on gnucobol-batch, so the case cites those
+# two stub limitations, as every scenario whose program uses a seam does.
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    # TRANSACT-DALY is the card-sorted sequential input CBTRN03C reads through
+    # TRANFILE. The transaction is invented: its id, description and merchant
+    # match no repository record and no real merchant. Card 9680294154603697 is
+    # the repository card of account 00000000001 [app/data/ASCII/cardxref.txt:49];
+    # type 01 is Purchase [app/data/ASCII/trantype.txt:1] and type 01 category
+    # 0001 is Regular Sales Draft [app/data/ASCII/trancatg.txt:1].
+    TRANSACT-DALY:
+      records:
+      - TRAN-ID: '9900000000000631'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '0001'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase before a transaction file close fault
+        TRAN-AMT: '10.00'
+        TRAN-MERCHANT-ID: '900000631'
+        TRAN-MERCHANT-NAME: Synthetic Merchant 631
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+    CARDXREF:
+      base: CARDXREF
+    TRANTYPE:
+      base: TRANTYPE
+    TRANCATG:
+      base: TRANCATG
+  parameters:
+    DATEPARM: '2022-07-01 2022-07-31'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  - target: TRANSACT-DALY
+    operation: close
+    condition: io-error
+inputs:
+  program: CBTRN03C
+expected:
+  return_code: null
+  messages:
+  - 'START OF EXECUTION OF PROGRAM CBTRN03C'
+  - 'Reporting from 2022-07-01 to 2022-07-31'
+  # DISPLAY TRAN-RECORD, before the detail line is written.
+  - '9900000000000631010001POS TERM  Synthetic purchase before a transaction file close fault                                            0000000100{900000631Synthetic Merchant 631                            Testville                                         00000     96802941546036972022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  # End of file: the last TRAN-AMT, still in TRAN-RECORD, and WS-PAGE-TOTAL
+  # before the second addition.
+  - 'TRAN-AMT 00000001000+'
+  - 'WS-PAGE-TOTAL00000001000+'
+  - 'ERROR CLOSING POSTED TRANSACTION FILE'
+  - 'FILE STATUS IS: NNNN0030'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'
+  datasets:
+    TRANREPT:
+      records:
+      # REPORT-NAME-HEADER, the blank line, TRANSACTION-HEADER-1 and the
+      # TRANSACTION-HEADER-2 separator, written before the first detail line.
+      - 'DALYREPT                              Daily Transaction Report                 Date Range: 2022-07-01 to 2022-07-31                  '
+      - '                                                                                                                                     '
+      - 'Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      - '9900000000000631 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     '
+      # End of file: 10.00 plus the last amount 10.00 again, then the grand total.
+      - 'Page Total ......................................................................................+         20.00                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      - 'Grand Total......................................................................................+         20.00                     '

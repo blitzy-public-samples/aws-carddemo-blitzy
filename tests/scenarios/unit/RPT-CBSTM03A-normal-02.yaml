@@ -1,0 +1,236 @@
+# The statement of one card with two transactions. CARDXREF holds only the
+# repository cross-reference of card 9680294154603697 (customer 000000001,
+# account 00000000001), given inline so that the run writes a single statement;
+# CBSTM03B reads the repository ACCTDATA and CUSTDATA by key for it. TRXFL holds
+# two invented transactions of that card, with ids, descriptions and merchants
+# that match no repository transaction.
+#
+# 5000-CREATE-STATEMENT writes the name and address block, the account id, the
+# balance 194.00 in the 9(9).99- edit and the FICO score 274, then the
+# transaction headings [app/cbl/CBSTM03A.CBL:458-504]. 4000-TRNXFILE-GET writes
+# one line per transaction of the card, adds each TRNX-AMT to WS-TOTAL-AMT and
+# shows the sum 25.00 + 74.50 as 'Total EXP:' 99.50
+# [app/cbl/CBSTM03A.CBL:416-437,675-679]. The text statement is 16 heading
+# lines, one line per transaction and 3 closing lines: 21 in all. TRNX-DESC is
+# cut to the 49 bytes of ST-TRANDT. The HTML statement writes a table row per
+# transaction and no total
+# line: the closing rows of 4000-TRNXFILE-GET carry only 'End of Statement'
+# [app/cbl/CBSTM03A.CBL:439-454,681-721]. Its STRINGs DELIMITED BY '  ' keep two
+# spaces before '</p>', and the amount keeps the leading blanks of its Z(9).99-
+# edit [app/cbl/CBSTM03A.CBL:558-592,708-716].
+#
+# The messages are the control-block walk over the TIOT that the page-zero shim
+# builds from the CREASTMT STEP040 DD names of programs.yaml; the shim reports
+# every UCB valid, and the last DD is shown by the DISPLAY after the loop
+# [app/cbl/CBSTM03A.CBL:266-291] (GAP-STB-003). The run needs page zero mapped,
+# so the scenario is blocked where the probe fails (GAP-MIS-002).
+#
+# All values come from a GnuCOBOL 3.2 run of the app/ source under the suite's
+# compile options with the shim preloaded. Statement lines are the whole 80- and
+# 100-byte records with their trailing spaces.
+id: RPT-CBSTM03A-normal-02
+level: unit
+type: normal
+description: >-
+  CBSTM03A writes one statement for card 9680294154603697 of account
+  00000000001 with its two transactions: in STMTFILE the name, address, account
+  id, current balance 000000194.00, FICO score 274, one line per transaction
+  ($25.00 and $74.50) and 'Total EXP:' $99.50, 21 lines in all; in HTMLFILE the
+  same statement as 86 HTML lines with a table row per transaction and no total;
+  the TIOT display of job CREASTMT step STEP040 and its DD names; return code 0.
+inventory_ids:
+- INV-RPT-048  # CBSTM03A per-statement transaction total (calculation)
+- INV-RPT-004  # CBSTM03A program
+- INV-RPT-005  # CBSTM03B program, the file service CBSTM03A calls
+- INV-RPT-045  # CBSTM03A text statement (report)
+- INV-RPT-046  # CBSTM03A HTML statement (report)
+- INV-RPT-049  # CBSTM03B file service operations O/C/R/K (interface)
+- INV-LAY-004  # COSTM01 copybook, the TRXFL record
+- INV-LAY-015  # CUSTREC copybook, the customer record the statement reads
+- INV-DTA-001  # acctdata.txt, the ACCTDATA fixture source
+- INV-DTA-011  # EBCDIC account data file, its cross-check counterpart
+- INV-DTA-004  # custdata.txt, the CUSTDATA fixture source
+- INV-DTA-014  # EBCDIC customer data file, its cross-check counterpart
+tags: []
+gap_ids:
+- GAP-STB-003  # the page-zero PSA/TCB/TIOT shim in place of the z/OS control blocks
+- GAP-MIS-002  # whether the runner lets the shim map page zero
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    CARDXREF:
+      records:
+      - XREF-CARD-NUM: '9680294154603697'
+        XREF-CUST-ID: '000000001'
+        XREF-ACCT-ID: '00000000001'
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+    TRXFL:
+      records:
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000701'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic statement line one
+        TRNX-AMT: '25.00'
+        TRNX-MERCHANT-ID: '900000701'
+        TRNX-MERCHANT-NAME: Synthetic Store One
+        TRNX-MERCHANT-CITY: Testville
+        TRNX-MERCHANT-ZIP: '00000'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000702'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic statement line two
+        TRNX-AMT: '74.50'
+        TRNX-MERCHANT-ID: '900000702'
+        TRNX-MERCHANT-NAME: Synthetic Store Two
+        TRNX-MERCHANT-CITY: Testville
+        TRNX-MERCHANT-ZIP: '00000'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBSTM03A
+expected:
+  return_code: 0
+  datasets:
+    STMTFILE:
+      records:
+      # 5000-CREATE-STATEMENT: the start line, name and address, Basic Details and
+      # the transaction headings.
+      - '*******************************START OF STATEMENT*******************************'
+      - 'Immanuel Madeline Kessler                                                       '
+      - '618 Deshaun Route                                                               '
+      - 'Apt. 802                                                                        '
+      - 'Altenwerthshire NC USA 12546                                                    '
+      - '--------------------------------------------------------------------------------'
+      - '                                 Basic Details                                  '
+      - '--------------------------------------------------------------------------------'
+      - 'Account ID         :00000000001                                                 '
+      - 'Current Balance    :000000194.00                                                '
+      - 'FICO Score         :274                                                         '
+      - '--------------------------------------------------------------------------------'
+      - '                              TRANSACTION SUMMARY                               '
+      - '--------------------------------------------------------------------------------'
+      - 'Tran ID         Tran Details                                         Tran Amount'
+      - '--------------------------------------------------------------------------------'
+      # 6000-WRITE-TRANS: one line per transaction of the card.
+      - '9900000000000701 Synthetic statement line one                     $       25.00 '
+      - '9900000000000702 Synthetic statement line two                     $       74.50 '
+      # 4000-TRNXFILE-GET: the separator, the total of the two amounts and the end line.
+      - '--------------------------------------------------------------------------------'
+      - 'Total EXP:                                                        $       99.50 '
+      - '********************************END OF STATEMENT********************************'
+    HTMLFILE:
+      records:
+      # 5100-WRITE-HTML-HEADER: the document head and the bank block.
+      - '<!DOCTYPE html>                                                                                     '
+      - '<html lang="en">                                                                                    '
+      - '<head>                                                                                              '
+      - '<meta charset="utf-8">                                                                              '
+      - '<title>HTML Table Layout</title>                                                                    '
+      - '</head>                                                                                             '
+      - '<body style="margin:0px;">                                                                          '
+      - '<table  align="center" frame="box" style="width:70%; font:12px Segoe UI,sans-serif;">               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#1d1d96b3;">                                '
+      - '<h3>Statement for Account Number: 00000000001         </h3>                                         '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#FFAF33;">                                  '
+      - '<p style="font-size:16px">Bank of XYZ</p>                                                           '
+      - '<p>410 Terry Ave N</p>                                                                              '
+      - '<p>Seattle WA 99999</p>                                                                             '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#f2f2f2;">                                  '
+      # 5200-WRITE-HTML-NMADBS: name, address, Basic Details and the table headings.
+      - '<p style="font-size:16px">Immanuel Madeline Kessler  </p>                                           '
+      - '<p>618 Deshaun Route  </p>                                                                          '
+      - '<p>Apt. 802  </p>                                                                                   '
+      - '<p>Altenwerthshire NC USA 12546  </p>                                                               '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#33FFD1; text-align:center;">               '
+      - '<p style="font-size:16px">Basic Details</p>                                                         '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#f2f2f2;">                                  '
+      - '<p>Account ID         : 00000000001         </p>                                                    '
+      - '<p>Current Balance    : 000000194.00 </p>                                                           '
+      - '<p>FICO Score         : 274                 </p>                                                    '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#33FFD1; text-align:center;">               '
+      - '<p style="font-size:16px">Transaction Summary</p>                                                   '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#33FF5E; text-align:left;">                 '
+      - '<p style="font-size:16px">Tran ID</p>                                                               '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#33FF5E; text-align:left;">                 '
+      - '<p style="font-size:16px">Tran Details</p>                                                          '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#33FF5E; text-align:right;">                '
+      - '<p style="font-size:16px">Amount</p>                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      # 6000-WRITE-TRANS: one table row per transaction.
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000701</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic statement line one                     </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>       25.00 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000702</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic statement line two                     </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>       74.50 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      # 4000-TRNXFILE-GET: the closing rows, with no total.
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#1d1d96b3;">                                '
+      - '<h3>End of Statement</h3>                                                                           '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '</table>                                                                                            '
+      - '</body>                                                                                             '
+      - '</html>                                                                                             '
+  messages:
+  - 'Running JCL : CREASTMT Step STEP040 '
+  - 'DD Names from TIOT: '
+  - ': STEPLIB  -- valid UCB'
+  - ': SYSPRINT -- valid UCB'
+  - ': SYSOUT   -- valid UCB'
+  - ': TRNXFILE -- valid UCB'
+  - ': XREFFILE -- valid UCB'
+  - ': ACCTFILE -- valid UCB'
+  - ': CUSTFILE -- valid UCB'
+  - ': STMTFILE -- valid UCB'
+  - ': HTMLFILE -- valid UCB'
