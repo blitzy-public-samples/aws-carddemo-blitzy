@@ -1,0 +1,61 @@
+# Derived from source (capture_platform: derived), never observed. USER0001
+# signs on to the main menu COMEN01 [app/cbl/COSGN00C.cbl:221-237]; option 2
+# transfers control to COACTUPC, whose fresh entry sends the empty account
+# search map COACTUP with the search-key prompt in INFOMSG and WS-RETURN-MSG,
+# cleared at the start of every task, in ERRMSG
+# [app/cbl/COACTUPC.cbl:876-886,964-973,2955-2981]. Account number
+# 00000000000, and then ABCDEFGHIJK, fails 1210-EDIT-ACCOUNT (zero, then not
+# numeric), which STRINGs 'Account Number if supplied must be a 11 digit
+# Non-Zero Number' into the 75-byte WS-RETURN-MSG; the filter stays NOT-OK, so
+# 2000-DECIDE-ACTION reads no file, and 3200-SETUP-SCREEN-VARS echoes the
+# entered value in ACCTSID and blanks the details
+# [app/cbl/COACTUPC.cbl:1051-1057,1433-1446,1783-1813,2568-2580,2698-2781].
+# Fields are at their full BMS width with trailing spaces kept (ERRMSG 78,
+# INFOMSG 45, TITLE01/TITLE02 40, ACCTSID 11, ACSTNUM 9), because screens and
+# messages compare exactly; messages holds the ERRMSG of every step. CURDATE
+# and CURTIME come from the region clock, so they are matchers.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Account Number if supplied must be a 11 digit Non-Zero Number                 '
+- 'Account Number if supplied must be a 11 digit Non-Zero Number                 '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN002: '02. Account Update                      '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  ACCTSID: '00000000000'
+  ACSTNUM: '         '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Account Number if supplied must be a 11 digit Non-Zero Number                 '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP
+- '@map': COACTUP
+  ACCTSID: ABCDEFGHIJK
+  ACSTNUM: '         '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Account Number if supplied must be a 11 digit Non-Zero Number                 '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP

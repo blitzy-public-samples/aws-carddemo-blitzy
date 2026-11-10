@@ -1,0 +1,44 @@
+# Derived baseline of scenario ACT-COACTUPC-negative-001 (capture_platform:
+# derived, see manifest.yaml), authored from the source and never observed: no
+# TPE region runs in CI. Derived from
+# app/cbl/COACTUPC.cbl:1429-1446,1783-1797,2955-2981,3176-3189 and
+# app/bms/COACTUP.bms. Open until a UniKix run is imported: GAP-INF-005
+# (derived ACT end-to-end baselines), GAP-INF-012 (online-only copybooks);
+# GAP-UNC-014 carries the overwritten message.
+# Step 1: USER0001 signs on and COSGN00C routes the type 'U' user to COMEN01C
+# [app/cbl/COSGN00C.cbl:230-240], which sends the main menu COMEN01 with a
+# blank message.
+# Step 2: option 2 'Account Update' XCTLs to COACTUPC [app/cpy/COMEN02Y.cpy:31-35]
+# [app/cbl/COMEN01C.cbl:146-155]; its first entry sends COACTUP with the
+# search-key prompt and a blank message [app/cbl/COACTUPC.cbl:880-893,964-973].
+# Step 3: ENTER with ACCTSID empty. 1210-EDIT-ACCOUNT sets 'Account number not
+# provided', which 1200-EDIT-MAP-INPUTS always overwrites with 'No input
+# received' before 3250-SETUP-INFOMSG moves it to ERRMSG; 3300-SETUP-SCREEN-ATTRS
+# moves '*' to ACCTSID for the blank filter on a reentry. The overwrite is
+# pinned as the source shows it, never corrected; no file is read.
+# Values are full BMS width with trailing spaces kept (ACCTSID 11, INFOMSG 45
+# from the 40-byte WS-INFO-MSG, ERRMSG 78 from the 75-byte WS-RETURN-MSG),
+# because screens and messages compare exactly; messages holds each step's
+# ERRMSG in step order. Row 1 columns 1-9, which the UniKix copy of COACTUP.bms
+# changes (GAP-DOC-025), colours and the cursor are not asserted.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'No input received                                                             '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  ACCTSID: '*          '
+  ERRMSG: 'No input received                                                             '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP

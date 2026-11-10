@@ -1,0 +1,42 @@
+# Derived from the source, never observed: USER0001 signs on, takes main-menu
+# option 2 (COACTUPC, CAUP) and enters account 99999999999, which no CARDXREF
+# record holds. The READ of CXACAIX by account id answers NOTFND, so
+# 9200-GETCARDXREF-BYACCT composes the not-found message and 9000-READ-ACCT
+# ends before ACCTDAT or CUSTDAT is read
+# [app/cbl/COACTUPC.cbl:3608-3622,3650-3697].
+# ERRMSG pins the STRING as the source writes it: its 81 characters go
+# DELIMITED BY SIZE into the 75-byte WS-RETURN-MSG with no ON OVERFLOW, so
+# only '0000' of ERROR-RESP2 survives ('Reas:0000'); ERROR-RESP is the S9(9)
+# COMP RESP moved to X(10), NOTFND 13 as '000000013 '. The 75 bytes then pad
+# to the 78-byte ERRMSGO [app/cbl/COACTUPC.cbl:40-42,401-406,479,2981].
+# The last screen echoes the entered id in ACCTSID and keeps the search-key
+# prompt, since the details stay unfetched
+# [app/cbl/COACTUPC.cbl:2698-2726,2955-2981].
+# Values are whole BMS fields with trailing spaces [app/bms/COACTUP.bms]
+# [app/bms/COMEN01.bms]; CURDATE and CURTIME come from the region clock,
+# hence the matchers. Open under GAP-INF-005 and GAP-INF-012 until
+# `report.py --import-unikix` promotes it.
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN002: '02. Account Update                      '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  ACCTSID: '99999999999'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Account:99999999999 not found in Cross ref file.  Resp:000000013  Reas:0000   '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP

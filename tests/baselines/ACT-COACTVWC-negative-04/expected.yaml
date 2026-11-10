@@ -1,0 +1,83 @@
+# Derived baseline of scenario ACT-COACTVWC-negative-04: USER0001 signs on,
+# takes main-menu option 1 (Account View) and asks COACTVW for account
+# 00000000001, whose cross-reference (card 9680294154603697, customer
+# 000000001) and account record exist while the customer is omitted from
+# CUSTDATA. Authored from the source, never captured:
+# app/cbl/COACTVWC.cbl:282-286,353-373,460-535,622-681,687-722,825-857 with
+# app/bms/COACTVW.bms and app/cpy-bms/COACTVW.CPY, and app/cbl/COMEN01C.cbl:
+# 77-91 for the menu's first send.
+# Open until a UniKix run is imported: GAP-INF-005 (derived ACT end-to-end
+# baselines) and GAP-INF-012 (online-only copybooks).
+# One screen per step, each the one shown after the step's AID:
+# 1. the main menu COMEN01 with a blank message;
+# 2. COACTVW entered from the menu: the COMMAREA is reinitialized, so the
+#    account id is blank and only the prompt is shown;
+# 3. the lookup. CUSTDAT returns NOTFND, but the SET of
+#    DID-NOT-FIND-CUST-IN-CUSTDAT is commented out [app/cbl/COACTVWC.cbl:842]
+#    and the condition is only tested [app/cbl/COACTVWC.cbl:713], so 'Did not
+#    find associated customer in master file' never appears (GAP-UNC-014; the
+#    behaviour is pinned as observed-only, never corrected). The NOTFND branch
+#    STRINGs 'CustId:' + the customer id + ' not found in customer master.Resp: '
+#    + ERROR-RESP + ' REAS:' + ERROR-RESP2 into the 75-byte WS-RETURN-MSG.
+#    ERROR-RESP and ERROR-RESP2 are X(10) moved from S9(9) COMP, nine digits
+#    plus a space: RESP 13 (NOTFND) gives '000000013 '. The text is 78
+#    characters, STRING stops at the 75th, so only '0000000' of RESP2 shows,
+#    the same for any RESP2 below 100; ERRMSG is those 75 bytes plus 3 spaces.
+#    The account fields come from record 1 of app/data/ASCII/acctdata.txt, the
+#    amounts edited by PICOUT +ZZZ,ZZZ,ZZZ.99; ACCT-GROUP-ID is blank there
+#    (GAP-DEF-005). The customer fields stay LOW-VALUES, sent as nulls and
+#    captured as spaces. 9000-READ-ACCT clears WS-INFO-MSG, so the prompt is
+#    shown again.
+# Values are whole BMS fields with their trailing spaces. CURDATE and CURTIME
+# come from the run clock, which UniKix cannot fix, hence the matchers.
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTVW
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TRNNAME: CAVW
+- '@map': COACTVW
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
+  ACSADL1: '                                                  '
+  ACSADL2: '                                                  '
+  ACSCITY: '                                                  '
+  ACSCTRY: '   '
+  ACSEFTC: '          '
+  ACSFNAM: '                         '
+  ACSGOVT: '                    '
+  ACSHLIM: +      1,020.00
+  ACSLNAM: '                         '
+  ACSMNAM: '                         '
+  ACSPFLG: ' '
+  ACSPHN1: '             '
+  ACSPHN2: '             '
+  ACSSTTE: '  '
+  ACSTDOB: '          '
+  ACSTFCO: '   '
+  ACSTNUM: '         '
+  ACSTSSN: '            '
+  ACSTTUS: Y
+  ACSZIPC: '     '
+  ACURBAL: +        194.00
+  ADTOPEN: '2014-11-20'
+  AEXPDT: '2025-05-20'
+  AREISDT: '2025-05-20'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'CustId:000000001 not found in customer master.Resp: 000000013  REAS:0000000   '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAVW

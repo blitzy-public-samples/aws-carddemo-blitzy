@@ -1,0 +1,89 @@
+# Derived baseline of scenario ACT-COACTUPC-alternate-03: USER0001 signs on,
+# takes main menu option 2 and fetches account 00000000001 on COACTUP, which
+# shows the account and customer details with the information prompt
+# 'Update account details presented above.' (WS-INFO-MSG condition
+# PROMPT-FOR-CHANGES [app/cbl/COACTUPC.cbl:463-471]). Authored from the
+# source, never captured; open until a UniKix run is imported: GAP-INF-005
+# (derived ACT end-to-end baselines) and GAP-INF-012 (online-only copybooks).
+# Derived, so no datasets/.
+# One screen per step, each the one shown after the step's AID:
+# 1. the main menu COMEN01, asserted by its header only
+#    [app/cbl/COSGN00C.cbl:232-237];
+# 2. COACTUP on fresh entry from the menu, asserted by its header only
+#    [app/cbl/COACTUPC.cbl:964-973,2668-2676];
+# 3. the fetch: the COMMAREA returns with CDEMO-PGM-REENTER and
+#    ACUP-DETAILS-NOT-FETCHED, so 1210-EDIT-ACCOUNT accepts the id and
+#    2000-DECIDE-ACTION runs 9000-READ-ACCT (CXACAIX, ACCTDAT, CUSTDAT) and
+#    sets ACUP-SHOW-DETAILS; 3202-SHOW-ORIGINAL-VALUES moves the stored values
+#    and 3250-SETUP-INFOMSG sets PROMPT-FOR-CHANGES and moves the 40-byte
+#    WS-INFO-MSG to the 45-byte INFOMSG and the blank 75-byte WS-RETURN-MSG to
+#    the 78-byte ERRMSG [app/cbl/COACTUPC.cbl:880-893,1429-1446,2568-2580,
+#    2787-2865,2955-2982,3608-3884]. 3390 shows INFOMSG bright, since
+#    WS-INFO-MSG is not blank [app/cbl/COACTUPC.cbl:3566-3570].
+# Values are whole BMS fields with their trailing spaces. Amounts are
+# WS-EDIT-CURRENCY-9-2-F, PIC +ZZZ,ZZZ,ZZZ.99 [app/cbl/COACTUPC.cbl:371], of
+# acctdata.txt record 00000000001, whose blank ACCT-GROUP-ID leaves AADDGRP
+# blank; the customer is the scenario's invented record 000000001. CURDATE and
+# CURTIME come from the run clock, which UniKix cannot fix, hence the matchers.
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
+  ACSADL1: '100 Test Street                                   '
+  ACSADL2: 'Suite 1                                           '
+  ACSCITY: 'Raleigh                                           '
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
+  ACSFNAM: 'Testfirst                '
+  ACSGOVT: 'TESTGOVT0001        '
+  ACSHLIM: +      1,020.00
+  ACSLNAM: 'Testlast                 '
+  ACSMNAM: 'Testmiddle               '
+  ACSPFLG: Y
+  ACSPH1A: '919'
+  ACSPH1B: '555'
+  ACSPH1C: '0101'
+  ACSPH2A: '919'
+  ACSPH2B: '555'
+  ACSPH2C: '0102'
+  ACSSTTE: NC
+  ACSTFCO: '700'
+  ACSTNUM: '000000001'
+  ACSTTUS: Y
+  ACSZIPC: '27601'
+  ACTSSN1: '123'
+  ACTSSN2: '45'
+  ACTSSN3: '6789'
+  ACURBAL: +        194.00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  DOBDAY: 08
+  DOBMON: '06'
+  DOBYEAR: '1961'
+  ERRMSG: '                                                                              '
+  EXPDAY: '20'
+  EXPMON: '05'
+  EXPYEAR: '2025'
+  INFOMSG: 'Update account details presented above.      '
+  OPNDAY: '20'
+  OPNMON: '11'
+  OPNYEAR: '2014'
+  PGMNAME: COACTUPC
+  RISDAY: '20'
+  RISMON: '05'
+  RISYEAR: '2025'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP

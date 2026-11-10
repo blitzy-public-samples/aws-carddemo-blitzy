@@ -1,0 +1,37 @@
+# Derived from the source, never observed (GAP-INF-005): one screens entry
+# per scenario step, the menu, the account-view prompt and the abend screen.
+#
+# Step 3 ends in COACTVWC's ABEND-ROUTINE [app/cbl/COACTVWC.cbl:916-936]. It
+# moves 'UNEXPECTED ABEND OCCURRED.' to ABEND-MSG only when ABEND-MSG equals
+# LOW-VALUES. CSMSG02Y gives every ABEND-DATA field VALUE SPACES
+# [app/cpy/CSMSG02Y.cpy:21-29] and COACTVWC never moves LOW-VALUES there, so
+# the test is false and ABEND-MSG stays 72 spaces. The routine moves
+# LIT-THISPGM 'COACTVWC' to ABEND-CULPRIT and sends the 134 bytes of
+# ABEND-DATA (code 4, culprit 8, reason 50, message 72): row 1 holds four
+# blank code bytes, COACTVWC and blanks, and every other row is blank.
+#
+# Were ABEND-MSG LOW-VALUES, the message would fill row 1, columns 63-80
+# ('UNEXPECTED ABEND O') and row 2, columns 1-8 ('CCURRED.').
+#
+# The SEND FROM has no ERASE or CTLCHAR, and ABEND ABCODE('9999') follows it,
+# so the region's own abend notice may overwrite or follow these bytes. The
+# screen is pinned as the plain-text screens are: the sent bytes from row 1,
+# column 1, blanks elsewhere. The code 9999 has no observation of its own.
+#
+# Whether the default text was meant to appear is GAP-DEF-014, which the
+# scenario cites with its suspected-defect tag.
+#
+# report.py --import-unikix replaces this with the observed screen; a
+# different screen is a MAJOR bump and opens an uncertain-purpose entry.
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTVW
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TRNNAME: CAVW
+- '@map': TEXT
+  '@text': "    COACTVWC                                                                    \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                "
