@@ -1,0 +1,131 @@
+# COUSR02C cannot fetch a user for update while the USRSEC region file is out
+# of service.
+#
+# Step 1: ADMIN001 signs on through CC00 and COSGN00C routes the type A user to
+# the admin menu COADM01 [app/cbl/COSGN00C.cbl:221-237].
+# Step 2: option '3' makes COADM01C XCTL to COADM02Y entry 3, COUSR02C, with
+# CDEMO-PGM-CONTEXT 0 [app/cbl/COADM01C.cbl:115-145] [app/cpy/COADM02Y.cpy:34-37].
+# The group MOVE of COADM01C's shorter COMMAREA pads CDEMO-CU02-USR-SELECTED
+# with spaces, so no user is fetched and no file is touched: COUSR02C clears
+# COUSR2AO to LOW-VALUES, sends COUSR02 with its CU02 header, empty entry fields
+# and a blank ERRMSG, and returns with TRANSID CU02
+# [app/cbl/COUSR02C.cbl:84-105,135-138,266-315].
+# Step 3: ENTER with user id USER0003, a fixture user. PROCESS-ENTER-KEY finds
+# the id supplied, moves SPACES to the first name, last name, password and type
+# input fields and reads USRSEC by the id with UPDATE
+# [app/cbl/COUSR02C.cbl:143-165,320-331]. With the file closed or disabled the
+# response is neither NORMAL nor NOTFND, so WHEN OTHER sets the error flag,
+# moves 'Unable to lookup User...' to WS-MESSAGE, puts the cursor on the first
+# name and sends COUSR02 with ERASE [app/cbl/COUSR02C.cbl:346-351,266-278]. The
+# error flag stops the second send that would show the record's fields
+# [app/cbl/COUSR02C.cbl:166-172], and MAIN-PARA returns with TRANSID CU02.
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - COUSR2AO redefines COUSR2AI [app/cpy-bms/COUSR02.CPY:91], so the user id is
+#   sent back as received and the four cleared fields as spaces at their full
+#   BMS length [app/bms/COUSR02.bms:85-149]. PASSWD is a dark field
+#   (ATTRB=(DRK,FSET,UNPROT)) whose positions the s3270 capture renders as
+#   blanks.
+# - ERRMSG is the first 78 bytes of the 80-byte WS-MESSAGE, trailing spaces kept.
+# - The header is POPULATE-HEADER-INFO's: the COTTL01Y titles, CU02, COUSR02C,
+#   and CURDATE mm/dd/yy and CURTIME hh:mm:ss of the run clock through CSDAT01Y,
+#   hence the matchers and clock_mode relative.
+# - The DISPLAY of RESP and RESP2 goes to the region log, not to the terminal,
+#   and is not asserted. A failed READ changes no record, so no file state is
+#   asserted.
+id: USR-COUSR02C-recovery-01
+level: e2e
+type: recovery
+description: >-
+  ADMIN001 signs on, chooses admin menu option 3 'User Update (Security)' and
+  enters user id USER0003 on the COUSR02 update screen while the region file
+  USRSEC is unavailable. The READ UPDATE fails with a response other than NORMAL
+  or NOTFND, so COUSR02C shows 'Unable to lookup User...' on COUSR02 with the
+  user id kept and the name, password and type fields blank.
+# The recovery message is the primary item, then the program, the map option 3
+# is entered on and the map asserted, the transaction under which the failing
+# READ runs and the CSD file it fails on, then the online-only copybooks
+# COUSR02C copies. CSUSR01Y and the USRSEC data file are left out: their lowest
+# executing level is the DUSRSECJ integration scenario.
+inventory_ids:
+- INV-USR-043  # COUSR02C message 'Unable to lookup User...' (recovery)
+- INV-USR-003  # COUSR02C program
+- INV-MNU-004  # COADM01 map, the admin menu option 3 is entered on
+- INV-USR-007  # COUSR02 map, the update screen the failure is shown on
+- INV-CFG-025  # CU02 transaction, under which the fetch of step 3 runs
+- INV-CFG-008  # USRSEC CSD file, the target of the failing READ UPDATE
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA COADM01C passes with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to put USRSEC out of service
+preconditions:
+  datasets:
+    # The 10 repository users: COSGN00C reads ADMIN001, and USER0003 is the
+    # user the failing READ looks for.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  # No `after`: the unikix adapter applies an online fault after the sign-on
+  # step. COADM01C's option transfer and COUSR02C's first send touch no file,
+  # so the first USRSEC operation after the fault is the READ UPDATE of step 3.
+  # An adapter without a confirmed region file control raises
+  # MissingPrerequisite under GAP-MIS-011.
+  faults:
+  - target: USRSEC
+    operation: read
+    condition: unavailable
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '3'}
+    '@map': COADM01
+  - aid: ENTER
+    fields: {USRIDIN: USER0003}
+    '@map': COUSR02
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+  - '@map': COUSR02
+    TRNNAME: CU02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: '        '
+    FNAME: '                    '
+    LNAME: '                    '
+    PASSWD: '        '
+    USRTYPE: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COUSR02
+    TRNNAME: CU02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: USER0003
+    FNAME: '                    '
+    LNAME: '                    '
+    PASSWD: '        '
+    USRTYPE: ' '
+    ERRMSG: 'Unable to lookup User...                                                      '
+  # The ERRMSG value of each step: blank on the admin menu and on the first
+  # COUSR02 send, then the failure message.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Unable to lookup User...                                                      '

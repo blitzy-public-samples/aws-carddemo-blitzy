@@ -1,0 +1,160 @@
+# COUSR02C cannot save a user's changes when the REWRITE of the USRSEC record
+# fails with an I/O error.
+#
+# Step 1: ADMIN001 signs on through CC00 and COSGN00C routes the type 'A' user
+# to the admin menu COADM01 [app/cbl/COSGN00C.cbl:221-237].
+# Step 2: option '3' makes COADM01C transfer control (XCTL), with
+# CDEMO-PGM-CONTEXT 0, to COUSR02C, the 'User Update (Security)' entry of
+# COADM02Y [app/cbl/COADM01C.cbl:115-145] [app/cpy/COADM02Y.cpy:34-37]. COADM01C
+# passes only the COCOM01Y COMMAREA, so CDEMO-CU02-USR-SELECTED is blank and no
+# user is fetched: COUSR02C clears COUSR2AO, sends COUSR02 with empty entry
+# fields and a blank message and returns with TRANSID CU02
+# [app/cbl/COUSR02C.cbl:84-105,135-138,266-315].
+# Step 3: ENTER with TESTU002 reads USRSEC by that key with UPDATE; on NORMAL
+# the record's names and type are shown under 'Press PF5 key to save your
+# updates ...' [app/cbl/COUSR02C.cbl:143-172,320-339].
+# Step 4: PF5 with the last name typed over as TESTCHANGED. Every COUSR02 entry
+# field is FSET, so all come back and none is empty; UPDATE-USER-INFO reads the
+# record again with UPDATE (NORMAL, another 'Press PF5' send), finds the last
+# name changed and REWRITEs USRSEC [app/cbl/COUSR02C.cbl:122-123,177-245].
+# The REWRITE answers neither NORMAL nor NOTFND, so WHEN OTHER DISPLAYs RESP and
+# RESP2 to the region log (not asserted), sets the error flag, moves 'Unable to
+# Update User...' to WS-MESSAGE, puts the cursor on the first name and sends
+# COUSR02 again [app/cbl/COUSR02C.cbl:358-368,383-389]. COUSR2AO redefines
+# COUSR2AI, so the fields echo the values just received, the new last name
+# included. The screen holds the last send of the task.
+#
+# Only an I/O error on the REWRITE reaches this branch: the REWRITE follows a
+# successful READ UPDATE of the same record in the same task, so a closed or
+# disabled file would fail that READ first and give 'Unable to lookup User...'
+# instead [app/cbl/COUSR02C.cbl:346-352]. No adapter can inject an online I/O error, so the
+# scenario raises MissingPrerequisite under GAP-MIS-014 and stays
+# implemented-unexecuted until a mechanism exists.
+#
+# Expected values are derived from the source (no TPE region runs in CI). Text
+# values keep their full BMS field width with trailing spaces: ERRMSG is the
+# first 78 bytes of the 80-byte WS-MESSAGE, FNAME and LNAME the 20-byte names
+# [app/cpy/CSUSR01Y.cpy:17-23]. PASSWD is a dark field
+# [app/bms/COUSR02.bms:130-134] and is not asserted on the screen. CURDATE and
+# CURTIME come from the run clock, hence the matchers and clock_mode relative.
+# TESTU002 and its names and password are invented data added to the USRSEC
+# fixture; the user never signs on.
+id: USR-COUSR02C-recovery-02
+level: e2e
+type: recovery
+description: >-
+  ADMIN001 signs on, selects admin option 3 'User Update (Security)', fetches
+  the invented user TESTU002 on the COUSR02 update screen, changes the last
+  name to TESTCHANGED and presses PF5 while the REWRITE of USRSEC fails with an
+  I/O error. COUSR02C shows 'Unable to Update User...' on the same screen with
+  the entered values kept, and the TESTU002 record keeps its old last name.
+inventory_ids:
+- INV-USR-045  # COUSR02C message 'Unable to Update User...' (recovery)
+- INV-USR-003  # COUSR02C program
+- INV-MNU-004  # COADM01 map, the admin menu option 3 is entered on
+- INV-USR-007  # COUSR02 map, the update screen the failure is shown on
+- INV-CFG-025  # CU02 transaction, under which the fetch and the failing save run
+- INV-CFG-008  # USRSEC CSD file, read for update and the target of the failing REWRITE
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA COADM01C passes with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-014  # no mechanism to return an I/O error from a region file operation
+preconditions:
+  datasets:
+    # The 10 repository users, for the ADMIN001 sign-on, plus the user updated.
+    USRSEC:
+      base: USRSEC
+      records:
+      - {SEC-USR-ID: TESTU002, SEC-USR-FNAME: TESTFIRST, SEC-USR-LNAME: TESTLAST,
+         SEC-USR-PWD: TESTPWD2, SEC-USR-TYPE: U}
+  parameters:
+    clock_mode: relative
+  # No `after`: the REWRITE of step 4 is the only USRSEC rewrite of the
+  # scenario, and every READ before it succeeds.
+  faults:
+  - target: USRSEC
+    operation: rewrite
+    condition: io-error
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '3'}
+    '@map': COADM01
+  - aid: ENTER
+    fields: {USRIDIN: TESTU002}
+    '@map': COUSR02
+  - aid: PF5
+    fields: {LNAME: TESTCHANGED}
+    '@map': COUSR02
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR02
+    TRNNAME: CU02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: '        '
+    FNAME: '                    '
+    LNAME: '                    '
+    USRTYPE: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COUSR02
+    TRNNAME: CU02
+    PGMNAME: COUSR02C
+    USRIDIN: TESTU002
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTLAST            '
+    USRTYPE: U
+    ERRMSG: 'Press PF5 key to save your updates ...                                        '
+  - '@map': COUSR02
+    TRNNAME: CU02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: TESTU002
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTCHANGED         '
+    USRTYPE: U
+    ERRMSG: 'Unable to Update User...                                                      '
+  # The ERRMSG value of each step: blank on the admin menu and on the first
+  # COUSR02 send, the fetch prompt, then the failure message.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Press PF5 key to save your updates ...                                        '
+  - 'Unable to Update User...                                                      '
+  file_state:
+    # Every USRSEC record in key order, unchanged by the failed REWRITE:
+    # TESTU002 keeps its last name TESTLAST, and the ten fixture users are as
+    # loaded.
+    USRSEC:
+      records:
+      - {SEC-USR-ID: ADMIN001, SEC-USR-FNAME: 'MARGARET            ', SEC-USR-LNAME: 'GOLD                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN002, SEC-USR-FNAME: 'RUSSELL             ', SEC-USR-LNAME: 'RUSSELL             ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN003, SEC-USR-FNAME: 'RAYMOND             ', SEC-USR-LNAME: 'WHITMORE            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN004, SEC-USR-FNAME: 'EMMANUEL            ', SEC-USR-LNAME: 'CASGRAIN            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN005, SEC-USR-FNAME: 'GRANVILLE           ', SEC-USR-LNAME: 'LACHAPELLE          ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: TESTU002, SEC-USR-FNAME: 'TESTFIRST           ', SEC-USR-LNAME: 'TESTLAST            ', SEC-USR-PWD: TESTPWD2, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0001, SEC-USR-FNAME: 'LAWRENCE            ', SEC-USR-LNAME: 'THOMAS              ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0002, SEC-USR-FNAME: 'AJITH               ', SEC-USR-LNAME: 'KUMAR               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0003, SEC-USR-FNAME: 'LAURITZ             ', SEC-USR-LNAME: 'ALME                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0004, SEC-USR-FNAME: 'AVERARDO            ', SEC-USR-LNAME: 'MAZZI               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0005, SEC-USR-FNAME: 'LEE                 ', SEC-USR-LNAME: 'TING                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}

@@ -1,0 +1,125 @@
+# ENTER with a user id on the COUSR03 'Delete User' screen fetches the user and
+# prompts for the PF5 confirmation; nothing is deleted yet. ADMIN001 signs on
+# through CC00 and COSGN00C routes the type 'A' user to COADM01C with
+# CDEMO-PGM-CONTEXT 0 [app/cbl/COSGN00C.cbl:221-237]. Option '4' of the admin
+# menu is 'User Delete (Security)', so COADM01C sets CDEMO-PGM-CONTEXT to 0 and
+# XCTLs to COUSR03C [app/cbl/COADM01C.cbl:115-145] [app/cpy/COADM02Y.cpy:39-42].
+# COADM01C passes only the COCOM01Y COMMAREA, so the CDEMO-CU03-INFO extension
+# COUSR03C appends to it is padded with spaces and CDEMO-CU03-USR-SELECTED is
+# blank: on this first entry COUSR03C clears its output map and sends COUSR03
+# with every entry field empty and a blank message, then returns with TRANSID
+# CU03 and the COMMAREA marked re-entered [app/cbl/COUSR03C.cbl:36-37,49-58,84-105,134-137].
+# ENTER with USER0004 in USRIDIN runs CU03 again. PROCESS-ENTER-KEY finds the
+# user id filled, blanks FNAME, LNAME and USRTYPE, and READ-USER-SEC-FILE reads
+# USRSEC by that key with UPDATE. On NORMAL it moves 'Press PF5 key to delete
+# this user ...' to WS-MESSAGE, sets ERRMSG to the neutral colour and sends the
+# map; PROCESS-ENTER-KEY then moves the record's first name, last name and type
+# into the map and sends it again under the same message
+# [app/cbl/COUSR03C.cbl:142-169,267-286]. Each send uses ERASE, so the screen
+# holds the second one. COUSR3AO redefines the received COUSR3AI
+# [app/cpy-bms/COUSR03.CPY:17,60,85,128], so USRIDIN is sent back as entered.
+# The DELETE is reached only through PF5 [app/cbl/COUSR03C.cbl:121-122,174-192],
+# and the READ UPDATE lock ends with the task, so USRSEC keeps its 10 fixture
+# users exactly as loaded.
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values keep their full BMS length with trailing spaces: ERRMSG is the
+#   78-byte ERRMSGO, so the 37-character prompt is followed by 41 spaces
+#   (WS-MESSAGE X(80) moved to X(78)); comparisons never trim.
+# - The header is POPULATE-HEADER-INFO's [app/cbl/COUSR03C.cbl:243-262]: the
+#   COTTL01Y titles, CU03, COUSR03C, CURDATE as mm/dd/yy of the run date and
+#   CURTIME as the 8-character hh:mm:ss. Both come from the region clock, so
+#   they are matchers and the clock is relative.
+id: USR-COUSR03C-alternate-01
+level: e2e
+type: alternate
+description: >-
+  ADMIN001 signs on, selects admin menu option 4 'User Delete (Security)' and,
+  on the COUSR03 Delete User screen, enters user id USER0004 with ENTER.
+  COUSR03C reads the user and shows its first name AVERARDO, last name MAZZI
+  and type U with 'Press PF5 key to delete this user ...' in ERRMSG, and
+  deletes nothing: USRSEC keeps the 10 fixture users.
+inventory_ids:
+- INV-USR-051  # COUSR03C message 'Press PF5 key to delete this user ...' (rule)
+- INV-USR-004  # COUSR03C program
+- INV-MNU-004  # COADM01 map, the admin menu option 4 is entered on
+- INV-USR-008  # COUSR03 map, the delete screen
+- INV-CFG-026  # CU03 transaction, under which the fetch runs
+- INV-CFG-008  # USRSEC CSD file, read for update
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carried between the tasks
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR03C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # The 10 fixture users: ADMIN001 for the sign-on and USER0004, the user fetched.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '4'}
+    '@map': COADM01
+  - aid: ENTER
+    fields: {USRIDIN: USER0004}
+    '@map': COUSR03
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR03
+    TRNNAME: CU03
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR03C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: '        '
+    FNAME: '                    '
+    LNAME: '                    '
+    USRTYPE: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COUSR03
+    TRNNAME: CU03
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR03C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: USER0004
+    FNAME: 'AVERARDO            '
+    LNAME: 'MAZZI               '
+    USRTYPE: U
+    ERRMSG: 'Press PF5 key to delete this user ...                                         '
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Press PF5 key to delete this user ...                                         '
+  file_state:
+    # Every USRSEC record in key order, decoded through CSUSR01Y: the fetch
+    # deletes and rewrites nothing, so USER0004 and the other 9 users are as loaded.
+    USRSEC:
+      count: 10
+      records:
+      - {SEC-USR-ID: ADMIN001, SEC-USR-FNAME: 'MARGARET            ', SEC-USR-LNAME: 'GOLD                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN002, SEC-USR-FNAME: 'RUSSELL             ', SEC-USR-LNAME: 'RUSSELL             ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN003, SEC-USR-FNAME: 'RAYMOND             ', SEC-USR-LNAME: 'WHITMORE            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN004, SEC-USR-FNAME: 'EMMANUEL            ', SEC-USR-LNAME: 'CASGRAIN            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN005, SEC-USR-FNAME: 'GRANVILLE           ', SEC-USR-LNAME: 'LACHAPELLE          ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0001, SEC-USR-FNAME: 'LAWRENCE            ', SEC-USR-LNAME: 'THOMAS              ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0002, SEC-USR-FNAME: 'AJITH               ', SEC-USR-LNAME: 'KUMAR               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0003, SEC-USR-FNAME: 'LAURITZ             ', SEC-USR-LNAME: 'ALME                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0004, SEC-USR-FNAME: 'AVERARDO            ', SEC-USR-LNAME: 'MAZZI               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0005, SEC-USR-FNAME: 'LEE                 ', SEC-USR-LNAME: 'TING                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}

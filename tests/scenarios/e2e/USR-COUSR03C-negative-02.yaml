@@ -1,0 +1,98 @@
+# User delete with the user id left blank. ADMIN001 (user type A) signs on
+# through CC00 and COSGN00C transfers control to the admin menu COADM01C
+# [app/cbl/COSGN00C.cbl:221-240]. Option 4 of COADM02Y is 'User Delete
+# (Security)', program COUSR03C [app/cpy/COADM02Y.cpy:39-42], so COADM01C
+# transfers control to it with the program context reset
+# [app/cbl/COADM01C.cbl:115-145]. COADM01C passes only the COCOM01Y COMMAREA,
+# so the group MOVE into COUSR03C's longer CARDDEMO-COMMAREA pads
+# CDEMO-CU03-USR-SELECTED with spaces and no user is fetched. Entered without
+# the reenter flag, COUSR03C clears COUSR3AO to LOW-VALUES, sends COUSR03 with
+# WS-MESSAGE still spaces and returns with TRANSID CU03
+# [app/cbl/COUSR03C.cbl:84-105,135-138,211-224].
+#
+# The ENTER of step 3 runs CU03 again. COUSR03C receives map COUSR3A and the
+# first WHEN of PROCESS-ENTER-KEY finds USRIDINI equal to SPACES or
+# LOW-VALUES: it sets the error flag, moves 'User ID can NOT be empty...' to
+# WS-MESSAGE, puts the cursor on USRIDIN and sends the screen again
+# [app/cbl/COUSR03C.cbl:107-109,142-150]. The error flag keeps it from
+# READ-USER-SEC-FILE, so no user is looked up and the name and type fields,
+# never filled on this screen, stay blank [app/cbl/COUSR03C.cbl:156-168]. The
+# same move in DELETE-USER-INFO (PF5) is the same inventory item, so ENTER is
+# the one path exercised here. USRSEC is not touched by COUSR03C on this path,
+# so no file_state is asserted.
+#
+# Screen values are whole fields at their BMS length with trailing spaces kept,
+# because comparison never trims. ERRMSG is WS-MESSAGE (X(80)) cut to ERRMSGO
+# (X(78)); CURTIME is the 8-character hh:mm:ss of CSDAT01Y moved to the
+# 8-character CURTIMEO [app/bms/COUSR03.bms:70-74,140-143]. expected.messages
+# is not asserted: it carries the ERRMSG of every step, which the screens below
+# already assert. The baseline is derived from the source: no TPE region runs
+# in CI.
+id: USR-COUSR03C-negative-02
+level: e2e
+type: negative
+description: >-
+  ADMIN001 signs on, chooses option 4 (User Delete) on the admin menu and
+  presses ENTER on the delete-user screen with the user id blank. COUSR03C
+  refuses the fetch before any USRSEC read and shows map COUSR03 again with its
+  header (CU03, COUSR03C, the titles, the run date and time), the blank user
+  id, first name, last name and type, and 'User ID can NOT be empty...' in
+  ERRMSG [app/cbl/COUSR03C.cbl:144-149].
+# Primary item first, then the program, the maps the screens assert (COADM01,
+# COUSR03), the transaction step 3 enters (CU03, the TRANSID COUSR03C returned
+# with), and the online-only copybooks COUSR03C copies. CSUSR01Y is a
+# batch-level copybook verified elsewhere, and the sign-on and menu
+# transactions belong to their own scenarios.
+inventory_ids:
+- INV-USR-050  # COUSR03C message 'User ID can NOT be empty...' (rule)
+- INV-USR-004  # COUSR03C program
+- INV-MNU-004  # COADM01 map, the admin menu the sign-on lands on
+- INV-USR-008  # COUSR03 map, the delete-user screen
+- INV-CFG-026  # CU03 transaction, under which the ENTER of step 3 runs COUSR03C
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR03C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # USR end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user ADMIN001; COUSR03C reads nothing here.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: ADMIN001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '4'}, '@map': COADM01}
+  # The empty value leaves the user id field blank, so COUSR03C receives no
+  # user id.
+  - {aid: ENTER, fields: {USRIDIN: ''}, '@map': COUSR03}
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR03
+    TRNNAME: CU03
+    PGMNAME: COUSR03C
+    USRIDIN: '        '
+    ERRMSG: '                                                                              '
+  - '@map': COUSR03
+    TRNNAME: CU03
+    PGMNAME: COUSR03C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    USRIDIN: '        '
+    FNAME: '                    '
+    LNAME: '                    '
+    USRTYPE: ' '
+    ERRMSG: 'User ID can NOT be empty...                                                   '

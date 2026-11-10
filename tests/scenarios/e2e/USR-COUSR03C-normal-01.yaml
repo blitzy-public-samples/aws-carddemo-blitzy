@@ -1,0 +1,138 @@
+# An administrator deletes a user through COUSR03C and receives the composed
+# confirmation 'User <id> has been deleted ...'.
+#
+# Step 1: ADMIN001 signs on through CC00 and COSGN00C routes the type A user to
+# the admin menu COADM01 with a blank message (asserted here by its header and
+# ERRMSG only; its content belongs to SEC-COSGN00C-normal-01)
+# [app/cbl/COSGN00C.cbl:221-237] [app/cbl/COADM01C.cbl:78-90,172-184].
+# Step 2: option '4' makes COADM01C XCTL to COADM02Y entry 4, COUSR03C, with
+# CDEMO-PGM-CONTEXT 0 [app/cbl/COADM01C.cbl:115-145] [app/cpy/COADM02Y.cpy:39-42].
+# COADM01C passes only the COCOM01Y COMMAREA, so the group MOVE into COUSR03C's
+# longer CARDDEMO-COMMAREA pads CDEMO-CU03-USR-SELECTED with spaces and no user
+# is fetched. COUSR03C clears COUSR3AO to LOW-VALUES and sends COUSR03 with its
+# CU03 header, empty entry fields and a blank ERRMSG, then returns with TRANSID
+# CU03 [app/cbl/COUSR03C.cbl:49-58,86-105,134-137,213-262].
+# Step 3: ENTER with user id TESTU002. PROCESS-ENTER-KEY blanks FNAME, LNAME and
+# USRTYPE and reads USRSEC by the id with UPDATE; on RESP NORMAL
+# READ-USER-SEC-FILE moves 'Press PF5 key to delete this user ...' to
+# WS-MESSAGE and sends, then the record's names and type are moved into the map
+# and the screen is sent again with the same message
+# [app/cbl/COUSR03C.cbl:142-169,267-286].
+# Step 4: PF5. USRIDIN is FSET [app/bms/COUSR03.bms:85-89], so TESTU002 comes
+# back with the AID; DELETE-USER-INFO finds it supplied, reads the record again
+# with UPDATE (sending the 'Press PF5' screen once more) and DELETEs the record
+# read for update. On RESP NORMAL INITIALIZE-ALL-FIELDS moves spaces to USRIDIN,
+# FNAME, LNAME, USRTYPE and WS-MESSAGE, then STRING builds 'User ', SEC-USR-ID
+# delimited by space and ' has been deleted ...' in WS-MESSAGE and COUSR03 is
+# sent with ERASE [app/cbl/COUSR03C.cbl:121-122,174-190,305-322,349-356].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values are whole fields at their BMS length with trailing spaces:
+#   ERRMSG is the first 78 bytes of the 80-byte WS-MESSAGE; FNAME and LNAME are
+#   the 20-byte SEC-USR-FNAME and SEC-USR-LNAME [app/cpy/CSUSR01Y.cpy:17-22].
+# - Fields sent as LOW-VALUES show as blanks on the screen.
+# - The header is POPULATE-HEADER-INFO's: the COTTL01Y titles, CU03, COUSR03C,
+#   CURDATE mm/dd/yy and CURTIME hh:mm:ss of the run clock through CSDAT01Y,
+#   hence the matchers and clock_mode relative [app/cbl/COUSR03C.cbl:243-262].
+# TESTU002 and its names and password are invented data added to the USRSEC
+# fixture; the user never signs on. The absence of the deleted USRSEC record is
+# the DELETE item's own scenario.
+id: USR-COUSR03C-normal-01
+level: e2e
+type: normal
+description: >-
+  ADMIN001 signs on, chooses admin menu option 4 'User Delete (Security)',
+  fetches the invented user TESTU002 on the COUSR03 delete screen, which shows
+  its first and last name and type with 'Press PF5 key to delete this user ...',
+  and presses PF5. COUSR03C deletes the USRSEC record, blanks the screen fields
+  and confirms with 'User TESTU002 has been deleted ...'.
+inventory_ids:
+- INV-USR-054  # COUSR03C message 'User <SEC-USR-ID> has been deleted ...' (rule)
+- INV-USR-004  # COUSR03C program
+- INV-MNU-004  # COADM01 map, the admin menu the option is entered on
+- INV-USR-008  # COUSR03 map, the delete screen of steps 2-4
+- INV-CFG-026  # CU03 transaction, under which the fetch and the delete run
+- INV-CFG-008  # USRSEC CSD file, read for update and deleted from
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA COADM01C passes with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR03C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # The 10 repository users, for the ADMIN001 sign-on, plus the user deleted.
+    USRSEC:
+      base: USRSEC
+      records:
+      - {SEC-USR-ID: TESTU002, SEC-USR-FNAME: TESTFIRST, SEC-USR-LNAME: TESTLAST,
+         SEC-USR-PWD: TESTPWD2, SEC-USR-TYPE: U}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '4'}
+    '@map': COADM01
+  - aid: ENTER
+    fields: {USRIDIN: TESTU002}
+    '@map': COUSR03
+  - aid: PF5
+    fields: {}
+    '@map': COUSR03
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR03
+    TRNNAME: CU03
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR03C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: '        '
+    FNAME: '                    '
+    LNAME: '                    '
+    USRTYPE: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COUSR03
+    TRNNAME: CU03
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR03C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: TESTU002
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTLAST            '
+    USRTYPE: U
+    ERRMSG: 'Press PF5 key to delete this user ...                                         '
+  - '@map': COUSR03
+    TRNNAME: CU03
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR03C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: '        '
+    FNAME: '                    '
+    LNAME: '                    '
+    USRTYPE: ' '
+    ERRMSG: 'User TESTU002 has been deleted ...                                            '
+  # The ERRMSG of each step: the admin menu and the empty delete screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Press PF5 key to delete this user ...                                         '
+  - 'User TESTU002 has been deleted ...                                            '
