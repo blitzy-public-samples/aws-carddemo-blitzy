@@ -1,0 +1,66 @@
+id: DAT-CBACT01C-recovery-02
+level: unit
+type: recovery
+description: >-
+  CBACT01C opens ACCTFILE, lists the first account, and the second READ fails with
+  an I/O error. 1000-ACCTFILE-GET-NEXT displays 'ERROR READING ACCOUNT FILE', the
+  status through 9910-DISPLAY-IO-STATUS and 'ABENDING PROGRAM', then calls CEE3ABD
+  without parameters; 9000-ACCTFILE-CLOSE and the end-of-execution line are never
+  reached [app/cbl/CBACT01C.cbl:71-81,92-116,118-131,169-173,176-189]. No adapter
+  injects a read failure after a successful open (GAP-MIS-013), so the scenario
+  stays implemented-unexecuted and its baseline is derived from the source
+  (GAP-INF-013).
+# Only the read-or-close-failure item: this case never executes, so listing the
+# program, the CVACT01Y layout or the acctdata data files here would block items
+# that DAT-CBACT01C-normal-01 verifies (one scenario lists an item only when the
+# item's verification depends on it).
+inventory_ids:
+- INV-DAT-030
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013
+- GAP-INF-013
+- GAP-STB-001
+- GAP-DEF-001
+preconditions:
+  datasets:
+    ACCTDATA:
+      base: ACCTDATA
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  # after: 1 -- the first READ returns record 1, the second fails.
+  - target: ACCTDATA
+    operation: read
+    condition: io-error
+    after: 1
+inputs:
+  program: CBACT01C
+expected:
+  return_code: null
+  messages:
+  - 'START OF EXECUTION OF PROGRAM CBACT01C'
+  # Record 1 of the repository ACCTDATA, as 1100-DISPLAY-ACCT-RECORD shows it on
+  # GnuCOBOL 3.2 (the same lines DAT-CBACT01C-normal-01 produces for account 1).
+  - 'ACCT-ID                 :00000000001'
+  - 'ACCT-ACTIVE-STATUS      :Y'
+  - 'ACCT-CURR-BAL           :000000019400+'
+  - 'ACCT-CREDIT-LIMIT       :000000202000+'
+  - 'ACCT-CASH-CREDIT-LIMIT  :000000102000+'
+  - 'ACCT-OPEN-DATE          :2014-11-20'
+  - 'ACCT-EXPIRAION-DATE     :2025-05-20'
+  - 'ACCT-REISSUE-DATE       :2025-05-20'
+  - 'ACCT-CURR-CYC-CREDIT    :000000000000+'
+  - 'ACCT-CURR-CYC-DEBIT     :000000000000+'
+  - 'ACCT-GROUP-ID           :          '
+  - '-------------------------------------------------'
+  # The main loop's DISPLAY ACCOUNT-RECORD: the whole 300-byte record, raw.
+  - '00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            '
+  - 'ERROR READING ACCOUNT FILE'
+  # An io-error is taken as IBM file status 30 (inferred, GAP-INF-013): numeric
+  # and not 9x, so 9910-DISPLAY-IO-STATUS shows it as NNNN0030.
+  - 'FILE STATUS IS: NNNN0030'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'

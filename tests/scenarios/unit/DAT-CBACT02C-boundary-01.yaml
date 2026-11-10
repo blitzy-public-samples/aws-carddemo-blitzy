@@ -1,0 +1,33 @@
+# Count boundary of the CBACT02C card listing: the card KSDS exists but holds no
+# record. OPEN INPUT succeeds, the first READ returns status 10 (end of file), so
+# no CARD-RECORD is displayed between the start and end lines, the close
+# succeeds and the run ends normally [app/cbl/CBACT02C.cbl:71-116,118-152].
+# The clock is the suite default; CBACT02C reads no date.
+id: DAT-CBACT02C-boundary-01
+level: unit
+type: boundary
+description: >-
+  CBACT02C on an empty card file: only the start and end of execution lines are
+  displayed, and the program ends with return code 0.
+inventory_ids:
+- INV-DAT-031
+- INV-DAT-002
+- INV-LAY-017
+tags: []
+gap_ids:
+- GAP-STB-010
+- GAP-STB-011
+preconditions:
+  datasets:
+    CARDDATA:
+      records: []
+  parameters:
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBACT02C
+expected:
+  return_code: 0
+  messages:
+  - START OF EXECUTION OF PROGRAM CBACT02C
+  - END OF EXECUTION OF PROGRAM CBACT02C

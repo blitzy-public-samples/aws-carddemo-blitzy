@@ -1,0 +1,34 @@
+id: DAT-CBACT01C-normal-01
+level: unit
+type: normal
+description: >-
+  CBACT01C lists the repository account file in ACCT-ID order. The baseline pins
+  the 652 DISPLAY lines as observed: the start line; for each of the 50 accounts
+  the eleven labelled field lines and the separator of 1100-DISPLAY-ACCT-RECORD,
+  followed by the whole 300-byte ACCOUNT-RECORD that the main loop displays again,
+  so every record is shown twice; then the end line [app/cbl/CBACT01C.cbl:71-131].
+  The labelled S9(10)V99 amounts show as the GnuCOBOL runtime displays them, twelve
+  digits followed by a sign (000000019400+ for the first balance), a rendering of
+  the compile and runtime seam (GAP-STB-011).
+inventory_ids:
+- INV-DAT-028  # CBACT01C record listing in key order (report)
+- INV-DAT-001  # CBACT01C program
+- INV-LAY-016  # CVACT01Y copybook
+- INV-DTA-001  # acctdata.txt, the fixture source
+- INV-DTA-011  # EBCDIC account data file, the fixture's cross-check counterpart
+tags: []
+gap_ids:
+- GAP-STB-010  # Berkeley DB indexed file in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBACT01C
+expected:
+  return_code: 0
+  messages: baseline
