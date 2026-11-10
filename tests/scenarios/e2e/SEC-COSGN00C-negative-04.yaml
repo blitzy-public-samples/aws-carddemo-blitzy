@@ -1,0 +1,61 @@
+id: SEC-COSGN00C-negative-04
+level: e2e
+type: negative
+description: >-
+  A user id that USRSEC does not hold is refused at sign-on. Transaction CC00
+  sends the sign-on screen COSGN00; the user enters NOSUCHID, the one invented
+  id the suite allows and absent from the ten fixture users, with password
+  PASSWORD and presses ENTER. COSGN00C reads USRSEC by the upper-cased user id,
+  the READ answers NOTFND (RESP 13), and the program sets the error flag, puts
+  the cursor on the user id and sends COSGN00 again with 'User not found. Try
+  again ...' in ERRMSG, its own transaction and program name, the COTTL01Y
+  titles and the run date and time [app/cbl/COSGN00C.cbl:110-136,173-257].
+  The record is absent from the fixture, so no fault is injected.
+# Primary item first, then the program, the map the step enters on and lands
+# on, the transaction run, the CSD file read, and the online-only copybooks
+# COSGN00C copies.
+inventory_ids:
+- INV-SEC-008
+- INV-SEC-001
+- INV-SEC-002
+- INV-CFG-016
+- INV-CFG-008
+- INV-LAY-002
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-002
+- GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: NOSUCHID
+      PASSWD: PASSWORD
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. ERRMSG is the 80-byte WS-MESSAGE cut to the 78-byte
+# field. CURTIME is 9 bytes wide and receives the 8-byte hh:mm:ss, so its last
+# position is a space.
+expected:
+  screens:
+  - '@map': COSGN00
+    TRNNAME: CC00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COSGN00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time, format: '%H:%M:%S '}
+    ERRMSG: 'User not found. Try again ...                                                 '
+  messages:
+  - 'User not found. Try again ...                                                 '

@@ -1,0 +1,57 @@
+# An AID key other than ENTER and PF3 on the sign-on screen. Entering CC00
+# starts COSGN00C without a COMMAREA, so it sends map COSGN0A of mapset COSGN00
+# and returns with TRANSID(CC00) and the CARDDEMO-COMMAREA of COCOM01Y
+# [app/cbl/COSGN00C.cbl:80-83,98-102]. PF5 then restarts it with a COMMAREA:
+# EVALUATE EIBAID reaches WHEN OTHER, which moves CCDA-MSG-INVALID-KEY of
+# CSMSG01Y to WS-MESSAGE without receiving the map, and SEND-SIGNON-SCREEN
+# rebuilds the header from COTTL01Y and CSDAT01Y and sends the screen again
+# [app/cbl/COSGN00C.cbl:85-95,145-157,177-204] [app/cpy/CSMSG01Y.cpy:20-21].
+# USERID and PASSWD are not asserted: on this path the output map is never
+# cleared or received, so their content is whatever the task's working storage
+# holds. APPLID and SYSID come from EXEC CICS ASSIGN and name the region.
+id: SEC-COSGN00C-negative-05
+level: e2e
+type: negative
+description: >-
+  On the CardDemo sign-on screen the user presses PF5. COSGN00C accepts only
+  ENTER and PF3, so it sends the sign-on screen again with its header (CC00,
+  COSGN00C, the titles, the run date and time) and 'Invalid key pressed. Please
+  see below...' in the message line; nobody is signed on and no file is read.
+inventory_ids:
+- INV-SEC-004  # COSGN00C message 'Invalid key pressed. Please see below...' (rule)
+- INV-SEC-001  # COSGN00C program
+- INV-SEC-002  # COSGN00 map
+- INV-CFG-016  # CC00 transaction
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the PF5 entry a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, CCDA-MSG-INVALID-KEY
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-002  # SEC end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: PF5, fields: {}, '@map': COSGN00}
+expected:
+  screens:
+  # Text fields are compared at their full BMS length with trailing spaces:
+  # ERRMSG is 78 bytes, the 40-character message followed by spaces from
+  # WS-MESSAGE; CURTIME is 9 bytes and receives the 8-byte hh:mm:ss.
+  - '@map': COSGN00
+    TRNNAME: CC00
+    PGMNAME: COSGN00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S '}
+    ERRMSG: 'Invalid key pressed. Please see below...                                      '
+  messages:
+  - 'Invalid key pressed. Please see below...                                      '

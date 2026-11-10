@@ -1,0 +1,56 @@
+id: MNU-COMEN01C-alternate-04
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, reaches the main menu that COMEN01C sends under CM00, and
+  selects option 4 'Credit Card View'. The option is numeric, within the 10
+  menu options and of user type U, and its program name does not begin
+  'DUMMY', so COMEN01C transfers control with XCTL to COCRDSLC with the
+  program context reset to enter [app/cbl/COMEN01C.cbl:35-36,117-155,218-219]
+  [app/cpy/COMEN02Y.cpy:43-47]. Entered from the menu, COCRDSLC initializes
+  the COMMAREA and sends its search map COCRDSL headed with its own
+  transaction CCDL and program name COCRDSLC
+  [app/cbl/COCRDSLC.cbl:163-166,268-272,349-356,434-435].
+inventory_ids:
+- INV-MNU-012
+- INV-MNU-001
+- INV-MNU-003
+- INV-CRD-005
+- INV-CFG-018
+- INV-LAY-002
+- INV-LAY-003
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003
+- GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+    '@map': COSGN00
+  - aid: ENTER
+    fields:
+      OPTION: '4'
+    '@map': COMEN01
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC

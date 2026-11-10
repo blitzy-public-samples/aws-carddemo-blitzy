@@ -1,0 +1,66 @@
+# Sign-on with the user id left blank. Entering CC00 shows the sign-on screen;
+# on ENTER, COSGN00C receives map COSGN0A, finds USERIDI equal to SPACES or
+# LOW-VALUES and sends the sign-on screen again with 'Please enter User ID ...'
+# and the cursor on the user id. The error flag keeps it from reading USRSEC,
+# and it returns with TRANSID CC00 [app/cbl/COSGN00C.cbl:80-102,108-157,177-196].
+#
+# Screen values are written at the full BMS field width that
+# tests/inventory/layouts.yaml gives, trailing spaces kept, because captured
+# fields and messages are compared exactly. ERRMSG is WS-MESSAGE (X(80)) cut
+# to ERRMSGO (X(78)), and the adapter copies that 78-character ERRMSG value
+# into the message list, so the message is padded the same way.
+id: SEC-COSGN00C-negative-01
+level: e2e
+type: negative
+description: >-
+  Transaction CC00 is entered, and the sign-on screen is submitted with ENTER,
+  the user id blank and the password PASSWORD. COSGN00C refuses the sign-on
+  before any USRSEC lookup and shows map COSGN00 again, with its header
+  (transaction CC00, program COSGN00C, the two titles, the run date and time)
+  and 'Please enter User ID ...' in ERRMSG [app/cbl/COSGN00C.cbl:117-122,145-157].
+inventory_ids:
+- INV-SEC-005  # COSGN00C message 'Please enter User ID ...' (rule)
+- INV-SEC-001  # COSGN00C program
+- INV-SEC-002  # COSGN00 map
+- INV-CFG-016  # CC00 transaction, which starts COSGN00C
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA returned with TRANSID CC00
+- INV-LAY-005  # COTTL01Y copybook, the TITLE01 and TITLE02 texts
+- INV-LAY-006  # CSDAT01Y copybook, the CURDATE and CURTIME formats
+- INV-LAY-008  # CSMSG01Y copybook, copied by COSGN00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-002  # the SEC end-to-end baselines are derived, never observed
+- GAP-INF-012  # the online-only copybooks are covered only through derived e2e baselines
+preconditions:
+  # USRSEC is loaded so that the region starts from its fixture state, although
+  # this path never reads it. Nothing is written, so no file_state is asserted.
+  datasets:
+    USRSEC:
+      base: USRSEC
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  # The empty value clears the user id field, so COSGN00C receives no user id.
+  - transid: CC00
+    '@map': COSGN00
+    aid: ENTER
+    fields:
+      USERID: ''
+      PASSWD: PASSWORD
+expected:
+  screens:
+  - '@map': COSGN00
+    TRNNAME: CC00
+    PGMNAME: COSGN00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    # CSDAT01Y gives CURDATE as mm/dd/yy. CURTIME is the 8-character hh:mm:ss
+    # moved to the 9-character CURTIMEO, which pads it with one space.
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S '}
+    ERRMSG: 'Please enter User ID ...                                                      '
+  messages:
+  - 'Please enter User ID ...                                                      '

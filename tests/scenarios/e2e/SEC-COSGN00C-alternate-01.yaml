@@ -1,0 +1,81 @@
+# PF3 on the sign-on screen ends the CardDemo session. CC00 entered without a
+# COMMAREA sends map COSGN0A whatever the key, then returns with TRANSID CC00
+# and the COMMAREA of COCOM01Y [app/cbl/COSGN00C.cbl:80-83,98-102]. The PF3
+# that follows starts CC00 with EIBCALEN > 0: COSGN00C moves CCDA-MSG-THANK-YOU
+# (CSMSG01Y, PIC X(50)) to WS-MESSAGE (PIC X(80)), sends all 80 bytes with
+# SEND TEXT ... ERASE FREEKB and returns with no TRANSID
+# [app/cbl/COSGN00C.cbl:38,85-90,160-172] [app/cpy/CSMSG01Y.cpy:18-19].
+#
+# USRSEC is never read on this path. It is loaded so the region holds its usual
+# user file, and its CSD file item is therefore not listed. No asserted value
+# depends on the clock; clock_mode is relative because unikix cannot fix it
+# (GAP-MIS-015).
+id: SEC-COSGN00C-alternate-01
+level: e2e
+type: alternate
+description: >-
+  From the sign-on screen that CC00 shows when entered directly, PF3 ends the
+  session: COSGN00C erases the screen and sends the 80-byte WS-MESSAGE holding
+  'Thank you for using CardDemo application...' as plain text. The terminal
+  shows an unformatted screen whose first row is that text padded with spaces
+  and whose other rows are blank, with no screen message.
+inventory_ids:
+- INV-SEC-003
+- INV-SEC-001
+- INV-SEC-002
+- INV-CFG-016
+- INV-LAY-002
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-002
+- GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: PF3
+    fields: {}
+    '@map': COSGN00
+expected:
+  screens:
+  # Derived from SEND TEXT: the 80 sent bytes from row 1, column 1, after ERASE,
+  # and blanks elsewhere, as the 24 rows of 80 characters joined by line breaks
+  # that adapters/base.py screen_text gives. Each source line below is one row:
+  # '\ ' keeps a row's leading blank and '\n\' ends the row.
+  - '@map': TEXT
+    '@text': "Thank you for using CardDemo application...                                     \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                "
+  # An unformatted screen has no ERRMSG field, so the step yields no message.
+  messages: []
