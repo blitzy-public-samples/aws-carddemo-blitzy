@@ -633,3 +633,14 @@ All 14 variables are declared with defaults in `card-servicing-service/src/main/
 | `STUB_FAILURE_RATE` | Stub failure injection: fraction of calls answered `UNAVAILABLE`, overridable per stub and per test | `0` | `CardDataService`, `TransactionActivityService`, `ConfigService`, `ReferenceDataService`, `AuthService` |
 
 The components that read `AUTH_SERVICE_API_KEY`, `REDIS_PASSWORD` or `DB_PASSWORD` are exactly the S7 consumers of the [security control table](#security-control-table).
+
+### Stack container settings
+
+`tests/docker-compose.yml` (CS-01-001) also sets four values that are not application settings: `application.yml` declares none of them, and they are not among the 14 variables above. One is the framework profile selector, which Spring Boot reads to decide which profile-specific documents of `application.yml` apply, so it picks each container's stack profile. Three are bootstrap settings of the `postgres:16.6` image, which initialise the empty store at its first start. All four are literals in the stack file and set nowhere else.
+
+| Setting | Kind | Purpose | Container and value |
+|---|---|---|---|
+| `SPRING_PROFILES_ACTIVE` | Framework profile selector | Activates the stack profile that sets the container's mode, ports and stub targets, so one image runs as the service, one stub or the fixture loader | `card-servicing-service`: `stack-service`; `fixture-loader`: `fixture-load,stack-loader`; `card-data-stub`: `stack-stub-card-data`; `transaction-activity-stub`: `stack-stub-transaction-activity`; `config-stub`: `stack-stub-config`; `reference-data-stub`: `stack-stub-reference-data`; `auth-stub`: `stack-stub-auth` |
+| `POSTGRES_DB` | `postgres:16.6` image bootstrap | Names the database the image creates at first start of an empty store | `postgres`: `cardservicing` |
+| `POSTGRES_USER` | `postgres:16.6` image bootstrap | Names the user the image creates with that database | `postgres`: `cardservicing` |
+| `POSTGRES_PASSWORD` | `postgres:16.6` image bootstrap | Sets that user's password; the image refuses to initialise an empty store without it | `postgres`: `local-throwaway`, the throwaway local-container value that `DB_PASSWORD` also carries |

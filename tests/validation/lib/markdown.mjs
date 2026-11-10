@@ -28,6 +28,12 @@
  * of block for checks that scan lines themselves. A fence or comment opened inside a
  * blockquote ends when the quote level it opened in ends, even if an outer quote
  * continues. Line numbers are 1-based indexes into the text split on /\r?\n/.
+ *
+ * Links come from one left-to-right scanner that follows CommonMark's inline rules
+ * for links, images, reference links and autolinks, adds GitHub's autolink literals
+ * and reads a paragraph's lines together. It approximates block structure and does
+ * not model indented code blocks, list-container indentation beyond the paragraph a
+ * list item opens, or inline raw HTML other than comments.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -400,12 +406,13 @@ function commentEnd(s, i) {
 }
 
 /**
- * The inline link of `s` whose text opens at `open` and closes at the `]` at `close`, with
- * no line break between that `]` and the link's end, or null. Code spans are masked first.
+ * The inline link of `s` whose text, matched by the caller, closes at the `]` at `close`:
+ * the inlineTail that must follow that `]`, read on raw characters, with no line break
+ * between the `]` and the link's end, or null.
  */
-function linkClosedAt(s, open, close) {
-  const link = matchInlineLink(maskCodeSpans(s), open);
-  return link && link.textEnd === close && !s.slice(close, link.end).includes('\n') ? link : null;
+function linkClosedAt(s, close) {
+  const tail = s[close + 1] === '(' ? inlineTail(s, close + 1) : null;
+  return tail && !s.slice(close, tail.end).includes('\n') ? tail : null;
 }
 
 /**
@@ -449,14 +456,14 @@ function blankRunComments(s) {
     if (s[i] === ']') {
       const opener = openers.pop();
       if (opener?.active && s[i + 1] === '(') {
-        const link = linkClosedAt(out + s.slice(copied), opener.at, i);
+        const link = linkClosedAt(out + s.slice(copied), i);
         if (link) {
           if (!opener.image) for (const o of openers) if (!o.image) o.active = false;
           i = link.end;
           while (next < spans.length && base + spans[next].start < i) next++;
           continue;
         }
-        unlinked.push({ open: opener.at, close: i });
+        unlinked.push({ close: i });
       }
       i++;
       continue;
@@ -475,8 +482,8 @@ function blankRunComments(s) {
     next = 0;
   }
   let blanked = out + s.slice(copied);
-  for (const { open, close } of unlinked) {
-    if (linkClosedAt(blanked, open, close)) blanked = `${blanked.slice(0, close + 1)} ${blanked.slice(close + 2)}`;
+  for (const { close } of unlinked) {
+    if (linkClosedAt(blanked, close)) blanked = `${blanked.slice(0, close + 1)} ${blanked.slice(close + 2)}`;
   }
   return blanked;
 }
@@ -574,13 +581,47 @@ export function hiddenLines(text) {
 }
 
 /**
- * Inline code spans of one line, CommonMark style: a backtick run opens a span that the
- * next run of the same length closes, and an unmatched run is literal. A backslash
- * outside code escapes the next character, so an escaped backtick never opens a span.
- * One leading and one trailing space are trimmed from content that has both and is not
- * all spaces. Returns [{ start, end, content }] with `end` exclusive.
+ * The code span opened by the whole backtick run that starts at `i`, CommonMark style: the
+ * next run of exactly the same length closes it. Line endings in the content become
+ * spaces, then one leading and one trailing space are removed from content that has both
+ * and is not all spaces. Returns { end, content } with `end` exclusive, or null when no
+ * run closes it, in which case the opening run is literal text.
  */
-function findCodeSpans(s) {
+function codeSpanAt(s, i) {
+  let j = i;
+  while (j < s.length && s[j] === '`') j++;
+  const len = j - i;
+  let k = j;
+  while (k < s.length) {
+    if (s[k] !== '`') {
+      k++;
+      continue;
+    }
+    let m = k;
+    while (m < s.length && s[m] === '`') m++;
+    if (m - k === len) {
+      let content = s.slice(j, k).replace(/\r\n|\r|\n/g, ' ');
+      if (content.length >= 2 && content[0] === ' ' && content[content.length - 1] === ' ' && /[^ ]/.test(content)) {
+        content = content.slice(1, -1);
+      }
+      return { end: m, content };
+    }
+    k = m;
+  }
+  return null;
+}
+
+/**
+ * Inline code spans of a string, CommonMark style: a backtick run opens a span that the
+ * next run of the same length closes, and an unmatched run is literal. A backslash
+ * outside code escapes the next character, so an escaped backtick never opens a span. A
+ * span may cross a line ending, which its content holds as a space; one leading and one
+ * trailing space are trimmed from content that has both and is not all spaces.
+ * @param {string} s
+ * @returns {{ start: number, end: number, content: string }[]} offsets into `s`, `end` exclusive
+ */
+export function findCodeSpans(s) {
+  asText(s, 'findCodeSpans');
   const spans = [];
   let i = 0;
   while (i < s.length) {
@@ -593,34 +634,13 @@ function findCodeSpans(s) {
       i++;
       continue;
     }
-    let j = i;
-    while (j < s.length && s[j] === '`') j++;
-    const len = j - i;
-    let close = -1;
-    let k = j;
-    while (k < s.length) {
-      if (s[k] !== '`') {
-        k++;
-        continue;
-      }
-      let m = k;
-      while (m < s.length && s[m] === '`') m++;
-      if (m - k === len) {
-        close = k;
-        break;
-      }
-      k = m;
-    }
-    if (close < 0) {
-      i = j;
+    const span = codeSpanAt(s, i);
+    if (!span) {
+      while (i < s.length && s[i] === '`') i++;
       continue;
     }
-    let content = s.slice(j, close);
-    if (content.length >= 2 && content[0] === ' ' && content[content.length - 1] === ' ' && /[^ ]/.test(content)) {
-      content = content.slice(1, -1);
-    }
-    spans.push({ start: i, end: close + len, content });
-    i = close + len;
+    spans.push({ start: i, end: span.end, content: span.content });
+    i = span.end;
   }
   return spans;
 }
@@ -946,6 +966,31 @@ function protectInline(s) {
     out += s[i] === PH_OPEN || s[i] === PH_CLOSE ? hold(s[i]) : s[i];
   }
   return { out, held };
+}
+
+/**
+ * A link destination decoded as CommonMark's unescapeString decodes it, in one left-to-right
+ * pass: a backslash before ASCII punctuation gives that character, so `\&amp;` stays the text
+ * `&amp;`; a character reference gives the text it stands for (charReference); every other
+ * character is kept. Decoded text is not read again, so a decoded `\` or `&` is literal.
+ */
+function unescapeString(s) {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && i + 1 < s.length && ASCII_PUNCT_RE.test(s[i + 1])) {
+      out += s[i + 1];
+      i++;
+      continue;
+    }
+    const ref = s[i] === '&' ? charReference(s, i) : null;
+    if (ref) {
+      out += ref.value;
+      i = ref.end - 1;
+      continue;
+    }
+    out += s[i];
+  }
+  return out;
 }
 
 /**
@@ -1305,187 +1350,582 @@ export function surplusCellRows(table, label = 'table') {
   return surplus;
 }
 
-/** Replaces inline code spans with spaces of equal length, so positions survive. */
-function maskCodeSpans(line) {
-  const spans = findCodeSpans(line);
-  if (spans.length === 0) return line;
-  let out = '';
-  let pos = 0;
-  for (const span of spans) {
-    out += line.slice(pos, span.start) + ' '.repeat(span.end - span.start);
-    pos = span.end;
-  }
-  return out + line.slice(pos);
-}
-
 const EXTERNAL_SCHEME_RE = /^(?:https?|mailto):/i;
-const REF_DEF_RE = /^ {0,3}\[([^\]]+)\]:[ \t]*(<[^>]*>|\S+)(?:[ \t]+("[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*$/;
-const unescapePunct = (s) => s.replace(/\\([!-/:-@[-`{-~])/g, '$1');
-const isBlank = (c) => c === ' ' || c === '\t';
+// A setext underline; its indentation is measured against the paragraph it would close.
+const SETEXT_UNDERLINE_RE = /^[ \t]*(?:=+|-+)[ \t]*$/;
+// The list-item markers that open a line, nested ones on the same line included.
+const LIST_PREFIX_RE = /^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$))+/;
+// A list item that may interrupt a paragraph of its own container: not empty, and starting
+// at 1 when ordered.
+const LIST_INTERRUPT_RE = /^[ \t]*(?:[-+*]|0{0,8}1[.)])[ \t]+[^ \t]/;
+// The starts of CommonMark HTML blocks of types 1–6, the kinds that can interrupt a paragraph.
+const HTML_BLOCK_START_RE = new RegExp(
+  '^[ \\t]*<(?:(?:script|pre|style|textarea)(?:[ \\t>]|$)|!--|\\?|![A-Za-z]|!\\[CDATA\\[|/?(?:' +
+    'address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|' +
+    'dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|' +
+    'header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|' +
+    'param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \\t>]|/>|$))',
+  'i',
+);
+// A list-item marker opens a block at any indentation: a nested item sits deeper than three
+// columns inside its parent's content, and container indentation is not tracked here.
+const LIST_MARKER_RE = /^[ \t]*(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)/;
+const THEMATIC_BREAK_RE = /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
+const HOST_LABEL = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
+const EMAIL_AUTOLINK_RE = new RegExp(`<([A-Za-z0-9.!#$%&'*+/=?^_\`{|}~-]+@${HOST_LABEL}(?:\\.${HOST_LABEL})*)>`, 'y');
+const URI_AUTOLINK_RE = /<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^\x00-\x20\x7f<>]*)>/y;
+const LINK_LABEL_RE = /\[((?:[^\\[\]]|\\[\s\S]){0,999})\]/y;
+const LABEL_TEXT_RE = /^(?:[^\\[\]]|\\[\s\S]){0,999}$/;
+// GitHub's extended autolink literals: www. and http(s):// at a line start or after
+// whitespace, *, _, ~ or (, and bare email addresses.
+const URL_LITERAL_RE = /(?<=^|[\s*_~(])(?:https?:\/\/|www\.)[^\s<]*/g;
+const EMAIL_LITERAL_RE = /(?<![A-Za-z0-9._+-])[A-Za-z0-9._+-]+@[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+/g;
+const DOMAIN_RE = /^[\p{L}\p{N}_-]+(?:\.[\p{L}\p{N}_-]+)*/u;
+const MAX_EXCERPT = 80;
+const NO_DEFINITIONS = new Map();
 
+/** True when the character at `index` follows an odd run of backslashes, which escapes it. */
 function isEscaped(s, index) {
   let n = 0;
   for (let k = index - 1; k >= 0 && s[k] === '\\'; k--) n++;
   return n % 2 === 1;
 }
 
-/**
- * Matches an inline link whose text opens at `open` (a `[`) on a code-masked line: text
- * with up to one nested bracket level, then `(destination "optional title")`. The
- * destination is `<…>` or a space-free run with balanced parentheses.
- */
-function matchInlineLink(s, open) {
-  let depth = 0;
-  let j = open + 1;
-  for (; j < s.length; j++) {
-    const c = s[j];
-    if (c === '\\') {
-      j++;
-    } else if (c === '[') {
-      depth++;
-      if (depth > 1) return null;
-    } else if (c === ']') {
-      if (depth === 0) break;
-      depth--;
-    }
+/** Link-label matching key: trimmed, inner whitespace runs collapsed to one space, case-folded. */
+function labelKey(label) {
+  return label.trim().replace(/[ \t\r\n]+/g, ' ').toUpperCase().toLowerCase();
+}
+
+/** One-line diagnostic excerpt: whitespace runs collapsed, at most MAX_EXCERPT characters. */
+function excerpt(s) {
+  const one = s.replace(/\s+/g, ' ').trim();
+  return one.length > MAX_EXCERPT ? `${one.slice(0, MAX_EXCERPT - 1)}…` : one;
+}
+
+/** Skips optional spaces and tabs holding at most one line ending. */
+function skipLinkSpace(s, k) {
+  while (s[k] === ' ' || s[k] === '\t') k++;
+  if (s[k] === '\n') k++;
+  while (s[k] === ' ' || s[k] === '\t') k++;
+  return k;
+}
+
+/** End, exclusive, of the link title `"…"`, `'…'` or `(…)` that opens at `k`, or -1. */
+function titleEnd(s, k) {
+  const close = s[k] === '(' ? ')' : s[k];
+  for (let m = k + 1; m < s.length; m++) {
+    if (s[m] === '\\' && m + 1 < s.length && ASCII_PUNCT_RE.test(s[m + 1])) m++;
+    else if (s[m] === close) return m + 1;
+    else if (close === ')' && s[m] === '(') return -1;
   }
-  if (j >= s.length || s[j + 1] !== '(') return null;
-  const textEnd = j;
-  let k = j + 2;
-  while (k < s.length && isBlank(s[k])) k++;
-  let destStart;
-  let destEnd;
-  if (s[k] === '<') {
-    destStart = k + 1;
-    let m = destStart;
-    while (m < s.length && s[m] !== '>') {
-      if (s[m] === '<') return null;
-      m += s[m] === '\\' ? 2 : 1;
-    }
-    if (m >= s.length) return null;
-    destEnd = m;
-    k = m + 1;
-  } else {
-    destStart = k;
-    let parens = 0;
-    while (k < s.length && !isBlank(s[k])) {
-      const c = s[k];
-      if (c === '\\' && k + 1 < s.length) {
-        k += 2;
-        continue;
-      }
-      if (c === '(') parens++;
-      else if (c === ')') {
-        if (parens === 0) break;
-        parens--;
-      }
-      k++;
-    }
-    if (parens !== 0) return null;
-    destEnd = k;
-  }
-  while (k < s.length && isBlank(s[k])) k++;
-  if (s[k] === '"' || s[k] === "'" || s[k] === '(') {
-    const closer = s[k] === '(' ? ')' : s[k];
-    let m = k + 1;
-    while (m < s.length && s[m] !== closer) m += s[m] === '\\' ? 2 : 1;
-    if (m >= s.length) return null;
-    k = m + 1;
-    while (k < s.length && isBlank(s[k])) k++;
-  }
-  if (s[k] !== ')') return null;
-  return { textEnd, destStart, destEnd, end: k + 1 };
+  return -1;
 }
 
 /**
- * Inline links and images of one line, in position order (a link before the images or
- * links nested in its text). Structure comes from the code-masked line; text and target
- * are sliced from the original line at the same positions.
+ * The link destination that opens at `k`, read on raw characters, for inline links and
+ * reference definitions alike: `<…>` (no line ending, no unescaped `<`) or a run without
+ * whitespace or control characters whose parentheses balance, which may be empty only
+ * before a `)`; backticks in it are ordinary characters. Returns { start, stop, end }, the
+ * destination being s.slice(start, stop) and `end` the offset after it, or null.
  */
-function inlineLinks(masked, original) {
-  const found = [];
-  let i = 0;
-  while (i < masked.length) {
-    const ch = masked[i];
-    if (ch === '\\') {
-      i += 2;
-      continue;
+function linkDestination(s, k) {
+  if (s[k] === '<') {
+    let m = k + 1;
+    while (m < s.length && s[m] !== '>') {
+      if (s[m] === '<' || s[m] === '\n') return null;
+      m += s[m] === '\\' && m + 1 < s.length && s[m + 1] !== '\n' ? 2 : 1;
     }
-    if (ch !== '[') {
-      i++;
-      continue;
+    return m >= s.length ? null : { start: k + 1, stop: m, end: m + 1 };
+  }
+  const start = k;
+  let parens = 0;
+  for (; k < s.length; k++) {
+    const c = s[k];
+    if (c === '\\' && k + 1 < s.length && ASCII_PUNCT_RE.test(s[k + 1])) {
+      k++;
+    } else if (c === '(') {
+      parens++;
+    } else if (c === ')') {
+      if (parens === 0) break;
+      parens--;
+    } else if (c <= ' ' || c === '\x7f') {
+      break;
     }
-    const link = matchInlineLink(masked, i);
-    if (!link) {
-      i++;
-      continue;
+  }
+  if (parens !== 0 || (k === start && s[k] !== ')')) return null;
+  return { start, stop: k, end: k };
+}
+
+/**
+ * The inline-link tail that opens at `open`, the `(` right after a link text's `]`, read on
+ * raw characters: optional whitespace, a linkDestination, an optional title set off from it
+ * by whitespace, optional whitespace and `)`. Returns { destStart, destEnd, end }.
+ */
+function inlineTail(s, open) {
+  // Destination first, as in CommonMark: `[a]( "t")` has the destination `"t"`, quotes
+  // included, and only `<>` gives an empty destination that a title can follow.
+  const dest = linkDestination(s, skipLinkSpace(s, open + 1));
+  if (!dest) return null;
+  let k = skipLinkSpace(s, dest.end);
+  if (k > dest.end && (s[k] === '"' || s[k] === "'" || s[k] === '(')) {
+    const end = titleEnd(s, k);
+    if (end > 0) k = skipLinkSpace(s, end);
+  }
+  return s[k] === ')' ? { destStart: dest.start, destEnd: dest.stop, end: k + 1 } : null;
+}
+
+/**
+ * The inline link whose text opens at `open`, a `[`: the text runs to the `]` that balances
+ * it, a backslash escaping the character after it, and an inlineTail must follow that `]` at
+ * once. Code spans are not skipped, so callers pass text whose code spans are already held
+ * as placeholders. Returns { textEnd, destStart, destEnd, end }, `textEnd` being the `]`.
+ */
+function matchInlineLink(s, open) {
+  let depth = 0;
+  for (let j = open + 1; j < s.length; j++) {
+    if (s[j] === '\\') {
+      j++;
+    } else if (s[j] === '[') {
+      depth++;
+    } else if (s[j] === ']') {
+      if (depth > 0) {
+        depth--;
+        continue;
+      }
+      const tail = s[j + 1] === '(' ? inlineTail(s, j + 1) : null;
+      return tail ? { textEnd: j, ...tail } : null;
     }
-    const image = i > 0 && masked[i - 1] === '!' && !isEscaped(masked, i - 1);
-    found.push({
-      text: original.slice(i + 1, link.textEnd),
-      target: unescapePunct(original.slice(link.destStart, link.destEnd)),
-      image,
+  }
+  return null;
+}
+
+
+/** The CommonMark autolink `<scheme:…>` or `<user@host>` that opens at `i`, or null. */
+function autolinkAt(s, i) {
+  EMAIL_AUTOLINK_RE.lastIndex = i;
+  const email = EMAIL_AUTOLINK_RE.exec(s);
+  if (email) return { end: i + email[0].length, text: email[1], target: `mailto:${email[1]}` };
+  URI_AUTOLINK_RE.lastIndex = i;
+  const uri = URI_AUTOLINK_RE.exec(s);
+  return uri ? { end: i + uri[0].length, text: uri[1], target: uri[1] } : null;
+}
+
+/**
+ * Scans one block's inline text left to right, as CommonMark's inline parser does for
+ * links. A backslash escapes the ASCII punctuation after it; a code span or an autolink is
+ * taken whole, so nothing inside it is a bracket; `[` and `![` are pushed as openers, and
+ * each `]` closes the nearest one as an inline link or, failing that, as a full, collapsed
+ * or shortcut reference to `definitions`. A link deactivates the link openers before it, so
+ * a link inside a link's text wins and the outer brackets stay text; images may hold links
+ * and links may hold images. Offsets index `s`. Returns `links`
+ * [{ start, end, text, target, image?, autolink?, inline? }], `problems` [{ start, message }]
+ * and `covered`, the [start, end) ranges of code spans, autolinks, links and images.
+ */
+function scanInline(s, definitions) {
+  const links = [];
+  const problems = [];
+  const covered = [];
+  const openers = [];
+  const sites = []; // every `](` outside code: { from, at, closed }
+  const reportedLabels = new Set();
+
+  const closeBracket = (i) => {
+    const opener = openers.pop();
+    const site = s[i + 1] === '(' ? { from: opener ? opener.start : i, at: i, closed: false } : null;
+    if (site) sites.push(site);
+    if (!opener || !opener.active) return i + 1;
+    const text = s.slice(opener.textStart, i);
+    const tail = site ? inlineTail(s, i + 1) : null;
+    let link = null;
+    if (tail) {
+      site.closed = true;
+      link = { end: tail.end, target: unescapeString(s.slice(tail.destStart, tail.destEnd)), inline: true };
+    } else {
+      LINK_LABEL_RE.lastIndex = i + 1;
+      const label = LINK_LABEL_RE.exec(s);
+      const full = label !== null && label[1] !== '';
+      const name = full ? label[1] : text;
+      const end = label ? i + 1 + label[0].length : i + 1;
+      const key = labelKey(name);
+      // A `[^…]` label is a footnote and a blank one names nothing: neither is a reference.
+      if (key !== '' && !name.startsWith('^')) {
+        const target = full || LABEL_TEXT_RE.test(name) ? definitions.get(key) : undefined;
+        if (target !== undefined) {
+          link = { end, target };
+        } else if (label && !reportedLabels.has(opener.start)) {
+          // Only the full and collapsed forms are reported: a shortcut without a definition
+          // is ordinary bracketed text such as [Name] or a task-list [ ].
+          const message = `undefined link reference: ${excerpt(s.slice(opener.start, end))}`;
+          problems.push({ start: opener.start, message });
+          if (full) reportedLabels.add(i + 1);
+        }
+      }
+    }
+    if (!link) return i + 1;
+    links.push({
+      start: opener.start,
+      end: link.end,
+      text,
+      target: link.target,
+      image: opener.image,
+      inline: link.inline,
     });
-    found.push(...inlineLinks(masked.slice(i + 1, link.textEnd), original.slice(i + 1, link.textEnd)));
-    i = link.end;
+    covered.push([opener.start, link.end]);
+    if (!opener.image) for (const o of openers) if (!o.image) o.active = false;
+    return link.end;
+  };
+
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '\\' && i + 1 < s.length && ASCII_PUNCT_RE.test(s[i + 1])) {
+      i += 2;
+    } else if (c === '`') {
+      const span = codeSpanAt(s, i);
+      if (span) {
+        covered.push([i, span.end]);
+        i = span.end;
+      } else {
+        while (s[i] === '`') i++;
+      }
+    } else if (c === '<') {
+      const auto = autolinkAt(s, i);
+      if (auto) {
+        links.push({ start: i, end: auto.end, text: auto.text, target: auto.target, autolink: true });
+        covered.push([i, auto.end]);
+        i = auto.end;
+      } else {
+        i++;
+      }
+    } else if (c === '[' || (c === '!' && s[i + 1] === '[')) {
+      const image = c === '!';
+      openers.push({ start: i, textStart: i + (image ? 2 : 1), image, active: true });
+      i += image ? 2 : 1;
+    } else if (c === ']') {
+      i = closeBracket(i);
+    } else {
+      i++;
+    }
+  }
+
+  // A `](` that closes no inline link or image is reported once, from its opener (else from
+  // the `](`) to the end of the `](` line; a construct inside a reported excerpt is skipped.
+  let reportedTo = -1;
+  for (const site of sites.filter((x) => !x.closed).sort((a, b) => a.from - b.from)) {
+    if (site.from < reportedTo) continue;
+    const eol = s.indexOf('\n', site.at);
+    reportedTo = eol < 0 ? s.length : eol;
+    problems.push({ start: site.from, message: `malformed link: ${excerpt(s.slice(site.from, reportedTo))}` });
+  }
+  problems.sort((a, b) => a.start - b.start);
+  links.sort((a, b) => a.start - b.start);
+  return { links, problems, covered };
+}
+
+/** Removes the trailing characters GitHub leaves out of an autolink literal. */
+function trimLiteral(text) {
+  let t = text;
+  for (;;) {
+    const last = t.slice(-1);
+    if (last !== '' && '?!.,:*_~'.includes(last)) t = t.slice(0, -1);
+    else if (last === ')' && t.split(')').length > t.split('(').length) t = t.slice(0, -1);
+    else if (last === ';' && /&[A-Za-z0-9]+;$/.test(t)) t = t.replace(/&[A-Za-z0-9]+;$/, '');
+    else return t;
+  }
+}
+
+/** True when `host` opens with a domain GitHub autolinks: no `_` in its last two labels. */
+function validDomain(host, needPeriod) {
+  const m = DOMAIN_RE.exec(host);
+  if (!m) return false;
+  const labels = m[0].split('.');
+  return (!needPeriod || labels.length > 1) && !labels.slice(-2).some((label) => label.includes('_'));
+}
+
+/**
+ * GitHub's extended autolink literals in `s` outside the `covered` ranges: `www.` (target
+ * `http://…`), `http://` and `https://` links, and bare email addresses (target `mailto:…`).
+ * A literal ends at whitespace, `<` or a covered range; trailing `?!.,:*_~`, an unbalanced
+ * `)` and an entity-like `&name;` are left out of it.
+ */
+function literalAutolinks(s, covered) {
+  const found = [];
+  const stopAt = (start) => {
+    let stop = s.length;
+    for (const [from, to] of covered) {
+      if (start >= from && start < to) return -1;
+      if (from > start && from < stop) stop = from;
+    }
+    return stop;
+  };
+  for (const m of s.matchAll(URL_LITERAL_RE)) {
+    const stop = stopAt(m.index);
+    if (stop < 0) continue;
+    const text = trimLiteral(m[0].slice(0, stop - m.index));
+    const www = m[0].startsWith('www.');
+    const hostStart = www ? 0 : m[0].indexOf('//') + 2;
+    if (www ? !text.startsWith('www.') : text.length <= hostStart) continue;
+    if (!validDomain(text.slice(hostStart), www)) continue;
+    const target = www ? `http://${text}` : text;
+    found.push({ start: m.index, end: m.index + text.length, text, target, autolink: true });
+  }
+  for (const m of s.matchAll(EMAIL_LITERAL_RE)) {
+    const end = m.index + m[0].length;
+    if (stopAt(m.index) < end || /[-_]$/.test(m[0])) continue;
+    if (found.some((f) => m.index < f.end && end > f.start)) continue;
+    found.push({ start: m.index, end, text: m[0], target: `mailto:${m[0]}`, autolink: true });
   }
   return found;
 }
 
+/** Width of `s` in columns, a tab advancing to the next multiple of four. */
+function columns(s) {
+  let col = 0;
+  for (const c of s) col = c === '\t' ? col + 4 - (col % 4) : col + 1;
+  return col;
+}
+
 /**
- * Inline links, images (flagged `image: true`) and reference definitions outside fenced
- * code, HTML comments and inline code. Targets with an http:, https: or mailto: scheme are excluded;
- * any other scheme is returned so callers can flag it as non-relative.
- * @param {string} text
- * @returns {{ text: string, target: string, line: number, image?: boolean }[]}
+ * The reference definition that opens at `k` in a paragraph's raw content, as CommonMark
+ * reads it: a link label holding non-whitespace that is not a `[^…]` footnote, then `:`; a
+ * linkDestination after optional spaces and tabs holding at most one line ending; an
+ * optional title set off from it by the same kind of whitespace, which may span lines; then
+ * only spaces and tabs to the end of the line. A title followed by other text on its line is
+ * dropped when the destination ends its own line, and leaves no definition otherwise.
+ * Returns { key, target, end }, `end` being the offset after the definition's line ending
+ * (the content's length when nothing follows), or null.
  */
-export function parseLinks(text) {
-  const lines = splitLines(asText(text, 'parseLinks'));
+function definitionAt(c, k) {
+  LINK_LABEL_RE.lastIndex = k;
+  const label = LINK_LABEL_RE.exec(c);
+  const colon = label ? k + label[0].length : -1;
+  if (!label || c[colon] !== ':' || label[1].startsWith('^') || labelKey(label[1]) === '') return null;
+  const dest = linkDestination(c, skipLinkSpace(c, colon + 1));
+  if (!dest) return null;
+  const lineEnd = (j) => {
+    while (c[j] === ' ' || c[j] === '\t') j++;
+    if (j >= c.length) return c.length;
+    return c[j] === '\n' ? j + 1 : -1;
+  };
+  let end = -1;
+  const t = skipLinkSpace(c, dest.end);
+  if (t > dest.end && (c[t] === '"' || c[t] === "'" || c[t] === '(')) {
+    const close = titleEnd(c, t);
+    if (close > 0) end = lineEnd(close);
+  }
+  if (end < 0) end = lineEnd(dest.end);
+  if (end < 0) return null;
+  return { key: labelKey(label[1]), target: unescapeString(c.slice(dest.start, dest.stop)), end };
+}
+
+/**
+ * Takes the reference definitions that open a paragraph, as CommonMark does when the
+ * paragraph closes: passes each to `define(key, target)` in order and returns how many of
+ * the paragraph's lines they consume. Definitions are read on the paragraph's raw content,
+ * each line without its leading spaces and tabs and the first also without the list
+ * markers that open it. They follow one another from the first line; the first line that
+ * completes none ends them, and it and every later line are paragraph text.
+ */
+function takeDefinitions(lines, para, define = () => {}) {
+  const starts = [];
+  let c = '';
+  para.lines.forEach((i, n) => {
+    const { rest } = unquote(lines[i]);
+    if (n > 0) c += '\n';
+    starts.push(c.length);
+    c += (n === 0 ? rest.slice(para.prefix) : rest).replace(/^[ \t]+/, '');
+  });
+  let k = 0;
+  let taken = 0;
+  while (taken < starts.length && c[k] === '[') {
+    const def = definitionAt(c, k);
+    if (!def) break;
+    define(def.key, def.target);
+    k = def.end;
+    while (taken < starts.length && starts[taken] < k) taken++;
+  }
+  return taken;
+}
+
+/**
+ * The one pass behind parseLinks and linkDiagnostics, in two steps. Blocks come first, with
+ * block structure approximated: fenced code and HTML comment blocks are skipped and inline
+ * HTML comments blanked (blankInlineComments); table lines and ATX headings are
+ * blocks of one line; a blank line or a thematic break ends a paragraph; a deeper
+ * blockquote, the start of a CommonMark HTML block of types 1–6 or a list-item marker ends
+ * it and opens a new one, an empty list item opening none; a setext underline at the
+ * paragraph's own quote depth ends it as a heading, unless reference definitions are all
+ * it holds, and is no text itself; any other line continues it, lazily when its quote is
+ * shallower. A list item in the paragraph's own container, not on a lazy line, ends it only
+ * when the item is not empty and, if ordered, starts at 1. In a paragraph that a list item
+ * opens, a line indented less than the item's content is lazy too, and indentation counts
+ * from that content. A closing paragraph gives up the reference definitions that open it
+ * (takeDefinitions); each applies to the whole document, the first of a label winning, so a
+ * use may come before its definition. Each block's remaining lines are then scanned
+ * together. Returns links and problems in document order, each with its 1-based line.
+ */
+function scanDocument(text) {
+  const lines = splitLines(text);
   const mask = hiddenMask(lines);
+  // Inline HTML comments are blanked in place, so offsets and line lengths survive.
   const visible = blankInlineComments(lines, mask);
-  const out = [];
+  const tableLines = new Set();
+  for (const table of parseTables(text)) {
+    tableLines.add(table.line);
+    tableLines.add(table.line + 1);
+    table.rowLines.forEach((line) => tableLines.add(line));
+  }
+  const blocks = [];
+  const definitions = new Map();
+  const define = (key, target) => {
+    if (!definitions.has(key)) definitions.set(key, target);
+  };
+  let para = null;
+  const closePara = () => {
+    if (para) para.scan = para.lines.slice(takeDefinitions(visible, para, define));
+    para = null;
+  };
   for (let i = 0; i < lines.length; i++) {
-    if (mask[i]) continue;
-    const line = lines[i];
-    const def = REF_DEF_RE.test(unquote(visible[i]).rest) ? REF_DEF_RE.exec(unquote(line).rest) : null;
-    // "[^label]:" opens a footnote, whose text is not a link target.
-    if (def && !def[1].startsWith('^')) {
-      const raw = def[2].startsWith('<') ? def[2].slice(1, -1) : def[2];
-      const target = unescapePunct(raw);
-      if (!EXTERNAL_SCHEME_RE.test(target)) out.push({ text: def[1], target, line: i + 1 });
+    const { rest, depth } = unquote(lines[i]);
+    if (mask[i] || rest.trim() === '' || THEMATIC_BREAK_RE.test(rest)) {
+      closePara();
       continue;
     }
-    for (const link of inlineLinks(maskCodeSpans(visible[i]), line)) {
-      if (EXTERNAL_SCHEME_RE.test(link.target)) continue;
-      const entry = { text: link.text, target: link.target, line: i + 1 };
-      if (link.image) entry.image = true;
-      out.push(entry);
+    if (tableLines.has(i + 1) || matchAtx(rest)) {
+      closePara();
+      blocks.push({ scan: [i] });
+      continue;
     }
+    if (para && depth <= para.depth) {
+      const indent = columns(/^[ \t]*/.exec(rest)[0]);
+      const inner = indent - para.contentIndent; // negative: lazy past the list item
+      const own = depth === para.depth && inner >= 0; // inside the paragraph's own container
+      const underline = own && inner <= 3 && SETEXT_UNDERLINE_RE.test(rest);
+      if (underline && takeDefinitions(visible, para) < para.lines.length) {
+        closePara();
+        continue;
+      }
+      const html = (own ? inner : indent) <= 3 && HTML_BLOCK_START_RE.test(rest);
+      const item = LIST_MARKER_RE.test(rest) && (!own || LIST_INTERRUPT_RE.test(rest));
+      if (!html && !item) {
+        para.lines.push(i);
+        continue;
+      }
+    }
+    closePara();
+    const marker = LIST_PREFIX_RE.exec(rest)?.[0] ?? '';
+    if (marker !== '' && marker.length === rest.length) continue; // an empty list item
+    para = { depth, lines: [i], prefix: marker.length, contentIndent: columns(marker) };
+    blocks.push(para);
+  }
+  closePara();
+
+  const links = [];
+  const problems = [];
+  for (const { scan: block } of blocks) {
+    if (block.length === 0) continue;
+    const starts = [];
+    let s = '';
+    for (const i of block) {
+      if (starts.length > 0) s += '\n';
+      starts.push(s.length);
+      s += unquote(visible[i]).rest;
+    }
+    const lineOf = (offset) => {
+      let k = starts.length - 1;
+      while (k > 0 && starts[k] > offset) k--;
+      return block[k] + 1;
+    };
+    const scan = scanInline(s, definitions);
+    const found = [...scan.links, ...literalAutolinks(s, scan.covered)].sort((a, b) => a.start - b.start);
+    for (const link of found) links.push({ ...link, line: lineOf(link.start) });
+    for (const problem of scan.problems) problems.push({ line: lineOf(problem.start), message: problem.message });
+  }
+  return { links, problems };
+}
+
+/**
+ * Links of a Markdown document in document order, outside fenced code, HTML comments and
+ * code spans:
+ * inline links and images (`image: true`); uses of reference definitions in full
+ * (`[text][label]`), collapsed (`[label][]`) and shortcut (`[label]`) form, carrying the
+ * definition's target; CommonMark autolinks (`<scheme:…>`, and `<user@host>` as `mailto:`)
+ * and GitHub's autolink literals (`www.`, `http://`, `https://`, bare email addresses), both
+ * flagged `autolink: true`. Definitions are read where CommonMark reads them, at the start
+ * of a paragraph (a list item's or a blockquote's included), and may span lines; each serves
+ * the whole document, uses before it included, and a definition nobody uses is no link. A
+ * paragraph's lines are read together, so a link may span lines, but not across a setext
+ * underline or the start of an HTML block that ends the paragraph; `line` is the 1-based
+ * line where it opens.
+ * Labels match case-insensitively with whitespace collapsed, on their raw text. An inline or
+ * definition destination becomes its target through unescapeString: backslash-escaped
+ * punctuation and character references (`&amp;`, `&#35;`) give the characters they stand
+ * for, and nothing is percent-decoded. Autolink targets are not decoded. Targets with an
+ * http:, https: or mailto: scheme are left out unless
+ * `external` is true; any other scheme is always returned so callers can flag it. Block
+ * structure is approximated as scanDocument describes; this is not a full CommonMark parser.
+ * @param {string} text
+ * @param {{ external?: boolean }} [options]
+ * @returns {{ text: string, target: string, line: number, image?: boolean, autolink?: boolean }[]}
+ */
+export function parseLinks(text, { external = false } = {}) {
+  if (typeof external !== 'boolean') throw new TypeError('parseLinks: external must be a boolean');
+  const out = [];
+  for (const link of scanDocument(asText(text, 'parseLinks')).links) {
+    if (!external && EXTERNAL_SCHEME_RE.test(link.target)) continue;
+    const entry = { text: link.text, target: link.target, line: link.line };
+    if (link.image) entry.image = true;
+    if (link.autolink) entry.autolink = true;
+    out.push(entry);
   }
   return out;
 }
 
 /**
- * Resolves a link target against the root-relative file that holds it. The target is
- * percent-decoded (kept raw when decoding fails) and split at the first `#`. An
- * anchor-only target resolves to the file itself; a leading-slash path is returned as is
- * so callers can flag it; a path that escapes the root starts with `..`. Pure: no disk
- * access and no guard.
+ * Link syntax that renders as plain text, from the same scan as parseLinks, in document
+ * order. `malformed link: <excerpt>` marks a `](` outside code and HTML comments that
+ * closes no inline link or image, such as an unclosed destination, a destination holding
+ * a space, or a link whose text holds another link; `undefined link reference: <excerpt>` marks a full or
+ * collapsed reference whose label has no definition. A shortcut `[label]` without one is
+ * ordinary text, as in `[Name]` or a task-list `[ ]`, and is never reported. `line` is the
+ * line of the opening `[` (of the `](` when nothing opens it). An excerpt runs from there
+ * to the end of the `](` line, at most 80 characters, and a construct inside an excerpt
+ * already reported is not reported again.
+ * @param {string} text
+ * @returns {{ line: number, message: string }[]}
+ */
+export function linkDiagnostics(text) {
+  return scanDocument(asText(text, 'linkDiagnostics')).problems;
+}
+
+/**
+ * Resolves a link target against the root-relative file that holds it, as a browser
+ * resolves a URL. The target, as parseLinks and linkInCell return it with backslash escapes
+ * and character references already decoded, is first split at its first `#`, so a `#`
+ * written `&#35;` delimits the fragment as it does in a browser; the path part
+ * and the fragment are then percent-decoded independently, so an encoded `%23` stays a
+ * filename character rather than becoming a fragment delimiter. A part whose decoding
+ * fails on a malformed escape such as `%zz` is kept as written, without stopping the
+ * other part from decoding. The anchor is null when the target has no literal `#` and
+ * '' when the `#` ends it. An anchor-only target resolves to the file itself; a path
+ * that decodes to a leading slash is returned as is so callers can flag it; a path that
+ * escapes the root starts with `..`. Pure: no disk access and no guard.
  * @param {string} fromRel
  * @param {string} target
  * @returns {{ path: string, anchor: string | null }}
  */
 export function resolveLink(fromRel, target) {
   const rawTarget = String(target ?? '');
-  let decoded;
-  try {
-    decoded = decodeURIComponent(rawTarget);
-  } catch {
-    decoded = rawTarget; // a malformed escape such as "%zz" is kept as written
-  }
-  const hash = decoded.indexOf('#');
-  const linkPath = hash < 0 ? decoded : decoded.slice(0, hash);
-  const anchor = hash < 0 ? null : decoded.slice(hash + 1);
+  const decode = (part) => {
+    try {
+      return decodeURIComponent(part);
+    } catch {
+      return part; // a malformed escape such as "%zz" is kept as written
+    }
+  };
+  const hash = rawTarget.indexOf('#');
+  const linkPath = decode(hash < 0 ? rawTarget : rawTarget.slice(0, hash));
+  const anchor = hash < 0 ? null : decode(rawTarget.slice(hash + 1));
   if (linkPath === '') return { path: fromRel, anchor };
   if (linkPath.startsWith('/')) return { path: linkPath, anchor };
   let resolved = path.posix.normalize(path.posix.join(path.posix.dirname(fromRel), linkPath));
@@ -1494,14 +1934,16 @@ export function resolveLink(fromRel, target) {
 }
 
 /**
- * The first inline link or image in a table cell, outside inline code and HTML comments,
- * or null. No scheme is excluded; the caller decides what an external target means.
+ * The first inline link or image of a table cell, outside code spans and HTML comments, or
+ * null; an enclosing link comes before the image in its text. Reference links and autolinks
+ * are not considered. The target is decoded as parseLinks decodes an inline destination.
+ * No scheme is excluded; the caller decides what an external target means.
  * @param {string} cell
  * @returns {{ text: string, target: string } | null}
  */
 export function linkInCell(cell) {
-  const s = String(cell ?? '');
-  const [first] = inlineLinks(maskCodeSpans(blankInlineComments([s], [false])[0]), s);
+  const visible = blankInlineComments([String(cell ?? '')], [false])[0];
+  const first = scanInline(visible, NO_DEFINITIONS).links.find((link) => link.inline);
   return first ? { text: first.text, target: first.target } : null;
 }
 

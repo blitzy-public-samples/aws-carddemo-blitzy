@@ -21,6 +21,7 @@ Parent epic: [CS-04 Transaction Detail Drill-Down](../README.md)
 >   - Transaction identifier: at its start the step reads `transactionId` through step 3's hand-off accessor, which holds it from the first `transactions` element of step 3's filtered answer and fails the calling step with a message naming step 3 when step 3 did not pass, before this step sends any call.
 >   - Call order in step 4, one call at a time through the client: `GET /v1/accounts/00000000001/transactions/12345`, then `GET /v1/accounts/00000000001/transactions/<step 3 transaction identifier>` with `fixture-token-expired`, then `GET /v1/accounts/00000000011/transactions/<step 3 transaction identifier>`, then `GET /v1/accounts/00000000001/transactions/<step 3 transaction identifier>`, then `GET /v1/accounts/00000000002/transactions/<step 3 transaction identifier>`, then `GET /v1/accounts/00000000001/transactions/9999999999999999`. Every call except the second carries the client's default token `fixture-token-user0001`. The three rejected calls come first because none of them reads the cache or launches the background Config refresh, so no refresh started by an allowed call can land in a rejected call's request-log window. The allowed call precedes the two not-found calls, so its transaction read reaches the Transaction Activity stub instead of a cache entry a not-found call wrote.
 >   - Stub request logs: after the last call the step reads each of the five stubs' request logs in full through the client's request-log reader, under the stub names `auth`, `config`, `card-data`, `reference-data` and `transaction-activity`.
+>     > SCOPE-QUESTION (Resolved): The client's reader for this read is `E2eClient.wholeRequestLog(String stub)` (CS-01-002), which returns every entry the named stub's log lists, entries written before the flow included, from a settled read, so the Config entry AC7 needs is found whichever earlier test made it.
 > - Together this is the 1 file touched.
 >
 > In scope:
@@ -122,7 +123,7 @@ sequenceDiagram
         Service->>Card: Read the account cross-references
     end
     Service-->>Client: Detail answer with fresh data status
-    Note over Client: Reads all five stub request logs after the last call
+    Note over Client: Reads all five stub<br/>request logs after<br/>the last call
 ```
 
 ### Shared by both options
@@ -197,14 +198,14 @@ Settled assumptions:
 - Identical sample timestamps make step three's first row the highest identifier.
 - Compose defaults keep injection off.
 - The first regular fixture user's entitlement covers the first ten sample accounts and excludes the eleventh.
-- The flow finishes inside the configuration snapshot's fresh window, so no background refresh lands during a negative case.
+- The end-to-end client closes each call's log window only once the stub logs have settled, so no background refresh lands in a negative case.
 - The sample cross-reference links the transaction's card to the first sample account alone.
 - Card cross-references are never cached, so every allowed detail call reads them from the card stub.
+- The end-to-end client reads each stub's whole request log on demand, earlier entries included.
 
 Open assumptions:
 
 - Open → whether the end-to-end client exposes the service completion log with its cut-off time → settled by the end-to-end harness story.
-- Open → whether the end-to-end client reads a stub's whole request log beside its per-call and per-step entries → settled by the end-to-end harness story.
 
 | AC | Verdict | Why |
 |---|---|---|
@@ -214,7 +215,7 @@ Open assumptions:
 | AC4 | Holds | the length rule rejects the number before any upstream call |
 | AC5 | Holds | the access guard denies the eleventh sample account before any data read |
 | AC6 | Holds | token validation fails ahead of the authorization and data stages |
-| AC7 | Conditional | the harness must read each stub's whole request log |
+| AC7 | Holds | the harness reads each stub's whole request log |
 | AC8 | Holds | with injection off each upstream operation runs once |
 | AC9 | Conditional | it rests on the harness exposing the cut-off time |
 | AC10 | Holds | with injection off no call returns an unavailable or timed-out status |

@@ -8,8 +8,10 @@
  *   files of its family, and the entry point is readable and links onward;
  * - every file under docs/, every *.proto of the two proto roots and every OpenAPI document
  *   is reached, and every reached file is a readable regular file;
- * - no link is non-relative, leaves the delivery set or is broken, and every anchor into a
- *   Markdown file names one of its heading slugs (GitHub algorithm, duplicate suffixes included);
+ * - no link is non-relative (http, https and mailto links and autolinks included), leaves the
+ *   delivery set or is broken, and every anchor into a Markdown file names one of its heading
+ *   slugs (GitHub algorithm, duplicate suffixes included);
+ * - no link is malformed and every full or collapsed reference link has a definition;
  * - every story has a "4. Design" section, and every path it names, as a link or as a backticked
  *   path, exists.
  *
@@ -33,10 +35,12 @@ import {
   pathKind,
   listFiles,
   parseLinks,
+  linkDiagnostics,
   resolveLink,
   parseHeadings,
   sections,
   fencedBlocks,
+  findCodeSpans,
   isReferencePath,
   report,
 } from './lib/markdown.mjs';
@@ -124,51 +128,6 @@ function kindOf(rel) {
   return pathKind(rel);
 }
 
-/**
- * Inline code span contents of one line, CommonMark style: a backtick run closes on the next run
- * of equal length, an unmatched run is literal, and a backslash outside code escapes the next
- * character. The shared library keeps its span scanner private, so this mirrors it.
- */
-function codeSpans(line) {
-  const out = [];
-  let i = 0;
-  while (i < line.length) {
-    if (line[i] === '\\') {
-      i += 2;
-      continue;
-    }
-    if (line[i] !== '`') {
-      i++;
-      continue;
-    }
-    let j = i;
-    while (j < line.length && line[j] === '`') j++;
-    const run = j - i;
-    let close = -1;
-    let k = j;
-    while (k < line.length) {
-      if (line[k] !== '`') {
-        k++;
-        continue;
-      }
-      let m = k;
-      while (m < line.length && line[m] === '`') m++;
-      if (m - k === run) {
-        close = k;
-        break;
-      }
-      k = m;
-    }
-    if (close < 0) {
-      i = j;
-      continue;
-    }
-    out.push(line.slice(j, close));
-    i = close + run;
-  }
-  return out;
-}
-
 function main() {
   const violations = [];
   const texts = new Map();
@@ -203,12 +162,19 @@ function main() {
     return readability.get(rel);
   };
 
-  /** Checks every link of one Markdown file; `onReach` receives each regular file it links. */
+  /**
+   * Checks every link of one Markdown file, external ones included, and reports its link
+   * syntax that renders as plain text; `onReach` receives each regular file it links. Each
+   * file is scanned once, reached or not, so each diagnostic is reported once.
+   */
   const scanLinks = (fromRel, onReach) => {
     const text = textOf(fromRel);
     // An unreadable file is recorded as such and has no links to follow.
     if (text === null) return;
-    for (const { target, line } of parseLinks(text)) {
+    for (const { line, message } of linkDiagnostics(text)) {
+      violations.push({ path: fromRel, line, message });
+    }
+    for (const { target, line } of parseLinks(text, { external: true })) {
       const link = classifyLink(fromRel, target);
       if ('violation' in link) {
         violations.push({ path: fromRel, line, message: link.violation });
@@ -337,8 +303,8 @@ function checkDesignPaths(story, design, basenames, violations) {
   lines.forEach((text, i) => {
     if (inFence[i]) return;
     const line = design.startLine + i;
-    for (const span of codeSpans(text)) {
-      const token = span.trim();
+    for (const span of findCodeSpans(text)) {
+      const token = span.content.trim();
       const bare = token.replace(/#.*$/, '');
       if (bare === '') continue;
       let resolved;
@@ -372,8 +338,9 @@ ${ENTRY} it follows relative Markdown links. The universe is every file
 under docs/, every .proto under card-servicing-contracts/ and
 card-servicing-service/src/main/proto/, and every .yaml/.yml OpenAPI document under
 card-servicing-service/src/main/resources/openapi/. It reports unreachable files, non-relative
-links, links leaving the delivery set, broken links, missing anchors, missing paths named in a
-story's "4. Design" section, and failed preconditions (missing or empty roots or entry point, a
+links (http, https and mailto links and autolinks included), links leaving the delivery set,
+broken links, malformed links, undefined link references, missing anchors, missing paths named
+in a story's "4. Design" section, and failed preconditions (missing or empty roots or entry point, a
 missing Design section, unreadable files). Nothing under app/, diagrams/ or samples/ is ever
 opened.
 

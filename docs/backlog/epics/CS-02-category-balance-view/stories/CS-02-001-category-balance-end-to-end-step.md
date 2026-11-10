@@ -20,6 +20,7 @@ Parent epic: [CS-02 Category Balance View](../README.md)
 >   - Step 2: the test method at order 2 of the `e2e`-tagged flow class, running after step 1 and before the transaction list step (CS-03-001) in the same class instance, with the client that the CS-01-002 suite base injects. It never re-implements step 1, the client or the cache emptying before step 1.
 >   - Type code: the step reads `typeCode` through step 1's hand-off accessor, which holds the `typeCode` of the first `balancesByTypeGroup` element of step 1's `GET /v1/accounts/00000000001/balance-summary` answer and fails the calling step with a message naming step 1 when step 1 did not pass.
 >   - Call order in step 2, one call at a time through the client: `GET /v1/accounts/00000000001/category-balances?typeCode=1`, then `GET /v1/accounts/00000000001/category-balances` with `fixture-token-expired`, then `GET /v1/accounts/00000000011/category-balances`, then `GET /v1/accounts/00000000001/category-balances?typeCode=99`, then `GET /v1/accounts/00000000001/category-balances?typeCode=<step 1 type code>`, then `GET /v1/accounts/00000000001/category-balances`. Every call except the second carries the client's default token `fixture-token-user0001` of `USER0001`. The three rejected calls come first because none of them reads the cache or launches the background Config refresh, so no refresh started by an allowed call of this step can land in a rejected call's request-log window.
+>     > SCOPE-QUESTION (Resolved): Step one's last allowed call may launch the refresh, which this step's call order cannot hold back, and the client closes that call's window only once the stub logs have settled (CS-01-002), so the refresh is listed with step one and never in step two's rejected windows. This holds also for a final Config entry the stub lists after the 1,000 ms floor, because the window stays open until every call the Config stub reports having received is listed (CS-01-002, CS-11-002). The empty Config logs of AC5, AC6 and AC7 are asserted unchanged, and no application request waits for Config.
 >   - Hand-off: the step stores the `typeCode` and `categoryCode` of the first `categoryBalances` element of the filtered 200 answer in the flow instance for the transaction list step (CS-03-001). Its accessor fails the calling step with a message naming step 2 when step 2 did not pass.
 > - Together this is the 1 file touched.
 >
@@ -115,7 +116,7 @@ sequenceDiagram
 - Topology: the step runs on the build host and reaches the service and the five stubs through the end-to-end client over the stack's published host ports.
 - Naming: the step is the second of one ordered flow shared by the four interactions, and it is named for the category balance view.
 - Addressing: the service and stub log addresses come from the end-to-end harness, the allowed calls read the first sample account as the first regular fixture user, and the denial call uses the eleventh sample account.
-- Isolation: the step reads only sample accounts, so the synthetic volume in its own number range never changes an expected value, and the rejected calls run first, so no background configuration refresh falls inside their log windows.
+- Isolation: the step reads only sample accounts, so the synthetic volume in its own number range never changes an expected value, and the rejected calls run first while the client closes each call's log window only once the stub logs have settled, so no background configuration refresh falls inside their log windows.
 - Fallback: the step has no fallback path, so an unexpected status, a missing field or a missing log entry fails the step and, through the category-row hand-off, every later step.
 - Provisioning: the continuous integration gate starts the stack before the suite and stops it afterwards, and the shared loader seeds the sample set the step reads.
 - Cut-over: the deferred user interface later sends the same requests in place of the end-to-end client, and the real services replace the stubs by address and credential alone, with the step rerun unchanged.
@@ -184,12 +185,12 @@ Settled assumptions:
 - The reference data on the stack reads fresh, because every stub answers with failure injection off.
 - The flow empties the cache before step one, and step one reads no transaction categories.
 - A rejected call reads no cache entry and launches no configuration refresh.
+- The end-to-end client closes each call's log window only once the stub logs have settled, so step one's configuration refresh is listed with step one.
 
 Open assumptions:
 
 - Step one's type code kept for later steps Open → the hand-off of the balance summary step, confirmed when the first stack run reaches step two.
 - Completion log line with the cut-off time Open → the completion log reader of the end-to-end harness story, confirmed on the first stack run.
-- Configuration refresh from step one finished before step two's first call Open → the configuration stub log entries of step one's last call on the first stack run.
 
 | AC | Verdict | Why |
 |---|---|---|
@@ -197,7 +198,7 @@ Open assumptions:
 | AC2 | Conditional | the balance summary step must keep its type code for later steps |
 | AC3 | Holds | the sample account holds one category balance |
 | AC4 | Holds | the first transaction-category read decides the code is unknown together with the type list from step one |
-| AC5 | Conditional | no configuration refresh from step one may land in the call's log window |
+| AC5 | Holds | the settled log windows keep step one's configuration refresh out of the call's window |
 | AC6 | Holds | the access guard denies the call before any data read |
 | AC7 | Holds | token validation fails ahead of the authorization and data stages |
 | AC8 | Conditional | the harness must expose the completion log line with the cut-off time |
@@ -212,12 +213,12 @@ Settled assumptions:
 - The transaction-type and transaction-category seed data fix the two descriptions.
 - The first regular fixture user is entitled to the first ten sample accounts, and the eleventh sample account exists outside that range.
 - The purchase type code written in the step equals the type of the sample account's one balance.
+- The end-to-end client closes each call's log window only once the stub logs have settled, so step one's configuration refresh is listed with step one.
 
 Open assumptions:
 
 - Sample type row unchanged Open → the category-balance fixture load report on each stack start.
 - Completion log line with the cut-off time Open → the completion log reader of the end-to-end harness story, confirmed on the first stack run.
-- Configuration refresh from step one finished before step two's first call Open → the configuration stub log entries of step one's last call on the first stack run.
 
 | AC | Verdict | Why |
 |---|---|---|
@@ -225,7 +226,7 @@ Open assumptions:
 | AC2 | Breaks | the fixed code is never read from step one |
 | AC3 | Holds | the sample account holds one category balance |
 | AC4 | Holds | the first transaction-category read decides the code is unknown together with the type list from step one |
-| AC5 | Conditional | no configuration refresh from step one may land in the call's log window |
+| AC5 | Holds | the settled log windows keep step one's configuration refresh out of the call's window |
 | AC6 | Holds | the access guard denies the call before any data read |
 | AC7 | Holds | token validation fails ahead of the authorization and data stages |
 | AC8 | Conditional | the harness must expose the completion log line with the cut-off time |

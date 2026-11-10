@@ -23,7 +23,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import {
   repoRoot,
   readText,
@@ -40,7 +40,14 @@ const CHECK = 'check-diagrams';
 const DIAGRAM_DIR = 'docs/architecture';
 const TRD = 'docs/technical-requirements.md';
 const PUPPETEER_CONFIG = 'tests/validation/puppeteer-config.json';
+/** Launches the chrome-headless-shell build pinned by the locked puppeteer for every render. */
+const BROWSER_LAUNCHER = 'tests/validation/chrome-headless-shell.sh';
 const RENDER_TIMEOUT_MS = 180000;
+const RENDER_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
+/** Signals that stop a render in progress; the check then exits with 128 + the signal number. */
+const STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+/** How long a stopped mmdc gets to close its browser before it is killed. */
+const STOP_GRACE_MS = 5000;
 const NODE_BUDGET = 25;
 const LOGICAL = `${DIAGRAM_DIR}/logical-architecture.mmd`;
 const PHYSICAL = `${DIAGRAM_DIR}/physical-deployment.mmd`;
@@ -184,51 +191,117 @@ function firstLines(buffer, count = 4) {
 // ---------------------------------------------------------------------------------------
 // Rendering
 
-function renderAll(files, violations) {
+/**
+ * Renders every diagram with mmdc, one at a time, into a private temporary folder. Renders
+ * run without blocking the event loop, so SIGINT, SIGTERM or SIGHUP stops the running mmdc,
+ * removes the folder and exits with 128 + the signal number.
+ */
+async function renderAll(files, violations) {
   const mmdc = toolBin('mmdc');
   if (!mmdc) {
     violations.push({
       path: 'tests/validation/node_modules/.bin/mmdc',
+      line: 1,
       message: 'mmdc is not installed (run npm ci in tests/validation); no diagram was rendered',
     });
     return;
   }
   if (!exists(PUPPETEER_CONFIG)) {
-    violations.push({ path: PUPPETEER_CONFIG, message: 'puppeteer configuration is missing; no diagram was rendered' });
+    violations.push({
+      path: PUPPETEER_CONFIG,
+      line: 1,
+      message: 'puppeteer configuration is missing; no diagram was rendered',
+    });
+    return;
+  }
+  if (!exists(BROWSER_LAUNCHER)) {
+    violations.push({
+      path: BROWSER_LAUNCHER,
+      line: 1,
+      message: 'browser launcher is missing; no diagram was rendered',
+    });
     return;
   }
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'check-diagrams-'));
-  try {
-    for (const rel of files) {
-      const svg = path.join(tmp, `${path.basename(rel, '.mmd')}.svg`);
+  const options = {
+    cwd: repoRoot,
+    // Chrome leaves scratch directories in TMPDIR; pointing it at this run's
+    // temporary folder removes them with that folder. PUPPETEER_EXECUTABLE_PATH
+    // selects the pinned browser over any host value or .puppeteerrc setting.
+    env: { ...process.env, TMPDIR: tmp, PUPPETEER_EXECUTABLE_PATH: path.join(repoRoot, BROWSER_LAUNCHER) },
+    encoding: 'buffer',
+    timeout: RENDER_TIMEOUT_MS,
+    maxBuffer: RENDER_MAX_OUTPUT_BYTES,
+  };
+
+  let child = null;
+  let stopping = false;
+  const stop = (signal) => {
+    if (stopping) {
+      // A repeated signal skips the grace period.
+      child?.kill('SIGKILL');
+      return;
+    }
+    stopping = true;
+    const finish = () => {
       try {
-        execFileSync(mmdc, ['-p', PUPPETEER_CONFIG, '-i', rel, '-o', svg], {
-          cwd: repoRoot,
-          // Chrome leaves scratch directories in TMPDIR; pointing it at this run's
-          // temporary folder removes them with that folder.
-          env: { ...process.env, TMPDIR: tmp },
-          stdio: 'pipe',
-          timeout: RENDER_TIMEOUT_MS,
-          maxBuffer: 16 * 1024 * 1024,
-        });
+        fs.rmSync(tmp, { recursive: true, force: true });
       } catch (err) {
+        console.error(`${CHECK}: could not remove ${tmp}: ${err?.message ?? err}`);
+      }
+      process.exit(128 + os.constants.signals[signal]);
+    };
+    const running = child;
+    if (running === null || running.pid === undefined || running.exitCode !== null || running.signalCode !== null) {
+      finish();
+      return;
+    }
+    running.once('exit', finish);
+    setTimeout(() => running.kill('SIGKILL'), STOP_GRACE_MS);
+    running.kill(signal);
+  };
+  /** One mmdc run; resolves with null on success, or with the error and stderr of a failure. */
+  const render = (args) =>
+    new Promise((resolve) => {
+      child = execFile(mmdc, args, options, (err, _stdout, stderr) => {
+        child = null;
+        resolve(err ? { err, stderr } : null);
+      });
+      child.stdin?.end();
+    });
+
+  for (const signal of STOP_SIGNALS) process.on(signal, stop);
+  try {
+    for (const [index, rel] of files.entries()) {
+      // Diagrams in different folders can share a basename; the index gives every input
+      // its own output, so one render's SVG never stands in for another's.
+      const svg = path.join(tmp, `${index + 1}-${path.basename(rel, '.mmd')}.svg`);
+      const failed = await render(['-p', PUPPETEER_CONFIG, '-i', rel, '-o', svg]);
+      if (failed) {
+        const { err, stderr } = failed;
+        // err.killed marks a child killed from here: the timeout does that, and stop() exits
+        // before a stopped render is classified. An exceeded output bound carries its own
+        // code and message instead.
         const why =
-          err.code === 'ETIMEDOUT' ? `timed out after ${RENDER_TIMEOUT_MS / 1000} s`
-          : err.status != null ? `exit status ${err.status}`
+          err.killed ? `timed out after ${RENDER_TIMEOUT_MS / 1000} s`
+          : typeof err.code === 'number' ? `exit status ${err.code}`
           : err.signal ? `killed by ${err.signal}`
           : String(err.message ?? err);
-        violations.push({ path: rel, message: `mmdc render failed (${why}): ${firstLines(err.stderr)}` });
+        violations.push({ path: rel, line: 1, message: `mmdc render failed (${why}): ${firstLines(stderr)}` });
         continue;
       }
-      let size = 0;
+      let written = null;
       try {
-        size = fs.statSync(svg).size;
+        written = fs.lstatSync(svg);
       } catch (err) {
         if (err.code !== 'ENOENT') throw err;
       }
-      if (size === 0) violations.push({ path: rel, message: 'mmdc exited 0 but wrote no SVG output' });
+      if (!written?.isFile() || written.size === 0) {
+        violations.push({ path: rel, line: 1, message: 'mmdc exited 0 but wrote no SVG output' });
+      }
     }
   } finally {
+    for (const signal of STOP_SIGNALS) process.off(signal, stop);
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 }
@@ -1194,11 +1267,11 @@ function checkCatalogueDiagrams(files, catalogue, diagrams, violations) {
 
 // ---------------------------------------------------------------------------------------
 
-function main() {
+async function main() {
   const violations = [];
   const files = listFiles(DIAGRAM_DIR, { exts: ['.mmd'] });
   if (files.length === 0) violations.push({ path: DIAGRAM_DIR, message: 'no .mmd diagram found' });
-  else renderAll(files, violations);
+  else await renderAll(files, violations);
 
   let catalogue = new Map();
   let controls = new Map();
@@ -1241,7 +1314,7 @@ function main() {
 }
 
 try {
-  main();
+  await main();
 } catch (err) {
   console.error(`${CHECK}: internal error: ${err?.stack ?? err}`);
   process.exitCode = 2;

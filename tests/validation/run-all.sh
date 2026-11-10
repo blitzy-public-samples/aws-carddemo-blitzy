@@ -9,8 +9,11 @@
 # setup step and every check passed.
 #
 # Run: tests/validation/run-all.sh
-#   From the repository root; the script changes to the root itself, so any working
-#   directory gives the same result.
+#   From the repository root, or through any path or symlink to this file. The
+#   script resolves its own real location, symlinks included, and changes to the
+#   repository root that holds it, so any working directory gives the same result.
+#   When that location cannot be resolved, as when the script is read from a pipe,
+#   it stops with an error before any setup step.
 #
 # Requires Node.js 22 and access to the npm registry. No Java, Docker or Gradle.
 # Chrome, started by mmdc in check-diagrams, aborts with "Socket path too long" under
@@ -21,8 +24,49 @@
 # No -e: a failing setup step or check must not stop the checks after it.
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# The repository root is the grandparent of the directory that really holds this
+# script. Every step that finds it is checked, and any failure stops the run before
+# the first setup step, so no install or check runs against another directory. The
+# steps' own error output is discarded so that failure prints one line.
+script_source="${BASH_SOURCE[0]-}"
+fail_root_resolution() {
+  echo "run-all: cannot resolve the repository root from ${script_source:-a script with no file path}; run tests/validation/run-all.sh from a checkout of the repository" >&2
+  exit 1
+}
+# An exported CDPATH would let the relative cd below enter a directory other than
+# the one named, and print it into the captured path.
+unset CDPATH
+[[ -n "$script_source" ]] || fail_root_resolution
+
+# Follow symlinks to the script file. A relative link target is relative to the
+# directory that holds the link. Forty hops is the kernel's own limit, so a link
+# cycle stops with the resolution error.
+script_path="$script_source"
+link_hops=0
+while [[ -L "$script_path" ]]; do
+  link_hops=$((link_hops + 1))
+  if ((link_hops > 40)) || ! link_target="$(readlink -- "$script_path" 2>/dev/null)" \
+    || [[ -z "$link_target" ]]; then
+    fail_root_resolution
+  fi
+  if [[ "$link_target" == /* ]]; then
+    script_path="$link_target"
+  else
+    if ! link_dir="$(dirname -- "$script_path" 2>/dev/null)" || [[ -z "$link_dir" ]]; then
+      fail_root_resolution
+    fi
+    script_path="${link_dir}/${link_target}"
+  fi
+done
+
+# cd -P resolves symlinked directories on the way, so SCRIPT_DIR and ROOT are
+# physical paths. The root must hold this same file at tests/validation/run-all.sh.
+if ! script_dir_named="$(dirname -- "$script_path" 2>/dev/null)" || [[ -z "$script_dir_named" ]] \
+  || ! SCRIPT_DIR="$(cd -P -- "$script_dir_named" 2>/dev/null && pwd -P)" || [[ -z "$SCRIPT_DIR" ]] \
+  || ! ROOT="$(cd -P -- "${SCRIPT_DIR}/../.." 2>/dev/null && pwd -P)" || [[ -z "$ROOT" ]] \
+  || [[ ! "${ROOT}/tests/validation/run-all.sh" -ef "${SCRIPT_DIR}/${script_path##*/}" ]]; then
+  fail_root_resolution
+fi
 cd "$ROOT" || exit 1
 
 readonly -a CHECKS=(
@@ -48,23 +92,60 @@ if ! command -v node >/dev/null 2>&1; then
   echo "run-all: Node.js 22 required, found none" >&2
   exit 1
 fi
-node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null)"
-if [[ "$node_major" != "22" ]]; then
-  echo "run-all: Node.js 22 required, found $(node --version 2>/dev/null || echo none)" >&2
+# One probe decides the gate and supplies every version this step prints. It runs
+# under the caller's NODE_OPTIONS, as the tools and checks will, so a node that
+# cannot start stops here with its own error instead of a version from another call.
+node_version="$(node -p 'process.versions.node' 2>"$tmp")"
+node_status=$?
+if [[ "$node_status" -ne 0 ]]; then
+  echo "run-all: Node.js 22 required, but node failed to run (exit ${node_status}):" >&2
+  if [[ -s "$tmp" ]]; then
+    head -n 20 "$tmp" >&2
+  else
+    echo "(node printed no error output)" >&2
+  fi
   exit 1
 fi
-echo "Node.js $(node --version)"
+if [[ ! "$node_version" =~ ^([0-9]+)\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+  echo "run-all: Node.js 22 required, but node reported an unrecognised version:" >&2
+  printf '%s\n' "$node_version" | head -n 20 >&2
+  exit 1
+fi
+if [[ "${BASH_REMATCH[1]}" != "22" ]]; then
+  echo "run-all: Node.js 22 required, found v${node_version}" >&2
+  exit 1
+fi
+echo "Node.js v${node_version}"
 
+# npm ci runs the dependencies' install scripts, puppeteer's postinstall included,
+# and that script downloads browsers unless told not to. PUPPETEER_SKIP_DOWNLOAD,
+# set for npm ci alone, stops it, so no browser is fetched here and a browser-host
+# outage cannot fail npm ci and cost the run buf, Spectral and the YAML parser.
 echo "== setup: npm ci =="
-if ! (cd tests/validation && npm ci --no-audit --no-fund); then
+if ! (cd tests/validation && PUPPETEER_SKIP_DOWNLOAD=true npm ci --no-audit --no-fund); then
   echo "FAIL setup: npm ci"
   setup_failures+=("npm ci")
 fi
 
-# npm 11 skips puppeteer's postinstall, which would otherwise download the browser
-# that tests/validation/chrome-headless-shell.sh launches for mmdc.
+# This step installs exactly the chrome-headless-shell build the locked puppeteer
+# pins, into puppeteer's configured cache: the build that
+# tests/validation/chrome-headless-shell.sh launches for mmdc. The build id is read
+# from puppeteer's pinned revisions and passed explicitly, because without one
+# puppeteer installs whatever version a puppeteer config file in tests/validation or
+# any directory above it names. This is the only setup step that needs the browser
+# download host, and only while that build is not yet in the cache.
 echo "== setup: chrome-headless-shell install =="
-if ! (cd tests/validation && npx --no-install puppeteer browsers install chrome-headless-shell); then
+if ! (
+  cd tests/validation || exit 1
+  if ! build_id="$(node --input-type=module -e "
+import { PUPPETEER_REVISIONS } from 'puppeteer-core/internal/revisions.js';
+process.stdout.write(PUPPETEER_REVISIONS['chrome-headless-shell']);
+")" || [[ -z "$build_id" ]]; then
+    echo "run-all: cannot read the chrome-headless-shell build pinned by the locked puppeteer" >&2
+    exit 1
+  fi
+  npx --no-install puppeteer browsers install "chrome-headless-shell@${build_id}"
+); then
   echo "FAIL setup: chrome-headless-shell install"
   setup_failures+=("chrome-headless-shell install")
 fi
@@ -72,15 +153,24 @@ fi
 summary=()
 failed=0
 for check in "${CHECKS[@]}"; do
-  echo "== ${check} =="
+  # A check passes only when its header and output were written, node exited 0, its
+  # count was read back from the capture, and that count is 0. A failed write or
+  # count read is an error even when a count was captured: a broken stdout or
+  # capture file must not turn into PASS.
+  output_ok=1
+  echo "== ${check} ==" || output_ok=0
   node "tests/validation/${check}.mjs" 2>&1 | tee "$tmp"
-  status="${PIPESTATUS[0]}"
-  count="$(sed -nE "s/^${check}: ([0-9]+) violation\\(s\\)\$/\\1/p" "$tmp" | tail -n 1)"
-  if [[ "$status" -eq 0 && "$count" == "0" ]]; then
+  pipe_status=("${PIPESTATUS[@]}")
+  status="${pipe_status[0]}"
+  [[ "${pipe_status[1]}" -eq 0 ]] || output_ok=0
+  if ! count="$(sed -nE "s/^${check}: ([0-9]+) violation\\(s\\)\$/\\1/p" "$tmp" | tail -n 1)"; then
+    output_ok=0
+  fi
+  if [[ "$output_ok" -eq 1 && "$status" -eq 0 && "$count" == "0" ]]; then
     summary+=("PASS ${check} (${count} violations)")
   else
     failed=$((failed + 1))
-    if [[ -z "$count" ]]; then
+    if [[ "$output_ok" -eq 0 || -z "$count" ]]; then
       summary+=("FAIL ${check} (error)")
     else
       summary+=("FAIL ${check} (${count} violations)")
@@ -88,17 +178,23 @@ for check in "${CHECKS[@]}"; do
   fi
 done
 
-echo
+# The summary opens with a blank line and is written in one checked write, so a run
+# whose summary cannot be written exits non-zero whatever its checks found.
+summary_lines=("")
 # Setup failures head the summary so a run whose checks all passed against a stale or
 # partial toolchain is not read as green; they also make the exit status non-zero.
 for step in "${setup_failures[@]+"${setup_failures[@]}"}"; do
-  echo "FAIL setup: ${step}"
+  summary_lines+=("FAIL setup: ${step}")
 done
-printf '%s\n' "${summary[@]}"
+summary_lines+=("${summary[@]}")
 if [[ "$failed" -eq 0 ]]; then
-  echo "Validation: all ${#CHECKS[@]} checks passed"
+  summary_lines+=("Validation: all ${#CHECKS[@]} checks passed")
 else
-  echo "Validation: ${failed} of ${#CHECKS[@]} checks failed"
+  summary_lines+=("Validation: ${failed} of ${#CHECKS[@]} checks failed")
+fi
+if ! printf '%s\n' "${summary_lines[@]}"; then
+  echo "run-all: cannot write the validation summary" >&2
+  exit 1
 fi
 
 if [[ "$failed" -eq 0 && "${#setup_failures[@]}" -eq 0 ]]; then
