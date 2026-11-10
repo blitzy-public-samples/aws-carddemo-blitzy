@@ -23,7 +23,13 @@
 #   a bill payment...' goes to WS-MESSAGE and COBIL00 is sent; RETURN TRANSID
 #   CB00 ends the task and releases the READ UPDATE hold
 #   [app/cbl/COBIL00C.cbl:197-244].
-# Step 4 enters the account again with CONFIRM Y:
+# Step 4 enters the account again with CONFIRM y, in lower case. 'y' is the
+# second value of WHEN 'Y' / WHEN 'y', so it pays as Y does
+# [app/cbl/COBIL00C.cbl:174-177]; the other payment scenarios confirm with Y.
+# A terminal that translated input to upper case would deliver Y for y, which
+# takes the same branch, so the outcome holds either way: CARDDEMO.CSD gives
+# CB00 the profile DFHCICST and the repository holds no TYPETERM, so whether
+# the region translates is not determinable from the source.
 # - CONF-PAY-YES is set and READ ACCTDAT with UPDATE returns the balance
 #   147.00 again; it is above zero [app/cbl/COBIL00C.cbl:173-177,193-206].
 # - READ CXACAIX by account id returns the account's only card,
@@ -58,11 +64,11 @@ type: normal
 description: >-
   USER0001 signs on, chooses main-menu option 10 (Bill Payment) and enters
   repository account 00000000003, whose balance is 147.00. COBIL00C shows
-  +0000000147.00 and asks 'Confirm to make a bill payment...'; with CONFIRM Y
-  it writes payment transaction 0000000996722788 for the whole 147.00 on the
-  account's card 3999169246375885, rewrites the account with a balance of
-  0.00 and every other field unchanged, and reports 'Payment successful.  Your
-  Transaction ID is 0000000996722788.'.
+  +0000000147.00 and asks 'Confirm to make a bill payment...'; with CONFIRM y
+  (lowercase) it writes payment transaction 0000000996722788 for the whole
+  147.00 on the account's card 3999169246375885, rewrites the account with a
+  balance of 0.00 and every other field unchanged, and reports 'Payment
+  successful.  Your Transaction ID is 0000000996722788.'.
 # Primary item first, then the program, the maps asserted, the transaction
 # steps 3 and 4 run under, the CSD files COBIL00C reads, browses, writes and
 # rewrites, and the online-only copybooks it copies. Sign-on and the menu
@@ -127,7 +133,7 @@ inputs:
     '@map': COBIL00
     fields:
       ACTIDIN: '00000000003'
-      CONFIRM: 'Y'
+      CONFIRM: 'y'
 expected:
   screens:
   - '@map': COMEN01

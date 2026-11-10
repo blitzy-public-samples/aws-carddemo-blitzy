@@ -12,8 +12,14 @@
 # fixed date would pin a different case on every later day. The tpe adapter
 # types the year, month and day of the run date, the CURDATE of the first
 # step's screen, which the run-date matchers of screen 4 are judged against
-# too; a run that crosses midnight between that screen and the step-4 ENTER
-# would type the day before the region's date instead.
+# too. EDIT-DATE-OF-BIRTH reads the current date again at the step-4 ENTER,
+# before 3100-SCREEN-INIT reads it for the CURDATE of screen 4
+# [app/cpy/CSUTLDPY.cpy:343] [app/cbl/COACTUPC.cbl:2668-2684], so the adapter
+# checks that every screen the steps end on shows the first step's date. When
+# a later one shows another date, the run crossed midnight: the adapter drives
+# the steps again from the restored preconditions, within the scenario
+# deadline, until the typed date and the date EDIT-DATE-OF-BIRTH reads are
+# the same day.
 #
 # Steps 1-3 sign on as USER0001, choose main-menu option 2 and fetch account
 # 00000000001, as ACT-COACTUPC-alternate-04 does: CXACAIX gives customer

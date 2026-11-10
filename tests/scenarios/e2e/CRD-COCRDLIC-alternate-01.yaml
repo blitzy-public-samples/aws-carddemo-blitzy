@@ -1,6 +1,7 @@
 # The card list prompt 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD' on a page
 # that still has a page after it: on page 1, entered from the menu, and on page
-# 2, reached with PF8.
+# 2, reached with PF8. PF7 then returns to page 1, whose seven rows the backward
+# browse rebuilds, with the first-page message in place of the prompt.
 #
 # USER0001 signs on (CC00) and COSGN00C routes the type-U user to COMEN01C,
 # whose COMEN01 menu is the first screen. Option 3 is the COMEN02Y entry
@@ -33,20 +34,40 @@
 # 1400-SETUP-MESSAGE sets the same prompt through the same branch, not the
 # PF8 last-page branches [app/cbl/COCRDLIC.cbl:905-919].
 #
+# Page 1 again: PF7 also comes back to COCRDLIC itself, so the map is received
+# with the filters and selections blank and no input error is raised. With the
+# page number at 2, the WHEN CCARD-AID-PFK07 AND NOT CA-FIRST-PAGE branch moves
+# WS-CA-FIRST-CARD-NUM, page 2's first card 1561409106491600, to the RID,
+# subtracts 1 from WS-CA-SCREEN-NUM (2 to 1) and performs 9100-READ-BACKWARDS.
+# Its STARTBR GTEQ positions on that card and WS-SCRN-COUNTER starts at 8; the
+# READPREV right after STARTBR returns the start card itself and only counts
+# down to 7, then the loop READPREVs cards 7 to 1 into rows 7 to 1. At 0 the
+# loop ends, 0500024453765740 becomes WS-CA-FIRST-CARD-NUM and ENDBR follows
+# [app/cbl/COCRDLIC.cbl:501-513,1271-1378] [app/data/ASCII/carddata.txt:1-8].
+# 1100-SCREEN-INIT sets WS-NO-INFO-MESSAGE and moves the blank WS-INFO-MSG to
+# INFOMSG. The page number is already 1 when 1400-SETUP-MESSAGE runs, so its
+# WHEN CCARD-AID-PFK07 AND CA-FIRST-PAGE branch moves 'NO PREVIOUS PAGES TO
+# DISPLAY' to WS-ERROR-MSG and sets no information message: INFOMSG stays
+# blank and ERRMSG holds the 28-character text plus 50 spaces
+# [app/cbl/COCRDLIC.cbl:642-671,895-930]. The message is pinned as current
+# behaviour: the first-page branch overwrites WS-ERROR-MSG after a successful
+# backward page as well, so reaching page 1 with PF7 never shows the prompt.
+# Each row's selection field holds the blank received from page 2.
+#
 # Field values: PAGENO is the PIC 9(1) WS-CA-SCREEN-NUM moved to the 3-byte
 # PAGENOO, left-justified as '1  ' and '2  ' [app/cbl/COCRDLIC.cbl:237,667]
 # [app/cpy-bms/COCRDLI.CPY:332]. ACCTSID and CARDSID are left at LOW-VALUES on
-# both pages, so they show as spaces: entered from the menu
-# 1300-SETUP-SCREEN-ATTRS skips them, and after PF8 CDEMO-ACCT-ID and
+# every list screen, so they show as spaces: entered from the menu
+# 1300-SETUP-SCREEN-ATTRS skips them, and after PF8 and PF7 CDEMO-ACCT-ID and
 # CDEMO-CARD-NUM are zero [app/cbl/COCRDLIC.cbl:837-867,1003-1012,1036-1048].
 # Each row's selection field holds the space INITIALIZE puts in
-# WS-EDIT-SELECT-FLAGS on page 1, and the received blank on page 2; the account
-# number, card number and active status come from CARDDATA
-# [app/cbl/COCRDLIC.cbl:300-302,678-742,1165-1171]. Card keys hold digits only,
-# so the key order is the same in ASCII and cp037: page 1 is the first seven
-# repository cards by number and page 2 starts at 1561409106491600 (account
-# 00000000035). Values are whole fields with their trailing spaces; the
-# clock-derived CURDATE and CURTIME are matchers, so the clock is relative.
+# WS-EDIT-SELECT-FLAGS on page 1, and the received blank after PF8 and PF7;
+# the account number, card number and active status come from CARDDATA
+# [app/cbl/COCRDLIC.cbl:300-302,678-742,1165-1171,1338-1344]. Card keys hold
+# digits only, so the key order is the same in ASCII and cp037: page 1 is the
+# first seven repository cards by number and page 2 starts at 1561409106491600
+# (account 00000000035). Values are whole fields with their trailing spaces;
+# the clock-derived CURDATE and CURTIME are matchers, so the clock is relative.
 id: CRD-COCRDLIC-alternate-01
 level: e2e
 type: alternate
@@ -55,19 +76,23 @@ description: >-
   lists the first seven cards of CARDDATA with the prompt 'TYPE S FOR DETAIL,
   U TO UPDATE ANY RECORD' in INFOMSG and no error, and PF8 shows page 2,
   cards 8-14 starting at 1561409106491600, with the same prompt because a
-  further page still exists.
+  further page still exists. PF7 then returns to page 1: the backward browse
+  rebuilds the same seven cards in key order, with page number 1, a blank
+  INFOMSG and 'NO PREVIOUS PAGES TO DISPLAY' in ERRMSG, because the page
+  counter is already 1 when 1400-SETUP-MESSAGE runs.
 inventory_ids:
 - INV-CRD-007  # COCRDLIC message 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD'
+- INV-CRD-025  # COCRDLIC card list content (report): the PF7 page's rows
 - INV-CRD-001  # COCRDLIC program
 - INV-MNU-003  # COMEN01 map, the screen sign-on lands on
-- INV-CRD-004  # COCRDLI map, both list pages
-- INV-CFG-014  # CCLI transaction, the list's pseudo-conversation that PF8 runs
+- INV-CRD-004  # COCRDLI map, the three list screens (page 1, page 2, page 1 again)
+- INV-CFG-014  # CCLI transaction, the pseudo-conversation PF8 and PF7 run
 - INV-CFG-003  # CARDDAT CSD file, browsed by card number
 - INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the paging keys
 - INV-LAY-005  # COTTL01Y copybook, the screen titles
 - INV-LAY-006  # CSDAT01Y copybook, the screen date and time
 - INV-LAY-008  # CSMSG01Y copybook, copied by COCRDLIC
-- INV-LAY-011  # CSSTRPFY copybook, mapping PF8 to CCARD-AID-PFK08
+- INV-LAY-011  # CSSTRPFY copybook, mapping PF8/PF7 to CCARD-AID-PFK08/-PFK07
 - INV-LAY-019  # CVCRD01Y copybook, the AID and filter work area
 tags:
 - inferred-not-observed
@@ -94,6 +119,9 @@ inputs:
     fields:
       OPTION: '3'
   - aid: PF8
+    '@map': COCRDLI
+    fields: {}
+  - aid: PF7
     '@map': COCRDLI
     fields: {}
 expected:
@@ -185,8 +213,50 @@ expected:
     CRDSTS7: 'Y'
     INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
     ERRMSG: '                                                                              '
+  # Page 1 after PF7: rows 7 to 1 read back from card 7; first-page message.
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDLIC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENO: '1  '
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    CRDSEL2: ' '
+    ACCTNO2: '00000000027'
+    CRDNUM2: '0683586198171516'
+    CRDSTS2: 'Y'
+    CRDSEL3: ' '
+    ACCTNO3: '00000000002'
+    CRDNUM3: '0923877193247330'
+    CRDSTS3: 'Y'
+    CRDSEL4: ' '
+    ACCTNO4: '00000000020'
+    CRDNUM4: '0927987108636232'
+    CRDSTS4: 'Y'
+    CRDSEL5: ' '
+    ACCTNO5: '00000000012'
+    CRDNUM5: '0982496213629795'
+    CRDSTS5: 'Y'
+    CRDSEL6: ' '
+    ACCTNO6: '00000000044'
+    CRDNUM6: '1014086565224350'
+    CRDSTS6: 'Y'
+    CRDSEL7: ' '
+    ACCTNO7: '00000000037'
+    CRDNUM7: '1142167692878931'
+    CRDSTS7: 'Y'
+    INFOMSG: '                                             '
+    ERRMSG: 'NO PREVIOUS PAGES TO DISPLAY                                                  '
   # The ERRMSG value of each step, as the screens show it.
   messages:
   - '                                                                              '
   - '                                                                              '
   - '                                                                              '
+  - 'NO PREVIOUS PAGES TO DISPLAY                                                  '

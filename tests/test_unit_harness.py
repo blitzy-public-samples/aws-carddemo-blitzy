@@ -11,15 +11,26 @@ included, and views that describe different bytes must be refused.
 Deterministic projection: captures that differ only in the run clock must
 project to the same result YAML, with every screen's CURDATE and CURTIME
 holding their matcher kind whether or not the step asserts them.
+
+Same region day: ``tpe.drive``, on a fake terminal whose region clock passes
+midnight during the ACT-COACTUPC-boundary-24 steps, must drive the steps
+again after its ``restart``, or end under GAP-MIS-015 without one, so the run
+date typed and the date the birth date is judged against are one day.
 """
 
 from __future__ import annotations
 
 import copy
+import datetime
+import functools
+import os
+import shutil
 import sys
-from collections.abc import Mapping
+import tempfile
+from collections.abc import Iterator, Mapping
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,6 +39,7 @@ if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
 
 from adapters import base  # noqa: E402
+from adapters.unikix import tpe  # noqa: E402
 from harness import baselines, codec, dump_yaml, layouts, scenarios  # noqa: E402
 
 pytestmark = pytest.mark.unit
@@ -239,3 +251,304 @@ def test_every_screen_layout_defines_the_screen_clock_fields() -> None:
         if missing:
             lacking[mapset] = missing
     assert lacking == {}
+
+
+# The steps of ACT-COACTUPC-boundary-24 driven by tpe.drive on a fake region:
+# each AID is handled DAY_GUARD_AID_SECONDS after the last, so from
+# DAY_GUARD_MIDNIGHT the fifth AID, the ENTER of step 4, is the first after
+# midnight, and from DAY_GUARD_MORNING every AID falls on 2025-12-31. tpe reads
+# a two-digit screen year in the century nearest the host's year, so both days
+# read back as written on any host before 2075.
+DAY_GUARD_SCENARIO = "ACT-COACTUPC-boundary-24"
+DAY_GUARD_AID_SECONDS = 15
+DAY_GUARD_MIDNIGHT = datetime.datetime(2025, 12, 31, 23, 59)
+DAY_GUARD_MORNING = datetime.datetime(2025, 12, 31, 10, 0)
+DAY_GUARD_ADDRESS = "127.0.0.1:2001"
+# drive's working directory lies in the suite's work root, where every run
+# writes: a non-blank CARDDEMO_TEST_WORKDIR, or else a root made by
+# tempfile.mkdtemp(prefix="carddemo-").
+WORK_ROOT_ENV = "CARDDEMO_TEST_WORKDIR"
+DEFAULT_WORK_ROOT_PREFIX = "carddemo-"
+DAY_GUARD_WORKDIR_PREFIX = "unit-tpe-day-guard-"
+# The day change the midnight flow shows: its first attempt types 2025-12-31,
+# and the screen of step 4 shows 01/01/26.
+DAY_GUARD_CHANGE = {
+    "attempt": 1,
+    "first_step_screen_date": "12/31/25",
+    "step": 3,
+    "screen_date": "01/01/26",
+}
+# EDIT-DATE-OF-BIRTH's future-date refusal, and the prompt of a change that
+# passed every edit [app/cpy/CSUTLDPY.cpy:341-365] [app/cbl/COACTUPC.cbl:473].
+DOB_REFUSAL = "Date of Birth:cannot be in the future "
+CHANGES_VALIDATED = "Changes validated.Press F5 to save"
+
+# Each case: the region's start, whether drive gets a restart, whether the
+# deadline has passed once the region's day changed, the restarts expected,
+# the exception expected (None when drive returns), and the run date of the
+# last attempt.
+DAY_GUARD_CASES = [
+    pytest.param(
+        DAY_GUARD_MIDNIGHT,
+        True,
+        False,
+        1,
+        None,
+        datetime.date(2026, 1, 1),
+        id="midnight-driven-again",
+    ),
+    pytest.param(
+        DAY_GUARD_MIDNIGHT,
+        False,
+        False,
+        0,
+        base.AdapterUnavailable,
+        datetime.date(2025, 12, 31),
+        id="midnight-without-restart",
+    ),
+    pytest.param(
+        DAY_GUARD_MIDNIGHT,
+        True,
+        True,
+        0,
+        base.ScenarioTimeout,
+        datetime.date(2025, 12, 31),
+        id="midnight-after-deadline",
+    ),
+    pytest.param(
+        DAY_GUARD_MORNING, True, False, 0, None, datetime.date(2025, 12, 31), id="same-day"
+    ),
+    pytest.param(
+        DAY_GUARD_MORNING,
+        False,
+        False,
+        0,
+        None,
+        datetime.date(2025, 12, 31),
+        id="same-day-without-restart",
+    ),
+]
+
+
+def _fake_rows(mapset: str, values: Mapping[str, str]) -> tuple[str, ...]:
+    """The 24 rows of 80 characters of ``mapset`` with its static texts and
+    ``values`` in its named fields, each from the column after its BMS POS."""
+    layout = layouts.screen(mapset)
+    named = {entry["name"]: entry for entry in layout["fields"] if entry.get("name")}
+    texts = [(item["row"], item["col"], item["text"]) for item in layout["statics"]]
+    for name, value in values.items():
+        assert len(value) <= named[name]["length"], (mapset, name, value)
+        texts.append((named[name]["row"], named[name]["col"], value.ljust(named[name]["length"])))
+    buffer = [" "] * (base.SCREEN_ROWS * base.SCREEN_COLS)
+    for row, col, text in texts:
+        start = (row - 1) * base.SCREEN_COLS + col
+        for offset, char in enumerate(text):
+            buffer[(start + offset) % len(buffer)] = char
+    screen = "".join(buffer)
+    return tuple(
+        screen[row * base.SCREEN_COLS : (row + 1) * base.SCREEN_COLS]
+        for row in range(base.SCREEN_ROWS)
+    )
+
+
+class _FakeRegion:
+    """A region clock and the path of the boundary-24 steps through COSGN00C,
+    COMEN01C and COACTUPC. Each AID is handled at the clock's time, which then
+    moves on DAY_GUARD_AID_SECONDS; the birth date is judged against that
+    time's date, the date the screen then shows."""
+
+    def __init__(self, start: datetime.datetime) -> None:
+        self.now = start
+        self.terminals: list[_FakeTerminal] = []
+
+    def _tick(self) -> datetime.datetime:
+        at = self.now
+        self.now += datetime.timedelta(seconds=DAY_GUARD_AID_SECONDS)
+        return at
+
+    @staticmethod
+    def _header(at: datetime.datetime, transid: str, program: str) -> dict[str, str]:
+        return {
+            "TRNNAME": transid,
+            "PGMNAME": program,
+            "CURDATE": at.strftime("%m/%d/%y"),
+            "CURTIME": at.strftime("%H:%M:%S"),
+        }
+
+    def sign_on(self) -> tuple[str, dict[str, str]]:
+        return "COSGN00", self._header(self._tick(), "CC00", "COSGN00C")
+
+    def enter(self, mapset: str, entered: Mapping[str, str]) -> tuple[str, dict[str, str]]:
+        at = self._tick()
+        if mapset == "COSGN00" and entered == {
+            "USERID": "USER0001",
+            "PASSWD": scenarios.SIGN_ON_PASSWORD,
+        }:
+            menu = {"OPTN002": "02. Account Update"}
+            return "COMEN01", {**self._header(at, "CM00", "COMEN01C"), **menu}
+        update = self._header(at, "CAUP", "COACTUPC")
+        if mapset == "COMEN01" and entered == {"OPTION": "2"}:
+            return "COACTUP", {**update, "INFOMSG": "Enter or update id of account to update"}
+        update.update(ACCTSID="00000000001", INFOMSG="Update account details presented above.")
+        if mapset == "COACTUP" and entered == {"ACCTSID": "00000000001"}:
+            return "COACTUP", {**update, "DOBYEAR": "1961", "DOBMON": "06", "DOBDAY": "08"}
+        if mapset == "COACTUP" and set(entered) == {"DOBYEAR", "DOBMON", "DOBDAY"}:
+            typed = datetime.date(
+                int(entered["DOBYEAR"]), int(entered["DOBMON"]), int(entered["DOBDAY"])
+            )
+            if typed >= at.date():
+                return "COACTUP", {**update, **entered, "ERRMSG": DOB_REFUSAL}
+            return "COACTUP", {**update, **entered, "INFOMSG": CHANGES_VALIDATED}
+        raise AssertionError(f"the fake region has no path for {dict(entered)} on {mapset}")
+
+
+class _FakeTerminal:
+    """The ``tpe.S3270`` methods ``drive`` calls, answered by a
+    ``_FakeRegion``; it starts no process and opens no connection."""
+
+    def __init__(
+        self,
+        region: _FakeRegion,
+        workdir: Path,
+        time_left: object,
+        session: int = 1,
+        executable: str | None = None,
+    ) -> None:
+        assert Path(workdir).is_dir() and session == 1 and executable == "s3270"
+        self.region = region
+        self.connected = False
+        self.closed = False
+        self.mapset = ""
+        self.values: dict[str, str] = {}
+        self.entered: dict[str, str] = {}
+        region.terminals.append(self)
+
+    def _show(self, screen: tuple[str, dict[str, str]]) -> None:
+        self.mapset, self.values = screen
+        self.entered = {}
+
+    def connect(self, address: tpe.TN3270Address) -> None:
+        assert address == tpe.parse_address(DAY_GUARD_ADDRESS)
+        self.connected = True
+
+    def start_transaction(self, transid: str) -> None:
+        assert self.connected and not self.closed and transid == "CC00"
+        self._show(self.region.sign_on())
+
+    def read_screen(self) -> tpe.Screen:
+        return tpe.Screen(_fake_rows(self.mapset, self.values), True)
+
+    def enter_field(self, field: tpe.MapField, value: str) -> None:
+        self.entered[field.name] = value
+
+    def send_aid(self, aid: str) -> None:
+        assert aid == "ENTER" and not self.closed
+        self._show(self.region.enter(self.mapset, self.entered))
+
+    def wait_unlock(self) -> None:
+        assert not self.closed
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def day_guard_workdir() -> Iterator[Path]:
+    """A fresh directory of this case's own inside the work root, never under
+    pytest's basetemp. A configured work root is created when missing and
+    kept; the directory is removed afterwards, with the default root when this
+    fixture made it."""
+    configured = os.environ.get(WORK_ROOT_ENV, "")
+    made = None if configured.strip() else Path(tempfile.mkdtemp(prefix=DEFAULT_WORK_ROOT_PREFIX))
+    try:
+        root = Path(configured) if made is None else made
+        root.mkdir(parents=True, exist_ok=True)
+        directory = Path(tempfile.mkdtemp(prefix=DAY_GUARD_WORKDIR_PREFIX, dir=root))
+        try:
+            yield directory
+        finally:
+            shutil.rmtree(directory)
+    finally:
+        if made is not None:
+            shutil.rmtree(made)
+
+
+@pytest.mark.parametrize(
+    ("start", "with_restart", "deadline_at_midnight", "restarts", "raised", "run_date"),
+    DAY_GUARD_CASES,
+)
+def test_tpe_drives_the_steps_again_when_the_region_day_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    day_guard_workdir: Path,
+    start: datetime.datetime,
+    with_restart: bool,
+    deadline_at_midnight: bool,
+    restarts: int,
+    raised: type[Exception] | None,
+    run_date: datetime.date,
+) -> None:
+    scenario = scenarios.get(DAY_GUARD_SCENARIO)
+    steps = scenario.inputs["steps"]
+    region = _FakeRegion(start)
+    monkeypatch.setattr(tpe, "find_s3270", lambda: "s3270")
+    monkeypatch.setattr(tpe, "S3270", functools.partial(_FakeTerminal, region))
+    restarted: list[datetime.datetime] = []
+
+    def restart() -> None:
+        # The adapter's reset runs once every session of the attempt is closed.
+        assert region.terminals and all(terminal.closed for terminal in region.terminals)
+        restarted.append(region.now)
+
+    def time_left() -> float:
+        passed = deadline_at_midnight and region.now.date() > start.date()
+        return 0.0 if passed else float(base.DEFAULT_DEADLINE_S)
+
+    before: list[int] = []
+    capture = SimpleNamespace()
+    drive = functools.partial(
+        tpe.drive,
+        steps,
+        deadline=time_left,
+        capture=capture,
+        before_step=before.append,
+        workdir=day_guard_workdir,
+        address=DAY_GUARD_ADDRESS,
+        expected_screens=scenario.expected["screens"],
+        restart=restart if with_restart else None,
+    )
+    shown = run_date.strftime("%m/%d/%y")
+    if raised is None:
+        outcome = drive()
+        assert len(outcome.screens) == len(steps)
+        assert {screen["CURDATE"] for screen in outcome.screens} == {shown}
+        last = outcome.screens[-1]
+        assert last["ERRMSG"] == scenario.expected["screens"][-1]["ERRMSG"]
+        assert (last["DOBYEAR"], last["DOBMON"], last["DOBDAY"]) == (
+            f"{run_date:%Y}",
+            f"{run_date:%m}",
+            f"{run_date:%d}",
+        )
+        assert outcome.messages == [screen["ERRMSG"] for screen in outcome.screens]
+    else:
+        with pytest.raises(raised) as caught:
+            drive()
+        if raised is base.AdapterUnavailable:
+            assert caught.value.gap_id == "GAP-MIS-015"
+            for detail in ("12/31/25", "01/01/26", "steps[3]"):
+                assert detail in caught.value.reason
+    attempts = 1 + restarts
+    assert len(restarted) == restarts
+    assert len(region.terminals) == attempts
+    assert all(terminal.closed for terminal in region.terminals)
+    assert before == list(range(len(steps))) * attempts
+    tags = [(attempt, step) for attempt in range(1, attempts + 1) for step in range(len(steps))]
+    assert [(item["attempt"], item["step"]) for item in capture.screens_raw] == tags
+    assert [(item["attempt"], item["step"]) for item in capture.observed_messages] == tags
+    assert capture.run_date["first_step_screen_date"] == shown
+    if start == DAY_GUARD_MIDNIGHT:
+        assert capture.run_date["day_changes"] == [DAY_GUARD_CHANGE]
+        # Unguarded, the date typed from the 12/31/25 screens passes the edit
+        # of 01/01/26: the abandoned attempt ends on the confirmation prompt.
+        assert CHANGES_VALIDATED in "".join(capture.screens_raw[len(steps) - 1]["rows"])
+    else:
+        assert "day_changes" not in capture.run_date

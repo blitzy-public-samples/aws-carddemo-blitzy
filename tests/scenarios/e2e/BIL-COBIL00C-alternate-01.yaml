@@ -1,5 +1,7 @@
 # COBIL00C asks for confirmation instead of paying when an existing account
-# with a positive balance is entered and CONFIRM is left blank.
+# with a positive balance is entered and CONFIRM is left blank. Answering with
+# N, and then with n, cancels: the screen is cleared and nothing is read, paid
+# or rewritten.
 #
 # Steps 1-2: USER0001 (type U) signs on and is routed to COMEN01C; option 10 is
 # 'Bill Payment', a type U option, so COMEN01C transfers control to COBIL00C
@@ -27,6 +29,26 @@
 # No cross-reference read, TRANSACT browse, WRITE or REWRITE runs on this path
 # [app/cbl/COBIL00C.cbl:210-234]; RETURN TRANSID CB00 ends the task, which
 # releases the READ UPDATE hold, so ACCTDATA and TRANSACT stand as loaded.
+# Step 4 answers the request: it enters the account again with CONFIRM N and
+# presses ENTER under CB00. ACTIDIN is supplied, so it becomes ACCT-ID, and N
+# takes WHEN 'N' / WHEN 'n' [app/cbl/COBIL00C.cbl:158-171,174-181]:
+# - CLEAR-CURRENT-SCREEN performs INITIALIZE-ALL-FIELDS, which puts the cursor
+#   on ACTIDIN and moves SPACES to ACTIDIN, CURBAL, CONFIRM and WS-MESSAGE, and
+#   then SEND-BILLPAY-SCREEN refreshes the header, moves the blank WS-MESSAGE
+#   to ERRMSG and sends COBIL00 with ERASE
+#   [app/cbl/COBIL00C.cbl:289-301,552-566]. COBIL0AO redefines COBIL0AI, so
+#   those blanks are what the screen shows.
+# - The error flag is then set. The MOVE of ACCT-CURR-BAL to CURBALI that
+#   follows comes after the only SEND, so it never reaches the screen, and the
+#   flag skips every later block: no ACCTDAT read, CXACAIX read, TRANSACT
+#   browse, WRITE or REWRITE runs before RETURN TRANSID CB00
+#   [app/cbl/COBIL00C.cbl:146-149,181,193-244].
+# Step 5 types the account into the cleared screen with CONFIRM n, the second
+# value of the same WHEN, and gets the same cleared screen. A terminal that
+# translated input to upper case would deliver N for n, which takes the same
+# branch, so the outcome holds either way: CARDDEMO.CSD gives CB00 the profile
+# DFHCICST and the repository holds no TYPETERM, so whether the region
+# translates is not determinable from the source.
 # BMS pads each field with blanks to its length, so expected text values are
 # full field width with their trailing spaces. CURDATE and CURTIME come from the
 # region clock, so they are matchers and the clock is relative.
@@ -36,21 +58,25 @@ type: alternate
 description: >-
   USER0001 signs on, chooses main-menu option 10 (Bill Payment) and enters
   repository account 00000000001 on COBIL00 with CONFIRM left blank. COBIL00C
-  reads the account, shows its balance as +0000000194.00, asks 'Confirm to
-  make a bill payment...' and neither writes a payment transaction nor changes
-  the account.
+  reads the account, shows its balance as +0000000194.00 and asks 'Confirm to
+  make a bill payment...'. The user then enters the account with CONFIRM N,
+  and then again with n; each time COBIL00C clears ACTIDIN, CURBAL, CONFIRM
+  and the message without reading, paying or rewriting, so no payment
+  transaction is written and the account is unchanged.
 # Primary item first, then the program, the maps asserted, the transaction
-# step 3 runs under, the CSD file COBIL00C reads on this path (CXACAIX and
-# TRANSACT are not accessed), and the online-only copybooks it copies. Sign-on
-# and the menu option (CC00, CM00, COSGN00, USRSEC) are verified by the SEC and
-# MNU scenarios; the batch record copybooks (CVACT01Y, CVACT03Y, CVTRA05Y) and
-# the data files at the lowest level that executes them.
+# steps 3 to 5 run under, the CSD file COBIL00C reads in step 3 (CXACAIX and
+# TRANSACT are not accessed, and steps 4 and 5 issue no file command), and the
+# online-only copybooks it copies. The inventory has no item of its own for
+# the N/n cancellation, which the program item covers. Sign-on and the menu
+# option (CC00, CM00, COSGN00, USRSEC) are verified by the SEC and MNU
+# scenarios; the batch record copybooks (CVACT01Y, CVACT03Y, CVTRA05Y) and the
+# data files at the lowest level that executes them.
 inventory_ids:
 - INV-BIL-007  # COBIL00C message 'Confirm to make a bill payment...'
 - INV-BIL-001  # COBIL00C program
 - INV-MNU-003  # COMEN01 map, where option 10 is entered
-- INV-BIL-002  # COBIL00 map, the bill payment screen of steps 2 and 3
-- INV-CFG-012  # CB00 transaction, under which COBIL00C receives step 3
+- INV-BIL-002  # COBIL00 map, the bill payment screen of steps 2 to 5
+- INV-CFG-012  # CB00 transaction, under which COBIL00C receives steps 3 to 5
 - INV-CFG-001  # ACCTDAT CSD file, read for update by account id
 - INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
 - INV-LAY-005  # COTTL01Y copybook, the screen titles
@@ -93,6 +119,16 @@ inputs:
     fields:
       ACTIDIN: '00000000001'
       CONFIRM: ''
+  - aid: ENTER
+    '@map': COBIL00
+    fields:
+      ACTIDIN: '00000000001'
+      CONFIRM: 'N'
+  - aid: ENTER
+    '@map': COBIL00
+    fields:
+      ACTIDIN: '00000000001'
+      CONFIRM: 'n'
 expected:
   screens:
   - '@map': COMEN01
@@ -117,14 +153,42 @@ expected:
     CURBAL: '+0000000194.00'
     CONFIRM: ' '
     ERRMSG: 'Confirm to make a bill payment...                                             '
-  # The ERRMSG of each step: the menu and the empty bill payment screen carry none.
+  # N and then n: INITIALIZE-ALL-FIELDS blanked the account id, balance,
+  # confirmation and message, and no balance was read to show.
+  - '@map': COBIL00
+    TRNNAME: 'CB00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COBIL00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CURBAL: '              '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: 'CB00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COBIL00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CURBAL: '              '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  # The ERRMSG of each step: the menu and the empty bill payment screen carry
+  # none, then the confirmation request, and the N and n cancellations none.
   messages:
   - '                                                                              '
   - '                                                                              '
   - 'Confirm to make a bill payment...                                             '
+  - '                                                                              '
+  - '                                                                              '
   file_state:
-    # The account is read for update but never rewritten: all 50 accounts stand,
-    # and account 1 keeps the balance a payment would have cleared.
+    # The account is read for update in step 3 and never rewritten, and N and n
+    # read nothing: all 50 accounts stand, and account 1 keeps the balance a
+    # payment would have cleared.
     ACCTDATA:
       count: 50
       contains:
@@ -140,9 +204,9 @@ expected:
         ACCT-CURR-CYC-DEBIT: '0.00'
         ACCT-ADDR-ZIP: 'A000000000'
         ACCT-GROUP-ID: '          '
-    # No payment transaction is written: TRANSACT still holds the 300 fixture
-    # records, and the highest of them, the key a payment would follow, is
-    # unchanged.
+    # No payment transaction is written, neither after the blank CONFIRM nor
+    # after N or n: TRANSACT still holds the 300 fixture records, and the
+    # highest of them, the key a payment would follow, is unchanged.
     TRANSACT:
       count: 300
       contains:

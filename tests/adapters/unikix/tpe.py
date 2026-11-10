@@ -39,7 +39,14 @@ Capture
     receives the raw rows (``screens_raw``), every ``ERRMSG`` and ``@text``
     value (``observed_messages``) and the first step's screen date
     (``run_date["first_step_screen_date"]``). ``step`` in those records is the
-    0-based index of the step in ``inputs.steps``, as for ``before_step``.
+    0-based index of the step in ``inputs.steps``, as for ``before_step``, and
+    ``attempt`` the 1-based pass over the steps that recorded it: the steps
+    are driven again when the region's date changes during them (below), and
+    ``run_date["day_changes"]`` lists each abandoned attempt as
+    ``{attempt, first_step_screen_date, step, screen_date}``, the step index
+    and ``CURDATE`` of the screen that showed the other date. The returned
+    screens and messages, and ``first_step_screen_date``, are the completed
+    attempt's.
 Run-date inputs
     A field value ``{run-date: {part?, format?, offset_days?}}``
     (``harness.scenarios.RUN_DATE_INPUT``) is typed as the run date plus
@@ -54,6 +61,15 @@ Run-date inputs
     ``HarnessError``; when the first step's screen shows no such date, the
     input screen of the step due to type one is the step's result and
     driving stops, as for an unexpected map.
+
+    The application reads the clock again when it judges a typed date
+    (COACTUPC's EDIT-DATE-OF-BIRTH), before it reads the ``CURDATE`` of the
+    screen it then sends, so the date typed and the date judged are one day
+    when every recorded screen shows the run date's day. When a later
+    recorded screen shows another date, the region's day changed during the
+    steps: driving stops there, and the steps are driven again from the
+    first, on the preconditions ``drive``'s ``restart`` restores and within
+    the same scenario deadline, until one attempt runs on one day.
 Credentials
     Only the demo users ``ADMIN001`` and ``USER0001`` sign on; ``NOSUCHID`` is
     the invented id of the negative sign-on case. A step that would enter any
@@ -68,7 +84,10 @@ Outcomes
     outside the protocol or a malformed status line, under ``GAP-MIS-009``. A
     rejected keystroke (an operator error), an unknown field or an over-long
     value is ``HarnessError``. The scenario deadline passing while an action
-    is sent or a reply is awaited is ``ScenarioTimeout``. An application
+    is sent or a reply is awaited, or having passed when the region's date
+    changes during the steps, is ``ScenarioTimeout``. A change of the
+    region's date during the steps with no ``restart`` to restore the
+    preconditions is ``AdapterUnavailable(..., "GAP-MIS-015")``. An application
     outcome, such as landing on another map than the step expects, is captured
     and left to the comparison; it is never turned into ``blocked``.
 
@@ -145,6 +164,8 @@ RESOURCES_FILE = ADAPTERS_DIR / "unikix" / "resources.yaml"
 # operator host's installation, which s3270 is part of.
 LISTENER_GAP = "GAP-MIS-005"
 INSTALLATION_GAP = "GAP-MIS-009"
+# The region clock, which no confirmed command sets.
+CLOCK_GAP = "GAP-MIS-015"
 
 S3270_MODEL = "3279-2"  # 24 x 80, the size of every CardDemo map
 SIGN_ON_MAP = "COSGN00"
@@ -889,9 +910,10 @@ def transactions() -> frozenset[str]:
 
 
 class DriveOutcome(NamedTuple):
-    """What ``drive`` observed: one screen mapping per step that ran (fewer
-    than the steps when the application left the expected path), and the
-    ``ERRMSG`` value of each of those screens whose map has one."""
+    """What ``drive`` observed in the attempt it completed on one region day:
+    one screen mapping per step that ran (fewer than the steps when the
+    application left the expected path), and the ``ERRMSG`` value of each of
+    those screens whose map has one."""
 
     screens: list[dict[str, str]]
     messages: list[str]
@@ -1042,16 +1064,28 @@ def _capture_attribute(capture: Any, name: str, factory: Callable[[], Any]) -> A
 
 
 class _Observations:
-    """The screens and messages of one ``drive`` call, mirrored into the
-    adapter's evidence ``capture`` object (when one is given)."""
+    """The screens and messages of one ``drive`` attempt, mirrored into the
+    adapter's evidence ``capture`` object (when one is given) with each item
+    tagged with the attempt's 1-based number.
 
-    def __init__(self, capture: Any, identifier: ScreenIdentifier) -> None:
+    The attempt's region day is the first date a recorded screen's
+    ``CURDATE`` shows; ``day_change`` is the step index and ``CURDATE`` of the
+    first later recorded screen that shows another date."""
+
+    def __init__(self, capture: Any, identifier: ScreenIdentifier, attempt: int) -> None:
         self.capture = capture
         self.identifier = identifier
+        self.attempt = attempt
         self.screens: list[dict[str, str]] = []
         self.messages: list[str] = []
-        # The run date the first step's CURDATE shows, for run-date inputs.
+        # The run date the first step's CURDATE shows, for run-date inputs,
+        # and that CURDATE as shown.
         self.run_date: _dt.date | None = None
+        self.first_step_screen_date: str | None = None
+        # The region day of the attempt and the CURDATE that first showed it.
+        self.day: _dt.date | None = None
+        self.day_shown: str | None = None
+        self.day_change: tuple[int, str] | None = None
 
     def _evidence(self, name: str, item: dict[str, Any]) -> None:
         if self.capture is not None:
@@ -1062,12 +1096,19 @@ class _Observations:
         self.screens.append(values)
         self._evidence(
             "screens_raw",
-            {"step": index, "session": session, "map": mapset, "rows": list(screen.rows)},
+            {
+                "attempt": self.attempt,
+                "step": index,
+                "session": session,
+                "map": mapset,
+                "rows": list(screen.rows),
+            },
         )
         if mapset == UNFORMATTED_MAP:
             self._evidence(
                 "observed_messages",
                 {
+                    "attempt": self.attempt,
                     "step": index,
                     "session": session,
                     "field": SCREEN_TEXT,
@@ -1078,14 +1119,40 @@ class _Observations:
             self.messages.append(values["ERRMSG"])
             self._evidence(
                 "observed_messages",
-                {"step": index, "session": session, "field": "ERRMSG", "value": values["ERRMSG"]},
+                {
+                    "attempt": self.attempt,
+                    "step": index,
+                    "session": session,
+                    "field": "ERRMSG",
+                    "value": values["ERRMSG"],
+                },
             )
-        if index == 0 and "CURDATE" in values:
-            self.run_date = _screen_run_date(values["CURDATE"], _dt.date.today())
+        shown = values.get("CURDATE")
+        date = None if shown is None else _screen_run_date(shown, _dt.date.today())
+        if index == 0 and shown is not None:
+            self.run_date = date
+            self.first_step_screen_date = shown
             if self.capture is not None:
-                _capture_attribute(self.capture, "run_date", dict)["first_step_screen_date"] = values[
-                    "CURDATE"
-                ]
+                _capture_attribute(self.capture, "run_date", dict)["first_step_screen_date"] = shown
+        if date is None:
+            return  # no CURDATE, or one that is not a date
+        if self.day is None:
+            self.day, self.day_shown = date, shown
+        elif date != self.day and self.day_change is None:
+            self.day_change = (index, shown)
+
+    def day_change_entry(self) -> dict[str, Any]:
+        """The ``capture.run_date["day_changes"]`` entry of an attempt
+        abandoned for a day change."""
+        if self.day_change is None:
+            raise HarnessError(f"attempt {self.attempt} saw no change of the region's date")
+        step, shown = self.day_change
+        return {
+            "attempt": self.attempt,
+            "first_step_screen_date": self.first_step_screen_date,
+            "step": step,
+            "screen_date": shown,
+        }
 
     def typed_fields(self, fields: Mapping[str, Any]) -> dict[str, str] | None:
         """The text each field of a step types: text as given, a run-date
@@ -1158,6 +1225,7 @@ def drive(
     workdir: str | Path,
     address: TN3270Address | str | None = None,
     expected_screens: Sequence[Mapping[str, Any]] | None = None,
+    restart: Callable[[], None] | None = None,
 ) -> DriveOutcome:
     """Run a scenario's ``inputs.steps`` against the region and return the
     screen of each step and its ``ERRMSG``.
@@ -1177,9 +1245,9 @@ def drive(
         The evidence object receiving ``screens_raw``, ``observed_messages``
         and ``run_date`` (``adapters.unikix.evidence.Capture``), or ``None``.
     ``before_step``
-        Called with each step's 0-based index before the step runs; the
-        adapter applies an online ``unavailable`` fault there, after sign-on
-        and before the failing step.
+        Called with each step's 0-based index before the step runs, in every
+        attempt; the adapter applies an online ``unavailable`` fault there,
+        after sign-on and before the failing step.
     ``workdir``
         The scenario working directory, s3270's current and home directory.
     ``address``
@@ -1188,6 +1256,10 @@ def drive(
     ``expected_screens``
         The scenario's ``expected.screens``, used only to find the input map
         of a step without ``@map`` for the sign-on check.
+    ``restart``
+        Restores the scenario's preconditions (the adapter's reset), so the
+        steps can be driven again after the region's date changed during
+        them; ``None`` when nothing restores them.
 
     Each step: start ``transid`` when given (``Clear``, ``String``,
     ``Enter``), identify the input screen, enter the fields in screen order,
@@ -1196,17 +1268,87 @@ def drive(
     screen, or a run-date input is due and the first step's screen showed no
     date, that screen is the step's result and driving stops:
     the comparison then reports the application's path, which is never a
-    platform failure. Every session is closed before returning or raising."""
+    platform failure. Every session is closed before returning or raising.
+
+    The steps run on one region day. A program reads the date it judges a
+    step's input against before it reads the ``CURDATE`` of the screen it
+    then sends (COACTUPC's EDIT-DATE-OF-BIRTH, then 3100-SCREEN-INIT), so
+    when every recorded screen shows one date, every date judged was that
+    day. The attempt's day is the first date a recorded screen shows, the
+    first step's being the run date. A later recorded screen showing another
+    date ends the attempt there: that screen stays in the evidence and the
+    sessions are closed. Without ``restart`` that is ``AdapterUnavailable(...,
+    "GAP-MIS-015")``: no confirmed command sets the region clock, and a
+    second pass over the state the first left would not start from the
+    preconditions. With it, that is ``ScenarioTimeout`` once the deadline has
+    passed; before then, ``restart`` is called and every step is driven again
+    from the first over new sessions, with fresh screens, messages and run
+    date and ``before_step`` called again, under the same deadline, which is
+    never extended, until an attempt runs on one day. Only that attempt's
+    screens and messages are returned. Each ``screens_raw`` and
+    ``observed_messages`` item carries the 1-based ``attempt`` that recorded
+    it; each abandoned attempt appends ``{attempt, first_step_screen_date,
+    step, screen_date}`` (dates as shown) to
+    ``capture.run_date["day_changes"]``, and
+    ``run_date["first_step_screen_date"]`` is the returned attempt's."""
     identifier = default_identifier()
     _validate_steps(steps, sessions, identifier)
     check_sign_on(steps, expected_screens)
+    if restart is not None and not callable(restart):
+        raise HarnessError(f"restart must be a function or None, got {restart!r}")
     target = address_from_env() if address is None else parse_address(str(address))
     executable = find_s3270()
     directory = Path(workdir)
     if not directory.is_dir():
         raise HarnessError(f"scenario working directory {directory} does not exist")
     time_left = _time_left_function(deadline)
-    observed = _Observations(capture, identifier)
+    attempt = 1
+    while True:
+        observed = _Observations(capture, identifier, attempt)
+        _drive_attempt(
+            steps, sessions, target, executable, directory, time_left, observed, before_step
+        )
+        if observed.day_change is None:
+            return DriveOutcome(observed.screens, observed.messages)
+        change = observed.day_change_entry()
+        if capture is not None:
+            _capture_attribute(capture, "run_date", dict).setdefault("day_changes", []).append(
+                change
+            )
+        where = (
+            f"the region's date changed from {observed.day_shown} to {change['screen_date']} "
+            f"at steps[{change['step']}] (attempt {attempt})"
+        )
+        if restart is None:
+            raise AdapterUnavailable(
+                f"{where}, so the steps did not run on one day; nothing restores the "
+                "preconditions to drive them again, and no confirmed command sets the region clock",
+                CLOCK_GAP,
+            )
+        if time_left() <= 0:
+            raise ScenarioTimeout(f"deadline passed when {where}; the steps are not driven again")
+        restart()
+        if capture is not None:
+            # The next attempt records its own first step's screen date.
+            _capture_attribute(capture, "run_date", dict).pop("first_step_screen_date", None)
+        attempt += 1
+
+
+def _drive_attempt(
+    steps: Sequence[Mapping[str, Any]],
+    sessions: int,
+    target: TN3270Address,
+    executable: str,
+    directory: Path,
+    time_left: Callable[[], float],
+    observed: _Observations,
+    before_step: Callable[[int], None] | None,
+) -> None:
+    """One pass of ``drive`` over every step, into ``observed``, over new
+    sessions that are closed before returning or raising. It stops early as
+    ``drive`` describes, and at the first recorded screen showing a change of
+    the region's date."""
+    identifier = observed.identifier
     terminals: list[S3270] = []
     try:
         for number in range(1, sessions + 1):
@@ -1241,7 +1383,8 @@ def drive(
             terminal.wait_unlock()
             screen = terminal.read_screen()
             observed.record(index, number, screen, identifier.identify(screen))
+            if observed.day_change is not None:
+                break
     finally:
         for terminal in terminals:
             terminal.close()
-    return DriveOutcome(observed.screens, observed.messages)
