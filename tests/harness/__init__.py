@@ -378,7 +378,9 @@ def dump_yaml(obj: Any) -> str:
     written as the same YAML key, such as ``'1.5'`` and ``Decimal('1.5')``.
 
     ``Decimal`` becomes its string, paths their POSIX string, sets a sorted
-    list, tuples a list in order. A float anywhere raises ``HarnessError``.
+    list, tuples a list in order. A float anywhere raises ``HarnessError``,
+    and so does an integer too long to write in decimal under Python's
+    integer conversion limit (``sys.get_int_max_str_digits()`` digits).
     Strings, including trailing spaces and control characters, load back
     unchanged.
     """
@@ -393,6 +395,10 @@ def dump_yaml(obj: Any) -> str:
             line_break="\n",
         )
     except yaml.YAMLError as exc:
+        raise HarnessError(f"cannot write value as YAML: {exc}") from exc
+    except ValueError as exc:
+        # PyYAML writes an int with str(), which refuses one longer than the
+        # integer conversion limit; a hex or octal YAML literal loads one.
         raise HarnessError(f"cannot write value as YAML: {exc}") from exc
     except RecursionError:
         # Anchors are never written (ignore_aliases), so a value that contains
@@ -652,9 +658,15 @@ def _check_unique_keys(loader: Any, node: yaml.MappingNode, shown: str) -> None:
         except TypeError:  # an unhashable key, which construct_mapping refuses
             continue
         if earlier is not None:
+            try:
+                shown_key = _KEY_REPR.repr(key)
+            except ValueError:  # an integer too long to write in decimal
+                shown_key = (
+                    f"{_KEY_REPR.repr(key_node.value)} (an integer too long to show in decimal)"
+                )
             raise YAMLStructureError(
                 shown,
-                f"found duplicate key {_KEY_REPR.repr(key)} at line {line} "
+                f"found duplicate key {shown_key} at line {line} "
                 f"(first given at line {earlier})",
             )
         first[key] = line

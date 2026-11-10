@@ -78,8 +78,14 @@ needs a MAJOR bump, added assertions or added or changed ``.bin`` files (and a
 change of capture platform, such as a derived baseline replaced by an
 observed one) at least MINOR, any other change at least PATCH; an unchanged
 directory keeps its version, a new one starts at ``1.0.0``, and a baseline is
-never deleted. Exit 0 when clean, 1 with one ``<id>: <rule>`` line per
-violation, 2 when the revision cannot be read.
+never deleted. Expected values are compared by what they assert, so
+equivalent spellings are equal (a plain list and ``{records: <list>}``,
+``contains`` with as many items as ``count``, a numeric reason code and its
+four-digit text), and promoting a derived baseline to an observed one that
+keeps every asserted value (a ``count`` and ``contains`` replaced by all the
+records) is MINOR. Exit 0 when clean, 1 with one ``<id>: <rule>`` line per
+violation, 2 when the check cannot run: an unknown revision, a repository
+root that is not the top level of a git work tree, or git failing.
 
 The module writes only under ``tests/baselines/<id>/`` (``write``).
 """
@@ -236,7 +242,8 @@ class BaselineError(HarnessError):
 
 
 class BumpCheckError(HarnessError):
-    """The bump check cannot run: the revision is unknown or git fails."""
+    """The bump check cannot run: the revision is unknown, the repository root
+    is not the top level of a git work tree, or git fails."""
 
 
 # --------------------------------------------------------------------------
@@ -246,13 +253,20 @@ class BumpCheckError(HarnessError):
 
 def parse_version(version: Any) -> tuple[int, int, int]:
     """``"1.2.3"`` -> ``(1, 2, 3)``. Anything that is not ``MAJOR.MINOR.PATCH``
-    text without leading zeros raises ``BaselineError``."""
+    text without leading zeros, or holds a part too long to read as an
+    integer, raises ``BaselineError``."""
     match = _VERSION_RE.fullmatch(version) if isinstance(version, str) else None
     if match is None:
         raise BaselineError(
-            f"baseline_version {version!r} is not a semantic version MAJOR.MINOR.PATCH (quote it)"
+            f"baseline_version {_show(version)} is not a semantic version MAJOR.MINOR.PATCH (quote it)"
         )
-    major, minor, patch = (int(part) for part in match.groups())
+    try:
+        major, minor, patch = (int(part) for part in match.groups())
+    except ValueError:
+        raise BaselineError(
+            f"baseline_version {_show(version)} is too large to read: a part has more than "
+            f"{sys.get_int_max_str_digits()} digits, Python's integer conversion limit"
+        ) from None
     return major, minor, patch
 
 
@@ -566,8 +580,9 @@ def _show(value: Any, limit: int = 160) -> str:
 
 
 def _key_text(key: Any) -> str:
-    """A mapping key as messages name it: ``str(key)``, or ``_show(key)`` for
-    an integer too long to write in decimal."""
+    """A mapping key, or another value a message writes as text, as messages
+    name it: ``str(key)``, or ``_show(key)`` for an integer too long to write
+    in decimal."""
     try:
         return str(key)
     except ValueError:
@@ -1581,13 +1596,21 @@ def _screens_check(
     return problems, _display(spec), rows
 
 
+def _reason_text(code: Any) -> Any:
+    """A numeric reason code as its four-digit text (``102`` -> ``'0102'``);
+    anything else, and an integer too long to write in decimal, unchanged."""
+    if isinstance(code, int) and not isinstance(code, bool):
+        try:
+            return f"{code:04d}"
+        except ValueError:
+            pass
+    return code
+
+
 def _reason_texts(codes: Any) -> Any:
     """Reason codes as their four-digit texts (``102`` -> ``'0102'``)."""
     if isinstance(codes, list):
-        return [
-            f"{code:04d}" if isinstance(code, int) and not isinstance(code, bool) else code
-            for code in codes
-        ]
+        return [_reason_text(code) for code in codes]
     if isinstance(codes, Mapping) and not is_matcher(codes):
         return {key: (_reason_texts(value) if key in ("records", "contains") else value) for key, value in codes.items()}
     return codes
@@ -1596,7 +1619,7 @@ def _reason_texts(codes: Any) -> Any:
 def _matcher_map(value: Any) -> dict[str, Mapping[str, Any]]:
     if not isinstance(value, Mapping):
         return {}
-    return {str(name): matcher for name, matcher in value.items() if is_matcher(matcher)}
+    return {_key_text(name): matcher for name, matcher in value.items() if is_matcher(matcher)}
 
 
 def _loose_match(item: Any, record: Any, wildcards: Iterable[str]) -> bool:
@@ -1848,7 +1871,7 @@ _FINDING_TITLES = {
 def _yaml_lines(value: Any) -> list[str]:
     try:
         return dump_yaml(value).splitlines()
-    except (HarnessError, ValueError):  # ValueError: an integer too long to write in decimal
+    except HarnessError:  # an integer too long to write in decimal, among others
         return [_show(value, 10_000)]
 
 
@@ -2070,9 +2093,20 @@ def compare(
 _GIT_TIMEOUT_S = 120
 
 
+class _GitFailed(BumpCheckError):
+    """git ran and exited nonzero: ``returncode`` is its exit status and
+    ``detail`` its error output on one line, empty when git printed none."""
+
+    def __init__(self, message: str, returncode: int, detail: str) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+        self.detail = detail
+
+
 def _git(root: Path, args: Sequence[str], stdin: bytes | None = None) -> bytes:
-    """Run a local git command in ``root``; never touches a remote. A failure
-    raises ``BumpCheckError`` with git's message."""
+    """Run a local git command in ``root``; never touches a remote. git that
+    cannot start or times out raises ``BumpCheckError`` with the cause; git
+    exiting nonzero raises ``_GitFailed`` with git's message."""
     try:
         completed = subprocess.run(
             ["git", *args],
@@ -2086,21 +2120,78 @@ def _git(root: Path, args: Sequence[str], stdin: bytes | None = None) -> bytes:
         raise BumpCheckError(f"git {' '.join(args[:2])} cannot run in {display_path(root)}: {exc}") from None
     if completed.returncode != 0:
         detail = " ".join(completed.stderr.decode("utf-8", errors="replace").split())
-        raise BumpCheckError(f"git {' '.join(args[:2])} failed in {display_path(root)}: {detail or 'no message'}")
+        raise _GitFailed(
+            f"git {' '.join(args[:2])} failed in {display_path(root)}: {detail or 'no message'}",
+            completed.returncode,
+            detail,
+        )
     return completed.stdout
 
 
+def _check_work_tree(root: Path) -> None:
+    """Raise ``BumpCheckError`` unless ``root`` is the top level of a git work
+    tree, because the check reads ``tests/baselines`` relative to it both on
+    disk and through git. git that cannot start or times out propagates."""
+    shown = display_path(root)
+    named = "this checkout" if shown == "." else f"the repository root {shown}"
+    try:
+        is_folder = stat.S_ISDIR(root.stat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        raise BumpCheckError(f"{named} does not exist") from None
+    except OSError as exc:
+        raise BumpCheckError(f"{named} cannot be read: {exc.strerror or type(exc).__name__}") from None
+    if not is_folder:
+        raise BumpCheckError(f"{named} is not a directory")
+    try:
+        output = _git(root, ["rev-parse", "--show-toplevel"])
+    except _GitFailed as exc:
+        reason = exc.detail or f"git rev-parse --show-toplevel exited {exc.returncode} with no message"
+        raise BumpCheckError(f"git cannot use {named} as a work tree: {reason}") from None
+    top_text = os.fsdecode(output.removesuffix(b"\n"))
+    if not top_text:
+        raise BumpCheckError(f"git cannot use {named} as a work tree: git rev-parse --show-toplevel printed nothing")
+    top = Path(top_text)
+    try:
+        same = top.samefile(root)
+    except OSError:
+        same = False
+    if not same:
+        top_shown = display_path(top)
+        raise BumpCheckError(
+            f"{named} lies inside the git work tree whose top level is "
+            f"{'this checkout' if top_shown == '.' else top_shown}; give that top level as the repository root"
+        )
+
+
+def _is_shallow(root: Path) -> bool:
+    """Whether the repository at ``root`` is a shallow clone; ``False`` when
+    git cannot tell, so the probe never hides the error it qualifies."""
+    try:
+        return _git(root, ["rev-parse", "--is-shallow-repository"]).strip() == b"true"
+    except BumpCheckError:
+        return False
+
+
 def _resolve_commit(base: Any, root: Path) -> str:
+    """The full commit id ``base`` names in the work tree whose top level is
+    ``root``. ``BumpCheckError`` when ``base`` is not revision text, ``root``
+    is not such a top level, ``base`` names no commit (with the fetch-depth
+    hint only in a shallow clone) or git fails."""
     if not isinstance(base, str) or not base.strip() or base.startswith("-") or any(c in base for c in "\0\n\r"):
         raise BumpCheckError(f"{base!r} is not a revision")
+    _check_work_tree(root)
     try:
         commit = _git(root, ["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"]).decode().strip()
-    except BumpCheckError:
+    except _GitFailed as exc:
+        if exc.returncode != 1:
+            raise
         where = display_path(root)
-        raise BumpCheckError(
-            f"{base!r} is not a commit of {'this checkout' if where == '.' else where}; "
-            f"with a shallow clone, fetch the full history (fetch-depth: 0)"
-        ) from None
+        message = f"{base!r} is not a commit of {'this checkout' if where == '.' else where}"
+        if exc.detail:
+            message += f": {exc.detail}"
+        if _is_shallow(root):
+            message += "; the clone is shallow: fetch the full history (fetch-depth: 0)"
+        raise BumpCheckError(message) from None
     if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
         raise BumpCheckError(f"{base!r} resolves to {commit!r}, which is not a commit id")
     return commit
@@ -2220,57 +2311,287 @@ def _same(left: Any, right: Any) -> bool:
         return left == right
 
 
-def _outcome_change(base: Any, new: Any, where: str = "", contains: bool = False) -> tuple[int, str]:
-    """How the expected value ``new`` differs from ``base``: ``(0, "")``
-    when equal, ``(_MINOR, path)`` when it only adds keys, fields or (in a
-    ``contains`` list) items, ``(_MAJOR, path)`` when a value present at the
-    base changed or was removed. An exact list that changes length changes
-    the outcome; a matcher is one value."""
+def _generic_unkept(x: Any, y: Any, where: str) -> str | None:
+    """The path of the first assertion of ``y`` that ``x`` does not imply,
+    read as plain data, or ``None`` when it implies them all: a matcher or a
+    scalar must be the same value, a mapping must hold every key of ``y``
+    and a list must be as long and agree item by item."""
     label = where or "(document)"
-    if is_matcher(base) or is_matcher(new):
-        return (0, "") if _same(base, new) else (_MAJOR, label)
-    if isinstance(base, Mapping) and isinstance(new, Mapping):
-        level, at = 0, ""
-        for key, value in base.items():
-            child = f"{where}.{key}" if where else str(key)
-            if key not in new:
-                return _MAJOR, child
-            change, place = _outcome_change(value, new[key], child, key == "contains")
-            if change == _MAJOR:
-                return _MAJOR, place
-            if change > level:
-                level, at = change, place
-        added = [key for key in new if key not in base]
-        if added and level < _MINOR:
-            level, at = _MINOR, f"{where}.{added[0]}" if where else str(added[0])
-        return level, at
-    if isinstance(base, list) and isinstance(new, list):
-        if contains:
-            level, at, position = 0, "", 0
-            for index, item in enumerate(base):
-                for candidate in range(position, len(new)):
-                    change, place = _outcome_change(item, new[candidate], f"{where}[{candidate}]")
-                    if change < _MAJOR:
-                        if change > level:
-                            level, at = change, place
-                        position = candidate + 1
-                        break
-                else:
-                    return _MAJOR, f"{where}[{index}]"
-            if len(new) > len(base) and level < _MINOR:
-                level, at = _MINOR, f"{where}[{len(base)}]"
-            return level, at
-        if len(base) != len(new):
-            return _MAJOR, f"{label} ({len(base)} items became {len(new)})"
-        level, at = 0, ""
-        for index, (left, right) in enumerate(zip(base, new)):
-            change, place = _outcome_change(left, right, f"{where}[{index}]")
-            if change == _MAJOR:
-                return _MAJOR, place
-            if change > level:
-                level, at = change, place
-        return level, at
-    return (0, "") if _same(base, new) else (_MAJOR, label)
+    if is_matcher(x) or is_matcher(y):
+        return None if _same(x, y) else label
+    if isinstance(x, Mapping) and isinstance(y, Mapping):
+        for key, value in y.items():
+            child = f"{where}.{_key_text(key)}" if where else _key_text(key)
+            if key not in x:
+                return child
+            missing = _generic_unkept(x[key], value, child)
+            if missing is not None:
+                return missing
+        return None
+    if isinstance(x, list) and isinstance(y, list):
+        if len(x) != len(y):
+            return f"{label} ({len(y)} items became {len(x)})"
+        for index, (mine, theirs) in enumerate(zip(x, y)):
+            missing = _generic_unkept(mine, theirs, f"{where}[{index}]")
+            if missing is not None:
+                return missing
+        return None
+    return None if _same(x, y) else label
+
+
+@dataclass(frozen=True)
+class _ListForm:
+    """What a list value asserts: its exact ``records`` (or ``None``), its
+    ordered subsequence ``contains`` (or ``None``), the record ``counts`` it
+    states and its field-level ``matchers``."""
+
+    records: list | None
+    contains: list | None
+    counts: frozenset[int]
+    matchers: Mapping[str, Mapping[str, Any]]
+
+
+def _list_form(value: Any) -> _ListForm | None:
+    """The ``_ListForm`` of a list value, the same for every spelling of one
+    assertion: a plain list and ``{records: <list>}`` are the exact list, and
+    so is ``{count: n, contains: <n items>}``, because an ordered subsequence
+    of n items in n records is the whole list (``{count: 0}`` is the empty
+    list). ``None`` unless the value is a list, or a mapping of list keys
+    whose ``records`` and ``contains`` are lists, whose ``count`` is an
+    integer and whose ``matchers`` maps fields to matchers."""
+    if isinstance(value, list):
+        return _ListForm(list(value), None, frozenset({len(value)}), {})
+    if not isinstance(value, Mapping) or not set(value) <= _LIST_SPEC_KEYS:
+        return None
+    if any(key in value and not isinstance(value[key], list) for key in ("records", "contains")):
+        return None
+    count = value.get("count")
+    if "count" in value and (isinstance(count, bool) or not isinstance(count, int)):
+        return None
+    matchers = value.get("matchers", {})
+    if not isinstance(matchers, Mapping) or len(_matcher_map(matchers)) != len(matchers):
+        return None
+    records, contains = value.get("records"), value.get("contains")
+    if records is None and count == len(contains or []):
+        records, contains = list(contains or []), None
+    counts = {count} if "count" in value else set()
+    if records is not None:
+        counts.add(len(records))
+    return _ListForm(records, contains, frozenset(counts), _matcher_map(matchers))
+
+
+def _effective(record: Mapping[Any, Any], name: Any, matchers: tuple[Mapping[str, Any], Mapping[str, Any]]) -> Any:
+    """The value ``compare`` holds field ``name`` of an expected record to, as
+    ``_record_check`` chooses it from the ``(entry, top-level)`` matcher maps:
+    a matcher the record writes, else the entry's matcher for the field, else
+    the document's, else the literal."""
+    literal = record[name]
+    if is_matcher(literal):
+        return literal
+    entry, top = matchers
+    matcher = entry.get(name) or top.get(name)
+    return literal if matcher is None else matcher
+
+
+def _record_unkept(
+    x: Any,
+    y: Any,
+    x_matchers: tuple[Mapping[str, Any], Mapping[str, Any]],
+    y_matchers: tuple[Mapping[str, Any], Mapping[str, Any]],
+) -> str | None:
+    """Where expected record ``x`` fails to assert what record ``y`` does:
+    ``None`` when it asserts all of it, ``.<field>`` for the first field of a
+    field map ``y`` that ``x`` does not name with the same effective value
+    (``_effective``, under each record's own matcher maps), ``""`` when ``y``
+    is a text line or a whole-record matcher that ``x`` is not."""
+    if isinstance(y, Mapping) and not is_matcher(y):
+        if not isinstance(x, Mapping) or is_matcher(x):
+            return ""
+        for name in y:
+            if name not in x or not _same(_effective(x, name, x_matchers), _effective(y, name, y_matchers)):
+                return f".{_key_text(name)}"
+        return None
+    return None if _same(x, y) else ""
+
+
+def _subsequence_gap(
+    pool: Sequence[Any],
+    items: Sequence[Any],
+    x_matchers: tuple[Mapping[str, Any], Mapping[str, Any]],
+    y_matchers: tuple[Mapping[str, Any], Mapping[str, Any]],
+) -> int | None:
+    """The index of the first of ``items`` that no record of ``pool`` after
+    the one the previous item matched asserts (``_record_unkept``), or
+    ``None`` when ``items`` is an ordered subsequence of ``pool``. Matching
+    each item at its earliest record leaves the most records to the rest, so
+    the search finds a subsequence whenever one exists."""
+    position = 0
+    for index, item in enumerate(items):
+        for candidate in range(position, len(pool)):
+            if _record_unkept(pool[candidate], item, x_matchers, y_matchers) is None:
+                position = candidate + 1
+                break
+        else:
+            return index
+    return None
+
+
+def _entry_matcher_kept(form: _ListForm, name: str, matcher: Mapping[str, Any], top: Mapping[str, Any]) -> bool:
+    """Whether the list ``form``, under its document's top-level matchers
+    ``top``, asserts what an entry-level matcher ``name: matcher`` does. An
+    entry matcher replaces the literal of every record naming the field and
+    marks the field in every actual record, so it is kept by the same
+    field-level matcher (the entry's, else the document's) or by exact
+    records that are all field maps naming the field with ``matcher`` as its
+    effective value: every actual record is then one of them (none when the
+    list is empty), whereas a matcher in some records marks only those."""
+    if _same(form.matchers.get(name) or top.get(name), matcher):
+        return True
+    return form.records is not None and all(
+        isinstance(record, Mapping)
+        and not is_matcher(record)
+        and name in record
+        and _same(_effective(record, name, (form.matchers, top)), matcher)
+        for record in form.records
+    )
+
+
+def _list_unkept(x: Any, y: Any, where: str, x_top: Mapping[str, Any], y_top: Mapping[str, Any]) -> str | None:
+    """The path of the first assertion of list value ``y`` that list value
+    ``x`` does not imply, or ``None``; ``x_top`` and ``y_top`` are their
+    documents' top-level matchers. Every record count ``y`` states must be
+    one ``x`` states; exact ``records`` need exact records of ``x`` as long,
+    each asserting its counterpart; ``contains`` must be an ordered
+    subsequence of the records or the ``contains`` of ``x``; and every
+    entry-level matcher of ``y`` must be kept by ``x``: by the same matcher
+    for the field in its entry or its document's top-level matchers, or by
+    exact records that all name the field with that matcher as its effective
+    value (``_entry_matcher_kept``). A value ``_list_form`` cannot read
+    compares as plain data."""
+    fx, fy = _list_form(x), _list_form(y)
+    if fx is None or fy is None:
+        return _generic_unkept(x, y, where)
+    lost = sorted(fy.counts - fx.counts)
+    if lost:
+        if fx.counts and not fx.counts & fy.counts:
+            became = " or ".join(_key_text(n) for n in sorted(fx.counts))
+            return f"{where} ({_key_text(lost[0])} items became {became})"
+        return f"{where}.count"
+    x_matchers, y_matchers = (fx.matchers, x_top), (fy.matchers, y_top)
+    if fy.records is not None:
+        if fx.records is None:
+            return f"{where}.records"
+        if len(fx.records) != len(fy.records):
+            return f"{where} ({len(fy.records)} items became {len(fx.records)})"
+        for index, (mine, theirs) in enumerate(zip(fx.records, fy.records)):
+            field = _record_unkept(mine, theirs, x_matchers, y_matchers)
+            if field is not None:
+                return f"{where}[{index}]{field}"
+    if fy.contains:
+        gaps = [
+            _subsequence_gap(pool, fy.contains, x_matchers, y_matchers)
+            for pool in (fx.records, fx.contains)
+            if pool is not None
+        ]
+        if None not in gaps:
+            return f"{where}.contains[{max(gaps, default=0)}]"
+    for name, matcher in fy.matchers.items():
+        if not _entry_matcher_kept(fx, name, matcher, x_top):
+            return f"{where}.matchers.{name}"
+    return None
+
+
+def _section_unkept(x: Any, y: Any, where: str, x_top: Mapping[str, Any], y_top: Mapping[str, Any]) -> str | None:
+    """``_list_unkept`` over every dataset the ``datasets`` or ``file_state``
+    mapping ``y`` names; a dataset ``x`` lacks is itself the path."""
+    if not isinstance(x, Mapping) or not isinstance(y, Mapping):
+        return _generic_unkept(x, y, where)
+    for name, value in y.items():
+        place = f"{where}.{_key_text(name)}"
+        missing = place if name not in x else _list_unkept(x[name], value, place, x_top, y_top)
+        if missing is not None:
+            return missing
+    return None
+
+
+def _screens_unkept(x: Any, y: Any, where: str, x_top: Mapping[str, Any], y_top: Mapping[str, Any]) -> str | None:
+    """The path of the first screen field ``y`` asserts that ``x`` does not:
+    ``x`` needs as many steps, each naming every field of its counterpart with
+    the same effective value (only top-level matchers apply, as in
+    ``_screens_check``). Anything but two lists of field maps compares as
+    plain data."""
+    if not all(
+        isinstance(side, list) and all(isinstance(step, Mapping) and not is_matcher(step) for step in side)
+        for side in (x, y)
+    ):
+        return _generic_unkept(x, y, where)
+    if len(x) != len(y):
+        return f"{where} ({len(y)} items became {len(x)})"
+    for index, (mine, theirs) in enumerate(zip(x, y)):
+        field = _record_unkept(mine, theirs, ({}, x_top), ({}, y_top))
+        if field is not None:
+            return f"{where}[{index}]{field}"
+    return None
+
+
+def _unkept(x: Any, y: Any) -> str | None:
+    """The path of the first assertion of the expected document ``y`` that
+    document ``x`` does not imply, or ``None`` when ``x`` asserts everything
+    ``y`` does. A key ``y`` holds and ``x`` lacks is itself the path. Keys
+    are read as ``compare`` reads them: ``messages``, ``reject_reason_codes``
+    (as four-digit texts) and each ``datasets`` or ``file_state`` entry are
+    list values, ``screens`` is judged step by step, and ``return_code``, the
+    top-level ``matchers`` and any other key as plain data."""
+    if not isinstance(x, Mapping) or not isinstance(y, Mapping):
+        return _generic_unkept(x, y, "")
+    x_top, y_top = _matcher_map(x.get("matchers")), _matcher_map(y.get("matchers"))
+    for key, value in y.items():
+        where = _key_text(key)
+        if key not in x:
+            return where
+        other = x[key]
+        if key == "reject_reason_codes":
+            missing = _list_unkept(_reason_texts(other), _reason_texts(value), where, x_top, y_top)
+        elif key == "messages":
+            missing = _list_unkept(other, value, where, x_top, y_top)
+        elif key in ("datasets", "file_state"):
+            missing = _section_unkept(other, value, where, x_top, y_top)
+        elif key == "screens":
+            missing = _screens_unkept(other, value, where, x_top, y_top)
+        else:
+            missing = _generic_unkept(other, value, where)
+        if missing is not None:
+            return missing
+    return None
+
+
+def _outcome_change(base: Any, new: Any) -> tuple[int, str]:
+    """How the expected document ``new`` changes the outcome ``base``
+    asserts, judged by what each asserts rather than by how it is written:
+    ``(0, "")`` when each implies the other (``_unkept``), ``(_MINOR, path)``
+    when ``new`` keeps every assertion of ``base`` and adds the one at
+    ``path``, ``(_MAJOR, path)`` when it changes or drops the assertion of
+    ``base`` at ``path``.
+
+    A plain list, ``{records: <list>}`` and ``{count: n, contains: <n
+    items>}`` are one exact list, ``102`` is ``'0102'``, a literal that a
+    field-level matcher replaces asserts nothing, and an entry-level matcher
+    is the same matcher written as the field's value in every record of an
+    exact list, so rewriting one spelling as another changes nothing. An
+    entry-level matcher moved to an equal top-level matcher is kept, and the
+    top-level matcher only adds. An added field, key, dataset, count or
+    ``contains`` item only adds, and so does promoting a derived baseline to
+    an observed one that keeps every asserted value (``{count: 50, contains:
+    [r]}`` to the 50 records, ``r`` among them). An exact list of another
+    length, a record added to an exact list, a changed or removed value,
+    field, dataset or key, a matcher added over a literal a record names or
+    replaced by a literal, and the reverse of a promotion change the
+    outcome."""
+    lost = _unkept(new, base)
+    if lost is not None:
+        return _MAJOR, lost
+    added = _unkept(base, new)
+    return (0, "") if added is None else (_MINOR, added)
 
 
 def _required_bump(
@@ -2317,7 +2638,9 @@ def _required_bump(
             reasons.append((_MINOR, f"{name} changed"))
     old_platform, new_platform = base_manifest.get("capture_platform"), new_manifest.get("capture_platform")
     if old_platform != new_platform:
-        reasons.append((_MINOR, f"capture_platform changed from {old_platform} to {new_platform}"))
+        reasons.append(
+            (_MINOR, f"capture_platform changed from {_key_text(old_platform)} to {_key_text(new_platform)}")
+        )
     metadata = {key: value for key, value in base_manifest.items() if key != "baseline_version"}
     if not _same(metadata, {key: value for key, value in new_manifest.items() if key != "baseline_version"}):
         reasons.append((_PATCH, f"{MANIFEST_FILE} metadata changed"))
@@ -2331,9 +2654,19 @@ def check_bumps(base: str, repo_root: str | Path = REPO_ROOT) -> list[str]:
     """Every baseline version rule the working tree of ``repo_root`` breaks
     against revision ``base``, one ``<id>: <rule>`` text per violation; empty
     when every directory under ``tests/baselines/`` is bumped as its change
-    requires (the rules are in the module docstring). An unknown revision, or
-    git failing, raises ``BumpCheckError``."""
-    root = Path(repo_root).resolve()
+    requires (the rules are in the module docstring). An unknown revision, a
+    ``repo_root`` that is not the top level of a git work tree, or git
+    failing, raises ``BumpCheckError``."""
+    try:
+        root = Path(repo_root).resolve()
+    except (OSError, RuntimeError, ValueError) as exc:  # pathlib reports a symbolic link loop as RuntimeError
+        shown = display_path(repo_root)
+        named = "this checkout" if shown == "." else f"the repository root {shown}"
+        if isinstance(exc, RuntimeError):
+            reason = "its symbolic links form a loop"
+        else:
+            reason = getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
+        raise BumpCheckError(f"{named} cannot be resolved: {reason}") from None
     commit = _resolve_commit(base, root)
     at_base = _base_tree(root, commit)
     in_work, problems = _working_tree(root / BASELINES_REL)
@@ -2437,7 +2770,9 @@ examples (from the repository root):
   python tests/harness/baselines.py --check-bumps --base 93ebec71ff7b59a68cedd7c501afe496a8eaa68d
 
 exit status: 0 when every baseline is bumped as its change requires, 1 with one
-'<id>: <rule>' line per violation, 2 when the revision cannot be read.
+'<id>: <rule>' line per violation, 2 when the check cannot run: an unknown
+revision, a repository root that is not the top level of a git work tree, or
+git failing.
 """
 
 
