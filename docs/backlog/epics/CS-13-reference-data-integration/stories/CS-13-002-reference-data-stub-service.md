@@ -23,6 +23,7 @@ Parent epic: [CS-13 Reference Data Integration](../README.md)
 >   - An empty provider result is answered `OK` with an empty list, never with an error.
 >   - It reads the provider on every call and keeps no copy of the rows between calls, so a data load into the two tables is visible on the next call with no stub restart.
 >   - A provider read failure, the store unreachable or a query error, is answered `UNAVAILABLE` with one `cardservicing.common.v1.ErrorObject` from `card-servicing-contracts/src/main/proto/cardservicing/common/v1/common.proto` packed into the `google.rpc.Status` details, as the contract's `Errors:` block requires. It carries `code` `UNAVAILABLE`, `message` `Reference data store unavailable`, a `traceId` the stub issues at receipt as a 32-character lower-case hexadecimal value, and an empty `details` list. The stub logs the cause with that `traceId`, and no exception text reaches the caller.
+>     > SCOPE-QUESTION (Resolved): What may the stub log when the provider read fails? One diagnostic record and nothing else. For each failed call the stub writes exactly one `WARN` line, built only from this allowlist: the call's `traceId`; its full operation name, `cardservicing.referencedata.v1.ReferenceDataService/ListTransactionTypes` or `cardservicing.referencedata.v1.ReferenceDataService/ListTransactionCategories`; the fully qualified class name of the exception the provider caught; the fully qualified class name of the innermost cause in its chain; and the SQLSTATE of the first `java.sql.SQLException` in the chain when it matches `^[0-9A-Z]{5}$`, otherwise `none`. The template is `Provider read failed traceId={} operation={} exception={} rootCause={} sqlState={}`. The line never carries an exception message, a stack trace, a nested cause's text, SQL text, a bound parameter or request value, a connection URL, a user name or a password, and the stub passes no exception object to the logger, so no layout can print one. The provider writes no log line of its own and copies no text from the caught exception into its read failure, which carries the caught exception only as its cause. The outward answer stays as written, and no file, dependency or story edge is added, so the 4 files touched stand.
 >   - It never answers `UNAUTHENTICATED`: the contract lists that status for the real service, and its comment states that the stub does not re-authorize. `DEADLINE_EXCEEDED` arises at the client, never from the stub.
 >   - A nested configuration class, active only when `card-servicing.stub.serve` is `reference-data`, builds the relational provider and declares the `StubServerHost.HostedStub` bean named `reference-data` for container mode. With `card-servicing.stub.serve` empty, the Card Servicing service process builds no Reference Data stub and no provider, so it opens no store connection for them.
 > - `card-servicing-service/src/main/java/com/example/cardservicing/integration/referencedata/ReferenceDataProvider.java`: the provider abstraction, with one read of every type and one read of every category, and its two implementations nested in the same file.
@@ -69,6 +70,7 @@ Parent epic: [CS-13 Reference Data Integration](../README.md)
 > - AC7: With a per-test latency override of 400 ms (`STUB_LATENCY_MS`) on stub `reference-data`, each answer reaches the client no earlier than 400 ms after sending and still carries the AC1 or AC2 list, and its request-log entry shows a duration of at least 400 ms.
 > - AC8: With no Redis server reachable and no Auth stub registered, calls of each operation with no `x-api-key` and no `authorization` metadata, with `x-api-key` empty, and with `x-api-key` set to `wrong` receive identical answers: `OK` with the AC1 and AC2 lists.
 > - AC9: With the relational provider's store unreachable, each operation returns `UNAVAILABLE`, and the `google.rpc.Status` details hold exactly one packed `ErrorObject` with `code` `UNAVAILABLE`, `message` `Reference data store unavailable`, a 32-character lower-case hexadecimal `traceId` and an empty `details` list. The request log records each call with outcome `UNAVAILABLE`, and no exception text reaches the client.
+>   > SCOPE-QUESTION (Resolved): The criterion also covers the diagnostic record resolved beneath the provider read failure bullet. The relational provider runs over its `EntityManager` test double, which throws a persistence exception whose message carries sentinels the test generates at run time, a 16-digit card number, a bearer token, an `x-api-key` value, a password and a SQL-shaped fragment, with a `java.sql.SQLException` cause of SQLSTATE `08001` carrying them again. For each operation, with every log event captured on the root logger at `DEBUG` from the call's start until its answer arrives, each event as its formatted message plus the rendering of any attached exception, the captured text holds none of the sentinels, and exactly one line, at `WARN`, holds the call's `traceId`, equal to the `traceId` of the packed `ErrorObject`, the operation name, the fully qualified class names of the persistence exception and of its `java.sql.SQLException` cause, and `08001`. The answers stay as AC9 states.
 > - AC10: For the packaged seed rows, the in-memory provider and the relational provider, the latter over the same 7 type rows and 18 category rows as CS-13-001 stores them, give identical `ListTransactionTypes` and `ListTransactionCategories` answers field for field.
 > - AC11: `StubHarness.allRegistered()` starts the Reference Data stub under stub name `reference-data` on a `127.0.0.1` port it reports, and a client on that port receives the AC1 list. A context started with `card-servicing.stub.serve=reference-data` holds the hosted stub named `reference-data`. A context started with `card-servicing.stub.serve` empty holds no `ReferenceDataStubService` bean, no provider bean and no hosted stub named `reference-data`.
 >
@@ -102,7 +104,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass with ≥80% line coverage per module. `ReferenceDataStubServiceTest` covers AC1–AC11 on the loopback harness: the two ordered lists and their reverse-order input, the contract examples, a changed description, empty tables, failure rate 1.0 with its request-log entries, the 400 ms latency, the absent, empty and wrong service key, the unreachable store with its packed error object, provider parity, discovery and the container-mode bean condition.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass with ≥80% line coverage per module. `ReferenceDataStubServiceTest` covers AC1–AC11 on the loopback harness: the two ordered lists and their reverse-order input, the contract examples, a changed description, empty tables, failure rate 1.0 with its request-log entries, the 400 ms latency, the absent, empty and wrong service key, the unreachable store with its packed error object and the root-logger capture of a sentinel-bearing provider failure, which shows none of the sentinels and one diagnostic line per call, provider parity, discovery and the container-mode bean condition.
 - Integration: Applies. This story adds no integration suite; the Reference Data integration suite (CS-13-004) runs the Reference Data client against this stub with Testcontainers `postgres:16.6` and `redis:7.4.2`. Command `./gradlew :card-servicing-service:integrationTest`; all pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap, each injected on this stub for CS-13-004.
 - Performance: Not applicable — the stub adds no UI-facing endpoint, and the Compose defaults keep failure injection off; it applies to balance-retrieval and drill-down stories. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -118,124 +120,101 @@ Completed during implementation.
 
 Recommended: Option A — one provider abstraction with relational and in-memory implementations.
 
-Rationale: the stub answers from whatever the loaded tables hold, so a data load is visible on the next call, while unit suites run on the same answers without a database.
+Rationale: answers track the loaded tables, and unit suites need no database.
 
-- Rejected: Option B, the stub reads the seed files directly, because it bypasses the tables and a reload goes unseen.
+- Rejected: Option B, because seed files read at start bypass the tables.
 
 ### Shared by both options
 
-- Topology: a remote procedure server in the test process on a loopback port, or a container in the compose stack.
-- Naming: the two operations keep the baseline names for listing types and listing categories.
-- Addressing: the service reaches the stub only through its configured target address.
-- Isolation: the stub reads reference data only and never touches the shared cache.
-- Fallback: none in the stub, because the client story owns the description fallback and a read failure is reported as unavailable status.
-- Provisioning: the stub hosting story starts and stops it with the other stubs.
-- Cut-over: the real service replaces the stub by a change of target address and credential source.
-- Failures: injected latency, injected failure rate and a request-log entry for every call.
+- Topology: a loopback server in tests, or a compose stack container.
+- Naming: both operations keep their baseline names.
+- Addressing: the service calls only the stub's configured address.
+- Isolation: the stub reads only reference data, never the shared cache.
+- Fallback: none in the stub, because the client story owns the description fallback.
+- Provisioning: the stub hosting story starts and stops it.
+- Cut-over: only the target address and credential source change.
+- Failures: injected latency and failure rate, and a request-log entry per call.
 
 ### Design Option A — one provider abstraction over the tables
 
-The stub asks one provider for every type or every category on each call and puts the rows in code order before answering. In the shared stack and the container-backed suite the provider reads the two reference tables in the relational store, and in unit suites it serves an in-memory set built from the seed files the tables story loads. A store read failure becomes the unavailable status with the standard error object.
+Each call reads the tables, or a seed copy in unit suites, and the stub sorts the rows. A store read failure answers unavailable, logging only the trace identifier, operation and failure kind, never its text.
 
 How it behaves:
 
-- Every call reads the provider, so a description loaded into a table shows on the next call.
-- The stub orders types by type code and categories by type code then category code, whatever order the provider returns.
-- Empty tables give empty lists with a success status.
-- Unit suites build the in-memory set from the packaged seed files, so they see the rows the tables hold.
-- The stub keeps no copy of the rows between calls.
-- The relational provider exists only in a process started to host this stub, so the service process opens no store connection for it.
+- Empty tables answer empty lists, and only a stub process connects to the store, on first use.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One provider abstraction (vs direct table reads in the stub) | unit suites run the same stub with no store | two provider paths must stay in step |
-| 2 | Table read per request (vs a stub-side cache) | a data load shows on the next call | each call costs one store round trip |
-| 3 | In-memory set from the seed files (vs hand-written test rows) | unit answers match the stored rows | a seed change also moves the unit expectations |
+| 1 | One provider (vs direct reads) | unit suites need no store | two paths to keep in step |
+| 2 | Read per call (vs a stub cache) | loads show next call | a round trip per call |
+| 3 | Seed copy (vs hand-built rows) | unit rows match the store | seed edits shift unit tests |
 
-Effort and risk: low effort on top of the stub hosting story, with the risk in the two providers drifting apart, which the parity check catches.
+Effort and risk: low effort, and the parity check catches provider drift.
 
 ### Design Option B — seed files parsed at stub start
 
-The stub parses the two seed files once when it starts and answers every call from that copy in memory, in every hosting mode. No provider abstraction and no store read exist, so the stub needs no store connection in the shared stack. A reference data change reaches the stub only through a new seed file and a stub restart.
+The stub answers from seed files read at start, with no store. Changes need new files and a restart.
 
 How it differs:
 
-- The stub never reads the reference tables, so a data load into them goes unseen.
-- A seed file that cannot be read stops the stub at start instead of failing a call.
-- Empty reference data can be expressed only through empty seed files.
-- The shared stack needs no store connection for this stub.
+- Table loads go unseen, and an unreadable seed file stops the stub at start.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Seed files read at start (vs table reads per request) | no store round trip on any call | a data load goes unseen until a restart |
-| 2 | One file-based path in every mode (vs a provider abstraction) | one code path for tests and containers | the stub and the tables can disagree |
+| 1 | Read once at start (vs per call) | no store round trip | loads wait for a restart |
+| 2 | One file path (vs two providers) | one path in every mode | stub and tables can differ |
 
-Effort and risk: lower effort, with high risk that a data load goes unseen.
+Effort and risk: lower effort, with high risk that loads go unseen.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: the stub answers from the loaded tables, so the promise that a reference data change is a data load holds from the stub outward.
-- Strongest argument against: two provider paths must stay in step, and the unit suite proves the relational path only against a stand-in for the store.
-- Shared items that do not decide the choice: hosting, injection, the request log, ordering and the contract shape.
-- Flip conditions: reference data stops living in the relational store, or the data owner ships only files.
+- Why: a reference data change stays a data load, seen on the next call.
+- Strongest argument against: two provider paths must stay in step.
+- Shared items that do not decide the choice: hosting, injection, request log, ordering, contracts.
+- Flip conditions: reference data leaves the relational store, or arrives only as files.
 
 ## Design Validation
 
 ### Option A validation
 
-Settled assumptions:
+Settled assumptions: examples equal the seed rows, and reference data needs no authorization.
 
-- The contract examples equal the 7 type rows and 18 category rows of the seed files.
-- The stub hosting story supplies injection and the request log.
-- Reference data carries no account data, so no authorization step applies.
-- The store connection opens on first use, so a stub process starts with no store reachable.
-
-Open assumptions:
-
-- Per-request read latency stays under the per-attempt timeout. Open → settled by the request-log durations in the integration suite.
-- The contract examples and the seed rows stay equal as either one changes. Open → settled by the unit comparison of the stub answers with the contract examples.
+- Read latency fits the per-attempt timeout. Open → settled by integration request-log durations.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the stub orders the type rows by code before answering |
-| AC2 | Holds | the stub orders the category rows by type code then category code |
-| AC3 | Holds | the in-memory set and the examples share the seed rows |
-| AC4 | Holds | every call reads the provider with no copy kept |
-| AC5 | Holds | an empty provider result becomes an empty list |
-| AC6 | Holds | the shared injector answers ahead of any provider read |
-| AC7 | Holds | the shared injector holds the call ahead of the stub's answer |
-| AC8 | Holds | the stub reads no metadata and opens no cache connection |
-| AC9 | Holds | a provider read failure becomes the unavailable status with the error object |
-| AC10 | Conditional | parity rests on building the in-memory set from the same seed files |
-| AC11 | Holds | the hosted stub is declared only in a process started for this stub |
+| AC1 | Holds | the stub sorts types |
+| AC2 | Holds | the stub sorts categories |
+| AC3 | Holds | examples match the seed rows |
+| AC4 | Holds | each call reads afresh |
+| AC5 | Holds | empty tables give empty lists |
+| AC6 | Holds | injection answers before any read |
+| AC7 | Holds | injection delays the answer |
+| AC8 | Holds | metadata and cache go unread |
+| AC9 | Holds | read failures answer unavailable |
+| AC10 | Conditional | parity rests on seed files |
+| AC11 | Holds | only stub processes host it |
 
 ### Option B validation
 
-Settled assumptions:
+Settled assumptions: examples equal the seed rows, and reference data needs no authorization.
 
-- The contract examples equal the 7 type rows and 18 category rows of the seed files.
-- The stub hosting story supplies injection and the request log.
-- Reference data carries no account data, so no authorization step applies.
-
-Open assumptions:
-
-- The data owner accepts a stub restart for each reference data change. Open → settled by the data owner's first change request.
-- A seed file that cannot be read shows up before a suite runs. Open → settled by the health check of the compose stack story.
+- The data owner accepts restarts. Open → settled by the owner's first change request.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the stub orders the parsed type rows by code |
-| AC2 | Holds | the stub orders the parsed category rows by both codes |
-| AC3 | Holds | the parsed rows and the examples share the seed rows |
-| AC4 | Breaks | a table change goes unseen until a restart with a new file |
-| AC5 | At risk | empty tables cannot be expressed without empty seed files |
-| AC6 | Holds | the shared injector answers before the stub |
-| AC7 | Holds | the shared injector holds the call ahead of the stub's answer |
-| AC8 | Holds | the stub reads no metadata and opens no cache connection |
-| AC9 | At risk | no store read exists to fail on a call |
-| AC10 | Breaks | no relational provider exists to compare |
-| AC11 | Holds | registration and the hosted stub do not depend on the data source |
+| AC1 | Holds | the stub sorts types |
+| AC2 | Holds | the stub sorts categories |
+| AC3 | Holds | parsed rows match the examples |
+| AC4 | Breaks | table changes need a restart |
+| AC5 | At risk | empty tables need empty files |
+| AC6 | Holds | injection answers before the stub |
+| AC7 | Holds | injection delays the answer |
+| AC8 | Holds | metadata and cache go unread |
+| AC9 | At risk | no store read exists to fail |
+| AC10 | Breaks | no relational provider exists |
+| AC11 | Holds | registration ignores the data source |
 
 ## Metadata
 

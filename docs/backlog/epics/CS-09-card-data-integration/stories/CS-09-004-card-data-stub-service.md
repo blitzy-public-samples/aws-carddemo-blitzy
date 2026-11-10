@@ -34,6 +34,7 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 > - Responses follow `card_data_service.proto` and `card-data-service.yaml` exactly: every field name, every pattern and the omission of an absent `groupId`.
 > - An unknown account returns `NOT_FOUND`, and a malformed or all-zero account identifier returns `INVALID_ARGUMENT`, each with one `cardservicing.common.v1.ErrorObject` from `card-servicing-contracts/src/main/proto/cardservicing/common/v1/common.proto` packed into the `google.rpc.Status` details. The error object carries a `traceId` the stub issues at receipt as a 32-character lower-case hexadecimal value.
 > - A provider read failure, the store unreachable or a query error, is answered `UNAVAILABLE` with one packed `ErrorObject`. The stub logs the cause with that `traceId`, and no exception text reaches the caller.
+>   > SCOPE-QUESTION (Resolved): What may the stub log about a provider read failure, when a persistence or connection exception's message and causes can carry card numbers, credentials, SQL text or bound values? One diagnostic record and nothing else. For each failed call the stub writes exactly one `WARN` line, `Provider read failed traceId={} operation={} exception={} rootCause={} sqlState={}`, filled only from this allowlist: the call's `traceId`; its full operation name, `cardservicing.carddata.v1.CardDataService/GetAccount`, `cardservicing.carddata.v1.CardDataService/GetCardCrossReference` or `cardservicing.carddata.v1.CardDataService/ListCategoryBalances`; the fully qualified class name of the exception the provider caught; the fully qualified class name of the innermost cause in that exception's chain; and the SQLSTATE of the first `java.sql.SQLException` in the chain when it matches `^[0-9A-Z]{5}$`, otherwise `none`. The line never carries an exception message, a stack trace, a nested cause's text, SQL text, a bound parameter or a request value, the account identifier included, a connection URL, a user name or a password, and the stub passes no exception object to the logger, so no layout can print one. The relational provider writes no log line of its own for the failure and copies no text from the caught exception into its provider read failure, which carries the caught exception only as its cause. The outward answer stays as written: `UNAVAILABLE` with one packed `ErrorObject` and no exception text. No file, dependency or story edge is added, so the 4 files touched stand.
 > - The stub ignores the `x-api-key` service key and the forwarded `authorization` metadata and never re-authorizes, so it never answers `UNAUTHENTICATED`, although the contract lists that status for the real service. `DEADLINE_EXCEEDED` arises at the client, never from the stub. No token value reaches the request log or any stub log line.
 > - The stub reads only `account`, `card_cross_reference` and `category_balance`. It never opens a Redis connection, never calls Auth or any other service, and makes zero live external calls.
 > - `STUB_LATENCY_MS` and `STUB_FAILURE_RATE` apply through `StubFailureInjector`, which `StubServerHost` places in front of the stub, and every call lands in `StubRequestLog` with its full operation name, outcome and duration (CS-11-002). The stub adds no interceptor of its own.
@@ -71,6 +72,7 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 > - AC11: With a per-test latency override of 400 ms (`STUB_LATENCY_MS`) on stub `card-data`, each answer reaches the client no earlier than 400 ms after sending and still carries the AC1, AC2 or AC3 values, and its request-log entry shows a duration of at least 400 ms.
 > - AC12: With no Redis server reachable and no Auth stub registered, calls of each operation for `00000000001` with no `x-api-key` and no `authorization` metadata, with `x-api-key` empty, and with `x-api-key` set to `wrong` receive identical answers: `OK` with the AC1, AC2 and AC3 values. No call answers `UNAUTHENTICATED`.
 > - AC13: With the relational provider's store unreachable, each operation for `00000000001` returns `UNAVAILABLE`, and the `google.rpc.Status` details hold exactly one packed `ErrorObject` with `code` `UNAVAILABLE`, `message` `Card data store unavailable`, a 32-character lower-case hexadecimal `traceId` and an empty `details` list. The request log records each call with outcome `UNAVAILABLE`, and no exception text reaches the client.
+>   > SCOPE-QUESTION (Resolved): AC13 also proves the logging limit that the note beneath the provider-read-failure rule sets. For each of the three operations, the relational provider runs over repository test doubles that throw a persistence exception whose message carries sentinel values the test generates at runtime: a 16-digit card number, a bearer token, an `x-api-key` value, a password and a SQL-shaped fragment naming account `00000000001`. Its cause is a `java.sql.SQLException` with SQLSTATE `08001` whose message carries the same sentinels again. Every log event the test JVM writes is captured on the root logger at `DEBUG` from the call's start until its answer arrives, each event as its formatted message plus the rendering of any attached exception. The captured text holds none of the sentinels, and exactly one captured line, at `WARN`, holds the call's `traceId`, equal to the `traceId` of the packed `ErrorObject`, together with the operation name, the class names of the thrown exception and of its `java.sql.SQLException` cause, and `08001`. The answer stays as AC13 states.
 > - AC14: For `00000000001`, `00000000050` and `00000000099`, the in-memory provider over `CardDataFixtureSet` and the relational provider over the rows the CS-09-003 loaders write give identical answers to each of the three operations, field for field and status for status.
 >   > SCOPE-QUESTION (Resolved): The `00000000099` answers are `NOT_FOUND` errors whose packed `ErrorObject` carries the `traceId` the stub issues at that call's receipt, so two separate calls never share one and a literal comparison of the error objects cannot pass. AC14 therefore reads as follows. For `00000000001` and `00000000050`, each operation's two answers, one through each provider, have the same status, `OK`, and equal response messages field for field, presence of `group_id` included. For `00000000099`, each operation's two answers have the same status, `NOT_FOUND`, and their packed `ErrorObject` values are equal in `code`, `message` and `details`. The `traceId` values are left out of the equality comparison: each is checked on its own as a 32-character lower-case hexadecimal value, as AC6 requires, and the two values differ, because each call receives its own. No `traceId` is reused or fixed in advance to make the comparison pass.
 > - AC15: `StubHarness.allRegistered()` starts the Card Data stub under stub name `card-data` on a `127.0.0.1` port it reports, and a client on that port receives the AC1 answer. A context started with `card-servicing.stub.serve` empty holds no `CardDataStubService` bean, no provider bean and no hosted stub named `card-data`.
@@ -96,7 +98,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; pass when all tests pass with ≥80% line coverage per module. `CardDataStubServiceTest` covers AC1–AC16 on the loopback harness and in test contexts: the three operations and their contract examples, the boundary accounts, not-found, malformed identifiers, ordering and empty lists, value rendering, failure rate 1.0 and the 400 ms latency with their request-log entries, service-key indifference, the unreachable store, provider equality as the note beneath AC14 compares it, with each `traceId` checked on its own, discovery and the container-mode relational path.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; pass when all tests pass with ≥80% line coverage per module. `CardDataStubServiceTest` covers AC1–AC16 on the loopback harness and in test contexts: the three operations and their contract examples, the boundary accounts, not-found, malformed identifiers, ordering and empty lists, value rendering, failure rate 1.0 and the 400 ms latency with their request-log entries, service-key indifference, the unreachable store with the sentinel log capture that the note beneath AC13 sets, provider equality as the note beneath AC14 compares it, with each `traceId` checked on its own, discovery and the container-mode relational path.
 - Integration: Applies, through the Card Data integration suite CS-09-006, which runs the Card Data client against this stub over the sample rows in the `postgres:16.6` container and repeats the AC14 comparison, as the note beneath AC14 sets it, against the stored rows, with each `traceId` checked on its own. Command `./gradlew :card-servicing-service:integrationTest`; pass when all suites pass, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap, each injected on this stub for CS-09-006.
 - Performance: Not applicable — the stub adds no UI-facing endpoint; it is measured through the endpoint scenarios CS-01-005 and CS-02-002. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -110,140 +112,122 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A, one mock data provider contract with a relational and an in-memory implementation.
+Recommended: Option A, one provider contract with relational and in-memory implementations.
 
-Rationale: the stub answers from whichever store its host holds, so unit suites run with no database while the shared container stack answers from the loaded relational store.
+Rationale: unit suites need no database while containers serve loaded rows.
 
-- Rejected: Option B, the in-memory provider on every host, because it bypasses the loaded relational store, so the shared container stack never serves the volume rows the performance scenarios read.
-- Rejected: provider objects with no remote procedure channel, already set aside by the stub hosting decision, because the contract goes unexercised.
+- Rejected: Option B, in-memory data everywhere, which never serves volume rows.
+- Rejected: direct provider calls, because the contract goes unexercised.
 
 ### Shared by both options
 
-- Topology: the stub hosting story serves the stub on a loopback port in the test process and as its own container in the shared container stack.
-- Naming: the three operations keep the contract names for the account read, the cross-reference read and the category balance list.
-- Addressing: one listening port per stub, assigned by the host and handed to the client under test.
-- Isolation: the stub reads only the three card data tables, never the cache, ignores the service credential and never re-authorizes.
-- Fallback: none, because the stub is the source of record and a store read failure is reported as the unavailable status.
-- Provisioning: rows come from the card data fixture load, and the in-memory fixture set is built from the same sample files.
-- Cut-over: the real card data service replaces the stub, and only the client's target address and credential source change.
-- Failures: an unknown account answers the not-found status with the standard error object, and injected latency and failures come from the stub hosting story.
+- Topology: the stub runs on a loopback port or in its own container.
+- Naming: the operations keep their contract names.
+- Addressing: the host assigns and reports the port.
+- Isolation: only account, cross-reference and category balance data; no cache or access check.
+- Fallback: none, because the stub is the source of record.
+- Provisioning: the in-memory fixture set comes from the sample files.
+- Cut-over: replacing the stub changes only the client's address and credential source.
+- Failures: unknown accounts answer not found, and the hosting story injects faults.
 
-### Design Option A — one provider contract with two implementations
+### Design Option A — two providers
 
-The stub checks the account identifier, asks one mock data provider for the account, its cross-references or its category balances, and puts the rows in contract order before answering. In a process started to host this stub, the provider reads the three card data tables in the relational store on every call. In unit suites a second implementation serves the in-memory fixture set that the card data fixture load story builds from the sample files.
+One provider contract feeds the stub. Stub hosts read the loaded tables; unit suites read the fixtures.
 
 How it behaves:
 
-- A malformed or all-zero identifier is rejected with the invalid-argument status before any provider read.
-- The provider's account lookup decides whether an account exists, for all three operations.
-- An existing account with no cross-reference or no category balance answers an empty list with a success status.
-- Amounts are written with two decimal places, dates as year, month and day, and identifiers keep their leading zeros.
-- A blank group identifier leaves the group field unset, so the HTTP interface description omits it.
-- A store read failure becomes the unavailable status with the standard error object and no exception text.
-- The relational provider exists only in a process started to host this stub, so the service process opens no store connection for it.
+- Malformed identifiers fail before any provider read.
+- The account lookup decides not found, so empty accounts answer empty lists.
+- A store read failure logs only the trace identifier, operation and failure kind, never its text.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One provider contract (vs two stub variants) | one stub serves every host | two implementations must stay equal |
-| 2 | Relational provider in containers (vs the in-memory provider everywhere) | the shared container stack serves the loaded volume rows | each stub container needs a store connection |
-| 3 | In-memory provider built from the shared fixture set (vs hand-written values) | unit answers match the loaded rows | a fixture change moves the unit expectations |
-| 4 | Not-found decided by the provider's account lookup (vs an empty list meaning not found) | an existing account with no rows answers an empty list | each list read adds one account lookup |
+| 1 | Provider contract (vs two stubs) | one stub on every host | providers must match |
+| 2 | Tables in containers (vs fixtures) | volume rows arrive | containers need a store |
+| 3 | Shared fixtures (vs hand-written) | answers match the load | fixture edits move tests |
+| 4 | Not found by lookup (vs empty list) | empty lists stay valid | list reads add a lookup |
 
-Effort and risk: low effort on top of the stub hosting story, with the risk in the two implementations drifting apart, which the equality test catches.
+Effort and risk: low effort, with provider drift as the risk.
 
-### Design Option B — in-memory provider on every host
+### Design Option B — in-memory everywhere
 
-The stub answers every call from the in-memory fixture set, in the test process and in the shared container stack alike. No relational provider exists, so the stub container needs no store connection. The identifier check, the ordering, the value rendering and the not-found rule are the same as in Option A.
+The stub serves the in-memory fixture set on every host. No relational provider exists.
 
 How it differs:
 
-- The stub never reads the three card data tables, so rows loaded into them after the sample are never served.
-- The category balance volume loaded for the performance scenarios never reaches the stub, so those scenarios read only the fifty sample accounts.
-- The fixture set must ship inside the service package instead of the test sources.
-- No store read exists, so a store outage can never be reproduced at the stub.
+- Volume rows never reach the stub.
+- Test data ships in the service.
+- A store outage cannot be reproduced.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | In-memory provider on every host (vs the relational provider in containers) | no stub needs a store connection | the volume rows never reach the stub |
-| 2 | Fixture set packaged with the service (vs kept in the test sources) | one data path for tests and containers | test data ships inside the service package |
-| 3 | Not-found decided by the provider's account lookup (vs an empty list meaning not found) | an existing account with no rows answers an empty list | the rule is exercised only against the sample |
+| 1 | Fixtures everywhere (vs tables) | no store connection | no volume rows |
+| 2 | Fixtures in the service (vs tests) | one data path | service carries test data |
+| 3 | Not found by lookup (vs empty list) | empty lists stay valid | only sample rows test it |
 
-Effort and risk: lower effort with no relational path, with high risk that the performance scenarios measure the sample instead of the volume.
+Effort and risk: lower effort, with high risk of sample-only measurement.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: the same answers come from both stores, and the shared container stack serves whatever the fixture load wrote.
-- Strongest argument against: two providers must stay equal, which only the equality test proves.
-- Shared items that do not decide the choice: the contract shape, the not-found rule and the failure injection.
-- Flip conditions: the performance scenarios stop reading volume rows through the stub.
+- Why: containers serve whatever the fixture load wrote.
+- Strongest argument against: only the equality test keeps the providers equal.
+- Shared items that do not decide the choice: the contract, not-found rule and failure injection.
+- Flip conditions: no scenario reads volume rows through the stub.
 
 ## Design Validation
 
 ### Option A validation
 
-Settled assumptions:
+Settled assumptions: the contract fixes every field and status, each sample account has one card and one balance, and the hosting story supplies injection and the request log.
 
-- The contract fixes every field name, pattern and error status.
-- The sample has one card and one category balance per account.
-- The in-memory fixture set holds all fifty sample accounts.
-- The stub hosting story supplies injection and the request log.
-
-Open assumptions:
-
-- Open → whether a malformed identifier reaches the stub at all → settled by the card data client story's input handling.
-- Open → whether a relational read stays well under the per-attempt timeout at volume → settled by the request-log durations in the card data integration suite.
+- Open → whether malformed identifiers reach the stub → settled by the client story.
+- Open → relational read time at volume → settled by the integration suite.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the in-memory fixture set carries the sample account values |
-| AC2 | Holds | the sample holds one card for the first account |
-| AC3 | Holds | the sample holds one category balance for the first account |
-| AC4 | Holds | the contract examples carry the sample values |
-| AC5 | Holds | the in-memory fixture set holds exactly the fifty sample accounts |
-| AC6 | Holds | the account lookup returns no row for an unknown account |
-| AC7 | Holds | the identifier check runs before any provider read |
-| AC8 | Holds | the stub orders the rows itself before answering |
-| AC9 | Holds | the stub writes every amount with two decimal places |
-| AC10 | Holds | the shared injector answers ahead of any provider read |
-| AC11 | Holds | the shared injector holds the call ahead of the stub's answer |
-| AC12 | Holds | the stub reads no metadata and opens no cache connection |
-| AC13 | Holds | a relational read failure becomes the unavailable status with the error object |
-| AC14 | Conditional | equality of everything but the per-call trace identifier rests on both providers drawing from the same sample files |
-| AC15 | Holds | the registration sits where the harness looks for stubs |
-| AC16 | Holds | the container host builds the relational provider over the three tables |
+| AC1 | Holds | fixture values match |
+| AC2 | Holds | sample holds this card |
+| AC3 | Holds | sample holds this balance |
+| AC4 | Holds | examples carry sample values |
+| AC5 | Holds | fixture holds fifty accounts |
+| AC6 | Holds | lookup finds no row |
+| AC7 | Holds | validation precedes provider reads |
+| AC8 | Holds | stub sorts rows itself |
+| AC9 | Holds | stub writes two decimals |
+| AC10 | Holds | injector answers first |
+| AC11 | Holds | injector delays the answer |
+| AC12 | Holds | no metadata or cache is read |
+| AC13 | Holds | read failures answer unavailable without logged text |
+| AC14 | Conditional | equality rests on shared sample files |
+| AC15 | Holds | harness finds the registration |
+| AC16 | Holds | provider reads tables per call |
 
 ### Option B validation
 
-Settled assumptions:
+Settled assumptions: the contract fixes every field and status, and the hosting story supplies injection and the request log.
 
-- The contract fixes every field name, pattern and error status.
-- The sample has one card and one category balance per account.
-- The stub hosting story supplies injection and the request log.
-
-Open assumptions:
-
-- Open → whether any scenario needs rows beyond the sample through the stub → settled by the category balance performance scenario.
-- Open → whether test data may ship inside the service package → settled by the delivery lead's design review.
+- Open → whether scenarios need non-sample rows → settled by the volume scenario.
+- Open → shipping test data in the service → settled by design review.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the in-memory fixture set carries the sample account values |
-| AC2 | Holds | the sample holds one card for the first account |
-| AC3 | Holds | the sample holds one category balance for the first account |
-| AC4 | Holds | the contract examples carry the sample values |
-| AC5 | Holds | the in-memory fixture set holds exactly the fifty sample accounts |
-| AC6 | Holds | the account lookup returns no row for an unknown account |
-| AC7 | Holds | the identifier check runs before any provider read |
-| AC8 | Holds | the stub orders the rows itself before answering |
-| AC9 | Holds | the stub writes every amount with two decimal places |
-| AC10 | Holds | the shared injector answers ahead of any provider read |
-| AC11 | Holds | the shared injector holds the call ahead of the stub's answer |
-| AC12 | Holds | the stub reads no metadata and opens no cache connection |
-| AC13 | Breaks | no store read exists to fail |
-| AC14 | Breaks | no relational provider exists to compare |
-| AC15 | Holds | registration does not depend on the data source |
-| AC16 | Breaks | rows present only in the relational store never reach the stub |
+| AC1 | Holds | fixture values match |
+| AC2 | Holds | sample holds this card |
+| AC3 | Holds | sample holds this balance |
+| AC4 | Holds | examples carry sample values |
+| AC5 | Holds | fixture holds fifty accounts |
+| AC6 | Holds | lookup finds no row |
+| AC7 | Holds | validation precedes provider reads |
+| AC8 | Holds | stub sorts rows itself |
+| AC9 | Holds | stub writes two decimals |
+| AC10 | Holds | injector answers first |
+| AC11 | Holds | injector delays the answer |
+| AC12 | Holds | no metadata or cache is read |
+| AC13 | Breaks | no store read exists |
+| AC14 | Breaks | no relational provider exists |
+| AC15 | Holds | registration ignores the source |
+| AC16 | Breaks | relational-only rows never arrive |
 
 ## Metadata
 
