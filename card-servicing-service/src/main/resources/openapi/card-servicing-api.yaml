@@ -30,8 +30,9 @@ info:
 
     Freshness - dataStatus in every 200 body, repeated in the X-Data-Status
     response header, is FRESH, STALE (served from cache past its fresh
-    lifetime) or PARTIAL (reference descriptions unavailable, rendered as
-    null), with precedence PARTIAL over STALE over FRESH. asOf is the upstream
+    lifetime) or PARTIAL (at least one reference description unavailable,
+    and only the unavailable descriptions rendered as null), with precedence
+    PARTIAL over STALE over FRESH. asOf is the upstream
     read time or the oldest cachedAt of the cache entries used.
 
 
@@ -241,14 +242,19 @@ paths:
         token is validated (401) and the caller is authorized for accountId
         (403) before any account data is read from upstream or cache. The
         category balances, the transaction categories and the transaction types
-        are then read concurrently. An unknown typeCode returns 400 while the
-        transaction category list is usable (fresh or within its maximum stale
-        age); with no usable transaction category list the check is skipped,
-        the filter still applies and the result is PARTIAL with typeDescription
-        and categoryDescription null. With only the transaction type list
-        unusable, typeDescription is null and the result is PARTIAL. A stale
-        cached category-balance read gives STALE; any other upstream failure
-        returns 503 or 504. Source - Data Layouts · CVTRA01Y.
+        are then read concurrently. While the transaction type list and the
+        transaction category list are both usable (fresh or within their
+        maximum stale age), a typeCode that the type list does not hold and no
+        category carries returns 400, and a stored type that no category
+        carries is known and returns 200 with categoryBalances empty. With
+        either list unusable the typeCode check rejects nothing, the filter
+        still applies and the result is PARTIAL. Each description is null only
+        when it is unavailable - an unusable category list leaves
+        typeDescription and categoryDescription null, an unusable type list
+        alone leaves typeDescription null and keeps categoryDescription, and a
+        code that a usable list does not hold leaves that one description null.
+        A stale cached category-balance read gives STALE; any other upstream
+        failure returns 503 or 504. Source - Data Layouts · CVTRA01Y.
       parameters:
         - name: accountId
           in: path
@@ -274,8 +280,12 @@ paths:
             omitted returns every type. Reserved characters, the space, control
             characters and non-ASCII characters are percent-encoded in the URL
             (RFC 3986, UTF-8 for non-ASCII), and the pattern applies to the
-            decoded value. An unknown value returns 400 while the transaction
-            category list is usable.
+            decoded value. While the transaction type list and the transaction
+            category list are both usable, a value that the type list does not
+            hold and no category carries returns 400, and a stored type that no
+            category carries returns 200 with categoryBalances empty. With
+            either list unusable the check rejects nothing, the filter still
+            applies and dataStatus is PARTIAL.
           schema:
             type: string
             pattern: '^[\s\S]{2}$'
@@ -310,7 +320,7 @@ paths:
                     dataStatus: 'FRESH'
                     asOf: '2024-03-05T14:07:09.123456Z'
                 partial:
-                  summary: Fixture account 00000000001 with reference data unavailable
+                  summary: Fixture account 00000000001 with the transaction category list unavailable
                   value:
                     accountId: '00000000001'
                     categoryBalances:
@@ -321,11 +331,24 @@ paths:
                         balance: '0.00'
                     dataStatus: 'PARTIAL'
                     asOf: '2024-03-05T14:07:09.123456Z'
+                partialTypeListOnly:
+                  summary: Fixture account 00000000001 with only the transaction type list unavailable
+                  value:
+                    accountId: '00000000001'
+                    categoryBalances:
+                      - typeCode: '01'
+                        typeDescription: null
+                        categoryCode: '0001'
+                        categoryDescription: 'Regular Sales Draft'
+                        balance: '0.00'
+                    dataStatus: 'PARTIAL'
+                    asOf: '2024-03-05T14:07:09.123456Z'
         '400':
           description: >-
             INVALID_ARGUMENT - accountId malformed or all zeros, typeCode
-            malformed, or typeCode unknown while the transaction category list
-            is usable (fresh or within its maximum stale age).
+            malformed, or typeCode unknown (held by neither the transaction
+            type list nor any transaction category) while both lists are usable
+            (fresh or within their maximum stale age).
           content:
             application/json:
               schema:
@@ -934,9 +957,9 @@ components:
           type: string
           description: >-
             Freshness of the data behind this response, also sent as the
-            X-Data-Status header. PARTIAL (reference descriptions unavailable)
-            outranks STALE (a cached value past its fresh lifetime was used),
-            which outranks FRESH; Config outcomes never affect it.
+            X-Data-Status header. PARTIAL (at least one reference description
+            unavailable) outranks STALE (a cached value past its fresh lifetime
+            was used), which outranks FRESH; Config outcomes never affect it.
           enum: [FRESH, STALE, PARTIAL]
         asOf:
           type: string
@@ -999,9 +1022,11 @@ components:
           description: >-
             The transaction type description, at most 50 characters (Data
             Layouts · CVTRA03Y · TRAN-TYPE-DESC X(50)). Always present; JSON
-            null only when dataStatus is PARTIAL because reference data is
-            unavailable, and an empty string never stands for absence. The gRPC
-            twin leaves its optional field unset instead.
+            null only when dataStatus is PARTIAL, and then only when this
+            description is unavailable because the transaction type list is
+            unusable or holds no description for typeCode. An empty string
+            never stands for absence. The gRPC twin leaves its optional field
+            unset instead.
           maxLength: 50
         balance:
           type: string
@@ -1029,9 +1054,9 @@ components:
           type: string
           description: >-
             Freshness of the data behind this response, also sent as the
-            X-Data-Status header. PARTIAL (reference descriptions unavailable)
-            outranks STALE (a cached value past its fresh lifetime was used),
-            which outranks FRESH; Config outcomes never affect it.
+            X-Data-Status header. PARTIAL (at least one reference description
+            unavailable) outranks STALE (a cached value past its fresh lifetime
+            was used), which outranks FRESH; Config outcomes never affect it.
           enum: [FRESH, STALE, PARTIAL]
         asOf:
           type: string
@@ -1056,9 +1081,11 @@ components:
           description: >-
             The transaction type description, at most 50 characters (Data
             Layouts · CVTRA03Y · TRAN-TYPE-DESC X(50)). Always present; JSON
-            null only when dataStatus is PARTIAL because reference data is
-            unavailable, and an empty string never stands for absence. The gRPC
-            twin leaves its optional field unset instead.
+            null only when dataStatus is PARTIAL, and then only when this
+            description is unavailable because the transaction type list or
+            the transaction category list is unusable, or the type list holds
+            no description for typeCode. An empty string never stands for
+            absence. The gRPC twin leaves its optional field unset instead.
           maxLength: 50
         categoryCode:
           type: string
@@ -1069,9 +1096,12 @@ components:
           description: >-
             The transaction category description, at most 50 characters (Data
             Layouts · CVTRA04Y · TRAN-CAT-TYPE-DESC X(50)). Always present; JSON
-            null only when dataStatus is PARTIAL because reference data is
-            unavailable, and an empty string never stands for absence. The gRPC
-            twin leaves its optional field unset instead.
+            null only when dataStatus is PARTIAL, and then only when this
+            description is unavailable because the transaction category list
+            is unusable or holds no description for (typeCode, categoryCode).
+            An unusable transaction type list by itself never makes it null.
+            An empty string never stands for absence. The gRPC twin leaves its
+            optional field unset instead.
           maxLength: 50
         balance:
           type: string

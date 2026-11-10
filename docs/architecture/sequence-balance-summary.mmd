@@ -78,7 +78,7 @@ sequenceDiagram
     AuthService-->>AccountAccessGuard: allowed true
     AccountAccessGuard-->>CardServicingService: Access allowed
 
-    opt stale configuration snapshot
+    opt stale or absent config snapshot
         CardServicingService-)ConfigService: GetConfig background refresh, not awaited
     end
 

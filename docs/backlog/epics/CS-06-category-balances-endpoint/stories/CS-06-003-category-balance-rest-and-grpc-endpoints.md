@@ -31,6 +31,9 @@ Parent epic: [CS-06 Category Balances Endpoint](../README.md)
 >   - The account access guard `AccountAccessGuard` (CS-12-003), through `AccountAccessFilter` on REST and `AccountAccessGrpcInterceptor` on gRPC, validates the token and authorizes the path `accountId` before either adapter runs.
 >   - The adapter makes one call to `CategoryBalanceRetrievalService` (CS-06-002) with the token, `accountId`, the optional `typeCode` and the request deadline, and receives one `CategoryBalanceRetrievalService.Result`.
 >   - It then applies the Stage 3 check of `CategoryBalanceRequestValidator` (CS-06-001) to the request's `typeCode` and the category-list result carried in that `Result`. On a rejection it completes the request deadline once with outcome `error` and status 400, because the retrieval has already marked the cut-off, and raises the failure, so no category balance reaches the response.
+>
+> > SCOPE-QUESTION (Resolved): The category-list result alone cannot show that a type is unknown, because a stored transaction type may have no category (CS-06-001). The adapter therefore applies the Stage 3 check to the request's `typeCode` and both list results carried in the `Result`, the type-list and the category-list `ReferenceDataResult`, and the check rejects only when both are usable and neither holds the code. AC16 below covers a stored type that no category carries. The 4 files touched stand.
+>
 >   - Otherwise it renders the `Result` through `CategoryBalanceResponseMapper` (CS-06-002), which completes the deadline with outcome `full` or `degraded`.
 > - Rules for both adapters:
 >   - Neither adapter reads data, opens a cache or store connection, launches an upstream call, marks the cut-off or builds an error body.
@@ -83,6 +86,9 @@ Parent epic: [CS-06 Category Balances Endpoint](../README.md)
 >
 > - AC14: Config: with the Config stub failing every call, and separately with a 2,000 ms Config stub latency and a stale configuration snapshot, the AC1 request on REST and the AC2 request on gRPC return the AC1 values with `dataStatus` `FRESH`, and REST returns `X-Data-Status: FRESH`. Each has a logged `cutoffMs` of at most 900 and a client-measured response below 1,000 ms.
 > - AC15: On a cold cache with no injected failure, one AC1 request on REST, and separately one AC2 request on gRPC, produces exactly one `ListCategoryBalances` call in the Card Data stub request log, exactly one `ListTransactionCategories` and one `ListTransactionTypes` call in the Reference Data stub request log, no `GetAccount` or `GetCardCrossReference` call and zero Transaction Activity entries. This shows that the adapters make no reads of their own.
+> > SCOPE-QUESTION (Resolved): Which criterion covers a stored type that no category carries? None of AC1–AC15 does. Resolution: AC16 below, run as paired assertions in `CategoryBalanceControllerTest` and `CategoryBalanceGrpcTest`.
+> >
+> > - AC16: With a test-local Reference Data server whose type list holds the seven seed types and also type code `08`, which no category carries, and whose category list holds the 18 seed categories, `typeCode` `08` for account `00000000001` returns 200 with `dataStatus` `FRESH` and no 400: REST `categoryBalances` is present and empty, and the gRPC message has no `category_balances` element.
 >
 > ### 3. Dependencies
 >
@@ -113,7 +119,7 @@ Completed during implementation.
 ## 6. Test Plan
 
 - Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass, with ≥80% line coverage per module.
-  - Cases: AC1–AC15 as paired REST and gRPC assertions in `CategoryBalanceControllerTest` and `CategoryBalanceGrpcTest`, against in-JVM loopback stubs with per-test `STUB_LATENCY_MS` and `STUB_FAILURE_RATE`, test-local scripted stub answers and the recording entry store on the test clock.
+  - Cases: AC1–AC16 as paired REST and gRPC assertions in `CategoryBalanceControllerTest` and `CategoryBalanceGrpcTest`, against in-JVM loopback stubs with per-test `STUB_LATENCY_MS` and `STUB_FAILURE_RATE`, test-local scripted stub answers and the recording entry store on the test clock.
   - REST bodies are checked against the `card-servicing-api.yaml` schemas, and gRPC field presence is asserted for every absent description.
   - Each degraded 200, 503 and 504 asserts a logged `cutoffMs` ≤ 900 and a client-measured response below 1,000 ms.
 - Integration: Not applicable — the integration suites belong to the external epics, here the Card Data, Reference Data and Auth integration suites (CS-09-006, CS-13-004, CS-12-005). Threshold when it applies: `./gradlew :card-servicing-service:integrationTest` passes, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS`, and the `UPSTREAM_MAX_RETRIES` cap.
@@ -150,7 +156,7 @@ Rationale: one retrieval result rendered by one mapper is the only way both inte
 
 ### Design Option A — thin adapters over one retrieval and one mapper
 
-The HTTP controller and the remote procedure method each take the account number, the optional type code, the caller's token and the request deadline, and make one call to the shared category balance retrieval. Each then runs the known-type check of the validation story on that result and renders it through the one response mapper of the retrieval story. The mapper renders a missing description as a present null value on the HTTP interface and as an unset field on the remote procedure interface. Failures leave the adapters as typed failures for the shared error handler and interceptor.
+The HTTP controller and the remote procedure method each take the account number, the optional type code, the caller's token and the request deadline, and make one call to the shared category balance retrieval. Each then runs the known-type check of the validation story on the type list and category list results that result carries, and renders it through the one response mapper of the retrieval story. The mapper renders a missing description as a present null value on the HTTP interface and as an unset field on the remote procedure interface. Failures leave the adapters as typed failures for the shared error handler and interceptor.
 
 How it behaves:
 
@@ -206,7 +212,7 @@ Settled assumptions:
 - Both contracts carry the same fields, with a present null on the HTTP interface and an unset field on the remote procedure interface.
 - The shared error handler and interceptor exist and render every failure with the receipt trace number.
 - The receipt stage starts the deadline and runs validation, and the guard runs before either adapter.
-- The retrieval returns one result per request, carrying the category list it read.
+- The retrieval returns one result per request, carrying the type list and the category list it read.
 
 Open assumptions:
 
@@ -230,6 +236,7 @@ Open assumptions:
 | AC13 | Conditional | it rests on the call policy's remaining-budget rule |
 | AC14 | Holds | the configuration refresh never sits on the request path |
 | AC15 | Holds | the adapters make no reads of their own |
+| AC16 | Holds | the adapter hands both list results to the known-type check |
 
 ### Validation of Option B
 
@@ -262,6 +269,7 @@ Open assumptions:
 | AC13 | Conditional | it rests on the call policy's remaining-budget rule |
 | AC14 | Holds | the configuration refresh never sits on the request path |
 | AC15 | Breaks | each adapter makes its own reads by design |
+| AC16 | Conditional | each path must hand both list results to the known-type check |
 
 ## Metadata
 

@@ -82,6 +82,8 @@ const EXPECTED_COMPONENTS = new Map([
 const BOUNDARIES = new Set(['AzureSubscription', 'AzureVNet', 'AksSubnet', 'PepSubnet', 'AzureAKS']);
 const EXTERNAL_SYSTEMS = [...EXPECTED_COMPONENTS].filter(([, c]) => c === 'External systems').map(([n]) => n);
 const SECRET_VARIABLES = ['AUTH_SERVICE_API_KEY', 'REDIS_PASSWORD', 'DB_PASSWORD'];
+/** The security view's three-row access-control matrix: exactly these Acm* rows. */
+const ACCESS_MATRIX_ROWS = ['AcmRegularUser', 'AcmAdminUser', 'AcmInvalidToken'];
 const KIND = Object.freeze({
   MTLS: 'mTLS',
   SECRET: 'Secret',
@@ -89,6 +91,14 @@ const KIND = Object.freeze({
   AUTH: 'AuthN/authZ',
   THREAT: 'Threat boundary',
 });
+/**
+ * The AuthN/authZ purposes the security view must cover, each with its own control row
+ * (named in that row's key) and its own AccountAccessGuard → AuthService edge.
+ */
+const AUTH_PURPOSES = Object.freeze([
+  { name: 'token validation', re: /\btoken validation\b/i },
+  { name: 'account authorization', re: /\baccount authori[sz]ation\b/i },
+]);
 
 const isAnnotation = (id) => id.startsWith('Legend') || id.startsWith('Acm') || id === 'Description';
 const normaliseSpace = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -225,7 +235,7 @@ function renderAll(files, violations) {
 // ---------------------------------------------------------------------------------------
 // TRD inputs: component catalogue, security control table, environment variables
 
-/** The first table of a TRD section whose header holds every wanted column, with indexes. */
+/** The first table of a TRD section whose header holds every wanted column, with indexes and header line. */
 function sectionTable(trdText, heading, wanted, violations) {
   const section = sectionByHeading(trdText, heading);
   if (!section) {
@@ -238,7 +248,7 @@ function sectionTable(trdText, heading, wanted, violations) {
     if (cols.every((c) => c >= 0)) {
       const col = Object.fromEntries(wanted.map((w, i) => [w, cols[i]]));
       const rows = table.rows.map((cells, i) => ({ cells, line: section.startLine + table.rowLines[i] - 1 }));
-      return { col, rows };
+      return { col, rows, line: section.startLine + table.line - 1 };
     }
   }
   violations.push({
@@ -309,6 +319,7 @@ function loadControls(trdText, catalogue, violations) {
   const columns = ['control', 'kind', 'protected components', 'key'];
   const table = sectionTable(trdText, 'Security control table', columns, violations);
   if (!table) return controls;
+  const authPurposes = new Set();
   for (const { cells, line } of table.rows) {
     const id = cellText(cells[table.col.control]);
     if (!/^S\d+$/.test(id)) {
@@ -334,33 +345,56 @@ function loadControls(trdText, catalogue, violations) {
     if (keySentences < 1 || keySentences > 2) {
       bad(line, `security control ${id} key has ${keySentences} sentences; expected 1–2`);
     }
+    if (kind === KIND.AUTH) {
+      const named = AUTH_PURPOSES.filter((p) => p.re.test(cellText(cells[table.col.key]))).map((p) => p.name);
+      if (named.length > 1) {
+        bad(line, `security control ${id} key names ${named.join(' and ')}; each needs its own AuthN/authZ control`);
+      }
+      named.forEach((p) => authPurposes.add(p));
+    }
     controls.set(id, { kind, protectedComponents: protectedComponents.filter((c) => catalogue.has(c)), line });
   }
   // The security view must show every control kind, so each needs at least one row.
   const kinds = new Set([...controls.values()].map((c) => c.kind));
   for (const kind of Object.values(KIND)) {
-    if (!kinds.has(kind)) bad(undefined, `security control table has no ${kind} control`);
+    if (!kinds.has(kind)) bad(table.line, `security control table has no ${kind} control`);
+  }
+  // AuthN/authZ covers token validation and account authorization, each with its own row.
+  for (const { name } of AUTH_PURPOSES) {
+    if (!authPurposes.has(name)) bad(table.line, `security control table has no ${KIND.AUTH} control for ${name}`);
   }
   return controls;
 }
 
-/** Components the environment-variable table lists as reading a deployed secret. */
+/**
+ * Components the environment-variable table lists as reading a deployed secret, each with
+ * the rows that list it: reader → [{ variable, line }]. Every row of a secret is read.
+ */
 function loadSecretConsumers(trdText, catalogue, violations) {
-  const consumers = new Set();
+  const consumers = new Map();
   const bad = (line, message) => violations.push({ path: TRD, line, message });
   const table = sectionTable(trdText, 'Environment variables', ['variable', 'read by'], violations);
   if (!table) return consumers;
   for (const variable of SECRET_VARIABLES) {
-    const row = table.rows.find(({ cells }) => cellText(cells[table.col.variable]) === variable);
-    if (!row) {
-      bad(undefined, `environment-variable table has no row for ${variable}`);
+    const rows = table.rows.filter(({ cells }) => cellText(cells[table.col.variable]) === variable);
+    if (rows.length === 0) {
+      bad(table.line, `environment-variable table has no row for ${variable}`);
       continue;
     }
-    const readers = cellList(row.cells[table.col['read by']]);
-    if (readers.length === 0) bad(row.line, `${variable} names no reader`);
-    for (const reader of readers) {
-      if (catalogue.has(reader) && !catalogue.get(reader).boundary) consumers.add(reader);
-      else bad(row.line, `${variable} is read by "${reader}", which is not a catalogue component`);
+    for (const row of rows.slice(1)) {
+      bad(row.line, `environment-variable table lists ${variable} again; its first row is line ${rows[0].line}`);
+    }
+    for (const row of rows) {
+      const readers = cellList(row.cells[table.col['read by']]);
+      if (readers.length === 0) bad(row.line, `${variable} names no reader`);
+      for (const reader of readers) {
+        if (catalogue.has(reader) && !catalogue.get(reader).boundary) {
+          if (!consumers.has(reader)) consumers.set(reader, []);
+          consumers.get(reader).push({ variable, line: row.line });
+        } else {
+          bad(row.line, `${variable} is read by "${reader}", which is not a catalogue component`);
+        }
+      }
     }
   }
   return consumers;
@@ -487,9 +521,9 @@ const ARROW_RE = new RegExp(
 );
 /** Links with their label inline: `-- text -->`, `== text ==>`, `-. text .->`. */
 const TEXT_ARROW_RES = [
-  /^(<)?--\s+(.+?)\s+(?:-{2,}>|-{3,})/,
-  /^(<)?==\s+(.+?)\s+(?:={2,}>|={3,})/,
-  /^(<)?-\.\s*(.+?)\s*\.->?/,
+  /^(<)?--\s+(.+?)\s+(-{2,}>|-{3,})/,
+  /^(<)?==\s+(.+?)\s+(={2,}>|={3,})/,
+  /^(<)?-\.\s*(.+?)\s*(\.->?)/,
 ];
 
 /** A node statement or link chain (`A & B --> C -->|x| D`); returns nodes and links or an error. */
@@ -532,12 +566,15 @@ function parseChain(s) {
     if (i >= s.length) return { nodes, links };
     const rest = s.slice(i);
     let label = null;
-    let bidi = false;
+    // Arrowheads as Mermaid draws them: at `to` for a `>` end, at `from` for a `<` start with that end.
+    let arrowAtTo = false;
+    let arrowAtFrom = false;
     let invisible = false;
     const plain = ARROW_RE.exec(rest);
     if (plain) {
       i += plain[0].length;
-      bidi = plain[1] !== undefined;
+      arrowAtTo = plain[2].endsWith('>');
+      arrowAtFrom = arrowAtTo && plain[1] === '<';
       invisible = plain[2].startsWith('~');
       const piped = /^\s*\|([^|]*)\|/.exec(s.slice(i));
       if (piped) {
@@ -548,14 +585,17 @@ function parseChain(s) {
       const text = TEXT_ARROW_RES.map((re) => re.exec(rest)).find(Boolean);
       if (!text) return { error: `unexpected text "${rest.slice(0, 24)}"` };
       i += text[0].length;
-      bidi = text[1] !== undefined;
+      arrowAtTo = text[3].endsWith('>');
+      arrowAtFrom = arrowAtTo && text[1] !== undefined;
       label = text[2];
     }
     const next = parseGroup();
     if (next.error) return next;
     nodes.push(...next.ids);
     for (const a of prev) {
-      for (const b of next.ids) links.push({ from: a.id, to: b.id, label: labelText(label), bidi, invisible });
+      for (const b of next.ids) {
+        links.push({ from: a.id, to: b.id, label: labelText(label), arrowAtTo, arrowAtFrom, invisible });
+      }
     }
     prev = next.ids;
   }
@@ -568,6 +608,8 @@ function parseFlowchart(rel, statements, violations) {
     order: [],
     edges: [],
     subgraphs: new Map(),
+    // Every subgraph block in file order, a repeated ID included; `subgraphs` keeps the first.
+    subgraphOccurrences: [],
     classDefs: new Map(),
     styles: new Map(),
     statements: [],
@@ -594,7 +636,9 @@ function parseFlowchart(rel, statements, violations) {
       const id = sm ? sm[1] : qm ? qm[1] : rest;
       const title = sm ? (sm[2] ?? sm[3]) : qm ? qm[1] : rest;
       if (id === '') violations.push({ path: rel, line, message: 'subgraph has no ID or title' });
-      if (!fc.subgraphs.has(id)) fc.subgraphs.set(id, { id, title: labelText(title), line, ancestors: [...stack] });
+      const occurrence = { id, title: labelText(title), line, ancestors: [...stack] };
+      fc.subgraphOccurrences.push(occurrence);
+      if (!fc.subgraphs.has(id)) fc.subgraphs.set(id, occurrence);
       stack.push(id);
       fc.statements.push({ kind: 'subgraph', line });
     } else if (text === 'end') {
@@ -923,7 +967,9 @@ const MTLS_CATEGORIES = new Set(['Compute', 'External systems']);
 const hasToken = (text, token) => new RegExp(`\\b${token}\\b`).test(text ?? '');
 
 function mergeFlowcharts(parts) {
-  const merged = { nodes: new Map(), labels: new Map(), edges: [], subgraphs: new Map(), members: new Map() };
+  // `subgraphs` holds every subgraph occurrence of every part, each with its file, so a split
+  // view's repeated boundary keeps each title; `members` unions a boundary's contents across parts.
+  const merged = { nodes: new Map(), labels: new Map(), edges: [], subgraphs: [], members: new Map() };
   const addMember = (sg, id) => {
     if (!merged.members.has(sg)) merged.members.set(sg, new Set());
     merged.members.get(sg).add(id);
@@ -936,8 +982,8 @@ function mergeFlowcharts(parts) {
       n.stack.forEach((sg) => addMember(sg, n.id));
     }
     for (const e of fc.edges) if (!e.invisible) merged.edges.push({ ...e, rel: fc.rel });
-    for (const sg of fc.subgraphs.values()) {
-      if (!merged.subgraphs.has(sg.id)) merged.subgraphs.set(sg.id, { ...sg, rel: fc.rel });
+    for (const sg of fc.subgraphOccurrences) {
+      merged.subgraphs.push({ ...sg, rel: fc.rel });
       sg.ancestors.forEach((a) => addMember(a, sg.id));
     }
   }
@@ -946,10 +992,10 @@ function mergeFlowcharts(parts) {
 
 function checkSecurity(parts, catalogue, controls, secretConsumers, violations) {
   const set = mergeFlowcharts(parts);
-  const where = parts.length === 1 ? parts[0].rel : `${DIAGRAM_DIR}/security-architecture*.mmd`;
   const v = (rel, line, message) => violations.push({ path: rel, line, message });
   const categoryOf = (id) => componentCategory(catalogue, id);
-  const joins = (e, from, to) => (e.from === from && e.to === to) || (e.bidi && e.from === to && e.to === from);
+  const joins = (e, from, to) =>
+    (e.from === from && e.to === to && e.arrowAtTo) || (e.from === to && e.to === from && e.arrowAtFrom);
   const hasEdge = (from, to, token) => set.edges.some((e) => joins(e, from, to) && hasToken(e.label, token));
 
   const texts = [
@@ -958,7 +1004,7 @@ function checkSecurity(parts, catalogue, controls, secretConsumers, violations) 
       set.labels.get(n.id).map((text) => ({ rel: n.rel, line: n.line, what: `label of ${n.id}`, text })),
     ),
     ...set.edges.map((e) => ({ rel: e.rel, line: e.line, what: `edge ${e.from} → ${e.to}`, text: e.label })),
-    ...[...set.subgraphs.values()].map((g) => ({
+    ...set.subgraphs.map((g) => ({
       rel: g.rel,
       line: g.line,
       what: `subgraph ${g.id} title`,
@@ -977,9 +1023,13 @@ function checkSecurity(parts, catalogue, controls, secretConsumers, violations) 
     if (p) v(t.rel, t.line, `${t.what} carries physical numbering ${p[0]}; the security view uses S<n> only`);
   }
 
+  // The mTLS form lives only on edges between two Compute or External-systems components:
+  // each of them must carry it, and only they can carry a protected component's form.
+  const mtlsEdges = set.edges.filter(
+    (e) => MTLS_CATEGORIES.has(categoryOf(e.from)) && MTLS_CATEGORIES.has(categoryOf(e.to)),
+  );
   const mtlsIds = new Set([...controls].filter(([, c]) => c.kind === KIND.MTLS).map(([id]) => id));
-  for (const e of set.edges) {
-    if (!MTLS_CATEGORIES.has(categoryOf(e.from)) || !MTLS_CATEGORIES.has(categoryOf(e.to))) continue;
+  for (const e of mtlsEdges) {
     const m = /\b(S\d+)\s+mTLS\b/i.exec(e.label);
     if (!m || !mtlsIds.has(m[1])) {
       const edge = `edge ${e.from} → ${e.to} joins two Compute or External-systems components`;
@@ -991,16 +1041,24 @@ function checkSecurity(parts, catalogue, controls, secretConsumers, violations) 
     if (control.kind === KIND.MTLS) {
       const re = new RegExp(`\\b${id}\\s+mTLS\\b`, 'i');
       for (const c of control.protectedComponents) {
-        if (!set.edges.some((e) => (e.from === c || e.to === c) && re.test(e.label))) {
-          v(where, undefined, `${id} (mTLS) protects ${c}, but no edge at ${c} is labelled "${id} mTLS"`);
+        if (!MTLS_CATEGORIES.has(categoryOf(c))) {
+          v(TRD, control.line, `${id} (mTLS) protects ${c}, which is not a Compute or External-systems component`);
+        } else if (!mtlsEdges.some((e) => (e.from === c || e.to === c) && re.test(e.label))) {
+          const node = set.nodes.get(c);
+          const edge = `edge between ${c} and another Compute or External-systems component`;
+          const message = `${id} (mTLS) protects ${c}, but no ${edge} is labelled "${id} mTLS"`;
+          v(node?.rel ?? TRD, node?.line ?? control.line, message);
         }
       }
     } else if (control.kind === KIND.SECRET) {
-      const consumers = new Set([...control.protectedComponents, ...secretConsumers]);
+      const consumers = new Set([...control.protectedComponents, ...secretConsumers.keys()]);
       consumers.delete('AzureKeyVault');
       for (const c of consumers) {
         if (!hasEdge('AzureKeyVault', c, id)) {
-          v(where, undefined, `${id} (Secret) needs an edge AzureKeyVault → ${c} labelled ${id}`);
+          // At the consumer's node, else at the TRD row that names it.
+          const node = set.nodes.get(c);
+          const row = control.protectedComponents.includes(c) ? control.line : secretConsumers.get(c)[0].line;
+          v(node?.rel ?? TRD, node?.line ?? row, `${id} (Secret) needs an edge AzureKeyVault → ${c} labelled ${id}`);
         }
       }
     } else if (control.kind === KIND.ENCRYPTION) {
@@ -1008,31 +1066,58 @@ function checkSecurity(parts, catalogue, controls, secretConsumers, violations) 
         const labels = set.labels.get(store);
         const node = set.nodes.get(store);
         if (!labels) {
-          v(where, undefined, `${id} (Encryption at rest) protects ${store}, which is not in the security diagram`);
+          v(TRD, control.line, `${id} (Encryption at rest) protects ${store}, which is not in the security diagram`);
         } else if (!labels.some((l) => hasToken(l, id))) {
           v(node.rel, node.line, `label of ${store} does not carry ${id} (Encryption at rest)`);
         }
       }
     } else if (control.kind === KIND.AUTH) {
+      // The AuthN/authZ form is the AccountAccessGuard → AuthService edge, so it reaches only those two.
+      const ends = ['AccountAccessGuard', 'AuthService'];
+      for (const c of control.protectedComponents) {
+        if (!ends.includes(c)) {
+          const form = 'its form, the edge AccountAccessGuard → AuthService,';
+          v(TRD, control.line, `${id} (AuthN/authZ) protects ${c}, but ${form} does not reach ${c}`);
+        }
+      }
       if (!hasEdge('AccountAccessGuard', 'AuthService', id)) {
-        v(where, undefined, `${id} (AuthN/authZ) needs an edge AccountAccessGuard → AuthService labelled ${id}`);
+        const node = set.nodes.get('AccountAccessGuard') ?? set.nodes.get('AuthService');
+        const message = `${id} (AuthN/authZ) needs an edge AccountAccessGuard → AuthService labelled ${id}`;
+        v(node?.rel ?? TRD, node?.line ?? control.line, message);
       }
     } else if (control.kind === KIND.THREAT) {
-      const boundary = [...set.subgraphs.values()].find((g) => new RegExp(`^${id}\\b`).test(g.title));
-      if (!boundary) {
-        v(where, undefined, `${id} (Threat boundary) has no subgraph whose title starts with ${id}`);
+      const titled = new RegExp(`^${id}\\b`);
+      // Each boundary ID titled with the control, located at its first such occurrence; its
+      // contents are the union over every part that draws it.
+      const boundaries = new Map();
+      for (const g of set.subgraphs) if (titled.test(g.title) && !boundaries.has(g.id)) boundaries.set(g.id, g);
+      if (boundaries.size === 0) {
+        v(TRD, control.line, `${id} (Threat boundary) has no subgraph whose title starts with ${id}`);
         continue;
       }
-      for (const c of control.protectedComponents) {
-        if (c !== boundary.id && !set.members.get(boundary.id)?.has(c)) {
-          v(boundary.rel, boundary.line, `${id} (Threat boundary) subgraph ${boundary.id} does not contain ${c}`);
+      for (const boundary of boundaries.values()) {
+        for (const c of control.protectedComponents) {
+          if (c !== boundary.id && !set.members.get(boundary.id)?.has(c)) {
+            v(boundary.rel, boundary.line, `${id} (Threat boundary) subgraph ${boundary.id} does not contain ${c}`);
+          }
         }
       }
     }
   }
 
+  const guard = set.nodes.get('AccountAccessGuard');
+  const matrixAt = guard ? { rel: guard.rel, line: guard.line } : { rel: parts[0].rel, line: 1 };
+  const matrixRows = ACCESS_MATRIX_ROWS.join(', ');
+  for (const row of ACCESS_MATRIX_ROWS) {
+    if (!set.nodes.has(row)) {
+      v(matrixAt.rel, matrixAt.line, `access-control row ${row} is missing; the matrix has the rows ${matrixRows}`);
+    }
+  }
   for (const n of set.nodes.values()) {
     if (!n.id.startsWith('Acm')) continue;
+    if (!ACCESS_MATRIX_ROWS.includes(n.id)) {
+      v(n.rel, n.line, `${n.id} is not one of the three access-control rows ${matrixRows}`);
+    }
     const linked = set.edges.some(
       (e) => (e.from === n.id && e.to === 'AccountAccessGuard') || (e.to === n.id && e.from === 'AccountAccessGuard'),
     );
@@ -1108,7 +1193,7 @@ function main() {
 
   let catalogue = new Map();
   let controls = new Map();
-  let secretConsumers = new Set();
+  let secretConsumers = new Map();
   if (!exists(TRD)) {
     violations.push({ path: TRD, message: 'Technical Requirements Document is missing' });
   } else {

@@ -63,10 +63,17 @@ service CardServicingService {
   // transaction type, ordered by (type_code, category_code) ascending, with no
   // paging (Data Layouts · CVTRA01Y). REST twin:
   // GET /v1/accounts/{accountId}/category-balances. A stale cached read gives
-  // STALE; with no usable transaction category list the type_code check is
-  // skipped, the filter still applies and the result is PARTIAL with both
-  // descriptions unset. With only the transaction type list unusable,
-  // type_description is unset and the result is PARTIAL.
+  // STALE. While the transaction type list and the transaction category list
+  // are both usable (fresh or within their maximum stale age), a type_code
+  // that the type list does not hold and no category carries returns
+  // INVALID_ARGUMENT, and a stored type that no category carries is known and
+  // returns empty category_balances. With either list unusable the type_code
+  // check rejects nothing, the filter still applies and the result is
+  // PARTIAL. Each description is unset only when it is unavailable: an
+  // unusable category list leaves both descriptions unset, an unusable type
+  // list alone leaves type_description unset and keeps category_description,
+  // and a code that a usable list does not hold leaves that one description
+  // unset.
   //
   // Example request:
   //   {"accountId":"00000000001","typeCode":"01"}
@@ -75,10 +82,11 @@ service CardServicingService {
   //   {"accountId":"00000000001","categoryBalances":[{"typeCode":"01","typeDescription":"Purchase",
   //   "categoryCode":"0001","categoryDescription":"Regular Sales Draft","balance":"0.00"}],
   //   "dataStatus":"FRESH","asOf":"2024-03-05T14:07:09.123456Z"}
-  //   PARTIAL variant: "dataStatus":"PARTIAL" with typeDescription and categoryDescription unset.
+  //   PARTIAL variant, category list unusable: "dataStatus":"PARTIAL" with typeDescription and categoryDescription unset.
+  //   PARTIAL variant, type list unusable only: "dataStatus":"PARTIAL" with typeDescription unset and categoryDescription "Regular Sales Draft".
   //
   // Errors:
-  //   INVALID_ARGUMENT - account_id malformed or all zeros, or another parameter malformed; type_code unknown while the transaction category list is usable (fresh or within its maximum stale age); with no usable transaction category list the filter still applies and the result is PARTIAL
+  //   INVALID_ARGUMENT - account_id malformed or all zeros, or another parameter malformed; type_code unknown (held by neither the transaction type list nor any transaction category) while both lists are usable (fresh or within their maximum stale age); with either list unusable the filter still applies and the result is PARTIAL
   //   UNAUTHENTICATED - bearer token missing, invalid or expired
   //   PERMISSION_DENIED - account outside the caller's entitlements; authorization runs before any account-data read, cache reads included
   //   NOT_FOUND - account unknown
@@ -189,9 +197,9 @@ message GetBalanceSummaryResponse {
   repeated TypeGroupBalance balances_by_type_group = 4;
   // Freshness of the data behind this response: FRESH, STALE or PARTIAL, a
   // string rather than an enum so REST and gRPC carry identical text. PARTIAL
-  // (reference descriptions unavailable) outranks STALE (a cached value past its
-  // fresh lifetime was used), which outranks FRESH. Config outcomes never
-  // affect it.
+  // (at least one reference description unavailable) outranks STALE (a cached
+  // value past its fresh lifetime was used), which outranks FRESH. Config
+  // outcomes never affect it.
   string data_status = 5;
   // When the data was read: the upstream read time, or the oldest cachedAt of
   // the cache entries used. RFC 3339 with microseconds and Z, for example
@@ -240,9 +248,11 @@ message TypeGroupBalance {
   // (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)).
   string type_code = 1;
   // The transaction type description, at most 50 characters
-  // (Data Layouts · CVTRA03Y · TRAN-TYPE-DESC X(50)). Unset when data_status is
-  // PARTIAL because reference data is unavailable; the REST twin then renders
-  // it as null. An empty string never stands for an unset description.
+  // (Data Layouts · CVTRA03Y · TRAN-TYPE-DESC X(50)). Unset only when
+  // data_status is PARTIAL, and then only when this description is
+  // unavailable, because the transaction type list is unusable or holds no
+  // description for type_code; the REST twin then renders it as null. An empty
+  // string never stands for an unset description.
   optional string type_description = 2;
   // The exact decimal sum of this type's category balances as a scale-2
   // decimal string, for example "1234.56", pattern ^-?[0-9]+\.[0-9]{2}$. Being
@@ -259,10 +269,12 @@ message ListCategoryBalancesRequest {
   // Optional filter on the transaction type code, exactly two characters of
   // any kind, pattern ^[\s\S]{2}$, because PIC X places no restriction on its
   // characters (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)); unset
-  // returns every type. An unknown value returns INVALID_ARGUMENT while the
-  // transaction category list is usable (fresh or within its maximum stale
-  // age). With no usable transaction category list the check is skipped, the
-  // filter still applies and data_status is PARTIAL.
+  // returns every type. While the transaction type list and the transaction
+  // category list are both usable (fresh or within their maximum stale age),
+  // a value that the type list does not hold and no category carries returns
+  // INVALID_ARGUMENT, and a stored type that no category carries is known and
+  // returns empty category_balances. With either list unusable the check
+  // rejects nothing, the filter still applies and data_status is PARTIAL.
   optional string type_code = 2;
 }
 
@@ -276,8 +288,9 @@ message ListCategoryBalancesResponse {
   // carries the array.
   repeated CategoryBalance category_balances = 2;
   // Freshness of the data behind this response: FRESH, STALE or PARTIAL, with
-  // precedence PARTIAL > STALE > FRESH. PARTIAL means reference descriptions are
-  // unavailable; STALE means a cached value past its fresh lifetime was used.
+  // precedence PARTIAL > STALE > FRESH. PARTIAL means at least one reference
+  // description is unavailable, and only the unavailable descriptions are
+  // unset; STALE means a cached value past its fresh lifetime was used.
   // Config outcomes never affect it.
   string data_status = 3;
   // When the data was read: the upstream read time, or the oldest cachedAt of
@@ -294,17 +307,23 @@ message CategoryBalance {
   // (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)).
   string type_code = 1;
   // The transaction type description, at most 50 characters
-  // (Data Layouts · CVTRA03Y · TRAN-TYPE-DESC X(50)). Unset when data_status is
-  // PARTIAL; the REST twin then renders it as null. An empty string never
-  // stands for an unset description.
+  // (Data Layouts · CVTRA03Y · TRAN-TYPE-DESC X(50)). Unset only when
+  // data_status is PARTIAL, and then only when this description is
+  // unavailable, because the transaction type list or the transaction category
+  // list is unusable, or the type list holds no description for type_code; the
+  // REST twin then renders it as null. An empty string never stands for an
+  // unset description.
   optional string type_description = 2;
   // The transaction category code, four digits, pattern ^[0-9]{4}$
   // (Data Layouts · CVTRA01Y · TRANCAT-CD 9(04)).
   string category_code = 3;
   // The transaction category description, at most 50 characters
-  // (Data Layouts · CVTRA04Y · TRAN-CAT-TYPE-DESC X(50)). Unset when data_status
-  // is PARTIAL; the REST twin then renders it as null. An empty string never
-  // stands for an unset description.
+  // (Data Layouts · CVTRA04Y · TRAN-CAT-TYPE-DESC X(50)). Unset only when
+  // data_status is PARTIAL, and then only when this description is
+  // unavailable, because the transaction category list is unusable or holds no
+  // description for (type_code, category_code); the REST twin then renders it
+  // as null. An unusable transaction type list by itself never unsets it. An
+  // empty string never stands for an unset description.
   optional string category_description = 4;
   // The category balance as a scale-2 decimal string, for example "1234.56",
   // at most 9 integer digits and 2 decimals, pattern ^-?[0-9]{1,9}\.[0-9]{2}$

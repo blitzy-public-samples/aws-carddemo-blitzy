@@ -132,7 +132,7 @@ How it behaves:
 - The unfiltered answer must hold the same single row, because the sample account holds one category balance.
 - The data-status header and the data status in the body must both read fresh, and the read time is checked by its form.
 - The malformed type code must show no upstream call, the expired token must show token validation alone, and the denial call must show the two authentication operations and no data read.
-- The unknown type code must show the one transaction-category read that decides the code is unknown.
+- The unknown type code must show the one transaction-category read that decides the code is unknown together with the type list from step one.
 - Every call passes the client's deadline check on cut-off time and client latency, and no call reports a retried operation.
 
 | No. | Decision (vs rejected) | Pro | Con |
@@ -196,7 +196,7 @@ Open assumptions:
 | AC1 | Holds | each category-balance field is checked by name against the sample record |
 | AC2 | Conditional | the balance summary step must keep its type code for later steps |
 | AC3 | Holds | the sample account holds one category balance |
-| AC4 | Holds | the first transaction-category read of the flow decides the code is unknown |
+| AC4 | Holds | the first transaction-category read decides the code is unknown together with the type list from step one |
 | AC5 | Conditional | no configuration refresh from step one may land in the call's log window |
 | AC6 | Holds | the access guard denies the call before any data read |
 | AC7 | Holds | token validation fails ahead of the authorization and data stages |
@@ -224,7 +224,7 @@ Open assumptions:
 | AC1 | Holds | the fixed code matches the sample row |
 | AC2 | Breaks | the fixed code is never read from step one |
 | AC3 | Holds | the sample account holds one category balance |
-| AC4 | Holds | the first transaction-category read of the flow decides the code is unknown |
+| AC4 | Holds | the first transaction-category read decides the code is unknown together with the type list from step one |
 | AC5 | Conditional | no configuration refresh from step one may land in the call's log window |
 | AC6 | Holds | the access guard denies the call before any data read |
 | AC7 | Holds | token validation fails ahead of the authorization and data stages |

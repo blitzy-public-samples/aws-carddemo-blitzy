@@ -78,7 +78,7 @@ sequenceDiagram
     AuthService-->>AccountAccessGuard: allowed true
     AccountAccessGuard-->>CardServicingService: Access allowed
 
-    opt stale configuration snapshot
+    opt stale or absent config snapshot
         CardServicingService-)ConfigService: GetConfig background refresh, not awaited
     end
 
@@ -108,23 +108,23 @@ sequenceDiagram
         end
     end
 
-    alt unknown typeCode, category list usable
+    alt unknown typeCode, both lists usable
         CardServicingService->>CardServicingService: Discard data read,<br/>outcome 400
-    else no usable category list
+    else a reference list unusable
         CardServicingService->>CardServicingService: Skip typeCode check,<br/>apply filter,<br/>mark PARTIAL
     else typeCode known or absent
-        CardServicingService->>CardServicingService: Apply typeCode filter<br/>and label descriptions
+        CardServicingService->>CardServicingService: Known when the type list<br/>or a category holds it,<br/>apply typeCode filter<br/>and label descriptions
     end
 
     Note over CardServicingService: Cut-off at or before 900 ms
 
-    alt unknown typeCode, category list usable
+    alt unknown typeCode, both lists usable
         CardServicingService-->>ApiGateway: 400 ErrorObject for typeCode
         ApiGateway-->>CardServicingUi: 400 ErrorObject
     else category balances read or served stale
         CardServicingService->>CardServicingService: Sort by typeCode<br/>and categoryCode,<br/>resolve dataStatus
         CardServicingService-->>ApiGateway: 200 balances, dataStatus FRESH, STALE or PARTIAL
-        ApiGateway-->>CardServicingUi: 200 with X-Data-Status, null descriptions if PARTIAL
+        ApiGateway-->>CardServicingUi: 200 with X-Data-Status,<br/>null only for unavailable descriptions
     else account unknown
         CardServicingService-->>ApiGateway: 404 ErrorObject NOT_FOUND
         ApiGateway-->>CardServicingUi: 404 ErrorObject
@@ -133,4 +133,4 @@ sequenceDiagram
         ApiGateway-->>CardServicingUi: 503 or 504 ErrorObject
     end
 
-    Note over LegendCompute,LegendNetworking: The service checks the token and account<br/>access, then reads the account's category<br/>balances, the category descriptions and the<br/>type descriptions concurrently through the<br/>cache. An unknown typeCode returns 400 while<br/>the category list is usable, and missing<br/>descriptions give PARTIAL.
+    Note over LegendCompute,LegendNetworking: The service checks the token and account<br/>access, then reads the account's category<br/>balances, the category descriptions and the<br/>type descriptions concurrently through the<br/>cache. A typeCode held by neither the type<br/>list nor any category returns 400 while both<br/>lists are usable, and missing descriptions<br/>give PARTIAL.
