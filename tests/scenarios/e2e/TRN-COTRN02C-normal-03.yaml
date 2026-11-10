@@ -1,0 +1,243 @@
+# COTRN02C computes the id of the transaction it adds as the highest TRAN-ID
+# on TRANSACT plus 1, not the record count plus 1 [app/cbl/COTRN02C.cbl:442-451].
+# TRANSACT holds three invented records whose keys, 7, 19 and 41, are not
+# contiguous, so the next id is 42 where a count would give 4.
+#
+# Steps 1-2 reach the empty Add Transaction screen as MNU-COMEN01C-alternate-08
+# does: USER0001 (type U) is routed to COMEN01C, and option 8 transfers control
+# to COTRN02C with the program context reset, so COTRN02C sets the re-enter
+# flag, finds no transaction selected and sends COTRN02 with a blank ERRMSG
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:115-156,236-264]
+# [app/cbl/COTRN02C.cbl:119-130,516-528].
+# Step 3 enters the valid field set of the TRN-COTRN02C scenarios, card number
+# only, with CONFIRM Y, under the CT02 that step 2 returned with
+# [app/cbl/COTRN02C.cbl:131-135,530-534]:
+# - ACTIDIN is blank, so the card path reads CCXREF by card number; card
+#   0500024453765740 is record 1 of the CARDXREF fixture, for account
+#   00000000050 [app/cbl/COTRN02C.cbl:210-223,609-623].
+# - Every data field is supplied; type and category are numeric, the amount
+#   has the sign, eight digits, point and two decimals, both dates have the
+#   YYYY-MM-DD shape and CSUTLDTC accepts them with that mask, and the
+#   merchant id is nine digits [app/cbl/COTRN02C.cbl:251-437].
+# - CONFIRM Y performs ADD-TRANSACTION: STARTBR at HIGH-VALUES positions past
+#   the last key, READPREV reads 0000000000000041 into TRAN-RECORD, and the key
+#   moved to WS-TRAN-ID-N PIC 9(16) plus 1 gives 0000000000000042
+#   [app/cbl/COTRN02C.cbl:57,444-449,642-697].
+# - INITIALIZE TRAN-RECORD, then the input fields move into the record: the
+#   category text 0001 into the PIC 9(04) TRAN-CAT-CD, the amount through
+#   NUMVAL-C into TRAN-AMT, the 10-character dates into the 26-byte
+#   timestamps, padded with spaces; no clock is involved
+#   [app/cbl/COTRN02C.cbl:383-386,450-465].
+# - The WRITE is NORMAL, so INITIALIZE-ALL-FIELDS blanks every input field and
+#   STRING composes 'Transaction added successfully. ' + ' Your Tran ID is ' +
+#   TRAN-ID + '.' in ERRMSG [app/cbl/COTRN02C.cbl:711-734,762-779].
+# TRANSACT then holds the three records unchanged plus 0000000000000042, in key
+# order. The 20-byte FILLER is not asserted: INITIALIZE leaves FILLER items
+# alone, so the new record carries over the FILLER bytes READPREV read.
+# BMS pads each received field with blanks to its length, and expected text
+# values are full field width with their trailing spaces. CURDATE and CURTIME
+# come from the region clock, so they are matchers and the clock is relative.
+id: TRN-COTRN02C-normal-03
+level: e2e
+type: normal
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and adds a
+  12.34 purchase for card 0500024453765740 with CONFIRM Y while TRANSACT holds
+  only the transactions 0000000000000007, 0000000000000019 and
+  0000000000000041. COTRN02C takes the highest key plus 1, writes transaction
+  0000000000000042, clears the input fields and shows 'Transaction added
+  successfully.  Your Tran ID is 0000000000000042.'
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the CSD files COTRN02C reads and writes, and the online-only
+# copybooks it copies. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC, the
+# option-8 navigation) are verified by the SEC and MNU scenarios, the success
+# message and the TRANSACT WRITE by their own TRN-COTRN02C scenarios, and the
+# batch record copybooks and data files at the lowest level that executes them.
+inventory_ids:
+- INV-TRN-067  # COTRN02C next TRAN-ID (calculation)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the add
+- INV-CFG-004  # CCXREF CSD file, read by card number
+- INV-CFG-007  # TRANSACT CSD file, browsed backwards and written
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    CARDXREF: {base: CARDXREF}
+    # Invented transactions for the repository card, with gaps between the keys.
+    TRANSACT:
+      records:
+      - TRAN-ID: '0000000000000007'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase 7
+        TRAN-AMT: '10.07'
+        TRAN-MERCHANT-ID: '900000007'
+        TRAN-MERCHANT-NAME: Synthetic Merchant
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '27601'
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-07 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-07-10.00.00.000000'
+      - TRAN-ID: '0000000000000019'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase 19
+        TRAN-AMT: '20.19'
+        TRAN-MERCHANT-ID: '900000019'
+        TRAN-MERCHANT-NAME: Synthetic Merchant
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '27601'
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-19 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-19-10.00.00.000000'
+      - TRAN-ID: '0000000000000041'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase 41
+        TRAN-AMT: '30.41'
+        TRAN-MERCHANT-ID: '900000041'
+        TRAN-MERCHANT-NAME: Synthetic Merchant
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '27601'
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-28 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-28-10.00.00.000000'
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: POS TERM
+      TDESC: Test purchase
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: Test Merchant
+      MCITY: Testville
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN008: '08. Transaction Add                     '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    PGMNAME: COTRN02C
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CARDNIN: '                '
+    TTYPCD: '  '
+    TCATCD: '    '
+    TRNSRC: '          '
+    TDESC: '                                                            '
+    TRNAMT: '            '
+    TORIGDT: '          '
+    TPROCDT: '          '
+    MID: '         '
+    MNAME: '                              '
+    MCITY: '                         '
+    MZIP: '          '
+    CONFIRM: ' '
+    ERRMSG: 'Transaction added successfully.  Your Tran ID is 0000000000000042.            '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Transaction added successfully.  Your Tran ID is 0000000000000042.            '
+  file_state:
+    TRANSACT:
+      records:
+      - TRAN-ID: '0000000000000007'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Synthetic purchase 7                                                                                '
+        TRAN-AMT: '10.07'
+        TRAN-MERCHANT-ID: '900000007'
+        TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '27601     '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-07 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-07-10.00.00.000000'
+      - TRAN-ID: '0000000000000019'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Synthetic purchase 19                                                                               '
+        TRAN-AMT: '20.19'
+        TRAN-MERCHANT-ID: '900000019'
+        TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '27601     '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-19 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-19-10.00.00.000000'
+      - TRAN-ID: '0000000000000041'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Synthetic purchase 41                                                                               '
+        TRAN-AMT: '30.41'
+        TRAN-MERCHANT-ID: '900000041'
+        TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '27601     '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-28 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-28-10.00.00.000000'
+      # The added transaction: the highest key 41 plus 1, with the fields of step 3.
+      - TRAN-ID: '0000000000000042'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Test purchase                                                                                       '
+        TRAN-AMT: '12.34'
+        TRAN-MERCHANT-ID: '800000001'
+        TRAN-MERCHANT-NAME: 'Test Merchant                                     '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '27601     '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-07-01                '
+        TRAN-PROC-TS: '2022-07-01                '

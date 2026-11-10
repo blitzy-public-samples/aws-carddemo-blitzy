@@ -1,0 +1,188 @@
+# COTRN02C adds a transaction for repository card 0500024453765740 and shows
+# 'Transaction added successfully.  Your Tran ID is <max+1>.' (tech-spec seed
+# "Scenario 2: Complete Transaction Lifecycle"; the repository card replaces
+# the tech-spec card 4111111111111111, which exists nowhere in app/data,
+# GAP-DOC-011). Card 0500024453765740 is record 1 of app/data/ASCII/cardxref.txt,
+# for account 00000000050.
+#
+# Step 1 signs on as USER0001 on COSGN00 (transaction CC00); the type-U user is
+# routed to COMEN01C, which sends the main menu COMEN01 headed CM00/COMEN01C
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:36-37,82-90].
+# Step 2 enters option 8 on COMEN01: 'Transaction Add', user type U, program
+# COTRN02C [app/cpy/COMEN02Y.cpy:67-72]. COMEN01C resets the program context
+# and transfers control to COTRN02C [app/cbl/COMEN01C.cbl:115-156]. Entered
+# without CDEMO-PGM-REENTER and with no transaction selected (the COMMAREA
+# COMEN01C passes ends before CDEMO-CT02-INFO, so the move pads it with
+# spaces), COTRN02C sets the re-enter flag, moves LOW-VALUES to COTRN2AO and
+# sends COTRN02 with its header: CT02, COTRN02C, the COTTL01Y titles and the
+# run date and time through CSDAT01Y [app/cbl/COTRN02C.cbl:115-130,516-571].
+# Step 3 fills COTRN02 by card number (Acct # left blank) with a valid
+# transaction and CONFIRM Y, and presses ENTER under CT02:
+# - VALIDATE-INPUT-KEY-FIELDS takes the card branch: the card is numeric, is
+#   moved back through WS-CARD-NUM-N unchanged, and READ CCXREF by card is
+#   NORMAL [app/cbl/COTRN02C.cbl:210-223,609-637].
+# - VALIDATE-INPUT-DATA-FIELDS finds every field supplied, Type CD 01 and
+#   Category CD 0001 numeric, the amount in the form +99999999.99, both dates in
+#   the form YYYY-MM-DD and valid for CSUTLDTC with mask YYYY-MM-DD, and the
+#   Merchant ID numeric [app/cbl/COTRN02C.cbl:235-437]. NUMVAL-C turns
+#   +00000012.34 into 12.34 and edits it back to +00000012.34.
+# - CONFIRM Y performs ADD-TRANSACTION: STARTBR TRANSACT at HIGH-VALUES and
+#   READPREV return the highest key, 0000000996722787 (the last of the 300
+#   DALYTRAN ids in key order); the new TRAN-ID is that number plus 1, and
+#   INITIALIZE TRAN-RECORD then the moves from the screen build the record
+#   [app/cbl/COTRN02C.cbl:442-466,642-706].
+# - The WRITE is NORMAL: INITIALIZE-ALL-FIELDS moves spaces to every input
+#   field and CONFIRM, and STRING composes 'Transaction added successfully. ',
+#   ' Your Tran ID is ', TRAN-ID and '.', so two spaces precede 'Your'; ERRMSG
+#   is set green and COTRN02 is sent again with ERASE before RETURN TRANSID CT02
+#   [app/cbl/COTRN02C.cbl:711-734,762-779,516-534].
+#
+# Expected text values are whole fields at their BMS or record length, trailing
+# spaces included. BMS pads each received field with blanks to its length, so
+# the description, merchant name and city reach the record padded to 100, 50
+# and 50. TRAN-ORIG-TS and TRAN-PROC-TS receive the 10-character date fields,
+# padded with spaces to 26 [app/cbl/COTRN02C.cbl:464-465]: no clock is
+# involved, so they are exact values. Only the screen CURDATE and CURTIME come
+# from the region clock, so they are matchers and the clock is relative.
+id: TRN-COTRN02C-normal-01
+level: e2e
+type: normal
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and, on
+  COTRN02, adds a transaction for repository card 0500024453765740 (type 01,
+  category 0001, POS TERM, 'Test purchase', +00000012.34, dates 2022-07-01,
+  merchant 800000001 'Test Merchant', Testville 27601) with CONFIRM Y. COTRN02C
+  writes TRANSACT record 0000000996722788, one more than the highest of the 300
+  fixture ids, clears the input fields and shows 'Transaction added
+  successfully.  Your Tran ID is 0000000996722788.'
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the CSD files COTRN02C reads and writes, and the
+# online-only copybooks it copies. The written record and its generated id are
+# asserted in file_state, so the TRANSACT WRITE and the next-TRAN-ID items are
+# listed too. Sign-on and the menu option (CC00, CM00, COSGN00, USRSEC) are
+# verified by the SEC and MNU scenarios; the batch record copybooks (CVTRA05Y,
+# CVACT03Y) and the data files are verified at the lowest level that executes
+# them.
+inventory_ids:
+- INV-TRN-061  # COTRN02C message 'Transaction added successfully.  Your Tran ID is <TRAN-ID>.'
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-TRN-066  # COTRN02C TRANSACT WRITE (interface), the new record in file_state
+- INV-TRN-067  # COTRN02C next TRAN-ID (calculation): highest id plus 1
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the add
+- INV-CFG-004  # CCXREF CSD file: card cross-reference read by card number
+- INV-CFG-007  # TRANSACT CSD file: browsed backwards and written
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-011  # repository card in place of the tech-spec card 4111111111111111
+# TRANSACT is built from the repository's 300 daily transactions (the same
+# 350-byte shape as TRAN-RECORD), keyed by TRAN-ID, so the backward browse
+# finds 0000000996722787 as the highest key. CARDXREF is the region's CCXREF
+# file (and the CXACAIX path); USRSEC holds the demo users.
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left blank, so the card number selects the cross-reference.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CARDNIN: '                '
+    TTYPCD: '  '
+    TCATCD: '    '
+    TRNSRC: '          '
+    TDESC: '                                                            '
+    TRNAMT: '            '
+    TORIGDT: '          '
+    TPROCDT: '          '
+    MID: '         '
+    MNAME: '                              '
+    MCITY: '                         '
+    MZIP: '          '
+    CONFIRM: ' '
+    ERRMSG: 'Transaction added successfully.  Your Tran ID is 0000000996722788.            '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Transaction added successfully.  Your Tran ID is 0000000996722788.            '
+  file_state:
+    # The 300 fixture records stand unchanged and the new record is added in
+    # key order after them. Values are in decoded form: TRAN-CAT-CD is the
+    # number 1 and TRAN-AMT the decimal 12.34. The record's FILLER is not
+    # asserted: INITIALIZE leaves FILLER items alone, so it keeps the bytes
+    # READPREV read into TRAN-RECORD.
+    TRANSACT:
+      count: 301
+      contains:
+      - TRAN-ID: '0000000996722788'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Test purchase                                                                                       '
+        TRAN-AMT: '12.34'
+        TRAN-MERCHANT-ID: '800000001'
+        TRAN-MERCHANT-NAME: 'Test Merchant                                     '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '27601     '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-07-01                '
+        TRAN-PROC-TS: '2022-07-01                '

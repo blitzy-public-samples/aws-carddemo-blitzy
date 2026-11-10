@@ -1,0 +1,206 @@
+# USER0001 adds a transaction by account number on the Add Transaction screen,
+# and COTRN02C writes it to TRANSACT with the card the account's cross-reference
+# names: the TRANSACT WRITE item, observed as the new record in file_state.
+#
+# Step 1 signs on as USER0001 through CC00; the type-U user is routed to the
+# main menu COMEN01 (asserted here by its header only; its content belongs to
+# SEC-COSGN00C-normal-02).
+# Step 2 enters option 8, 'Transaction Add' (user type U, program COTRN02C):
+# COMEN01C transfers control with CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:67-72]. COMEN01C passes
+# only the COCOM01Y COMMAREA, so the group MOVE into COTRN02C's longer
+# CARDDEMO-COMMAREA pads CDEMO-CT02-TRN-SELECTED with spaces and nothing is
+# pre-filled. COTRN02C sets the re-enter flag, moves LOW-VALUES to COTRN2AO and
+# sends COTRN02 with its CT02 header, empty entry fields and a blank ERRMSG
+# [app/cbl/COTRN02C.cbl:115-130,516-571].
+# Step 3 fills the screen and presses ENTER with CONFIRM Y:
+# - VALIDATE-INPUT-KEY-FIELDS takes the account branch, because ACTIDIN is
+#   supplied: the numeric account id 00000000001 is read through CXACAIX and
+#   the card it names, XREF-CARD-NUM, replaces CARDNINI; the empty CARDNIN is
+#   never examined [app/cbl/COTRN02C.cbl:195-209,576-604]. Account 00000000001
+#   has one card in the repository cross-reference, 9680294154603697 (record 49
+#   of app/data/ASCII/cardxref.txt).
+# - Every data field is supplied and passes its format check: numeric type and
+#   category codes, the amount in the -99999999.99 form, both dates in the
+#   YYYY-MM-DD form and accepted by CSUTLDTC, a numeric merchant id. The
+#   amount is edited back into TRNAMTI as -00000005.00
+#   [app/cbl/COTRN02C.cbl:235-437].
+# - ADD-TRANSACTION positions a browse at HIGH-VALUES and reads the previous
+#   record, the highest key 0000000996722787 of the TRANSACT fixture, so the
+#   new id is 0000000996722788. INITIALIZE TRAN-RECORD then receives the
+#   screen fields and CARDNINI [app/cbl/COTRN02C.cbl:442-466].
+# - The WRITE keyed by TRAN-ID succeeds: INITIALIZE-ALL-FIELDS blanks every
+#   entry field, and STRING builds 'Transaction added successfully. ' + ' Your
+#   Tran ID is ' + TRAN-ID + '.' in WS-MESSAGE, which COTRN02 shows in green
+#   [app/cbl/COTRN02C.cbl:711-734,762-779].
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - The entry values outside this scenario's own overrides (dates and merchant
+#   fields) are a valid field set chosen here; the merchant data is invented.
+# - BMS pads each received field with blanks to its length, and the MOVEs into
+#   the longer record fields pad again: TRAN-DESC to 100, the merchant name and
+#   city to 50, the two timestamps to 26 (the screen carries only the date).
+# - TRAN-RECORD's 20-byte FILLER is not asserted: INITIALIZE skips FILLER, so
+#   the record keeps whatever the READPREV left there.
+# - Screen values are whole fields at their BMS length with trailing spaces;
+#   CURDATE and CURTIME come from the run clock, hence the matchers and
+#   clock_mode relative.
+id: TRN-COTRN02C-normal-02
+level: e2e
+type: normal
+description: >-
+  USER0001 signs on, chooses main menu option 8 'Transaction Add' and, on
+  COTRN02, enters account 00000000001 with no card number, type 02, category
+  0002, source OPERATOR, description 'Test write via account', amount
+  -00000005.00, both dates 2022-07-01 and merchant fields, confirming with Y.
+  COTRN02C looks up the account's card 9680294154603697 through CXACAIX, writes
+  TRANSACT record 0000000996722788 from the entered fields and that card, blanks
+  the screen and shows 'Transaction added successfully.  Your Tran ID is
+  0000000996722788.'.
+# The sign-on step's own items (COSGN00, CC00, USRSEC) and the menu option and
+# transaction (CM00) belong to the SEC and MNU scenarios; the confirmation
+# message and the next-id calculation are the primary items of their own
+# TRN-COTRN02C scenarios.
+inventory_ids:
+- INV-TRN-066  # COTRN02C TRANSACT WRITE (interface), observed in file_state
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, the menu option 8 is entered on
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the add
+- INV-CFG-006  # CXACAIX CSD file, read by account id for the card number
+- INV-CFG-007  # TRANSACT CSD file, browsed for the highest key and written
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA COMEN01C passes with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # derived TRN end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT has no repository data of its own (datasets.yaml source
+    # 'built'), so it is built from the 300 repository daily transactions,
+    # which share its 350-byte record shape.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      ACTIDIN: '00000000001'
+      CARDNIN: ''
+      TTYPCD: '02'
+      TCATCD: '0002'
+      TRNSRC: OPERATOR
+      TDESC: Test write via account
+      TRNAMT: '-00000005.00'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: Test Merchant
+      MCITY: Test City
+      MZIP: '10001'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COTRN02
+    TRNNAME: CT02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CARDNIN: '                '
+    TTYPCD: '  '
+    TCATCD: '    '
+    TRNSRC: '          '
+    TDESC: '                                                            '
+    TRNAMT: '            '
+    TORIGDT: '          '
+    TPROCDT: '          '
+    MID: '         '
+    MNAME: '                              '
+    MCITY: '                         '
+    MZIP: '          '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CARDNIN: '                '
+    TTYPCD: '  '
+    TCATCD: '    '
+    TRNSRC: '          '
+    TDESC: '                                                            '
+    TRNAMT: '            '
+    TORIGDT: '          '
+    TPROCDT: '          '
+    MID: '         '
+    MNAME: '                              '
+    MCITY: '                         '
+    MZIP: '          '
+    CONFIRM: ' '
+    ERRMSG: 'Transaction added successfully.  Your Tran ID is 0000000996722788.            '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Transaction added successfully.  Your Tran ID is 0000000996722788.            '
+  file_state:
+    # The 300 fixture records plus the one written. The highest fixture record,
+    # the one the browse read, is unchanged.
+    TRANSACT:
+      count: 301
+      contains:
+      - TRAN-ID: '0000000996722788'
+        TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '2'
+        TRAN-SOURCE: 'OPERATOR  '
+        TRAN-DESC: 'Test write via account                                                                              '
+        TRAN-AMT: '-5.00'
+        TRAN-MERCHANT-ID: '800000001'
+        TRAN-MERCHANT-NAME: 'Test Merchant                                     '
+        TRAN-MERCHANT-CITY: 'Test City                                         '
+        TRAN-MERCHANT-ZIP: '10001     '
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-01                '
+        TRAN-PROC-TS: '2022-07-01                '
+      - TRAN-ID: '0000000996722787'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+        TRAN-AMT: '603.22'
+        TRAN-MERCHANT-ID: '800000000'
+        TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+        TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+        TRAN-MERCHANT-ZIP: '53200-7529'
+        TRAN-CARD-NUM: '3260763612337560'
+        TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+        TRAN-PROC-TS: '                          '

@@ -1,0 +1,158 @@
+# COTRN01C cannot look up a transaction while the TRANSACT region file is out
+# of service.
+#
+# Step 1: USER0001 signs on through CC00, and COSGN00C routes the type U user to
+# the main menu COMEN01 [app/cbl/COSGN00C.cbl:221-237]. COMEN01C, entered for
+# the first time, sends the menu with a blank ERRMSG [app/cbl/COMEN01C.cbl:77-90,
+# 182-194].
+# Step 2: option '7' makes COMEN01C XCTL to COMEN02Y entry 7, COTRN01C, with
+# CDEMO-PGM-CONTEXT 0 [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:61-65].
+# The group MOVE of COMEN01C's shorter COMMAREA pads CDEMO-CT01-TRN-SELECTED
+# with spaces, so no transaction is fetched and no file is touched: COTRN01C
+# moves LOW-VALUES to COTRN1AO, sends COTRN01 with its CT01 header, empty fields
+# and a blank ERRMSG, and returns with TRANSID CT01
+# [app/cbl/COTRN01C.cbl:88-109,136-139,213-225].
+# Step 3: ENTER with transaction id 0000000000683580, the first DALYTRAN record,
+# which the TRANSACT fixture holds. PROCESS-ENTER-KEY finds the id supplied,
+# moves SPACES to the 13 detail input fields and reads TRANSACT by the id with
+# UPDATE [app/cbl/COTRN01C.cbl:144-173,267-278]. With the file closed or
+# disabled the response is neither NORMAL nor NOTFND, so WHEN OTHER sets the
+# error flag, moves 'Unable to lookup Transaction...' to WS-MESSAGE, puts the
+# cursor on the id field and sends COTRN01 with ERASE
+# [app/cbl/COTRN01C.cbl:280-296,213-225]. The error flag stops the move of the
+# record's fields and the second send [app/cbl/COTRN01C.cbl:176-192], and
+# MAIN-PARA returns with TRANSID CT01.
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - COTRN1AO redefines COTRN1AI [app/cpy-bms/COTRN01.CPY:145], so the id is sent
+#   back as received and the 13 cleared detail fields as spaces at their full
+#   BMS length [app/bms/COTRN01.bms:85-256]. On the first send every data field
+#   is LOW-VALUES, so BMS sends no data and the capture shows the blank INITIAL
+#   value or nulls as spaces at the field's full length.
+# - ERRMSG is the first 78 bytes of the 80-byte WS-MESSAGE, trailing spaces kept.
+# - The header is POPULATE-HEADER-INFO's: the COTTL01Y titles, CT01, COTRN01C,
+#   and CURDATE mm/dd/yy and CURTIME hh:mm:ss of the run clock through CSDAT01Y,
+#   hence the matchers and clock_mode relative [app/cbl/COTRN01C.cbl:243-262].
+# - The DISPLAY of RESP and RESP2 goes to the region log, not to the terminal,
+#   and is not asserted. A failed READ changes no record, so no file state is
+#   asserted.
+id: TRN-COTRN01C-recovery-01
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, chooses main menu option 7 'Transaction View' and enters
+  transaction id 0000000000683580 on the COTRN01 view screen while the region
+  file TRANSACT is unavailable. The READ UPDATE fails with a response other than
+  NORMAL or NOTFND, so COTRN01C shows 'Unable to lookup Transaction...' on
+  COTRN01 with the id kept and every transaction detail field blank.
+# The recovery message is the primary item, then the program, the map option 7
+# is entered on and the map asserted, the transaction under which the failing
+# READ runs and the CSD file it fails on, then the online-only copybooks
+# COTRN01C copies. CVTRA05Y and the DALYTRAN data files are left out: their
+# lowest executing level is the batch scenarios. The sign-on items (COSGN00,
+# CC00, USRSEC) and CM00 belong to the SEC and MNU scenarios.
+inventory_ids:
+- INV-TRN-026  # COTRN01C message 'Unable to lookup Transaction...' (recovery)
+- INV-TRN-002  # COTRN01C program
+- INV-MNU-003  # COMEN01 map, the main menu option 7 is entered on
+- INV-TRN-005  # COTRN01 map, the view screen the failure is shown on
+- INV-CFG-021  # CT01 transaction, under which the lookup of step 3 runs
+- INV-CFG-007  # TRANSACT CSD file, the target of the failing READ UPDATE
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA COMEN01C passes with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN01C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # online transaction (TRN) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to put TRANSACT out of service
+preconditions:
+  datasets:
+    # COSGN00C reads USER0001 from the 10 repository users.
+    USRSEC: {base: USRSEC}
+    # TRANSACT is built from the repository's daily transactions, so the id of
+    # step 3 names a record that exists and only the file's availability fails.
+    # The base is DALYTRAN because the TRANSACT entry of datasets.yaml is
+    # `source: built` and holds no repository data of its own.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  # No `after`: the unikix adapter applies an online fault after the sign-on
+  # step. Sign-on reads only USRSEC, and COMEN01C's option transfer and
+  # COTRN01C's first send touch no file, so the first TRANSACT operation after
+  # the fault is the READ UPDATE of step 3. An adapter without a confirmed
+  # region file control raises MissingPrerequisite under GAP-MIS-011.
+  faults:
+  - target: TRANSACT
+    operation: read
+    condition: unavailable
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '7'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {TRNIDIN: '0000000000683580'}
+    '@map': COTRN01
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COTRN01
+    TRNNAME: CT01
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN01C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    TRNIDIN: '                '
+    TRNID: '                '
+    CARDNUM: '                '
+    TTYPCD: '  '
+    TCATCD: '    '
+    TRNSRC: '          '
+    TDESC: '                                                            '
+    TRNAMT: '            '
+    TORIGDT: '          '
+    TPROCDT: '          '
+    MID: '         '
+    MNAME: '                              '
+    MCITY: '                         '
+    MZIP: '          '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN01
+    TRNNAME: CT01
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN01C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    TRNIDIN: '0000000000683580'
+    TRNID: '                '
+    CARDNUM: '                '
+    TTYPCD: '  '
+    TCATCD: '    '
+    TRNSRC: '          '
+    TDESC: '                                                            '
+    TRNAMT: '            '
+    TORIGDT: '          '
+    TPROCDT: '          '
+    MID: '         '
+    MNAME: '                              '
+    MCITY: '                         '
+    MZIP: '          '
+    ERRMSG: 'Unable to lookup Transaction...                                               '
+  # The ERRMSG value of each step: blank on the main menu and on the first
+  # COTRN01 send, then the failure message.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Unable to lookup Transaction...                                               '

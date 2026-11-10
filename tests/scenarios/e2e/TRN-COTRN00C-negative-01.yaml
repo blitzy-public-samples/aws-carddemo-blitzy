@@ -1,0 +1,162 @@
+# PF5, a key COTRN00C does not handle, on the transaction list.
+#
+# USER0001 (type U) signs on through CC00 and COSGN00C transfers control to the
+# main menu COMEN01C [app/cbl/COSGN00C.cbl:228-240]. Option 6 of COMEN02Y is
+# 'Transaction List', program COTRN00C, so COMEN01C transfers control to it
+# with CDEMO-PGM-CONTEXT zero [app/cpy/COMEN02Y.cpy:55-59]
+# [app/cbl/COMEN01C.cbl:145-155].
+#
+# Entered without the reenter flag, COTRN00C clears its output map and browses
+# TRANSACT from a LOW-VALUES key (STARTBR without GTEQ still positions GTEQ, its
+# default), so from the lowest key; the task's AID is the menu's ENTER, so no
+# record is skipped. It fills the 10 rows, finds an 11th record, so it sets no
+# message, moves page number 1 (PIC 9(08)) to the 8-byte PAGENUM as '00000001',
+# blanks TRNIDIN and sends map COTRN0A of mapset COTRN00
+# [app/cbl/COTRN00C.cbl:107-116,206-229,279-328,381-445,527-540].
+#
+# PF5 then reenters it. RECEIVE MAP fills COTRN0AI, which COTRN0AO redefines,
+# and EVALUATE EIBAID reaches WHEN OTHER: CCDA-MSG-INVALID-KEY of CSMSG01Y goes
+# to WS-MESSAGE, and SEND-TRNLST-SCREEN rebuilds only the header (the COTTL01Y
+# titles, CT00, COTRN00C, the CSDAT01Y run date and time) and ERRMSG before it
+# sends the map with ERASE; no record is read or changed
+# [app/cbl/COTRN00C.cbl:117-133,527-586] [app/cpy/CSMSG01Y.cpy:20-21]
+# [app/cpy/COTTL01Y.cpy:17-22]. Every named field of COTRN00 is defined FSET, so
+# the terminal returns all of them with the PF5 [app/bms/COTRN00.bms:34-453]:
+# the rows, PAGENUM, TRNIDIN and the select fields come back as step 2 showed
+# them and are sent again unchanged.
+#
+# The rows are the first ten TRANSACT records in key order, TRANSACT being
+# built from the repository's daily transactions; the 11th key is
+# 0000000025430891 [app/data/ASCII/dailytran.txt]. TDATE is the MM/DD/YY of
+# TRAN-ORIG-TS (2022-06-10 for all ten), TDESC the first 26 characters of
+# TRAN-DESC, and TAMT the TRAN-AMT edited as +99999999.99
+# [app/cbl/COTRN00C.cbl:56-57,381-396] [app/cpy/CSDAT01Y.cpy:30-35,42-55].
+#
+# Expected values are derived from the source (no TPE region runs in CI) and
+# are whole fields at their BMS length, trailing spaces kept: comparison never
+# trims. ERRMSG is 78 bytes, the 40-character message followed by spaces. The
+# select fields, left at LOW-VALUES in step 2, show their one-blank INITIAL.
+# The step-2 list is asserted by identification only: its content is the
+# COTRN00C list-content item, which TRN-COTRN00C-normal-01 pins with the same
+# rows, and here it is pinned where the invalid key sends it back. CURDATE and
+# CURTIME come from the run clock, so they are matchers and the clock is
+# relative.
+id: TRN-COTRN00C-negative-01
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses option 6 (Transaction List) on the main menu and,
+  on the transaction list, presses PF5. COTRN00C accepts only ENTER, PF3, PF7
+  and PF8, so it sends the list screen again with a fresh header (CT00,
+  COTRN00C, the titles, the run date and time), 'Invalid key pressed. Please
+  see below...' in the message line, and the page-1 rows, page number and
+  search field exactly as the terminal returned them; no TRANSACT record is
+  read or changed.
+inventory_ids:
+- INV-TRN-010  # COTRN00C message 'Invalid key pressed. Please see below...' (rule)
+- INV-TRN-001  # COTRN00C program
+- INV-MNU-003  # COMEN01 map, where option 6 is entered
+- INV-TRN-004  # COTRN00 map, the list screen asserted
+- INV-CFG-020  # CT00 transaction, TRNNAME and the RETURN TRANSID of the list
+- INV-CFG-007  # TRANSACT CSD file, browsed for the page the PF5 screen keeps
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the PF5 entry a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE, CURTIME and the row dates
+- INV-LAY-008  # CSMSG01Y copybook, CCDA-MSG-INVALID-KEY
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# TRANSACT is built from the repository's daily transactions, so the first
+# browse fills a whole page and finds a next one.
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '6'
+  - aid: PF5
+    '@map': COTRN00
+    fields: {}
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COTRN00
+    TRNNAME: CT00
+    PGMNAME: COTRN00C
+  - '@map': COTRN00
+    TRNNAME: CT00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '00000001'
+    TRNIDIN: '                '
+    SEL0001: ' '
+    TRNID01: '0000000000683580'
+    TDATE01: '06/10/22'
+    TDESC01: 'Purchase at Abshire-Lowe  '
+    TAMT001: '+00000504.77'
+    SEL0002: ' '
+    TRNID02: '0000000001774260'
+    TDATE02: '06/10/22'
+    TDESC02: 'Return item at Nitzsche, N'
+    TAMT002: '-00000919.00'
+    SEL0003: ' '
+    TRNID03: '0000000006292564'
+    TDATE03: '06/10/22'
+    TDESC03: 'Purchase at Ernser, Roob a'
+    TAMT003: '+00000067.88'
+    SEL0004: ' '
+    TRNID04: '0000000009101861'
+    TDATE04: '06/10/22'
+    TDESC04: 'Purchase at Guann LLC     '
+    TAMT004: '+00000281.77'
+    SEL0005: ' '
+    TRNID05: '0000000010142252'
+    TDATE05: '06/10/22'
+    TDESC05: 'Purchase at Kertzmann-Scho'
+    TAMT005: '+00000454.66'
+    SEL0006: ' '
+    TRNID06: '0000000010229018'
+    TDATE06: '06/10/22'
+    TDESC06: 'Purchase at Gislason-Medhu'
+    TAMT006: '+00000849.99'
+    SEL0007: ' '
+    TRNID07: '0000000016259484'
+    TDATE07: '06/10/22'
+    TDESC07: 'Return item at Sipes Inc  '
+    TAMT007: '-00000056.77'
+    SEL0008: ' '
+    TRNID08: '0000000017874199'
+    TDATE08: '06/10/22'
+    TDESC08: 'Purchase at Legros Group  '
+    TAMT008: '+00000373.66'
+    SEL0009: ' '
+    TRNID09: '0000000019065428'
+    TDATE09: '06/10/22'
+    TDESC09: 'Return item at Turcotte Gr'
+    TAMT009: '-00000535.88'
+    SEL0010: ' '
+    TRNID10: '0000000021711604'
+    TDATE10: '06/10/22'
+    TDESC10: 'Purchase at Gleason, Shana'
+    TAMT010: '+00000416.11'
+    ERRMSG: 'Invalid key pressed. Please see below...                                      '

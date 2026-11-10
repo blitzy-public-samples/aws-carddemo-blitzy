@@ -1,0 +1,116 @@
+# Transaction view of an id that TRANSACT does not hold. USER0001 (user type U)
+# signs on through CC00 and COSGN00C transfers control to the main menu COMEN01C
+# [app/cbl/COSGN00C.cbl:235-239]. Option 7 of COMEN02Y is 'Transaction View',
+# user type U, program COTRN01C [app/cpy/COMEN02Y.cpy:61-65], so COMEN01C moves
+# zeros to CDEMO-PGM-CONTEXT and transfers control to COTRN01C
+# [app/cbl/COMEN01C.cbl:127-155]. COMEN01C passes only the COCOM01Y COMMAREA,
+# so the group MOVE into COTRN01C's longer CARDDEMO-COMMAREA pads
+# CDEMO-CT01-TRN-SELECTED with spaces and no transaction is read on entry.
+# COTRN01C sets CDEMO-PGM-REENTER, clears COTRN1AO to LOW-VALUES, sends COTRN01
+# with WS-MESSAGE still spaces and returns with TRANSID CT01
+# [app/cbl/COTRN01C.cbl:36-37,53-61,94-109,136-139,213-225].
+#
+# The ENTER of step 3 runs CT01 again. COTRN01C receives map COTRN1A; the
+# entered id is not blank, so PROCESS-ENTER-KEY moves SPACES to the thirteen
+# detail fields of COTRN1AI, which COTRN1AO redefines, and reads TRANSACT by
+# that id with UPDATE [app/cbl/COTRN01C.cbl:110-114,144-174,267-278]. The
+# precondition builds TRANSACT from the repository's 300 daily transactions,
+# whose highest id is 0000000996722787, so 9999999999999999 is absent and the
+# READ answers NOTFND: this is the notfnd condition, produced by omission, so
+# no fault entry is needed. The NOTFND branch sets the error flag, moves
+# 'Transaction ID NOT found...' to WS-MESSAGE, puts the cursor on TRNIDIN and
+# sends the screen again [app/cbl/COTRN01C.cbl:280-288]. The error flag skips
+# the moves of the record into the screen [app/cbl/COTRN01C.cbl:176-192], so
+# the detail fields go out as the spaces moved before the READ, and TRNIDIN
+# still holds the id the user entered. No record is read, so no lock is held
+# and TRANSACT is unchanged: no file_state is asserted.
+#
+# Screen values are whole fields at their BMS length with trailing spaces kept,
+# because comparison never trims [app/bms/COTRN01.bms]. ERRMSG is WS-MESSAGE
+# (X(80)) cut to ERRMSGO (X(78)) [app/cbl/COTRN01C.cbl:38,217]. CURDATE and
+# CURTIME come from the region clock, so they are matchers. expected.messages
+# is not asserted: it carries the ERRMSG of every step, which the screens below
+# already assert. The baseline is derived from the source: no TPE region runs
+# in CI.
+id: TRN-COTRN01C-negative-03
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 7 'Transaction View' and asks
+  for transaction 9999999999999999, which TRANSACT does not hold. The READ of
+  TRANSACT answers NOTFND, and COTRN01C shows map COTRN01 again with its header
+  (CT01, COTRN01C, the titles, the run date and time), the entered id kept in
+  TRNIDIN, every detail field blank, and 'Transaction ID NOT found...' in
+  ERRMSG [app/cbl/COTRN01C.cbl:283-288].
+# Primary item first, then the program, the maps the screens assert (COMEN01,
+# COTRN01), the transaction step 3 enters (CT01, the TRANSID COTRN01C returned
+# with), the CSD file the lookup reads, and the online-only copybooks COTRN01C
+# copies. CVTRA05Y is a batch-level copybook verified elsewhere, the data files
+# are covered at the unit and integration levels, and the sign-on and menu
+# transactions belong to their own scenarios.
+inventory_ids:
+- INV-TRN-025  # COTRN01C message 'Transaction ID NOT found...' (recovery: record not found for a user-entered key)
+- INV-TRN-002  # COTRN01C program
+- INV-MNU-003  # COMEN01 map, where option 7 is entered
+- INV-TRN-005  # COTRN01 map, the transaction view screen of steps 2 and 3
+- INV-CFG-021  # CT01 transaction, under which the ENTER of step 3 runs COTRN01C
+- INV-CFG-007  # TRANSACT CSD file, the READ UPDATE that answers NOTFND
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN01C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001. TRANSACT holds no repository
+    # data of its own, so it is built from the daily transactions, as the
+    # online scenarios build it; none of them has id 9999999999999999.
+    USRSEC: {base: USRSEC}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '7'}, '@map': COMEN01}
+  - {aid: ENTER, fields: {TRNIDIN: '9999999999999999'}, '@map': COTRN01}
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN007: '07. Transaction View                    '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN01
+    TRNNAME: CT01
+    PGMNAME: COTRN01C
+    TRNIDIN: '                '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN01
+    TRNNAME: CT01
+    PGMNAME: COTRN01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    TRNIDIN: '9999999999999999'
+    TRNID: '                '
+    CARDNUM: '                '
+    TTYPCD: '  '
+    TCATCD: '    '
+    TRNSRC: '          '
+    TDESC: '                                                            '
+    TRNAMT: '            '
+    TORIGDT: '          '
+    TPROCDT: '          '
+    MID: '         '
+    MNAME: '                              '
+    MCITY: '                         '
+    MZIP: '          '
+    ERRMSG: 'Transaction ID NOT found...                                                   '
