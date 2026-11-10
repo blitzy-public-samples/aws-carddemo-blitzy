@@ -1,0 +1,146 @@
+# COTRN02C refuses a transaction for a card the cross-reference does not hold
+# (tech-spec seed "Scenario 5: Error Handling and Recovery", invalid card
+# 9999999999999999). No record of app/data/ASCII/cardxref.txt has that card, so
+# the notfnd condition comes from the fixture itself and needs no fault entry.
+#
+# Steps 1 and 2 are those of TRN-COTRN02C-normal-01: USER0001 signs on through
+# CC00 and reaches the main menu COMEN01, and option 8 'Transaction Add' makes
+# COTRN02C send the empty COTRN02 [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:67-72] [app/cbl/COTRN02C.cbl:115-130,516-571].
+# Step 3 enters normal-01's valid field set with card 9999999999999999 and
+# CONFIRM Y, and presses ENTER under CT02:
+# - Acct # is left as sent (FSET, INITIAL ' '), so it arrives as spaces and
+#   VALIDATE-INPUT-KEY-FIELDS takes the card branch. The card is numeric and
+#   goes through NUMVAL and WS-CARD-NUM-N, PIC 9(16), unchanged: sixteen digits
+#   are exact both in fixed point and in a long hexadecimal float
+#   [app/cbl/COTRN02C.cbl:210-223].
+# - READ CCXREF by that card answers NOTFND: the error flag is set,
+#   'Card Number NOT found...' goes to WS-MESSAGE, the cursor to CARDNIN, and
+#   SEND-TRNADD-SCREEN sends COTRN02 with ERASE and ends the task with RETURN
+#   TRANSID CT02 [app/cbl/COTRN02C.cbl:609-637,516-534].
+# - So the move of XREF-ACCT-ID into Acct #, VALIDATE-INPUT-DATA-FIELDS and
+#   ADD-TRANSACTION never run. COTRN2AO redefines COTRN2AI, so the screen
+#   echoes every field as received (BMS pads each with blanks to its length),
+#   Acct # stays blank, and TRANSACT is neither browsed nor written.
+#
+# Expected values are derived from the source: no TPE region runs in CI. Screen
+# values are whole fields at their BMS length, trailing spaces kept. ERRMSG is
+# WS-MESSAGE, X(80), cut to ERRMSGO, X(78). CURDATE and CURTIME come from the
+# region clock, so they are matchers and the clock is relative.
+id: TRN-COTRN02C-negative-03
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and, on
+  COTRN02, enters a valid transaction for card 9999999999999999 with CONFIRM Y.
+  The card cross-reference has no such card, so READ CCXREF answers NOTFND and
+  COTRN02C shows COTRN02 again with the entered values, a blank Acct # and
+  'Card Number NOT found...' in ERRMSG; TRANSACT keeps its 300 records.
+# Primary item first, then the program, the maps the screens assert, the
+# transaction step 3 runs under, the CSD file the failed lookup reads, and the
+# online-only copybooks COTRN02C copies. TRANSACT is never opened on this path,
+# so its CSD file and WRITE items are verified by the add scenarios. Sign-on and
+# the menu option (CC00, CM00, COSGN00, USRSEC) belong to the SEC and MNU
+# scenarios; batch copybooks and data files are verified at the lowest level
+# that executes them.
+inventory_ids:
+- INV-TRN-057  # COTRN02C message 'Card Number NOT found...' (recovery: not found for a user-entered key)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the add
+- INV-CFG-004  # CCXREF CSD file: the read by card number that answers NOTFND
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COTRN02C
+tags:
+- inferred-not-observed
+# GAP-DOC-011 is not cited: 9999999999999999 is the tech spec's own invalid
+# card, used as written, and no tech-spec value is replaced by repository data.
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT holds no repository data of its own, so it is built from the
+    # 300 daily transactions, which share its 350-byte record shape.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left blank, so the card number selects the cross-reference.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '9999999999999999'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CARDNIN: '9999999999999999'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: 'Y'
+    ERRMSG: 'Card Number NOT found...                                                      '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Card Number NOT found...                                                      '
+  file_state:
+    # No record is added: the task ends before ADD-TRANSACTION.
+    TRANSACT:
+      count: 300

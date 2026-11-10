@@ -1,0 +1,144 @@
+# A card number that is not numeric on the Transaction Add screen.
+#
+# Step 1 signs on as USER0001 on COSGN00 (transaction CC00); the type-U user is
+# routed to COMEN01C, which sends the main menu COMEN01 headed CM00/COMEN01C
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:36-37,82-90].
+# Step 2 enters option 8 on COMEN01: 'Transaction Add', user type U, program
+# COTRN02C [app/cpy/COMEN02Y.cpy:67-72]. On that first entry COTRN02C sets
+# CDEMO-PGM-REENTER, moves LOW-VALUES to COTRN2AO and sends COTRN02 with its
+# header (CT02, COTRN02C, the COTTL01Y titles, the CSDAT01Y run date and time)
+# and a blank message line [app/cbl/COTRN02C.cbl:115-130,516-571].
+# Step 3 enters the valid transaction of TRN-COTRN02C-normal-01, except that
+# Acct # is erased and Card # holds 'ABCD', and presses ENTER under CT02:
+# - VALIDATE-INPUT-KEY-FIELDS finds ACTIDINI blank, so it takes the card
+#   branch. 'ABCD' padded with blanks to the 16-byte CARDNINI is NOT NUMERIC:
+#   WS-ERR-FLG is set, 'Card Number must be Numeric...' is moved to the 80-byte
+#   WS-MESSAGE and the cursor to CARDNIN [app/cbl/COTRN02C.cbl:193-216].
+# - SEND-TRNADD-SCREEN rebuilds the header, moves WS-MESSAGE to the 78-byte
+#   ERRMSG, sends COTRN02 with ERASE and ends the task with RETURN TRANSID CT02
+#   [app/cbl/COTRN02C.cbl:516-534]. NUMVAL, READ-CCXREF-FILE and
+#   VALIDATE-INPUT-DATA-FIELDS are never reached, so no file is read and no
+#   input field is blanked or replaced.
+# The input fields on the third screen are what RECEIVE MAP put in COTRN2AI:
+# COTRN2AO redefines it and every input field of COTRN02 carries FSET
+# [app/bms/COTRN02.bms:85-285], so the entered values come back unchanged.
+# CARDNIN still shows 'ABCD' and Acct # stays blank, because the
+# cross-reference lookup that would fill it never ran; the data fields keep
+# their values, because the blanking that VALIDATE-INPUT-DATA-FIELDS performs
+# after an error is never reached [app/cbl/COTRN02C.cbl:235-249].
+#
+# Text fields are compared at their full BMS length with trailing spaces kept.
+# Only CURDATE and CURTIME come from the region clock, so they are matchers and
+# the clock is relative. The baseline is derived from the source: no TPE region
+# runs in CI.
+id: TRN-COTRN02C-negative-05
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and, on
+  COTRN02, enters a complete transaction with Acct # blank and Card # 'ABCD'.
+  COTRN02C refuses the card number before any lookup: it sends COTRN02 again
+  with 'Card Number must be Numeric...' in the message line and every entered
+  value unchanged, and reads and writes no file.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under and the online-only copybooks COTRN02C copies. No CSD file
+# is listed: the refusal comes before the cross-reference read. Sign-on and the
+# menu option (CC00, CM00, COSGN00, USRSEC) are verified by the SEC and MNU
+# scenarios; batch record copybooks and data files are verified at the lowest
+# level that executes them.
+inventory_ids:
+- INV-TRN-034  # COTRN02C message 'Card Number must be Numeric...' (rule)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the entry
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes step 3 a reentry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# USRSEC holds the demo user COSGN00C reads. CARDXREF is loaded as the region's
+# CCXREF file so that a lookup, were it made, would find the cross-reference;
+# this path never reaches it.
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is erased, so the non-numeric card number selects the card branch.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      ACTIDIN: ''
+      CARDNIN: 'ABCD'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CARDNIN: 'ABCD            '
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: 'Y'
+    ERRMSG: 'Card Number must be Numeric...                                                '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Card Number must be Numeric...                                                '

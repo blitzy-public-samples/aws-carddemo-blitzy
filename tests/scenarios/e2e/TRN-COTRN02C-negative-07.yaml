@@ -1,0 +1,178 @@
+# COTRN02C refuses a transaction whose Type CD is blank with 'Type CD can NOT
+# be empty...', and writes nothing to TRANSACT.
+#
+# Step 1 signs on as USER0001 on COSGN00 (transaction CC00); the type-U user is
+# routed to COMEN01C, which sends the main menu COMEN01 headed CM00/COMEN01C
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:36-37,82-90].
+# Step 2 enters option 8 on COMEN01: 'Transaction Add', user type U, program
+# COTRN02C [app/cpy/COMEN02Y.cpy:67-72] [app/cbl/COMEN01C.cbl:115-156].
+# Entered without CDEMO-PGM-REENTER and with no transaction selected, COTRN02C
+# sets the re-enter flag, moves LOW-VALUES to COTRN2AO and sends COTRN02 with
+# its CT02 header, empty entry fields and a blank ERRMSG
+# [app/cbl/COTRN02C.cbl:115-130,516-534].
+# Step 3 enters the valid field set of the TRN-COTRN02C scenarios by card
+# number, except that Type CD is left blank, and presses ENTER under CT02
+# [app/cbl/COTRN02C.cbl:131-135,539-547]:
+# - Every input field of COTRN02 is FSET, so each one is received; the blank
+#   ACTIDIN and TTYPCD arrive as spaces [app/bms/COTRN02.bms:85-126].
+# - VALIDATE-INPUT-KEY-FIELDS takes the card branch: card 0500024453765740 is
+#   numeric, goes back into CARDNINI unchanged through WS-CARD-NUM-N, and READ
+#   CCXREF by card is NORMAL; XREF-ACCT-ID 00000000050 (record 1 of the
+#   CARDXREF fixture) replaces ACTIDINI [app/cbl/COTRN02C.cbl:193-223,609-623].
+# - VALIDATE-INPUT-DATA-FIELDS starts with ERR-FLG off, so no field is
+#   cleared, and the first WHEN of the empty-field EVALUATE matches: TTYPCDI is
+#   SPACES. The message goes to WS-MESSAGE, the cursor to Type CD, and
+#   SEND-TRNADD-SCREEN sends COTRN02 and returns with TRANSID CT02
+#   [app/cbl/COTRN02C.cbl:235-256,516-534]. The task ends there: none of the
+#   later empty or format checks runs, the amount is never edited, CONFIRM is
+#   never evaluated, and ADD-TRANSACTION is never reached.
+# - COTRN2AO redefines COTRN2AI [app/cpy-bms/COTRN02.CPY:145], so the map is
+#   sent with the values as received, plus the account id the lookup put in
+#   ACTIDIN; the blank Type CD stays blank.
+#
+# CONFIRM is entered as Y, beyond the valid field set: with confirmation given,
+# the unchanged TRANSACT shows that the empty Type CD alone stops the add,
+# where a blank CONFIRM would also stop it ('Confirm to add this
+# transaction...').
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - BMS pads each received field with blanks to its length, so text values are
+#   whole fields with their trailing spaces. ERRMSG is the 78-byte field: the
+#   message followed by spaces from the 80-byte WS-MESSAGE.
+# - CURDATE and CURTIME come from the region clock, hence the matchers and
+#   clock_mode relative.
+id: TRN-COTRN02C-negative-07
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and, on
+  COTRN02, enters repository card 0500024453765740 with category 0001, source
+  POS TERM, 'Test purchase', +00000012.34, both dates 2022-07-01, merchant
+  800000001 'Test Merchant', Testville 27601 and CONFIRM Y, but leaves Type CD
+  blank. COTRN02C looks up account 00000000050 for the card, then refuses the
+  entry with 'Type CD can NOT be empty...', sends COTRN02 back with the entered
+  values and writes nothing to TRANSACT.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the CSD files COTRN02C reads (CCXREF, for the account id shown)
+# and leaves unchanged (TRANSACT, in file_state), and the online-only
+# copybooks it copies. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC, the
+# option-8 navigation) are verified by the SEC and MNU scenarios; the batch
+# record copybooks and the data files are verified at the lowest level that
+# executes them.
+inventory_ids:
+- INV-TRN-036  # COTRN02C message 'Type CD can NOT be empty...'
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the entry
+- INV-CFG-004  # CCXREF CSD file, read by card number for the account id
+- INV-CFG-007  # TRANSACT CSD file, left unchanged
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT has no repository data of its own (datasets.yaml source
+    # 'built'), so it is built from the 300 repository daily transactions,
+    # which share its 350-byte record shape.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left blank, so the card number selects the cross-reference;
+  # TTYPCD is entered empty.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: ''
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '  '
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: 'Y'
+    ERRMSG: 'Type CD can NOT be empty...                                                   '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Type CD can NOT be empty...                                                   '
+  file_state:
+    # Nothing is written: the 300 fixture records stand, and the highest of
+    # them, which ADD-TRANSACTION would have browsed to, is unchanged.
+    TRANSACT:
+      count: 300
+      contains:
+      - TRAN-ID: '0000000996722787'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+        TRAN-AMT: '603.22'
+        TRAN-MERCHANT-ID: '800000000'
+        TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+        TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+        TRAN-MERCHANT-ZIP: '53200-7529'
+        TRAN-CARD-NUM: '3260763612337560'
+        TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+        TRAN-PROC-TS: '                          '
