@@ -34,11 +34,18 @@
       *   param_files, and its size must be a multiple of 80: libcob
       *   returns a short final record with status 00 and leaves the
       *   rest of the record area as the previous READ filled it.
+      *   A date or mask holding a line-control byte, one a line
+      *   reader can take as a line end (x'0A' to x'0D', x'1C' to
+      *   x'1E', x'85'), is refused before the CALL with the stderr
+      *   line below and exit status 255. Every other byte is passed
+      *   as it stands.
       *
       * Output contract
       *   - stdout: one line per DTCIN record, in file order:
       *       DTCDRV DATE=<d> MASK=<m> RC=<rc> RESULT=<p> HEX=<h>
-      *     <d>, <m>  the date and the mask, X(10) each, as passed
+      *     <d>, <m>  the date and the mask, X(10) each, as passed.
+      *               Neither holds a line-control byte, so every
+      *               stdout line is exactly one record.
       *     <rc>      RETURN-CODE after the call, 4 digits: the
       *               severity CSUTLDTC sets
       *     <p>       the 80-byte result, each byte outside x'20' to
@@ -54,9 +61,17 @@
       *     no line and exit status 0.
       *   - stderr, for harness failures only: one line beginning
       *     CARDDEMO-DTCDRV, then exit status 255. DTCIN open, read or
-      *     close failed (status=<ss>), or CSUTLDTC could not be
-      *     loaded. The adapter treats these as harness errors, never
-      *     as program behaviour.
+      *     close failed (status=<ss>), CSUTLDTC could not be loaded,
+      *     or a DTCIN record held a line-control byte. That last line
+      *     is, wrapped here:
+      *       CARDDEMO-DTCDRV DTCIN record <n> <f> holds line-control
+      *       byte x'<hh>'
+      *     <n> is the 1-based record number in 9 digits, <f> is DATE
+      *     or MASK, and <hh> is the field's first line-control byte
+      *     in 2 upper-case hex digits. The field itself is not shown.
+      *     The records before it keep their stdout lines. The adapter
+      *     treats these as harness errors, never as program
+      *     behaviour.
       *   No clock or environment variable is read here, so the output
       *   depends only on DTCIN and on what CSUTLDTC and CEEDAYS return.
       ******************************************************************
@@ -95,6 +110,16 @@
        01  WS-DTC-STATUS               PIC X(2).
        01  WS-EOF-FLAG                 PIC X VALUE 'N'.
            88  DTC-EOF                 VALUE 'Y'.
+       01  WS-REC-NO                   PIC 9(9) VALUE 0.
+
+      *    The field 2100-CHECK-LINE-BYTES scans, its name in the
+      *    diagnostic, and the value of the byte under test.
+       01  WS-CHK-FIELD                PIC X(10).
+       01  WS-CHK-NAME                 PIC X(4).
+       01  WS-CHK-VAL                  PIC S9(4) COMP.
+           88  LINE-CONTROL-BYTE       VALUES 10 THRU 13
+                                              28 THRU 30
+                                              133.
 
        01  WS-IDX                      PIC S9(4) COMP.
        01  WS-HEX-POS                  PIC S9(4) COMP.
@@ -114,6 +139,7 @@
 
            PERFORM 1000-READ-DTCIN
            PERFORM UNTIL DTC-EOF
+               ADD 1 TO WS-REC-NO
                PERFORM 2000-CALL-CSUTLDTC
                PERFORM 1000-READ-DTCIN
            END-PERFORM
@@ -147,6 +173,13 @@
            MOVE DTC-MASK TO WS-MASK
            MOVE SPACES   TO WS-RESULT
 
+           MOVE 'DATE'  TO WS-CHK-NAME
+           MOVE WS-DATE TO WS-CHK-FIELD
+           PERFORM 2100-CHECK-LINE-BYTES
+           MOVE 'MASK'  TO WS-CHK-NAME
+           MOVE WS-MASK TO WS-CHK-FIELD
+           PERFORM 2100-CHECK-LINE-BYTES
+
       *    ON EXCEPTION only catches a CSUTLDTC that cannot be loaded.
       *    Without it libcob ends the run with exit status 1, which
       *    would read as a return code; the CARDDEMO-DTCDRV line and
@@ -167,6 +200,27 @@
                    ' RC=' WS-RC-DISP
                    ' RESULT=' WS-PRINT
                    ' HEX=' WS-HEX.
+
+       2100-CHECK-LINE-BYTES.
+      *    A line-control byte in the date or the mask would split the
+      *    record's stdout line, so the record is refused before the
+      *    CALL. The diagnostic names the byte and never shows the
+      *    field.
+           PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > 10
+               COMPUTE WS-CHK-VAL =
+                       FUNCTION ORD(WS-CHK-FIELD(WS-IDX:1)) - 1
+               IF LINE-CONTROL-BYTE
+                   DIVIDE WS-CHK-VAL BY 16
+                       GIVING WS-HI-NIBBLE REMAINDER WS-LO-NIBBLE
+                   DISPLAY 'CARDDEMO-DTCDRV DTCIN record ' WS-REC-NO
+                           ' ' WS-CHK-NAME
+                           ' holds line-control byte x'''
+                           WS-HEX-DIGITS(WS-HI-NIBBLE + 1:1)
+                           WS-HEX-DIGITS(WS-LO-NIBBLE + 1:1)
+                           '''' UPON SYSERR
+                   PERFORM 9000-CLOSE-AND-FAIL
+               END-IF
+           END-PERFORM.
 
        3000-RENDER-RESULT.
            PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > 80

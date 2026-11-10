@@ -30,7 +30,7 @@ selector_keys:
 gaps:
 - gap_id: GAP-DEF-001
   category: suspected-defect
-  unknown: Every CB* abend path ends in 9999-ABEND-PROGRAM, which moves 0 to TIMING and 999 to ABCODE and then issues CALL 'CEE3ABD' with no parameters [app/cbl/CBTRN02C.cbl:707-711]; CBACT01C-03C, CBCUS01C, CBTRN01C, CBTRN03C, CBACT04C and CBSTM03A end the same way (for example [app/cbl/CBACT01C.cbl:169-173]). Whether an abend code, dump or condition handling was intended is unknown; the abend is pinned as observed.
+  unknown: Every CB* abend path ends in 9999-ABEND-PROGRAM (Z-ABEND-PROGRAM in CBCUS01C and CBTRN01C), which issues CALL 'CEE3ABD' with no parameters [app/cbl/CBTRN02C.cbl:707-711]. CBACT01C-04C, CBCUS01C and CBTRN01C-03C first move 0 to TIMING and 999 to ABCODE (for example [app/cbl/CBACT01C.cbl:169-173] [app/cbl/CBCUS01C.cbl:154-158]); CBSTM03A displays 'ABENDING PROGRAM' and calls CEE3ABD with neither MOVE, and declares no TIMING or ABCODE field [app/cbl/CBSTM03A.CBL:921-923]. Whether an abend code, dump or condition handling was intended is unknown; the abend is pinned as observed.
   affected_inventory_ids:
   - INV-DAT-029
   - INV-DAT-030

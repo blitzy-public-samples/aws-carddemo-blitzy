@@ -53,7 +53,10 @@
  *   it per subprocess from the scenario parameter ceedays_feedback, so
  *   that every branch of CSUTLDTC's token mapping runs. Any other value,
  *   the empty string included, is a harness misconfiguration: the stub
- *   writes one diagnostic line to stderr and exits 70 (EX_SOFTWARE).
+ *   writes one diagnostic line to stderr and exits 70 (EX_SOFTWARE). The
+ *   line shows the rejected value with each backslash written as \\ and
+ *   each byte outside 0x20..0x7E as \xHH (upper-case hex), so it is always
+ *   a single line and the value can be recovered from it.
  *
  * Limitations
  *   - GAP-STB-002: only the two pictures the callers pass are supported.
@@ -303,6 +306,24 @@ static int parse_injection(const char *value, unsigned *msg)
     return 1;
 }
 
+/* Writes value to stream reversibly and without line breaks: a byte in
+ * 0x20..0x7E other than backslash as itself, a backslash as \\, and every
+ * other byte as \x followed by two upper-case hex digits. */
+static void put_escaped(FILE *stream, const char *value)
+{
+    const unsigned char *p;
+
+    for (p = (const unsigned char *)value; *p != '\0'; p++) {
+        if (*p == '\\') {
+            fputs("\\\\", stream);
+        } else if (*p >= 0x20 && *p <= 0x7E) {
+            fputc(*p, stream);
+        } else {
+            fprintf(stream, "\\x%02X", (unsigned)*p);
+        }
+    }
+}
+
 static void put_valid(unsigned char *lilian, unsigned char *fc,
                       long long day_number)
 {
@@ -336,8 +357,9 @@ int CEEDAYS(unsigned char *date_vstr, unsigned char *pic_vstr,
 
     if (injected != NULL) {
         if (!parse_injection(injected, &msg)) {
-            fprintf(stderr, "CARDDEMO-CEEDAYS invalid %s '%s'\n",
-                    FEEDBACK_ENV, injected);
+            fprintf(stderr, "CARDDEMO-CEEDAYS invalid %s '", FEEDBACK_ENV);
+            put_escaped(stderr, injected);
+            fputs("'\n", stderr);
             fflush(stderr);
             exit(EXIT_BAD_INJECTION);
         }
