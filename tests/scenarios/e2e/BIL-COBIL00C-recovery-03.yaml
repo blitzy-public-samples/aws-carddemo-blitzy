@@ -1,0 +1,205 @@
+# COBIL00C cannot look up the account's card through the CXACAIX path while that
+# region file is out of service, yet it records the payment and reports it as
+# successful.
+#
+# Step 1: USER0001 signs on through CC00; COSGN00C routes the type 'U' user to
+# COMEN01C, which sends the main menu COMEN01 headed CM00/COMEN01C
+# [app/cbl/COSGN00C.cbl:221-239] [app/cbl/COMEN01C.cbl:82-90].
+# Step 2: option '10' is 'Bill Payment', program COBIL00C [app/cpy/COMEN02Y.cpy:80-84].
+# COMEN01C transfers control (XCTL) to COBIL00C [app/cbl/COMEN01C.cbl:115-156],
+# which, entered without CDEMO-PGM-REENTER and with no transaction selected,
+# moves LOW-VALUES to COBIL0AO and sends COBIL00 with its header and a blank
+# message [app/cbl/COBIL00C.cbl:107-122,289-338].
+# Step 3: ENTER with Acct ID 00000000001 and CONFIRM Y, under CB00:
+# - READ ACCTDAT with UPDATE is NORMAL; the balance 194.00 is above zero, so the
+#   payment proceeds [app/cbl/COBIL00C.cbl:170-206,343-372].
+# - READ CXACAIX by account answers neither NORMAL nor NOTFND, so WHEN OTHER
+#   DISPLAYs RESP and RESP2 to the region log (not asserted), sets the error
+#   flag, moves 'Unable to lookup XREF AIX file...' to WS-MESSAGE, puts the
+#   cursor on ACTIDIN and sends COBIL00 with ERASE [app/cbl/COBIL00C.cbl:408-436].
+# - The pay block tests no flag after that read [app/cbl/COBIL00C.cbl:208-244]:
+#   STARTBR TRANSACT at HIGH-VALUES and READPREV return the highest key,
+#   0000000996722787, and the payment record is built with TRAN-ID
+#   0000000996722788 and TRAN-AMT 194.00. TRAN-CARD-NUM is moved from
+#   XREF-CARD-NUM, which the failed READ INTO left as working storage began
+#   [app/cbl/COBIL00C.cbl:212-232] [app/cpy/CVACT03Y.cpy:4-5].
+# - The WRITE is NORMAL: INITIALIZE-ALL-FIELDS blanks ACTIDIN, CURBAL, CONFIRM
+#   and WS-MESSAGE, and STRING composes 'Payment successful.  Your Transaction
+#   ID is 0000000996722788.' into WS-MESSAGE, replacing the lookup failure, and
+#   COBIL00 is sent [app/cbl/COBIL00C.cbl:510-532,560-566].
+# - ACCT-CURR-BAL becomes 0.00 and the REWRITE of the record the READ UPDATE
+#   holds is NORMAL; COBIL00 is sent once more with the payment message, and
+#   the task ends with RETURN TRANSID CB00 [app/cbl/COBIL00C.cbl:233-242,377-403,146-149].
+# Every send erases the screen, so the capture after step 3 holds the last one;
+# the lookup failure is never on the screen the keyboard unlocks with.
+#
+# Expected values are derived from the source (no TPE region runs in CI). Text
+# values keep their full BMS field width with trailing spaces: ERRMSG is the
+# first 78 bytes of the 80-byte WS-MESSAGE. CURDATE, CURTIME and the payment's
+# timestamps come from the run clock, hence the matchers and clock_mode relative.
+id: BIL-COBIL00C-recovery-03
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, chooses main-menu option 10 (Bill Payment) and confirms
+  the payment of account 00000000001's balance of 194.00 with CONFIRM Y while
+  the region file CXACAIX, the cross-reference path by account, is
+  unavailable. COBIL00C sends 'Unable to lookup XREF AIX file...', but its pay
+  block goes on without testing the error flag: the WRITE of payment
+  0000000996722788 succeeds, its message 'Payment successful.  Your
+  Transaction ID is 0000000996722788.' overwrites the lookup failure on the
+  last COBIL00 screen, and the account is rewritten with a balance of 0.00.
+  The card number of the payment is XREF-CARD-NUM as working storage began,
+  never read: LOW-VALUES under the UniKix copy's -dv=0 compile option,
+  unpredictable on Enterprise COBOL. The card-less payment and the overwritten
+  message are pinned observed-only; GAP-UNC-019 asks whether the payment is
+  meant to go on and which card number it is meant to carry.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the CSD files COBIL00C reads, browses, writes and
+# rewrites, and the online-only copybooks it copies. Sign-on and the menu
+# option (CC00, CM00, COSGN00, USRSEC) are verified by the SEC and MNU
+# scenarios; the batch record copybooks (CVACT01Y, CVACT03Y, CVTRA05Y) and the
+# data files are verified at the lowest level that executes them.
+inventory_ids:
+- INV-BIL-011  # COBIL00C message 'Unable to lookup XREF AIX file...' (recovery)
+- INV-BIL-001  # COBIL00C program
+- INV-MNU-003  # COMEN01 map, where option 10 is entered
+- INV-BIL-002  # COBIL00 map, the bill payment screen of steps 2 and 3
+- INV-CFG-012  # CB00 transaction, under which COBIL00C receives the payment
+- INV-CFG-001  # ACCTDAT CSD file: read for update and rewritten
+- INV-CFG-006  # CXACAIX CSD file: the cross-reference read that fails
+- INV-CFG-007  # TRANSACT CSD file: browsed backwards and written
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE, CURTIME and the WS-TIMESTAMP of the payment
+- INV-LAY-008  # CSMSG01Y, copied by COBIL00C
+tags:
+- inferred-not-observed
+- observed-only
+# The observed-only question is registered as GAP-UNC-019, its own
+# uncertain-purpose entry: GAP-UNC-013 asks about code that never runs, and
+# this path runs.
+gap_ids:
+- GAP-INF-008  # bill payment (BIL) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to put CXACAIX out of service
+- GAP-UNC-019  # the payment goes on after the failed CXACAIX read, with an unread card number
+preconditions:
+  datasets:
+    # COSGN00C reads USER0001 from the 10 repository users.
+    USRSEC: {base: USRSEC}
+    # Account 00000000001 is the first of the 50 repository accounts, with a
+    # balance of 194.00.
+    ACCTDATA: {base: ACCTDATA}
+    # The region's CCXREF file and its CXACAIX path; the account's record
+    # exists, so only the path's availability fails.
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT is a built dataset with no repository data of its own, so the
+    # schema refuses it as a base: it is loaded from the repository's 300 daily
+    # transactions (the same 350-byte shape as TRAN-RECORD), whose highest key
+    # is 0000000996722787.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  # No `after`: the unikix adapter applies an online fault after the sign-on
+  # step, and the READ of step 3 is the scenario's only CXACAIX request. An
+  # adapter without a confirmed region file control raises
+  # MissingPrerequisite under GAP-MIS-011.
+  faults:
+  - target: CXACAIX
+    operation: read
+    condition: unavailable
+# PASSWORD is the README's documented demo password, not a secret: the scenario
+# schema accepts no other sign-on password.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '10'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACTIDIN: '00000000001', CONFIRM: 'Y'}
+    '@map': COBIL00
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN010: '10. Bill Payment                        '
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: CB00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COBIL00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CURBAL: '              '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  # The last send of step 3: INITIALIZE-ALL-FIELDS blanked the entered fields,
+  # and the payment message has replaced 'Unable to lookup XREF AIX file...'.
+  - '@map': COBIL00
+    TRNNAME: CB00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COBIL00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CURBAL: '              '
+    CONFIRM: ' '
+    ERRMSG: 'Payment successful.  Your Transaction ID is 0000000996722788.                 '
+  # The ERRMSG value of each step: blank on the menu and on the first COBIL00
+  # send, then the payment message.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Payment successful.  Your Transaction ID is 0000000996722788.                 '
+  file_state:
+    # The 300 fixture records and the payment, keyed one above the highest of
+    # them. TRAN-CARD-NUM is pinned as sixteen LOW-VALUES, written as YAML "\0"
+    # escapes: XREF-CARD-NUM is never read, and the UniKix copy is compiled
+    # with -dv=0 [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:bin/compile:21],
+    # which starts working storage without a VALUE clause as LOW-VALUES
+    # (GAP-UNC-019). The timestamps are WS-TIMESTAMP: the FORMATTIME date and
+    # time with CSDAT01Y's separators and zero microseconds [app/cbl/COBIL00C.cbl:249-267]
+    # [app/cpy/CSDAT01Y.cpy:42-55].
+    TRANSACT:
+      count: 301
+      contains:
+      - TRAN-ID: '0000000996722788'
+        TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '2'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'BILL PAYMENT - ONLINE                                                                               '
+        TRAN-AMT: '194.00'
+        TRAN-MERCHANT-ID: '999999999'
+        TRAN-MERCHANT-NAME: 'BILL PAYMENT                                      '
+        TRAN-MERCHANT-CITY: 'N/A                                               '
+        TRAN-MERCHANT-ZIP: 'N/A       '
+        TRAN-CARD-NUM: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-ORIG-TS: {match: run-timestamp, format: '%Y-%m-%d %H:%M:%S.000000'}
+        TRAN-PROC-TS: {match: run-timestamp, format: '%Y-%m-%d %H:%M:%S.000000'}
+    # Account 00000000001 as rewritten after the payment: ACCT-CURR-BAL reduced
+    # by the 194.00 payment amount to 0.00, every other field as loaded; the
+    # other 49 accounts are untouched.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '0.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: 'A000000000'
+        ACCT-GROUP-ID: '          '

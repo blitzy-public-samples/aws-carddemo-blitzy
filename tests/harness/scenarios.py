@@ -50,12 +50,13 @@ Schema (``validate`` is the authority; every key not listed here is refused)
     ordered list of them run against one catalog) and ``steps`` (e2e level;
     ``[{transid?, aid, fields?, session?, '@map'?}]`` where ``@map`` is the map
     expected before the fields are entered). A field value is text, or a
-    run-date input ``{run-date: {part: year|month|day, offset_days?: <days>}}``
-    (``RUN_DATE_INPUT``, only with ``clock_mode: relative``) for input whose
-    outcome depends on its relation to the run date: the adapter types that
-    part of the run date plus ``offset_days`` days, zero-padded
-    (``input_text``). Batch inputs may add ``param_files``: logical name ->
-    list of record lines.
+    run-date input ``{run-date: {part?: year|month|day, format?: <strftime>,
+    offset_days?: <days>}}`` (``RUN_DATE_INPUT``, only with ``clock_mode:
+    relative``) for input whose outcome depends on its relation to the run
+    date: the adapter types the run date plus ``offset_days`` days, either
+    one part of it as zero-padded digits or in ``format`` (default
+    ``%Y-%m-%d``) (``input_text``). Batch inputs may add ``param_files``:
+    logical name -> list of record lines.
 ``expected``
     ``return_code`` (integer, ``null`` for an abend, or ``baseline``),
     ``messages`` (list of text, or ``baseline``), ``reject_reason_codes``
@@ -77,7 +78,11 @@ Schema (``validate`` is the authority; every key not listed here is refused)
 Matchers (``{match: <kind>, ...}``, ``MATCH_KINDS``) stand only for values that
 come from a clock the adapter cannot fix, so they need ``clock_mode: relative``.
 A line of a line observation may itself be a matcher whose ``format`` holds the
-whole line around the date. Platform names (DSNs, ``DD_`` mappings, host:port
+whole line around the date. Run-date inputs (``RUN_DATE_INPUT``,
+``input_text``) need ``clock_mode: relative`` too: they are how a step
+enters a date that only has meaning against the run date, such as the day
+before it, and the expected screens assert its echo with the run-date matcher
+of the same offset and format. Platform names (DSNs, ``DD_`` mappings, host:port
 addresses, absolute paths) never appear under ``preconditions``, ``inputs`` or
 ``expected``, except inside the ``@CATALOG`` and ``@TDQ:JOBS`` observations,
 whose lines are catalog entries and job JCL as the platform reports them. Sign-on steps use only the
@@ -149,6 +154,7 @@ __all__ = [
     "MATCH_KINDS",
     "RESERVED_OBSERVATIONS",
     "RUN_DATE_INPUT",
+    "RUN_DATE_INPUT_DEFAULT_FORMAT",
     "RUN_DATE_INPUT_PARTS",
     "Scenario",
     "ScenarioError",
@@ -247,13 +253,19 @@ MATCH_KINDS = {
 
 # A step field value standing for a date relative to the run date, the input
 # counterpart of a run-date matcher: an outcome that hinges on the typed date's
-# relation to the run date (a date of birth equal to it is refused) cannot be
-# written as fixed text while unikix cannot fix its clock (GAP-MIS-015).
-# {run-date: {part: <part>, offset_days?: <days>}} types the part of the run
-# date plus offset_days days as zero-padded digits of the given width.
+# relation to the run date (a date of birth equal to it is refused, the day
+# before it accepted) cannot be written as fixed text while unikix cannot fix
+# its clock (GAP-MIS-015), so like a matcher it needs clock_mode: relative.
+# {run-date: {part?: <part>, format?: <strftime>, offset_days?: <days>}} types
+# the run date plus offset_days days: with part, that part as zero-padded
+# digits of the given width; otherwise in format (default %Y-%m-%d), which
+# holds only the numeric date directives, so the text typed is the same under
+# every locale. part and format exclude each other.
 RUN_DATE_INPUT = "run-date"
 RUN_DATE_INPUT_PARTS = {"year": 4, "month": 2, "day": 2}
-_RUN_DATE_INPUT_KEYS = frozenset({"part", "offset_days"})
+RUN_DATE_INPUT_DEFAULT_FORMAT = "%Y-%m-%d"
+_RUN_DATE_INPUT_KEYS = frozenset({"part", "format", "offset_days"})
+_RUN_DATE_INPUT_DIRECTIVES = frozenset("Ymdyj%")
 
 # Sign-on: only the demo users the README documents, against a local region.
 SIGN_ON_MAP = "COSGN00"
@@ -1061,10 +1073,13 @@ def is_run_date_input(value: Any) -> bool:
 
 
 def run_date_input_problem(value: Any) -> str | None:
-    """Why ``value`` is not a valid run-date input
-    ``{run-date: {part: year|month|day, offset_days?: <days>}}``, or ``None``
+    """Why ``value`` is not a valid run-date input ``{run-date: {part?:
+    year|month|day, format?: <strftime>, offset_days?: <days>}}``, or ``None``
     when it is one."""
-    shape = f"{{{RUN_DATE_INPUT}: {{part: {'|'.join(RUN_DATE_INPUT_PARTS)}, offset_days?: <days>}}}}"
+    shape = (
+        f"{{{RUN_DATE_INPUT}: {{part?: {'|'.join(RUN_DATE_INPUT_PARTS)}, format?: <strftime>, "
+        "offset_days?: <days>}}"
+    )
     if not isinstance(value, dict) or list(value) != [RUN_DATE_INPUT]:
         return f"must be text, or a run-date input {shape}"
     spec = value[RUN_DATE_INPUT]
@@ -1072,9 +1087,21 @@ def run_date_input_problem(value: Any) -> str | None:
         return f"must be a run-date input {shape}"
     unknown = sorted(str(key) for key in spec if key not in _RUN_DATE_INPUT_KEYS)
     if unknown:
-        return f"has unknown run-date key(s) {', '.join(unknown)}; allowed: offset_days, part"
-    if not _member(spec.get("part"), RUN_DATE_INPUT_PARTS):
-        return f"part {spec.get('part')!r} is not one of {', '.join(RUN_DATE_INPUT_PARTS)}"
+        return (
+            f"has unknown run-date key(s) {', '.join(unknown)}; "
+            f"allowed: {', '.join(sorted(_RUN_DATE_INPUT_KEYS))}"
+        )
+    if "part" in spec and "format" in spec:
+        return "takes part or format, not both"
+    if "part" in spec and not _member(spec["part"], RUN_DATE_INPUT_PARTS):
+        return f"part {spec['part']!r} is not one of {', '.join(RUN_DATE_INPUT_PARTS)}"
+    if "format" in spec:
+        fmt = spec["format"]
+        if not isinstance(fmt, str) or not fmt:
+            return "format must be a strftime format"
+        for directive in re.findall(r"%(.?)", fmt):
+            if directive not in _RUN_DATE_INPUT_DIRECTIVES:
+                return f"format {fmt!r} may hold only the directives %Y %m %d %y %j and %%"
     if "offset_days" in spec and not _is_int(spec["offset_days"]):
         return "offset_days must be a whole number of days"
     return None
@@ -1082,8 +1109,9 @@ def run_date_input_problem(value: Any) -> str | None:
 
 def input_text(value: Any, run_date: _dt.date) -> str:
     """The text a step field value types: text as it stands, and for a
-    run-date input the part of ``run_date`` plus ``offset_days`` days, as
-    zero-padded digits (``RUN_DATE_INPUT_PARTS`` gives the width). Raises
+    run-date input ``run_date`` plus ``offset_days`` days, as its ``part`` in
+    zero-padded digits (``RUN_DATE_INPUT_PARTS`` gives the width) or in
+    ``format`` (default ``RUN_DATE_INPUT_DEFAULT_FORMAT``). Raises
     ``HarnessError`` for any other value or a date out of range."""
     if isinstance(value, str):
         return value
@@ -1097,7 +1125,9 @@ def input_text(value: Any, run_date: _dt.date) -> str:
         raise HarnessError(
             f"run-date input {value!r}: {run_date} plus the offset is out of range"
         ) from exc
-    return f"{getattr(day, spec['part']):0{RUN_DATE_INPUT_PARTS[spec['part']]}d}"
+    if "part" in spec:
+        return f"{getattr(day, spec['part']):0{RUN_DATE_INPUT_PARTS[spec['part']]}d}"
+    return day.strftime(spec.get("format", RUN_DATE_INPUT_DEFAULT_FORMAT))
 
 
 def _natural_key(text: str) -> tuple:
@@ -1800,11 +1830,14 @@ def _check_sign_on(s: Scenario, problems: _Problems, where: str, fields: dict) -
     # and PASSWD fields, holding the user record being maintained (TESTU001), so
     # the demo-user rule applies to steps entering CC00 (always on COSGN00,
     # whatever @map they declare), to steps entered on COSGN00, and to steps
-    # whose input map is unknown. A blank user id signs nobody on.
+    # whose input map is unknown. A blank user id signs nobody on. A value that
+    # is not text is reported by _check_steps, except a run-date input,
+    # which is well formed there but is no demo user.
     if "USERID" in fields:
         user = fields["USERID"]
         allowed = (
-            not isinstance(user, str) or not user.strip() or user in SIGN_ON_USERS
+            (not isinstance(user, str) and not is_run_date_input(user))
+            or (isinstance(user, str) and not user.strip()) or user in SIGN_ON_USERS
             or (user == INVENTED_USER and s.id == INVENTED_USER_SCENARIO)
         )
         if not allowed:

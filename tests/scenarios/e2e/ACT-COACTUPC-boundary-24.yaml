@@ -10,9 +10,10 @@
 # harness/scenarios.py RUN_DATE_INPUT), not fixed text: the outcome hinges on
 # equality with the region's date, which unikix cannot fix (GAP-MIS-015), and a
 # fixed date would pin a different case on every later day. The tpe adapter
-# types the year, month and day of the CURDATE shown on screen 3, the date of
-# the task that sent the screen; a run that crosses midnight between that send
-# and the step-4 ENTER would type the day before instead.
+# types the year, month and day of the run date, the CURDATE of the first
+# step's screen, which the run-date matchers of screen 4 are judged against
+# too; a run that crosses midnight between that screen and the step-4 ENTER
+# would type the day before the region's date instead.
 #
 # Steps 1-3 sign on as USER0001, choose main-menu option 2 and fetch account
 # 00000000001, as ACT-COACTUPC-alternate-04 does: CXACAIX gives customer
@@ -195,7 +196,7 @@ inputs:
     '@map': COACTUP
     fields:
       ACCTSID: '00000000001'
-  # The run date itself (offset 0), typed from the CURDATE of screen 3.
+  # The run date itself (offset 0), typed from the CURDATE of the first step's screen.
   - aid: ENTER
     '@map': COACTUP
     fields:
