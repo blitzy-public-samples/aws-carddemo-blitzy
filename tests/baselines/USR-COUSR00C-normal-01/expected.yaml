@@ -1,0 +1,86 @@
+# Derived baseline of USR-COUSR00C-normal-01: ADMIN001 signs on, takes admin
+# option 1 and gets the first page of the user list. Not observed; authored
+# from app/cbl/COSGN00C.cbl:211-237 (type-A XCTL to COADM01C),
+# app/cbl/COADM01C.cbl:75-145,168-260 with app/bms/COADM01.bms and
+# app/cpy/COADM02Y.cpy (first-entry menu, option 1 -> COUSR00C),
+# app/cbl/COUSR00C.cbl:110-119,149-232,282-331,384-441,522-640 with
+# app/bms/COUSR00.bms, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy and the
+# USRSEC fixture (app/data/EBCDIC/AWS.M2.CARDDEMO.USRSEC.PS decoded as cp037:
+# the 10 DUSRSECJ users in key order). The tenth READNEXT fills row 10, the page number becomes 1 and
+# the look-ahead READNEXT meets end of file, leaving the bottom-of-page message
+# in ERRMSG for every later send of the task. Only report.py --import-unikix
+# replaces it with an observed outcome: GAP-INF-004 (derived USR end-to-end
+# baselines) and GAP-INF-012 (online-only copybooks). One screen per step;
+# values are whole fields at their BMS length, trailing spaces kept; CURDATE
+# and CURTIME come from the region clock and are matchers. Canonical
+# harness.dump_yaml layout.
+screens:
+- '@map': COADM01
+  ERRMSG: '                                                                              '
+  OPTION: '  '
+  OPTN001: '01. User List (Security)                '
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'You have reached the bottom of the page...                                    '
+  FNAME01: 'MARGARET            '
+  FNAME02: 'RUSSELL             '
+  FNAME03: 'RAYMOND             '
+  FNAME04: 'EMMANUEL            '
+  FNAME05: 'GRANVILLE           '
+  FNAME06: 'LAWRENCE            '
+  FNAME07: 'AJITH               '
+  FNAME08: 'LAURITZ             '
+  FNAME09: 'AVERARDO            '
+  FNAME10: 'LEE                 '
+  LNAME01: 'GOLD                '
+  LNAME02: 'RUSSELL             '
+  LNAME03: 'WHITMORE            '
+  LNAME04: 'CASGRAIN            '
+  LNAME05: 'LACHAPELLE          '
+  LNAME06: 'THOMAS              '
+  LNAME07: 'KUMAR               '
+  LNAME08: 'ALME                '
+  LNAME09: 'MAZZI               '
+  LNAME10: 'TING                '
+  PAGENUM: '00000001'
+  PGMNAME: COUSR00C
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU00
+  USRID01: ADMIN001
+  USRID02: ADMIN002
+  USRID03: ADMIN003
+  USRID04: ADMIN004
+  USRID05: ADMIN005
+  USRID06: USER0001
+  USRID07: USER0002
+  USRID08: USER0003
+  USRID09: USER0004
+  USRID10: USER0005
+  USRIDIN: '        '
+  UTYPE01: A
+  UTYPE02: A
+  UTYPE03: A
+  UTYPE04: A
+  UTYPE05: A
+  UTYPE06: U
+  UTYPE07: U
+  UTYPE08: U
+  UTYPE09: U
+  UTYPE10: U

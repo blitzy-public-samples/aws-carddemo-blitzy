@@ -1,0 +1,21 @@
+# Derived baseline of SEC-COSGN00C-alternate-01. Only unikix can run the
+# scenario, so expected.yaml is authored from the source and is
+# inferred-not-observed (GAP-INF-002, GAP-INF-012). It names no execution_id or
+# execution_fingerprint and holds no datasets/ until an eligible UniKix run is
+# imported (report.py --import-unikix).
+#
+# source_identity.units are the app/ sources the expected screen is derived
+# from: the PF3 path's SEND TEXT ... ERASE in COSGN00C
+# [app/cbl/COSGN00C.cbl:85-90,160-172] and the CCDA-MSG-THANK-YOU text it sends
+# [app/cpy/CSMSG01Y.cpy:18-19]. An e2e run has no program COPY closure in
+# harness.results, so no other unit is listed.
+baseline_version: 1.0.0
+capture_date: '2026-11-10'
+capture_platform: derived
+source_commit: 5be63e4b5432fd02cccb27f0c4bf8b7aac51ed40
+source_identity:
+  commit: 5be63e4b5432fd02cccb27f0c4bf8b7aac51ed40
+  tree: app
+  units:
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda

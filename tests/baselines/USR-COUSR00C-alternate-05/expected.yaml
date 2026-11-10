@@ -1,0 +1,199 @@
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'You have reached the bottom of the page...                                    '
+- 'You have reached the top of the page...                                       '
+screens:
+- '@map': COADM01
+  ERRMSG: '                                                                              '
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  FNAME01: 'MARGARET            '
+  FNAME02: 'RUSSELL             '
+  FNAME03: 'RAYMOND             '
+  FNAME04: 'EMMANUEL            '
+  FNAME05: 'GRANVILLE           '
+  FNAME06: 'TESTFIRST           '
+  FNAME07: 'LAWRENCE            '
+  FNAME08: 'AJITH               '
+  FNAME09: 'LAURITZ             '
+  FNAME10: 'AVERARDO            '
+  LNAME01: 'GOLD                '
+  LNAME02: 'RUSSELL             '
+  LNAME03: 'WHITMORE            '
+  LNAME04: 'CASGRAIN            '
+  LNAME05: 'LACHAPELLE          '
+  LNAME06: 'TESTLAST            '
+  LNAME07: 'THOMAS              '
+  LNAME08: 'KUMAR               '
+  LNAME09: 'ALME                '
+  LNAME10: 'MAZZI               '
+  PAGENUM: '00000001'
+  PGMNAME: COUSR00C
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU00
+  USRID01: ADMIN001
+  USRID02: ADMIN002
+  USRID03: ADMIN003
+  USRID04: ADMIN004
+  USRID05: ADMIN005
+  USRID06: TESTU003
+  USRID07: USER0001
+  USRID08: USER0002
+  USRID09: USER0003
+  USRID10: USER0004
+  USRIDIN: '        '
+  UTYPE01: A
+  UTYPE02: A
+  UTYPE03: A
+  UTYPE04: A
+  UTYPE05: A
+  UTYPE06: U
+  UTYPE07: U
+  UTYPE08: U
+  UTYPE09: U
+  UTYPE10: U
+- '@map': COUSR00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'You have reached the bottom of the page...                                    '
+  FNAME01: 'LEE                 '
+  FNAME02: '                    '
+  FNAME03: '                    '
+  FNAME04: '                    '
+  FNAME05: '                    '
+  FNAME06: '                    '
+  FNAME07: '                    '
+  FNAME08: '                    '
+  FNAME09: '                    '
+  FNAME10: '                    '
+  LNAME01: 'TING                '
+  LNAME02: '                    '
+  LNAME03: '                    '
+  LNAME04: '                    '
+  LNAME05: '                    '
+  LNAME06: '                    '
+  LNAME07: '                    '
+  LNAME08: '                    '
+  LNAME09: '                    '
+  LNAME10: '                    '
+  PAGENUM: '00000002'
+  PGMNAME: COUSR00C
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU00
+  USRID01: USER0005
+  USRID02: '        '
+  USRID03: '        '
+  USRID04: '        '
+  USRID05: '        '
+  USRID06: '        '
+  USRID07: '        '
+  USRID08: '        '
+  USRID09: '        '
+  USRID10: '        '
+  USRIDIN: '        '
+  UTYPE01: U
+  UTYPE02: ' '
+  UTYPE03: ' '
+  UTYPE04: ' '
+  UTYPE05: ' '
+  UTYPE06: ' '
+  UTYPE07: ' '
+  UTYPE08: ' '
+  UTYPE09: ' '
+  UTYPE10: ' '
+- '@map': COUSR00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'You have reached the top of the page...                                       '
+  FNAME01: 'MARGARET            '
+  FNAME02: 'RUSSELL             '
+  FNAME03: 'RAYMOND             '
+  FNAME04: 'EMMANUEL            '
+  FNAME05: 'GRANVILLE           '
+  FNAME06: 'TESTFIRST           '
+  FNAME07: 'LAWRENCE            '
+  FNAME08: 'AJITH               '
+  FNAME09: 'LAURITZ             '
+  FNAME10: 'AVERARDO            '
+  LNAME01: 'GOLD                '
+  LNAME02: 'RUSSELL             '
+  LNAME03: 'WHITMORE            '
+  LNAME04: 'CASGRAIN            '
+  LNAME05: 'LACHAPELLE          '
+  LNAME06: 'TESTLAST            '
+  LNAME07: 'THOMAS              '
+  LNAME08: 'KUMAR               '
+  LNAME09: 'ALME                '
+  LNAME10: 'MAZZI               '
+  PAGENUM: '00000001'
+  PGMNAME: COUSR00C
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU00
+  USRID01: ADMIN001
+  USRID02: ADMIN002
+  USRID03: ADMIN003
+  USRID04: ADMIN004
+  USRID05: ADMIN005
+  USRID06: TESTU003
+  USRID07: USER0001
+  USRID08: USER0002
+  USRID09: USER0003
+  USRID10: USER0004
+  USRIDIN: '        '
+  UTYPE01: A
+  UTYPE02: A
+  UTYPE03: A
+  UTYPE04: A
+  UTYPE05: A
+  UTYPE06: U
+  UTYPE07: U
+  UTYPE08: U
+  UTYPE09: U
+  UTYPE10: U

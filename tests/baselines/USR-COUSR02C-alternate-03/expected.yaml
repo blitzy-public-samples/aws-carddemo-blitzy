@@ -1,0 +1,164 @@
+# Derived baseline of scenario USR-COUSR02C-alternate-03 (capture_platform:
+# derived, tag inferred-not-observed): ADMIN001 signs on, takes admin option 3
+# to the empty COUSR02 Update User screen and presses PF3 with nothing typed.
+# Authored from the source at commit 93ebec71ff7b59a68cedd7c501afe496a8eaa68d,
+# never captured. Open until a UniKix run is imported: GAP-INF-004 (derived
+# USR end-to-end baselines) and GAP-INF-012 (online-only copybooks).
+# One screen per step, the one shown after the step's AID; values are full BMS
+# field width with their trailing spaces, and only CURDATE (mm/dd/yy) and
+# CURTIME (hh:mm:ss), built from the run clock [app/cpy/CSDAT01Y.cpy:31-42],
+# are matchers.
+# - Step 1: the type A user is routed to COADM01C
+#   [app/cbl/COSGN00C.cbl:209-237], which sends the cleared admin menu with
+#   ERASE: CA00, COADM01C, the COTTL01Y
+#   titles [app/cpy/COTTL01Y.cpy:18-22] and the four COADM02Y options as
+#   40-byte texts [app/cbl/COADM01C.cbl:86-90,172-263]; the same entry as
+#   SEC-COSGN00C-normal-01.
+# - Step 2: option 3 XCTLs to COUSR02C with CDEMO-FROM-PROGRAM COADM01C and
+#   context 0 [app/cbl/COADM01C.cbl:115-145] [app/cpy/COADM02Y.cpy:34-37]. The
+#   group MOVE of the shorter COMMAREA pads CDEMO-CU02-USR-SELECTED with spaces,
+#   so no user is fetched and COUSR02 is sent cleared with CU02, COUSR02C and a
+#   blank ERRMSG [app/cbl/COUSR02C.cbl:94-105,266-315]. PASSWD is dark and
+#   reads as blanks.
+# - Step 3: PF3 PERFORMs UPDATE-USER-INFO first, which refuses the empty user
+#   id with 'User ID can NOT be empty...' and sends COUSR02, with no USRSEC READ
+#   or REWRITE [app/cbl/COUSR02C.cbl:111-112,177-185,215]. The branch ignores
+#   the error flag and XCTLs to CDEMO-FROM-PROGRAM, COADM01C, with context 0
+#   [app/cbl/COUSR02C.cbl:113-119,250-261], which sends the menu again with
+#   ERASE. The target comes from the COMMAREA, so the sign-on screen never
+#   appears.
+# Caveat: only the final COADM01 send of the PF3 task is pinned; the
+# intermediate COUSR02 error send comes first. If an observed run captures
+# that intermediate screen instead, `report.py --import-unikix` records a
+# MAJOR change under GAP-INF-004; this baseline is never edited by hand.
+# file_state: PF3 with a blank user id writes nothing, so USRSEC holds its 10
+# fixture users in key order, decoded through CSUSR01Y.
+file_state:
+  USRSEC:
+    count: 10
+    records:
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'MARGARET            '
+      SEC-USR-ID: ADMIN001
+      SEC-USR-LNAME: 'GOLD                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'RUSSELL             '
+      SEC-USR-ID: ADMIN002
+      SEC-USR-LNAME: 'RUSSELL             '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'RAYMOND             '
+      SEC-USR-ID: ADMIN003
+      SEC-USR-LNAME: 'WHITMORE            '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'EMMANUEL            '
+      SEC-USR-ID: ADMIN004
+      SEC-USR-LNAME: 'CASGRAIN            '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'GRANVILLE           '
+      SEC-USR-ID: ADMIN005
+      SEC-USR-LNAME: 'LACHAPELLE          '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LAWRENCE            '
+      SEC-USR-ID: USER0001
+      SEC-USR-LNAME: 'THOMAS              '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'AJITH               '
+      SEC-USR-ID: USER0002
+      SEC-USR-LNAME: 'KUMAR               '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LAURITZ             '
+      SEC-USR-ID: USER0003
+      SEC-USR-LNAME: 'ALME                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'AVERARDO            '
+      SEC-USR-ID: USER0004
+      SEC-USR-LNAME: 'MAZZI               '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LEE                 '
+      SEC-USR-ID: USER0005
+      SEC-USR-LNAME: 'TING                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+screens:
+- '@map': COADM01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTION: '  '
+  OPTN001: '01. User List (Security)                '
+  OPTN002: '02. User Add (Security)                 '
+  OPTN003: '03. User Update (Security)              '
+  OPTN004: '04. User Delete (Security)              '
+  OPTN005: '                                        '
+  OPTN006: '                                        '
+  OPTN007: '                                        '
+  OPTN008: '                                        '
+  OPTN009: '                                        '
+  OPTN010: '                                        '
+  OPTN011: '                                        '
+  OPTN012: '                                        '
+  PGMNAME: COADM01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CA00
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  FNAME: '                    '
+  LNAME: '                    '
+  PASSWD: '        '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: '        '
+  USRTYPE: ' '
+- '@map': COADM01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTION: '  '
+  OPTN001: '01. User List (Security)                '
+  OPTN002: '02. User Add (Security)                 '
+  OPTN003: '03. User Update (Security)              '
+  OPTN004: '04. User Delete (Security)              '
+  OPTN005: '                                        '
+  OPTN006: '                                        '
+  OPTN007: '                                        '
+  OPTN008: '                                        '
+  OPTN009: '                                        '
+  OPTN010: '                                        '
+  OPTN011: '                                        '
+  OPTN012: '                                        '
+  PGMNAME: COADM01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CA00
