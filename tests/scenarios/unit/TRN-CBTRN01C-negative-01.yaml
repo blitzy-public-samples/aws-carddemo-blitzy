@@ -1,0 +1,78 @@
+# The skip rule of CBTRN01C for a card the cross-reference does not hold: the
+# XREF READ takes INVALID KEY, so the program displays 'INVALID CARD NUMBER FOR
+# XREF' and the skip line, and never reads the account
+# [app/cbl/CBTRN01C.cbl:170-184,227-239]. The one daily record carries the
+# invented card 9999000011110001, which matches no card of app/data. The second
+# pair of lines comes from the lookup the loop repeats after the read that sets
+# end of file, with the last record still in DALYTRAN-RECORD
+# [app/cbl/CBTRN01C.cbl:164-186]; that duplicate belongs to the per-record
+# display item and its GAP-DEF-006, which this scenario neither lists nor tags.
+# The record line is the whole 350-byte DALYTRAN-RECORD that DISPLAY writes, its
+# trailing spaces included.
+id: TRN-CBTRN01C-negative-01
+level: unit
+type: negative
+description: >-
+  CBTRN01C reads one daily transaction whose card is absent from the card
+  cross-reference: it displays the record, 'INVALID CARD NUMBER FOR XREF' and
+  'CARD NUMBER ... COULD NOT BE VERIFIED. SKIPPING TRANSACTION ID-...', makes no
+  account lookup, repeats the lookup lines once after end of file and ends with
+  return code 0.
+inventory_ids:
+- INV-TRN-070
+- INV-TRN-007
+- INV-DTA-003
+- INV-DTA-013
+- INV-DTA-001
+- INV-DTA-011
+- INV-DTA-004
+- INV-DTA-014
+- INV-DTA-002
+- INV-DTA-012
+tags: []
+gap_ids:
+- GAP-UNC-003
+- GAP-STB-010
+- GAP-STB-011
+preconditions:
+  datasets:
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9900000000000201'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '0001'
+        DALYTRAN-SOURCE: POS TERM
+        DALYTRAN-DESC: Synthetic unknown card
+        DALYTRAN-AMT: '10.00'
+        DALYTRAN-MERCHANT-ID: '999000201'
+        DALYTRAN-MERCHANT-NAME: Synthetic Merchant 201
+        DALYTRAN-MERCHANT-CITY: Synthetic City
+        DALYTRAN-MERCHANT-ZIP: '99999'
+        DALYTRAN-CARD-NUM: '9999000011110001'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+    CARDXREF:
+      base: CARDXREF
+    ACCTDATA:
+      base: ACCTDATA
+    CUSTDATA:
+      base: CUSTDATA
+    CARDDATA:
+      base: CARDDATA
+    TRANSACT:
+      records: []
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN01C
+expected:
+  return_code: 0
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN01C
+  - '9900000000000201010001POS TERM  Synthetic unknown card                                                                              0000000100{999000201Synthetic Merchant 201                            Synthetic City                                    99999     99990000111100012022-07-05 09:15:00.000000                                              '
+  - INVALID CARD NUMBER FOR XREF
+  - CARD NUMBER 9999000011110001 COULD NOT BE VERIFIED. SKIPPING TRANSACTION ID-9900000000000201
+  - INVALID CARD NUMBER FOR XREF
+  - CARD NUMBER 9999000011110001 COULD NOT BE VERIFIED. SKIPPING TRANSACTION ID-9900000000000201
+  - END OF EXECUTION OF PROGRAM CBTRN01C

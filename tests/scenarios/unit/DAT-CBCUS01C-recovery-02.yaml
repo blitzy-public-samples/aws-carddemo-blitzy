@@ -1,0 +1,58 @@
+id: DAT-CBCUS01C-recovery-02
+level: unit
+type: recovery
+description: >-
+  CBCUS01C opens CUSTFILE, lists the first customer, and the second READ fails
+  with an I/O error. 1000-CUSTFILE-GET-NEXT displays 'ERROR READING CUSTOMER
+  FILE', the status through Z-DISPLAY-IO-STATUS and 'ABENDING PROGRAM', then
+  calls CEE3ABD without parameters; 9000-CUSTFILE-CLOSE and the end-of-execution
+  line are never reached [app/cbl/CBCUS01C.cbl:71-81,92-116,118-134,154-158,161-174].
+  No adapter injects a read failure after a successful open (GAP-MIS-013), so the
+  scenario stays implemented-unexecuted and its baseline is derived from the
+  source (GAP-INF-013).
+# Only the read-or-close-failure item: this case never executes, so listing the
+# program, the CVCUS01Y layout or the custdata data files here would block items
+# that DAT-CBCUS01C-normal-01 verifies (one scenario lists an item only when the
+# item's verification depends on it).
+inventory_ids:
+- INV-DAT-039
+# GAP-DEF-001 (the parameterless CALL 'CEE3ABD' that ends every CB* abend path)
+# is cited as the gap this abend passes through, as in every read-program
+# recovery case; suspected-defect marks the cases that pin a program's own defect.
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013
+- GAP-INF-013
+- GAP-STB-001
+- GAP-DEF-001
+preconditions:
+  datasets:
+    CUSTDATA:
+      base: CUSTDATA
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  # after: 1 -- the first READ returns customer 000000001, the second fails.
+  - target: CUSTDATA
+    operation: read
+    condition: io-error
+    after: 1
+inputs:
+  program: CBCUS01C
+expected:
+  return_code: null
+  messages:
+  - 'START OF EXECUTION OF PROGRAM CBCUS01C'
+  # Record 1 of the repository CUSTDATA, the whole 500-byte CUSTOMER-RECORD, raw:
+  # once from 1000-CUSTFILE-GET-NEXT after the successful READ, and once more from
+  # the main loop [app/cbl/CBCUS01C.cbl:76-79,93-96].
+  - '000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        '
+  - '000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        '
+  - 'ERROR READING CUSTOMER FILE'
+  # An io-error is taken as IBM file status 30 (inferred, GAP-INF-013): numeric
+  # and not 9x, so Z-DISPLAY-IO-STATUS shows it as NNNN0030.
+  - 'FILE STATUS IS: NNNN0030'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'
