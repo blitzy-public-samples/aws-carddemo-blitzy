@@ -170,6 +170,14 @@ gaps:
   needed: The owner's confirmation of intent, and the unikix outcome of a HANDLE ABEND scenario once GAP-MIS-014 gives a way to force the abend. The behaviour is pinned as derived and never fixed under app/.
   resolving_evidence: null
   status: open
+- gap_id: GAP-DEF-015
+  category: suspected-defect
+  unknown: 'When 9600-WRITE-PROCESSING cannot lock the customer record (the CUSTDAT READ UPDATE does not answer NORMAL) it sets COULD-NOT-LOCK-CUST-FOR-UPDATE and leaves before either REWRITE [app/cbl/COACTUPC.cbl:3917-3942], but 2000-DECIDE-ACTION tests only COULD-NOT-LOCK-ACCT-FOR-UPDATE, LOCKED-BUT-UPDATE-FAILED and DATA-WAS-CHANGED-BEFORE-UPDATE, so the failure falls to WHEN OTHER and sets ACUP-CHANGES-OKAYED-AND-DONE [app/cbl/COACTUPC.cbl:2602-2615]. The screen then shows ''Changes committed to database'' in INFOMSG beside ''Could not lock customer record for update'' in ERRMSG [app/cbl/COACTUPC.cbl:2968-2981], although nothing was written, where the account-lock failure shows ''Changes unsuccessful. Please try again''. ACT-COACTUPC-recovery-03 pins the screen as derived.'
+  affected_inventory_ids:
+  - INV-ACT-052
+  needed: The owner's confirmation of intent. The behaviour is pinned as derived and never fixed under app/. The unikix outcome of ACT-COACTUPC-recovery-03, once a lock-holding mechanism resolves GAP-MIS-014, would show the screen the region sends.
+  resolving_evidence: null
+  status: open
 - gap_id: GAP-DOC-001
   category: doc-conflict
   unknown: 'The tech spec counts 18 online programs ("eighteen CICS programs", Section 1.2.2.1; "Online Programs (18 CICS Programs)", Section 1.2.2.2; "Online Programs (app/cbl/CO*.cbl): 18 programs", Section 6.6.2.1.2), but app/cbl holds 17 online sources. COCRDSEC (''CREDIT CARD SEARCH'') exists only as a CSD definition [app/csd/CARDDEMO.CSD:211-218], started by transaction CDV1 ''DEVELOPER TRANSACTION - 1'' [app/csd/CARDDEMO.CSD:388-390]; neither app/cbl nor the UniKix copy''s migrated_app/cbl holds its source, so both items are unreachable.'
