@@ -5,25 +5,35 @@
  * and the environment-variable table of docs/technical-requirements.md:
  *
  * - every file renders to a non-empty SVG;
+ * - the logical (flowchart LR), physical (flowchart TB) and four sequence diagrams
+ *   (sequenceDiagram) exist at their fixed paths, and the security view is
+ *   security-architecture.mmd (flowchart TB) or its split into
+ *   security-architecture-network.mmd and security-architecture-access.mmd;
  * - at most 25 nodes or participants per file, annotations (Legend*, Acm*, Description)
  *   counted; no component without an edge or message;
  * - every component ID is a catalogue name, every subgraph ID a boundary name or Legend,
  *   and every component label runs 1–5 words after its P<n>/S<n> prefix;
- * - frontmatter title, a closing 1–2 sentence description and all five legend entries in
- *   their category colours (flowchart Legend subgraph; sequence box groups);
+ * - frontmatter title, a closing description of 1–2 complete sentences and all five
+ *   legend entries in their category colours (flowchart Legend subgraph; sequence box
+ *   groups);
  * - the security view maps every S<n> control to its components in the diagram form of
  *   its kind, and carries no physical P<n> numbering;
  * - every external system appears in the logical, physical and security views;
+ * - labels, aliases and fills are read as the pinned Mermaid renders them: a later label
+ *   or alias wins, #name; and #nnn; entity codes are decoded, and class fills apply in
+ *   default → node → assignment order with style statements last;
  * - the catalogue's Diagrams column names exactly the diagrams each ID appears in, and
  *   every flowchart component carries the fill of its catalogue category.
  *
- * Run from anywhere as `node tests/validation/check-diagrams.mjs`; exit 0 with no
- * violation, 1 with violations, 2 on an internal error.
+ * Run from the repository root as `node tests/validation/check-diagrams.mjs` (as run-all.sh
+ * does), or from any directory by the script's absolute path; `-h` or `--help` prints usage.
+ * Exit 0 with no violation, 1 with violations, 2 on a usage error or an internal error.
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
 import {
   repoRoot,
   readText,
@@ -31,10 +41,12 @@ import {
   listFiles,
   sectionByHeading,
   parseTables,
+  plainText,
   surplusCellRows,
   toolBin,
   report,
 } from './lib/markdown.mjs';
+import { NAMED_CHARACTER_REFERENCES, C1_NUMERIC_REFERENCES } from './lib/html-entities.mjs';
 
 const CHECK = 'check-diagrams';
 const DIAGRAM_DIR = 'docs/architecture';
@@ -52,6 +64,26 @@ const NODE_BUDGET = 25;
 const LOGICAL = `${DIAGRAM_DIR}/logical-architecture.mmd`;
 const PHYSICAL = `${DIAGRAM_DIR}/physical-deployment.mmd`;
 const SECURITY_RE = /^security-architecture.*\.mmd$/;
+
+/**
+ * Diagrams the set must hold at fixed paths, each with the kind of its view and, for a
+ * flowchart, its direction. The TRD catalogue's Diagrams column is editable, so it cannot
+ * stand in for this list.
+ */
+const REQUIRED_DIAGRAMS = [
+  { rel: LOGICAL, kind: 'flowchart', direction: 'LR' },
+  { rel: PHYSICAL, kind: 'flowchart', direction: 'TB' },
+  { rel: `${DIAGRAM_DIR}/sequence-balance-summary.mmd`, kind: 'sequence', direction: null },
+  { rel: `${DIAGRAM_DIR}/sequence-category-balances.mmd`, kind: 'sequence', direction: null },
+  { rel: `${DIAGRAM_DIR}/sequence-transaction-list.mmd`, kind: 'sequence', direction: null },
+  { rel: `${DIAGRAM_DIR}/sequence-transaction-detail.mmd`, kind: 'sequence', direction: null },
+];
+/** The security view: one flowchart TB, or the split rule's two flowchart parts, whose direction is free. */
+const SECURITY_VIEW = { rel: `${DIAGRAM_DIR}/security-architecture.mmd`, kind: 'flowchart', direction: 'TB' };
+const SECURITY_SPLIT = [
+  { rel: `${DIAGRAM_DIR}/security-architecture-network.mmd`, kind: 'flowchart', direction: null },
+  { rel: `${DIAGRAM_DIR}/security-architecture-access.mmd`, kind: 'flowchart', direction: null },
+];
 
 /** Category order is also the required sequence-diagram box order. */
 const CATEGORIES = [
@@ -113,15 +145,14 @@ const normaliseSpace = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 const fmtRgb = (rgb) => `rgb(${rgb.join(',')})`;
 const fmtHex = (rgb) => `#${rgb.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
 
-/** Table cell as plain text: links reduced to their text, code, emphasis and HTML removed. */
+/** Shared plainText of a table cell, `\|` unescaped and `<br>` read as a space; whitespace collapsed. */
 function cellText(cell) {
   return normaliseSpace(
-    String(cell ?? '')
-      .replace(/\\\|/g, '|')
-      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/`/g, '')
-      .replace(/\*\*|__/g, ''),
+    plainText(
+      String(cell ?? '')
+        .replace(/\\\|/g, '|')
+        .replace(/<br\s*\/?>/gi, ' '),
+    ),
   );
 }
 
@@ -133,21 +164,112 @@ function cellList(cell) {
     .filter((s) => s !== '');
 }
 
-/** Mermaid label text: line breaks and other HTML tags become spaces, quotes are dropped. */
-function labelText(raw) {
-  return normaliseSpace(
-    String(raw ?? '')
-      .replace(/<br\s*\/?>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/"/g, ''),
-  );
+/** Mermaid label as displayed: tags become spaces, quotes drop, entities decode as flowchart HTML or sequence SVG. */
+function labelText(raw, mode) {
+  if (mode !== 'flowchart' && mode !== 'sequence') throw new TypeError(`labelText: unknown mode ${mode}`);
+  const text = String(raw ?? '')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/"/g, '');
+  return normaliseSpace(mode === 'flowchart' ? decodeHtmlLabel(text) : decodeEntityMarkers(text));
 }
 
-/** Sentences of a text: runs ending at `.`, `!` or `?` followed by whitespace or the end. */
+/** Private-use pair standing for Mermaid's entity marker, which keeps a `#…;` code's `;` from ending a statement. */
+const ENTITY_OPEN = '\uE010';
+const ENTITY_CLOSE = '\uE011';
+const ENTITY_MARKER_RE = new RegExp(`${ENTITY_OPEN}(\\w+)${ENTITY_CLOSE}`, 'g');
+
+/** Mermaid's encodeEntities: drops the `;` closing a style or classDef colour, then marks every `#…;` code. */
+function encodeEntities(text) {
+  return String(text)
+    .replace(/style.*:\S*#.*;/g, (s) => s.slice(0, -1))
+    .replace(/classDef.*:\S*#.*;/g, (s) => s.slice(0, -1))
+    .replace(/#\w+;/g, (s) => `${ENTITY_OPEN}${s.slice(1, -1)}${ENTITY_CLOSE}`);
+}
+
+/**
+ * Character a numeric reference displays: U+FFFD for 0, a surrogate or a value past U+10FFFF,
+ * the Windows-1252 character for 0x80–0x9F, and otherwise the code point itself, a control
+ * character included, as browsers keep it.
+ */
+function codePointText(value) {
+  const invalid = value === 0 || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff);
+  return invalid ? '\uFFFD' : (C1_NUMERIC_REFERENCES.get(value) ?? String.fromCodePoint(value));
+}
+
+/** A character reference as HTML text content reads one: `&#N` or `&#xH` with an optional `;`, or a name. */
+const CHARACTER_REFERENCE_RE = /&(?:#([0-9]+);?|#[xX]([0-9A-Fa-f]+);?|([^\t\n\f <&#;]{1,32};?))/g;
+
+/**
+ * Decodes the character references of `html` in one left-to-right pass, as HTML text content
+ * does: a numeric one through codePointText; a named one as the whole `name;` when the WHATWG
+ * table holds it, else as the longest table name prefixing it (only a legacy name without its
+ * `;` can, so `&notit;` reads `¬it;`) followed by the rest; any other `&` stays as written.
+ */
+function decodeCharacterReferences(html) {
+  return html.replace(CHARACTER_REFERENCE_RE, (ref, dec, hex, name) => {
+    if (dec !== undefined) return codePointText(Number.parseInt(dec, 10));
+    if (hex !== undefined) return codePointText(Number.parseInt(hex, 16));
+    const whole = NAMED_CHARACTER_REFERENCES.get(name);
+    if (whole !== undefined) return whole;
+    for (let end = name.length - 1; end > 1; end -= 1) {
+      const prefix = NAMED_CHARACTER_REFERENCES.get(name.slice(0, end));
+      if (prefix !== undefined) return prefix + name.slice(end);
+    }
+    return ref;
+  });
+}
+
+/** The reference Mermaid writes for a marked code at display: `&#N;` for `#N;`, `&name;` for `#name;`. */
+const markerReference = (inner) => (/^\d+$/.test(inner) ? `&#${inner};` : `&${inner};`);
+
+/**
+ * Sequence SVG text: each marked code reaches the SVG markup as its reference and decodes on
+ * its own; all other text, a typed `&…;` included, is escaped there and displays as written.
+ */
+function decodeEntityMarkers(text) {
+  return text.replace(ENTITY_MARKER_RE, (_, inner) => decodeCharacterReferences(markerReference(inner)));
+}
+
+/** Flowchart HTML label: markers become their references, then every reference decodes in one pass. */
+function decodeHtmlLabel(text) {
+  return decodeCharacterReferences(text.replace(ENTITY_MARKER_RE, (_, inner) => markerReference(inner)));
+}
+
+/**
+ * Complete sentences of a text, and the unterminated fragment after the last one. The text
+ * splits into words at whitespace, so a number such as 1.5 never ends a sentence. A sentence
+ * is a run of words whose last word ends at `.`, `!` or `?`, optionally followed by closing
+ * quotes or brackets (' " ’ ” ) ]), and which holds a letter or digit; a terminated run of
+ * bare punctuation is not one. The words after the last terminator form the fragment, ''
+ * when there are none.
+ */
 function sentenceCount(text) {
-  return normaliseSpace(text)
-    .split(/(?<=[.!?])\s+/)
-    .filter((s) => s !== '').length;
+  let sentences = 0;
+  let run = [];
+  for (const word of normaliseSpace(text).split(' ')) {
+    if (word === '') continue;
+    run.push(word);
+    if (!/[.!?]['"’”)\]]*$/.test(word)) continue;
+    if (/[\p{L}\p{N}]/u.test(run.join(' '))) sentences += 1;
+    run = [];
+  }
+  return { sentences, fragment: run.join(' ') };
+}
+
+/** Violations of the 1–2 complete sentence rule for `text`, each message opening with `subject`. */
+function sentenceRuleMessages(subject, text) {
+  const { sentences, fragment } = sentenceCount(text);
+  const messages = [];
+  if (fragment !== '') {
+    const shown = [...fragment].slice(0, 40).join('');
+    messages.push(`${subject} ends with an unterminated fragment "${shown}"; expected 1–2 complete sentences`);
+  }
+  // A fragment standing alone is already reported above, so it adds no zero-count message.
+  if (sentences > 2 || (sentences === 0 && fragment === '')) {
+    messages.push(`${subject} has ${sentences} sentences; expected 1–2`);
+  }
+  return messages;
 }
 
 /** Word count of a label after a leading P<n> or S<n> item number. */
@@ -310,14 +432,15 @@ async function renderAll(files, violations) {
 // TRD inputs: component catalogue, security control table, environment variables
 
 /**
- * The first table of a TRD section whose header holds every wanted column, with indexes and
- * header line. Each of its rows with more cells than the header is reported, since a renderer
- * drops the surplus cells and the named-column readers never see them; every row is still returned.
+ * The first table of a TRD section whose header holds every wanted column, with indexes, its
+ * row lines and its header line, where a row the table lacks is reported. Each of its rows
+ * with more cells than the header is reported, since a renderer drops the surplus cells and
+ * the named-column readers never see them; every row is still returned.
  */
 function sectionTable(trdText, heading, wanted, violations) {
   const section = sectionByHeading(trdText, heading);
   if (!section) {
-    violations.push({ path: TRD, message: `section "${heading}" is missing` });
+    violations.push({ path: TRD, line: 1, message: `section "${heading}" is missing` });
     return null;
   }
   for (const table of parseTables(section.text)) {
@@ -379,7 +502,7 @@ function loadCatalogue(trdText, violations) {
     });
   }
   for (const name of [...EXPECTED_COMPONENTS.keys(), ...BOUNDARIES]) {
-    if (!catalogue.has(name)) bad(undefined, `component catalogue has no row for ${name}`);
+    if (!catalogue.has(name)) bad(table.line, `component catalogue has no row for ${name}`);
   }
   return catalogue;
 }
@@ -423,9 +546,8 @@ function loadControls(trdText, catalogue, violations) {
       }
     }
     // A control's key is the one- or two-sentence explanation its S<n> label points to.
-    const keySentences = sentenceCount(cellText(cells[table.col.key]));
-    if (keySentences < 1 || keySentences > 2) {
-      bad(line, `security control ${id} key has ${keySentences} sentences; expected 1–2`);
+    for (const message of sentenceRuleMessages(`security control ${id} key`, cellText(cells[table.col.key]))) {
+      bad(line, message);
     }
     if (kind === KIND.AUTH) {
       const named = AUTH_PURPOSES.filter((p) => p.re.test(cellText(cells[table.col.key]))).map((p) => p.name);
@@ -485,26 +607,98 @@ function loadSecretConsumers(trdText, catalogue, violations) {
 // ---------------------------------------------------------------------------------------
 // Mermaid parsers
 
+/** The pinned Mermaid's frontmatter pattern, with match indices for line numbers. */
+const FRONTMATTER_RE = /^([^\S\n\r]*)-{3}\s*[\n\r](.*?)[\n\r]\1-{3}\s*[\n\r]+/ds;
+
+/** js-yaml's `{ load, JSON_SCHEMA }`: undefined until first use, null when it does not resolve. */
+let frontmatterYaml;
+
 /**
- * Splits YAML frontmatter from the diagram body. Body statements keep their file line
- * numbers; blank lines, `%%` comments and `%%{…}%%` directives are dropped.
+ * Resolves js-yaml once, on first use, from the locked tool tree, where the mermaid
+ * toolchain hoists it. Never add a YAML package to package.json for this: the manifest
+ * pins exactly the three validation tools. When js-yaml does not resolve, reports that
+ * once and returns null.
  */
-function splitSource(text) {
+function yamlLoader(violations) {
+  if (frontmatterYaml !== undefined) return frontmatterYaml;
+  frontmatterYaml = null;
+  try {
+    const { load, JSON_SCHEMA } = createRequire(new URL('./package.json', import.meta.url))('js-yaml');
+    if (typeof load === 'function' && JSON_SCHEMA) frontmatterYaml = { load, JSON_SCHEMA };
+  } catch {
+    // Not resolvable from tests/validation; reported below.
+  }
+  if (frontmatterYaml === null) {
+    violations.push({
+      path: 'tests/validation/package.json',
+      line: 1,
+      message: 'js-yaml is not resolvable from tests/validation (run npm ci); frontmatter titles were not decoded',
+    });
+  }
+  return frontmatterYaml;
+}
+
+/**
+ * Decodes frontmatter as the pinned Mermaid does before rendering: line endings and tag
+ * attributes normalised first, the opener's indentation stripped from the body, the body
+ * loaded with js-yaml's JSON schema, a non-mapping read as no keys, and the title kept
+ * only when truthy, as its string. Returns null when Mermaid sees no frontmatter, else
+ * `{ start, title, titleType, error }`: the 0-based line index the diagram body starts
+ * at, the title (null when Mermaid shows none, undefined when not decoded), the decoded
+ * title's YAML type (string, boolean, number, sequence or mapping; null when the key is
+ * absent or null, undefined when not decoded) and a YAML error located at its file line.
+ */
+function decodeFrontmatter(text, violations) {
+  const cleaned = text
+    .replace(/\r\n?/g, '\n')
+    .replace(/<(\w+)([^>]*)>/g, (_, tag, attrs) => `<${tag}${attrs.replace(/="([^"]*)"/g, "='$1'")}>`);
+  const m = FRONTMATTER_RE.exec(cleaned);
+  if (!m) return null;
+  const start = m[0].split('\n').length - 1;
+  const yamlLine = cleaned.slice(0, m.indices[2][0]).split('\n').length;
+  const indent = m[1];
+  const yamlText = indent
+    ? m[2].split('\n').map((l) => (l.startsWith(indent) ? l.slice(indent.length) : l)).join('\n')
+    : m[2];
+  const yaml = yamlLoader(violations);
+  if (yaml === null) return { start, title: undefined, titleType: undefined, error: null };
+  let parsed;
+  try {
+    parsed = yaml.load(yamlText, { schema: yaml.JSON_SCHEMA }) ?? {};
+  } catch (err) {
+    if (err?.name !== 'YAMLException') throw err;
+    const line = yamlLine + (Number.isInteger(err.mark?.line) ? err.mark.line : 0);
+    const message = `frontmatter is not valid YAML: ${err.reason || err.message}`;
+    return { start, title: undefined, titleType: undefined, error: { line, message } };
+  }
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) parsed = {};
+  const value = parsed.title ?? null;
+  // The JSON schema yields only strings, booleans, numbers, sequences and mappings.
+  const titleType =
+    value === null ? null : Array.isArray(value) ? 'sequence' : typeof value === 'object' ? 'mapping' : typeof value;
+  return { start, title: value ? String(value) : null, titleType, error: null };
+}
+
+/**
+ * Splits YAML frontmatter from the diagram body. The title is the one the pinned Mermaid
+ * renders, null when it renders none, and undefined when the frontmatter was not
+ * decoded; titleType is the decoded title's YAML type, as decodeFrontmatter returns it,
+ * and null when there is no frontmatter. A frontmatter error carries its file line. Body
+ * statements keep their file line numbers; blank lines, `%%` comments and `%%{…}%%`
+ * directives are dropped.
+ */
+function splitSource(text, violations) {
   const lines = text.split(/\r?\n/);
   let title = null;
+  let titleType = null;
   let start = 0;
   let frontmatterError = null;
-  if (lines[0]?.trim() === '---') {
-    const close = lines.findIndex((l, i) => i > 0 && l.trim() === '---');
-    if (close < 0) {
-      frontmatterError = 'frontmatter opened with --- is never closed';
-    } else {
-      for (const l of lines.slice(1, close)) {
-        const m = /^title:\s*(.*?)\s*$/.exec(l);
-        if (m) title = m[1].replace(/^(['"])(.*)\1$/, '$2').trim();
-      }
-      start = close + 1;
-    }
+  const frontmatter = decodeFrontmatter(text, violations);
+  if (frontmatter) {
+    ({ title, titleType, start } = frontmatter);
+    frontmatterError = frontmatter.error;
+  } else if (lines[0]?.trim() === '---') {
+    frontmatterError = { line: 1, message: 'frontmatter opened with --- is never closed' };
   }
   const body = [];
   for (let i = start; i < lines.length; i++) {
@@ -512,7 +706,7 @@ function splitSource(text) {
     if (t === '' || t.startsWith('%%')) continue;
     body.push({ text: t, line: i + 1 });
   }
-  return { title, body, frontmatterError };
+  return { title, titleType, body, frontmatterError };
 }
 
 /** Flowchart statements of one line: `;` separates them outside quotes, brackets and |labels|. */
@@ -676,7 +870,8 @@ function parseChain(s) {
     nodes.push(...next.ids);
     for (const a of prev) {
       for (const b of next.ids) {
-        links.push({ from: a.id, to: b.id, label: labelText(label), arrowAtTo, arrowAtFrom, invisible });
+        const edgeLabel = labelText(label, 'flowchart');
+        links.push({ from: a.id, to: b.id, label: edgeLabel, arrowAtTo, arrowAtFrom, invisible });
       }
     }
     prev = next.ids;
@@ -700,11 +895,15 @@ function parseFlowchart(rel, statements, violations) {
   const touch = (n, line) => {
     let node = fc.nodes.get(n.id);
     if (!node) {
-      node = { id: n.id, line, label: null, classes: [], stack: [] };
+      node = { id: n.id, line, label: null, labelLine: line, classes: [], stack: [] };
       fc.nodes.set(n.id, node);
       fc.order.push(n.id);
     }
-    if (node.label === null && n.label !== null) node.label = labelText(n.label);
+    // Mermaid displays the last explicit label a node is given.
+    if (n.label !== null) {
+      node.label = labelText(n.label, 'flowchart');
+      node.labelLine = line;
+    }
     // A node belongs to the first subgraph block that mentions it, as Mermaid places it.
     if (node.stack.length === 0 && stack.length > 0) node.stack = [...stack];
     node.classes.push(...n.classes);
@@ -718,7 +917,7 @@ function parseFlowchart(rel, statements, violations) {
       const id = sm ? sm[1] : qm ? qm[1] : rest;
       const title = sm ? (sm[2] ?? sm[3]) : qm ? qm[1] : rest;
       if (id === '') violations.push({ path: rel, line, message: 'subgraph has no ID or title' });
-      const occurrence = { id, title: labelText(title), line, ancestors: [...stack] };
+      const occurrence = { id, title: labelText(title, 'flowchart'), line, ancestors: [...stack] };
       fc.subgraphOccurrences.push(occurrence);
       if (!fc.subgraphs.has(id)) fc.subgraphs.set(id, occurrence);
       stack.push(id);
@@ -730,8 +929,12 @@ function parseFlowchart(rel, statements, violations) {
     } else if (/^direction\s+\w+$/.test(text)) {
       fc.statements.push({ kind: 'direction', line });
     } else if ((m = /^classDef\s+(\S+)\s+(.+)$/.exec(text))) {
-      const props = parseProps(m[2]);
-      for (const name of m[1].split(',')) fc.classDefs.set(name.trim(), props);
+      // Mermaid appends a redefined classDef's styles to the class, so a later key wins and earlier keys stay.
+      for (const name of m[1].split(',')) {
+        const props = fc.classDefs.get(name.trim()) ?? new Map();
+        for (const [k, v] of parseProps(m[2])) props.set(k, v);
+        fc.classDefs.set(name.trim(), props);
+      }
       fc.statements.push({ kind: 'classDef', line });
     } else if ((m = /^class\s+(.+?)\s+([A-Za-z0-9_-]+)$/.exec(text))) {
       // Mermaid applies a class statement only to nodes that already exist.
@@ -779,11 +982,30 @@ const SEQ_IGNORED_RE =
 function parseSequence(rel, statements, violations) {
   const sq = { kind: 'sequence', participants: new Map(), order: [], messages: [], boxes: [], notes: [], last: null };
   const stack = [];
+  // Mermaid keeps one actor per ID: a later alias replaces its label, and a redeclaration
+  // inside a box places an unboxed actor there but cannot move it to a different box.
   const addParticipant = (id, label, line, box) => {
-    if (sq.participants.has(id)) return;
-    sq.participants.set(id, { id, label: labelText(label ?? id), line, box });
-    sq.order.push(id);
-    if (box !== null) sq.boxes[box].participants.push(id);
+    let p = sq.participants.get(id);
+    if (!p) {
+      p = { id, label: labelText(id, 'sequence'), labelLine: line, line, box: null };
+      sq.participants.set(id, p);
+      sq.order.push(id);
+    }
+    if (box !== null && p.box !== null && p.box !== box) {
+      const boxes = `box "${sq.boxes[p.box].name}" and box "${sq.boxes[box].name}"`;
+      violations.push({ path: rel, line, message: `participant ${id} is declared in ${boxes}; Mermaid allows one` });
+      return;
+    }
+    if (label != null) {
+      p.label = labelText(label, 'sequence');
+      p.labelLine = line;
+    }
+    if (box !== null && p.box === null) {
+      p.box = box;
+      const members = sq.boxes[box].participants;
+      members.push(id);
+      members.sort((a, b) => sq.order.indexOf(a) - sq.order.indexOf(b));
+    }
   };
   const openBox = () => {
     const top = stack.findLast((s) => s.kind === 'box');
@@ -796,7 +1018,8 @@ function parseSequence(rel, statements, violations) {
       if (openBox() !== null) violations.push({ path: rel, line, message: 'box groups cannot be nested' });
       const rest = (m[1] ?? '').trim();
       const cm = /^(rgba?\([^)]*\)|#[0-9A-Fa-f]{3,8}|[A-Za-z]+)\s*(.*)$/.exec(rest);
-      sq.boxes.push({ colour: cm ? cm[1] : '', name: normaliseSpace(cm ? cm[2] : rest), line, participants: [] });
+      const name = normaliseSpace(decodeEntityMarkers(cm ? cm[2] : rest));
+      sq.boxes.push({ colour: cm ? cm[1] : '', name, line, participants: [] });
       stack.push({ kind: 'box', index: sq.boxes.length - 1 });
       kind = 'box';
     } else if (text === 'end') {
@@ -809,17 +1032,17 @@ function parseSequence(rel, statements, violations) {
     } else if ((m = /^note\s+(over|left of|right of)\s+(.+?)\s*:\s*(.*)$/i.exec(text))) {
       const over = m[2].split(',').map((p) => p.trim()).filter((p) => p !== '');
       over.forEach((p) => addParticipant(p, null, line, null));
-      sq.notes.push({ over, text: labelText(m[3]), line });
+      sq.notes.push({ over, text: labelText(m[3], 'sequence'), line });
       kind = 'note';
     } else if (SEQ_BLOCK_RE.test(text)) {
-      stack.push({ kind: 'block' });
+      stack.push({ kind: 'block', line });
       kind = 'block';
     } else if (SEQ_IGNORED_RE.test(text)) {
       kind = 'control';
     } else if ((m = SEQ_MESSAGE_RE.exec(text))) {
       addParticipant(m[1], null, line, null);
       addParticipant(m[4], null, line, null);
-      sq.messages.push({ from: m[1], to: m[4], arrow: m[2], text: labelText(m[5] ?? ''), line });
+      sq.messages.push({ from: m[1], to: m[4], arrow: m[2], text: labelText(m[5] ?? '', 'sequence'), line });
       kind = 'message';
     } else {
       violations.push({ path: rel, line, message: `cannot parse sequence statement "${text.slice(0, 40)}"` });
@@ -830,20 +1053,25 @@ function parseSequence(rel, statements, violations) {
   for (const open of stack) {
     const box = open.kind === 'box' ? sq.boxes[open.index] : null;
     const what = box ? `box "${box.name}"` : 'a block';
-    violations.push({ path: rel, line: box?.line, message: `${what} is never closed with "end"` });
+    violations.push({ path: rel, line: box ? box.line : open.line, message: `${what} is never closed with "end"` });
   }
   return sq;
 }
 
-/** Parses one .mmd file; returns null when its type cannot be determined. */
+/**
+ * Parses one .mmd file, with its header line and, for a flowchart, its effective direction;
+ * returns null when its type cannot be determined.
+ */
 function parseDiagram(rel, violations) {
-  const { title, body, frontmatterError } = splitSource(readText(rel));
-  if (frontmatterError) violations.push({ path: rel, line: 1, message: frontmatterError });
-  if (title === null || title === '') {
-    violations.push({ path: rel, line: 1, message: 'frontmatter title: is missing or empty' });
+  const { title, titleType, body, frontmatterError } = splitSource(readText(rel), violations);
+  if (frontmatterError) violations.push({ path: rel, ...frontmatterError });
+  if (titleType !== undefined && titleType !== null && titleType !== 'string') {
+    violations.push({ path: rel, line: 1, message: `frontmatter title: must be a string; found ${titleType}` });
+  } else if (title !== undefined && (title === null || title.trim() === '')) {
+    violations.push({ path: rel, line: 1, message: 'frontmatter title: is missing, null or blank' });
   }
   if (body.length === 0) {
-    violations.push({ path: rel, message: 'diagram has no statements' });
+    violations.push({ path: rel, line: 1, message: 'diagram has no statements' });
     return null;
   }
   const header = body[0];
@@ -854,18 +1082,24 @@ function parseDiagram(rel, violations) {
     return null;
   }
   if (flow) {
-    const statements = body.flatMap(({ text, line }) => splitFlowchartStatements(text).map((t) => ({ text: t, line })));
+    const statements = body.flatMap(({ text, line }) =>
+      splitFlowchartStatements(encodeEntities(text)).map((t) => ({ text: t, line })),
+    );
     const head = statements.shift();
-    if (!/^(flowchart|graph)(?:\s+(TB|TD|BT|LR|RL))?$/.test(head.text)) {
+    const headMatch = /^(flowchart|graph)(?:\s+(TB|TD|BT|LR|RL))?$/.exec(head.text);
+    if (!headMatch) {
       violations.push({ path: rel, line: head.line, message: `malformed flowchart header "${head.text}"` });
     }
-    return { rel, title, ...parseFlowchart(rel, statements, violations) };
+    // Mermaid lays a flowchart out top to bottom when its header names no direction and reads
+    // TD as TB; a top-level direction statement does not change it. Null for a malformed header.
+    const direction = headMatch ? (headMatch[2] ?? 'TB').replace('TD', 'TB') : null;
+    return { rel, title, ...parseFlowchart(rel, statements, violations), headerLine: head.line, direction };
   }
   const statements = body.flatMap(({ text, line }) =>
-    text.split(';').map((t) => t.trim()).filter((t) => t !== '').map((t) => ({ text: t, line })),
+    encodeEntities(text).split(';').map((t) => t.trim()).filter((t) => t !== '').map((t) => ({ text: t, line })),
   );
   statements.shift();
-  return { rel, title, ...parseSequence(rel, statements, violations) };
+  return { rel, title, ...parseSequence(rel, statements, violations), headerLine: header.line, direction: null };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -880,8 +1114,7 @@ const componentCategory = (catalogue, id) => {
 };
 
 function checkDescriptionText(rel, line, text, violations) {
-  const n = sentenceCount(text);
-  if (n < 1 || n > 2) violations.push({ path: rel, line, message: `description has ${n} sentences; expected 1–2` });
+  for (const message of sentenceRuleMessages('description', text)) violations.push({ path: rel, line, message });
 }
 
 function checkLabel(rel, line, owner, label, violations) {
@@ -892,19 +1125,26 @@ function checkLabel(rel, line, owner, label, violations) {
   }
 }
 
-/** Fills a flowchart node carries: from its classes in assignment order, and its effective fill. */
+/**
+ * A flowchart node's fill as the pinned renderer paints it. Mermaid compiles the styles of
+ * the `default` class, the `node` class and then the node's classes in assignment order,
+ * follows them with its `style` statements, and writes the result inline on the shape with
+ * `!important`, where a later value of a key wins. The inline styles override the class rules
+ * in the stylesheet, so stylesheet order and classDef order never decide the colour.
+ * `classFill` is the fill from the classes alone; `effective` is the painted fill.
+ */
 function fillOf(fc, node) {
-  const classes = node.classes.length === 0 && fc.classDefs.has('default') ? ['default'] : node.classes;
-  const classFills = classes.map((c) => fc.classDefs.get(c)?.get('fill')).filter((f) => f !== undefined);
+  let classFill = null;
+  for (const c of ['default', 'node', ...node.classes]) classFill = fc.classDefs.get(c)?.get('fill') ?? classFill;
   const styled = fc.styles.get(node.id)?.get('fill');
-  return { classFills, effective: styled ?? classFills[classFills.length - 1] ?? null };
+  return { classFill, effective: styled ?? classFill };
 }
 
 function checkFlowchart(fc, catalogue, violations) {
   const { rel } = fc;
   const v = (line, message) => violations.push({ path: rel, line, message });
   if (fc.nodes.size > NODE_BUDGET) {
-    v(undefined, `${fc.nodes.size} nodes exceed the ${NODE_BUDGET}-node budget; split the diagram by domain boundary`);
+    v(1, `${fc.nodes.size} nodes exceed the ${NODE_BUDGET}-node budget; split the diagram by domain boundary`);
   }
   const linked = new Set();
   for (const e of fc.edges) {
@@ -925,7 +1165,7 @@ function checkFlowchart(fc, catalogue, violations) {
       v(node.line, `node ID ${node.id} is not a component name in the TRD component catalogue`);
       continue;
     }
-    checkLabel(rel, node.line, node.id, node.label ?? node.id, violations);
+    checkLabel(rel, node.labelLine, node.id, node.label ?? node.id, violations);
     // The catalogue states that a component's colour class follows its category, so the
     // legend can be read off every component node, as the box rule does for sequences.
     const { rgb } = CATEGORY_BY_NAME.get(category.toLowerCase());
@@ -943,30 +1183,31 @@ function checkFlowchart(fc, catalogue, violations) {
 
   const description = fc.nodes.get('Description');
   if (!description) {
-    v(undefined, 'Description node is missing');
+    v(1, 'Description node is missing');
   } else {
     const at = fc.statements.findIndex((s) => s.kind === 'chain' && s.ids.includes('Description'));
     const after = fc.statements.slice(at + 1).find((s) => !DESCRIPTION_TRAILERS.has(s.kind));
     if (after) v(after.line, `a ${after.kind} statement follows the Description node, which must be the last element`);
-    checkDescriptionText(rel, description.line, description.label ?? '', violations);
+    checkDescriptionText(rel, description.labelLine, description.label ?? '', violations);
   }
 
   const legend = fc.subgraphs.get('Legend');
-  if (!legend) v(undefined, 'Legend subgraph is missing');
+  if (!legend) v(1, 'Legend subgraph is missing');
   for (const cat of CATEGORIES) {
     const node = fc.nodes.get(cat.legend);
     if (!node) {
-      v(legend?.line, `legend entry ${cat.legend} is missing`);
+      v(legend?.line ?? 1, `legend entry ${cat.legend} is missing`);
       continue;
     }
     if (legend && !node.stack.includes('Legend')) v(node.line, `${cat.legend} is not inside the Legend subgraph`);
     if (normaliseSpace(node.label ?? '').toLowerCase() !== cat.name.toLowerCase()) {
-      v(node.line, `${cat.legend} is labelled "${node.label ?? ''}"; expected "${cat.name}"`);
+      v(node.labelLine, `${cat.legend} is labelled "${node.label ?? ''}"; expected "${cat.name}"`);
     }
-    const { classFills, effective } = fillOf(fc, node);
-    if (!classFills.some((f) => sameColour(f, cat.rgb)) || !sameColour(effective, cat.rgb)) {
+    const { classFill, effective } = fillOf(fc, node);
+    if (!sameColour(classFill, cat.rgb) || !sameColour(effective, cat.rgb)) {
       const expected = `${fmtHex(cat.rgb)} (${fmtRgb(cat.rgb)})`;
-      v(node.line, `${cat.legend} needs a class whose classDef fill is ${expected}; found ${effective ?? 'none'}`);
+      const found = `class fill ${classFill ?? 'none'}, rendered fill ${effective ?? 'none'}`;
+      v(node.line, `${cat.legend} must be filled ${expected} by its category classDef; found ${found}`);
     }
   }
 }
@@ -977,7 +1218,7 @@ function checkSequence(sq, catalogue, violations) {
   const closingNote = sq.last?.kind === 'note' ? sq.last.note : null;
   const count = sq.participants.size + (closingNote ? 1 : 0);
   if (count > NODE_BUDGET) {
-    v(undefined, `${count} participants and closing note exceed the ${NODE_BUDGET}-node budget; split the diagram`);
+    v(1, `${count} participants and closing note exceed the ${NODE_BUDGET}-node budget; split the diagram`);
   }
   const linked = new Set(sq.messages.flatMap((m) => [m.from, m.to]));
   for (const p of sq.participants.values()) {
@@ -993,7 +1234,7 @@ function checkSequence(sq, catalogue, violations) {
       v(p.line, `participant ID ${p.id} is not a component name in the TRD component catalogue`);
       continue;
     }
-    checkLabel(rel, p.line, p.id, p.label, violations);
+    checkLabel(rel, p.labelLine, p.id, p.label, violations);
     const box = p.box === null ? null : sq.boxes[p.box];
     if (!box || box.name.toLowerCase() !== category.toLowerCase()) {
       const at = box ? `in box "${box.name}"` : 'outside every box';
@@ -1001,12 +1242,12 @@ function checkSequence(sq, catalogue, violations) {
     }
   }
 
-  if (!closingNote) v(sq.last?.line, 'the last statement must be the closing description Note');
+  if (!closingNote) v(sq.last?.line ?? 1, 'the last statement must be the closing description Note');
   else checkDescriptionText(rel, closingNote.line, closingNote.text, violations);
 
   const order = CATEGORIES.map((c) => c.name).join(', ');
   if (sq.boxes.length !== CATEGORIES.length) {
-    v(undefined, `${sq.boxes.length} box groups; expected exactly ${CATEGORIES.length} (${order})`);
+    v(1, `${sq.boxes.length} box groups; expected exactly ${CATEGORIES.length} (${order})`);
   }
   sq.boxes.forEach((box, i) => {
     const named = CATEGORY_BY_NAME.get(box.name.toLowerCase());
@@ -1029,11 +1270,11 @@ function checkSequence(sq, catalogue, violations) {
   for (const cat of CATEGORIES) {
     const p = sq.participants.get(cat.legend);
     if (!p) {
-      v(undefined, `legend participant ${cat.legend} is missing`);
+      v(1, `legend participant ${cat.legend} is missing`);
       continue;
     }
     if (p.label.toLowerCase() !== cat.name.toLowerCase()) {
-      v(p.line, `${cat.legend} is labelled "${p.label}"; expected "${cat.name}"`);
+      v(p.labelLine, `${cat.legend} is labelled "${p.label}"; expected "${cat.name}"`);
     }
     const box = p.box === null ? null : sq.boxes[p.box];
     if (!box || box.name.toLowerCase() !== cat.name.toLowerCase()) {
@@ -1083,7 +1324,7 @@ function checkSecurity(parts, catalogue, controls, secretConsumers, violations) 
   const texts = [
     ...parts.map((p) => ({ rel: p.rel, line: 1, what: 'title', text: p.title ?? '' })),
     ...[...set.nodes.values()].flatMap((n) =>
-      set.labels.get(n.id).map((text) => ({ rel: n.rel, line: n.line, what: `label of ${n.id}`, text })),
+      set.labels.get(n.id).map((text) => ({ rel: n.rel, line: n.labelLine, what: `label of ${n.id}`, text })),
     ),
     ...set.edges.map((e) => ({ rel: e.rel, line: e.line, what: `edge ${e.from} → ${e.to}`, text: e.label })),
     ...set.subgraphs.map((g) => ({
@@ -1150,7 +1391,7 @@ function checkSecurity(parts, catalogue, controls, secretConsumers, violations) 
         if (!labels) {
           v(TRD, control.line, `${id} (Encryption at rest) protects ${store}, which is not in the security diagram`);
         } else if (!labels.some((l) => hasToken(l, id))) {
-          v(node.rel, node.line, `label of ${store} does not carry ${id} (Encryption at rest)`);
+          v(node.rel, node.labelLine ?? node.line, `label of ${store} does not carry ${id} (Encryption at rest)`);
         }
       }
     } else if (control.kind === KIND.AUTH) {
@@ -1208,26 +1449,79 @@ function checkSecurity(parts, catalogue, controls, secretConsumers, violations) 
 }
 
 // ---------------------------------------------------------------------------------------
+// Required diagrams: fixed paths, kinds and flowchart directions, and the security view's form
+
+const kindName = (kind, direction) =>
+  kind === 'sequence' ? 'sequenceDiagram' : direction ? `flowchart ${direction}` : 'flowchart';
+
+/**
+ * Reports every required diagram that is missing, of the wrong kind or laid out in the wrong
+ * direction, and a security view that is neither security-architecture.mmd alone nor exactly
+ * its two split parts. A file parseDiagram could not parse is skipped; it is reported already.
+ */
+function checkRequiredDiagrams(files, diagrams, violations) {
+  const present = new Set(files);
+  const v = (rel, line, message) => violations.push({ path: rel, line, message });
+  const checkForm = ({ rel, kind, direction }) => {
+    const d = diagrams.get(rel);
+    if (!d) return;
+    if (d.kind !== kind) {
+      v(rel, d.headerLine, `must be a ${kindName(kind, direction)}; found ${kindName(d.kind, null)}`);
+    } else if (direction !== null && d.direction !== null && d.direction !== direction) {
+      v(rel, d.headerLine, `flowchart direction is ${d.direction}; expected ${direction}`);
+    }
+  };
+  for (const required of REQUIRED_DIAGRAMS) {
+    if (present.has(required.rel)) checkForm(required);
+    else v(required.rel, 1, 'required diagram is missing');
+  }
+
+  const base = (rel) => path.posix.basename(rel);
+  const [network, access] = SECURITY_SPLIT.map((part) => base(part.rel));
+  const forms = `${base(SECURITY_VIEW.rel)} alone, or exactly its split ${network} and ${access}`;
+  const single = present.has(SECURITY_VIEW.rel);
+  const split = SECURITY_SPLIT.filter((part) => present.has(part.rel));
+  if (!single && split.length === 0) {
+    v(SECURITY_VIEW.rel, 1, `required diagram is missing (or its split ${network} and ${access})`);
+  } else if (single && split.length > 0) {
+    const parts = split.map((part) => base(part.rel)).join(' and ');
+    v(SECURITY_VIEW.rel, 1, `the security view is present both whole and split (${parts}); keep ${forms}`);
+  } else if (!single && split.length === 1) {
+    const missing = SECURITY_SPLIT.find((part) => !present.has(part.rel));
+    v(missing.rel, 1, `required diagram is missing; the split security view needs both ${network} and ${access}`);
+  }
+  const securityForms = new Map([SECURITY_VIEW, ...SECURITY_SPLIT].map((form) => [form.rel, form]));
+  for (const rel of files.filter((f) => SECURITY_RE.test(base(f)))) {
+    if (securityForms.has(rel)) {
+      checkForm(securityForms.get(rel));
+    } else {
+      v(rel, 1, `not a security view file; the security view is ${forms}`);
+      checkForm({ rel, kind: 'flowchart', direction: null });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------
 // External systems in every architecture view, and the catalogue Diagrams column
 
-function checkExternalSystems(files, diagrams, securityParts, violations) {
+function checkExternalSystems(diagrams, securityParts, violations) {
+  // A missing logical or physical diagram is reported by checkRequiredDiagrams.
   for (const rel of [LOGICAL, PHYSICAL]) {
-    if (!files.includes(rel)) {
-      violations.push({ path: rel, message: 'required architecture diagram is missing' });
-      continue;
-    }
     const d = diagrams.get(rel);
     if (!d) continue;
     for (const ext of EXTERNAL_SYSTEMS) {
       const shown = d.kind === 'flowchart' ? d.nodes.has(ext) : d.participants.has(ext);
-      if (!shown) violations.push({ path: rel, message: `external system ${ext} is not shown` });
+      if (!shown) violations.push({ path: rel, line: 1, message: `external system ${ext} is not shown` });
     }
   }
   if (securityParts.length === 0) return;
-  const where = securityParts.length === 1 ? securityParts[0].rel : `${DIAGRAM_DIR}/security-architecture*.mmd`;
+  // A split view is reported at its first part, the message naming every part searched.
+  const where = securityParts[0].rel;
+  const parts = securityParts.map((p) => path.posix.basename(p.rel)).join(', ');
+  const scope = securityParts.length === 1 ? '' : ` in any part of the security view (${parts})`;
   for (const ext of EXTERNAL_SYSTEMS) {
     if (!securityParts.some((p) => p.nodes.has(ext))) {
-      violations.push({ path: where, message: `external system ${ext} is not shown` });
+      violations.push({ path: where, line: 1, message: `external system ${ext} is not shown${scope}` });
     }
   }
 }
@@ -1270,14 +1564,14 @@ function checkCatalogueDiagrams(files, catalogue, diagrams, violations) {
 async function main() {
   const violations = [];
   const files = listFiles(DIAGRAM_DIR, { exts: ['.mmd'] });
-  if (files.length === 0) violations.push({ path: DIAGRAM_DIR, message: 'no .mmd diagram found' });
-  else await renderAll(files, violations);
+  // An empty set renders nothing; checkRequiredDiagrams reports every diagram it lacks.
+  if (files.length > 0) await renderAll(files, violations);
 
   let catalogue = new Map();
   let controls = new Map();
   let secretConsumers = new Map();
   if (!exists(TRD)) {
-    violations.push({ path: TRD, message: 'Technical Requirements Document is missing' });
+    violations.push({ path: TRD, line: 1, message: 'Technical Requirements Document is missing' });
   } else {
     const trdText = readText(TRD);
     catalogue = loadCatalogue(trdText, violations);
@@ -1295,27 +1589,50 @@ async function main() {
     else checkSequence(d, catalogue, violations);
   }
 
-  const securityFiles = files.filter((rel) => SECURITY_RE.test(path.posix.basename(rel)));
-  const securityParts = [];
-  for (const rel of securityFiles) {
-    const d = diagrams.get(rel);
-    if (d?.kind === 'flowchart') securityParts.push(d);
-    else if (d) violations.push({ path: rel, message: 'security architecture diagram must be a flowchart' });
-  }
-  if (securityFiles.length === 0) {
-    violations.push({ path: DIAGRAM_DIR, message: 'no security-architecture*.mmd diagram found' });
-  } else if (securityParts.length > 0) {
-    checkSecurity(securityParts, catalogue, controls, secretConsumers, violations);
-  }
-  checkExternalSystems(files, diagrams, securityParts, violations);
+  checkRequiredDiagrams(files, diagrams, violations);
+  // Every security-architecture*.mmd that parsed as a flowchart is a part of the security
+  // view; checkRequiredDiagrams reports a missing view, a wrong kind and a stray name.
+  const securityParts = files
+    .filter((rel) => SECURITY_RE.test(path.posix.basename(rel)))
+    .map((rel) => diagrams.get(rel))
+    .filter((d) => d?.kind === 'flowchart');
+  if (securityParts.length > 0) checkSecurity(securityParts, catalogue, controls, secretConsumers, violations);
+  checkExternalSystems(diagrams, securityParts, violations);
   if (catalogue.size > 0) checkCatalogueDiagrams(files, catalogue, diagrams, violations);
 
   report(CHECK, violations);
 }
 
-try {
-  await main();
-} catch (err) {
-  console.error(`${CHECK}: internal error: ${err?.stack ?? err}`);
+const USAGE = [
+  'Usage: node tests/validation/check-diagrams.mjs [-h | --help]',
+  '',
+  'Renders every docs/architecture/*.mmd with the pinned mmdc and checks it against the',
+  'component catalogue, security control table and environment-variable table of',
+  'docs/technical-requirements.md.',
+  '',
+  "Takes no arguments. Run it from the repository root, or from any directory by the script's absolute path.",
+  'Exit status: 0 no violation, 1 one or more violations, 2 usage error or internal error.',
+  '',
+  'Renders go to a temporary folder under TMPDIR (the OS temp directory by default) that is',
+  'removed afterwards. Keep TMPDIR short: Chrome aborts with "Socket path too long" on a long one.',
+  'Prerequisites, as run-all.sh installs them: `npm ci` in tests/validation, then',
+  '`npx --no-install puppeteer browsers install chrome-headless-shell` there.',
+].join('\n');
+
+const args = process.argv.slice(2);
+const unexpected = args.filter((arg) => arg !== '-h' && arg !== '--help');
+if (unexpected.length > 0) {
+  const shown = unexpected.map((arg) => (arg === '' || /\s/.test(arg) ? JSON.stringify(arg) : arg));
+  console.error(`${CHECK}: unexpected argument(s): ${shown.join(' ')}`);
+  console.error(USAGE);
   process.exitCode = 2;
+} else if (args.length > 0) {
+  console.log(USAGE);
+} else {
+  try {
+    await main();
+  } catch (err) {
+    console.error(`${CHECK}: internal error: ${err?.stack ?? err}`);
+    process.exitCode = 2;
+  }
 }
