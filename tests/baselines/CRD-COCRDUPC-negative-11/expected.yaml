@@ -1,0 +1,60 @@
+# Derived baseline (capture_platform: derived) of CRD-COCRDUPC-negative-11,
+# authored from app/cbl/COCRDUPC.cbl:374-542,721-760,1035-1340 and
+# app/bms/COCRDUP.bms because no TPE region runs in CI; the scenario is tagged
+# inferred-not-observed (GAP-INF-006, GAP-INF-012), and an imported, eligible
+# UniKix run replaces this file. It pins the source as it stands, never
+# corrected.
+#
+# One screen per step, each the reply to that step's AID. Step 1: sign-on
+# reaches the main menu. Step 2: option 5 XCTLs to COCRDUPC as a fresh entry
+# (CDEMO-PGM-ENTER), so 3200 leaves ACCTSID and CARDSID as LOW-VALUES, 3250
+# sets the search prompt and moves the WS-RETURN-MSG cleared at line 384 to
+# ERRMSG. Step 3: WHEN OTHER runs the edits; 1210-EDIT-ACCOUNT finds
+# 'ABCDEFGHIJK' neither blank nor zero but NOT NUMERIC and moves 'ACCOUNT
+# FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER' to WS-RETURN-MSG; 1220 accepts
+# the numeric card; 2000 reads nothing, because the filters are not both
+# valid; 3200 echoes CC-ACCT-ID (CC-ACCT-ID-N is not 0) and CC-CARD-NUM, and
+# sends the card details as LOW-VALUES under CCUP-DETAILS-NOT-FETCHED, which
+# also keeps the search prompt in INFOMSG.
+#
+# Caveat: reaching the message and echoing ACCTSID both assume the runtime
+# gives the PIC 9(11) view of 'ABCDEFGHIJK' a non-zero value at lines 727 and
+# 1087; were it zero, the blank path (WS-PROMPT-FOR-ACCT) would apply instead.
+# The UniKix import settles this; nothing here anticipates it.
+#
+# Values are whole BMS fields with trailing spaces kept; LOW-VALUES read back as
+# spaces. ERRMSG is the 75-byte WS-RETURN-MSG in the 80-byte ERRMSGO, INFOMSG
+# the 40-byte WS-INFO-MSG. TITLE01/TITLE02 and the card detail fields are
+# asserted because the scenario names them; CURDATE and CURTIME come from the
+# region clock, so they are matchers (the only fields a matcher may stand for),
+# never fixed values. The dark EXPDAY is not asserted.
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDUP
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': COCRDUP
+  ACCTSID: ABCDEFGHIJK
+  CARDSID: '0500024453765740'
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S'
+    match: run-time
+  ERRMSG: 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER                            '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCUP

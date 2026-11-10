@@ -1,0 +1,119 @@
+# TRN-COTRN00C-alternate-02. Derived from source (capture_platform: derived),
+# never observed. USER0001 reaches COMEN01, option 6 lists the first page of
+# TRANSACT, and the search from 0000000996722787, the highest key, lists that
+# one record before READNEXT ends the file, so the page routine sets
+# NEXT-PAGE-NO, which the COMMAREA carries to the next task. PF8 then reads no
+# record and re-sends COTRN00 without ERASE with 'You are already at the
+# bottom of the page...' [app/cbl/COTRN00C.cbl:97-141,257-274,279-328,
+# 527-586,624-653]. Every COTRN00 field is FSET, so row 1, PAGENUM and the
+# blank search field come back through RECEIVE and stay on the PF8 screen.
+# Fields are at full BMS width with trailing spaces kept (ERRMSG 78); CURDATE
+# and CURTIME come from the region clock, so they are matchers.
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN00
+  ERRMSG: '                                                                              '
+  PAGENUM: '00000001'
+  PGMNAME: COTRN00C
+  TRNNAME: CT00
+- '@map': COTRN00
+  ERRMSG: 'You have reached the bottom of the page...                                    '
+  PAGENUM: '00000001'
+  PGMNAME: COTRN00C
+  TAMT001: '+00000603.22'
+  TAMT002: '            '
+  TAMT003: '            '
+  TAMT004: '            '
+  TAMT005: '            '
+  TAMT006: '            '
+  TAMT007: '            '
+  TAMT008: '            '
+  TAMT009: '            '
+  TAMT010: '            '
+  TDATE01: '06/10/22'
+  TDATE02: '        '
+  TDATE03: '        '
+  TDATE04: '        '
+  TDATE05: '        '
+  TDATE06: '        '
+  TDATE07: '        '
+  TDATE08: '        '
+  TDATE09: '        '
+  TDATE10: '        '
+  TDESC01: 'Purchase at Kilback LLC   '
+  TDESC02: '                          '
+  TDESC03: '                          '
+  TDESC04: '                          '
+  TDESC05: '                          '
+  TDESC06: '                          '
+  TDESC07: '                          '
+  TDESC08: '                          '
+  TDESC09: '                          '
+  TDESC10: '                          '
+  TRNID01: '0000000996722787'
+  TRNID02: '                '
+  TRNID03: '                '
+  TRNID04: '                '
+  TRNID05: '                '
+  TRNID06: '                '
+  TRNID07: '                '
+  TRNID08: '                '
+  TRNID09: '                '
+  TRNID10: '                '
+  TRNIDIN: '                '
+  TRNNAME: CT00
+- '@map': COTRN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'You are already at the bottom of the page...                                  '
+  PAGENUM: '00000001'
+  PGMNAME: COTRN00C
+  TAMT001: '+00000603.22'
+  TAMT002: '            '
+  TAMT003: '            '
+  TAMT004: '            '
+  TAMT005: '            '
+  TAMT006: '            '
+  TAMT007: '            '
+  TAMT008: '            '
+  TAMT009: '            '
+  TAMT010: '            '
+  TDATE01: '06/10/22'
+  TDATE02: '        '
+  TDATE03: '        '
+  TDATE04: '        '
+  TDATE05: '        '
+  TDATE06: '        '
+  TDATE07: '        '
+  TDATE08: '        '
+  TDATE09: '        '
+  TDATE10: '        '
+  TDESC01: 'Purchase at Kilback LLC   '
+  TDESC02: '                          '
+  TDESC03: '                          '
+  TDESC04: '                          '
+  TDESC05: '                          '
+  TDESC06: '                          '
+  TDESC07: '                          '
+  TDESC08: '                          '
+  TDESC09: '                          '
+  TDESC10: '                          '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNID01: '0000000996722787'
+  TRNID02: '                '
+  TRNID03: '                '
+  TRNID04: '                '
+  TRNID05: '                '
+  TRNID06: '                '
+  TRNID07: '                '
+  TRNID08: '                '
+  TRNID09: '                '
+  TRNID10: '                '
+  TRNIDIN: '                '
+  TRNNAME: CT00

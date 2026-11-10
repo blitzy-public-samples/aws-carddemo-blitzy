@@ -1,0 +1,90 @@
+# Derived baseline (capture_platform: derived) of TRN-COTRN00C-negative-02,
+# authored from the source because no TPE region runs in CI; an imported,
+# eligible UniKix run replaces it.
+#
+# One screen per step, each captured after the step's AID. Sign-on as USER0001
+# reaches the main menu COMEN01; option 6 is 'Transaction List' (COTRN00C)
+# [app/cpy/COMEN02Y.cpy:55-59], whose first entry lists page 1 of TRANSACT from
+# the lowest TRAN-ID with a blank message [app/cbl/COTRN00C.cbl:102-116].
+#
+# The third step enters X in SEL0001. PROCESS-ENTER-KEY takes it as the flag
+# and the FSET TRNID01 as the selected id; X is neither S nor s, so WHEN OTHER
+# moves 'Invalid selection. Valid value is S' to WS-MESSAGE without setting the
+# error flag and no XCTL happens [app/cbl/COTRN00C.cbl:146-204]. TRNIDIN came
+# back blank, so the browse restarts at LOW-VALUES and page 1 is listed again:
+# ENTER skips the positioning read, the 10 rows are cleared and refilled, and
+# PAGENUM is 00000001 [app/cbl/COTRN00C.cbl:206-225,279-326]. TRANSACT holds the
+# 300 daily transactions, so the 11th look-ahead read succeeds and the
+# end-of-file message never replaces WS-MESSAGE [app/cbl/COTRN00C.cbl:305-313,
+# 636-645]. SEL0001 still shows X: COTRN0AO redefines the received COTRN0AI and
+# INITIALIZE-TRAN-DATA clears only the id, date, description and amount fields
+# [app/cbl/COTRN00C.cbl:450-505,527-540].
+#
+# Values are whole BMS fields with trailing spaces kept (ERRMSG 78, TDESCnn 26,
+# TITLE01/TITLE02 40). Rows show TRAN-ID, TRAN-ORIG-TS as MM/DD/YY, TRAN-DESC
+# and TRAN-AMT edited +99999999.99 [app/cbl/COTRN00C.cbl:56-57,381-445].
+# CURDATE and CURTIME come from the region clock, so they are matchers.
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN00
+  ERRMSG: '                                                                              '
+  PAGENUM: '00000001'
+  PGMNAME: COTRN00C
+  TRNID01: 0000000000683580
+  TRNNAME: CT00
+- '@map': COTRN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Invalid selection. Valid value is S                                           '
+  PAGENUM: '00000001'
+  PGMNAME: COTRN00C
+  SEL0001: X
+  TAMT001: '+00000504.77'
+  TAMT002: '-00000919.00'
+  TAMT003: '+00000067.88'
+  TAMT004: '+00000281.77'
+  TAMT005: '+00000454.66'
+  TAMT006: '+00000849.99'
+  TAMT007: '-00000056.77'
+  TAMT008: '+00000373.66'
+  TAMT009: '-00000535.88'
+  TAMT010: '+00000416.11'
+  TDATE01: 06/10/22
+  TDATE02: 06/10/22
+  TDATE03: 06/10/22
+  TDATE04: 06/10/22
+  TDATE05: 06/10/22
+  TDATE06: 06/10/22
+  TDATE07: 06/10/22
+  TDATE08: 06/10/22
+  TDATE09: 06/10/22
+  TDATE10: 06/10/22
+  TDESC01: 'Purchase at Abshire-Lowe  '
+  TDESC02: Return item at Nitzsche, N
+  TDESC03: Purchase at Ernser, Roob a
+  TDESC04: 'Purchase at Guann LLC     '
+  TDESC05: Purchase at Kertzmann-Scho
+  TDESC06: Purchase at Gislason-Medhu
+  TDESC07: 'Return item at Sipes Inc  '
+  TDESC08: 'Purchase at Legros Group  '
+  TDESC09: Return item at Turcotte Gr
+  TDESC10: Purchase at Gleason, Shana
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNID01: 0000000000683580
+  TRNID02: '0000000001774260'
+  TRNID03: 0000000006292564
+  TRNID04: 0000000009101861
+  TRNID05: '0000000010142252'
+  TRNID06: 0000000010229018
+  TRNID07: 0000000016259484
+  TRNID08: 0000000017874199
+  TRNID09: 0000000019065428
+  TRNID10: '0000000021711604'
+  TRNIDIN: '                '
+  TRNNAME: CT00

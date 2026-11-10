@@ -1,0 +1,70 @@
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN00
+  PGMNAME: COTRN00C
+  TRNNAME: CT00
+- '@map': COTRN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'You have reached the bottom of the page...                                    '
+  PAGENUM: '00000001'
+  PGMNAME: COTRN00C
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TAMT001: '+00000635.99'
+  TAMT002: '+00000603.22'
+  TAMT003: '            '
+  TAMT004: '            '
+  TAMT005: '            '
+  TAMT006: '            '
+  TAMT007: '            '
+  TAMT008: '            '
+  TAMT009: '            '
+  TAMT010: '            '
+  TDATE01: 06/10/22
+  TDATE02: 06/10/22
+  TDATE03: '        '
+  TDATE04: '        '
+  TDATE05: '        '
+  TDATE06: '        '
+  TDATE07: '        '
+  TDATE08: '        '
+  TDATE09: '        '
+  TDATE10: '        '
+  TDESC01: Purchase at Dickens, Barto
+  TDESC02: 'Purchase at Kilback LLC   '
+  TDESC03: '                          '
+  TDESC04: '                          '
+  TDESC05: '                          '
+  TDESC06: '                          '
+  TDESC07: '                          '
+  TDESC08: '                          '
+  TDESC09: '                          '
+  TDESC10: '                          '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNID01: 0000000992103545
+  TRNID02: 0000000996722787
+  TRNID03: '                '
+  TRNID04: '                '
+  TRNID05: '                '
+  TRNID06: '                '
+  TRNID07: '                '
+  TRNID08: '                '
+  TRNID09: '                '
+  TRNID10: '                '
+  TRNIDIN: '                '
+  TRNNAME: CT00

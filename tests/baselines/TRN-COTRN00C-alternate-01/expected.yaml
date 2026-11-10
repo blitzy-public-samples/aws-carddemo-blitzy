@@ -1,0 +1,149 @@
+# Derived baseline of TRN-COTRN00C-alternate-01: PF7 on page 1 of the
+# transaction list. Not observed; authored from app/cbl/COTRN00C.cbl:107-141,
+# 206-252,279-327,381-445,527-586 (PF7 with CDEMO-CT00-PAGE-NUM not above 1
+# sends the top-of-page message without ERASE and issues no browse),
+# app/bms/COTRN00.bms (every field FSET, so PF7 resends the received rows),
+# app/cbl/COMEN01C.cbl:236-272, app/cpy/COMEN02Y.cpy (option 6), app/cpy/COTTL01Y.cpy,
+# app/cpy/CSDAT01Y.cpy and the TRANSACT fixture built from
+# app/data/ASCII/dailytran.txt (300 records; page 1 is the 10 lowest TRAN-IDs).
+# Only report.py --import-unikix replaces it with an observed outcome:
+# GAP-INF-007 (derived TRN end-to-end baselines) and GAP-INF-012 (online-only
+# copybooks). Screens are whole fields at their BMS length, trailing spaces
+# kept; CURDATE and CURTIME come from the region clock and are matchers.
+# Canonical harness.dump_yaml layout.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'You are already at the top of the page...                                     '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN006: '06. Transaction List                    '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PAGENUM: '00000001'
+  PGMNAME: COTRN00C
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TAMT001: '+00000504.77'
+  TAMT002: '-00000919.00'
+  TAMT003: '+00000067.88'
+  TAMT004: '+00000281.77'
+  TAMT005: '+00000454.66'
+  TAMT006: '+00000849.99'
+  TAMT007: '-00000056.77'
+  TAMT008: '+00000373.66'
+  TAMT009: '-00000535.88'
+  TAMT010: '+00000416.11'
+  TDATE01: 06/10/22
+  TDATE02: 06/10/22
+  TDATE03: 06/10/22
+  TDATE04: 06/10/22
+  TDATE05: 06/10/22
+  TDATE06: 06/10/22
+  TDATE07: 06/10/22
+  TDATE08: 06/10/22
+  TDATE09: 06/10/22
+  TDATE10: 06/10/22
+  TDESC01: 'Purchase at Abshire-Lowe  '
+  TDESC02: Return item at Nitzsche, N
+  TDESC03: Purchase at Ernser, Roob a
+  TDESC04: 'Purchase at Guann LLC     '
+  TDESC05: Purchase at Kertzmann-Scho
+  TDESC06: Purchase at Gislason-Medhu
+  TDESC07: 'Return item at Sipes Inc  '
+  TDESC08: 'Purchase at Legros Group  '
+  TDESC09: Return item at Turcotte Gr
+  TDESC10: Purchase at Gleason, Shana
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNID01: 0000000000683580
+  TRNID02: '0000000001774260'
+  TRNID03: 0000000006292564
+  TRNID04: 0000000009101861
+  TRNID05: '0000000010142252'
+  TRNID06: 0000000010229018
+  TRNID07: 0000000016259484
+  TRNID08: 0000000017874199
+  TRNID09: 0000000019065428
+  TRNID10: '0000000021711604'
+  TRNIDIN: '                '
+  TRNNAME: CT00
+- '@map': COTRN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'You are already at the top of the page...                                     '
+  PAGENUM: '00000001'
+  PGMNAME: COTRN00C
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TAMT001: '+00000504.77'
+  TAMT002: '-00000919.00'
+  TAMT003: '+00000067.88'
+  TAMT004: '+00000281.77'
+  TAMT005: '+00000454.66'
+  TAMT006: '+00000849.99'
+  TAMT007: '-00000056.77'
+  TAMT008: '+00000373.66'
+  TAMT009: '-00000535.88'
+  TAMT010: '+00000416.11'
+  TDATE01: 06/10/22
+  TDATE02: 06/10/22
+  TDATE03: 06/10/22
+  TDATE04: 06/10/22
+  TDATE05: 06/10/22
+  TDATE06: 06/10/22
+  TDATE07: 06/10/22
+  TDATE08: 06/10/22
+  TDATE09: 06/10/22
+  TDATE10: 06/10/22
+  TDESC01: 'Purchase at Abshire-Lowe  '
+  TDESC02: Return item at Nitzsche, N
+  TDESC03: Purchase at Ernser, Roob a
+  TDESC04: 'Purchase at Guann LLC     '
+  TDESC05: Purchase at Kertzmann-Scho
+  TDESC06: Purchase at Gislason-Medhu
+  TDESC07: 'Return item at Sipes Inc  '
+  TDESC08: 'Purchase at Legros Group  '
+  TDESC09: Return item at Turcotte Gr
+  TDESC10: Purchase at Gleason, Shana
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNID01: 0000000000683580
+  TRNID02: '0000000001774260'
+  TRNID03: 0000000006292564
+  TRNID04: 0000000009101861
+  TRNID05: '0000000010142252'
+  TRNID06: 0000000010229018
+  TRNID07: 0000000016259484
+  TRNID08: 0000000017874199
+  TRNID09: 0000000019065428
+  TRNID10: '0000000021711604'
+  TRNIDIN: '                '
+  TRNNAME: CT00

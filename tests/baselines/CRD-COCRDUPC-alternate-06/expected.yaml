@@ -1,0 +1,56 @@
+# Derived baseline (capture_platform: derived) of CRD-COCRDUPC-alternate-06,
+# derived from app/cbl/COCRDUPC.cbl:380-395,502-511,1035-1336 at commit
+# 93ebec71ff7b59a68cedd7c501afe496a8eaa68d, because no TPE region runs in CI;
+# an imported, eligible UniKix run replaces it (inferred-not-observed,
+# GAP-INF-006, GAP-INF-012). The UniKix copy's COCRDUPC differs only in the
+# card-name edit (GAP-DOC-023), which this path never reaches, and its COCRDUP
+# map matches app/.
+#
+# CCUP entered directly, with no COMMAREA and no sign-on: EIBCALEN = 0, so
+# COCRDUPC initializes its COMMAREAs, sets CDEMO-PGM-ENTER and
+# CCUP-DETAILS-NOT-FETCHED, takes the fresh-entry branch, sends its own COCRDUP
+# screen and returns with TRANSID CCUP and CDEMO-PGM-REENTER; it checks no user
+# id or type and issues no XCTL [app/cbl/COCRDUPC.cbl:380-395,502-511,546-558].
+# Pinned as observed - direct entry without sign-on is not corrected
+# (observed-only, GAP-UNC-010).
+#
+# This screen is the reply to the step's ENTER, not the fresh screen: the
+# driver identifies the fresh COCRDUP as the step's input map, then presses
+# the AID and captures what comes back. ENTER re-enters COCRDUPC with its own
+# COMMAREA; CDEMO-PGM-REENTER with CCUP-DETAILS-NOT-FETCHED selects WHEN OTHER
+# [app/cbl/COCRDUPC.cbl:388-401,536-542]. The FSET search fields arrive empty
+# and become LOW-VALUES, both filters are flagged blank, and 'No input received'
+# replaces 'Account number not provided' [app/cbl/COCRDUPC.cbl:578-605,641-661,
+# 721-800]; 2000-DECIDE-ACTION reads no card [app/cbl/COCRDUPC.cbl:954-966].
+# The resent map carries the titles, CCUP and COCRDUPC, the card detail fields
+# at LOW-VALUES, the search prompt in INFOMSG, the message in ERRMSG, and '*' in
+# ACCTSID and CARDSID because each filter is blank on a re-entry
+# [app/cbl/COCRDUPC.cbl:1052-1163,1243-1261,1324-1336]
+# [app/cpy/COTTL01Y.cpy:18-22].
+#
+# Keys are exactly those the scenario's expected names. Values are whole BMS
+# fields, trailing spaces kept; LOW-VALUES show as spaces. ERRMSG's 80th
+# character is FKEYS's attribute position (row 24, column 1), read as a space.
+# FKEYS shows its BMS INITIAL; EXPDAY and FKEYSC are dark and not asserted.
+# CURDATE and CURTIME come from the region clock (CSDAT01Y MM/DD/YY, HH:MM:SS),
+# so they are the only matcher fields.
+screens:
+- '@map': COCRDUP
+  ACCTSID: '*          '
+  CARDSID: '*               '
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'No input received                                                               '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  FKEYS: ENTER=Process F3=Exit
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCUP

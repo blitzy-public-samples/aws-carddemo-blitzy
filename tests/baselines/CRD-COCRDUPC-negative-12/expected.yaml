@@ -1,0 +1,43 @@
+# Derived from source (capture_platform: derived), never observed; promoted only
+# by report.py --import-unikix (GAP-INF-006, GAP-INF-012). ENTER on COCRDUP with
+# account 00000000050 and card id ABCDEFGHIJKLMNOP: 1210-EDIT-ACCOUNT accepts the
+# account, 1220-EDIT-CARD refuses the card as NOT NUMERIC with 'CARD ID
+# FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER', no file is read, and the map is
+# re-sent with both filters echoed [app/cbl/COCRDUPC.cbl:721-800,1035-1340].
+# Fields are at full BMS width with trailing spaces kept; messages holds the
+# ERRMSG of every step.
+messages:
+- '                                                                              '
+- '                                                                                '
+- 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER                            '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN005: '05. Credit Card Update                  '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDUP
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': COCRDUP
+  ACCTSID: '00000000050'
+  CARDSID: ABCDEFGHIJKLMNOP
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER                            '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCUP

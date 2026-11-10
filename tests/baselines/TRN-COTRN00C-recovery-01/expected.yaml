@@ -1,0 +1,79 @@
+messages:
+- '                                                                              '
+- 'Unable to lookup transaction...                                               '
+screens:
+- '@map': COMEN01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTN006: '06. Transaction List                    '
+  PGMNAME: COMEN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CM00
+- '@map': COTRN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Unable to lookup transaction...                                               '
+  PAGENUM: '        '
+  PGMNAME: COTRN00C
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TAMT001: '            '
+  TAMT002: '            '
+  TAMT003: '            '
+  TAMT004: '            '
+  TAMT005: '            '
+  TAMT006: '            '
+  TAMT007: '            '
+  TAMT008: '            '
+  TAMT009: '            '
+  TAMT010: '            '
+  TDATE01: '        '
+  TDATE02: '        '
+  TDATE03: '        '
+  TDATE04: '        '
+  TDATE05: '        '
+  TDATE06: '        '
+  TDATE07: '        '
+  TDATE08: '        '
+  TDATE09: '        '
+  TDATE10: '        '
+  TDESC01: '                          '
+  TDESC02: '                          '
+  TDESC03: '                          '
+  TDESC04: '                          '
+  TDESC05: '                          '
+  TDESC06: '                          '
+  TDESC07: '                          '
+  TDESC08: '                          '
+  TDESC09: '                          '
+  TDESC10: '                          '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNID01: '                '
+  TRNID02: '                '
+  TRNID03: '                '
+  TRNID04: '                '
+  TRNID05: '                '
+  TRNID06: '                '
+  TRNID07: '                '
+  TRNID08: '                '
+  TRNID09: '                '
+  TRNID10: '                '
+  TRNIDIN: '                '
+  TRNNAME: CT00
