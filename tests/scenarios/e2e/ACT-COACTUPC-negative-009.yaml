@@ -1,0 +1,144 @@
+# COACTUPC finds the account but not its customer: the composed CUSTDAT
+# not-found message of 9400-GETCUSTDATA-BYCUST [app/cbl/COACTUPC.cbl:3752-3796].
+#
+# Step 1: USER0001 signs on through CC00 and COSGN00C XCTLs to COMEN01C, which
+# sends the main menu under CM00 [app/cbl/COSGN00C.cbl:221-240].
+# Step 2: option '2' makes COMEN01C move CM00 and COMEN01C to the FROM fields,
+# zero CDEMO-PGM-CONTEXT and XCTL to COACTUPC [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:31-35]. Entered from LIT-MENUPGM without
+# CDEMO-PGM-REENTER, COACTUPC sends COACTUP with the search-key prompt, sets
+# CDEMO-PGM-REENTER and ACUP-DETAILS-NOT-FETCHED and returns TRANSID CAUP
+# [app/cbl/COACTUPC.cbl:964-972,1007-1020]. No file is read.
+# Step 3: ENTER with account 00000000003 runs CAUP in re-enter state, so the
+# WHEN OTHER path receives the map and edits the account id: numeric and not
+# zero, so FLG-ACCTFILTER-ISVALID [app/cbl/COACTUPC.cbl:996-1003,1040-1062,
+# 1429-1442,1783-1818]. 2000-DECIDE-ACTION, with no details fetched, clears
+# the message and performs 9000-READ-ACCT [app/cbl/COACTUPC.cbl:2562-2580,
+# 3608-3643]:
+# - CXACAIX by account id: the CARDXREF fixture holds one card for account
+#   00000000003 (3999169246375885, customer 000000003, line 17 of
+#   app/data/ASCII/cardxref.txt), so the alternate key is unique, the READ is
+#   NORMAL and CDEMO-CUST-ID becomes 000000003 [app/cbl/COACTUPC.cbl:3650-3664].
+# - ACCTDAT by account id: record 3 of ACCTDATA, found.
+# - CUSTDAT by customer id 000000003: the fixture omits that record, so the
+#   response is NOTFND. INPUT-ERROR and FLG-CUSTFILTER-NOT-OK are set, RESP and
+#   RESP2 are moved to ERROR-RESP and ERROR-RESP2 and the message is composed
+#   into WS-RETURN-MSG [app/cbl/COACTUPC.cbl:3762-3783].
+# DID-NOT-FIND-CUST-IN-CUSTDAT is an 88-level of WS-RETURN-MSG with another
+# text [app/cbl/COACTUPC.cbl:501-502], so 9000-READ-ACCT goes on to
+# 9500-STORE-FETCHED-DATA, which changes only the COMMAREA context.
+# FOUND-CUST-IN-MASTER stays unset, so ACUP-SHOW-DETAILS is not set and
+# 3000-SEND-MAP sends COACTUP as for a search: the account id echoed, every
+# detail field LOW-VALUES (3201-SHOW-INITIAL-VALUES), the search-key prompt in
+# INFOMSG and the message in ERRMSG [app/cbl/COACTUPC.cbl:2698-2783,2955-2983].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - ERROR-RESP and ERROR-RESP2 are X(10) receiving S9(09) COMP RESP values: the
+#   nine digits unsigned, then a space. NOTFND is RESP 13 and RESP2 80 on a
+#   file READ.
+# - The STRING operands total 78 characters: 'CustId:' 7, the customer id 9,
+#   ' not found' 10, ' in customer master.Resp: ' 26, ERROR-RESP 10, ' REAS:' 6
+#   and ERROR-RESP2 10. WS-RETURN-MSG is X(75), so the STRING overflows and
+#   keeps the first 7 digits of ERROR-RESP2, '0000000' for any RESP2 below 100.
+#   The 75 characters move to the 78-byte ERRMSG, padded with 3 spaces.
+# - INFOMSG is the 40-byte prompt in the 45-byte field; titles are COTTL01Y's;
+#   CURDATE (mm/dd/yy) and CURTIME (hh:mm:ss) come from the region clock
+#   through CSDAT01Y, hence the matchers and clock_mode relative.
+# - ACSTTUS and ACSTNUM stand for the detail fields left at LOW-VALUES, which
+#   the screen capture shows as spaces: neither the account nor the customer
+#   details are shown although the account was found.
+# The UniKix copy of COACTUP.bms lacks the unnamed field at row 1, columns 1-9,
+# beside TRNNAME (GAP-DOC-025).
+id: ACT-COACTUPC-negative-009
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 2 'Account Update' and enters
+  account 00000000003 on the COACTUPC update screen (CAUP). The card
+  cross-reference through CXACAIX gives customer 000000003 and the account is
+  found in ACCTDAT, but CUSTDAT holds no record for that customer. COACTUPC
+  shows 'CustId:000000003 not found in customer master.Resp: 000000013
+  REAS:0000000' (cut at 75 characters) in the message line, keeps the account
+  id and the search-key prompt, and shows no account or customer details.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs, the CSD files COACTUPC reads, and the online-only copybooks it
+# copies. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC) are verified by the
+# SEC and MNU scenarios; the batch record copybooks and the data files are
+# verified at the lowest level that executes them.
+inventory_ids:
+- INV-ACT-063  # COACTUPC message 'CustId:... not found in customer master.Resp: ... REAS:...'
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, where option 2 is entered
+- INV-ACT-004  # COACTUP map, the prompt and the message screen
+- INV-CFG-009  # CAUP transaction, which runs the account lookup
+- INV-CFG-006  # CXACAIX CSD file: card cross-reference by account id
+- INV-CFG-001  # ACCTDAT CSD file: account master read
+- INV-CFG-005  # CUSTDAT CSD file: the customer master read that is NOTFND
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and ids
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COACTUPC
+- INV-LAY-007  # CSLKPCDY, copied by COACTUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COACTUPC
+- INV-LAY-010  # CSSETATY: the field attribute setting in 3300-SETUP-SCREEN-ATTRS
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
+- INV-LAY-013  # CSUTLDPY, copied by COACTUPC
+- INV-LAY-014  # CSUTLDWY, copied by COACTUPC
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-025  # the UniKix COACTUP.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    # Customer 000000003, the customer of account 00000000003, is left out, so
+    # the CUSTDAT READ of step 3 is NOTFND.
+    CUSTDATA: {base: CUSTDATA, omit_keys: ['000000003']}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '2'
+  - aid: ENTER
+    '@map': COACTUP
+    fields:
+      ACCTSID: '00000000003'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000003'
+    ACSTTUS: ' '
+    ACSTNUM: '         '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: 'CustId:000000003 not found in customer master.Resp: 000000013  REAS:0000000   '
