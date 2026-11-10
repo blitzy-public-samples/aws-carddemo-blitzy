@@ -1,0 +1,91 @@
+# The transaction-category lookup abend of CBTRN03C: TRAN-TYPE-CD and
+# TRAN-CAT-CD are moved to the 6-byte TRANCATG key and the random READ takes
+# INVALID KEY, so the program displays 'INVALID TRAN CATG KEY : ' with the key,
+# moves 23 to IO-STATUS and abends through 9999-ABEND-PROGRAM
+# [app/cbl/CBTRN03C.cbl:191-195,504-512,626-646].
+# The one input record carries type 01 with the invented category 0009, giving
+# the key 010009, which app/data holds no record for (trancatg.txt lists
+# categories 0001 to 0005 for type 01). Its card, 9680294154603697, is record
+# 49 of cardxref.txt and type 01 is in trantype.txt, so the cross-reference and
+# type lookups before it succeed and only the category lookup can fail
+# [app/cbl/CBTRN03C.cbl:181-190].
+# The processing date 2022-07-05 lies inside the DATEPARM window, so the record
+# is displayed before the lookups: the record line is the whole 350-byte
+# TRAN-RECORD that DISPLAY writes, its trailing spaces included
+# [app/cbl/CBTRN03C.cbl:170-180]. TRANREPT is opened OUTPUT before the loop and
+# the report headers are written only after the lookups, so the report the
+# abend leaves behind holds no line [app/cbl/CBTRN03C.cbl:162,196,274-280].
+# The libcob implicit-CLOSE warnings that follow the abend marker go to the raw
+# evidence only.
+id: RPT-CBTRN03C-negative-03
+level: unit
+type: negative
+description: >-
+  CBTRN03C reads one in-window transaction whose type and category key 010009 is
+  absent from the transaction category file: it displays the record,
+  'INVALID TRAN CATG KEY : 010009' and file status 23, and abends through
+  CEE3ABD before writing any report line.
+inventory_ids:
+- INV-RPT-042  # CBTRN03C abend on INVALID KEY lookup of card, type or category (recovery)
+- INV-RPT-003  # CBTRN03C program
+- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
+- INV-DTA-013  # its EBCDIC cross-check counterpart
+- INV-DTA-009  # trantype.txt, the TRANTYPE fixture source
+- INV-DTA-020  # its EBCDIC cross-check counterpart
+- INV-DTA-008  # trancatg.txt, the TRANCATG fixture source
+- INV-DTA-019  # its EBCDIC cross-check counterpart
+# Untagged by design: GAP-DEF-001 (the parameterless CALL 'CEE3ABD' that ends
+# every CB* abend path) is cited as the gap this abend passes through, as in
+# every CB* abend case; suspected-defect marks the cases that pin a program's
+# own defect.
+tags: []
+gap_ids:
+- GAP-MIS-001  # DATEPARM is supplied as a parameter file
+- GAP-STB-001  # CEE3ABD stub: no abend code, dump or LE condition handling
+- GAP-DEF-001  # the parameterless CALL 'CEE3ABD'
+- GAP-STB-010  # Berkeley DB indexed files in place of VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    CARDXREF:
+      base: CARDXREF
+    TRANTYPE:
+      base: TRANTYPE
+    TRANCATG:
+      base: TRANCATG
+    # The sequential TRANFILE input, already in card order (programs.yaml).
+    TRANSACT-DALY:
+      records:
+      - TRAN-ID: '9900000000000591'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '0009'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic unknown transaction category
+        TRAN-AMT: '10.00'
+        TRAN-MERCHANT-ID: '999000591'
+        TRAN-MERCHANT-NAME: Synthetic Merchant 591
+        TRAN-MERCHANT-CITY: Synthetic City
+        TRAN-MERCHANT-ZIP: '99999'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+  parameters:
+    DATEPARM: '2022-07-01 2022-07-31'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN03C
+expected:
+  return_code: null
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN03C
+  - Reporting from 2022-07-01 to 2022-07-31
+  - '9900000000000591010009POS TERM  Synthetic unknown transaction category                                                              0000000100{999000591Synthetic Merchant 591                            Synthetic City                                    99999     96802941546036972022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - 'INVALID TRAN CATG KEY : 010009'
+  - 'FILE STATUS IS: NNNN0023'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD
+  datasets:
+    TRANREPT:
+      records: []
