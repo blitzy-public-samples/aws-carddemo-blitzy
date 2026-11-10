@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package cardservicing.config.v1;
+
+import "cardservicing/common/v1/common.proto";
+
+option java_multiple_files = true;
+option java_package = "com.example.cardservicing.contract.config.v1";
+
+// Supplies runtime settings (default and maximum page size, upstream per-attempt timeout and retry cap) to the Card Servicing service; the page size traces to Use Cases · COTRN00C.
+// The Card Servicing service holds the last good values in an in-memory snapshot and refreshes them in the background, so no request waits on this call.
+// Stub phase: a stub gRPC server answered by a mock-data provider backed by bound configuration properties; the real swap changes only the target address and the credential source.
+// Identity: the caller's bearer token is forwarded in authorization metadata and the service credential travels in x-api-key; the stub ignores the key and does not re-authorize.
+service ConfigService {
+  // Returns the values of the requested configuration keys; unknown keys are absent from the result.
+  //
+  // Example request:
+  //   {"keys":["default_page_size","max_page_size","upstream_timeout_ms","upstream_max_retries"]}
+  //
+  // Example response:
+  //   {"values":{"default_page_size":"20","max_page_size":"100","upstream_timeout_ms":"300","upstream_max_retries":"2"}}
+  //
+  // Errors:
+  //   INVALID_ARGUMENT - no keys requested
+  //   UNAUTHENTICATED - forwarded bearer token missing, invalid or expired (the stub does not re-authorize)
+  //   UNAVAILABLE - service unavailable after retries
+  //   DEADLINE_EXCEEDED - request deadline reached
+  //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+}
+
+// Request for GetConfig.
+message GetConfigRequest {
+  // Configuration keys to read, at least one. Baseline keys: default_page_size, max_page_size, upstream_timeout_ms, upstream_max_retries. REQUEST_DEADLINE_MS is never a Config key.
+  repeated string keys = 1;
+}
+
+// Response for GetConfig.
+message GetConfigResponse {
+  // Values of the known requested keys as decimal strings; unknown keys are absent. Baseline values: default_page_size 20, max_page_size 100 (upper bound for page size), upstream_timeout_ms 300 (per-attempt timeout in milliseconds), upstream_max_retries 2.
+  map<string, string> values = 1;
+}
+
+// Names the standard error object that every RPC in this service packs, as cardservicing.common.v1.ErrorObject itself, into google.rpc.Status details on a non-OK status; not a request or response type.
+message ErrorDetail {
+  // The standard error object for a non-OK status.
+  cardservicing.common.v1.ErrorObject error = 1;
+}
