@@ -1,0 +1,388 @@
+# COACTUPC reports 'Changes unsuccessful. Please try again' when a confirmed
+# account update cannot be saved because the REWRITE of the account record
+# fails with an I/O error.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00 and
+# COSGN00C XCTLs to COMEN01C, which sends the main menu and returns TRANSID
+# CM00 [app/cbl/COSGN00C.cbl:221-240] [app/cbl/COMEN01C.cbl:82-90,107-110].
+# Step 2: option '2' is 'Account Update', program COACTUPC
+# [app/cpy/COMEN02Y.cpy:30-34]; COMEN01C XCTLs to it with CDEMO-FROM-PROGRAM
+# COMEN01C and CDEMO-PGM-CONTEXT 0 [app/cbl/COMEN01C.cbl:145-155]. COACTUPC
+# takes the fresh-entry branch, initializes its own COMMAREA area, sends
+# COACTUP with the search prompt, sets CDEMO-PGM-REENTER and returns TRANSID
+# CAUP [app/cbl/COACTUPC.cbl:880-893,964-973,2955-2961].
+# Step 3: ENTER with account 00000000001. The id is numeric and non-zero
+# [app/cbl/COACTUPC.cbl:1783-1818], so 9000-READ-ACCT reads CXACAIX (card
+# 9680294154603697, customer 000000001), ACCTDAT and CUSTDAT, all NORMAL, and
+# stores the fetched values as the "old" details [app/cbl/COACTUPC.cbl:2568-2580,
+# 3608-3884]. The screen shows them with 'Update account details presented
+# above.' [app/cbl/COACTUPC.cbl:2787-2865,2962-2963].
+# Step 4: ENTER with the FICO score typed over as 720. Every data field is FSET
+# [app/cbl/COACTUPC.cbl:3441-3561], so all come back; 1205-COMPARE-OLD-NEW finds
+# a change and every field edit passes, so ACUP-CHANGES-OK-NOT-CONFIRMED is set
+# and the screen asks 'Changes validated.Press F5 to save'
+# [app/cbl/COACTUPC.cbl:1429-1676,2620-2621,2966-2967].
+# Step 5: PF5 is valid in that state [app/cbl/COACTUPC.cbl:905-912]. The edits
+# are skipped for confirmed changes [app/cbl/COACTUPC.cbl:1463-1468], and
+# 9600-WRITE-PROCESSING reads ACCTDAT and CUSTDAT for update (both NORMAL),
+# finds neither changed since the fetch (9700-CHECK-CHANGE-IN-REC), and
+# REWRITEs ACCTDAT. The REWRITE answers IOERR, so LOCKED-BUT-UPDATE-FAILED
+# moves 'Update of record failed' to WS-RETURN-MSG and the CUSTDAT REWRITE is
+# never issued [app/cbl/COACTUPC.cbl:3888-4081,4109-4192]. 2000-DECIDE-ACTION
+# sets ACUP-CHANGES-OKAYED-BUT-FAILED [app/cbl/COACTUPC.cbl:2602-2615], and
+# 3250-SETUP-INFOMSG turns it into INFORM-FAILURE in INFOMSG, with
+# WS-RETURN-MSG in ERRMSG [app/cbl/COACTUPC.cbl:476-477,2973-2981]. The changed
+# values stay on the screen (3203-SHOW-UPDATED-VALUES, since 'F' is one of
+# ACUP-CHANGES-MADE) [app/cbl/COACTUPC.cbl:2718-2720,2870-2949].
+#
+# How the failure states relate: INFORM-FAILURE is shown for both
+# ACUP-CHANGES-FAILED states [app/cbl/COACTUPC.cbl:2971-2974]. A READ UPDATE of
+# ACCTDAT that is not NORMAL gives the lock-error state with ERRMSG 'Could not
+# lock account record for update' (recovery-02); a REWRITE of ACCTDAT or
+# CUSTDAT that is not NORMAL gives this state with 'Update of record failed'
+# (recovery-04 pins that message). A customer READ UPDATE failure sets neither
+# state: it falls to WHEN OTHER, ACUP-CHANGES-OKAYED-AND-DONE (recovery-03).
+#
+# No adapter can return IOERR from a region file operation, so the scenario
+# raises MissingPrerequisite under GAP-MIS-014 and stays implemented-unexecuted
+# until a mechanism exists. Neither file changes: the failing REWRITE writes
+# nothing, the CUSTDAT record is only read, and the task ends at RETURN, whose
+# syncpoint releases both locks.
+#
+# The customer record 000000001 is replaced by invented values that pass every
+# COACTUPC edit, so the save is reached: area code 919 is a general-purpose
+# code, NC a state code, and NC with zip 27601 a valid state/zip pair
+# [app/cpy/CSLKPCDY.cpy:521-930,1012-1070,1073-1186]. The account record is
+# the repository's record 1.
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values are whole fields at their BMS length with trailing spaces:
+#   INFOMSG 45 (from the 40-byte WS-INFO-MSG), ERRMSG 78 (from the 75-byte
+#   WS-RETURN-MSG), names 25, address lines and city 50, government id 20
+#   [app/bms/COACTUP.bms] [app/cbl/COACTUPC.cbl:463,479].
+# - Amounts are S9(10)V99 moved to +ZZZ,ZZZ,ZZZ.99 [app/cbl/COACTUPC.cbl:371],
+#   so a zero amount shows as '+           .00'.
+# - AADDGRP is asserted only on the fetched screen: the blank group id comes
+#   back as spaces, 1100-RECEIVE-MAP stores LOW-VALUES for it and later sends
+#   echo nulls, whose 3270 rendering is not a business outcome
+#   [app/cbl/COACTUPC.cbl:1213-1218,2921]. ACCTSID is not asserted on the first
+#   COACTUP send, which leaves it as LOW-VALUES.
+# - CURDATE (mm/dd/yy) and CURTIME come from the region clock, hence the
+#   matchers and clock_mode relative [app/cbl/COACTUPC.cbl:2668-2691].
+# The UniKix copy of COACTUP.bms lacks the unnamed field at row 1, columns 1-9
+# (GAP-DOC-025). Its COACTUPC and CSUTLDPY also change the amount, blank and
+# date edits and the change detection (GAP-DOC-022, GAP-DOC-024), but only for
+# input this scenario does not enter: every value here is valid and changes
+# only the FICO score.
+id: ACT-COACTUPC-recovery-01
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, selects main-menu option 2 (Account Update), fetches
+  account 00000000001 with its invented customer 000000001, changes the FICO
+  score from 700 to 720, is asked to confirm, and presses PF5 while the REWRITE
+  of the account record fails with an I/O error. COACTUPC keeps the changed
+  values on the COACTUP screen with 'Changes unsuccessful. Please try again' in
+  INFOMSG and 'Update of record failed' in ERRMSG, and neither the account nor
+  the customer record changes.
+# Primary item first, then the program, the maps asserted, the transaction
+# under which the fetch and the failing save run, the CSD files COACTUPC reads
+# and locks, and the online-only copybooks it copies. Sign-on and the menu
+# (CC00, CM00, COSGN00, USRSEC) are verified by the SEC and MNU scenarios; the
+# batch record copybooks and the data files are verified at the lowest level
+# that executes them.
+inventory_ids:
+- INV-ACT-033  # COACTUPC message 'Changes unsuccessful. Please try again' (recovery)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, where option 2 is entered
+- INV-ACT-004  # COACTUP map, the search, detail, confirmation and failure screens
+- INV-CFG-009  # CAUP transaction, which runs the fetch, the edit and the save
+- INV-CFG-006  # CXACAIX CSD file: card cross-reference by account id
+- INV-CFG-001  # ACCTDAT CSD file: account read, read for update, failing REWRITE
+- INV-CFG-005  # CUSTDAT CSD file: customer read and read for update
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and the customer id
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-007  # CSLKPCDY: the area code, state and state/zip lookups the edits pass
+- INV-LAY-008  # CSMSG01Y, copied by COACTUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COACTUPC
+- INV-LAY-010  # CSSETATY: the field attribute settings of 3300-SETUP-SCREEN-ATTRS
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER and PF5 paths
+- INV-LAY-013  # CSUTLDPY: the date edits the step 4 dates pass
+- INV-LAY-014  # CSUTLDWY: the date edit work areas
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-014  # no mechanism to return an I/O error from a region file operation
+- GAP-DOC-025  # the UniKix COACTUP.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    USRSEC: {base: USRSEC}
+    # Customer 000000001 replaced by invented values that pass every edit;
+    # FILLER keeps the repository record's bytes.
+    CUSTDATA:
+      base: CUSTDATA
+      records:
+      - CUST-ID: '000000001'
+        CUST-FIRST-NAME: Testfirst
+        CUST-MIDDLE-NAME: Testmiddle
+        CUST-LAST-NAME: Testlast
+        CUST-ADDR-LINE-1: '100 Test Street'
+        CUST-ADDR-LINE-2: 'Suite 1'
+        CUST-ADDR-LINE-3: Raleigh
+        CUST-ADDR-STATE-CD: NC
+        CUST-ADDR-COUNTRY-CD: USA
+        CUST-ADDR-ZIP: '27601'
+        CUST-PHONE-NUM-1: '(919)555-0101'
+        CUST-PHONE-NUM-2: '(919)555-0102'
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: TESTGOVT0001
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'
+  parameters:
+    clock_mode: relative
+  # No `after`: the REWRITE of step 5 is the only ACCTDAT rewrite of the
+  # scenario, and every read before it succeeds.
+  faults:
+  - target: ACCTDAT
+    operation: rewrite
+    condition: io-error
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+  - aid: ENTER
+    '@map': COMEN01
+    fields: {OPTION: '2'}
+  - aid: ENTER
+    '@map': COACTUP
+    fields: {ACCTSID: '00000000001'}
+  - aid: ENTER
+    '@map': COACTUP
+    fields: {ACSTFCO: '720'}
+  - aid: PF5
+    '@map': COACTUP
+    fields: {}
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  # The fetched account and customer (3202-SHOW-ORIGINAL-VALUES).
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: '                                                                              '
+  # The validated change awaiting confirmation (3203-SHOW-UPDATED-VALUES).
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '720'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Changes validated.Press F5 to save           '
+    ERRMSG: '                                                                              '
+  # The failed save: the changed values kept, INFORM-FAILURE in INFOMSG and
+  # LOCKED-BUT-UPDATE-FAILED in ERRMSG.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '720'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Changes unsuccessful. Please try again       '
+    ERRMSG: 'Update of record failed                                                       '
+  # The ERRMSG value of each step: blank until the failed save.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - '                                                                              '
+  - '                                                                              '
+  - 'Update of record failed                                                       '
+  file_state:
+    # Account 00000000001 as loaded: the failed REWRITE wrote nothing, so the
+    # balances, dates, ACCT-ADDR-ZIP and the blank group id are unchanged.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: 'A000000000'
+        ACCT-GROUP-ID: '          '
+    # Customer 000000001 as loaded: the CUSTDAT REWRITE was never issued, so
+    # the FICO score is still 700.
+    CUSTDATA:
+      count: 50
+      contains:
+      - CUST-ID: '1'
+        CUST-FIRST-NAME: 'Testfirst                '
+        CUST-MIDDLE-NAME: 'Testmiddle               '
+        CUST-LAST-NAME: 'Testlast                 '
+        CUST-ADDR-LINE-1: '100 Test Street                                   '
+        CUST-ADDR-LINE-2: 'Suite 1                                           '
+        CUST-ADDR-LINE-3: 'Raleigh                                           '
+        CUST-ADDR-STATE-CD: 'NC'
+        CUST-ADDR-COUNTRY-CD: 'USA'
+        CUST-ADDR-ZIP: '27601     '
+        CUST-PHONE-NUM-1: '(919)555-0101  '
+        CUST-PHONE-NUM-2: '(919)555-0102  '
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'

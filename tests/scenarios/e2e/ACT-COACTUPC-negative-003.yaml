@@ -1,0 +1,260 @@
+# ENTER on the Update Account screen with every fetched value left as it was:
+# COACTUPC finds no difference between the received fields and the values it
+# fetched, refuses to treat the input as an update, and shows 'No change
+# detected with respect to values fetched.'.
+#
+# Step 1: USER0001 signs on through CC00; COSGN00C routes the type 'U' user to
+# the main menu COMEN01 [app/cbl/COSGN00C.cbl:221-237].
+# Step 2: option '2' is 'Account Update' of COMEN02Y, so COMEN01C XCTLs to
+# COACTUPC with CDEMO-FROM-PROGRAM COMEN01C and CDEMO-PGM-CONTEXT zero
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:31-35]. COACTUPC takes
+# its fresh-entry path: COACTUP from a cleared output map, the search-key
+# prompt in INFOMSG, an empty message line [app/cbl/COACTUPC.cbl:964-973,2955-2983].
+# Step 3: ENTER with ACCTSID 00000000001. 1210-EDIT-ACCOUNT accepts the id;
+# 9000-READ-ACCT reads CXACAIX by account (card 9680294154603697, customer
+# 000000001), ACCTDAT and CUSTDAT, and 9500-STORE-FETCHED-DATA keeps every
+# value in ACUP-OLD-DETAILS of the COMMAREA; ACUP-SHOW-DETAILS is set
+# [app/cbl/COACTUPC.cbl:1433-1446,2568-2580,3608-3884]. 3202-SHOW-ORIGINAL-VALUES
+# sends the values, the amounts edited as +ZZZ,ZZZ,ZZZ.99
+# [app/cbl/COACTUPC.cbl:371,2787-2865], with 'Update account details presented
+# above.' in INFOMSG. 3310/3320 give every editable field DFHBMFSE and ACCTSID,
+# ACSTNUM and ACSCTRY DFHBMPRF, so each field's MDT is on
+# [app/cbl/COACTUPC.cbl:2986-3000,3441-3561].
+# Step 4: ENTER with no field typed. With the MDTs on, the terminal returns
+# every field as sent and 1100-RECEIVE-MAP rebuilds ACUP-NEW-DETAILS from them;
+# each edited amount goes back through NUMVAL-C into its S9(10)V99 redefinition
+# and equals the fetched bytes [app/cbl/COACTUPC.cbl:1039-1425].
+# 1205-COMPARE-OLD-NEW finds every account and customer field equal and sets
+# NO-CHANGES-DETECTED in WS-RETURN-MSG; 1200-EDIT-MAP-INPUTS then skips every
+# field edit [app/cbl/COACTUPC.cbl:1452-1468,1681-1775]. 2000-DECIDE-ACTION
+# leaves ACUP-SHOW-DETAILS as it is [app/cbl/COACTUPC.cbl:2585-2591], so the map
+# is sent again with the fetched values, the same INFOMSG prompt and the
+# message in ERRMSG [app/cbl/COACTUPC.cbl:2698-2727,2955-2982]. No READ UPDATE
+# or REWRITE runs on this path: ACCTDAT and CUSTDAT keep the records as loaded.
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - Text values are whole fields at their BMS length with trailing spaces:
+#   ERRMSG is the 75-byte WS-RETURN-MSG padded to 78, INFOMSG the 40-byte
+#   WS-INFO-MSG padded to 45.
+# - The header is 3100-SCREEN-INIT's: the COTTL01Y titles, CAUP, COACTUPC and
+#   CURDATE mm/dd/yy and CURTIME hh:mm:ss of the run clock through CSDAT01Y,
+#   hence the matchers and clock_mode relative [app/cbl/COACTUPC.cbl:2668-2692].
+# - The CUSTDATA record of customer 000000001 is replaced by invented values
+#   that pass every field edit and fill every field of the screen, so each
+#   value the screen shows comes back exactly as fetched.
+id: ACT-COACTUPC-negative-003
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 2 'Account Update', fetches
+  account 00000000001 on the COACTUP screen and presses ENTER without changing
+  any field. COACTUPC compares the returned fields with the values it fetched,
+  finds no change, skips every field edit and sends the screen again with the
+  fetched values and 'No change detected with respect to values fetched.';
+  ACCTDAT and CUSTDAT are not updated.
+inventory_ids:
+- INV-ACT-039  # COACTUPC message 'No change detected with respect to values fetched.' (rule)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, the main menu option 2 is entered on
+- INV-ACT-004  # COACTUP map, the update screen of steps 2-4
+- INV-CFG-009  # CAUP transaction, under which the fetch and the unchanged ENTER run
+- INV-CFG-006  # CXACAIX CSD file, the account-to-card path the fetch reads
+- INV-CFG-001  # ACCTDAT CSD file, read by the fetch and left unchanged
+- INV-CFG-005  # CUSTDAT CSD file, read by the fetch and left unchanged
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the fetched values between steps
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COACTUPC
+- INV-LAY-007  # CSLKPCDY copybook, the edit lookups compiled into COACTUPC
+- INV-LAY-009  # CSMSG02Y copybook, the abend variables
+- INV-LAY-010  # CSSETATY copybook, the field attributes of the re-sent screen
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping that turns ENTER into CCARD-AID-ENTER
+- INV-LAY-013  # CSUTLDPY copybook, the date edits this path skips
+- INV-LAY-014  # CSUTLDWY copybook, the date edit work areas
+- INV-LAY-019  # CVCRD01Y copybook, the AID flags and CC-ACCT-ID
+tags:
+- inferred-not-observed
+# GAP-DOC-022: the UniKix copy of COACTUPC drops FUNCTION TRIM from these
+#   comparisons and the TEST-NUMVAL-C checks of the amounts, so a UniKix run
+#   never verifies this item while that entry is open.
+# GAP-DOC-025: the UniKix copy of COACTUP.bms drops the unnamed field at row 1,
+#   columns 1-9, where TRNNAME is asserted.
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-022
+- GAP-DOC-025
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001.
+    USRSEC: {base: USRSEC}
+    # Record 49 maps account 00000000001 to card 9680294154603697 and customer
+    # 000000001; CXACAIX is its alternate-index path.
+    CARDXREF: {base: CARDXREF}
+    # ACCT-GROUP-ID is blank in every repository account (GAP-DEF-005). A blank
+    # AADDGRP comes back as SPACES, which 1100-RECEIVE-MAP turns into LOW-VALUES
+    # while the fetched value stays SPACES, and TRIM removes only spaces, so
+    # 1205-COMPARE-OLD-NEW would report a change for every repository account
+    # and this message could never appear [app/cbl/COACTUPC.cbl:1213-1218,1697-1700].
+    # The invented group id keeps the field non-blank; the rest of account
+    # 00000000001 is the repository record.
+    ACCTDATA:
+      base: ACCTDATA
+      records:
+      - {ACCT-ID: '00000000001', ACCT-GROUP-ID: TESTGRP001}
+    # Customer 000000001 with invented values that pass every COACTUPC edit and
+    # fill every screen field, so none comes back blank.
+    CUSTDATA:
+      base: CUSTDATA
+      records:
+      - CUST-ID: '000000001'
+        CUST-FIRST-NAME: Testfirst
+        CUST-MIDDLE-NAME: Testmiddle
+        CUST-LAST-NAME: Testlast
+        CUST-ADDR-LINE-1: 100 Test Street
+        CUST-ADDR-LINE-2: Suite 1
+        CUST-ADDR-LINE-3: Raleigh
+        CUST-ADDR-STATE-CD: NC
+        CUST-ADDR-COUNTRY-CD: USA
+        CUST-ADDR-ZIP: '27601'
+        CUST-PHONE-NUM-1: '(919)555-0101'
+        CUST-PHONE-NUM-2: '(919)555-0102'
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: TESTGOVT0001
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000001'}
+    '@map': COACTUP
+  # No field typed: the fetched values go back as sent.
+  - aid: ENTER
+    fields: {}
+    '@map': COACTUP
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '00000000001'
+    ACSTNUM: '000000001'
+    AADDGRP: TESTGRP001
+    ACURBAL: '+        194.00'
+    ACSFNAM: 'Testfirst                '
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: '                                                                              '
+  # The values fetched at step 3, sent again unchanged, with the message.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: TESTGRP001
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: NC
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: USA
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: 'No change detected with respect to values fetched.                            '
+  # One ERRMSG value per step: blank on the menu, the fresh and the fetched
+  # update screens, the no-change message after the unchanged ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - '                                                                              '
+  - 'No change detected with respect to values fetched.                            '
+  file_state:
+    # Nothing is rewritten: account 00000000001 and customer 000000001 hold the
+    # values loaded, and each dataset keeps its 50 records.
+    ACCTDATA:
+      count: 50
+      contains:
+      - {ACCT-ID: '1', ACCT-ACTIVE-STATUS: 'Y', ACCT-CURR-BAL: '194.00', ACCT-CREDIT-LIMIT: '2020.00',
+         ACCT-CASH-CREDIT-LIMIT: '1020.00', ACCT-OPEN-DATE: '2014-11-20', ACCT-EXPIRAION-DATE: '2025-05-20',
+         ACCT-REISSUE-DATE: '2025-05-20', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00',
+         ACCT-ADDR-ZIP: A000000000, ACCT-GROUP-ID: TESTGRP001}
+    CUSTDATA:
+      count: 50
+      contains:
+      - CUST-ID: '1'
+        CUST-FIRST-NAME: 'Testfirst                '
+        CUST-MIDDLE-NAME: 'Testmiddle               '
+        CUST-LAST-NAME: 'Testlast                 '
+        CUST-ADDR-LINE-1: '100 Test Street                                   '
+        CUST-ADDR-LINE-2: 'Suite 1                                           '
+        CUST-ADDR-LINE-3: 'Raleigh                                           '
+        CUST-ADDR-STATE-CD: NC
+        CUST-ADDR-COUNTRY-CD: USA
+        CUST-ADDR-ZIP: '27601     '
+        CUST-PHONE-NUM-1: '(919)555-0101  '
+        CUST-PHONE-NUM-2: '(919)555-0102  '
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'

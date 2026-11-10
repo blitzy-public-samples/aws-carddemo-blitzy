@@ -1,0 +1,377 @@
+# USER0001 updates the FICO score of account 00000000001's customer through
+# COACTUPC, confirms with PF5 and receives 'Changes committed to database'.
+#
+# Step 1: USER0001 signs on through CC00; COSGN00C routes the type U user to the
+# main menu COMEN01 (asserted by its header and option 2 only; its content
+# belongs to SEC-COSGN00C-normal-02).
+# Step 2: option '2' makes COMEN01C XCTL to COACTUPC with CDEMO-PGM-CONTEXT 0,
+# which takes the fresh-entry path and sends COACTUP with the search-key prompt
+# [app/cbl/COMEN01C.cbl:115-156] [app/cbl/COACTUPC.cbl:964-973,2955-2961]
+# (the same landing screen as MNU-COMEN01C-alternate-02).
+# Step 3: ENTER with account 00000000001. 9000-READ-ACCT reads CXACAIX (card
+# 9680294154603697, customer 000000001), ACCTDAT and CUSTDAT, sets
+# ACUP-SHOW-DETAILS and 3202-SHOW-ORIGINAL-VALUES fills the map, with INFOMSG
+# 'Update account details presented above.' [app/cbl/COACTUPC.cbl:2568-2580,
+# 2787-2865,3608-3884]. 3320-UNPROTECT-FEW-ATTRS gives every input field an
+# attribute with MDT on (DFHBMFSE, or DFHBMPRF for ACCTSID, ACSTNUM and
+# ACSCTRY), so every field comes back on the next AID [app/cbl/COACTUPC.cbl:
+# 3441-3562].
+# Step 4: ENTER with FICO 720 typed over 700. 1205-COMPARE-OLD-NEW finds the
+# change, every edit of 1200-EDIT-MAP-INPUTS passes for this customer, so
+# ACUP-CHANGES-OK-NOT-CONFIRMED is set; 3203-SHOW-UPDATED-VALUES echoes the
+# received values, INFOMSG is 'Changes validated.Press F5 to save', F5=Save and
+# F12=Cancel turn bright and every field is DFHBMPRF (protected, MDT on)
+# [app/cbl/COACTUPC.cbl:1429-1676,2870-2949,2966-2967,3001-3003,3566-3584].
+# Step 5: PF5, valid only in that state, runs 9600-WRITE-PROCESSING: READ UPDATE
+# of ACCTDAT and CUSTDAT, 9700-CHECK-CHANGE-IN-REC finds both records as
+# fetched, and both REWRITEs succeed, so ACUP-CHANGES-OKAYED-AND-DONE is set and
+# 3250-SETUP-INFOMSG moves CONFIRM-UPDATE-SUCCESS 'Changes committed to
+# database' to INFOMSG; the fields still echo the values received with the PF5
+# [app/cbl/COACTUPC.cbl:474-475,906-911,2602-2615,2968-2969,3888-4192].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values are whole fields at their BMS length, trailing spaces kept.
+#   INFOMSG is the 40-byte WS-INFO-MSG in the 45-byte field; ERRMSG holds the
+#   blank 75-byte WS-RETURN-MSG in its 78 bytes [app/cbl/COACTUPC.cbl:462-479,
+#   2979-2981].
+# - Amounts are shown through WS-EDIT-CURRENCY-9-2-F, PIC +ZZZ,ZZZ,ZZZ.99, and
+#   NUMVAL-C of that text gives the stored value back [app/cbl/COACTUPC.cbl:
+#   370-371,1072-1140].
+# - AADDGRP shows ACCT-GROUP-ID, blank in every repository account (GAP-DEF-005);
+#   the blank received field becomes LOW-VALUES in ACUP-NEW-GROUP-ID, which
+#   3203 sends as nulls, shown as spaces [app/cbl/COACTUPC.cbl:1213-1218,2921].
+# - ACSZIPC is 5 bytes, so the 10-byte zip shows its first 5.
+# - FKEY05 and FKEY12 are ATTRB=(ASKIP,DRK) in the map; the screen capture
+#   renders a zero-intensity field as blanks unless 3390 makes it bright.
+# - The header is the COTTL01Y titles, CAUP, COACTUPC and CURDATE mm/dd/yy and
+#   CURTIME hh:mm:ss of the run clock through CSDAT01Y, hence the matchers and
+#   clock_mode relative [app/cbl/COACTUPC.cbl:2668-2692].
+# - CAUP runs under PROFILE(DFHCICST), which does not translate input to upper
+#   case [app/csd/CARDDEMO.CSD:306-316], so the mixed-case names come back and
+#   are rewritten as shown.
+id: ACT-COACTUPC-normal-02
+level: e2e
+type: normal
+description: >-
+  USER0001 signs on, chooses main menu option 2 'Account Update', fetches
+  account 00000000001 on the COACTUP screen, which shows the account and its
+  customer 000000001 with 'Update account details presented above.', changes
+  the FICO score from 700 to 720 and presses ENTER. COACTUPC validates every
+  field and asks 'Changes validated.Press F5 to save'; PF5 rewrites the account
+  and customer records and confirms with 'Changes committed to database'.
+inventory_ids:
+- INV-ACT-032  # COACTUPC message 'Changes committed to database' (rule)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, the main menu option 2 is entered on
+- INV-ACT-004  # COACTUP map, the account update screen of steps 2-5
+- INV-CFG-009  # CAUP transaction, under which the fetch, edit and save run
+- INV-CFG-006  # CXACAIX CSD file, the cross-reference path read by account id
+- INV-CFG-001  # ACCTDAT CSD file, read, read for update and rewritten
+- INV-CFG-005  # CUSTDAT CSD file, read, read for update and rewritten
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA COMEN01C passes with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COACTUPC
+- INV-LAY-007  # CSLKPCDY copybook, the area code, state and state/zip tables
+- INV-LAY-009  # CSMSG02Y copybook, the abend data COACTUPC copies
+- INV-LAY-010  # CSSETATY copybook, the field attribute setting of 3300
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping that accepts PF5
+- INV-LAY-013  # CSUTLDPY copybook, the date edits of step 4
+- INV-LAY-014  # CSUTLDWY copybook, the date edit work areas
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # account (ACT) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# Step 4 runs the four date edits through CSUTLDTC, so 'Changes validated' rests
+# on CEEDAYS accepting the dates, which no run has observed.
+- GAP-INF-001
+# The UniKix copy changes code this scenario passes through: CSUTLDTC's Vstring
+# lengths (021), COACTUPC's edits and change detection (022), CSUTLDPY's date
+# edits (024) and COACTUP's row 1 (025). A unikix run therefore observes the
+# copy's behaviour of those parts.
+- GAP-DOC-021
+- GAP-DOC-022
+- GAP-DOC-024
+- GAP-DOC-025
+preconditions:
+  datasets:
+    # The 10 repository users, for the USER0001 sign-on.
+    USRSEC: {base: USRSEC}
+    # Account 00000000001 and its cross-reference record (card 9680294154603697,
+    # customer 000000001, read through the CXACAIX path) as in the repository.
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    # Customer 000000001 replaced by invented values that pass every edit of
+    # 1200-EDIT-MAP-INPUTS: the repository record fails the Phone Number 2 area
+    # code, the state/zip combination and the FICO range. FILLER stays as in the
+    # base record.
+    CUSTDATA:
+      base: CUSTDATA
+      records:
+      - CUST-ID: '1'
+        CUST-FIRST-NAME: Testfirst
+        CUST-MIDDLE-NAME: Testmiddle
+        CUST-LAST-NAME: Testlast
+        CUST-ADDR-LINE-1: 100 Test Street
+        CUST-ADDR-LINE-2: Suite 1
+        CUST-ADDR-LINE-3: Raleigh
+        CUST-ADDR-STATE-CD: NC
+        CUST-ADDR-COUNTRY-CD: USA
+        CUST-ADDR-ZIP: '27601'
+        CUST-PHONE-NUM-1: (919)555-0101
+        CUST-PHONE-NUM-2: (919)555-0102
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: TESTGOVT0001
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000001'}
+    '@map': COACTUP
+  - aid: ENTER
+    fields: {ACSTFCO: '720'}
+    '@map': COACTUP
+  - aid: PF5
+    fields: {}
+    '@map': COACTUP
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: '                                                                              '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: '       '
+    FKEY12: '          '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '720'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Changes validated.Press F5 to save           '
+    ERRMSG: '                                                                              '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: F5=Save
+    FKEY12: F12=Cancel
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '720'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Changes committed to database                '
+    ERRMSG: '                                                                              '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: '       '
+    FKEY12: '          '
+  file_state:
+    # CUST-UPDATE-RECORD has the CVCUS01Y layout; 9600-WRITE-PROCESSING moves
+    # every received value into it, rebuilds the phone numbers and the date of
+    # birth with STRING, and REWRITEs it [app/cbl/COACTUPC.cbl:434-456,4007-4091].
+    # Only CUST-FICO-CREDIT-SCORE differs from the record loaded. Its 168-byte
+    # FILLER is not asserted: INITIALIZE skips FILLER, so the REWRITE writes
+    # whatever that never-initialized working storage holds.
+    CUSTDATA:
+      count: 50
+      contains:
+      - CUST-ID: '1'
+        CUST-FIRST-NAME: 'Testfirst                '
+        CUST-MIDDLE-NAME: 'Testmiddle               '
+        CUST-LAST-NAME: 'Testlast                 '
+        CUST-ADDR-LINE-1: '100 Test Street                                   '
+        CUST-ADDR-LINE-2: 'Suite 1                                           '
+        CUST-ADDR-LINE-3: 'Raleigh                                           '
+        CUST-ADDR-STATE-CD: 'NC'
+        CUST-ADDR-COUNTRY-CD: 'USA'
+        CUST-ADDR-ZIP: '27601     '
+        CUST-PHONE-NUM-1: '(919)555-0101  '
+        CUST-PHONE-NUM-2: '(919)555-0102  '
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '720'
+    # The account fields COACTUPC rewrites from the screen, all as fetched. The
+    # rest of the record is left to the account REWRITE item's own scenario:
+    # ACCT-UPDATE-RECORD has no ACCT-ADDR-ZIP, so its group id (LOW-VALUES here)
+    # lands on ACCT-ADDR-ZIP and its never-initialized 188-byte FILLER on
+    # ACCT-GROUP-ID and the record's FILLER [app/cbl/COACTUPC.cbl:418-433,
+    # 3956-4002], a suspected defect this message scenario does not pin.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+

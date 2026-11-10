@@ -178,6 +178,22 @@ gaps:
   needed: The owner's confirmation of intent. The behaviour is pinned as derived and never fixed under app/. The unikix outcome of ACT-COACTUPC-recovery-03, once a lock-holding mechanism resolves GAP-MIS-014, would show the screen the region sends.
   resolving_evidence: null
   status: open
+- gap_id: GAP-DEF-016
+  category: suspected-defect
+  unknown: 'COACTUPC rewrites the account from ACCT-UPDATE-RECORD [app/cbl/COACTUPC.cbl:418-433,4065-4071], whose layout omits the ACCT-ADDR-ZIP of CVACT01Y [app/cpy/CVACT01Y.cpy:15-17]: ACCT-UPDATE-GROUP-ID lies at columns 103-112, where the account master holds ACCT-ADDR-ZIP, and its 188-byte FILLER covers ACCT-GROUP-ID and the record FILLER (columns 113-300). Every successful account update therefore writes the Account Group screen field into ACCT-ADDR-ZIP, as LOW-VALUES when the field is blank [app/cbl/COACTUPC.cbl:1213-1218,4002], so the group id that acctdata.txt keeps there (GAP-DEF-005) is lost; columns 113-300 receive working storage that INITIALIZE skips and nothing sets [app/cbl/COACTUPC.cbl:3956]. Whether the update layout or CVACT01Y is meant is unknown; ACT-COACTUPC-normal-03 pins the derived record and leaves columns 113-300 unasserted.'
+  affected_inventory_ids:
+  - INV-ACT-192
+  needed: The owner's confirmation of intent, and the unikix outcome of ACT-COACTUPC-normal-03, which would show the bytes the region writes into columns 103-300. The behaviour is pinned as derived and never fixed under app/.
+  resolving_evidence: null
+  status: open
+- gap_id: GAP-DEF-017
+  category: suspected-defect
+  unknown: 'When 9700-CHECK-CHANGE-IN-REC finds that the account or customer record read for update differs from the values the session fetched, COACTUPC sets DATA-WAS-CHANGED-BEFORE-UPDATE, writes nothing, and 2000-DECIDE-ACTION sets ACUP-SHOW-DETAILS, so 3202-SHOW-ORIGINAL-VALUES redisplays ACUP-OLD-DETAILS from the COMMAREA: the values fetched before the other change, with the user''s own edits dropped [app/cbl/COACTUPC.cbl:2602-2615,2787-2865,3944-3952,4109-4191]. Nothing stores the records just read (9500-STORE-FETCHED-DATA is not performed), so the screen that asks the user to review shows none of the other session''s values, and every later save from the same fetch is refused with the same message until the account is fetched again, for example by PF12 [app/cbl/COACTUPC.cbl:2572-2580]. COCRDUPC''s 9300-CHECK-CHANGE-IN-REC, by contrast, moves the re-read card fields into its old values [app/cbl/COCRDUPC.cbl:1498-1519]. ACT-COACTUPC-alternate-02 pins the redisplay as derived.'
+  affected_inventory_ids:
+  - INV-ACT-053
+  needed: The owner's confirmation of intent. The behaviour is pinned as derived and never fixed under app/. The unikix outcome of ACT-COACTUPC-alternate-02 would show the redisplay on a live region.
+  resolving_evidence: null
+  status: open
 - gap_id: GAP-DOC-001
   category: doc-conflict
   unknown: 'The tech spec counts 18 online programs ("eighteen CICS programs", Section 1.2.2.1; "Online Programs (18 CICS Programs)", Section 1.2.2.2; "Online Programs (app/cbl/CO*.cbl): 18 programs", Section 6.6.2.1.2), but app/cbl holds 17 online sources. COCRDSEC (''CREDIT CARD SEARCH'') exists only as a CSD definition [app/csd/CARDDEMO.CSD:211-218], started by transaction CDV1 ''DEVELOPER TRANSACTION - 1'' [app/csd/CARDDEMO.CSD:388-390]; neither app/cbl nor the UniKix copy''s migrated_app/cbl holds its source, so both items are unreachable.'
