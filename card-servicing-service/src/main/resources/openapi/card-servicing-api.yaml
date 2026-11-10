@@ -240,11 +240,13 @@ paths:
         ordered by (typeCode, categoryCode) ascending, with no paging. The bearer
         token is validated (401) and the caller is authorized for accountId
         (403) before any account data is read from upstream or cache. The
-        category balances and the transaction categories are then read
-        concurrently. An unknown typeCode returns 400 while reference data is
-        usable (fresh or within its maximum stale age); with no usable reference
-        data the check is skipped, the filter still applies and the result is
-        PARTIAL with typeDescription and categoryDescription null. A stale
+        category balances, the transaction categories and the transaction types
+        are then read concurrently. An unknown typeCode returns 400 while the
+        transaction category list is usable (fresh or within its maximum stale
+        age); with no usable transaction category list the check is skipped,
+        the filter still applies and the result is PARTIAL with typeDescription
+        and categoryDescription null. With only the transaction type list
+        unusable, typeDescription is null and the result is PARTIAL. A stale
         cached category-balance read gives STALE; any other upstream failure
         returns 503 or 504. Source - Data Layouts · CVTRA01Y.
       parameters:
@@ -272,8 +274,8 @@ paths:
             omitted returns every type. Reserved characters, the space, control
             characters and non-ASCII characters are percent-encoded in the URL
             (RFC 3986, UTF-8 for non-ASCII), and the pattern applies to the
-            decoded value. An unknown value returns 400 while reference data
-            is usable.
+            decoded value. An unknown value returns 400 while the transaction
+            category list is usable.
           schema:
             type: string
             pattern: '^[\s\S]{2}$'
@@ -322,8 +324,8 @@ paths:
         '400':
           description: >-
             INVALID_ARGUMENT - accountId malformed or all zeros, typeCode
-            malformed, or typeCode unknown while reference data is usable (fresh
-            or within its maximum stale age).
+            malformed, or typeCode unknown while the transaction category list
+            is usable (fresh or within its maximum stale age).
           content:
             application/json:
               schema:

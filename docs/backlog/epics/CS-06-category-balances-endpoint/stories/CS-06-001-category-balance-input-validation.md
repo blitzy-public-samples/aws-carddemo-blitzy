@@ -164,7 +164,7 @@ Effort and risk: the same rule set and a reordered data stage in the retrieval s
 ### Recommendation
 
 - Option: Option A.
-- Why: one concurrent data stage keeps both reads inside the 900 millisecond deadline, and the shape check keeps malformed input away from every network call.
+- Why: one concurrent data stage keeps the balance read and the reference reads inside the 900 millisecond deadline, and the shape check keeps malformed input away from every network call.
 - Strongest argument against: a request with an unknown type code still pays for a balance read that is then discarded.
 - Shared items that do not decide the choice: the two-character type code rule, the receipt stage ahead of the guard, the skip rule on unusable reference data, the standard error object and the receipt trace number.
 - Flip conditions: a reference copy held in memory with no network call, which makes an early known-type check free, or a deadline budget that holds two serial data reads on a cold path.

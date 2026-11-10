@@ -98,11 +98,19 @@ sequenceDiagram
             ReferenceDataService-->>CardServicingService: Categories with descriptions or error
             CardServicingService->>AzureManagedRedis: Store categories with cachedAt on success
         end
+    and transaction types
+        CardServicingService->>AzureManagedRedis: Read cached transaction types
+        AzureManagedRedis-->>CardServicingService: Fresh entry, stale entry or miss
+        opt miss or stale entry
+            CardServicingService->>ReferenceDataService: ListTransactionTypes
+            ReferenceDataService-->>CardServicingService: Types with descriptions or error
+            CardServicingService->>AzureManagedRedis: Store types with cachedAt on success
+        end
     end
 
-    alt unknown typeCode, reference data usable
+    alt unknown typeCode, category list usable
         CardServicingService->>CardServicingService: Discard data read,<br/>outcome 400
-    else no usable reference data
+    else no usable category list
         CardServicingService->>CardServicingService: Skip typeCode check,<br/>apply filter,<br/>mark PARTIAL
     else typeCode known or absent
         CardServicingService->>CardServicingService: Apply typeCode filter<br/>and label descriptions
@@ -110,7 +118,7 @@ sequenceDiagram
 
     Note over CardServicingService: Cut-off at or before 900 ms
 
-    alt unknown typeCode, reference data usable
+    alt unknown typeCode, category list usable
         CardServicingService-->>ApiGateway: 400 ErrorObject for typeCode
         ApiGateway-->>CardServicingUi: 400 ErrorObject
     else category balances read or served stale
@@ -125,4 +133,4 @@ sequenceDiagram
         ApiGateway-->>CardServicingUi: 503 or 504 ErrorObject
     end
 
-    Note over LegendCompute,LegendNetworking: The service checks the token and account<br/>access, then reads the account's category<br/>balances and the category descriptions<br/>concurrently through the cache. An unknown<br/>typeCode returns 400 while reference data<br/>is usable, and missing descriptions<br/>give PARTIAL.
+    Note over LegendCompute,LegendNetworking: The service checks the token and account<br/>access, then reads the account's category<br/>balances, the category descriptions and the<br/>type descriptions concurrently through the<br/>cache. An unknown typeCode returns 400 while<br/>the category list is usable, and missing<br/>descriptions give PARTIAL.

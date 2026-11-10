@@ -333,7 +333,7 @@ Degradation table. Every stage-3 story follows it; the outcome applies when the 
 | `GetConfig` | All four endpoints (background refresh only) | Request unaffected: the held snapshot values are used, otherwise the built-in defaults (20, 100, 300, 2) | Never affects `dataStatus` |
 | `GetAccount` | Balance summary | Serve the cached entry within the 300 s max stale age, otherwise 503 (`UNAVAILABLE`) or 504 (`DEADLINE_EXCEEDED`) | `STALE` when a stale entry is served |
 | `ListCategoryBalances` | Balance summary, category balances | Same as `GetAccount` | `STALE` when a stale entry is served |
-| `ListTransactionTypes` | Balance summary | Serve the cached entry within its max stale age, otherwise `typeDescription` is `null` in REST and unset in gRPC | `PARTIAL` when descriptions are missing |
+| `ListTransactionTypes` | Balance summary, category balances | Serve the cached entry within its max stale age, otherwise `typeDescription` is `null` in REST and unset in gRPC | `PARTIAL` when descriptions are missing |
 | `ListTransactionCategories` | Category balances | Serve the cached entry within its max stale age, otherwise `typeDescription` and `categoryDescription` are `null` in REST and unset in gRPC; the unknown-`typeCode` check is skipped and the `typeCode` filter still applies | `PARTIAL` when descriptions are missing |
 | `ListTransactions` | Transaction list | Fail hard: 503 or 504; a page is never served stale | None; no 200 is returned |
 | `GetTransaction` | Transaction detail | Serve the cached transaction entry within its max stale age, otherwise 503 or 504 | `STALE` when a stale entry is served |
@@ -485,13 +485,13 @@ All four endpoints follow the same five stages. Endpoint stories, sequence diagr
 | Endpoint | Stage 3 concurrent reads | Sequence diagram |
 |---|---|---|
 | Balance summary | `GetAccount` ‖ `ListCategoryBalances` ‖ `ListTransactionTypes`; `CategoryBalanceAggregator` then sums the category balances by type | [sequence-balance-summary.mmd](architecture/sequence-balance-summary.mmd) |
-| Category balances | `ListCategoryBalances` ‖ `ListTransactionCategories` (which also decides "unknown `typeCode`") | [sequence-category-balances.mmd](architecture/sequence-category-balances.mmd) |
+| Category balances | `ListCategoryBalances` ‖ `ListTransactionCategories` ‖ `ListTransactionTypes` (`ListTransactionCategories` also decides "unknown `typeCode`") | [sequence-category-balances.mmd](architecture/sequence-category-balances.mmd) |
 | Transaction list | `ListTransactions`, with the page size from the snapshot and the page token passed through | [sequence-transaction-list.mmd](architecture/sequence-transaction-list.mmd) |
 | Transaction detail | `GetTransaction` ‖ `GetCardCrossReference`, then the ownership check of the transaction's card number against the account's cross-references | [sequence-transaction-detail.mmd](architecture/sequence-transaction-detail.mmd) |
 
 Each sequence diagram runs end to end from `CardServicingUi` through these stages: validation, the guard, the cache and the stage-3 upstream calls. `ConfigService` appears only inside an `opt` block for a stale snapshot, placed right after `AccountAccessGuard` allows access, as an asynchronous refresh the request does not wait for. Validation and denial paths show no Config call. A cut-off note precedes the stage-4 response.
 
-Open → settled by CS-06-002 with CS-13-003: the category-balance contract carries `typeDescription` (`Data Layouts · CVTRA03Y · TRAN-TYPE-DESC`) beside `categoryDescription`, while the stage-3 reads fixed for that endpoint name `ListTransactionCategories` and not `ListTransactionTypes`. Whatever source those stories settle on adds no serialized call to the request, and a type label that cannot be resolved follows the same rule as a category label: `null` in REST, unset in gRPC, `dataStatus` `PARTIAL`.
+Settled by CS-06-002 with CS-13-003: the category-balance contract carries `typeDescription` (`Data Layouts · CVTRA03Y · TRAN-TYPE-DESC`) beside `categoryDescription`, and a transaction category carries no type description, so the category-balance Stage 3 adds `ListTransactionTypes` as a third concurrent read beside the other two. It adds no serialized call, and a type label that cannot be resolved follows the same rule as a category label: `null` in REST, unset in gRPC, `dataStatus` `PARTIAL`.
 
 ### Deadline boundary
 
@@ -526,7 +526,7 @@ Owning tests: CS-11-003 covers the attempt timeout cut to the residual budget an
 
 - `balancesByTypeGroup` holds one element per `typeCode` with at least one category balance. Its `balance` is the exact decimal sum, and the order is `typeCode` ascending. Arrays are always present, empty when nothing matches; absent optional scalars are omitted.
 - An all-zero `accountId` returns 400 with the message "Account number must be a non zero 11 digit number", following `Use Cases · COACTVWC`. The schema pattern stays `^[0-9]{11}$` and its description states the zero rule.
-- Category balances: an unknown `typeCode` returns 400 when reference data is usable, fresh or within its max stale age. With no usable reference data the check is skipped, the filter applies and `dataStatus` is `PARTIAL`.
+- Category balances: an unknown `typeCode` returns 400 when the category list (`ListTransactionCategories`) is usable, fresh or within its max stale age. With no usable category list the check is skipped, the filter applies and `dataStatus` is `PARTIAL`.
 - Transaction list: a well-formed but unknown `typeCode` or `categoryCode` returns 200 with empty items, because the degradation table gives this endpoint no reference-data call. `TransactionActivityService.ListTransactions` returns `NOT_FOUND` when the account has no cross-reference record, so "404 account unknown" is reachable; an existing account with no match returns empty items.
 - Transaction detail: `NOT_FOUND` from `GetTransaction`, or a card number absent from the account's cross-reference records, returns 404. A cross-reference failure returns 503 or 504 even when the transaction came from cache.
 - `dataStatus` precedence is `PARTIAL` > `STALE` > `FRESH`; `asOf` is the upstream read time or the oldest `cachedAt` used. Config outcomes never affect `dataStatus`.
@@ -536,7 +536,7 @@ Error mapping, the same for REST and gRPC:
 
 | Condition | REST status | `code` |
 |---|---|---|
-| Malformed parameter, all-zero `accountId`, empty `transactionId` (sixteen spaces or NULs), `pageSize` out of bounds, or unknown `typeCode` on category balances with usable reference data | 400 | `INVALID_ARGUMENT`, with a `details` entry naming the field |
+| Malformed parameter, all-zero `accountId`, empty `transactionId` (sixteen spaces or NULs), `pageSize` out of bounds, or unknown `typeCode` on category balances with a usable category list | 400 | `INVALID_ARGUMENT`, with a `details` entry naming the field |
 | `INVALID_ARGUMENT` on paging, from the service's own token check or the upstream | 400 | `INVALID_ARGUMENT`, with a `details` entry for `pageToken` |
 | `UNAUTHENTICATED` | 401 | `UNAUTHENTICATED` |
 | `allowed=false` from `AuthorizeAccountAccess` | 403 | `PERMISSION_DENIED` |

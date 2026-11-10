@@ -63,8 +63,10 @@ service CardServicingService {
   // transaction type, ordered by (type_code, category_code) ascending, with no
   // paging (Data Layouts · CVTRA01Y). REST twin:
   // GET /v1/accounts/{accountId}/category-balances. A stale cached read gives
-  // STALE; with no usable reference data the type_code check is skipped, the
-  // filter still applies and the result is PARTIAL with both descriptions unset.
+  // STALE; with no usable transaction category list the type_code check is
+  // skipped, the filter still applies and the result is PARTIAL with both
+  // descriptions unset. With only the transaction type list unusable,
+  // type_description is unset and the result is PARTIAL.
   //
   // Example request:
   //   {"accountId":"00000000001","typeCode":"01"}
@@ -76,7 +78,7 @@ service CardServicingService {
   //   PARTIAL variant: "dataStatus":"PARTIAL" with typeDescription and categoryDescription unset.
   //
   // Errors:
-  //   INVALID_ARGUMENT - account_id malformed or all zeros, or another parameter malformed; type_code unknown while reference data is usable (fresh or within its maximum stale age); with no usable reference data the filter still applies and the result is PARTIAL
+  //   INVALID_ARGUMENT - account_id malformed or all zeros, or another parameter malformed; type_code unknown while the transaction category list is usable (fresh or within its maximum stale age); with no usable transaction category list the filter still applies and the result is PARTIAL
   //   UNAUTHENTICATED - bearer token missing, invalid or expired
   //   PERMISSION_DENIED - account outside the caller's entitlements; authorization runs before any account-data read, cache reads included
   //   NOT_FOUND - account unknown
@@ -257,10 +259,10 @@ message ListCategoryBalancesRequest {
   // Optional filter on the transaction type code, exactly two characters of
   // any kind, pattern ^[\s\S]{2}$, because PIC X places no restriction on its
   // characters (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)); unset
-  // returns every type. An unknown value returns INVALID_ARGUMENT while
-  // reference data is usable (fresh or within its
-  // maximum stale age). With no usable reference data the check is skipped,
-  // the filter still applies and data_status is PARTIAL.
+  // returns every type. An unknown value returns INVALID_ARGUMENT while the
+  // transaction category list is usable (fresh or within its maximum stale
+  // age). With no usable transaction category list the check is skipped, the
+  // filter still applies and data_status is PARTIAL.
   optional string type_code = 2;
 }
 
