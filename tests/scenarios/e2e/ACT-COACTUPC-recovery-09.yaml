@@ -1,0 +1,166 @@
+# COACTUPC's HANDLE ABEND routine, reached by an abend while the account
+# master is read for account 00000000001.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00 and
+# COSGN00C XCTLs to COMEN01C [app/cbl/COSGN00C.cbl:221-240].
+# Step 2: option '2' makes COMEN01C XCTL to COACTUPC with CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:146-156] [app/cpy/COMEN02Y.cpy:31-35]. COACTUPC
+# registers ABEND-ROUTINE with HANDLE ABEND at the start of every task
+# [app/cbl/COACTUPC.cbl:862-864], takes the fresh-entry branch, sends COACTUP
+# with the search-key prompt and returns TRANSID CAUP
+# [app/cbl/COACTUPC.cbl:964-973,1007-1019].
+# Step 3: CAUP re-enters COACTUPC. The account id is numeric and non-zero
+# [app/cbl/COACTUPC.cbl:1783-1818], and with the details not yet fetched
+# 2000-DECIDE-ACTION performs 9000-READ-ACCT [app/cbl/COACTUPC.cbl:996-1003,
+# 2562-2580]. The CXACAIX read finds account 00000000001's card in the
+# CARDXREF fixture [app/cbl/COACTUPC.cbl:3608-3626,3650-3664]; the ACCTDAT
+# read that follows abends under the fault [app/cbl/COACTUPC.cbl:3701-3711],
+# so CUSTDAT is never read and its CSD file item is not listed.
+#
+# ABEND-ROUTINE [app/cbl/COACTUPC.cbl:4203-4228] moves 'UNEXPECTED ABEND
+# OCCURRED.' to ABEND-MSG only when ABEND-MSG equals LOW-VALUES. CSMSG02Y
+# declares the fields of ABEND-DATA with VALUE SPACES
+# [app/cpy/CSMSG02Y.cpy:21-29], and on this path nothing moves to ABEND-MSG or
+# ABEND-CODE (the only such moves are in the WHEN OTHER of 2000-DECIDE-ACTION
+# [app/cbl/COACTUPC.cbl:2633-2640], pinned by ACT-COACTUPC-recovery-05), so
+# the test is false and the default text is not moved (GAP-DEF-014). The
+# routine moves LIT-THISPGM 'COACTUPC' to ABEND-CULPRIT, sends the 134 bytes
+# of ABEND-DATA (ABEND-CODE X(4), ABEND-CULPRIT X(8), ABEND-REASON X(50),
+# ABEND-MSG X(72)) with SEND FROM ... NOHANDLE ERASE, cancels the handler and
+# abends the task with ABCODE 9999.
+#
+# Priority decision: the message INV-ACT-065 names is expected absent. The
+# test plan expected 'UNEXPECTED ABEND OCCURRED.' on this screen, but a derived
+# baseline pins what the source does, and the source never moves the text; the
+# question is registered as GAP-DEF-014 and the code under app/ is never fixed.
+#
+# The screen is derived, never observed (GAP-INF-005), and written as the
+# plain-text screens are: after ERASE the 134 sent bytes stand from row 1,
+# column 1, so row 1 holds four blank code bytes, COACTUPC, the 50 blank
+# reason bytes and the first 18 bytes of the blank message, the first 54
+# columns of row 2 hold the rest of the message, and the other rows are blank. The SEND names no CTLCHAR, and the 9999 abend that
+# follows ends the task with the region's own notice; the unikix evidence of
+# this scenario settles the screen the region shows.
+#
+# No mechanism forces an abend in the TPE region, so the fault makes the
+# scenario implemented-unexecuted (MissingPrerequisite, GAP-MIS-014); in CI no
+# TPE region runs and it is blocked. The UniKix copy of ABEND-ROUTINE and
+# CSMSG02Y is the same as app/'s; its COACTUP.bms lacks the unnamed field at
+# row 1, columns 1-9 (GAP-DOC-025).
+id: ACT-COACTUPC-recovery-09
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, selects main menu option 2 'Account Update' and enters
+  account 00000000001 on the COACTUPC screen (CAUP). The card cross-reference
+  read through CXACAIX succeeds, and the account master read on ACCTDAT
+  abends. COACTUPC's HANDLE ABEND routine names itself as the culprit, erases
+  the screen, sends the abend data as unformatted text and abends the task
+  with code 9999. Because ABEND-MSG starts as spaces rather than LOW-VALUES,
+  the default 'UNEXPECTED ABEND OCCURRED.' is not moved: the screen shows
+  COACTUPC after four blank code bytes, with a blank reason and message.
+# Primary item first, then the program, the maps the steps enter on, the
+# transaction step 3 runs under, the CSD files the account lookup reads, and
+# the online-only copybooks COACTUPC copies. Sign-on and the menu programs are
+# verified by the SEC and MNU scenarios; the batch record copybooks and the
+# data files are verified at the lowest level that executes them.
+inventory_ids:
+- INV-ACT-065  # COACTUPC message 'UNEXPECTED ABEND OCCURRED.' (ABEND-ROUTINE, recovery)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, where option 2 is entered
+- INV-ACT-004  # COACTUP map, where the account id is entered
+- INV-CFG-009  # CAUP transaction, under which the lookup abends
+- INV-CFG-006  # CXACAIX CSD file: card cross-reference read by account id
+- INV-CFG-001  # ACCTDAT CSD file: the account master read that abends
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context into CAUP
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02 of the COACTUP send
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME of the COACTUP send
+- INV-LAY-007  # CSLKPCDY, copied by COACTUPC
+- INV-LAY-008  # CSMSG01Y, copied by COACTUPC
+- INV-LAY-009  # CSMSG02Y: ABEND-DATA, the area the abend routine sends
+- INV-LAY-010  # CSSETATY: the field attributes of the COACTUP send
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
+- INV-LAY-013  # CSUTLDPY, copied by COACTUPC
+- INV-LAY-014  # CSUTLDWY, copied by COACTUPC
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+- suspected-defect
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-014  # no mechanism forces an abend in the TPE region
+- GAP-DEF-014  # the LOW-VALUES test never moves the default abend message
+- GAP-DOC-025  # the UniKix COACTUP.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+    CARDXREF: {base: CARDXREF}
+    # COSGN00C reads the sign-on user USER0001 from USRSEC.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults:
+  # The first ACCTDAT read of the task abends instead of returning a response.
+  - {target: ACCTDAT, operation: read, condition: abend}
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '2'
+  - aid: ENTER
+    '@map': COACTUP
+    fields:
+      ACCTSID: '00000000001'
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. ACCTSID, left at LOW-VALUES by the fresh-entry send,
+# and the blank message line show as spaces.
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  # The 24 rows of 80 characters joined by line breaks, as adapters/base.py
+  # screen_text gives them. Each source line below is one row: '\ ' keeps a
+  # row's leading blank and '\n\' ends the row.
+  - '@map': TEXT
+    '@text': "    COACTUPC                                                                    \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                "
