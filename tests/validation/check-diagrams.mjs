@@ -362,8 +362,37 @@ async function renderAll(files, violations) {
     return;
   }
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'check-diagrams-'));
+  // mmdc runs in an empty directory inside the temporary folder and is given its
+  // puppeteer configuration, input and output by absolute path, because puppeteer
+  // loads a configuration file as code from its working directory and every directory
+  // above it: run inside the repository, it would run any .puppeteerrc.cjs or
+  // puppeteer.config.js the repository holds. Nothing is written into that directory.
+  // The folder is verified to be outside the repository before mmdc starts: its
+  // physical path, symlinks resolved, must not equal or lie below the physical
+  // repository root (a root of / holds every path). The folder is also the browser
+  // launcher's TMPDIR, so the launcher's own temporary directory is outside the
+  // repository too.
+  let insideRepository;
+  try {
+    const fromRoot = path.relative(fs.realpathSync(repoRoot), fs.realpathSync(tmp));
+    insideRepository =
+      fromRoot === '' || (fromRoot !== '..' && !fromRoot.startsWith(`..${path.sep}`) && !path.isAbsolute(fromRoot));
+  } catch (err) {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    throw err;
+  }
+  if (insideRepository) {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    violations.push({
+      path: '',
+      message: 'TMPDIR resolves inside the repository; set it to a directory outside it; no diagram was rendered',
+    });
+    return;
+  }
+  const workDir = path.join(tmp, 'cwd');
+  const config = path.join(repoRoot, PUPPETEER_CONFIG);
   const options = {
-    cwd: repoRoot,
+    cwd: workDir,
     // Chrome leaves scratch directories in TMPDIR; pointing it at this run's
     // temporary folder removes them with that folder. PUPPETEER_EXECUTABLE_PATH
     // selects the pinned browser over any host value or .puppeteerrc setting.
@@ -411,11 +440,12 @@ async function renderAll(files, violations) {
 
   for (const signal of STOP_SIGNALS) process.on(signal, stop);
   try {
+    fs.mkdirSync(workDir);
     for (const [index, rel] of files.entries()) {
       // Diagrams in different folders can share a basename; the index gives every input
       // its own output, so one render's SVG never stands in for another's.
       const svg = path.join(tmp, `${index + 1}-${path.basename(rel, '.mmd')}.svg`);
-      const failed = await render(['-p', PUPPETEER_CONFIG, '-i', rel, '-o', svg]);
+      const failed = await render(['-p', config, '-i', path.join(repoRoot, rel), '-o', svg]);
       if (failed) {
         const { err, stderr } = failed;
         // err.killed marks a child killed from here: the timeout does that, and stop() exits
@@ -1635,8 +1665,8 @@ const USAGE = [
   '',
   'Renders go to a temporary folder under TMPDIR (the OS temp directory by default) that is',
   'removed afterwards. Keep TMPDIR short: Chrome aborts with "Socket path too long" on a long one.',
-  'Prerequisites, as run-all.sh installs them: `npm ci` in tests/validation, then',
-  '`npx --no-install puppeteer browsers install chrome-headless-shell` there.',
+  'Prerequisites, as tests/validation/run-all.sh installs them: the pinned tools in',
+  'tests/validation/node_modules and the chrome-headless-shell build the locked puppeteer pins.',
 ].join('\n');
 
 const args = process.argv.slice(2);
