@@ -1,0 +1,39 @@
+# Derived baseline of scenario USR-COUSR00C-alternate-07: ADMIN001 opens the
+# user list from the admin menu, enters U against row 6 (USER0001) and lands on
+# the user update screen. Authored from the source, never captured: the U
+# branch of app/cbl/COUSR00C.cbl:149-199 (SEL0006 and USRID06 to the COMMAREA,
+# XCTL to COUSR02C with context 0) and the first entry of
+# app/cbl/COUSR02C.cbl:94-105,143-172,320-339 (the selected id in USRIDIN, READ
+# UPDATE on USRSEC, 'Press PF5 key to save your updates ...', the record's
+# names and type), sent as map COUSR02 with ERASE [app/cbl/COUSR02C.cbl:266-278].
+# Open until a UniKix run is imported: GAP-INF-004 (derived USR end-to-end
+# baselines) and GAP-INF-012 (online-only copybooks). Derived, so no datasets/.
+# One screen per step, each the screen shown after the step's AID: COADM01
+# after sign-on, COUSR00 after option 1, COUSR02 after the selection. Values
+# are full BMS field width with their trailing spaces; USER0001 is LAWRENCE
+# THOMAS, type U [app/jcl/DUSRSECJ.jcl:40]. PASSWD is a dark (DRK) field
+# [app/bms/COUSR02.bms:130], not part of the displayed screen, so it is not
+# asserted; CURDATE and CURTIME come from the run clock and are matchers.
+screens:
+- '@map': COADM01
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR00
+  PGMNAME: COUSR00C
+  TRNNAME: CU00
+  USRID06: USER0001
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Press PF5 key to save your updates ...                                        '
+  FNAME: 'LAWRENCE            '
+  LNAME: 'THOMAS              '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: USER0001
+  USRTYPE: U

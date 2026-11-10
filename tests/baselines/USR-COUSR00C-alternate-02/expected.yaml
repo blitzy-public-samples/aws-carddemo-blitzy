@@ -1,0 +1,81 @@
+# Derived from source (capture_platform: derived), never observed. ADMIN001
+# reaches COADM01, option 1 lists the ten USRSEC users and the look-ahead read
+# ends the file, so PF8 finds NEXT-PAGE-NO and re-sends COUSR00 without ERASE
+# with 'You are already at the bottom of the page...'
+# [app/cbl/COUSR00C.cbl:110-131,260-331,522-581,631-640]. Every list field is
+# FSET, so the rows and PAGENUM come back through RECEIVE and stay on the PF8
+# screen. Fields are at full BMS width with trailing spaces kept (ERRMSG 78);
+# CURDATE and CURTIME come from the region clock, so they are matchers.
+screens:
+- '@map': COADM01
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR00
+  ERRMSG: 'You have reached the bottom of the page...                                    '
+  PAGENUM: '00000001'
+  PGMNAME: COUSR00C
+  TRNNAME: CU00
+  USRID01: ADMIN001
+  USRID02: ADMIN002
+  USRID03: ADMIN003
+  USRID04: ADMIN004
+  USRID05: ADMIN005
+  USRID06: USER0001
+  USRID07: USER0002
+  USRID08: USER0003
+  USRID09: USER0004
+  USRID10: USER0005
+  USRIDIN: '        '
+- '@map': COUSR00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'You are already at the bottom of the page...                                  '
+  FNAME01: 'MARGARET            '
+  FNAME02: 'RUSSELL             '
+  FNAME03: 'RAYMOND             '
+  FNAME04: 'EMMANUEL            '
+  FNAME05: 'GRANVILLE           '
+  FNAME06: 'LAWRENCE            '
+  FNAME07: 'AJITH               '
+  FNAME08: 'LAURITZ             '
+  FNAME09: 'AVERARDO            '
+  FNAME10: 'LEE                 '
+  LNAME01: 'GOLD                '
+  LNAME02: 'RUSSELL             '
+  LNAME03: 'WHITMORE            '
+  LNAME04: 'CASGRAIN            '
+  LNAME05: 'LACHAPELLE          '
+  LNAME06: 'THOMAS              '
+  LNAME07: 'KUMAR               '
+  LNAME08: 'ALME                '
+  LNAME09: 'MAZZI               '
+  LNAME10: 'TING                '
+  PAGENUM: '00000001'
+  PGMNAME: COUSR00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU00
+  USRID01: ADMIN001
+  USRID02: ADMIN002
+  USRID03: ADMIN003
+  USRID04: ADMIN004
+  USRID05: ADMIN005
+  USRID06: USER0001
+  USRID07: USER0002
+  USRID08: USER0003
+  USRID09: USER0004
+  USRID10: USER0005
+  USRIDIN: '        '
+  UTYPE01: A
+  UTYPE02: A
+  UTYPE03: A
+  UTYPE04: A
+  UTYPE05: A
+  UTYPE06: U
+  UTYPE07: U
+  UTYPE08: U
+  UTYPE09: U
+  UTYPE10: U

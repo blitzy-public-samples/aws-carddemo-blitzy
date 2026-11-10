@@ -1,0 +1,33 @@
+# Derived from source (capture_platform: derived), never observed: ADMIN001
+# signs on through CC00 and lands on the admin menu COADM01
+# [app/cbl/COSGN00C.cbl:230-234]; option 1 'User List (Security)' transfers
+# control to COUSR00C [app/cpy/COADM02Y.cpy:24-27] [app/cbl/COADM01C.cbl:127-145],
+# which browses USRSEC and sends map COUSR0A of mapset COUSR00
+# [app/cbl/COUSR00C.cbl:110-119]. PF5 reenters it: WHEN OTHER moves
+# CCDA-MSG-INVALID-KEY to WS-MESSAGE and SEND-USRLST-SCREEN rebuilds the header
+# and sends the screen again [app/cbl/COUSR00C.cbl:120-144,522-544,562-581]
+# [app/cpy/CSMSG01Y.cpy:20-21] [app/cpy/COTTL01Y.cpy].
+# One screen per step, each the screen the step ends on. Fields are at their
+# full BMS width with trailing spaces kept (ERRMSG 78, TITLE01/TITLE02 40),
+# because screens compare exactly. CURDATE and CURTIME come from the region
+# clock, so they are matchers. The list rows and PAGENUM are not asserted:
+# after PF5 they hold what RECEIVE MAP returned.
+screens:
+- '@map': COADM01
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR00
+  PGMNAME: COUSR00C
+  TRNNAME: CU00
+- '@map': COUSR00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S'
+    match: run-time
+  ERRMSG: 'Invalid key pressed. Please see below...                                      '
+  PGMNAME: COUSR00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU00

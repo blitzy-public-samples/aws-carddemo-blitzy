@@ -1,0 +1,5 @@
+screens:
+- '@map': COADM01
+- '@map': COUSR00
+  PGMNAME: COUSR00C
+  TRNNAME: CU00

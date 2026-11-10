@@ -1,0 +1,76 @@
+# Derived baseline (inferred-not-observed, GAP-INF-004, GAP-INF-012), authored
+# from app/cbl/COUSR00C.cbl:149-232,282-331,522-614,687-691.
+# Screen 3 is the NOTFND send of the ZZZZZZZZ search, not the second send of
+# PROCESS-PAGE-FORWARD: the ENDBR that follows has no browse to end and no RESP,
+# so CICS raises INVREQ and the task abends first (GAP-DEF-013). USRIDIN,
+# PAGENUM and the rows therefore come back as the FSET input returned them.
+screens:
+- '@map': COADM01
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR00
+  PGMNAME: COUSR00C
+  TRNNAME: CU00
+- '@map': COUSR00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'You are at the top of the page...                                             '
+  FNAME01: 'MARGARET            '
+  FNAME02: 'RUSSELL             '
+  FNAME03: 'RAYMOND             '
+  FNAME04: 'EMMANUEL            '
+  FNAME05: 'GRANVILLE           '
+  FNAME06: 'LAWRENCE            '
+  FNAME07: 'AJITH               '
+  FNAME08: 'LAURITZ             '
+  FNAME09: 'AVERARDO            '
+  FNAME10: 'LEE                 '
+  LNAME01: 'GOLD                '
+  LNAME02: 'RUSSELL             '
+  LNAME03: 'WHITMORE            '
+  LNAME04: 'CASGRAIN            '
+  LNAME05: 'LACHAPELLE          '
+  LNAME06: 'THOMAS              '
+  LNAME07: 'KUMAR               '
+  LNAME08: 'ALME                '
+  LNAME09: 'MAZZI               '
+  LNAME10: 'TING                '
+  PAGENUM: '00000001'
+  PGMNAME: COUSR00C
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU00
+  USRID01: ADMIN001
+  USRID02: ADMIN002
+  USRID03: ADMIN003
+  USRID04: ADMIN004
+  USRID05: ADMIN005
+  USRID06: USER0001
+  USRID07: USER0002
+  USRID08: USER0003
+  USRID09: USER0004
+  USRID10: USER0005
+  USRIDIN: ZZZZZZZZ
+  UTYPE01: A
+  UTYPE02: A
+  UTYPE03: A
+  UTYPE04: A
+  UTYPE05: A
+  UTYPE06: U
+  UTYPE07: U
+  UTYPE08: U
+  UTYPE09: U
+  UTYPE10: U
