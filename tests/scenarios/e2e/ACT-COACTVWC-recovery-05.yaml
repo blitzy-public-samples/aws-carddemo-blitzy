@@ -30,12 +30,30 @@
 # baseline pins what the source does, and the source never moves the text; the
 # question is registered as GAP-DEF-014 and the code under app/ is never fixed.
 #
-# The screen is derived, never observed (GAP-INF-005): the SEND has no map and
-# no ERASE, and the 9999 abend that follows ends the task with the region's own
-# notice. It is written as the plain-text screens are, the sent bytes from
-# row 1, column 1 and blanks elsewhere, so the 134 bytes fill row 1 and the
-# first 54 columns of row 2: four blank code bytes, COACTVWC, and 122 blanks.
-# The unikix evidence of this scenario settles the screen the region shows.
+# The screen is derived, never observed (GAP-INF-005). The SEND names no map,
+# no ERASE and no CTLCHAR [app/cbl/COACTVWC.cbl:924-928], so it is a 3270
+# Write, not an Erase/Write: the default WCC resets the modified data tags and
+# restores the keyboard, and with no buffer address the 134 bytes are written
+# from the cursor. Step 2's SEND MAP ... CURSOR put the cursor on ACCTSID's
+# first position, row 5, column 39 [app/cbl/COACTVWC.cbl:545-552,583-589]
+# [app/bms/COACTVW.bms:84-90]. The eleventh digit typed in step 3 fills the
+# field, the autoskip stopper after it [app/bms/COACTVW.bms:91-92] passes the
+# cursor on, and ACCTSID, the map's only unprotected field, takes it back.
+# The bytes cover row 5, column 39 to row 7, column 12
+# [app/bms/COACTVW.bms:84-127]. ACCTSID shows the four blank code bytes and
+# COACTVW, the culprit's last C replaces the stopper's attribute at row 5,
+# column 50, and the 122 blanks of reason and message blank ACSTTUS, ADTOPEN
+# and ACRDLIM. Every position and field attribute outside them keeps what
+# step 2 sent, so the screen stays formatted in COACTVW's format, with TRNNAME,
+# PGMNAME and INFOMSG unchanged. The blanks also overwrite the statics
+# 'Active Y/N: ', 'Opened:', 'Credit Limit        :' and the 'Expi' of
+# 'Expiry:', so the screen matches no map of tests/inventory/layouts.yaml and
+# the unikix adapter reports it under GAP-MIS-005.
+# What the region shows for the ABEND ABCODE('9999') that follows
+# [app/cbl/COACTVWC.cbl:930-935] cannot be derived from app/: CICS writes its
+# abend notice over the existing screen, at the bottom, and the UniKix zip
+# documents no notice, so ERRMSG on row 23 is not asserted. Terminal evidence
+# from a UniKix region settles it (GAP-INF-005, GAP-MIS-014).
 #
 # No mechanism forces an abend in the TPE region, so the fault makes the
 # scenario implemented-unexecuted (MissingPrerequisite, GAP-MIS-014); in CI no
@@ -49,11 +67,13 @@ description: >-
   USER0001 signs on, selects main menu option 1 'Account View' and enters
   account 00000000001 on the COACTVWC screen (CAVW). The card cross-reference
   read through CXACAIX succeeds, and the account master read on ACCTDAT
-  abends. COACTVWC's HANDLE ABEND routine names itself as the culprit, sends
-  the abend data as an unformatted screen and abends the task with code 9999.
+  abends. COACTVWC's HANDLE ABEND routine names itself as the culprit, writes
+  the abend data, without erasing, over the account-view screen from the
+  cursor in the account-number field, and abends the task with code 9999.
   Because ABEND-MSG starts as spaces rather than LOW-VALUES, the default
-  'UNEXPECTED ABEND OCCURRED.' is not moved: the screen shows COACTVWC after
-  four blank code bytes, with a blank reason and message.
+  'UNEXPECTED ABEND OCCURRED.' is not moved: the account number shows the four
+  blank code bytes and COACTVW, and the blank reason and message blank the
+  rest of rows 5-6 and the start of row 7.
 # Primary item first, then the program, the maps asserted, the transaction
 # step 3 runs under, the CSD files the account lookup reads, and the
 # online-only copybooks COACTVWC copies. Sign-on and the menu programs are
@@ -80,6 +100,7 @@ tags:
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-005  # the derived step-3 screen is formatted but matches no single map
 - GAP-MIS-014  # no mechanism forces an abend in the TPE region
 - GAP-DEF-014  # the LOW-VALUES test never moves the default abend message
 - GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
@@ -122,31 +143,19 @@ expected:
     PGMNAME: COACTVWC
     INFOMSG: 'Enter or update id of account to display     '
     ERRMSG: '                                                                              '
-  # The 24 rows of 80 characters joined by line breaks, as adapters/base.py
-  # screen_text gives them. Each source line below is one row: '\ ' keeps a
-  # row's leading blank and '\n\' ends the row.
-  - '@map': TEXT
-    '@text': "    COACTVWC                                                                    \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                \n\
-      \                                                                                "
+  # Step 3 writes ABEND-DATA over step 2's screen from the cursor at row 5,
+  # column 39, without erasing it [app/cbl/COACTVWC.cbl:924-928]: ACCTSID
+  # holds the four blank code bytes and COACTVW, and the blank reason and
+  # message blank ACSTTUS, ADTOPEN and ACRDLIM. Had ABEND-MSG been LOW-VALUES,
+  # 'UNEXPECTED ABEND OCCURRED.' would land on row 6, columns 21-46, and
+  # ADTOPEN would read '   UNEXPEC' (GAP-DEF-014). TRNNAME, PGMNAME and
+  # INFOMSG keep step 2's values. ERRMSG is not asserted: the region's notice
+  # for the 9999 abend may be written on row 23.
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    ACCTSID: '    COACTVW'
+    ACSTTUS: ' '
+    ADTOPEN: '          '
+    ACRDLIM: '               '
+    INFOMSG: 'Enter or update id of account to display     '
