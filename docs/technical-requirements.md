@@ -310,7 +310,7 @@ Counterfactual, not counted as an alternative: separate Compose files or Compose
 **Pressure-test.**
 
 - Failure modes: a loader failure fails `--wait` fast, because the stubs and the service start only after the loader completes successfully ([Compose topology](#test-and-performance-harness)).
-- Data growth: the end-to-end start also pays the volume load. Its time is measured by CS-10-008 and bounded by the `--wait` health timeout.
+- Data growth: the end-to-end start also pays the volume load. Its time is measured by CS-10-008 and bounded by the one-shot loader's own 600 s process timeout (CS-01-001): Compose 2.29.7 applies no `--wait-timeout` to the wait on a `service_completed_successfully` dependency, and the health checks behind `--wait` cover only the long-running containers ([Compose topology](#test-and-performance-harness)).
 - 1-second SLA: synthetic rows match the sample's shape, so measured latency is representative; the end-to-end suite reads only `00000000001`–`00000000050`, so volume never changes its expected values.
 
 
@@ -574,8 +574,8 @@ CI contract (`.github/workflows/ci.yml`):
 
 Compose topology (`tests/docker-compose.yml`, CS-01-001):
 
-- Services: `postgres:16.6`, `redis:7.4.2`, the fixture loader, the five stub services and the Card Servicing service, each with a health check so that `--wait` succeeds only when the stack is ready.
-- The fixture loader is a one-shot job that loads the CardDemo sample and then the synthetic volume; the stubs and the service start only after it completes successfully, so a loader failure fails `--wait`.
+- Services: the long-running containers `postgres:16.6`, `redis:7.4.2`, the five stub services and the Card Servicing service, each with a health check, and the one-shot fixture loader, which has no health check and must exit 0, so `--wait` succeeds only when every long-running container is healthy and the loader has completed successfully.
+- The fixture loader is a one-shot job that loads the CardDemo sample and then the synthetic volume under a 600 s process timeout, the limit that bounds the load because Compose 2.29.7 applies no `--wait-timeout` to the wait on it; the stubs and the service start only after it completes successfully, so a loader failure or a load that reaches the limit fails `--wait`.
 - Every variable in the [environment-variable table](#environment-variables) is set in this file.
 - Data partition ([D5](#d5-one-compose-stack-for-both-suites)): the end-to-end suite reads only the sample accounts `00000000001`–`00000000050`; the performance suite reads the synthetic accounts `10000000001`–`10000010000`.
 

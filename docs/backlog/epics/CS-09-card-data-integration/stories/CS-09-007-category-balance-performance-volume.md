@@ -53,6 +53,9 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 >
 > - Synthetic transactions (CS-10-008).
 > - The Compose stack and its health timeout (CS-01-001).
+>
+> > SCOPE-QUESTION (Resolved): The stack bounds the loader that runs this generator with a process time limit, not a health timeout. CS-01-001 disables the fixture loader's health check and runs it under a 600 s process timeout, because Compose 2.29.7 applies no `--wait-timeout` to the wait on a `service_completed_successfully` dependency, while the stack's health checks cover its long-running containers. The stack and that loader limit stay with CS-01-001.
+>
 > - The latency scenarios (CS-01-005, CS-02-002).
 > - Auth entitlements for synthetic accounts (CS-12-001).
 >
@@ -183,7 +186,7 @@ Settled assumptions:
 Open assumptions:
 
 - Open → load time added to the stack start → settled by the transaction performance volume story's measurement.
-- Open → whether batches of one thousand rows keep the load inside the readiness wait → settled by the test stack story's health timeout.
+- Open → whether batches of one thousand rows keep the load inside the loader's time limit → settled by the transaction performance volume story's load-time measurement against the test stack story's loader time limit.
 
 | AC | Verdict | Why |
 |---|---|---|

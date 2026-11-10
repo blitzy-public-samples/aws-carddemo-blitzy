@@ -49,6 +49,9 @@ Parent epic: [CS-10 Transaction Activity Integration](../README.md)
 >
 > - Synthetic accounts, cards and category balances (CS-09-007).
 > - The Compose stack and its health timeout (CS-01-001).
+>
+> > SCOPE-QUESTION (Resolved): The stack bounds the loader that runs this step with a process time limit, not a health timeout. CS-01-001 disables the fixture loader's health check and runs it under a 600 s process timeout, because Compose 2.29.7 applies no `--wait-timeout` to the wait on a `service_completed_successfully` dependency, while the stack's health checks cover its long-running containers. The stack and that loader limit stay with CS-01-001.
+>
 > - The latency scenarios (CS-03-003, CS-04-002).
 > - The filter-leading indexes (Recommendations).
 >
@@ -69,6 +72,9 @@ Parent epic: [CS-10 Transaction Activity Integration](../README.md)
 > - CS-09-007 — creates the synthetic accounts and cards the rows reference.
 >
 > Risk: a slow generator stretches stack start past the health timeout.
+>
+> > SCOPE-QUESTION (Resolved): The bound this Risk names is the fixture loader's 600 s process timeout from CS-01-001, not a loader health timeout. A generator slow enough to reach it makes the loader exit non-zero, so the five stubs and the Card Servicing service never start and `docker compose -f tests/docker-compose.yml up -d --wait` fails. The load time this story records (AC7) is measured against that limit.
+>
 
 ## 4. Design
 
@@ -84,7 +90,7 @@ Completed during implementation.
 ## 6. Test Plan
 
 - Unit — Applies: `SyntheticTransactionGeneratorTest` checks shape and determinism on a reduced count, two runs compared row for row over the first 200,000 rows, plus the full-count totals, disjointness, load order, load-time reporting and the plan check's pass and fail outcomes behind AC1–AC8, through the recording transaction manager of CS-09-001 and a counting row writer. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass; at least 80% line coverage per module.
-- Integration — Not applicable — the volume belongs to the Compose stack, not the per-epic suite. Command `./gradlew :card-servicing-service:integrationTest`; one suite per external epic (CS-10-007 for this epic) covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
+- Integration — Applies indirectly — the CS-10-007 suite's fixture loader run executes this generator, because no setting switches the synthetic loads off, yet that suite asserts only sample rows and the `transaction_record` load-report entry, so this story adds no integration assertion and its volume assertions stay in the unit and performance suites. Command `./gradlew :card-servicing-service:integrationTest`; one suite per external epic (CS-10-007 for this epic) covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance — Applies, consumed by CS-03-003 and CS-04-002, and every stack start runs the AC8 plan check on the Compose PostgreSQL. `docker compose -f tests/docker-compose.yml up -d --wait`, `./gradlew :card-servicing-service:performanceTest`, `docker compose -f tests/docker-compose.yml down`; p50, p95 and p99 below 1,000 ms over successful requests with failure injection off at 10 users × 100 sequential calls, 100,000 category balances and 1,000,000 transactions; injected failures proven by a logged `cutoffMs` at most 900 and a client-measured response below 1,000 ms; applies to balance-retrieval and drill-down stories.
 - End-to-end — Not applicable — the end-to-end suite reads only sample accounts `00000000001` to `00000000050`. `docker compose -f tests/docker-compose.yml up -d --wait`, `./gradlew :card-servicing-service:e2eTest`, `docker compose -f tests/docker-compose.yml down`; the four-step flow for account `00000000001` returns the expected fixture values and each stub's request log shows at least one call.
 
@@ -106,7 +112,7 @@ Rationale: a generator inside the fixture loader derives every synthetic transac
 - Naming: synthetic transaction identifiers sit in a range disjoint from the sample range, and the load report entry names the synthetic transaction set.
 - Addressing: each row names one synthetic account in a fixed numeric range and that account's one card, and the card's cross-reference record supplies the row's account.
 - Isolation: synthetic rows never share an identifier with sample rows, so the end-to-end suite sees only the sample.
-- Fallback: none, because a failed load fails the health check and the stack start.
+- Fallback: none, because a failed load, or one that reaches the loader's time limit, ends the loader with a non-zero exit status, which keeps the stubs and the service from starting and fails the stack start.
 - Provisioning: the step runs after the sample load and the category balance volume on every stack start, with no data-set switch.
 - Cut-over: the step retires with the stubs, because the real transaction activity owner holds the real history.
 - Failures: any skipped row shows as a non-zero count in the load report and fails the shape test, and a failed batch or a query plan with a sort step rolls back the step and stops the loader.
@@ -128,7 +134,7 @@ How it behaves:
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
 | 1 | Rows derived from a fixed seed (vs a random source) | two runs yield identical rows | the seed must never change silently |
-| 2 | Set-based batches (vs row-by-row inserts) | load time stays inside the health timeout | large batches hold memory |
+| 2 | Set-based batches (vs row-by-row inserts) | load time stays inside the loader's time limit | large batches hold memory |
 | 3 | Sparse pair on the large-history account only (vs spread across accounts) | the volume scenario's worst case is exact | other accounts never exercise that pair |
 | 4 | Query plan check at stack start (vs a manual check) | a plan regression fails before any latency run | one planner choice can block both suites |
 
