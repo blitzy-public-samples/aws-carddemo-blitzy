@@ -1,6 +1,7 @@
 # COCRDLIC list selection S: ENTER with 'S' on a card row transfers control
 # (XCTL) to the card detail program COCRDSLC with that row's account and card
-# [app/cbl/COCRDLIC.cbl:515-541].
+# [app/cbl/COCRDLIC.cbl:515-541]; PF3 on the detail screen then returns to the
+# calling list, not to the main menu [app/cbl/COCRDSLC.cbl:305-334].
 #
 # Steps 1-2 reach the card list as MNU-COMEN01C-alternate-03 does. Entered from
 # the menu, COCRDLIC starts afresh and reads forward on CARDDAT from the lowest
@@ -33,6 +34,46 @@
 # a blank WS-RETURN-MSG in the 80-character ERRMSG [app/cbl/COCRDSLC.cbl:129-130,
 # 427-497]. Screen fields are compared at their full BMS length, trailing spaces
 # included; CURDATE and CURTIME come from the region clock, so they are matchers.
+#
+# Step 4 presses PF3 on the detail screen. Step 3's 1400-SEND-SCREEN set
+# CDEMO-PGM-REENTER, and COMMON-RETURN kept the FROM fields CCLI and COCRDLIC
+# that COCRDLIC set before its XCTL, returning TRANSID CCDL with the COMMAREA
+# [app/cbl/COCRDSLC.cbl:394-406,563-567] [app/cbl/COCRDLIC.cbl:515-541], so
+# step 4 runs under CCDL. COCRDSLC's working-storage CDEMO-FROM-PROGRAM, which
+# nothing in the new task has set, is not COMEN01C, so the COMMAREA is restored
+# [app/cbl/COCRDSLC.cbl:268-279]. YYYY-STORE-PFKEY maps DFHPF3 to
+# CCARD-AID-PFK03, a valid key [app/cpy/CSSTRPFY.cpy:34-35]
+# [app/cbl/COCRDSLC.cbl:284-299]. The PF3 branch moves FROM-TRANID CCLI and
+# FROM-PROGRAM COCRDLIC to the TO fields (the LIT-MENUTRANID/LIT-MENUPGM
+# fallback CM00/COMEN01C applies only when they are blank), records
+# CCDL/COCRDSLC as the caller, sets CDEMO-PGM-ENTER and XCTLs to COCRDLIC
+# [app/cbl/COCRDSLC.cbl:179-182,305-334].
+#
+# In the same task COCRDLIC copies the COMMAREA and, entered in CDEMO-PGM-ENTER
+# from another program, re-initializes its paging area and sets page 1
+# [app/cbl/COCRDLIC.cbl:315-343]. EIBAID is still PF3 after the XCTL, so
+# YYYY-STORE-PFKEY gives CCARD-AID-PFK03 [app/cbl/COCRDLIC.cbl:349]. It receives
+# no map, because the caller is COCRDSLC [app/cbl/COCRDLIC.cbl:357-362], and
+# skips the PF3 XCTL to the menu, which needs the caller to be COCRDLIC
+# [app/cbl/COCRDLIC.cbl:384-406]. The EVALUATE takes 'BACK - PF3 IF WE CAME
+# FROM SOME OTHER PROGRAM' (the INITIALIZEd input flag is INPUT-OK, so the
+# INPUT-ERROR branch is not taken): it INITIALIZEs CARDDEMO-COMMAREA and
+# WS-THIS-PROGCOMMAREA, records CCLI/COCRDLIC as the caller, sets
+# CDEMO-PGM-ENTER and CA-FIRST-PAGE, and browses CARDDAT from the blank
+# first-card key, so the first seven cards fill the rows and the look-ahead
+# READNEXT finds an eighth [app/cbl/COCRDLIC.cbl:56-60,456-482,1123-1260].
+# 1000-SEND-MAP shows page '1  ' [app/cbl/COCRDLIC.cbl:667]; CRDSEL1 blank, the
+# S gone, because the select flags were INITIALIZEd and no map was received
+# [app/cbl/COCRDLIC.cbl:300-302,683]; ACCTSID and CARDSID at LOW-VALUES
+# (spaces), because the re-initialized CDEMO-ACCT-ID and CDEMO-CARD-NUM are 0
+# [app/cbl/COCRDLIC.cbl:837-868]. A list reached without this branch (WHEN
+# OTHER) would echo 00000000050 and 0500024453765740 there, so the blank filters
+# pin the PF3 branch. INFOMSG is 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD',
+# set because WS-NO-INFO-MESSAGE and CA-NEXT-PAGE-EXISTS share one WHEN branch,
+# and ERRMSG is blank [app/cbl/COCRDLIC.cbl:895-930]; the task returns with
+# TRANSID CCLI [app/cbl/COCRDLIC.cbl:604-620]. A COMEN01 (CM00, COMEN01C)
+# screen 4, as an unconditional return to the menu would give, fails. The dark,
+# unset CRDSTP2-CRDSTP7 fields are not asserted.
 id: CRD-COCRDLIC-alternate-07
 level: e2e
 type: alternate
@@ -42,26 +83,33 @@ description: >-
   00000000050. COCRDLIC transfers control to COCRDSLC with that account and
   card, and the card detail screen COCRDSL (TRNNAME CCDL) shows them with the
   embossed name Aniya Von, active status Y, expiry 03/2023, the 'Displaying
-  requested details' information message and no error.
-# Primary item first, then the program, the maps asserted, the transaction step
-# 3 enters, the CSD file read, and the online-only copybooks COCRDLIC copies.
-# Sign-on and the menu (CC00, CM00, COSGN00, USRSEC) are verified by the SEC and
-# MNU scenarios; the batch record copybooks and the data files are verified at
-# the lowest level that executes them. CCDL is only the TRANSID COCRDSLC returns
-# with; no step starts it.
+  requested details' information message and no error. PF3 on COCRDSL then
+  returns to the COCRDLIC list (CCLI) that called it, not to the main menu:
+  reset to page 1 with blank filters and no selection, the list shows the first
+  seven cards, the 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD' message and no
+  error.
+# Primary item first, then the PF3 return step 4 verifies, the program, the maps
+# asserted, the transactions steps 3 and 4 run under, the CSD file read, and the
+# online-only copybooks COCRDLIC copies. Sign-on and the menu (CC00, CM00,
+# COSGN00, USRSEC) are verified by the SEC and MNU scenarios; the batch record
+# copybooks and the data files are verified at the lowest level that executes
+# them. Step 4's PF3 is processed under CCDL, the TRANSID COCRDSLC returned with
+# after step 3.
 inventory_ids:
 - INV-CRD-022  # COCRDLIC list selection S (navigation to COCRDSLC)
+- INV-CRD-044  # COCRDSLC PF3 return, here to the calling program COCRDLIC
 - INV-CRD-001  # COCRDLIC program
 - INV-MNU-003  # COMEN01 map, where option 3 is entered
 - INV-CRD-004  # COCRDLI map, the card list where S is entered
 - INV-CRD-005  # COCRDSL map, the card detail screen reached by the XCTL
 - INV-CFG-014  # CCLI transaction, which runs the selection
+- INV-CFG-013  # CCDL transaction, under which step 4's PF3 is processed
 - INV-CFG-003  # CARDDAT CSD file: browsed by COCRDLIC, read by COCRDSLC
-- INV-LAY-002  # COCOM01Y: CDEMO-ACCT-ID and CDEMO-CARD-NUM passed on the XCTL
+- INV-LAY-002  # COCOM01Y: account and card on the XCTL, FROM fields for the PF3 target
 - INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
 - INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
 - INV-LAY-008  # CSMSG01Y, copied by COCRDLIC
-- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER and PF3 paths
 - INV-LAY-019  # CVCRD01Y: CCARD-AID, CCARD-NEXT-PROG and CC-ACCT-ID/CC-CARD-NUM
 tags:
 - inferred-not-observed
@@ -92,6 +140,9 @@ inputs:
     '@map': COCRDLI
     fields:
       CRDSEL1: S
+  - aid: PF3
+    '@map': COCRDSL
+    fields: {}
 expected:
   screens:
   - '@map': COMEN01
@@ -120,3 +171,43 @@ expected:
     EXPYEAR: '2023'
     INFOMSG: '   Displaying requested details         '
     ERRMSG: '                                                                                '
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDLIC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENO: '1  '
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    CRDSEL2: ' '
+    ACCTNO2: '00000000027'
+    CRDNUM2: '0683586198171516'
+    CRDSTS2: 'Y'
+    CRDSEL3: ' '
+    ACCTNO3: '00000000002'
+    CRDNUM3: '0923877193247330'
+    CRDSTS3: 'Y'
+    CRDSEL4: ' '
+    ACCTNO4: '00000000020'
+    CRDNUM4: '0927987108636232'
+    CRDSTS4: 'Y'
+    CRDSEL5: ' '
+    ACCTNO5: '00000000012'
+    CRDNUM5: '0982496213629795'
+    CRDSTS5: 'Y'
+    CRDSEL6: ' '
+    ACCTNO6: '00000000044'
+    CRDNUM6: '1014086565224350'
+    CRDSTS6: 'Y'
+    CRDSEL7: ' '
+    ACCTNO7: '00000000037'
+    CRDNUM7: '1142167692878931'
+    CRDSTS7: 'Y'
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: '                                                                              '

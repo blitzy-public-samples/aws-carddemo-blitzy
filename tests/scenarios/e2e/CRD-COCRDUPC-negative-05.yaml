@@ -6,10 +6,20 @@
 #
 # COCRDUPC tests its working-storage CDEMO-FROM-PROGRAM before it copies
 # DFHCOMMAREA in [app/cbl/COCRDUPC.cbl:388-401]. On either branch the task is a
-# first entry from the menu: WHEN CCUP-DETAILS-NOT-FETCHED AND CDEMO-PGM-ENTER,
-# or WHEN CDEMO-FROM-PROGRAM = 'COMEN01C' AND NOT CDEMO-PGM-REENTER, comes
-# before every WHEN that tests the bytes COCRDUPC reads past the COMMAREA
-# COMEN01C passes [app/cbl/COCRDUPC.cbl:429-511]. That path initializes
+# first entry from the menu. The ELSE branch also copies the bytes past the
+# COMMAREA COMEN01C passes into WS-THIS-PROGCOMMAREA, which holds
+# CCUP-CHANGE-ACTION [app/cbl/COCRDUPC.cbl:274-288]. The WHENs on
+# CCUP-CHANGES-OKAYED-AND-DONE and CCUP-CHANGES-FAILED test it ahead of the
+# fresh-entry branch, but each also needs CDEMO-LAST-MAPSET to equal
+# LIT-CCLISTMAPSET, 'COCRDLI', and neither the sign-on nor the menu sets
+# CDEMO-LAST-MAPSET [app/cbl/COSGN00C.cbl:221-237]
+# [app/cbl/COMEN01C.cbl:145-155], so they cannot fire whatever those bytes hold;
+# EIBAID is ENTER, so WHEN CCARD-AID-PFK03 does not hold either
+# [app/cbl/COCRDUPC.cbl:231-232,435-439]. The card-list WHENs need
+# CDEMO-FROM-PROGRAM 'COCRDLIC' [app/cbl/COCRDUPC.cbl:482-485], so the
+# fresh-entry WHEN runs: CCUP-DETAILS-NOT-FETCHED AND CDEMO-PGM-ENTER after
+# the INITIALIZE, or CDEMO-FROM-PROGRAM = 'COMEN01C' AND NOT CDEMO-PGM-REENTER
+# after the copy [app/cbl/COCRDUPC.cbl:502-511]. That path initializes
 # WS-THIS-PROGCOMMAREA and sends COCRDUP with both filters LOW-VALUES (3200
 # leaves the map as 3100 cleared it while CDEMO-PGM-ENTER holds), the prompt
 # 'Please enter Account and Card Number' and a blank WS-RETURN-MSG, with no '*'

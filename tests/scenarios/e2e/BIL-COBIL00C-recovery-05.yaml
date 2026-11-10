@@ -31,9 +31,12 @@
 #   UPDATE-ACCTDAT-FILE REWRITEs the record the READ UPDATE still holds, which
 #   is NORMAL and sets no message [app/cbl/COBIL00C.cbl:233-235,377-403].
 # - SEND-BILLPAY-SCREEN runs once more with WS-MESSAGE unchanged, and the task
-#   ends with RETURN TRANSID CB00 [app/cbl/COBIL00C.cbl:242,146-149]. Every
-#   command is coded with RESP, so no abend backs the task out: the normal end
-#   of task commits the REWRITE.
+#   ends with RETURN TRANSID CB00 [app/cbl/COBIL00C.cbl:242,146-149]. The WRITE
+#   is coded with RESP, so its IOERR is handled by that WHEN OTHER branch
+#   instead of abending the task; ENDBR, ASKTIME, FORMATTIME, the SENDs and the
+#   RETURN are coded without RESP, and the scenario assumes they complete
+#   normally [app/cbl/COBIL00C.cbl:146-149,251-261,295-301,503-505]; the normal
+#   end of task then commits the REWRITE.
 # COBIL0AO redefines COBIL0AI, so the final screen echoes the account id and
 # CONFIRM just received and the CURBAL moved before the payment. The screen
 # holds the last send of the task.

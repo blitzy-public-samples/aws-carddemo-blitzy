@@ -27,8 +27,10 @@
 # Screen values are whole fields at their BMS length, trailing spaces kept,
 # because comparison never trims. ERRMSG is WS-MESSAGE (X(80)) cut to the
 # 78-character ERRMSGO, and the adapter copies that ERRMSG value into the
-# message list. PASSWD is a dark field showing its BMS INITIAL '________', and
-# APPLID and SYSID name the region (EXEC CICS ASSIGN), so none is asserted.
+# message list. PASSWD is a dark (DRK) field: its buffer holds the BMS INITIAL
+# '________', but it is hidden and the screen capture shows it as blanks
+# [app/bms/COSGN00.bms:175-180]. APPLID and SYSID name the region (EXEC CICS
+# ASSIGN). None of the three is asserted.
 id: USR-COUSR03C-alternate-03
 level: e2e
 type: alternate

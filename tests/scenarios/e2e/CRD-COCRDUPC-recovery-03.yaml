@@ -38,10 +38,11 @@
 # 3250-SETUP-INFOMSG puts INFORM-FAILURE in INFOMSG and the return message in
 # ERRMSG, and 3300 unprotects the search keys and leaves the key label dark
 # [app/cbl/COCRDUPC.cbl:1113-1123,1155-1163,1200-1207,1315-1317]. Nothing was
-# rewritten, so CARDDATA keeps its records. Only an I/O error on the REWRITE
-# reaches this branch: a closed or disabled CARDDAT fails the READ UPDATE
-# first and gives 'Could not lock record for update' instead
-# [app/cbl/COCRDUPC.cbl:1441-1449].
+# rewritten, so CARDDATA keeps its records. This scenario injects an I/O error
+# on the REWRITE, and the branch takes any REWRITE response other than NORMAL
+# [app/cbl/COCRDUPC.cbl:1488-1492]. A closed or disabled CARDDAT, by contrast,
+# fails the READ UPDATE first and gives 'Could not lock record for update'
+# instead [app/cbl/COCRDUPC.cbl:1441-1449].
 #
 # No adapter can inject an online I/O error, so the scenario raises
 # MissingPrerequisite under GAP-MIS-014 and stays implemented-unexecuted until a

@@ -15,8 +15,10 @@
 # Screen values are whole fields at their BMS length, trailing spaces kept,
 # because comparison never trims. USERID has no INITIAL, so the cleared field
 # shows as 8 spaces; ERRMSG receives the blank WS-MESSAGE. PASSWD is not
-# asserted: it is a dark field showing its BMS INITIAL '________'. APPLID and
-# SYSID come from EXEC CICS ASSIGN and name the region, so neither is asserted.
+# asserted: it is a dark (DRK) field whose buffer holds the BMS INITIAL
+# '________', but it is hidden and the screen capture shows it as blanks
+# [app/bms/COSGN00.bms:175-180]. APPLID and SYSID come from EXEC CICS ASSIGN
+# and name the region, so neither is asserted.
 id: MNU-COMEN01C-alternate-11
 level: e2e
 type: alternate

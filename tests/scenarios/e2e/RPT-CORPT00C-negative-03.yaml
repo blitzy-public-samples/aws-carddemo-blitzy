@@ -31,7 +31,7 @@
 #   the whole end date. SDTDD, never typed into, keeps its blank INITIAL '  '
 #   and MONTHLY and YEARLY their blank INITIAL ' ' [app/bms/CORPT00.bms:80-143].
 #   CONFIRM carries no business outcome on this path and is not asserted.
-# - ERRMSG is the 78-byte ERRMSGO: the 37-character message followed by spaces
+# - ERRMSG is the 78-byte ERRMSGO: the 36-character message followed by spaces
 #   from the 80-byte WS-MESSAGE; comparisons never trim.
 # - The header is POPULATE-HEADER-INFO's [app/cbl/CORPT00C.cbl:609-628]: the
 #   COTTL01Y titles, CR00, CORPT00C, CURDATE as mm/dd/yy of the run date and

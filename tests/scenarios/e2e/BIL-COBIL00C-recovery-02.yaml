@@ -40,12 +40,15 @@
 #   ends with RETURN TRANSID CB00 [app/cbl/COBIL00C.cbl:242,146-149]. Each SEND
 #   is issued with ERASE, so the terminal holds the last one: the success
 #   message never stays on the screen.
-# Every command is coded with RESP, so no abend backs the task out, and
-# COBIL00C issues no SYNCPOINT ROLLBACK. ACCTDAT and TRANSACT are defined
-# RECOVERY(NONE) [app/csd/CARDDEMO.CSD:1-12,76-87], so nothing would be backed
-# out in any case: the normal end of task keeps the WRITE, and the failed
-# REWRITE changed nothing, so account 00000000001 keeps its balance of 194.00.
-# The READ UPDATE lock is released at task end.
+# The REWRITE is coded with RESP, so its IOERR is handled by that WHEN OTHER
+# branch instead of abending the task. ENDBR, ASKTIME, FORMATTIME, the SENDs
+# and the RETURN are coded without RESP, and the scenario assumes they complete
+# normally [app/cbl/COBIL00C.cbl:146-149,251-261,295-301,503-505]. COBIL00C
+# issues no SYNCPOINT ROLLBACK. ACCTDAT and TRANSACT are defined RECOVERY(NONE)
+# [app/csd/CARDDEMO.CSD:1-12,76-87], so nothing would be backed out in any
+# case: the normal end of task keeps the WRITE, and the failed REWRITE changed
+# nothing, so account 00000000001 keeps its balance of 194.00. The READ UPDATE
+# lock is released at task end.
 #
 # Finding: TRANSACT holds a 194.00 bill-payment transaction while the account
 # still owes 194.00, and the screen reports the update as failed without

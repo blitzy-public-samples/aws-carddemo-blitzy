@@ -7,8 +7,10 @@
 # scenario adds 7 invented cards for it, 9900000000005001 to 9900000000005007.
 # They sort after every repository card (the highest is 9805583408996588), so
 # they are the last 7 keys of the file and the menu's unfiltered first page is
-# the one CRD-COCRDLIC-normal-01 pins. CRD-COCRDLIC-boundary-01 (7 cards) uses
-# the first 6 of them. No card of another account lies between them.
+# the one CRD-COCRDLIC-normal-01 pins. No card of another account lies between
+# them. CRD-COCRDLIC-boundary-01 (7 cards) builds its own fixture with six other
+# invented cards, 9999000050000001 to 9999000050000006, so the two scenarios
+# share no invented card.
 #
 # Steps 1-2: USER0001 signs on and enters main-menu option 3; COCRDLIC, entered
 # from the menu, starts afresh on page 1 and browses CARDDAT from the first key
