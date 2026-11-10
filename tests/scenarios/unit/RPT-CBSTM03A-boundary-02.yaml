@@ -1,0 +1,460 @@
+# The 10-transaction row limit of the CBSTM03A statement table, one past it.
+# WS-CARD-TBL OCCURS 51 holds a 16-byte card number and WS-TRAN-TBL OCCURS 10 of
+# 334 bytes, so each card row is 3,356 bytes, and 8500-READTRNX-READ stores every
+# transaction of a card at WS-TRAN-TBL (CR-CNT, TR-CNT) with no check on TR-CNT
+# [app/cbl/CBSTM03A.CBL:225-233,818-830]. The 11th transaction of card 1 lands at
+# offset 16 + 10 x 334 = 3,356, the first byte of WS-CARD-TBL (2): it overwrites
+# WS-CARD-NUM (2) and the start of WS-TRAN-TBL (2, 1), the slots a second card
+# would use. The subscript is checked neither by the GnuCOBOL build (no -debug or
+# -fec) nor by Enterprise COBOL under the BUILDBAT options, which leave the default
+# NOSSRANGE [samples/proc/BUILDBAT.prc:36]. With a single card CR-CNT stays 1, row 2
+# is never examined as a card, and 4000-TRNXFILE-GET reads (1, 11) back from the
+# same bytes [app/cbl/CBSTM03A.CBL:416-432], so the statement lists all 11
+# transactions and totals 11.00, with return code 0 and no error message. This
+# scenario pins that observed outcome and the input that produces it; the missing
+# bound check is GAP-DEF-007, never fixed here.
+id: RPT-CBSTM03A-boundary-02
+level: unit
+type: boundary
+description: >-
+  CBSTM03A builds one statement for card 9680294154603697 (customer 000000001,
+  account 00000000001) from 11 invented transactions of 1.00, one more than
+  WS-TRAN-TBL OCCURS 10 holds. The 11th is stored past the end of the card's
+  table row, over the bytes of the next row, without any check or message, and
+  is read back from there: STMTFILE lists all 11 transaction lines and
+  Total EXP: 11.00, HTMLFILE holds 11 transaction rows, and the run ends with
+  return code 0 [app/cbl/CBSTM03A.CBL:225-233,416-456,818-853].
+inventory_ids:
+- INV-RPT-050  # CBSTM03A 51-card x 10-transaction table limit (rule), the boundary under test
+- INV-RPT-004  # CBSTM03A program
+- INV-RPT-005  # CBSTM03B program, the file service that reads TRXFL, CARDXREF, ACCTDATA, CUSTDATA
+- INV-LAY-004  # COSTM01 copybook: the TRXFL records are TRNX-RECORD
+- INV-DTA-001  # acctdata.txt, the ACCTDATA fixture source
+- INV-DTA-011  # EBCDIC account file, its cross-check counterpart
+- INV-DTA-004  # custdata.txt, the CUSTDATA fixture source
+- INV-DTA-014  # EBCDIC customer file, its cross-check counterpart
+tags:
+- suspected-defect
+gap_ids:
+- GAP-DEF-007  # no bound check on WS-CARD-TBL (51) or WS-TRAN-TBL (10)
+- GAP-STB-003  # the page-zero PSA/TCB/TIOT shim behind the control-block walk
+- GAP-MIS-002  # whether page zero can be mapped; without it the run is blocked
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    # The repository cross-reference record of card 9680294154603697 [app/data/ASCII/cardxref.txt:49],
+    # alone, so the run makes exactly one statement.
+    CARDXREF:
+      records:
+      - XREF-CARD-NUM: '9680294154603697'
+        XREF-CUST-ID: '000000001'
+        XREF-ACCT-ID: '00000000001'
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+    # The statement work file: 11 invented transactions for the one card, in
+    # ascending key order (card number, then transaction id).
+    TRXFL:
+      records:
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000721'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic purchase 01
+        TRNX-AMT: '1.00'
+        TRNX-MERCHANT-ID: '900000721'
+        TRNX-MERCHANT-NAME: Synthetic Store
+        TRNX-MERCHANT-CITY: Testville
+        TRNX-MERCHANT-ZIP: '00000'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000722'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic purchase 02
+        TRNX-AMT: '1.00'
+        TRNX-MERCHANT-ID: '900000722'
+        TRNX-MERCHANT-NAME: Synthetic Store
+        TRNX-MERCHANT-CITY: Testville
+        TRNX-MERCHANT-ZIP: '00000'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000723'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic purchase 03
+        TRNX-AMT: '1.00'
+        TRNX-MERCHANT-ID: '900000723'
+        TRNX-MERCHANT-NAME: Synthetic Store
+        TRNX-MERCHANT-CITY: Testville
+        TRNX-MERCHANT-ZIP: '00000'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000724'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic purchase 04
+        TRNX-AMT: '1.00'
+        TRNX-MERCHANT-ID: '900000724'
+        TRNX-MERCHANT-NAME: Synthetic Store
+        TRNX-MERCHANT-CITY: Testville
+        TRNX-MERCHANT-ZIP: '00000'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000725'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic purchase 05
+        TRNX-AMT: '1.00'
+        TRNX-MERCHANT-ID: '900000725'
+        TRNX-MERCHANT-NAME: Synthetic Store
+        TRNX-MERCHANT-CITY: Testville
+        TRNX-MERCHANT-ZIP: '00000'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000726'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic purchase 06
+        TRNX-AMT: '1.00'
+        TRNX-MERCHANT-ID: '900000726'
+        TRNX-MERCHANT-NAME: Synthetic Store
+        TRNX-MERCHANT-CITY: Testville
+        TRNX-MERCHANT-ZIP: '00000'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000727'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic purchase 07
+        TRNX-AMT: '1.00'
+        TRNX-MERCHANT-ID: '900000727'
+        TRNX-MERCHANT-NAME: Synthetic Store
+        TRNX-MERCHANT-CITY: Testville
+        TRNX-MERCHANT-ZIP: '00000'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000728'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic purchase 08
+        TRNX-AMT: '1.00'
+        TRNX-MERCHANT-ID: '900000728'
+        TRNX-MERCHANT-NAME: Synthetic Store
+        TRNX-MERCHANT-CITY: Testville
+        TRNX-MERCHANT-ZIP: '00000'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000729'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic purchase 09
+        TRNX-AMT: '1.00'
+        TRNX-MERCHANT-ID: '900000729'
+        TRNX-MERCHANT-NAME: Synthetic Store
+        TRNX-MERCHANT-CITY: Testville
+        TRNX-MERCHANT-ZIP: '00000'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000730'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic purchase 10
+        TRNX-AMT: '1.00'
+        TRNX-MERCHANT-ID: '900000730'
+        TRNX-MERCHANT-NAME: Synthetic Store
+        TRNX-MERCHANT-CITY: Testville
+        TRNX-MERCHANT-ZIP: '00000'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000731'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic purchase 11
+        TRNX-AMT: '1.00'
+        TRNX-MERCHANT-ID: '900000731'
+        TRNX-MERCHANT-NAME: Synthetic Store
+        TRNX-MERCHANT-CITY: Testville
+        TRNX-MERCHANT-ZIP: '00000'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBSTM03A
+expected:
+  return_code: 0
+  datasets:
+    # Every 80-byte line in written order, trailing spaces included: the 16
+    # statement header lines of 5000-CREATE-STATEMENT, one line per transaction
+    # from 6000-WRITE-TRANS, then the total and trailer of 4000-TRNXFILE-GET
+    # [app/cbl/CBSTM03A.CBL:416-504,675-679].
+    STMTFILE:
+      records:
+      # statement header: customer 000000001, account 00000000001
+      - '*******************************START OF STATEMENT*******************************'
+      - 'Immanuel Madeline Kessler                                                       '
+      - '618 Deshaun Route                                                               '
+      - 'Apt. 802                                                                        '
+      - 'Altenwerthshire NC USA 12546                                                    '
+      - '--------------------------------------------------------------------------------'
+      - '                                 Basic Details                                  '
+      - '--------------------------------------------------------------------------------'
+      - 'Account ID         :00000000001                                                 '
+      - 'Current Balance    :000000194.00                                                '
+      - 'FICO Score         :274                                                         '
+      - '--------------------------------------------------------------------------------'
+      - '                              TRANSACTION SUMMARY                               '
+      - '--------------------------------------------------------------------------------'
+      - 'Tran ID         Tran Details                                         Tran Amount'
+      - '--------------------------------------------------------------------------------'
+      # transactions 1 to 10 from WS-TRAN-TBL (1, 1) to (1, 10)
+      - '9900000000000721 Synthetic purchase 01                            $        1.00 '
+      - '9900000000000722 Synthetic purchase 02                            $        1.00 '
+      - '9900000000000723 Synthetic purchase 03                            $        1.00 '
+      - '9900000000000724 Synthetic purchase 04                            $        1.00 '
+      - '9900000000000725 Synthetic purchase 05                            $        1.00 '
+      - '9900000000000726 Synthetic purchase 06                            $        1.00 '
+      - '9900000000000727 Synthetic purchase 07                            $        1.00 '
+      - '9900000000000728 Synthetic purchase 08                            $        1.00 '
+      - '9900000000000729 Synthetic purchase 09                            $        1.00 '
+      - '9900000000000730 Synthetic purchase 10                            $        1.00 '
+      # transaction 11, stored at WS-TRAN-TBL (1, 11), the bytes of WS-CARD-TBL (2),
+      # and read back from there
+      - '9900000000000731 Synthetic purchase 11                            $        1.00 '
+      # separator, Total EXP: the sum of all 11 amounts in WS-TOTAL-AMT, and the trailer
+      - '--------------------------------------------------------------------------------'
+      - 'Total EXP:                                                        $       11.00 '
+      - '********************************END OF STATEMENT********************************'
+    # Every 100-byte line in written order, trailing spaces included: 56 header
+    # lines (5100-WRITE-HTML-HEADER and 5200-WRITE-HTML-NMADBS), 11 lines per
+    # transaction row (6000-WRITE-TRANS) and 8 trailer lines (4000-TRNXFILE-GET)
+    # [app/cbl/CBSTM03A.CBL:439-454,506-669,681-721].
+    HTMLFILE:
+      records:
+      # page head and the account, bank, customer and basic-details blocks
+      - '<!DOCTYPE html>                                                                                     '
+      - '<html lang="en">                                                                                    '
+      - '<head>                                                                                              '
+      - '<meta charset="utf-8">                                                                              '
+      - '<title>HTML Table Layout</title>                                                                    '
+      - '</head>                                                                                             '
+      - '<body style="margin:0px;">                                                                          '
+      - '<table  align="center" frame="box" style="width:70%; font:12px Segoe UI,sans-serif;">               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#1d1d96b3;">                                '
+      - '<h3>Statement for Account Number: 00000000001         </h3>                                         '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#FFAF33;">                                  '
+      - '<p style="font-size:16px">Bank of XYZ</p>                                                           '
+      - '<p>410 Terry Ave N</p>                                                                              '
+      - '<p>Seattle WA 99999</p>                                                                             '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#f2f2f2;">                                  '
+      - '<p style="font-size:16px">Immanuel Madeline Kessler  </p>                                           '
+      - '<p>618 Deshaun Route  </p>                                                                          '
+      - '<p>Apt. 802  </p>                                                                                   '
+      - '<p>Altenwerthshire NC USA 12546  </p>                                                               '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#33FFD1; text-align:center;">               '
+      - '<p style="font-size:16px">Basic Details</p>                                                         '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#f2f2f2;">                                  '
+      - '<p>Account ID         : 00000000001         </p>                                                    '
+      - '<p>Current Balance    : 000000194.00 </p>                                                           '
+      - '<p>FICO Score         : 274                 </p>                                                    '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#33FFD1; text-align:center;">               '
+      - '<p style="font-size:16px">Transaction Summary</p>                                                   '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#33FF5E; text-align:left;">                 '
+      - '<p style="font-size:16px">Tran ID</p>                                                               '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#33FF5E; text-align:left;">                 '
+      - '<p style="font-size:16px">Tran Details</p>                                                          '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#33FF5E; text-align:right;">                '
+      - '<p style="font-size:16px">Amount</p>                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      # transaction rows 1 to 10
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000721</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic purchase 01                            </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>        1.00 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000722</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic purchase 02                            </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>        1.00 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000723</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic purchase 03                            </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>        1.00 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000724</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic purchase 04                            </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>        1.00 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000725</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic purchase 05                            </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>        1.00 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000726</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic purchase 06                            </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>        1.00 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000727</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic purchase 07                            </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>        1.00 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000728</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic purchase 08                            </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>        1.00 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000729</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic purchase 09                            </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>        1.00 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000730</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic purchase 10                            </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>        1.00 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      # transaction row 11, from WS-TRAN-TBL (1, 11)
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000731</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic purchase 11                            </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>        1.00 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      # trailer
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#1d1d96b3;">                                '
+      - '<h3>End of Statement</h3>                                                                           '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '</table>                                                                                            '
+      - '</body>                                                                                             '
+      - '</html>                                                                                             '
+  # The page-zero shim's TIOT: job, step, then the nine STEP040 DD names, the last
+  # one shown by the DISPLAY after the walk [app/cbl/CBSTM03A.CBL:266-291].
+  messages:
+  - 'Running JCL : CREASTMT Step STEP040 '
+  - 'DD Names from TIOT: '
+  - ': STEPLIB  -- valid UCB'
+  - ': SYSPRINT -- valid UCB'
+  - ': SYSOUT   -- valid UCB'
+  - ': TRNXFILE -- valid UCB'
+  - ': XREFFILE -- valid UCB'
+  - ': ACCTFILE -- valid UCB'
+  - ': CUSTFILE -- valid UCB'
+  - ': STMTFILE -- valid UCB'
+  - ': HTMLFILE -- valid UCB'

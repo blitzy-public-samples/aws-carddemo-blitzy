@@ -1,0 +1,55 @@
+# A date whose year is not numeric, with the mask YYYY-MM-DD that CORPT00C and
+# COTRN02C pass. DTCDRV calls CSUTLDTC once for the single DTCIN record, and
+# CSUTLDTC passes the date and the mask to CEEDAYS as 10-byte Vstrings
+# [app/cbl/CSUTLDTC.cbl:103-120]. On gnucobol-batch CEEDAYS is the test-tree stub
+# tests/stubs/ceedays.c: the picture is supported and the date is as long as the
+# picture, so the first rule that applies is the non-digit 'A' at a Y position,
+# which gives the severity-3 token 000309D859C3C5C5. CSUTLDTC matches it as
+# FC-NON-NUMERIC-DATA, shows MSG-NO x'09D8' in decimal as 2520 with the text
+# 'Nonnumeric data', and sets RETURN-CODE to the severity, 3
+# [app/cbl/CSUTLDTC.cbl:69,98,122-124,143-144]. That real CEEDAYS refuses the
+# date with this token is inferred from the stub, not observed (GAP-INF-001).
+#
+# The expected line is DTCDRV's output as captured: the date and the mask as
+# passed, RC=0003, and the 80-byte result shown twice, as text with
+# non-printable bytes as '.' and as hex. MOVE WS-DATE-TO-TEST TO WS-DATE copies
+# the group's binary Vstring length x'000A' and the first 8 date characters into
+# TstDate [app/cbl/CSUTLDTC.cbl:25-31,52,122], so it holds x'000A' followed by
+# 'ABCD-07-'. The byte pair is pinned as observed, never corrected. DTCDRV
+# itself ends with exit status 0 after the last record.
+id: UTL-CSUTLDTC-negative-03
+level: unit
+type: negative
+description: >-
+  CSUTLDTC validates 'ABCD-07-18' against the mask YYYY-MM-DD: the CEEDAYS stub
+  refuses the non-numeric year with the token for message 2520, which CSUTLDTC
+  reports as severity 0003, 'Mesg Code: 2520', 'Nonnumeric data', TstDate
+  x'000A' followed by 'ABCD-07-' and 'Mask used:YYYY-MM-DD', and RETURN-CODE 3.
+  DTCDRV prints that result and ends with return code 0.
+inventory_ids:
+- INV-UTL-003  # CSUTLDTC date acceptance for masks YYYY-MM-DD and YYYYMMDD (rule)
+- INV-UTL-001  # CSUTLDTC program
+- INV-UTL-002  # CSUTLDTC CEEDAYS feedback-token mapping (rule)
+- INV-UTL-004  # CSUTLDTC result message layout and RETURN-CODE (interface)
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-STB-002  # CEEDAYS stub: computed tokens for the two caller masks only
+- GAP-INF-001  # which dates CEEDAYS accepts is known only through the stub
+- GAP-STB-004  # DTCDRV emulates CSUTLDTC's callers through the CALL interface
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  param_files:
+    # DTCIN record: DATE X(10), then MASK X(10); the rest of the 80 bytes is spaces.
+    DTCIN:
+    - 'ABCD-07-18YYYY-MM-DD'
+expected:
+  return_code: 0
+  messages:
+  - 'DTCDRV DATE=ABCD-07-18 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2520 Nonnumeric data TstDate: ..ABCD-07- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A2032353230204E6F6E6E756D65726963206461746120547374446174653A20000A414243442D30372D204D61736B20757365643A595959592D4D4D2D444420202020'

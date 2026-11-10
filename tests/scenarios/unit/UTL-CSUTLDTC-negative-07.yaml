@@ -1,0 +1,63 @@
+# The FC-BAD-DATE-VALUE branch of CSUTLDTC's feedback-token mapping, reached by
+# injection [app/cbl/CSUTLDTC.cbl:64,133-134]. DTCDRV calls CSUTLDTC once with
+# the date 2022-07-18 and the mask YYYY-MM-DD that CORPT00C and COTRN02C pass
+# (GAP-STB-004). The scenario parameter ceedays_feedback '09CC' makes the CEEDAYS
+# stub skip its own date check and return the severity-3 condition token
+# 00 03 09 CC 59 C3C5C5 for this date, which is otherwise valid
+# (tests/stubs/ceedays.c, GAP-STB-002). CSUTLDTC's own code then runs unchanged:
+# - FEEDBACK-TOKEN-VALUE equals the VALUE of FC-BAD-DATE-VALUE, so the EVALUATE
+#   moves 'Datevalue error' (all 15 characters of WS-RESULT) to the result;
+# - SEVERITY 3 and MSG-NO x'09CC' are moved to the numeric redefinitions, so the
+#   result reads '0003' and 'Mesg Code: 2508' [app/cbl/CSUTLDTC.cbl:122-124];
+# - RETURN-CODE is set to the severity, which DTCDRV prints as RC=0003
+#   [app/cbl/CSUTLDTC.cbl:98].
+# The token is injected rather than computed, so the scenario verifies the
+# mapping and the result layout, not which dates CEEDAYS refuses: it carries no
+# inferred-not-observed tag, and the date-acceptance item is not listed.
+#
+# The expected message is the DTCDRV line exactly as the driver printed it, 299
+# characters [tests/stubs/DTCDRV.cbl:38-52]: the result as printable text, every
+# byte outside x'20'-x'7E' shown as '.', then the same 80 bytes as hex. 'TstDate:'
+# reads '..2022-07-' (hex 000A323032322D30372D) because CSUTLDTC moves the whole
+# Vstring, its binary length x'000A' first, into the 10-byte WS-DATE
+# [app/cbl/CSUTLDTC.cbl:122]; that is pinned as observed. The line was taken
+# from a GnuCOBOL 3.2 run of app/cbl/CSUTLDTC.cbl (cobc -m with the suite's
+# flags) under DTCDRV and the CEEDAYS stub; a second run was byte-identical, and
+# neither program reads the clock, which is the unit default.
+id: UTL-CSUTLDTC-negative-07
+level: unit
+type: negative
+description: >-
+  With the CEEDAYS feedback token x'09CC' injected for the date 2022-07-18 and the
+  mask YYYY-MM-DD, CSUTLDTC maps it to FC-BAD-DATE-VALUE: the result reads severity
+  0003, 'Mesg Code: 2508' and 'Datevalue error' with the tested date and the mask,
+  and RETURN-CODE is 0003. The driver ends with return code 0.
+inventory_ids:
+- INV-UTL-002  # CSUTLDTC CEEDAYS feedback-token mapping (rule): 09CC -> 'Datevalue error', the primary item
+- INV-UTL-004  # CSUTLDTC result message layout and RETURN-CODE = severity (interface)
+- INV-UTL-001  # CSUTLDTC program
+tags: []
+gap_ids:
+- GAP-STB-002  # the CEEDAYS stub returns the injected token in place of Language Environment's answer
+- GAP-STB-004  # DTCDRV emulates only the CALL interface of CSUTLDTC's callers
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets: {}
+  parameters:
+    ceedays_feedback: '09CC'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  param_files:
+    # One DTCIN record: the date in bytes 1-10, the mask in bytes 11-20, spaces
+    # to 80 [tests/stubs/DTCDRV.cbl:75-80].
+    DTCIN:
+    - '2022-07-18YYYY-MM-DD'
+expected:
+  # DTCDRV's own exit status after the last call; the call's RETURN-CODE is the
+  # RC= field of its line.
+  return_code: 0
+  messages:
+  - 'DTCDRV DATE=2022-07-18 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2508 Datevalue error TstDate: ..2022-07- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A2032353038204461746576616C7565206572726F7220547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D4D4D2D444420202020'

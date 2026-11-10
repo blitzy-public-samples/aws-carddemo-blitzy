@@ -1,0 +1,45 @@
+id: UTL-CSUTLDTC-negative-01
+level: unit
+type: negative
+description: >-
+  An impossible day: 2022-02-30 with the mask YYYY-MM-DD that CORPT00C and
+  COTRN02C pass. CEEDAYS (the test-tree stub) refuses the day as outside its
+  month with the severity-3 token 09CC, and CSUTLDTC maps it to message number
+  2508 and 'Datevalue error', returns severity 0003 in RETURN-CODE, and puts
+  the 2-byte Vstring length x'000A' and the first 8 characters of the date
+  after 'TstDate:', because it moves the whole WS-DATE-TO-TEST group to WS-DATE
+  [app/cbl/CSUTLDTC.cbl:42-57,98,103-149].
+inventory_ids:
+- INV-UTL-003
+- INV-UTL-001
+- INV-UTL-002
+- INV-UTL-004
+# Which dates CEEDAYS refuses, and with which token, comes from
+# tests/stubs/ceedays.c, so the expectation is inferred, not observed.
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-STB-002
+- GAP-INF-001
+- GAP-STB-004
+- GAP-STB-011
+preconditions:
+  datasets: {}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  param_files:
+    # One DTCDRV call: columns 1-10 the date, 11-20 the mask (DTCIN).
+    DTCIN:
+    - '2022-02-30YYYY-MM-DD'
+expected:
+  # DTCDRV's own exit status after the last call; CSUTLDTC's RETURN-CODE is
+  # the RC=0003 of the message line.
+  return_code: 0
+  # RESULT shows each byte outside x'20'-x'7E' as '.', so the length x'000A'
+  # after 'TstDate:' appears as '..' there and as 000A in HEX.
+  messages:
+  - 'DTCDRV DATE=2022-02-30 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2508 Datevalue error TstDate: ..2022-02- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A2032353038204461746576616C7565206572726F7220547374446174653A20000A323032322D30322D204D61736B20757365643A595959592D4D4D2D444420202020'

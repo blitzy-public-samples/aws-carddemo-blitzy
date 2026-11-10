@@ -1,0 +1,57 @@
+# The invalid-era branch of CSUTLDTC's CEEDAYS feedback-token mapping: the
+# token x'000309CD59C3C5C5' satisfies FC-INVALID-ERA, so WS-RESULT becomes
+# 'Invalid Era    ', the severity 3 and the message number x'09CD' (2509) are
+# moved into the result, and RETURN-CODE is set to the severity
+# [app/cbl/CSUTLDTC.cbl:65,97-98,122-136].
+# CEEDAYS raises 09CD only for era-based picture strings, which no caller
+# passes and the CEEDAYS stub does not implement, so the token is injected
+# through ceedays_feedback: the stub skips its computation and returns the
+# severity-3 token 00 03 09 CD 59 C3 C5 C5 00 00 00 00 whatever the date
+# [tests/stubs/ceedays.c:49-56]. This verifies CSUTLDTC's own mapping code,
+# not which dates CEEDAYS refuses (GAP-STB-002).
+# The call is the one CORPT00C and COTRN02C make: a valid date with the mask
+# YYYY-MM-DD, so the injected token alone decides the outcome.
+# The DTCDRV line carries the 80-byte result twice, as printable text and as
+# hex [tests/stubs/DTCDRV.cbl:38-52]. Result bytes 46-47 are the binary
+# Vstring length x'000A' that MOVE WS-DATE-TO-TEST TO WS-DATE copies ahead of
+# the date text, which is why 'TstDate:' shows '..2022-07-'
+# [app/cbl/CSUTLDTC.cbl:25-31,52,122]; it is pinned as observed. RC=0003 is
+# CSUTLDTC's RETURN-CODE after the call, while DTCDRV itself ends with exit
+# status 0 after the last DTCIN record [tests/stubs/DTCDRV.cbl:129-130,161].
+id: UTL-CSUTLDTC-negative-08
+level: unit
+type: negative
+description: >-
+  DTCDRV calls CSUTLDTC once with the date 2022-07-18 and the mask YYYY-MM-DD
+  while the CEEDAYS stub returns the injected invalid-era token 09CD. CSUTLDTC
+  maps it to severity 0003, message code 2509 and 'Invalid Era    ', and sets
+  RETURN-CODE to 3.
+inventory_ids:
+- INV-UTL-002  # CSUTLDTC CEEDAYS feedback-token mapping (rule)
+- INV-UTL-004  # CSUTLDTC result message layout and RETURN-CODE (interface)
+- INV-UTL-001  # CSUTLDTC program
+# Untagged by design: the expectation is the output of CSUTLDTC's own mapping
+# code for an injected token, observed on gnucobol-batch. No date acceptance
+# by CEEDAYS is asserted, so INV-UTL-003 and GAP-INF-001 are not cited.
+tags: []
+gap_ids:
+- GAP-STB-002  # CEEDAYS stub: no era pictures, so 09CD arises only by injection
+- GAP-STB-004  # DTCDRV emulates the CALL interface of CSUTLDTC's callers
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets: {}
+  parameters:
+    ceedays_feedback: '09CD'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  param_files:
+    # One call: date X(10) then mask X(10); the adapter pads the record to 80 bytes.
+    DTCIN:
+    - '2022-07-18YYYY-MM-DD'
+expected:
+  return_code: 0
+  messages:
+  - 'DTCDRV DATE=2022-07-18 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2509 Invalid Era     TstDate: ..2022-07- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A203235303920496E76616C6964204572612020202020547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D4D4D2D444420202020'

@@ -1,0 +1,65 @@
+# The lower range boundary of CSUTLDTC date acceptance: Lilian day 1 is
+# 1582-10-15, the first day CEEDAYS supports, so the day before is out of range.
+# DTCDRV calls CSUTLDTC once per DTCIN record, in file order, with the mask
+# YYYY-MM-DD that CORPT00C and COTRN02C pass. CSUTLDTC hands the date and the
+# mask to CEEDAYS as 10-byte Vstrings, maps the feedback token to the
+# 15-character text [app/cbl/CSUTLDTC.cbl:128-149] and sets RETURN-CODE to the
+# token's severity [app/cbl/CSUTLDTC.cbl:98]:
+#   1582-10-15  Lilian day 1, a zero token: severity 0000, message 0000,
+#               'Date is valid', RC=0000
+#   1582-10-14  Lilian day 0, token x'09D1' (2513): severity 0003,
+#               'Unsupp. Range  ', RC=0003
+# What CEEDAYS returns comes from tests/stubs/ceedays.c, which refuses any date
+# before 1582-10-15 with 09D1; that real CEEDAYS draws the same line is inferred,
+# not observed (GAP-STB-002, GAP-INF-001). The mapping of both tokens and the
+# result layout are CSUTLDTC's own code and run unchanged.
+#
+# Each message is the DTCDRV line exactly as the driver prints it, 299
+# characters [tests/stubs/DTCDRV.cbl:38-52]: the result as printable text, with
+# every byte outside x'20'-x'7E' shown as '.', and the same 80 bytes as hex. The
+# result's 'TstDate:' field reads '..1582-10-' (hex 000A31353832...) because
+# CSUTLDTC moves the whole Vstring, its binary length x'000A' first, into the
+# 10-byte WS-DATE [app/cbl/CSUTLDTC.cbl:122]; that is pinned as observed. The
+# lines were taken from a GnuCOBOL 3.2 run of app/cbl/CSUTLDTC.cbl (cobc -m with
+# the suite's flags) under DTCDRV and the CEEDAYS stub; a second run was
+# byte-identical, and the output reads no clock.
+id: UTL-CSUTLDTC-boundary-01
+level: unit
+type: boundary
+description: >-
+  CSUTLDTC, called by DTCDRV with the mask YYYY-MM-DD, accepts 1582-10-15, Lilian
+  day 1, as 'Date is valid' with severity and RETURN-CODE 0000, and refuses the
+  day before, 1582-10-14, with the CEEDAYS token x'09D1': message 2513 'Unsupp.
+  Range', severity and RETURN-CODE 0003. The driver ends with return code 0.
+inventory_ids:
+- INV-UTL-003  # CSUTLDTC date acceptance for masks YYYY-MM-DD and YYYYMMDD (rule), the primary item
+- INV-UTL-001  # CSUTLDTC program
+- INV-UTL-002  # CEEDAYS feedback-token mapping (rule): the zero token and 09D1
+- INV-UTL-004  # result message layout and RETURN-CODE = severity (interface)
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-STB-002  # the CEEDAYS stub decides which dates are in range
+- GAP-INF-001  # the acceptance of both dates is inferred from the stub, not observed
+- GAP-STB-004  # DTCDRV emulates only the CALL interface of CSUTLDTC's callers
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  param_files:
+    # One DTCIN record per call: the date in bytes 1-10, the mask in bytes 11-20,
+    # spaces to 80 [tests/stubs/DTCDRV.cbl:75-80].
+    DTCIN:
+    - '1582-10-15YYYY-MM-DD'
+    - '1582-10-14YYYY-MM-DD'
+expected:
+  # DTCDRV's own exit status after the last call; each call's RETURN-CODE is the
+  # RC= field of its line.
+  return_code: 0
+  messages:
+  - 'DTCDRV DATE=1582-10-15 MASK=YYYY-MM-DD RC=0000 RESULT=0000Mesg Code: 0000 Date is valid   TstDate: ..1582-10- Mask used:YYYY-MM-DD     HEX=303030304D65736720436F64653A203030303020446174652069732076616C6964202020547374446174653A20000A313538322D31302D204D61736B20757365643A595959592D4D4D2D444420202020'
+  - 'DTCDRV DATE=1582-10-14 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2513 Unsupp. Range   TstDate: ..1582-10- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A203235313320556E737570702E2052616E6765202020547374446174653A20000A313538322D31302D204D61736B20757365643A595959592D4D4D2D444420202020'

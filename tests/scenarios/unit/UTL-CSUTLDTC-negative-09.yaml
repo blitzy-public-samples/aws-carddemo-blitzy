@@ -1,0 +1,50 @@
+# The unsupported-range branch of CSUTLDTC's feedback-token mapping, reached by
+# injection: the CEEDAYS stub returns message number x'09D1' whatever the date,
+# as the severity-3 token 00 03 09 D1 59 C3 C5 C5 that FC-UNSUPP-RANGE tests, so
+# CSUTLDTC moves 'Unsupp. Range  ' to WS-RESULT, 3 to the severity, 2513 to the
+# message number and the severity to RETURN-CODE [app/cbl/CSUTLDTC.cbl:66,
+# 90-98,116-124,137-138]. The date 2022-07-18 with mask YYYY-MM-DD is the
+# CORPT00C and COTRN02C form of the call; it plays no part in the outcome.
+#
+# The DTCDRV line is the result as captured on GnuCOBOL 3.2 under the suite's
+# compile options. 'TstDate:' is followed by the two bytes x'000A' and the first
+# eight characters of the date, because MOVE WS-DATE-TO-TEST TO WS-DATE copies the
+# Vstring's binary length first [app/cbl/CSUTLDTC.cbl:122]; DTCDRV shows them
+# as '..' and in the hex rendering, and they are pinned as observed. RC=0003 is
+# the RETURN-CODE CSUTLDTC sets; DTCDRV itself ends with return code 0.
+id: UTL-CSUTLDTC-negative-09
+level: unit
+type: negative
+description: >-
+  With the CEEDAYS feedback token 09D1 injected, CSUTLDTC maps it to severity
+  0003, message code 2513 and the text 'Unsupp. Range', lays out the 80-byte
+  result with the tested date and the mask, and sets RETURN-CODE to 3; the
+  driver ends with return code 0.
+inventory_ids:
+- INV-UTL-002  # CSUTLDTC CEEDAYS feedback-token mapping (rule): the FC-UNSUPP-RANGE branch
+- INV-UTL-004  # CSUTLDTC result message layout and RETURN-CODE (interface)
+- INV-UTL-001  # CSUTLDTC program
+# Untagged by design: the injected token replaces the stub's own date
+# computation, so the outcome is CSUTLDTC's mapping code observed running, not
+# an inference about which dates CEEDAYS refuses (GAP-INF-001 does not apply).
+tags: []
+gap_ids:
+- GAP-STB-002  # the CEEDAYS stub and its token injection
+- GAP-STB-004  # DTCDRV in place of CSUTLDTC's CICS callers
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets: {}
+  parameters:
+    ceedays_feedback: '09D1'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  param_files:
+    DTCIN:
+    - '2022-07-18YYYY-MM-DD'
+expected:
+  return_code: 0
+  messages:
+  - 'DTCDRV DATE=2022-07-18 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2513 Unsupp. Range   TstDate: ..2022-07- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A203235313320556E737570702E2052616E6765202020547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D4D4D2D444420202020'

@@ -1,0 +1,261 @@
+# RPT-CBSTM03A-recovery-03: CBSTM03A writes the whole statement of its one
+# card, and then the CLOSE of the transaction work file fails. After the
+# cross-reference file reaches end of file, 1000-MAINLINE performs
+# 9100-TRNXFILE-CLOSE first [app/cbl/CBSTM03A.CBL:316-339]. CBSTM03B closes
+# TRNX-FILE and returns TRNXFILE-STATUS in LK-M03B-RC
+# [app/cbl/CBSTM03B.CBL:146-155]; any status other than '00' or '04' displays
+# 'ERROR CLOSING TRNXFILE' and 'RETURN CODE: ' with that status, and
+# 9999-ABEND-PROGRAM displays 'ABENDING PROGRAM' and calls CEE3ABD, which never
+# returns [app/cbl/CBSTM03A.CBL:856-870,921-923]. The XREFFILE, CUSTFILE and
+# ACCTFILE closes and the CLOSE of STMT-FILE and HTML-FILE are never reached.
+#
+# Derived, never observed. No adapter injects a close failure after a
+# successful open (GAP-MIS-013), so gnucobol-batch raises MissingPrerequisite
+# and the scenario stays implemented-unexecuted; its baseline is derived from
+# the source (GAP-INF-013) and capture.py refuses to capture it. Where the
+# page-zero probe fails, the CBSTM03A scenarios are blocked first (GAP-MIS-002).
+#
+# How the expected outcome was derived:
+# - The messages begin with the control-block walk the page-zero shim feeds
+#   with the CREASTMT STEP040 job, step and DD names of programs.yaml
+#   [app/cbl/CBSTM03A.CBL:266-291] (GAP-STB-003): the job line, the 'DD Names
+#   from TIOT: ' line and one '-- valid UCB' line per DD, the last one from
+#   the DISPLAY after the loop. DISPLAY keeps the trailing spaces of TIOTJSTP
+#   and of the literal.
+# - The io-error close fault is taken as file status 30 (inferred), returned
+#   unchanged by CBSTM03B, so the second error line is 'RETURN CODE: 30'.
+# - The CEE3ABD stub ends the run (GAP-STB-001, GAP-DEF-001): the adapter
+#   reports return_code null and appends the stub's marker.
+# - Every statement line is written before the failing close. The stub's STOP
+#   RUN closes STMT-FILE and HTML-FILE implicitly, so both hold the complete
+#   statement; a z/OS abend would leave them to their abnormal DISP instead
+#   (GAP-STB-001). The 21 text and 86 HTML records follow 5000-CREATE-STATEMENT,
+#   5100-WRITE-HTML-HEADER, 5200-WRITE-HTML-NMADBS, 6000-WRITE-TRANS and the
+#   totals of 4000-TRNXFILE-GET [app/cbl/CBSTM03A.CBL:416-723], and were checked
+#   against a run of the same inputs without the fault, whose output up to the
+#   close is the same.
+# - Card 9680294154603697 cross-references customer 000000001 and account
+#   00000000001 [app/data/ASCII/cardxref.txt:49]. The customer is Immanuel
+#   Madeline Kessler of 618 Deshaun Route, Apt. 802, Altenwerthshire NC USA
+#   12546, FICO score 274 [app/data/ASCII/custdata.txt:1]; the account balance
+#   is 194.00, edited by 9(9).99- as '000000194.00 ' [app/data/ASCII/acctdata.txt:1].
+#   The two 10.00 lines make 'Total EXP:' 20.00.
+id: RPT-CBSTM03A-recovery-03
+level: unit
+type: recovery
+description: >-
+  Close failure after a complete statement: CBSTM03A writes the text and HTML
+  statement of card 9680294154603697 with its two 10.00 transactions and the
+  20.00 total, then CLOSE of the transaction work file returns a non-zero
+  status, so it displays 'ERROR CLOSING TRNXFILE', 'RETURN CODE: 30' and
+  'ABENDING PROGRAM' after the control-block display, and abends through
+  CEE3ABD with no return code and no further close.
+# Only the failure item. This case cannot run (GAP-MIS-013), and listing the
+# program, its statement items, its copybooks or the data files here would hold
+# those items at implemented-unexecuted although their other scenarios verify
+# them.
+inventory_ids:
+- INV-RPT-052  # CBSTM03A abend on read or close failure after open (recovery)
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013  # no adapter injects a failure after a successful open
+- GAP-INF-013  # the derived baselines of the post-open fault unit scenarios
+- GAP-STB-003  # the page-zero PSA/TCB/TIOT shim feeds the control-block display
+- GAP-STB-001  # the CEE3ABD stub: no abend code, dump or LE condition handling
+- GAP-DEF-001  # CALL 'CEE3ABD' without parameters
+# Beyond the case's own gaps: every scenario cites the stub limitations its
+# program uses, and CBSTM03B reads four Berkeley DB indexed files and both
+# units are compiled with the mapped options. The page-zero probe gates every
+# CBSTM03A scenario before its fault is considered.
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+- GAP-MIS-002  # whether page zero can be mapped for the shim
+preconditions:
+  datasets:
+    # One cross-reference, the repository's own values for this card, so that
+    # exactly one statement is written.
+    CARDXREF:
+      records:
+      - XREF-CARD-NUM: '9680294154603697'
+        XREF-CUST-ID: '000000001'
+        XREF-ACCT-ID: '00000000001'
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+    # Invented transactions: the ids, descriptions and merchant fields match no
+    # repository record and no real merchant.
+    TRXFL:
+      records:
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000751'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '1'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic statement line before close one
+        TRNX-AMT: '10.00'
+        TRNX-MERCHANT-ID: '800000751'
+        TRNX-MERCHANT-NAME: Synthetic Merchant Statement
+        TRNX-MERCHANT-CITY: Sampleton
+        TRNX-MERCHANT-ZIP: '99751'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000752'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '1'
+        TRNX-SOURCE: POS TERM
+        TRNX-DESC: Synthetic statement line before close two
+        TRNX-AMT: '10.00'
+        TRNX-MERCHANT-ID: '800000752'
+        TRNX-MERCHANT-NAME: Synthetic Merchant Statement
+        TRNX-MERCHANT-CITY: Sampleton
+        TRNX-MERCHANT-ZIP: '99752'
+        TRNX-ORIG-TS: '2022-07-05 09:00:00.000000'
+        TRNX-PROC-TS: '2022-07-05-10.00.00.000000'
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  - target: TRXFL
+    operation: close
+    condition: io-error
+inputs:
+  program: CBSTM03A
+expected:
+  return_code: null
+  messages:
+  - 'Running JCL : CREASTMT Step STEP040 '
+  - 'DD Names from TIOT: '
+  - ': STEPLIB  -- valid UCB'
+  - ': SYSPRINT -- valid UCB'
+  - ': SYSOUT   -- valid UCB'
+  - ': TRNXFILE -- valid UCB'
+  - ': XREFFILE -- valid UCB'
+  - ': ACCTFILE -- valid UCB'
+  - ': CUSTFILE -- valid UCB'
+  - ': STMTFILE -- valid UCB'
+  - ': HTMLFILE -- valid UCB'
+  - 'ERROR CLOSING TRNXFILE'
+  - 'RETURN CODE: 30'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'
+  datasets:
+    STMTFILE:
+      records:
+      - '*******************************START OF STATEMENT*******************************'
+      - 'Immanuel Madeline Kessler                                                       '
+      - '618 Deshaun Route                                                               '
+      - 'Apt. 802                                                                        '
+      - 'Altenwerthshire NC USA 12546                                                    '
+      - '--------------------------------------------------------------------------------'
+      - '                                 Basic Details                                  '
+      - '--------------------------------------------------------------------------------'
+      - 'Account ID         :00000000001                                                 '
+      - 'Current Balance    :000000194.00                                                '
+      - 'FICO Score         :274                                                         '
+      - '--------------------------------------------------------------------------------'
+      - '                              TRANSACTION SUMMARY                               '
+      - '--------------------------------------------------------------------------------'
+      - 'Tran ID         Tran Details                                         Tran Amount'
+      - '--------------------------------------------------------------------------------'
+      - '9900000000000751 Synthetic statement line before close one        $       10.00 '
+      - '9900000000000752 Synthetic statement line before close two        $       10.00 '
+      - '--------------------------------------------------------------------------------'
+      - 'Total EXP:                                                        $       20.00 '
+      - '********************************END OF STATEMENT********************************'
+    HTMLFILE:
+      records:
+      # 5100-WRITE-HTML-HEADER: page head, table, account number and bank address.
+      - '<!DOCTYPE html>                                                                                     '
+      - '<html lang="en">                                                                                    '
+      - '<head>                                                                                              '
+      - '<meta charset="utf-8">                                                                              '
+      - '<title>HTML Table Layout</title>                                                                    '
+      - '</head>                                                                                             '
+      - '<body style="margin:0px;">                                                                          '
+      - '<table  align="center" frame="box" style="width:70%; font:12px Segoe UI,sans-serif;">               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#1d1d96b3;">                                '
+      - '<h3>Statement for Account Number: 00000000001         </h3>                                         '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#FFAF33;">                                  '
+      - '<p style="font-size:16px">Bank of XYZ</p>                                                           '
+      - '<p>410 Terry Ave N</p>                                                                              '
+      - '<p>Seattle WA 99999</p>                                                                             '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      # The name and address cell: 5100 opens it and 5200-WRITE-HTML-NMADBS fills
+      # it, each STRING delimited by two spaces and then adding two.
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#f2f2f2;">                                  '
+      - '<p style="font-size:16px">Immanuel Madeline Kessler  </p>                                           '
+      - '<p>618 Deshaun Route  </p>                                                                          '
+      - '<p>Apt. 802  </p>                                                                                   '
+      - '<p>Altenwerthshire NC USA 12546  </p>                                                               '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      # The basic details heading, then the account, balance and FICO lines, each
+      # holding its whole statement field.
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#33FFD1; text-align:center;">               '
+      - '<p style="font-size:16px">Basic Details</p>                                                         '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#f2f2f2;">                                  '
+      - '<p>Account ID         : 00000000001         </p>                                                    '
+      - '<p>Current Balance    : 000000194.00 </p>                                                           '
+      - '<p>FICO Score         : 274                 </p>                                                    '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      # Transaction summary headings.
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#33FFD1; text-align:center;">               '
+      - '<p style="font-size:16px">Transaction Summary</p>                                                   '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#33FF5E; text-align:left;">                 '
+      - '<p style="font-size:16px">Tran ID</p>                                                               '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#33FF5E; text-align:left;">                 '
+      - '<p style="font-size:16px">Tran Details</p>                                                          '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#33FF5E; text-align:right;">                '
+      - '<p style="font-size:16px">Amount</p>                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      # 6000-WRITE-TRANS, once per transaction.
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000751</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic statement line before close one        </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>       10.00 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '<tr>                                                                                                '
+      - '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>9900000000000752</p>                                                                             '
+      - '</td>                                                                                               '
+      - '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">                 '
+      - '<p>Synthetic statement line before close two        </p>                                            '
+      - '</td>                                                                                               '
+      - '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">                '
+      - '<p>       10.00 </p>                                                                                '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      # 4000-TRNXFILE-GET after the transactions: the end of the statement.
+      - '<tr>                                                                                                '
+      - '<td colspan="3" style="padding:0px 5px;background-color:#1d1d96b3;">                                '
+      - '<h3>End of Statement</h3>                                                                           '
+      - '</td>                                                                                               '
+      - '</tr>                                                                                               '
+      - '</table>                                                                                            '
+      - '</body>                                                                                             '
+      - '</html>                                                                                             '

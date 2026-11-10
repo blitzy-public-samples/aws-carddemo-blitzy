@@ -1,0 +1,62 @@
+# The second caller mask of CSUTLDTC: EDIT-DATE-LE in the procedure copybook
+# CSUTLDPY, copied by COACTUPC, calls it with the mask 'YYYYMMDD'
+# [app/cpy/CSUTLDPY.cpy:284-296]. LS-DATE and LS-DATE-FORMAT are X(10) and
+# CSUTLDTC passes their full length 10 to CEEDAYS [app/cbl/CSUTLDTC.cbl:83-88,
+# 105-113], so the date and the mask each carry two trailing spaces, written
+# out in the call-list record below and never trimmed. (The UniKix copy passes
+# trimmed lengths instead, GAP-DOC-021; this scenario runs app/'s CSUTLDTC.)
+#
+# The CEEDAYS stub trims trailing spaces before it matches the picture, so the
+# date is accepted with a zero feedback token: severity 0000, message number
+# 0000, 'Date is valid', and RETURN-CODE 0. That acceptance is the stub's,
+# not an observed CEEDAYS outcome (GAP-STB-002, GAP-INF-001).
+#
+# 'TstDate:' is followed by the binary Vstring length x'000A' and the first 8
+# bytes of the date, because CSUTLDTC moves the whole WS-DATE-TO-TEST group to
+# the X(10) WS-DATE [app/cbl/CSUTLDTC.cbl:122]; DTCDRV shows those two bytes
+# as '..' and as 000A in the hex rendering. 'Mask used:' keeps the mask with
+# its two spaces. Both are pinned as observed.
+#
+# DTCDRV passes clean X(10) areas. The real CSUTLDPY call passes the 8-byte
+# WS-EDIT-DATE-CCYYMMDD followed by two bytes of WS-EDIT-DATE-BINARY, and the
+# X(08) WS-DATE-FORMAT followed by two spaces of the initialized WS-SEVERITY
+# [app/cpy/CSUTLDWY.cpy:4-37,58-63]; that caller storage is not reproduced
+# here (GAP-STB-004) and runs only online.
+id: UTL-CSUTLDTC-normal-02
+level: unit
+type: normal
+description: >-
+  CSUTLDTC validates 20220718 against the mask YYYYMMDD, both padded with two
+  spaces to the X(10) linkage items as COACTUPC's EDIT-DATE-LE mask is: the
+  result reads severity 0000, message code 0000, 'Date is valid', TstDate with
+  the Vstring length x'000A' and 20220718, and 'Mask used:YYYYMMDD  ', and
+  RETURN-CODE is 0.
+inventory_ids:
+- INV-UTL-004
+- INV-UTL-001
+- INV-UTL-002
+- INV-UTL-003
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-STB-002
+- GAP-INF-001
+- GAP-STB-004
+- GAP-STB-011
+preconditions:
+  datasets: {}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  param_files:
+    # One DTCDRV call: DATE in bytes 1-10, MASK in bytes 11-20, the rest of
+    # the 80-byte record spaces.
+    DTCIN:
+    - '20220718  YYYYMMDD  '
+expected:
+  return_code: 0
+  messages:
+  - 'DTCDRV DATE=20220718   MASK=YYYYMMDD   RC=0000 RESULT=0000Mesg Code: 0000 Date is valid   TstDate: ..20220718 Mask used:YYYYMMDD       HEX=303030304D65736720436F64653A203030303020446174652069732076616C6964202020547374446174653A20000A3230323230373138204D61736B20757365643A595959594D4D4444202020202020'
