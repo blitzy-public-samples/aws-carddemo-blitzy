@@ -1,0 +1,36 @@
+# Derived baseline, inferred-not-observed (GAP-INF-007, GAP-INF-012): authored
+# from the source, never captured; no TPE region runs in CI. USER0001 signs on
+# and COSGN00C transfers to COMEN01C, which sends COMEN01 with a blank message
+# [app/cbl/COSGN00C.cbl:222-240] [app/cbl/COMEN01C.cbl:75-110,182-194]. Option
+# 7 is COTRN01C [app/cpy/COMEN02Y.cpy:61-65]; on that first entry nothing is
+# selected, so COTRN01C sends COTRN01 with a blank message. PF7 then reaches
+# WHEN OTHER, which moves CCDA-MSG-INVALID-KEY to WS-MESSAGE and sends COTRN01
+# again with its header rebuilt from COTTL01Y and CSDAT01Y
+# [app/cbl/COTRN01C.cbl:52-61,88-131,213-262] [app/cpy/CSMSG01Y.cpy:20-21].
+# ERRMSG is the full 78-byte field [app/bms/COTRN01.bms:259-262], trailing
+# spaces kept, and messages holds the ERRMSG of every step. CURDATE and
+# CURTIME come from the region clock, so they are matchers.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Invalid key pressed. Please see below...                                      '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN01C
+  TRNNAME: CT01
+- '@map': COTRN01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Invalid key pressed. Please see below...                                      '
+  PGMNAME: COTRN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CT01

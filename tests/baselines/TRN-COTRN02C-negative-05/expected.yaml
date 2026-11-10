@@ -1,0 +1,68 @@
+# Derived baseline of scenario TRN-COTRN02C-negative-05 (capture_platform:
+# derived, see manifest.yaml), authored from the source and never observed: no
+# TPE region runs in CI. Derived from
+# app/cbl/COTRN02C.cbl:36-38,115-130,193-216,516-571, app/bms/COTRN02.bms and
+# app/cpy/COTTL01Y.cpy:18-22. Open until a UniKix run is imported: GAP-INF-007
+# (derived TRN end-to-end baselines), GAP-INF-012 (online-only copybooks).
+# Step 1: USER0001 signs on and COSGN00C routes the type 'U' user to COMEN01C
+# [app/cbl/COSGN00C.cbl:230-237], which sends the main menu COMEN01 headed
+# CM00/COMEN01C with a blank message [app/cbl/COMEN01C.cbl:36-38].
+# Step 2: option 8 'Transaction Add' XCTLs to COTRN02C
+# [app/cpy/COMEN02Y.cpy:67-72] [app/cbl/COMEN01C.cbl:146-155]; its first entry
+# moves LOW-VALUES to COTRN2AO and sends COTRN02 with the
+# CT02/COTRN02C header, the COTTL01Y titles and a blank message.
+# Step 3: ENTER with Acct # blank and Card # 'ABCD'. VALIDATE-INPUT-KEY-FIELDS
+# takes the card branch, finds the 16-byte CARDNINI NOT NUMERIC, moves
+# 'Card Number must be Numeric...' to WS-MESSAGE and performs
+# SEND-TRNADD-SCREEN, whose RETURN TRANSID(CT02) ends the task: no NUMVAL, no
+# CCXREF read and no data-field blanking, so every entered value comes back
+# as RECEIVE MAP padded it (all input fields carry FSET).
+# Values are full BMS width with trailing spaces kept (ERRMSG 78 from the
+# 80-byte WS-MESSAGE), because screens and messages compare exactly; messages
+# holds each step's ERRMSG in step order. CURDATE and CURTIME come from the
+# region clock, so they are matchers; colours and the cursor are not asserted.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Card Number must be Numeric...                                                '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CT02
+- '@map': COTRN02
+  ACTIDIN: '           '
+  CARDNIN: 'ABCD            '
+  CONFIRM: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Card Number must be Numeric...                                                '
+  MCITY: 'Testville                '
+  MID: '800000001'
+  MNAME: 'Test Merchant                 '
+  MZIP: '27601     '
+  PGMNAME: COTRN02C
+  TCATCD: '0001'
+  TDESC: 'Test purchase                                               '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-07-01'
+  TPROCDT: '2022-07-01'
+  TRNAMT: '+00000012.34'
+  TRNNAME: CT02
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'

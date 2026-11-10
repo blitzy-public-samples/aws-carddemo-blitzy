@@ -1,0 +1,32 @@
+# Derived from source (capture_platform: derived), never observed; the
+# scenario is inferred-not-observed under GAP-INF-007 and GAP-INF-012, and an
+# eligible `report.py --import-unikix` run replaces this outcome. CT02 entered
+# directly, without a COMMAREA: COTRN02C finds EIBCALEN = 0 and XCTLs to
+# COSGN00C with a COMMAREA, so the transaction add map COTRN02 is never sent
+# [app/cbl/COTRN02C.cbl:115-117,500-511]. COSGN00C takes the ENTER as an empty
+# sign-on attempt: RECEIVE MAP maps nothing from the unformatted 'CT02', and
+# USERIDI is spaces or LOW-VALUES, either of which gives 'Please enter User ID
+# ...' on map COSGN00 [app/cbl/COSGN00C.cbl:80-88,108-122,145-157]. The step's
+# ENTER on that screen, with nothing typed, gives the same screen and message.
+# The header is POPULATE-HEADER-INFO's: CC00, COSGN00C and the COTTL01Y titles
+# [app/cbl/COSGN00C.cbl:36-37,177-196] [app/cpy/COTTL01Y.cpy:17-22].
+# Keys are exactly those the scenario's expected names, because the comparison
+# needs a baseline value for each. Fields are at their full BMS width with
+# trailing spaces kept (ERRMSG 78, TITLE01/TITLE02 40, USERID 8); CURDATE and
+# CURTIME come from the region clock, so they are matchers.
+messages:
+- 'Please enter User ID ...                                                      '
+screens:
+- '@map': COSGN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S '
+    match: run-time
+  ERRMSG: 'Please enter User ID ...                                                      '
+  PGMNAME: COSGN00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CC00
+  USERID: '        '
