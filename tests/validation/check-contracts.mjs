@@ -2,20 +2,42 @@
 /**
  * check-contracts — buf, Spectral and contract-content check for the Card Servicing
  * interfaces. run-all.sh runs it fifth, from any working directory, as
- * `node tests/validation/check-contracts.mjs`.
+ * `node tests/validation/check-contracts.mjs`. It takes no arguments; -h or --help
+ * prints its usage and exits 0, and any other argument exits 2.
  *
  * Passes when every listed interface has its `.proto` and OpenAPI 3.1 document,
- * `buf lint` and Spectral report zero errors, the fourteen Stub Contract Baseline
+ * buf.yaml and .spectral.yaml pass validation (checkLintConfigs), no path this check
+ * reads or a tool lints (buf.yaml, the two proto roots and everything inside them,
+ * .spectral.yaml and the six OpenAPI documents) is or sits below a symbolic link,
+ * `buf lint` and Spectral report zero errors, no proto carries a `buf:lint:ignore`
+ * directive (a comment line that begins with it), the fourteen Stub Contract Baseline
  * operations are present under their baseline RPC names, REST methods and paths,
- * every RPC and OpenAPI operation carries examples and the standard error object,
- * and the ErrorObject schema is identical across the six OpenAPI documents and
- * mirrors cardservicing.common.v1.ErrorObject in camelCase.
+ * every RPC and OpenAPI operation carries examples and the standard error object, and
+ * the ErrorObject schema is identical across the six OpenAPI documents and mirrors
+ * cardservicing.common.v1.ErrorObject in camelCase.
+ *
+ * Nothing reached through a symbolic link is read by this check or linted by a tool,
+ * because a link may lead outside the repository or into a CardDemo reference root.
+ * Before any file is opened, every fixed path (common.proto, the six service protos,
+ * the six OpenAPI documents, buf.yaml, .spectral.yaml and the two proto roots) is
+ * checked with lstat from the repository root down, and the walk of each root never
+ * follows a link inside it. Each link is reported once, at the link, and stands for
+ * every path below it: such a path is not checked for existence, read, parsed or
+ * linted. The tools run only after their configuration and inputs are validated: buf
+ * only on a buf.yaml that passed, when neither buf.yaml nor a proto root has a
+ * symlinked component and no link sits inside a root; Spectral only on a .spectral.yaml
+ * that passed and has no symlinked component, and only for the documents that have
+ * none, parse and hold local `#` references alone. A tool or document held back is one
+ * more violation naming why, so neither tool reads a path the checks did not allow.
  *
  * A failing check is fixed in the contracts, never by weakening this script.
- * Output: one line per violation and a final count (lib/markdown.mjs report);
- * exit 0 with no violation, 1 with any, 2 on an internal error.
+ * Output: one line per violation and a final count (lib/markdown.mjs report).
+ * Informational lines read `check-contracts (note): <note>` and are not violations.
+ * Exit 0 with no violation, 1 with any, 2 on an internal or setup error, such as no
+ * resolvable YAML parser or @stoplight/spectral-rulesets (the count is still printed).
  */
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { repoRoot, readText, exists, toolBin, report } from './lib/markdown.mjs';
@@ -115,22 +137,54 @@ function repoRelative(printed) {
 // YAML parser
 // ---------------------------------------------------------------------------
 
+/** A YAML syntax error, duplicate keys included, with its 1-based line (undefined when unknown). */
+class YamlSyntaxError extends Error {
+  constructor(message, line) {
+    super(message);
+    this.name = 'YamlSyntaxError';
+    this.line = line;
+  }
+}
+
 /**
- * Resolves a YAML parser from the locked tool tree: @stoplight/yaml (Spectral's own
- * parser), else js-yaml (hoisted by the mermaid toolchain). Never add a YAML package
- * to package.json for this: the manifest pins exactly the three validation tools.
+ * Resolves a strict YAML parser from the locked tool tree: @stoplight/yaml (Spectral's
+ * own parser), else js-yaml (hoisted by the mermaid toolchain). The parser it returns
+ * throws a YamlSyntaxError on any syntax error or duplicate key; @stoplight/yaml's plain
+ * `parse` returns a partial result instead, which would let a malformed configuration
+ * be judged by its fragments. Never add a YAML package to package.json for this: the
+ * manifest pins exactly the three validation tools.
  */
 function resolveYamlParser() {
   const require = createRequire(new URL('./package.json', import.meta.url));
   try {
-    const { parse } = require('@stoplight/yaml');
-    if (typeof parse === 'function') return (text) => parse(text);
+    const { parseWithPointers } = require('@stoplight/yaml');
+    if (typeof parseWithPointers === 'function') {
+      return (text) => {
+        const { data, diagnostics } = parseWithPointers(text);
+        const error = (Array.isArray(diagnostics) ? diagnostics : []).find((d) => d?.severity === 0);
+        if (error) {
+          const line = error.range?.start?.line;
+          throw new YamlSyntaxError(String(error.message ?? 'syntax error'), Number.isInteger(line) ? line + 1 : undefined);
+        }
+        return data;
+      };
+    }
   } catch {
     // Not resolvable from tests/validation; js-yaml is tried next.
   }
   try {
     const { load } = require('js-yaml');
-    if (typeof load === 'function') return (text) => load(text);
+    if (typeof load === 'function') {
+      return (text) => {
+        try {
+          return load(text);
+        } catch (err) {
+          if (err?.name !== 'YAMLException') throw err;
+          const line = err.mark?.line;
+          throw new YamlSyntaxError(String(err.reason ?? err.message), Number.isInteger(line) ? line + 1 : undefined);
+        }
+      };
+    }
   } catch {
     // Neither parser resolves; the caller reports it.
   }
@@ -152,7 +206,10 @@ function runBuf(violations) {
     });
     return;
   }
-  const res = spawnSync(bin, ['lint', '--config', BUF_CONFIG], {
+  // main runs buf only when no symlink sits on buf.yaml, on a module root or inside one;
+  // --disable-symlinks still keeps buf off a link that appears inside a root after that
+  // walk, whose target may sit outside the repository or under a CardDemo reference root.
+  const res = spawnSync(bin, ['lint', '--config', BUF_CONFIG, '--disable-symlinks'], {
     cwd: repoRoot,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
@@ -177,29 +234,73 @@ function runBuf(violations) {
 }
 
 /**
- * Parses the first JSON array in a tool's output. Spectral appends a plain-text line
- * to its JSON (for example `[]No results with a severity of 'error' found!`) and may
- * print a banner before it, so each `[` is tried in turn and the array's end is found
- * by bracket matching outside string literals.
+ * The only text Spectral 6.15.0 prints after its JSON findings: the line it appends when
+ * nothing reaches the failure threshold, as in `[]No results with a severity of 'error' found!`.
+ */
+const SPECTRAL_TRAILER_RE = /^No results with a severity of '(error|warn|info|hint)'( or higher)? found!$/;
+
+/**
+ * Decodes Spectral's `-f json` stdout into its top-level findings array.
+ *
+ * Read from the top, stdout holds three parts in order. First, blank lines and banner
+ * lines: a banner line is plain text holding none of `[ ] { }`, such as Spectral 5's
+ * `OpenAPI 3.x detected`, and the banner lines are returned trimmed as `banner` for the
+ * caller to surface. Then the findings array, opened by `[` at column 0 of the first
+ * line that holds a bracket; every bracket in it must match by type outside string
+ * literals (balancedEnd), and exactly its span must parse as JSON. Last, only
+ * whitespace or the SPECTRAL_TRAILER_RE line.
+ *
+ * A line before the array that carries a bracket, such as `{"findings":` or `[info]`,
+ * is refused, never passed over as a banner: it cannot be told apart from malformed
+ * protocol output. The first array is the only candidate. A malformed one is an error,
+ * never a reason to look for a later array or to take an inner array for the findings.
+ *
+ * @param {string | null | undefined} text Spectral's stdout
+ * @returns {{ results: unknown[], banner: string } | { error: string }} the findings
+ *   and the trimmed banner (empty when none), or why no findings array was decoded
  */
 function extractJsonArray(text) {
   const src = String(text ?? '');
-  for (let start = src.indexOf('['); start >= 0; start = src.indexOf('[', start + 1)) {
-    const end = balancedEnd(src, start);
-    if (end < 0) return null;
-    try {
-      const parsed = JSON.parse(src.slice(start, end + 1));
-      if (Array.isArray(parsed)) return parsed;
-    } catch {
-      // Not JSON from this bracket; a banner such as "[info]" precedes the array.
-    }
+  if (src.trim() === '') return { error: 'stdout is empty' };
+  // The first line holding a bracket must open the array; every line before it holds
+  // none, so it is blank or banner text.
+  const lines = src.split('\n');
+  const first = lines.findIndex((line) => /[[\]{}]/.test(line));
+  if (first < 0) return { error: 'no line starts with a JSON array' };
+  if (!lines[first].startsWith('[')) {
+    return { error: `unexpected text before the JSON findings: ${clipSpectralText(lines[first].trim())}` };
   }
-  return null;
+  const lineNo = first + 1;
+  const start = lines.slice(0, first).reduce((offset, line) => offset + line.length + 1, 0);
+  const end = balancedEnd(src, start);
+  if (end === -2) return { error: `the array opened on line ${lineNo} has mismatched brackets` };
+  if (end < 0) return { error: `the array opened on line ${lineNo} never closes` };
+  let results;
+  try {
+    // A JSON text that opens with `[` and parses is an array.
+    results = JSON.parse(src.slice(start, end + 1));
+  } catch (err) {
+    // V8 quotes the failing source, line breaks included, so whitespace is collapsed
+    // to keep the violation on one line.
+    const reason = String(err?.message ?? err).replace(/\s+/g, ' ');
+    return { error: `the array opened on line ${lineNo} is not valid JSON (${clipSpectralText(reason)})` };
+  }
+  const rest = src.slice(end + 1).trim();
+  if (rest !== '' && !SPECTRAL_TRAILER_RE.test(rest)) {
+    return { error: `unexpected text follows the array opened on line ${lineNo}: ${firstLines(rest)}` };
+  }
+  return { results, banner: src.slice(0, start).trim() };
 }
 
-/** Index of the bracket closing the one at `start`, or -1 when it never closes. */
+/**
+ * Where the bracket at `start` closes, matching `[` with `]` and `{` with `}` outside
+ * JSON string literals: the index of its closing bracket, -1 when it never closes, or
+ * -2 at the first closing bracket that does not match the innermost open one, as in
+ * `[oops}`.
+ */
 function balancedEnd(src, start) {
-  let depth = 0;
+  // The closing bracket each open bracket needs, innermost last.
+  const needed = [];
   let inString = false;
   for (let i = start; i < src.length; i++) {
     const ch = src[i];
@@ -209,20 +310,76 @@ function balancedEnd(src, start) {
       continue;
     }
     if (ch === '"') inString = true;
-    else if (ch === '[' || ch === '{') depth++;
+    else if (ch === '[') needed.push(']');
+    else if (ch === '{') needed.push('}');
     else if (ch === ']' || ch === '}') {
-      depth--;
-      if (depth === 0) return i;
+      if (needed.pop() !== ch) return -2;
+      if (needed.length === 0) return i;
     }
   }
   return -1;
 }
 
-function firstLines(...texts) {
-  const lines = texts.join('\n').split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== '');
-  return lines.length === 0 ? '(no output)' : lines.slice(0, 5).join(' | ');
+/** `text` cut to `max` characters, ending in `…` when it was cut, so one violation stays one readable line. */
+function clipSpectralText(text, max = 200) {
+  const s = String(text);
+  return s.length <= max ? s : `${s.slice(0, max)}…`;
 }
 
+/**
+ * The first five non-blank lines of `texts`, each trimmed and clipped to 200
+ * characters, joined with ` | `; `(no output)` when every text is blank.
+ */
+function firstLines(...texts) {
+  const lines = texts.join('\n').split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== '');
+  return lines.length === 0 ? '(no output)' : lines.slice(0, 5).map((l) => clipSpectralText(l)).join(' | ');
+}
+
+/**
+ * Why a decoded Spectral result cannot be counted, or null when it is a finding: an
+ * object with a string or numeric `code`, a string `message`, an integer `severity`
+ * from 0 (error) to 3 (hint) and a non-negative integer `range.start.line`.
+ */
+function spectralFindingProblem(r) {
+  if (!isObject(r)) return 'not an object';
+  if (typeof r.code !== 'string' && typeof r.code !== 'number') return 'code is missing or not a string or number';
+  if (typeof r.message !== 'string') return 'message is missing or not a string';
+  if (!Number.isInteger(r.severity) || r.severity < 0 || r.severity > 3) {
+    return 'severity is missing or not an integer from 0 to 3';
+  }
+  const line = r.range?.start?.line;
+  if (!Number.isInteger(line) || line < 0) return 'range.start.line is missing or not a non-negative integer';
+  return null;
+}
+
+/**
+ * Node.js runtime warnings a tool may print on stderr, which say nothing about the
+ * contracts: `(node:<pid>) [DEPnnnn] DeprecationWarning: …`, `(node:<pid>)
+ * ExperimentalWarning: …`, and the "(Use node --trace-… to show where the warning was
+ * created)" line that follows them.
+ */
+const NODE_RUNTIME_WARNING_RE = /^\(node:\d+\) (?:\[DEP\d+\] DeprecationWarning|ExperimentalWarning): \S/;
+const NODE_TRACE_HINT_RE = /^\(Use `node --trace-[a-z-]+(?: [^`]*)?` to show where the warning was created\)$/;
+
+/**
+ * Lints each OpenAPI document in `files` with the local Spectral, against .spectral.yaml
+ * at the error threshold, and judges stdout, stderr and the exit status separately.
+ *
+ * Violations, per document: Spectral could not start; stdout is not one decodable
+ * findings array (extractJsonArray), whatever the exit status; one or more results are
+ * not findings (spectralFindingProblem), reported once with the count and the first;
+ * each error-severity finding, at its source line; a signal kill; a non-zero exit with
+ * no error finding; stderr holding anything but Node.js runtime warnings, reported once
+ * with its first unrecognised lines.
+ *
+ * Notes: text printed before the findings array; each distinct Node.js runtime warning,
+ * once across all documents and without its process id; the warning, info and hint
+ * counts across all documents.
+ *
+ * @param {string[]} files root-relative OpenAPI document paths
+ * @param {{ path: string, line?: number, message: string }[]} violations appended to
+ * @param {string[]} notes plain informational lines, appended to
+ */
 function runSpectral(files, violations, notes) {
   const bin = toolBin('spectral');
   if (!bin) {
@@ -232,7 +389,9 @@ function runSpectral(files, violations, notes) {
     });
     return;
   }
-  let warnings = 0;
+  // Findings below error severity, indexed by severity: 1 warning, 2 info, 3 hint.
+  const belowError = [0, 0, 0, 0];
+  const runtimeNotes = new Set();
   for (const rel of files) {
     const res = spawnSync(bin, ['lint', rel, '--ruleset', SPECTRAL_RULESET, '--fail-severity=error', '-f', 'json'], {
       cwd: repoRoot,
@@ -243,82 +402,386 @@ function runSpectral(files, violations, notes) {
       violations.push({ path: rel, message: `spectral lint could not run: ${res.error.message}` });
       continue;
     }
-    const results = extractJsonArray(res.stdout);
-    if (results === null) {
-      if (res.status !== 0) {
-        violations.push({
-          path: rel,
-          message: `spectral lint exited with ${res.status ?? res.signal}: ${firstLines(res.stdout, res.stderr)}`,
-        });
+
+    // Findings arrive on stdout only, so stderr is judged on its own, whatever stdout and the exit status say.
+    const unrecognised = [];
+    for (const raw of String(res.stderr ?? '').split(/\r?\n/)) {
+      const line = raw.trim();
+      if (line === '') continue;
+      if (NODE_RUNTIME_WARNING_RE.test(line) || NODE_TRACE_HINT_RE.test(line)) {
+        const note = `spectral printed a Node.js runtime warning on stderr: ${line.replace(/^\(node:\d+\) /, '')}`;
+        if (!runtimeNotes.has(note)) {
+          runtimeNotes.add(note);
+          notes.push(note);
+        }
       } else {
-        notes.push(`${rel}: spectral output was not JSON, so its warnings were not counted`);
-      }
-      continue;
-    }
-    let errors = 0;
-    for (const r of results) {
-      if (r?.severity === 0) {
-        errors++;
-        const file = typeof r.source === 'string' ? repoRelative(r.source) ?? rel : rel;
-        const line = Number.isInteger(r.range?.start?.line) ? r.range.start.line + 1 : undefined;
-        violations.push({ path: file, line, message: `spectral ${r.code}: ${r.message}` });
-      } else if (r?.severity === 1) {
-        warnings++;
+        unrecognised.push(line);
       }
     }
-    if (res.status !== 0 && errors === 0) {
-      const status = res.status ?? res.signal;
+    if (unrecognised.length > 0) {
+      violations.push({ path: rel, message: `spectral stderr: ${firstLines(...unrecognised)}` });
+    }
+
+    const exit = res.status === null ? `signal ${res.signal}` : `exit ${res.status}`;
+    const decoded = extractJsonArray(res.stdout);
+    if ('error' in decoded) {
       violations.push({
         path: rel,
-        message: `spectral lint exited with ${status} without an error result: ${firstLines(res.stderr)}`,
+        message: `spectral lint printed no valid JSON findings array (${exit}; ${decoded.error}): ${firstLines(res.stdout)}`,
+      });
+      continue;
+    }
+    if (decoded.banner !== '') {
+      notes.push(`spectral printed text before the JSON findings of ${rel}: ${firstLines(decoded.banner)}`);
+    }
+    let errors = 0;
+    let malformed = 0;
+    let firstMalformed = '';
+    for (const r of decoded.results) {
+      const problem = spectralFindingProblem(r);
+      if (problem !== null) {
+        malformed++;
+        if (malformed === 1) firstMalformed = `${problem}: ${clipSpectralText(JSON.stringify(r))}`;
+        continue;
+      }
+      if (r.severity === 0) {
+        errors++;
+        const file = typeof r.source === 'string' ? repoRelative(r.source) ?? rel : rel;
+        violations.push({ path: file, line: r.range.start.line + 1, message: `spectral ${r.code}: ${r.message}` });
+      } else {
+        belowError[r.severity]++;
+      }
+    }
+    if (malformed > 0) {
+      violations.push({
+        path: rel,
+        message: `spectral printed ${malformed} malformed finding(s) that cannot be counted; the first: ${firstMalformed}`,
       });
     }
+    if (res.status === null) {
+      violations.push({ path: rel, message: `spectral lint was killed by ${res.signal}` });
+    } else if (res.status !== 0 && errors === 0) {
+      violations.push({ path: rel, message: `spectral lint exited with ${res.status} without an error result` });
+    }
   }
-  if (warnings > 0) {
-    notes.push(`spectral reported ${warnings} warning(s) across the OpenAPI documents; warnings are not violations`);
+  const counted = [
+    [belowError[1], 'warning(s)'],
+    [belowError[2], 'info finding(s)'],
+    [belowError[3], 'hint(s)'],
+  ].filter(([n]) => n > 0);
+  if (counted.length > 0) {
+    const summary = counted.map(([n, label]) => `${n} ${label}`).join(', ');
+    notes.push(`spectral reported ${summary} across the OpenAPI documents; findings below error severity are not violations`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Lint configuration
+// ---------------------------------------------------------------------------
+
+/** The top-level keys buf.yaml may hold. */
+const BUF_KEYS = ['version', 'modules', 'lint', 'breaking'];
+/** Why a top-level buf.yaml key outside BUF_KEYS is refused, where a specific reason exists. */
+const BUF_KEY_REASONS = {
+  deps: 'it makes buf fetch remote modules',
+  plugins: 'it makes buf run external programs',
+};
+/** Why a lint key other than use is refused, where a specific reason exists. */
+const BUF_LINT_KEY_REASONS = {
+  except: 'it removes rules from the categories in lint.use',
+  ignore: 'it exempts the paths it lists from every rule',
+  ignore_only: 'it exempts the paths it lists from the rules it names',
+  disable_builtin: 'it turns off the built-in rules',
+};
+/** The top-level keys .spectral.yaml may hold. */
+const SPECTRAL_KEYS = ['extends', 'rules'];
+/** Why a top-level .spectral.yaml key outside SPECTRAL_KEYS is refused, where a specific reason exists. */
+const SPECTRAL_KEY_REASONS = {
+  functions: 'it loads custom rule functions from disk',
+  functionsDir: 'it loads custom rule functions from disk',
+  overrides: 'it changes the rules for selected documents',
+  parserOptions: 'it changes how documents are parsed',
+  aliases: 'it redefines what rules apply to',
+  formats: 'it restricts which documents rules apply to',
+};
+const OAS_RULESET = 'spectral:oas';
+/** The modes of an ["spectral:oas", <mode>] extends entry that keep its rules active. */
+const OAS_MODES = ['recommended', 'all'];
+
+/**
+ * Every string `$ref` in a parsed YAML value that is not a local `#` reference, in
+ * document order. Spectral loads such a reference itself (a file or a URL) before any
+ * rule runs, so a document or ruleset holding one is never handed to it.
+ */
+function nonLocalRefs(value) {
+  const out = [];
+  const seen = new Set();
+  const walk = (node) => {
+    if (node === null || typeof node !== 'object' || seen.has(node)) return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    for (const [key, child] of Object.entries(node)) {
+      if (key === '$ref' && typeof child === 'string' && !child.startsWith('#')) out.push(child);
+      walk(child);
+    }
+  };
+  walk(value);
+  return out;
+}
+
+/** The first three references, quoted, followed by the count of any others. */
+function listRefs(refs) {
+  const shown = refs
+    .slice(0, 3)
+    .map((r) => JSON.stringify(r))
+    .join(', ');
+  return refs.length > 3 ? `${shown} and ${refs.length - 3} more` : shown;
+}
+
+/** A rules entry as one short phrase: a scalar as JSON, a mapping by its keys. */
+function describeSetting(setting) {
+  if (isObject(setting)) {
+    const keys = Object.keys(setting);
+    return keys.length === 0 ? 'an empty mapping' : `a mapping of ${keys.join(', ')}`;
+  }
+  return JSON.stringify(setting) ?? String(setting);
 }
 
 /**
- * Zero linter errors prove nothing when the configuration lints nothing, so the buf
- * configuration must cover both proto roots with STANDARD and COMMENTS, and the
- * Spectral ruleset must extend spectral:oas.
+ * Names of the spectral:oas rules whose default severity is error, read from the locked
+ * @stoplight/spectral-rulesets that Spectral itself loads; null when that package does
+ * not resolve or lists no such rule, which is a setup failure.
  */
-function checkLintConfigs(parseYaml, violations) {
-  const buf = loadYaml(BUF_CONFIG, parseYaml, violations);
-  if (buf !== undefined) {
-    if (String(buf?.version ?? '') !== 'v2') {
-      violations.push({ path: BUF_CONFIG, message: `version is "${buf?.version ?? ''}", expected "v2"` });
-    }
-    const modules = Array.isArray(buf?.modules) ? buf.modules.map((m) => String(m?.path ?? '')) : [];
-    for (const root of [CONTRACTS_PROTO_ROOT, SERVICE_PROTO_ROOT]) {
-      if (!modules.includes(root)) violations.push({ path: BUF_CONFIG, message: `modules lack path ${root}` });
-    }
-    const use = Array.isArray(buf?.lint?.use) ? buf.lint.use.map(String) : [];
-    for (const category of ['STANDARD', 'COMMENTS']) {
-      if (!use.includes(category)) violations.push({ path: BUF_CONFIG, message: `lint.use lacks ${category}` });
-    }
+function oasErrorRules() {
+  const require = createRequire(new URL('./package.json', import.meta.url));
+  let rules;
+  try {
+    rules = require('@stoplight/spectral-rulesets')?.oas?.rules;
+  } catch {
+    return null;
   }
-  const ruleset = loadYaml(SPECTRAL_RULESET, parseYaml, violations);
-  if (ruleset !== undefined) {
-    const ext = ruleset?.extends;
-    const names = (Array.isArray(ext) ? ext : [ext]).map((e) => (Array.isArray(e) ? e[0] : e));
-    if (!names.includes('spectral:oas')) {
-      violations.push({ path: SPECTRAL_RULESET, message: 'extends does not include "spectral:oas"' });
-    }
-  }
+  if (!isObject(rules)) return null;
+  const names = Object.entries(rules)
+    .filter(([, rule]) => rule?.severity === 0 || rule?.severity === 'error')
+    .map(([name]) => name);
+  return names.length > 0 ? new Set(names) : null;
 }
 
-/** Parses a root-relative YAML file; undefined (with a violation) when absent or unparseable. */
+/**
+ * True when a rules entry keeps an error-severity rule at error severity: exactly
+ * "error" or true. Spectral 6.15.0 rejects the ruleset for any other override that
+ * names the rule without redefining it (a numeric severity such as 0, or a mapping
+ * without given and then), and every remaining value downgrades or disables it.
+ */
+function keepsErrorSeverity(setting) {
+  return setting === 'error' || setting === true;
+}
+
+/** Validates buf.yaml as checkLintConfigs sets out; true when buf may run on it. */
+function checkBufConfig(parseYaml, violations) {
+  const before = violations.length;
+  const add = (message) => violations.push({ path: BUF_CONFIG, message });
+  const buf = loadYaml(BUF_CONFIG, parseYaml, violations);
+  if (buf === undefined) return false;
+  if (!isObject(buf)) {
+    add('configuration is not a YAML mapping');
+    return false;
+  }
+  for (const key of Object.keys(buf)) {
+    if (!BUF_KEYS.includes(key)) {
+      add(`key "${key}" is not allowed: ${BUF_KEY_REASONS[key] ?? `buf.yaml may hold only ${BUF_KEYS.join(', ')}`}`);
+    }
+  }
+  if (buf.version !== 'v2') {
+    add(`version is ${buf.version === undefined ? 'missing' : JSON.stringify(buf.version)}, expected "v2"`);
+  }
+
+  const roots = [CONTRACTS_PROTO_ROOT, SERVICE_PROTO_ROOT];
+  const paths = [];
+  if (!Array.isArray(buf.modules)) {
+    add('modules is not a list of path entries');
+  } else {
+    buf.modules.forEach((entry, i) => {
+      const label = typeof entry?.path === 'string' ? `module ${entry.path}` : `module entry ${i + 1}`;
+      if (!isObject(entry)) {
+        add(`${label} is not a mapping`);
+        return;
+      }
+      for (const key of Object.keys(entry)) {
+        if (key !== 'path') {
+          add(`${label}: key "${key}" is not allowed: a module entry holds only path, so nothing narrows what buf lints in it`);
+        }
+      }
+      if (typeof entry.path === 'string') paths.push(entry.path);
+      else add(`${label}: path is missing or not a string`);
+    });
+  }
+  for (const root of roots) {
+    if (!paths.includes(root)) add(`modules lack path ${root}`);
+  }
+  const seen = new Set();
+  for (const p of paths) {
+    if (seen.has(p)) add(`modules list path ${p} more than once`);
+    else if (!roots.includes(p)) add(`modules include path ${p}, which buf would read; the modules must be exactly ${roots.join(' and ')}`);
+    seen.add(p);
+  }
+
+  const lint = buf.lint;
+  if (lint !== undefined && !isObject(lint)) add('lint is not a mapping');
+  const settings = isObject(lint) ? lint : {};
+  const use = settings.use;
+  if (use !== undefined && !(Array.isArray(use) && use.every((name) => typeof name === 'string'))) {
+    add('lint.use is not a list of rule and category names');
+  }
+  const used = Array.isArray(use) ? use : [];
+  for (const category of ['STANDARD', 'COMMENTS']) {
+    if (!used.includes(category)) add(`lint.use lacks ${category}`);
+  }
+  for (const [key, value] of Object.entries(settings)) {
+    if (key === 'use' || (key === 'disallow_comment_ignores' && value === true)) continue;
+    if (key === 'disallow_comment_ignores') {
+      add(`lint.disallow_comment_ignores is ${JSON.stringify(value)}; only true is allowed`);
+    } else {
+      const reason =
+        BUF_LINT_KEY_REASONS[key] ??
+        'lint may hold only use and disallow_comment_ignores: true, because any other setting relaxes the STANDARD or COMMENTS rules';
+      add(`lint.${key} is not allowed: ${reason}`);
+    }
+  }
+  return violations.length === before;
+}
+
+/**
+ * Validates .spectral.yaml as checkLintConfigs sets out. Returns { ready, setupFailure }:
+ * whether Spectral may run on it, and whether @stoplight/spectral-rulesets failed to
+ * resolve while rules needed checking against it.
+ */
+function checkSpectralRuleset(parseYaml, violations) {
+  const before = violations.length;
+  const add = (message) => violations.push({ path: SPECTRAL_RULESET, message });
+  const ruleset = loadYaml(SPECTRAL_RULESET, parseYaml, violations);
+  if (ruleset === undefined) return { ready: false, setupFailure: false };
+  if (!isObject(ruleset)) {
+    add('ruleset is not a YAML mapping');
+    return { ready: false, setupFailure: false };
+  }
+  for (const key of Object.keys(ruleset)) {
+    if (!SPECTRAL_KEYS.includes(key)) {
+      add(`key "${key}" is not allowed: ${SPECTRAL_KEY_REASONS[key] ?? `the ruleset may hold only ${SPECTRAL_KEYS.join(' and ')}`}`);
+    }
+  }
+
+  const ext = ruleset.extends;
+  const entries = ext === undefined ? [] : Array.isArray(ext) ? ext : [ext];
+  const namesOas = (entry) => entry === OAS_RULESET || (Array.isArray(entry) && entry[0] === OAS_RULESET);
+  if (!entries.some(namesOas)) add(`extends does not include "${OAS_RULESET}"`);
+  let oasEntries = 0;
+  for (const entry of entries) {
+    if (!namesOas(entry)) {
+      add(`extends entry ${describeSetting(entry)} is not allowed: Spectral would load it before any check; extends holds only "${OAS_RULESET}"`);
+    } else if (entry !== OAS_RULESET && !(entry.length === 2 && OAS_MODES.includes(entry[1]))) {
+      add(`extends entry ${JSON.stringify(entry)} is not allowed: only "${OAS_RULESET}" or ["${OAS_RULESET}", "recommended" | "all"] keeps its rules active`);
+    } else if (++oasEntries > 1) {
+      add(`extends lists "${OAS_RULESET}" more than once`);
+    }
+  }
+
+  for (const ref of nonLocalRefs(ruleset)) {
+    add(`$ref ${JSON.stringify(ref)} is not allowed: Spectral would load it before any check; only local "#" references are`);
+  }
+
+  let setupFailure = false;
+  if (hasOwn(ruleset, 'rules')) {
+    const rules = ruleset.rules;
+    if (!isObject(rules)) {
+      add('rules is not a mapping of rule names to settings');
+    } else if (Object.keys(rules).length > 0) {
+      const errorRules = oasErrorRules();
+      if (errorRules === null) {
+        setupFailure = true;
+        violations.push({
+          path: PACKAGE_JSON,
+          message: `@stoplight/spectral-rulesets does not resolve or lists no error-severity ${OAS_RULESET} rule, so the rules in ${SPECTRAL_RULESET} could not be checked`,
+        });
+      } else {
+        for (const [name, setting] of Object.entries(rules)) {
+          if (errorRules.has(name) && !keepsErrorSeverity(setting)) {
+            add(
+              `rules.${name} is ${describeSetting(setting)}: ${OAS_RULESET} reports this rule as an error, and an override may only keep it at error ("error" or true)`,
+            );
+          }
+        }
+      }
+    }
+  }
+  return { ready: violations.length === before, setupFailure };
+}
+
+/**
+ * Zero linter errors prove nothing when the configuration lints nothing, or when it
+ * excepts, ignores or downgrades the rules that would have failed; and buf and Spectral
+ * read whatever their configuration points them at. Both configurations are therefore
+ * validated here, before either tool runs, and a tool runs only on a configuration that
+ * passes:
+ *
+ * - buf.yaml is a mapping of only version, modules, lint and breaking (deps fetches
+ *   remote modules, plugins runs external programs); version is v2; modules are exactly
+ *   the two proto roots, each entry holding only path (no excludes or module-level lint)
+ *   and none repeated; lint.use is a list of names including STANDARD and COMMENTS; and
+ *   lint holds no other key (except, ignore, ignore_only, disable_builtin and the rule
+ *   options each relax those categories) apart from disallow_comment_ignores: true.
+ * - .spectral.yaml is a mapping of only extends and rules (functions and functionsDir
+ *   load code from disk; overrides, parserOptions, aliases and formats change what the
+ *   rules see); extends holds exactly one entry, spectral:oas, bare or as
+ *   ["spectral:oas", "recommended" | "all"]; no $ref is non-local; and every rules entry
+ *   naming a spectral:oas rule whose default severity is error keeps it at error.
+ *
+ * A configuration for which `linked(rel)` is true is reached through a symbolic link:
+ * it is neither read nor validated, and its tool is not ready. The caller reports the
+ * link and names it as the reason the tool was not run.
+ *
+ * Returns { bufReady, spectralReady, setupFailure }: whether each tool may run, and
+ * whether @stoplight/spectral-rulesets failed to resolve (a setup error, exit 2).
+ */
+function checkLintConfigs(parseYaml, violations, linked) {
+  const bufReady = !linked(BUF_CONFIG) && checkBufConfig(parseYaml, violations);
+  const spectral = linked(SPECTRAL_RULESET)
+    ? { ready: false, setupFailure: false }
+    : checkSpectralRuleset(parseYaml, violations);
+  return { bufReady, spectralReady: spectral.ready, setupFailure: spectral.setupFailure };
+}
+
+/**
+ * Parses a root-relative YAML file; undefined (with a violation) when it is absent,
+ * cannot be read (a directory, no permission and the like) or does not parse. Only a
+ * YamlSyntaxError, duplicate keys included, is a parse failure, reported at the line
+ * the parser names; any other error the parser throws is an internal error. Callers
+ * never pass a path reached through a symbolic link: main reports the link instead.
+ */
 function loadYaml(rel, parseYaml, violations) {
   if (!exists(rel)) {
     violations.push({ path: rel, message: 'expected file is missing' });
     return undefined;
   }
+  let text;
   try {
-    return parseYaml(readText(rel)) ?? null;
+    text = readText(rel);
   } catch (err) {
-    violations.push({ path: rel, message: `YAML does not parse: ${String(err?.message ?? err).split('\n')[0]}` });
+    violations.push({ path: rel, message: `cannot be read: ${String(err?.message ?? err).split('\n')[0]}` });
+    return undefined;
+  }
+  try {
+    return parseYaml(text) ?? null;
+  } catch (err) {
+    if (!(err instanceof YamlSyntaxError)) throw err;
+    violations.push({
+      path: rel,
+      line: Number.isInteger(err.line) ? err.line : undefined,
+      message: `YAML does not parse: ${String(err.message).split('\n')[0]}`,
+    });
     return undefined;
   }
 }
@@ -527,10 +990,14 @@ function leadingComment(code, comments, index) {
  * Checks the common import, every RPC's comment blocks and the baseline RPCs of each
  * service proto, and returns the camelCase field names of the shared ErrorObject and
  * FieldViolation messages (null for a message that cannot be read).
+ *
+ * A proto for which `linked(rel)` is true, common.proto included, is reached through a
+ * symbolic link and is skipped unread, as a missing one is: main reports the link. A
+ * skipped common.proto leaves both shared field lists null.
  */
-function checkProtos(violations) {
+function checkProtos(violations, linked) {
   for (const iface of INTERFACES) {
-    if (!exists(iface.proto)) continue;
+    if (linked(iface.proto) || !exists(iface.proto)) continue;
     const proto = parseProto(readText(iface.proto));
     if (!proto.imports.includes(COMMON_IMPORT)) {
       violations.push({ path: iface.proto, message: `missing import "${COMMON_IMPORT}"` });
@@ -566,7 +1033,7 @@ function checkProtos(violations) {
   }
 
   const shared = { errorObject: null, fieldViolation: null };
-  if (!exists(COMMON_PROTO)) return shared;
+  if (linked(COMMON_PROTO) || !exists(COMMON_PROTO)) return shared;
   const common = parseProto(readText(COMMON_PROTO));
   for (const [key, name] of [
     ['errorObject', 'ErrorObject'],
@@ -580,6 +1047,141 @@ function checkProtos(violations) {
     }
   }
   return shared;
+}
+
+/** A symbolic link on, or at the end of, a path this check reads or buf or Spectral would lint. */
+const LINK_MESSAGE =
+  'is a symbolic link: nothing reached through it is read by this check or linted by buf or Spectral, because its target may sit outside the repository or under a CardDemo reference root; the delivery set must hold the real file or directory, so replace the link with its target';
+/** A symbolic link the walk found inside a module root. */
+const SYMLINK_MESSAGE =
+  'is a symbolic link inside a module root: buf lint is not run while one is present, because a proto behind it would drop out of the lint unseen; the delivery set must hold the real file or directory, so replace the link with its target';
+
+/**
+ * The first component of a root-relative path that is a symbolic link, checked with
+ * lstat from the repository root down to the path itself, as a root-relative path;
+ * null when no component is a link or the path is missing (a component that does not
+ * exist, or is not a directory, ends the walk). No link is followed, so its target is
+ * never statted.
+ */
+function symlinkedComponent(rel) {
+  const segments = rel.split('/');
+  for (let i = 1; i <= segments.length; i++) {
+    const part = segments.slice(0, i).join('/');
+    let stat;
+    try {
+      stat = fs.lstatSync(path.join(repoRoot, part));
+    } catch (err) {
+      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return null;
+      throw err;
+    }
+    if (stat.isSymbolicLink()) return part;
+  }
+  return null;
+}
+
+/**
+ * Reports each symbolic link met on the check's or a tool's inputs once, at the link
+ * itself, however many inputs sit below it. onPath(rel) returns symlinkedComponent(rel)
+ * and reports that component the first time; found(rel) reports a link the module-root
+ * walk met.
+ */
+function linkTracker(violations) {
+  const reported = new Set();
+  const add = (rel, message) => {
+    if (reported.has(rel)) return;
+    reported.add(rel);
+    violations.push({ path: rel, message });
+  };
+  return {
+    onPath(rel) {
+      const link = symlinkedComponent(rel);
+      if (link !== null) add(link, LINK_MESSAGE);
+      return link;
+    },
+    found(rel) {
+      add(rel, SYMLINK_MESSAGE);
+    },
+  };
+}
+
+/**
+ * Why a tool input is withheld from its tool: `link`, a component of its path (the
+ * input itself included), is a symbolic link. `subject` names the input in the
+ * sentence (default: its path).
+ */
+function linkReason(rel, link, subject = rel) {
+  return `${subject} is reached through symbolic link ${link}`;
+}
+
+/**
+ * Walks the two module roots without following any symbolic link, for two rules:
+ *
+ * - buf honours a `buf:lint:ignore <RULE>` directive in an element's leading comment
+ *   unless buf.yaml sets disallow_comment_ignores, so one such line silences a STANDARD
+ *   or COMMENTS rule for that element. A directive is a line that, after leading
+ *   whitespace and an optional `//`, `/*` or block-continuation `*` marker and
+ *   whitespace, begins with `buf:lint:ignore`, extra words after it included. Every
+ *   directive line, in every regular .proto file under the roots, is a violation. A
+ *   mention after other text on its line, prose before the token or code before a
+ *   trailing comment, is not a directive: buf does not honour it, so it is not flagged.
+ * - buf follows a symbolic link at or above a module root to wherever it points, and
+ *   with --disable-symlinks it skips one inside a root, so a proto behind it would drop
+ *   out of the lint unseen. A link at or above a root is reported once (links.onPath)
+ *   and the root is not walked; every link inside a root, file or directory, is a
+ *   violation, and its target is never statted, read or descended. A missing root is
+ *   skipped without a violation: the expected-file checks and buf report it.
+ *
+ * Returns, in root order, why buf must not run: each root reached through a link, and
+ * each root holding a link. Output is in path order within each root.
+ */
+function checkLintIgnoreComments(violations, links) {
+  const bufBlocked = [];
+  for (const root of [CONTRACTS_PROTO_ROOT, SERVICE_PROTO_ROOT]) {
+    const link = links.onPath(root);
+    if (link !== null) {
+      bufBlocked.push(linkReason(root, link));
+      continue;
+    }
+    let isDir;
+    try {
+      isDir = fs.lstatSync(path.join(repoRoot, root)).isDirectory();
+    } catch (err) {
+      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') continue;
+      throw err;
+    }
+    if (!isDir) continue;
+    const found = [];
+    const walk = (rel) => {
+      for (const entry of fs.readdirSync(path.join(repoRoot, rel), { withFileTypes: true })) {
+        const child = `${rel}/${entry.name}`;
+        if (entry.isSymbolicLink()) found.push({ rel: child, link: true });
+        else if (entry.isDirectory()) walk(child);
+        else if (entry.isFile() && path.extname(entry.name) === '.proto') found.push({ rel: child, link: false });
+      }
+    };
+    walk(root);
+    found.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+    const inRoot = found.filter((f) => f.link).length;
+    if (inRoot > 0) bufBlocked.push(`module root ${root} holds ${inRoot} symbolic link(s)`);
+    for (const { rel, link } of found) {
+      if (link) {
+        links.found(rel);
+        continue;
+      }
+      readText(rel)
+        .split(/\r?\n/)
+        .forEach((text, i) => {
+          if (/^\s*(?:\/\/+|\/\*+|\*+)?\s*buf:lint:ignore/.test(text)) {
+            violations.push({
+              path: rel,
+              line: i + 1,
+              message: 'buf:lint:ignore comment silences a buf lint rule; remove it so STANDARD and COMMENTS apply here',
+            });
+          }
+        });
+    }
+  }
+  return bufBlocked;
 }
 
 // ---------------------------------------------------------------------------
@@ -802,31 +1404,140 @@ function checkErrorObjects(docs, shared, violations) {
 // Main
 // ---------------------------------------------------------------------------
 
+/** --help text. No line starts with `check-contracts:`, so none reads as a violation. */
+const USAGE = `Usage: node tests/validation/check-contracts.mjs [--help]
+
+Validates card-servicing-contracts/buf.yaml and .spectral.yaml, then runs buf lint over
+both proto roots and Spectral over the six OpenAPI 3.1 documents, and checks that the
+fourteen Stub Contract Baseline operations are present under their RPC names, methods and
+paths, that every RPC and operation carries examples and the standard error object, and
+that ErrorObject is identical across the OpenAPI documents and mirrors common.proto.
+
+Runs from any working directory: every path resolves against the repository root.
+Takes no argument other than -h or --help, which prints this text.
+
+TMPDIR needs no setting. This check starts no browser and runs only the local buf and
+Spectral from tests/validation/node_modules/.bin, so any TMPDIR works, long paths
+included. TMPDIR matters to the suite only for check-diagrams: the Chrome that mmdc
+starts there aborts with "Socket path too long" under a long TMPDIR.
+
+Exit status:
+  0  no violation
+  1  one or more violations, one line each, then the count line
+  2  usage, setup or internal error, such as an unknown argument or no YAML parser
+`;
+
 function main() {
+  const args = process.argv.slice(2);
+  const unknown = args.find((arg) => arg !== '-h' && arg !== '--help');
+  if (unknown !== undefined) {
+    console.error(`${CHECK}: unknown argument "${unknown}"; run with --help for usage`);
+    process.exitCode = 2;
+    return;
+  }
+  if (args.length > 0) {
+    process.stdout.write(USAGE);
+    process.exitCode = 0;
+    return;
+  }
+
   const violations = [];
   const notes = [];
+  // A setup failure (a parser or ruleset package that does not resolve) exits 2, not 1.
+  let setupFailure = false;
 
+  // Nothing reached through a symbolic link is read here or handed to a tool, because
+  // the link may lead outside the repository or under a CardDemo reference root. Every
+  // fixed path this check opens or a tool lints is therefore checked with lstat alone,
+  // before anything is statted or read through it, and each link is reported once
+  // however many of those paths sit below it. Every later step skips a path for which
+  // linked() is true: its link violation stands for it.
+  const links = linkTracker(violations);
   const expected = [COMMON_PROTO, ...INTERFACES.flatMap((i) => [i.proto, i.openapi])];
+  const fixedPaths = [...expected, BUF_CONFIG, SPECTRAL_RULESET, CONTRACTS_PROTO_ROOT, SERVICE_PROTO_ROOT];
+  const linkOf = new Map(fixedPaths.map((rel) => [rel, links.onPath(rel)]));
+  const linked = (rel) => linkOf.get(rel) !== null;
+
   for (const rel of expected) {
-    if (!exists(rel)) violations.push({ path: rel, message: 'expected contract file is missing' });
+    if (!linked(rel) && !exists(rel)) violations.push({ path: rel, message: 'expected contract file is missing' });
   }
-  const openapiFiles = INTERFACES.map((i) => i.openapi).filter((rel) => exists(rel));
-
-  runBuf(violations);
-  runSpectral(openapiFiles, violations, notes);
-
-  const shared = checkProtos(violations);
 
   const parseYaml = resolveYamlParser();
+  const shared = checkProtos(violations, linked);
+
+  const bufBlocked = [];
+  const bufConfigLink = linkOf.get(BUF_CONFIG);
+  if (bufConfigLink !== null) bufBlocked.push(linkReason(BUF_CONFIG, bufConfigLink));
+  // The root walk asks links.onPath about each root again; a link already reported is not repeated.
+  bufBlocked.push(...checkLintIgnoreComments(violations, links));
+  const rulesetLink = linkOf.get(SPECTRAL_RULESET);
+
   if (!parseYaml) {
-    violations.push({ path: PACKAGE_JSON, message: 'no YAML parser resolvable (@stoplight/yaml or js-yaml)' });
+    setupFailure = true;
+    violations.push({
+      path: PACKAGE_JSON,
+      message:
+        'no YAML parser resolvable (@stoplight/yaml or js-yaml); buf lint, Spectral and the YAML content checks were not run',
+    });
   } else {
-    checkLintConfigs(parseYaml, violations);
-    const docs = new Map();
+    // Each tool runs only on a configuration that passed validation and on inputs
+    // reached through no symbolic link, so neither reads a path, module, ruleset or
+    // function that the checks did not allow. A tool held back is one violation that
+    // names every reason.
+    const configs = checkLintConfigs(parseYaml, violations, linked);
+    setupFailure = configs.setupFailure;
+    // A linked configuration is never validated: the link, already listed, is the reason.
+    if (bufConfigLink === null && !configs.bufReady) bufBlocked.unshift('this configuration failed validation');
+    if (bufBlocked.length === 0) runBuf(violations);
+    else violations.push({ path: BUF_CONFIG, message: `buf lint was not run: ${bufBlocked.join('; ')}` });
+
+    // Spectral resolves every $ref of a document it lints, so a document reaches it only
+    // when it is reached through no symbolic link, parses and holds local references
+    // alone. A linked document is not loaded or content-checked either: its not-run line
+    // names the link, and the ErrorObject identity check covers the documents loaded.
+    const loaded = [];
+    const lintable = [];
     for (const iface of INTERFACES) {
+      const link = linkOf.get(iface.openapi);
+      if (link !== null) {
+        violations.push({
+          path: iface.openapi,
+          message: `spectral lint was not run on this document: ${linkReason(iface.openapi, link, 'it')}`,
+        });
+        continue;
+      }
       if (!exists(iface.openapi)) continue;
+      const withheld = [];
       const doc = loadYaml(iface.openapi, parseYaml, violations);
-      if (doc === undefined) continue;
+      if (doc === undefined) {
+        withheld.push('it does not parse as YAML');
+      } else {
+        const remote = nonLocalRefs(doc);
+        if (remote.length > 0) {
+          withheld.push(`it holds non-local $ref ${listRefs(remote)}; only local "#" references are allowed`);
+        }
+        loaded.push({ iface, doc });
+      }
+      if (withheld.length > 0) {
+        violations.push({
+          path: iface.openapi,
+          message: `spectral lint was not run on this document: ${withheld.join('; ')}`,
+        });
+      } else {
+        lintable.push(iface.openapi);
+      }
+    }
+    const spectralBlocked = [];
+    if (rulesetLink === null && !configs.spectralReady) spectralBlocked.push('this ruleset failed validation');
+    if (rulesetLink !== null) spectralBlocked.push(linkReason(SPECTRAL_RULESET, rulesetLink));
+    if (spectralBlocked.length > 0) {
+      violations.push({ path: SPECTRAL_RULESET, message: `spectral lint was not run: ${spectralBlocked.join('; ')}` });
+    } else if (lintable.length > 0) {
+      runSpectral(lintable, violations, notes);
+    }
+
+    const docs = new Map();
+    for (const { iface, doc } of loaded) {
       if (!isObject(doc)) {
         violations.push({ path: iface.openapi, message: 'document is not a YAML mapping' });
         continue;
@@ -843,8 +1554,11 @@ function main() {
     checkErrorObjects(docs, shared, violations);
   }
 
-  for (const note of notes) console.log(`${CHECK}: note: ${note}`);
+  // `<check> (note): …` can never be read as a `<check>: <path>: <message>` violation line.
+  for (const note of notes) console.log(`${CHECK} (note): ${note}`);
   report(CHECK, violations);
+  // report() sets exit 0 or 1; a setup failure overrides it after the count is printed.
+  if (setupFailure) process.exitCode = 2;
 }
 
 try {
