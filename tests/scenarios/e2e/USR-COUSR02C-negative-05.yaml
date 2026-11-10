@@ -1,0 +1,142 @@
+# PF5 on the COUSR02 update screen with the password erased is refused with
+# 'Password can NOT be empty...' and USRSEC is left as loaded.
+#
+# Step 1: ADMIN001 signs on through CC00 and COSGN00C routes the type A user to
+# the admin menu COADM01C [app/cbl/COSGN00C.cbl:221-237].
+# Step 2: option '3', 'User Update (Security)', makes COADM01C XCTL to COUSR02C
+# with CDEMO-PGM-CONTEXT 0 [app/cbl/COADM01C.cbl:115-145]
+# [app/cpy/COADM02Y.cpy:34-37]. CDEMO-CU02-USR-SELECTED arrives blank, so no user
+# is fetched: COUSR02C clears COUSR2AO and sends COUSR02 with empty entry fields
+# and a blank message, then returns with TRANSID CU02
+# [app/cbl/COUSR02C.cbl:84-105,135-138,266-278].
+# Step 3: ENTER with TESTU002. PROCESS-ENTER-KEY reads USRSEC by the id with
+# UPDATE; on NORMAL it sends 'Press PF5 key to save your updates ...', then moves
+# the record's names, password and type into the map and sends it again under
+# the same message [app/cbl/COUSR02C.cbl:143-172,320-339]. The task ends with
+# RETURN, which releases the READ UPDATE.
+# Step 4: PF5 after the password field is erased (the adapter's EraseEOF with no
+# text). Every COUSR02 entry field is FSET, so the user id, first and last name
+# and type come back as shown; the erased PASSWD comes back without data. In
+# UPDATE-USER-INFO the user id, first name and last name tests fail, the
+# PASSWDI test (SPACES OR LOW-VALUES) holds, so WS-ERR-FLG is set, the message is
+# moved, the cursor goes to PASSWD and the map is sent again
+# [app/cbl/COUSR02C.cbl:122-123,177-213]. With the error flag on, neither the
+# second READ nor the REWRITE runs [app/cbl/COUSR02C.cbl:215-245], so USRSEC is
+# unchanged and TESTU002 keeps the password TESTPWD2.
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - COUSR2AO redefines the received COUSR2AI [app/cpy-bms/COUSR02.CPY:17,91], so the
+#   entered user id, names and type are sent back as received, each padded with
+#   spaces to its BMS length. PASSWD is a dark (DRK) field
+#   [app/bms/COUSR02.bms:130-134] and is not asserted on any screen.
+# - ERRMSG is the 78-byte ERRMSGO: the 28-character message plus 50 spaces
+#   (WS-MESSAGE X(80) moved to X(78)); comparisons never trim.
+# - The header is POPULATE-HEADER-INFO's [app/cbl/COUSR02C.cbl:296-315]: the
+#   COTTL01Y titles, CU02, COUSR02C, CURDATE mm/dd/yy and CURTIME hh:mm:ss of the
+#   region clock through CSDAT01Y, hence the matchers and clock_mode relative.
+# - ERRMSG is asserted on every screen, so expected.messages is not repeated.
+# TESTU002 and its names and password are invented data added to the USRSEC
+# fixture; the user never signs on.
+id: USR-COUSR02C-negative-05
+level: e2e
+type: negative
+description: >-
+  ADMIN001 signs on, chooses admin menu option 3 'User Update (Security)' and
+  fetches the invented user TESTU002 on the COUSR02 update screen, erases the
+  password and presses PF5. COUSR02C sends COUSR02 again with the user id, names
+  and type as entered and 'Password can NOT be empty...' in ERRMSG, and leaves
+  the USRSEC record unchanged.
+inventory_ids:
+- INV-USR-038  # COUSR02C message 'Password can NOT be empty...' (rule)
+- INV-USR-003  # COUSR02C program
+- INV-MNU-004  # COADM01 map, the admin menu option 3 is entered on
+- INV-USR-007  # COUSR02 map, the update screen of steps 2-4
+- INV-CFG-025  # CU02 transaction, under which the fetch and the refused save run
+- INV-CFG-008  # USRSEC CSD file, read for update and left unchanged
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carried between the tasks
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # The ten fixture users, ADMIN001 among them for the sign-on, plus the
+    # invented user TESTU002 whose update is refused.
+    USRSEC:
+      base: USRSEC
+      records:
+      - {SEC-USR-ID: TESTU002, SEC-USR-FNAME: TESTFIRST, SEC-USR-LNAME: TESTLAST, SEC-USR-PWD: TESTPWD2, SEC-USR-TYPE: U}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  # PASSWORD is the demo password documented in README.md, not a secret.
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '3'}
+    '@map': COADM01
+  - aid: ENTER
+    fields: {USRIDIN: TESTU002}
+    '@map': COUSR02
+  # PASSWD here is the maintained user's password, erased before PF5.
+  - aid: PF5
+    fields: {PASSWD: ''}
+    '@map': COUSR02
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR02
+    TRNNAME: CU02
+    PGMNAME: COUSR02C
+    USRIDIN: '        '
+    FNAME: '                    '
+    LNAME: '                    '
+    USRTYPE: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COUSR02
+    TRNNAME: CU02
+    PGMNAME: COUSR02C
+    USRIDIN: TESTU002
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTLAST            '
+    USRTYPE: U
+    ERRMSG: 'Press PF5 key to save your updates ...                                        '
+  - '@map': COUSR02
+    TRNNAME: CU02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: TESTU002
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTLAST            '
+    USRTYPE: U
+    ERRMSG: 'Password can NOT be empty...                                                  '
+  file_state:
+    # Every USRSEC record in key order, as loaded: TESTU002 keeps its names,
+    # password TESTPWD2 and type, and the ten fixture users are untouched.
+    USRSEC:
+      records:
+      - {SEC-USR-ID: ADMIN001, SEC-USR-FNAME: 'MARGARET            ', SEC-USR-LNAME: 'GOLD                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN002, SEC-USR-FNAME: 'RUSSELL             ', SEC-USR-LNAME: 'RUSSELL             ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN003, SEC-USR-FNAME: 'RAYMOND             ', SEC-USR-LNAME: 'WHITMORE            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN004, SEC-USR-FNAME: 'EMMANUEL            ', SEC-USR-LNAME: 'CASGRAIN            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN005, SEC-USR-FNAME: 'GRANVILLE           ', SEC-USR-LNAME: 'LACHAPELLE          ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: TESTU002, SEC-USR-FNAME: 'TESTFIRST           ', SEC-USR-LNAME: 'TESTLAST            ', SEC-USR-PWD: TESTPWD2, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0001, SEC-USR-FNAME: 'LAWRENCE            ', SEC-USR-LNAME: 'THOMAS              ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0002, SEC-USR-FNAME: 'AJITH               ', SEC-USR-LNAME: 'KUMAR               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0003, SEC-USR-FNAME: 'LAURITZ             ', SEC-USR-LNAME: 'ALME                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0004, SEC-USR-FNAME: 'AVERARDO            ', SEC-USR-LNAME: 'MAZZI               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0005, SEC-USR-FNAME: 'LEE                 ', SEC-USR-LNAME: 'TING                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}

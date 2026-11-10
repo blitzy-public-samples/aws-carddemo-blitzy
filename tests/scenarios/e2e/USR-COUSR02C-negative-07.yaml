@@ -1,0 +1,95 @@
+# User id not found on the Update User screen. ADMIN001 signs on through CC00
+# and COSGN00C routes the type 'A' user to the admin menu COADM01
+# [app/cbl/COSGN00C.cbl:221-237]. Option '3' is 'User Update (Security)', so
+# COADM01C transfers control with XCTL to COUSR02C [app/cbl/COADM01C.cbl:115-145]
+# [app/cpy/COADM02Y.cpy:34-37]. COADM01C passes only the COCOM01Y COMMAREA, so
+# CDEMO-CU02-USR-SELECTED is blank: COUSR02C clears COUSR2AO, sends COUSR02 with
+# empty entry fields and returns with TRANSID CU02 [app/cbl/COUSR02C.cbl:84-105].
+# The third step re-enters COUSR02C under CU02: RECEIVE MAP fills COUSR2AI and
+# ENTER performs PROCESS-ENTER-KEY [app/cbl/COUSR02C.cbl:106-110]. It finds
+# TESTU009 in USRIDIN, moves spaces to the received first name, last name,
+# password and type, and reads USRSEC by that key with UPDATE
+# [app/cbl/COUSR02C.cbl:143-163,320-330]. TESTU009 is in no
+# fixture record, so the READ answers NOTFND: the error flag is set,
+# 'User ID NOT found...' goes to WS-MESSAGE, the cursor to the user id, and the
+# map is sent with ERASE [app/cbl/COUSR02C.cbl:340-345,266-277]. The error flag
+# skips the move of record fields into the map [app/cbl/COUSR02C.cbl:166-172].
+# The REWRITE NOTFND branch moves the same text [app/cbl/COUSR02C.cbl:377-382];
+# it is the same inventory item, reached only when the record disappears
+# between the PF5 read and the rewrite.
+# TESTU009 is an invented id entered on COUSR02 as the user to look up; nobody
+# signs on with it. The baseline is derived from the source: no TPE region runs
+# in CI.
+id: USR-COUSR02C-negative-07
+level: e2e
+type: negative
+description: >-
+  ADMIN001 signs on, selects option 3 'User Update (Security)' on the admin menu
+  and asks COUSR02C for the user TESTU009, which USRSEC does not hold. The READ
+  for update answers NOTFND, and the Update User screen COUSR02 comes back with
+  the id kept, the name, password and type fields blank, and
+  'User ID NOT found...'.
+# The not-found message is the primary item, then the program, the maps the
+# steps assert, the CU02 transaction the READ runs under and the CSD file it is
+# issued against, then the online-only copybooks COUSR02C copies. CSUSR01Y and
+# the USRSEC data file are left out: their lowest executing level is the
+# DUSRSECJ integration scenario.
+inventory_ids:
+- INV-USR-042  # COUSR02C message 'User ID NOT found...' (recovery)
+- INV-USR-003  # COUSR02C program
+- INV-MNU-004  # COADM01 map, the admin menu option 3 is entered on
+- INV-USR-007  # COUSR02 map, the Update User screen
+- INV-CFG-025  # CU02 transaction, under which the READ is issued
+- INV-CFG-008  # USRSEC CSD file, the READ target
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carried through the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads ADMIN001; the not-found case is produced by omission, since
+    # the 10 fixture users do not include TESTU009.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '3'}
+    '@map': COADM01
+  - aid: ENTER
+    fields: {USRIDIN: TESTU009}
+    '@map': COUSR02
+expected:
+  # Screen fields keep their full BMS length with trailing spaces: the titles
+  # are 40 characters, FNAME and LNAME 20, PASSWD 8, ERRMSG 78.
+  screens:
+  - '@map': COADM01
+  - '@map': COUSR02
+  # COUSR2AO redefines COUSR2AI [app/cpy-bms/COUSR02.CPY:91], so the received id is
+  # sent back, and the four fields PROCESS-ENTER-KEY blanked show as spaces.
+  # PASSWD is a dark (DRK) field [app/bms/COUSR02.bms:130-134]; it holds spaces
+  # here and a screen read shows it blank either way.
+  - '@map': COUSR02
+    TRNNAME: CU02
+    PGMNAME: COUSR02C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    USRIDIN: TESTU009
+    FNAME: '                    '
+    LNAME: '                    '
+    PASSWD: '        '
+    USRTYPE: ' '
+    ERRMSG: 'User ID NOT found...                                                          '

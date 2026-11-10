@@ -1,0 +1,134 @@
+# PF3 on the COUSR02C 'Update User' screen returns to the admin menu, after an
+# attempted save that refuses the empty user id.
+#
+# Step 1: ADMIN001 signs on through CC00 and COSGN00C routes the type A user to
+# the admin menu COADM01 [app/cbl/COSGN00C.cbl:221-237].
+# Step 2: option '3' is 'User Update (Security)', so COADM01C sets
+# CDEMO-FROM-TRANID CA00, CDEMO-FROM-PROGRAM COADM01C and CDEMO-PGM-CONTEXT 0
+# and XCTLs to COUSR02C [app/cbl/COADM01C.cbl:115-145]
+# [app/cpy/COADM02Y.cpy:34-37]. No user is selected, so COUSR02C clears
+# COUSR2AO and sends COUSR02 with its CU02 header, empty entry fields and a
+# blank ERRMSG, then returns with TRANSID CU02 [app/cbl/COUSR02C.cbl:84-105,135-138].
+# Step 3: PF3 with nothing typed. The DFHPF3 branch first PERFORMs
+# UPDATE-USER-INFO, the PF5 save: the user id is empty, so it sets the error
+# flag, moves 'User ID can NOT be empty...' to WS-MESSAGE and sends COUSR02,
+# with no USRSEC READ or REWRITE [app/cbl/COUSR02C.cbl:111-112,177-185,215].
+# The branch then ignores the error flag: CDEMO-FROM-PROGRAM is still
+# COADM01C, so RETURN-TO-PREV-SCREEN sets CDEMO-PGM-CONTEXT 0 and XCTLs to
+# COADM01C [app/cbl/COUSR02C.cbl:113-119,250-261]. COADM01C, not re-entered,
+# sends the admin menu with ERASE in the same task, replacing the error screen:
+# CA00 and COADM01C, the COTTL01Y titles, the run clock's date and time, the
+# four COADM02Y options as 40-byte texts, OPTN005-OPTN012 blank and a blank
+# ERRMSG [app/cbl/COADM01C.cbl:77-90,172-263]. The step therefore ends on
+# COADM01 and the error message is never the screen the user is left with.
+#
+# PF3 thus saves pending changes before returning: had a fetched user been
+# edited, UPDATE-USER-INFO would REWRITE it first. Here nothing was fetched,
+# so the pinned outcome is that PF3 writes nothing: USRSEC holds the 10 fixture
+# users unchanged.
+#
+# Text values are full field width with trailing spaces; ERRMSG is the first
+# 78 bytes of the 80-byte WS-MESSAGE. PASSWD is a dark field and shows blanks.
+# CURDATE (mm/dd/yy) and CURTIME (8-byte hh:mm:ss) come from the region clock,
+# hence the matchers and clock_mode relative. The baseline is derived from the
+# source: no TPE region runs in CI.
+id: USR-COUSR02C-alternate-03
+level: e2e
+type: alternate
+description: >-
+  ADMIN001 signs on, chooses admin menu option 3 'User Update (Security)' and
+  reaches the empty COUSR02 update screen (transaction CU02). PF3 there first
+  tries to save, which refuses the empty user id without touching USRSEC, then
+  transfers control back to COADM01C regardless: the admin menu COADM01 is shown
+  afresh with transaction CA00, program COADM01C, its four user-security
+  options and no message, and USRSEC still holds the 10 fixture users.
+inventory_ids:
+- INV-USR-046  # COUSR02C PF3 return (navigation rule)
+- INV-USR-003  # COUSR02C program
+- INV-USR-007  # COUSR02 map, the screen PF3 is pressed on
+- INV-MNU-004  # COADM01 map, the screen the XCTL lands on
+- INV-CFG-025  # CU02 transaction, under which PF3 is processed
+- INV-LAY-002  # COCOM01Y copybook, CDEMO-FROM-PROGRAM and the COMMAREA passed with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user ADMIN001 from USRSEC; COUSR02C never
+    # reaches it on this path.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '3'}
+    '@map': COADM01
+  - aid: PF3
+    fields: {}
+    '@map': COUSR02
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+  - '@map': COUSR02
+    TRNNAME: CU02
+    PGMNAME: COUSR02C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    USRIDIN: '        '
+    FNAME: '                    '
+    LNAME: '                    '
+    PASSWD: '        '
+    USRTYPE: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN001: '01. User List (Security)                '
+    OPTN002: '02. User Add (Security)                 '
+    OPTN003: '03. User Update (Security)              '
+    OPTN004: '04. User Delete (Security)              '
+    OPTN005: '                                        '
+    OPTN006: '                                        '
+    OPTN007: '                                        '
+    OPTN008: '                                        '
+    OPTN009: '                                        '
+    OPTN010: '                                        '
+    OPTN011: '                                        '
+    OPTN012: '                                        '
+    OPTION: '  '
+    ERRMSG: '                                                                              '
+  file_state:
+    # The refused save writes nothing: the 10 fixture users in key order,
+    # decoded through CSUSR01Y.
+    USRSEC:
+      count: 10
+      records:
+      - {SEC-USR-ID: ADMIN001, SEC-USR-FNAME: 'MARGARET            ', SEC-USR-LNAME: 'GOLD                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN002, SEC-USR-FNAME: 'RUSSELL             ', SEC-USR-LNAME: 'RUSSELL             ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN003, SEC-USR-FNAME: 'RAYMOND             ', SEC-USR-LNAME: 'WHITMORE            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN004, SEC-USR-FNAME: 'EMMANUEL            ', SEC-USR-LNAME: 'CASGRAIN            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN005, SEC-USR-FNAME: 'GRANVILLE           ', SEC-USR-LNAME: 'LACHAPELLE          ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0001, SEC-USR-FNAME: 'LAWRENCE            ', SEC-USR-LNAME: 'THOMAS              ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0002, SEC-USR-FNAME: 'AJITH               ', SEC-USR-LNAME: 'KUMAR               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0003, SEC-USR-FNAME: 'LAURITZ             ', SEC-USR-LNAME: 'ALME                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0004, SEC-USR-FNAME: 'AVERARDO            ', SEC-USR-LNAME: 'MAZZI               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0005, SEC-USR-FNAME: 'LEE                 ', SEC-USR-LNAME: 'TING                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
