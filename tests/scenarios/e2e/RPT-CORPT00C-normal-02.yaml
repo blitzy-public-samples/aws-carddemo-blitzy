@@ -1,0 +1,165 @@
+# CORPT00C submits the yearly transaction report: the date window of the
+# TRNRPT00 job it writes to the TDQ JOBS runs from 1 January to 31 December of
+# the year of the region clock (tech-spec seed "Scenario 4: Report Generation
+# and Statement Creation").
+#
+# Step 1 signs on as USER0001 on COSGN00 (transaction CC00); the type-U user is
+# routed to COMEN01C, which sends the main menu COMEN01 headed CM00/COMEN01C
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:36-37,82-90].
+# Step 2 enters option 9 on COMEN01: 'Transaction Reports', user type U,
+# program CORPT00C [app/cpy/COMEN02Y.cpy:74-78]. COMEN01C zeroes the program
+# context and transfers control to CORPT00C [app/cbl/COMEN01C.cbl:115-156],
+# whose first entry sets the re-enter flag, moves LOW-VALUES to CORPT0AO and
+# sends CORPT00 with CR00, CORPT00C, the COTTL01Y titles, the run date and
+# time through CSDAT01Y and a blank ERRMSG [app/cbl/CORPT00C.cbl:163-181,
+# 556-580,609-628]. The input fields show their BMS initial blanks.
+# Step 3 marks Yearly with CONFIRM Y and presses ENTER under CR00
+# [app/cbl/CORPT00C.cbl:183-186]:
+# - MONTHLY is sent back as its FSET initial blank [app/bms/CORPT00.bms:80-85],
+#   so the WHEN for YEARLY runs: WS-REPORT-NAME becomes 'Yearly' and FUNCTION
+#   CURRENT-DATE gives the run year [app/cbl/CORPT00C.cbl:212-241].
+# - The start date is the run year with month and day '01', the end date the
+#   run year with '12' and '31'; each goes to PARM-...-DATE-1 and -2
+#   [app/cbl/CORPT00C.cbl:243-253]. No date is entered and CSUTLDTC is not
+#   called on this path.
+# - SUBMIT-JOB-TO-INTRDR finds CONFIRM 'Y' and writes JOB-LINES 1 to 17 to
+#   JOBS, one WRITEQ TD of 80 bytes each: it marks the end on the '/*EOF'
+#   record and still writes it, so '/*EOF' is the 17th record
+#   [app/cbl/CORPT00C.cbl:81-127,462-523].
+# - Every write is NORMAL, so INITIALIZE-ALL-FIELDS moves spaces to every input
+#   field, CONFIRM and WS-MESSAGE, STRING composes 'Yearly' (delimited by
+#   space) and ' report submitted for printing ...', ERRMSG is set green and
+#   CORPT00 is sent again with ERASE before RETURN TRANSID CR00
+#   [app/cbl/CORPT00C.cbl:445-456,556-591,633-646].
+#
+# The window comes from the region clock, which unikix cannot fix (GAP-MIS-015),
+# so the clock is relative: the three date records are matchers stating
+# "1 January / 31 December of the run year", and so are the screen CURDATE and
+# CURTIME. Text values are whole fields at their BMS or record length, trailing
+# spaces included.
+id: RPT-CORPT00C-normal-02
+level: e2e
+type: normal
+description: >-
+  USER0001 signs on, chooses main-menu option 9 (Transaction Reports) and, on
+  CORPT00, requests the Yearly report with CONFIRM Y. CORPT00C writes the 17
+  records of job TRNRPT00 to the TDQ JOBS with PARM-START-DATE 1 January and
+  PARM-END-DATE 31 December of the run year, and the DATEPARM record
+  '<run year>-01-01 <run year>-12-31', clears the input fields and shows
+  'Yearly report submitted for printing ...'.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the TDQ the job is written to, and the online-only
+# copybooks CORPT00C copies. The 'report submitted' message and the JOBS write
+# are the primary items of their own scenarios; sign-on and the menu option
+# (CC00, CM00, COSGN00, USRSEC) are verified by the SEC and MNU scenarios; the
+# batch record copybook CVTRA05Y, which CORPT00C copies but never uses, is
+# verified at the lowest level that executes it.
+inventory_ids:
+- INV-RPT-034  # CORPT00C yearly date range (calculation): 1 January to 31 December of the run year
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, where option 9 is entered
+- INV-RPT-002  # CORPT00 map, the report screen of steps 2 and 3
+- INV-CFG-019  # CR00 transaction, under which CORPT00C receives the request
+- INV-CFG-029  # JOBS CSD TDQ: the queue the 17 job records are written to
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-017  # no confirmed capture of the records the region writes to JOBS
+# CORPT00C reads no file; USRSEC holds the demo users for the sign-on.
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # MONTHLY and CUSTOM are left at their initial blank.
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      YEARLY: 'X'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': CORPT00
+    TRNNAME: 'CR00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'CORPT00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: 'CR00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'CORPT00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: ' '
+    SDTMM: '  '
+    SDTDD: '  '
+    SDTYYYY: '    '
+    EDTMM: '  '
+    EDTDD: '  '
+    EDTYYYY: '    '
+    CONFIRM: ' '
+    ERRMSG: 'Yearly report submitted for printing ...                                      '
+  # The ERRMSG of each step: the menu and the first report screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Yearly report submitted for printing ...                                      '
+  file_state:
+    # The JOB-LINES CORPT00C writes, in write order, each 80 bytes with its
+    # trailing spaces [app/cbl/CORPT00C.cbl:81-127]: records 11 and 12 carry
+    # the dates in the SORT symbols of STEP05R, record 15 is the DATEPARM
+    # record of STEP10R (start date, a space, end date), and record 17 is the
+    # '/*EOF' end marker, written before the loop stops.
+    # Records 11, 12 and 15 are whole-line matchers: the literal text is the
+    # JOB-DATA filler around the dates, and the date directives render the
+    # first or last day of the run year. Record 15 holds both dates; one
+    # matcher renders one kind's date, so the end date's year is the same %Y
+    # and its fixed month and day ('-12-31', the MOVEs at
+    # app/cbl/CORPT00C.cbl:250-251) are literal.
+    '@TDQ:JOBS':
+      records:
+      - '//TRNRPT00 JOB ''TRAN REPORT'',CLASS=A,MSGCLASS=0,                                '
+      - '// NOTIFY=&SYSUID                                                               '
+      - '//*                                                                             '
+      - '//JOBLIB JCLLIB ORDER=(''AWS.M2.CARDDEMO.PROC'')                                  '
+      - '//*                                                                             '
+      - '//STEP10 EXEC PROC=TRANREPT                                                     '
+      - '//*                                                                             '
+      - '//STEP05R.SYMNAMES DD *                                                         '
+      - 'TRAN-CARD-NUM,263,16,ZD                                                         '
+      - 'TRAN-PROC-DT,305,10,CH                                                          '
+      - {match: run-year-start, format: 'PARM-START-DATE,C''%Y-%m-%d''                                                   '}
+      - {match: run-year-end, format: 'PARM-END-DATE,C''%Y-%m-%d''                                                     '}
+      - '/*                                                                              '
+      - '//STEP10R.DATEPARM DD *                                                         '
+      - {match: run-year-start, format: '%Y-%m-%d %Y-12-31                                                           '}
+      - '/*                                                                              '
+      - '/*EOF                                                                           '

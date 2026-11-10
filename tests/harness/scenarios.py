@@ -56,7 +56,9 @@ Schema (``validate`` is the authority; every key not listed here is refused)
     ``messages`` (list of text, or ``baseline``), ``reject_reason_codes``
     (list of CBTRN02C reason codes, as quoted four-digit text ``'0102'`` or
     the number ``102``; or ``baseline``), ``datasets`` (logical name -> value),
-    ``file_state`` (logical name or reserved observation -> value),
+    ``file_state`` (logical name or reserved observation -> value; a record
+    of ``@CATALOG``, ``@REGION-FILES`` or ``@TDQ:JOBS`` is a line of text or
+    a whole-line matcher),
     ``screens`` (one field map per step, each naming ``@map``; ``@text``, the
     full screen as one string, 24 rows of 80 characters joined by line breaks
     with every space kept (``adapters.base.screen_text``), only with
@@ -69,10 +71,11 @@ Schema (``validate`` is the authority; every key not listed here is refused)
 
 Matchers (``{match: <kind>, ...}``, ``MATCH_KINDS``) stand only for values that
 come from a clock the adapter cannot fix, so they need ``clock_mode: relative``.
-Platform names (DSNs, ``DD_`` mappings, host:port addresses, absolute paths)
-never appear under ``preconditions``, ``inputs`` or ``expected``, except inside
-the ``@CATALOG`` and ``@TDQ:JOBS`` observations, whose lines are catalog
-entries and job JCL as the platform reports them. Sign-on steps use only the
+A line of a line observation may itself be a matcher whose ``format`` holds the
+whole line around the date. Platform names (DSNs, ``DD_`` mappings, host:port
+addresses, absolute paths) never appear under ``preconditions``, ``inputs`` or
+``expected``, except inside the ``@CATALOG`` and ``@TDQ:JOBS`` observations,
+whose lines are catalog entries and job JCL as the platform reports them. Sign-on steps use only the
 demo users ``ADMIN001`` and ``USER0001`` with ``PASSWORD``; ``NOSUCHID`` is the
 invented id of ``SEC-COSGN00C-negative-04``.
 
@@ -1928,8 +1931,14 @@ def _check_expected_dataset(problems: _Problems, where: str, name: Any, value: A
             continue
         for index, record in enumerate(value[key]):
             if lines_only:
-                if not isinstance(record, str):
-                    problems.add(f"{where}.{key}[{index}]", "must be a line of text")
+                # A line may also be a whole-line matcher, as harness.baselines
+                # compares it: the JCL CORPT00C writes to JOBS carries dates
+                # derived from the region clock (run month or year) inside
+                # fixed text, such as the DATEPARM record of a monthly report,
+                # which only a matcher format can state; _check_matchers
+                # checks its kind and options.
+                if not (isinstance(record, str) or _is_matcher(record)):
+                    problems.add(f"{where}.{key}[{index}]", "must be a line of text or a matcher {match: ...}")
             else:
                 _check_record(problems, f"{where}.{key}[{index}]", record, spec, False, text_ok, expected=True)
     if "count" in value and not (_is_int(value["count"]) and value["count"] >= 0):
