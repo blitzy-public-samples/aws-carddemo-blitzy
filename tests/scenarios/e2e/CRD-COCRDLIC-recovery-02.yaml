@@ -1,0 +1,126 @@
+# The card list is chosen while the region file CARDDAT is out of service.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00, and
+# COSGN00C transfers control to COMEN01C, whose first entry sends COMEN01 with
+# a blank message and returns with TRANSID CM00 [app/cbl/COSGN00C.cbl:221-240]
+# [app/cbl/COMEN01C.cbl:82-90,107-110,182-194]. Sign-on reads only USRSEC, so
+# the fault, applied after the sign-on step, first acts in step 2.
+#
+# Step 2: option 3 is 'Credit Card List', program COCRDLIC, so COMEN01C moves
+# 0 (CDEMO-PGM-ENTER) to CDEMO-PGM-CONTEXT and transfers control (XCTL) to
+# COCRDLIC within the CM00 task, sending nothing itself
+# [app/cbl/COMEN01C.cbl:115-157] [app/cpy/COMEN02Y.cpy:37-41]. Entered from
+# the menu, COCRDLIC forgets its own context, maps ENTER through CSSTRPFY,
+# receives no map and takes the WHEN OTHER branch, which browses from the blank
+# first-card key through 9000-READ-FORWARD [app/cbl/COCRDLIC.cbl:315-349,
+# 357-380,418-582]. The STARTBR on CARDDAT fails (DISABLED, RESP 84 with RESP2
+# 50, for a disabled file; NOTOPEN, RESP 19 with RESP2 60, for a closed one),
+# but its response is never tested. The first READNEXT then has no browse to
+# continue and answers INVREQ (RESP 16, RESP2 34), so its WHEN OTHER branch
+# sets READ-LOOP-EXIT and composes 'File Error: READ     on CARDDAT   returned
+# RESP 000000016 ,RESP2 000000034 ' in WS-ERROR-MSG, the primary item
+# [app/cbl/COCRDLIC.cbl:153-171,1123-1156,1246-1256].
+#
+# The message never reaches the screen. The ENDBR after the loop has no RESP
+# option, and COCRDLIC sets no HANDLE CONDITION or HANDLE ABEND
+# [app/cbl/COCRDLIC.cbl:1258-1259]. On CICS an ENDBR that matches no
+# successful STARTBR raises INVREQ (RESP2 35), whose default action abends the
+# task with AEIP, so the 1000-SEND-MAP of the WHEN OTHER branch and the RETURN
+# TRANSID(CCLI) never run [app/cbl/COCRDLIC.cbl:578-582,604-620]. The terminal
+# receives the region's abnormal-termination message for transaction CM00 on an
+# unformatted screen. That the composed message is lost is the suspected defect
+# GAP-DEF-022.
+#
+# The expectation is derived from the source and the CICS file control
+# responses, never observed (GAP-INF-006); no TPE region runs in CI. The UniKix
+# copy of COCRDLIC has the same code. Without a confirmed region file control
+# the runner raises MissingPrerequisite under GAP-MIS-011.
+id: CRD-COCRDLIC-recovery-02
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on and chooses main menu option 3 'Credit Card List' while the
+  region file CARDDAT is unavailable. COCRDLIC's STARTBR fails untested, the
+  first READNEXT of 9000-READ-FORWARD answers neither NORMAL, DUPREC nor
+  ENDFILE, and COCRDLIC composes 'File Error: READ on CARDDAT returned RESP
+  <resp>,RESP2 <resp2>'. The ENDBR that follows has no RESP option, so on CICS
+  the task abends (AEIP) before the card list is sent: the user sees the
+  region's abend message on an unformatted screen, and the composed message
+  never appears.
+# The recovery message is the primary item, then the program, the map the
+# option is entered on, the transaction the failing step runs under, the CSD
+# file the browse fails on, and the online-only copybooks COCRDLIC copies.
+# Neither the COCRDLI map nor the CCLI transaction is listed: the task abends
+# before COCRDLIC sends its map or returns with TRANSID CCLI, so neither one's
+# verification depends on this scenario. CVACT02Y, CSUSR01Y and the data files
+# are left out: their lowest executing level is a batch scenario.
+inventory_ids:
+- INV-CRD-018  # COCRDLIC 'File Error: READ on CARDDAT' (9000-READ-FORWARD, READNEXT at line 1146)
+- INV-CRD-001  # COCRDLIC program
+- INV-MNU-003  # COMEN01 map, the main menu option 3 is entered on
+- INV-CFG-018  # CM00 transaction, the task COMEN01C transfers from and the one that abends
+- INV-CFG-003  # CARDDAT CSD file, the file the STARTBR and READNEXT fail on
+- INV-LAY-002  # COCOM01Y: CDEMO-PGM-ENTER from COMEN01C selects the fresh start
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02 of the menu
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME of the menu
+- INV-LAY-008  # CSMSG01Y, copied by COCRDLIC
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CCARD-AID and the filter work area COCRDLIC initializes
+tags:
+- inferred-not-observed
+- suspected-defect
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to make CARDDAT unavailable
+- GAP-DEF-022  # the RESP-less ENDBR after the failed STARTBR abends the task and loses the message
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user from USRSEC. CARDDATA holds the 50 cards
+    # the list would show, so the failure comes from the fault alone.
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  # No `after`: an online unavailable fault is applied after the sign-on step,
+  # which reads no card, so the STARTBR of step 2 is the first CARDDAT request
+  # it meets.
+  faults:
+  - target: CARDDAT
+    operation: read
+    condition: unavailable
+# PASSWORD is the README's documented demo password, not a secret: the scenario
+# schema accepts no other sign-on password.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+  - aid: ENTER
+    '@map': COMEN01
+    fields: {OPTION: '3'}
+expected:
+  # Text fields keep their full BMS length with trailing spaces: ERRMSG is 78
+  # characters, the titles and OPTN003 40. CURDATE and CURTIME come from the
+  # region clock, so they are matchers.
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN003: '03. Credit Card List                    '
+    ERRMSG: '                                                                              '
+  # The AEIP abend at the RESP-less ENDBR (GAP-DEF-022) ends the task before
+  # COCRDLIC sends COCRDLI, so the screen is the region's unformatted
+  # abnormal-termination message, not the card list with the composed message.
+  # Its text carries the region's own wording, identifier and time, which the
+  # source cannot give, so only the unformatted screen is asserted.
+  - '@map': TEXT
+  # The ERRMSG of each formatted screen: the blank message of the menu. The
+  # unformatted abend screen has no ERRMSG, so the file error never appears.
+  messages:
+  - '                                                                              '
