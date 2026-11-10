@@ -1,0 +1,104 @@
+---
+title: Transaction detail request sequence
+---
+sequenceDiagram
+    box rgb(173,216,230) Compute
+        participant LegendCompute as Compute
+        participant CardServicingUi
+        participant ApiGateway
+        participant CardServicingService
+    end
+    box rgb(144,238,144) Data stores
+        participant LegendDataStores as Data stores
+        participant AzureManagedRedis
+    end
+    box rgb(211,211,211) External systems
+        participant LegendExternal as External systems
+        participant AuthService
+        participant ConfigService
+        participant TransactionActivityService
+        participant CardDataService
+    end
+    box rgb(244,204,204) Security
+        participant LegendSecurity as Security
+        participant AccountAccessGuard
+    end
+    box rgb(255,255,224) Networking
+        participant LegendNetworking as Networking
+    end
+
+    CardServicingUi->>ApiGateway: GET transaction detail
+    ApiGateway->>CardServicingService: Forward with bearer token
+    CardServicingService->>CardServicingService: Start 900 ms deadline and traceId
+    CardServicingService->>CardServicingService: Read held config snapshot
+    CardServicingService->>CardServicingService: Validate accountId and transactionId
+    alt invalid accountId or transactionId
+        CardServicingService-->>ApiGateway: 400 ErrorObject with traceId
+        ApiGateway-->>CardServicingUi: 400 with no upstream call
+    end
+
+    CardServicingService->>AccountAccessGuard: Check token and account access
+    AccountAccessGuard->>AuthService: ValidateToken
+    alt token valid
+        AuthService-->>AccountAccessGuard: Subject and roles
+    else token invalid
+        AuthService-->>AccountAccessGuard: UNAUTHENTICATED
+        AccountAccessGuard-->>CardServicingService: Token rejected
+        CardServicingService-->>ApiGateway: 401 ErrorObject with traceId
+        ApiGateway-->>CardServicingUi: 401 with no data read
+    else Auth unavailable or deadline spent
+        AccountAccessGuard-->>CardServicingService: Fail closed
+        CardServicingService-->>ApiGateway: 503 or 504 ErrorObject
+        ApiGateway-->>CardServicingUi: 503 or 504 with no data read
+    end
+
+    AccountAccessGuard->>AuthService: AuthorizeAccountAccess
+    alt allowed true
+        AuthService-->>AccountAccessGuard: allowed true
+    else allowed false
+        AuthService-->>AccountAccessGuard: allowed false
+        AccountAccessGuard-->>CardServicingService: Access denied
+        CardServicingService-->>ApiGateway: 403 ErrorObject with traceId
+        ApiGateway-->>CardServicingUi: 403 with no data read
+    else Auth unavailable or deadline spent
+        AccountAccessGuard-->>CardServicingService: Fail closed
+        CardServicingService-->>ApiGateway: 503 or 504 ErrorObject
+        ApiGateway-->>CardServicingUi: 503 or 504 with no data read
+    end
+    AccountAccessGuard-->>CardServicingService: Access allowed
+
+    opt stale configuration snapshot
+        CardServicingService-)ConfigService: GetConfig background refresh
+    end
+
+    par transaction
+        CardServicingService->>AzureManagedRedis: Read cached transaction
+        AzureManagedRedis-->>CardServicingService: Entry or miss
+        opt miss or stale entry
+            CardServicingService->>TransactionActivityService: GetTransaction on miss or stale
+            TransactionActivityService-->>CardServicingService: Transaction or NOT_FOUND
+            CardServicingService->>AzureManagedRedis: Store found transaction with cachedAt
+        end
+    and cross-reference
+        CardServicingService->>CardDataService: GetCardCrossReference
+        CardDataService-->>CardServicingService: Card numbers on account
+    end
+    CardServicingService->>CardServicingService: Match transaction card to account
+    Note over CardServicingService: Cut-off at or before 900 ms
+
+    alt card belongs to account
+        CardServicingService->>CardServicingService: Resolve dataStatus and asOf
+        CardServicingService-->>ApiGateway: 200 transaction detail
+        ApiGateway-->>CardServicingUi: 200 with dataStatus FRESH or STALE
+    else not found or card not on account
+        CardServicingService-->>ApiGateway: 404 ErrorObject with traceId
+        ApiGateway-->>CardServicingUi: 404 NOT_FOUND
+    else transaction read failed with no usable entry
+        CardServicingService-->>ApiGateway: 503 or 504 ErrorObject
+        ApiGateway-->>CardServicingUi: 503 or 504
+    else cross-reference read failed
+        CardServicingService-->>ApiGateway: 503 or 504 even with cached transaction
+        ApiGateway-->>CardServicingUi: 503 or 504
+    end
+
+    Note over LegendCompute,LegendNetworking: The service validates the request and checks access, then reads the transaction and the account card cross-references concurrently. A transaction whose card number is not on the account returns 404.

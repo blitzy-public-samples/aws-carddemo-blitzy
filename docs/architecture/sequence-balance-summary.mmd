@@ -1,0 +1,106 @@
+---
+title: Balance summary request sequence
+---
+sequenceDiagram
+    box rgb(173,216,230) Compute
+        participant LegendCompute as Compute
+        participant CardServicingUi as Card Servicing UI
+        participant ApiGateway as API gateway
+        participant CardServicingService as Card Servicing service
+        participant CategoryBalanceAggregator as Category balance aggregator
+    end
+    box rgb(144,238,144) Data stores
+        participant LegendDataStores as Data stores
+        participant AzureManagedRedis as Azure Managed Redis
+    end
+    box rgb(211,211,211) External systems
+        participant LegendExternal as External systems
+        participant AuthService as Auth service
+        participant ConfigService as Config service
+        participant CardDataService as Card Data service
+        participant ReferenceDataService as Reference Data service
+    end
+    box rgb(244,204,204) Security
+        participant LegendSecurity as Security
+        participant AccountAccessGuard as Account access guard
+    end
+    box rgb(255,255,224) Networking
+        participant LegendNetworking as Networking
+    end
+
+    CardServicingUi->>ApiGateway: GET balance summary for accountId
+    ApiGateway->>CardServicingService: Forward with bearer token
+    CardServicingService->>CardServicingService: Start 900 ms deadline and traceId, read held config snapshot
+    CardServicingService->>CardServicingService: Validate accountId as 11 digits, not all zero
+    alt accountId malformed or all zero
+        CardServicingService-->>ApiGateway: 400 ErrorObject, no upstream or Config call
+        ApiGateway-->>CardServicingUi: 400 INVALID_ARGUMENT
+    end
+
+    CardServicingService->>AccountAccessGuard: Check access with bearer token
+    AccountAccessGuard->>AuthService: ValidateToken
+    AuthService-->>AccountAccessGuard: subject and roles, or UNAUTHENTICATED
+    alt token missing, invalid or expired
+        AccountAccessGuard-->>CardServicingService: Reject as UNAUTHENTICATED
+        CardServicingService-->>ApiGateway: 401 ErrorObject, no Config call
+        ApiGateway-->>CardServicingUi: 401 UNAUTHENTICATED
+    else Auth unavailable or deadline spent
+        AccountAccessGuard-->>CardServicingService: Fail closed
+        CardServicingService-->>ApiGateway: 503 or 504 ErrorObject, no Config call
+        ApiGateway-->>CardServicingUi: 503 UNAVAILABLE or 504 DEADLINE_EXCEEDED
+    end
+
+    AccountAccessGuard->>AuthService: AuthorizeAccountAccess for subject and accountId
+    AuthService-->>AccountAccessGuard: allowed
+    alt allowed false
+        AccountAccessGuard-->>CardServicingService: Deny as PERMISSION_DENIED
+        CardServicingService-->>ApiGateway: 403 ErrorObject, no account data read
+        ApiGateway-->>CardServicingUi: 403 PERMISSION_DENIED
+    else Auth unavailable or deadline spent
+        AccountAccessGuard-->>CardServicingService: Fail closed
+        CardServicingService-->>ApiGateway: 503 or 504 ErrorObject, no account data read
+        ApiGateway-->>CardServicingUi: 503 UNAVAILABLE or 504 DEADLINE_EXCEEDED
+    end
+    AccountAccessGuard-->>CardServicingService: Access allowed
+
+    opt stale configuration snapshot
+        CardServicingService-)ConfigService: GetConfig background refresh, not awaited
+    end
+
+    par account
+        CardServicingService->>AzureManagedRedis: Read cached account
+        AzureManagedRedis-->>CardServicingService: Fresh entry, stale entry or miss
+        CardServicingService->>CardDataService: GetAccount on miss or stale
+        CardDataService-->>CardServicingService: Account record
+        CardServicingService->>AzureManagedRedis: Store account with cachedAt
+    and category balances
+        CardServicingService->>AzureManagedRedis: Read cached category balances
+        AzureManagedRedis-->>CardServicingService: Fresh entry, stale entry or miss
+        CardServicingService->>CardDataService: ListCategoryBalances on miss or stale
+        CardDataService-->>CardServicingService: Category balances
+        CardServicingService->>AzureManagedRedis: Store category balances with cachedAt
+    and transaction types
+        CardServicingService->>AzureManagedRedis: Read cached transaction types
+        AzureManagedRedis-->>CardServicingService: Fresh entry, stale entry or miss
+        CardServicingService->>ReferenceDataService: ListTransactionTypes on miss or stale
+        ReferenceDataService-->>CardServicingService: Types with descriptions
+        CardServicingService->>AzureManagedRedis: Store transaction types with cachedAt
+    end
+    CardServicingService->>CategoryBalanceAggregator: Sum balances by type
+    CategoryBalanceAggregator-->>CardServicingService: balancesByTypeGroup
+
+    Note over CardServicingService: Cut-off at or before 900 ms
+
+    alt account and balances read, fresh or within 300 s max stale age
+        CardServicingService->>CardServicingService: Resolve dataStatus and asOf
+        CardServicingService-->>ApiGateway: 200 balance summary with dataStatus
+        ApiGateway-->>CardServicingUi: 200 FRESH, STALE for a stale entry, PARTIAL with null descriptions
+    else account unknown
+        CardServicingService-->>ApiGateway: 404 ErrorObject
+        ApiGateway-->>CardServicingUi: 404 NOT_FOUND
+    else account or balances read failed with no usable stale entry
+        CardServicingService-->>ApiGateway: 503 or 504 ErrorObject
+        ApiGateway-->>CardServicingUi: 503 UNAVAILABLE or 504 DEADLINE_EXCEEDED
+    end
+
+    Note over LegendCompute,LegendNetworking: The service validates the account, checks the token and account access through the guard, then reads the account, category balances and transaction types concurrently through the cache. A stale cache entry yields STALE, missing types yield PARTIAL with null descriptions, and the Config refresh never delays the response.
