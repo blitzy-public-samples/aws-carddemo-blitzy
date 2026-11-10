@@ -17,7 +17,7 @@
 # The program's only SET of DID-NOT-FIND-CUST-IN-CUSTDAT is commented out
 # [app/cbl/COACTUPC.cbl:3769], and the condition is only tested
 # [app/cbl/COACTUPC.cbl:3636], so its text cannot reach the screen. That is the
-# observed-only behaviour pinned here; GAP-UNC-013 asks what this never-executed
+# observed-only behaviour pinned here; GAP-UNC-014 asks what this never-shown
 # message code is for. Because the test fails, 9000-READ-ACCT also falls through
 # to 9500-STORE-FETCHED-DATA and copies the CUSTOMER-RECORD the failed READ left
 # untouched into the COMMAREA [app/cbl/COACTUPC.cbl:3636-3646,3801-3884]; none
@@ -82,7 +82,7 @@ tags:
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-- GAP-UNC-013  # purpose of message code that never executes (the commented-out SET)
+- GAP-UNC-014  # purpose of message code that never reaches the screen (the commented-out SET)
 # Not in the planned gap list. The UniKix COACTUP.bms lacks the unnamed field
 # at row 1, columns 1-9, of the map this scenario asserts, and scenarios cite
 # each place where the deployed UniKix copy differs from app/.

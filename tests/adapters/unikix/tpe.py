@@ -40,8 +40,9 @@ Credentials
     Only the demo users ``ADMIN001`` and ``USER0001`` sign on; ``NOSUCHID`` is
     the invented id of the negative sign-on case. A step that would enter any
     other user id on the sign-on screen raises ``HarnessError``: before any
-    ``s3270`` process starts when the steps show its input map, and in any
-    case before the id is typed.
+    ``s3270`` process starts when the steps show its input map (a step
+    starting ``CC00`` is always on ``COSGN00``, whatever ``@map`` it
+    declares), and in any case before the id is typed.
 Outcomes
     A missing ``s3270``, an unreachable listener, a lost connection or an
     unidentified screen is ``AdapterUnavailable`` (``blocked``). A rejected
@@ -93,6 +94,7 @@ __all__ = [
     "RESOURCES_FILE",
     "SIGNON_IDS",
     "SIGN_ON_MAP",
+    "SIGN_ON_TRANSID",
     "DriveOutcome",
     "MapField",
     "Reply",
@@ -121,6 +123,9 @@ INSTALLATION_GAP = "GAP-MIS-009"
 
 S3270_MODEL = "3279-2"  # 24 x 80, the size of every CardDemo map
 SIGN_ON_MAP = "COSGN00"
+# CC00 starts COSGN00C [app/csd/CARDDEMO.CSD:378-379], which sends COSGN00
+# first; the same value as harness.scenarios.SIGN_ON_TRANSID.
+SIGN_ON_TRANSID = "CC00"
 SIGNON_IDS = frozenset({"ADMIN001", "USER0001", "NOSUCHID"})
 MAX_SESSIONS = 2
 AIDS = frozenset({"ENTER", "CLEAR", "PA1", "PA2", "PA3"} | {f"PF{n}" for n in range(1, 25)})
@@ -734,9 +739,13 @@ def _static_input_map(
     index: int,
 ) -> str | None:
     """The map a step's fields are entered on, as far as it is known before
-    running: the step's own ``@map``; else, unless it starts a transaction,
-    the ``@map`` its session's previous step is expected to end on."""
+    running: for a step starting ``SIGN_ON_TRANSID``, the sign-on map
+    COSGN00C sends, whatever ``@map`` it declares; else the step's own
+    ``@map``; else, unless it starts a transaction, the ``@map`` its
+    session's previous step is expected to end on."""
     step = steps[index]
+    if step.get("transid") == SIGN_ON_TRANSID:
+        return SIGN_ON_MAP
     declared = step.get(SCREEN_MAP)
     if isinstance(declared, str):
         return declared
@@ -757,14 +766,17 @@ def check_sign_on(
 ) -> None:
     """Refuse, with ``HarnessError``, a step that would sign on a user other
     than the demo users: one whose ``USERID`` is neither blank nor in
-    ``SIGNON_IDS`` and whose input map is the sign-on map or not known.
+    ``SIGNON_IDS`` and whose input map is the sign-on map or not known. A
+    step starting ``SIGN_ON_TRANSID`` is always entered on the sign-on map,
+    whatever ``@map`` it declares.
 
     ``expected_screens`` (the scenario's ``expected.screens``) lets a step
     without ``@map`` take the map its session's previous step ends on."""
     # Only a sign-on entry is a credential. COUSR01 and COUSR02 also have a
     # USERID field, holding the user record being maintained (TESTU001 in
-    # USR-COUSR01C-normal-01), so the demo-user rule applies to steps entered
-    # on COSGN00 and to steps whose input map is not known, as
+    # USR-COUSR01C-normal-01), so the demo-user rule applies to steps
+    # starting CC00 (always on COSGN00, whatever @map they declare), to steps
+    # entered on COSGN00 and to steps whose input map is not known, as
     # harness/scenarios.py applies it; refusing every USERID field would make
     # the user-maintenance scenarios impossible to run.
     for index, step in enumerate(steps):

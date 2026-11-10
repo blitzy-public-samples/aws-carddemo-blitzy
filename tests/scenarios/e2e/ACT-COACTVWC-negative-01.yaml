@@ -19,7 +19,7 @@
 # The 'Account number not provided' text therefore never reaches the screen.
 # This scenario is the primary case of that message item and pins what the
 # screen shows instead: ERRMSG 'No input received'. Whether the overwritten
-# prompt has any purpose is the open uncertain-purpose question of GAP-UNC-013,
+# prompt has any purpose is the open uncertain-purpose question of GAP-UNC-014,
 # hence the observed-only tag. INV-ACT-009, the 'No input received' item, is not
 # listed: its own scenario verifies it.
 #
@@ -67,7 +67,7 @@ tags:
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-- GAP-UNC-013  # the 'Account number not provided' text is set but never shown
+- GAP-UNC-014  # the 'Account number not provided' text is set but never shown
 - GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
 preconditions:
   datasets:

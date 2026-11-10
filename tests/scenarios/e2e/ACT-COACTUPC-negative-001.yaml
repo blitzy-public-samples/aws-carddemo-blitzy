@@ -62,15 +62,15 @@ inventory_ids:
 - INV-LAY-014  # CSUTLDWY copybook
 - INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID
 # observed-only: the primary item's message is set and then overwritten, so the
-# replacement is pinned as observed. GAP-UNC-013 is the open uncertain-purpose
-# entry for COACTUPC message conditions whose text never appears.
+# replacement is pinned as observed. GAP-UNC-014 is the open uncertain-purpose
+# entry for message conditions that are set or tested but whose text never appears.
 tags:
 - inferred-not-observed
 - observed-only
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-- GAP-UNC-013  # COACTUPC message text defined but never shown
+- GAP-UNC-014  # COACTUPC message text set but never shown
 # GAP-DOC-025: the UniKix copy of COACTUP.bms drops the unnamed field at row 1,
 # columns 1-9, where TRNNAME is asserted, so a UniKix run of this scenario never
 # verifies the COACTUP map item while that entry is open.

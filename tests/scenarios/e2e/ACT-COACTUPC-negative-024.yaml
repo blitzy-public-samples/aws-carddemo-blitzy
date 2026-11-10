@@ -40,7 +40,7 @@
 # Why observed-only: severity 0 is derived, never observed, and the source
 # leaves it open.
 # - CSUTLDTC declares LS-DATE and LS-DATE-FORMAT as X(10) and gives CEEDAYS the
-#   full 10-byte lengths [app/cbl/CSUTLDTC.cbl:86-88,105-113]. CSUTLDPY passes
+#   full 10-byte lengths [app/cbl/CSUTLDTC.cbl:84-85,105-113]. CSUTLDPY passes
 #   the 8-byte WS-EDIT-DATE-CCYYMMDD and the 8-byte WS-DATE-FORMAT, so CEEDAYS
 #   receives '20150131' followed by the first two bytes of WS-EDIT-DATE-BINARY.
 #   That field has no VALUE and is computed only later, by the Date of Birth
@@ -49,7 +49,7 @@
 #   the two spaces that INITIALIZE leaves in WS-SEVERITY.
 # - Every date that passes the COBOL checks is a real Gregorian date between
 #   1900 and 2099, which CEEDAYS is expected to accept. The severity message
-#   therefore has no known trigger, and the code's purpose is open (GAP-UNC-013).
+#   therefore has no known trigger, and the code's purpose is open (GAP-UNC-017).
 #   Which dates CEEDAYS accepts is known only through the stub (GAP-INF-001).
 # - The UniKix copy trims the Vstring lengths (GAP-DOC-021) and changes CSUTLDPY
 #   (GAP-DOC-024), and whether UniKix supplies CEEDAYS is open (GAP-MIS-010). A
@@ -123,10 +123,10 @@ gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
 - GAP-INF-001  # which dates CEEDAYS accepts is known only through the stub
-# Open uncertain-purpose entry for online code that is defined but never
-# executed. Its item list does not name INV-ACT-082, but the question is the
-# same: a message composed only on a severity no known input produces.
-- GAP-UNC-013
+# Open uncertain-purpose entry for the COACTUPC date edits' CSUTLDTC severity
+# message, composed only on a severity no known input produces; it lists
+# INV-ACT-082.
+- GAP-UNC-017
 - GAP-MIS-010  # whether UniKix supplies CEEDAYS
 # The UniKix copy of CSUTLDPY drops TRIM from the composed date-edit messages
 # and replaces TEST-NUMVAL in the month and day checks; it lists INV-ACT-082.

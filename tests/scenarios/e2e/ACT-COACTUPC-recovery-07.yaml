@@ -37,9 +37,10 @@
 # [app/cbl/COACTUPC.cbl:3176-3189].
 #
 # This fall-through, the details screen offered for change after the account
-# read failed, is pinned as derived without a suspected-defect tag, as
-# ACT-COACTUPC-negative-008 pins it for the NOTFND branch of the same read and
-# ACT-COACTVWC-recovery-03 for the COACTVWC copy of 9000-READ-ACCT.
+# read failed, is the suspected defect GAP-DEF-020 and is pinned as derived
+# under the suspected-defect tag, as ACT-COACTUPC-negative-008 pins it for the
+# NOTFND branch of the same read and ACT-COACTVWC-recovery-03 for the COACTVWC
+# copy of 9000-READ-ACCT.
 #
 # Expected values are derived from the source (no TPE region runs in CI):
 # - The composed message is 80 bytes [app/cbl/COACTUPC.cbl:389-408]: 'File
@@ -112,10 +113,12 @@ inventory_ids:
 - INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, echoed into ACCTSID, and the AID flags
 tags:
 - inferred-not-observed
+- suspected-defect
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
 - GAP-MIS-011  # no confirmed region file control to make ACCTDAT unavailable
+- GAP-DEF-020  # the failed account read goes on to the customer read and the details screen
 - GAP-DOC-025  # the UniKix COACTUP.bms differs from app/ at row 1, columns 1-9
 preconditions:
   datasets:

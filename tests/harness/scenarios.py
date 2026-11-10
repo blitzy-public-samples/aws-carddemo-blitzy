@@ -31,8 +31,13 @@ Schema (``validate`` is the authority; every key not listed here is refused)
     ``{base?: <logical with repository data>, records?: [<field map>],
     omit_keys?: [<primary key text>]}``; record keys are field keys of the
     dataset's layout (names, or paths, with ``(n)`` subscripts for table
-    occurrences), names of the dataset's own ``fields``, or ``@raw``.
-    ``parameters``: ``clock``
+    occurrences), names of the dataset's own ``fields``, or ``@raw``, and no
+    two keys of a record name one field. Values are what ``harness.codec``
+    encodes for the field (text for text fields, decimal text or integers for
+    numbers), precondition values of two views of the same bytes
+    (``REDEFINES``) agree on them, and subscripts stay within the OCCURS
+    bounds; expected records also take a matcher, or ``{raw: <hex>}`` for
+    invalid numeric bytes. ``parameters``: ``clock``
     (``'YYYY-MM-DD HH:MM:SS.hh'``, default ``DEFAULT_CLOCK``), ``clock_mode``
     (``fixed`` default, or ``relative``), ``parm`` (the EXEC PARM text),
     ``DATEPARM`` (the 80-byte ``YYYY-MM-DD YYYY-MM-DD`` record),
@@ -49,13 +54,18 @@ Schema (``validate`` is the authority; every key not listed here is refused)
 ``expected``
     ``return_code`` (integer, ``null`` for an abend, or ``baseline``),
     ``messages`` (list of text, or ``baseline``), ``reject_reason_codes``
-    (list, or ``baseline``), ``datasets`` (logical name -> value),
+    (list of CBTRN02C reason codes, as quoted four-digit text ``'0102'`` or
+    the number ``102``; or ``baseline``), ``datasets`` (logical name -> value),
     ``file_state`` (logical name or reserved observation -> value),
-    ``screens`` (one field map per step, each naming ``@map``; ``@text`` with
+    ``screens`` (one field map per step, each naming ``@map``; ``@text``, the
+    full screen as one string, 24 rows of 80 characters joined by line breaks
+    with every space kept (``adapters.base.screen_text``), only with
     ``@map: TEXT``) and ``matchers`` (name -> matcher). A dataset value is
     ``baseline`` or a mapping of ``records``, ``contains``, ``count`` and
-    ``matchers``. At least one business outcome beyond ``return_code`` is
-    asserted.
+    ``matchers`` that asserts ``records`` (``[]`` for an empty dataset), a
+    ``count`` or ``contains`` with at least one record; ``matchers`` only
+    qualify fields of the records given, so alone they assert nothing. At
+    least one business outcome beyond ``return_code`` is asserted.
 
 Matchers (``{match: <kind>, ...}``, ``MATCH_KINDS``) stand only for values that
 come from a clock the adapter cannot fix, so they need ``clock_mode: relative``.
@@ -67,18 +77,23 @@ demo users ``ADMIN001`` and ``USER0001`` with ``PASSWORD``; ``NOSUCHID`` is the
 invented id of ``SEC-COSGN00C-negative-04``.
 
 Loading never raises for a schema problem, so collection cannot crash on a bad
-scenario; only unparsable YAML raises ``ScenarioError``. Parsed scenarios are
-cached per file and re-read when the file changes. Callers share the cached
-objects and must not modify their mappings.
+scenario; only unparsable YAML raises ``ScenarioError``. Only regular files
+are read as scenarios: a symbolic link (the file, its level folder or the
+scenarios folder) is never followed, ``load_file`` reports such a path in
+``load_problems`` unread, and ``check_manifest`` reports it. ``get`` looks up
+only ids of the closed manifest. Parsed scenarios are cached per file and
+re-read when the file changes. Callers share the cached objects and must not
+modify their mappings.
 """
 
 from __future__ import annotations
 
 import re
+import stat
 import sys
 import threading
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, replace
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator, TypeVar
 
 import yaml
@@ -103,6 +118,7 @@ from harness import (  # noqa: E402
     load_yaml,
     sha256_hex,
 )
+from harness import codec as _codec  # noqa: E402
 from harness import layouts as _layouts  # noqa: E402
 
 __all__ = [
@@ -210,6 +226,8 @@ MATCH_KINDS = {
 
 # Sign-on: only the demo users the README documents, against a local region.
 SIGN_ON_MAP = "COSGN00"
+# CC00 starts COSGN00C [app/csd/CARDDEMO.CSD:378-379], which sends COSGN00 first [app/cbl/COSGN00C.cbl:80-83,145-153].
+SIGN_ON_TRANSID = "CC00"
 SIGN_ON_USERS = ("ADMIN001", "USER0001")
 SIGN_ON_PASSWORD = "PASSWORD"
 INVENTED_USER = "NOSUCHID"
@@ -222,6 +240,12 @@ FIXED_CLOCK_SCENARIOS = frozenset({"BAT-CHAIN-normal-01"})
 # The job CORPT00C writes to the JOBS queue [app/cbl/CORPT00C.cbl:84-127]; it has
 # no app/jcl member of its own.
 GENERATED_JOBS = frozenset({"TRNRPT00"})
+
+# The reasons CBTRN02C moves to its PIC 9(04) WS-VALIDATION-FAIL-REASON
+# [app/cbl/CBTRN02C.cbl:181,385,397,410,417,556]. A scenario gives each as its
+# quoted four-digit text ('0102') or as the number (102).
+_REJECT_REASON_CODES = frozenset({100, 101, 102, 103, 109})
+_REJECT_REASON_TEXTS = frozenset(f"{code:04d}" for code in _REJECT_REASON_CODES)
 
 PROGRAM_DIR = REPO_ROOT / "app" / "cbl"
 JCL_DIR = REPO_ROOT / "app" / "jcl"
@@ -454,15 +478,46 @@ def _scenario(path: Path, level: str, document: Any) -> Scenario:
     )
 
 
+def _refusal(path: Path) -> str | None:
+    """Why ``path`` (``<scenarios folder>/<level>/<name>``) is not read as a
+    scenario file, or ``None`` when it is read: the scenarios folder (the
+    file's folder's parent), the level folder (the file's folder) or the file
+    is a symbolic link, or the file is not a regular file. The folders are
+    examined before the file, outermost first, so nothing under a linked
+    folder is examined; folders above the scenarios folder are not examined,
+    so a tests root reached through a linked path still loads. Raises
+    ``OSError`` when the file cannot be examined (``FileNotFoundError`` when
+    it is absent)."""
+    if path.parent.parent.is_symlink():
+        return "the scenarios folder is a symbolic link, so the file was not read"
+    if path.parent.is_symlink():
+        return f"the level folder {path.parent.name} is a symbolic link, so the file was not read"
+    mode = path.lstat().st_mode
+    if stat.S_ISLNK(mode):
+        return "the file is a symbolic link, not a regular file, so it was not read"
+    if not stat.S_ISREG(mode):
+        return "the path is not a regular file, so it was not read"
+    return None
+
+
 def load_file(path: str | Path, level: str | None = None) -> Scenario:
     """Parse one scenario file; ``level`` defaults to its folder's name.
-    Raises ``ScenarioError`` only when the file is not valid YAML."""
+    Raises ``ScenarioError`` only when the file is not valid YAML, and
+    ``FileNotFoundError`` when it is absent. Only a regular file whose level
+    folder and scenarios folder are not symbolic links is read: a symbolic
+    link (whatever it points to) at any of the three, or any other kind of
+    file, gives an empty scenario whose ``load_problems`` say why it was not
+    read. Folders above the scenarios folder are not examined."""
     file_path = Path(path)
+    level = level or file_path.parent.name
+    refusal = _refusal(file_path)
+    if refusal is not None:
+        return replace(_scenario(file_path, level, {}), load_problems=(refusal,))
     try:
         document = load_yaml(file_path)
     except yaml.YAMLError as exc:
         raise ScenarioError(f"{file_path}: not valid YAML: {exc}") from None
-    return _scenario(file_path, level or file_path.parent.name, document)
+    return _scenario(file_path, level, document)
 
 
 _LOCK = threading.Lock()
@@ -475,6 +530,27 @@ def _stamp(path: Path) -> tuple[int, int] | None:
     except FileNotFoundError:
         return None
     return status.st_mtime_ns, status.st_size
+
+
+def _regular_file(path: Path) -> bool:
+    """Whether ``path`` itself is a regular file; a symbolic link never is,
+    whatever it points to."""
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def _scenario_file(path: Path) -> bool:
+    """Whether ``path`` (``<scenarios folder>/<level>/<name>``) is read as a
+    scenario file: a ``.yaml`` file that ``_refusal`` does not refuse, the
+    rule ``load_file`` applies. An absent or unexaminable path is not one."""
+    if path.suffix != ".yaml":
+        return False
+    try:
+        return _refusal(path) is None
+    except OSError:
+        return False
 
 
 def _cached_file(path: Path, level: str) -> Scenario:
@@ -492,11 +568,11 @@ def _cached_file(path: Path, level: str) -> Scenario:
 
 def _level_files(level: str, scenarios_dir: Path, prefix: str = "") -> list[Path]:
     folder = scenarios_dir / level
-    if not folder.is_dir():
+    if scenarios_dir.is_symlink() or folder.is_symlink() or not folder.is_dir():
         return []
     return sorted(
         path for path in folder.iterdir()
-        if path.is_file() and path.suffix == ".yaml" and path.stem.startswith(prefix)
+        if path.stem.startswith(prefix) and _scenario_file(path)
     )
 
 
@@ -521,17 +597,25 @@ def load_all() -> list[Scenario]:
 
 
 def get(scenario_id: str, missing_ok: bool = False) -> Scenario | None:
-    """The scenario with this id, looked up in its manifest level first.
-    A missing one raises ``KeyError``, or returns ``None`` with ``missing_ok``."""
-    levels = [_LEVEL_OF[scenario_id]] if scenario_id in _LEVEL_OF else []
+    """The scenario with this id, looked up in its manifest level first, then
+    in the other level folders (so a misplaced file is still found). Only ids
+    of the closed manifest are looked up: no path is built from any other
+    value, and a symbolic link counts as no file. An id outside the manifest,
+    like a missing file, raises ``KeyError``, or returns ``None`` with
+    ``missing_ok``."""
+    if not isinstance(scenario_id, str) or scenario_id not in ALL_IDS:
+        if missing_ok:
+            return None
+        raise KeyError(f"{scenario_id!r} is not an id of the closed scenario id manifest")
+    levels = [_LEVEL_OF[scenario_id]]
     levels += [level for level in LEVELS if level not in levels]
     for level in levels:
         path = SCENARIOS_DIR / level / f"{scenario_id}.yaml"
-        if path.is_file():
+        if _scenario_file(path):
             return _cached_file(path, level)
     if missing_ok:
         return None
-    raise KeyError(f"no scenario file for {scenario_id} under {SCENARIOS_DIR}")
+    raise KeyError(f"no scenario file for {scenario_id} under tests/scenarios")
 
 
 # --------------------------------------------------------------------------
@@ -705,38 +789,107 @@ def _screen_fields() -> dict[str, frozenset[str]]:
     }
 
 
-_SUBSCRIPT_RE = re.compile(r"\(\d+(?:,\d+)*\)$")
+# A record key: a field key, then one 1-based subscript per OCCURS level.
+_KEY_RE = re.compile(r"^(?P<base>.+?)(?:\((?P<indices>[0-9]+(?:,[0-9]+)*)\))?$")
+# harness.fixtures materializes every record in this encoding (its
+# _FIXTURE_ENCODING), so precondition values are checked as they will be encoded.
+_RECORD_ENCODING = "ascii"
 
 
-def _layout_keys(layout: str) -> frozenset[str] | None:
-    """The field keys a record of ``layout`` accepts (``layouts.field_map``:
-    paths, and names unique in the record), or ``None`` for an unknown layout."""
+@dataclass(frozen=True)
+class _RecordField:
+    """A field a record key can name: its ``harness.codec`` descriptor, the
+    OCCURS counts of the field and of each group above it (outermost first;
+    empty outside any table) and, for a dataset's own field, its own layout."""
+
+    descriptor: dict[str, Any]
+    dimensions: tuple[int, ...] = ()
+    layout: str | None = None
+
+
+def _layout_fields(layout: str) -> dict[str, _RecordField] | None:
+    """The fields a record of ``layout`` can name, by the keys
+    ``layouts.field_map`` gives (paths, and names unique in the record), or
+    ``None`` for a layout ``tests/inventory/layouts.yaml`` lacks. A layout file
+    that cannot be read raises, so ``validate`` reports it."""
+    _layouts.load()
     try:
-        return frozenset(_layouts.field_map(layout))
+        entries = _layouts.record(layout)["fields"]
+        keys = _layouts.field_map(layout)
     except HarnessError:
         return None
+    # The rule harness.codec lays tables out by: a field's OCCURS count follows its groups'.
+    dimensions: dict[str, tuple[int, ...]] = {}
+    for entry in entries:
+        path = entry["path"]
+        occurs = entry.get("occurs") or 0
+        dimensions[path] = dimensions.get(path.rpartition(".")[0], ()) + ((occurs,) if occurs else ())
+    return {key: _RecordField(entry, dimensions[entry["path"]]) for key, entry in keys.items()}
 
 
-def _record_keys(spec: dict | None) -> frozenset[str] | None:
-    """The field keys a record of a dataset accepts: its layout's keys plus the
-    names of the dataset's own ``fields`` (the inner structure datasets.yaml
-    gives line data such as DATEPARM and DTCIN); ``None`` when neither is known."""
+def _own_descriptor(entry: dict) -> dict[str, Any]:
+    """The ``harness.codec`` descriptor of a datasets.yaml ``fields`` entry. Its
+    defaults mirror harness.fixtures (``DatasetField.descriptor`` and the type
+    its ``_fields`` assumes), which imports this module and so cannot be imported."""
+    layout = entry.get("layout")
+    type_ = entry.get("type", "group" if layout else "alphanumeric")
+    length, digits = entry.get("length"), entry.get("digits")
+    if digits is None and _is_int(length) and type_ in ("zoned", "zoned-signed"):
+        digits = length
+    elif digits is None and _is_int(length) and type_ == "comp-3":
+        digits = length * 2 - 1
+    scale = entry.get("scale")
+    return {
+        "name": entry["name"],
+        "type": type_,
+        "length": length,
+        "digits": digits,
+        "scale": 0 if scale is None else scale,
+        "signed": type_ == "zoned-signed",
+    }
+
+
+def _record_fields(
+    spec: dict | None,
+) -> tuple[dict[str, _RecordField] | None, dict[str, _RecordField]] | None:
+    """The fields a record of a dataset can name: its layout's (``None`` when
+    ``tests/inventory/layouts.yaml`` lacks the layout it names) and, by name,
+    the dataset's own ``fields`` (the inner structure datasets.yaml gives line
+    data such as DATEPARM and DTCIN); ``None`` when it names neither."""
     if not spec:
         return None
     layout = spec.get("layout")
-    keys = _layout_keys(layout) if isinstance(layout, str) else None
-    names = frozenset(
-        entry["name"] for entry in (spec.get("fields") or [])
+    entries = spec.get("fields")
+    own = {
+        entry["name"]: _RecordField(
+            _own_descriptor(entry), (), entry["layout"] if isinstance(entry.get("layout"), str) else None
+        )
+        for entry in (entries if isinstance(entries, list) else [])
         if isinstance(entry, dict) and isinstance(entry.get("name"), str)
-    )
-    if keys is None and not names:
+    }
+    if not isinstance(layout, str) and not own:
         return None
-    return (keys or frozenset()) | names
+    return (_layout_fields(layout) if isinstance(layout, str) else {}), own
 
 
 def _repository_backed(entry: dict) -> bool:
+    """Whether a ``datasets.yaml`` entry's ``source`` is repository data: a
+    relative path under ``app/`` without ``..`` that, symbolic links followed,
+    stays inside the repository. An absent file still counts: the fixture
+    build reports it as a missing prerequisite."""
     source = entry.get("source")
-    return isinstance(source, str) and source.startswith("app/")
+    if not isinstance(source, str):
+        return False
+    path = PurePosixPath(source.strip())
+    if path.is_absolute() or ".." in path.parts or len(path.parts) < 2 or path.parts[0] != "app":
+        return False
+    root = REPO_ROOT.resolve()
+    try:
+        return root.joinpath(*path.parts).resolve().is_relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        # A symbolic link loop (RuntimeError on Python 3.11), an unreadable
+        # path, or one holding a NUL byte.
+        return False
 
 
 def _aix_paths() -> dict[str, str]:
@@ -946,10 +1099,15 @@ def _is_matcher(value: Any) -> bool:
     return isinstance(value, dict) and "match" in value
 
 
-def _is_reason_code(value: Any) -> bool:
-    if _is_int(value):
-        return 0 <= value <= 9999
-    return isinstance(value, str) and re.fullmatch(r"\d{1,4}", value) is not None
+def _reason_code_problem(value: Any) -> str | None:
+    """Why ``value`` is not a CBTRN02C reason code, or ``None`` when it is one."""
+    if (_is_int(value) and value in _REJECT_REASON_CODES) or _member(value, _REJECT_REASON_TEXTS):
+        return None
+    octal = f"0{value:o}" if _is_int(value) and value >= 0 else ""
+    if octal in _REJECT_REASON_TEXTS:
+        return f"{value} is how YAML 1.1 reads an unquoted {octal}, as an octal number; quote it: '{octal}'"
+    texts = ", ".join(f"'{text}'" for text in sorted(_REJECT_REASON_TEXTS))
+    return f"{value!r} is not a CBTRN02C reason code; give one of {texts} quoted, or its number such as 102"
 
 
 def _clip(text: str, limit: int = 60) -> str:
@@ -959,15 +1117,27 @@ def _clip(text: str, limit: int = 60) -> str:
 _PLATFORM_PATTERNS = (
     ("a data set name", re.compile(r"\b(?:AWS|OEM)\.[A-Z0-9#@$]{1,8}\.")),
     ("a ddname mapping", re.compile(r"\bDD_[A-Za-z0-9#@$]")),
+    # A single-label host 'label:port' counts when its port of one to five digits does not start with 0 and does not
+    # run on into a word character, '%', ':' or '-', into '.' or ',' before a word character, or into '/' before a
+    # digit. So 'tpehost:2001' is an address at the end, before a space, '!', '?', a closing '.', ', ', ')', ';',
+    # a quote or '/x', while 'width:70%', 'font:12px', 'TstDate:2022-07-18', 'Time:10:00:00', 'EXP:1234.56-',
+    # 'Total:12,345.67', 'Date:12/31/22' and 'Reas:0000' are not.
     (
         "a host:port address",
         re.compile(
-            r"(?<![\w.-])(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:]+\]"
+            r"(?<![\w.-])(?:(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:]+\]"
             r"|[A-Za-z][A-Za-z0-9-]*(?:\.[A-Za-z][A-Za-z0-9-]*)+):\d{1,5}(?!\d)"
+            r"|[A-Za-z][A-Za-z0-9-]*:[1-9]\d{0,4}(?![\w%:-]|[.,]\w|/\d))"
         ),
     ),
-    # '//' and '/*' begin JCL statements and comments, never a path.
-    ("an absolute path", re.compile(r"(?:^|\s)(?:/[^/\s*]+/|~/|[A-Za-z]:\\)")),
+    # A path starts the text or follows a space, quote, '=', '(', '[', ',', ';' or ':', and is '~/', a drive such
+    # as 'C:\' or a '/' followed by anything but '/', '*' or a space: '/tmp', '/@data' and '/opt/x' are paths, and
+    # the JCL '//' and '/*', '</p>', 'Y/N' and '%m/%d/%y' are not. Nor is a lone '/' followed by a closing mark
+    # ('"`>)]) and then only closing marks, ',', ';' or '.' up to a space or the end, as in x '/' y or '<br />'.
+    (
+        "an absolute path",
+        re.compile(r"(?:^|(?<=[\s'\"=(\[,;:]))(?:/(?=[^/*\s])(?![>)\]'\"`][>)\]'\"`,;.]*(?:\s|$))|~/|[A-Za-z]:\\)"),
+    ),
 )
 
 
@@ -1074,7 +1244,24 @@ def _check_tags_and_gaps(s: Scenario, problems: _Problems) -> None:
     # naming what would settle it, so the tag cites one.
     if "inferred-not-observed" in tags and not any(gap_id.startswith("GAP-INF-") for gap_id in gap_ids):
         problems.add("tags", "inferred-not-observed needs a GAP-INF entry among gap_ids")
-    manifest_path = _tests_root_of(s) / "baselines" / s.id / "manifest.yaml"
+    if s.id not in ALL_IDS:
+        # _check_identity reports the id; no baseline path is built from it.
+        return
+    baselines = _tests_root_of(s) / "baselines"
+    manifest_path = baselines / s.id / "manifest.yaml"
+    named = f"tests/baselines/{s.id}/manifest.yaml"
+    chain = (
+        (baselines, "tests/baselines"),
+        (manifest_path.parent, f"tests/baselines/{s.id}"),
+        (manifest_path, named),
+    )
+    for path, label in chain:
+        if path.is_symlink():
+            problems.add("baseline", f"{named} is not read: {label} is a symbolic link")
+            return
+    if manifest_path.exists() and not _regular_file(manifest_path):
+        problems.add("baseline", f"{named} is not read: it is not a regular file")
+        return
     try:
         manifest = load_yaml(manifest_path, missing_ok=True)
     except yaml.YAMLError as exc:
@@ -1093,27 +1280,208 @@ def _check_tags_and_gaps(s: Scenario, problems: _Problems) -> None:
 # --------------------------------------------------------------------------
 
 
+def _unknown_layout(layout: str) -> str:
+    return f"layout {layout} is not a record of tests/inventory/layouts.yaml, so its fields cannot be checked"
+
+
+def _check_raw(problems: _Problems, where: str, value: Any, length: Any) -> None:
+    """An ``@raw`` record image: text of at most ``length`` characters (when
+    known) that the record encoding can hold."""
+    codec = _codec.ENCODINGS[_RECORD_ENCODING]
+    if not isinstance(value, str):
+        problems.add(where, "must be the record's text")
+    elif _is_int(length) and len(value) > length:
+        problems.add(where, f"holds {len(value)} characters; a record has {length}")
+    else:
+        try:
+            value.encode(codec)
+        except UnicodeEncodeError:
+            problems.add(where, f"holds a character {codec} cannot encode")
+
+
+def _check_value(problems: _Problems, where: str, value: Any, field: _RecordField, expected: bool) -> None:
+    """A record value: one ``harness.codec`` encodes for the field, or, in an
+    expected record, a matcher or ``{raw: <hex>}`` for invalid numeric bytes. A
+    precondition value of a dataset field with its own layout may be a field
+    map of that layout."""
+    if isinstance(value, float) or _is_matcher(value):
+        # _validate reports every float, and _check_matchers every matcher.
+        return
+    shown = _clip(repr(value))
+    if field.layout and isinstance(value, dict) and not expected:
+        fields = _layout_fields(field.layout)
+        if fields is None:
+            problems.add(where, _unknown_layout(field.layout))
+            return
+        named: dict[tuple[str, tuple[int, ...]], str] = {}
+        encodable: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == RAW_KEY:
+                _check_raw(problems, f"{where}.{RAW_KEY}", item, field.descriptor.get("length"))
+            elif not isinstance(key, str):
+                problems.add(where, f"field key {key!r} must be text")
+            elif _check_field(
+                problems, f"{where}.{key}", key, item, fields, {},
+                f"is not a field of layout {field.layout}", expected, named,
+            ):
+                encodable[key] = item
+        # harness.fixtures encodes this map as a record of the field's own layout.
+        _check_views(problems, where, encodable, field.layout)
+        return
+    kind = field.descriptor.get("type")
+    if expected and isinstance(value, dict) and set(value) == {"raw"}:
+        if kind in _codec.TEXT_TYPES:
+            problems.add(where, f"value {shown}: a text field never decodes to {{raw: <hex>}}; give its text")
+        elif kind == "binary":
+            problems.add(where, f"value {shown}: a binary field decodes every byte pattern to a number")
+        else:
+            try:
+                _codec.encode(_codec.Invalid(value["raw"]), field.descriptor, _RECORD_ENCODING)
+            except _codec.CodecError as exc:
+                problems.add(where, f"value {shown} is not the field's invalid bytes: {exc.reason}")
+        return
+    if isinstance(value, (dict, list)):
+        container = "a mapping" if isinstance(value, dict) else "a list"
+        problems.add(
+            where,
+            f"value {shown} is {container}; give the field's text or number"
+            + (", a matcher, or {raw: <hex>} for invalid numeric bytes" if expected else ""),
+        )
+        return
+    try:
+        _codec.encode(value, field.descriptor, _RECORD_ENCODING)
+    except _codec.CodecError as exc:
+        verdict = "is never a decoded value of the field" if expected else "cannot be encoded"
+        problems.add(where, f"value {shown} {verdict}: {exc.reason}")
+
+
+def _check_field(
+    problems: _Problems,
+    where: str,
+    key: str,
+    value: Any,
+    layout_fields: dict[str, _RecordField],
+    own_fields: dict[str, _RecordField],
+    unknown: str,
+    expected: bool,
+    named: dict[tuple[str, tuple[int, ...]], str],
+) -> bool:
+    """One ``key: value`` of a record field map. The key names a field, with
+    one subscript per OCCURS level, each within its bounds, and no layout field
+    an earlier key of the record names (``named``: field path and subscripts ->
+    that key), as ``harness.codec.encode_record`` requires; then the value.
+    True when the key names a layout field and its value is a plain value that
+    passes, so the record can compare it with other views of the same bytes."""
+    match = _KEY_RE.fullmatch(key)
+    base = match["base"] if match else key
+    field = layout_fields.get(base)
+    own = own_fields.get(base)
+    # harness.fixtures resolves a key the same way: to the dataset's own field
+    # when the layout lacks it, or when that field has a layout and the value is a mapping.
+    if own is not None and (field is None or (own.layout and isinstance(value, dict))):
+        field = own
+    if match is None or field is None:
+        problems.add(where, unknown)
+        return False
+    texts = match["indices"].split(",") if match["indices"] else []
+    shape = f"{base}({','.join(f'1..{count}' for count in field.dimensions)})"
+    if texts and not field.dimensions:
+        problems.add(where, "is not a table item, so it takes no subscript")
+        return False
+    if len(texts) != len(field.dimensions):
+        problems.add(where, f"is a table item: name one occurrence with a subscript per OCCURS level, {shape}")
+        return False
+    indices: list[int] = []
+    for text, count in zip(texts, field.dimensions):
+        # A subscript with more digits than its count is out of range, so only
+        # short texts are converted: int() refuses a text of more than 4300 digits.
+        digits = text.lstrip("0") or "0"
+        if len(digits) > len(str(count)) or not 1 <= int(digits) <= count:
+            problems.add(where, f"subscript {_clip(digits)} lies outside 1..{count} of {shape}")
+            return False
+        indices.append(int(digits))
+    canonical = f"{base}({','.join(str(index) for index in indices)})" if indices else base
+    if key != canonical:
+        problems.add(where, f"write the key as {canonical}")
+        return False
+    layout_field = field is not own
+    if layout_field:
+        # A field's name and its path name one field occurrence: harness.codec
+        # refuses the later key before it encodes any value.
+        first = named.setdefault((field.descriptor["path"], tuple(indices)), key)
+        if first != key:
+            problems.add(where, f"names the same field as {first}")
+            return False
+    reported = len(problems.items)
+    _check_value(problems, where, value, field, expected)
+    # Floats, matchers and {raw: <hex>} are not values the codec encodes as given.
+    return layout_field and len(problems.items) == reported and not isinstance(value, (float, dict))
+
+
+def _check_views(problems: _Problems, where: str, values: dict[str, Any], layout: str) -> None:
+    """Precondition values of fields that share bytes without one containing
+    the other (two REDEFINES views) agree on those bytes. The rule is
+    ``harness.codec.encode_record``'s: it refuses the later field of a pair
+    that disagrees, which is reported at its key and left out so the other
+    pairs are still compared. ``values`` holds only layout keys whose key and
+    value passed their own checks, so no problem is reported twice."""
+    remaining = dict(values)
+    while remaining:
+        try:
+            _codec.encode_record(remaining, layout, _RECORD_ENCODING)
+        except _codec.CodecError as exc:
+            if not (isinstance(exc.field, str) and exc.field in remaining):
+                problems.add(where, f"cannot be encoded as a record of layout {layout}: {exc}")
+                return
+            problems.add(f"{where}.{exc.field}", exc.reason)
+            del remaining[exc.field]
+        else:
+            return
+
+
 def _check_record(
-    problems: _Problems, where: str, record: Any, spec: dict | None, allow_raw: bool, allow_text: bool
+    problems: _Problems,
+    where: str,
+    record: Any,
+    spec: dict | None,
+    allow_raw: bool,
+    allow_text: bool,
+    expected: bool = False,
 ) -> None:
     """A record given as a field map of the dataset ``spec`` describes (or as a
-    text line where the dataset is line data)."""
+    text line where the dataset is line data). ``expected`` marks a record of
+    ``expected``, whose values may also be matchers or ``{raw: <hex>}``. No
+    two keys name one field; a precondition record's values of two views of
+    the same bytes must also agree, as the fixture build requires. Expected
+    values are compared after decoding, so their views are not compared."""
     if isinstance(record, str) and allow_text:
         return
     if not isinstance(record, dict):
         shape = "a field map or a text line" if allow_text else "a field map of the dataset's layout"
         problems.add(where, f"must be {shape}")
         return
-    keys = _record_keys(spec)
+    fields = _record_fields(spec)
+    layout_fields, own_fields = fields if fields is not None else ({}, {})
+    if layout_fields is None:
+        problems.add(where, _unknown_layout(spec["layout"]))
+        layout_fields = {}
+    named: dict[tuple[str, tuple[int, ...]], str] = {}
+    encodable: dict[str, Any] = {}
     for key, value in record.items():
         if allow_raw and key == RAW_KEY:
-            if not isinstance(value, str):
-                problems.add(f"{where}.{RAW_KEY}", "must be the record's text")
+            _check_raw(problems, f"{where}.{RAW_KEY}", value, spec.get("record_length") if spec else None)
             continue
         if not isinstance(key, str):
             problems.add(where, f"field key {key!r} must be text")
-        elif keys is not None and _SUBSCRIPT_RE.sub("", key) not in keys:
-            problems.add(f"{where}.{key}", f"is not a field of layout {spec.get('layout')} or of the dataset")
+        elif (layout_fields or own_fields) and _check_field(
+            problems, f"{where}.{key}", key, value, layout_fields, own_fields,
+            f"is not a field of layout {spec.get('layout')} or of the dataset", expected, named,
+        ):
+            encodable[key] = value
+    if encodable and not expected:
+        # Only layout keys are collected, so spec names a layout here; the
+        # dataset's own fields overlay the record after it is encoded.
+        _check_views(problems, where, encodable, spec["layout"])
 
 
 def _check_precondition_dataset(problems: _Problems, name: Any, entry: Any) -> None:
@@ -1263,9 +1631,13 @@ def _previous_screen_map(steps: list, screens: list, index: int) -> str | None:
 
 
 def _input_map(steps: list, screens: list, index: int) -> str | None:
-    """The map a step's fields are entered on: its own ``@map``; else, unless it
-    starts a transaction, the map its session's previous step ends on."""
+    """The map a step's fields are entered on: for a step entering
+    ``SIGN_ON_TRANSID``, the sign-on map COSGN00C sends, whatever ``@map`` it
+    declares; else its own ``@map``; else, unless it starts a transaction, the
+    map its session's previous step ends on."""
     step = steps[index]
+    if step.get("transid") == SIGN_ON_TRANSID:
+        return SIGN_ON_MAP
     declared = step.get(SCREEN_MAP)
     if isinstance(declared, str):
         return declared
@@ -1277,8 +1649,9 @@ def _input_map(steps: list, screens: list, index: int) -> str | None:
 def _check_sign_on(s: Scenario, problems: _Problems, where: str, fields: dict) -> None:
     # Only a sign-on entry is a credential. COUSR01 and COUSR02 also have USERID
     # and PASSWD fields, holding the user record being maintained (TESTU001), so
-    # the demo-user rule applies to steps entered on COSGN00, and to steps whose
-    # input map is unknown. A blank user id signs nobody on.
+    # the demo-user rule applies to steps entering CC00 (always on COSGN00,
+    # whatever @map they declare), to steps entered on COSGN00, and to steps
+    # whose input map is unknown. A blank user id signs nobody on.
     if "USERID" in fields:
         user = fields["USERID"]
         allowed = (
@@ -1325,6 +1698,10 @@ def _check_steps(s: Scenario, problems: _Problems, steps: Any, sessions: int, sc
         declared = step.get(SCREEN_MAP)
         if SCREEN_MAP in step and not (_member(declared, screen_fields) or declared == TEXT_SCREEN):
             problems.add(f"{where}.@map", f"{declared!r} is not a mapset of tests/inventory/layouts.yaml or TEXT")
+        elif SCREEN_MAP in step and step.get("transid") == SIGN_ON_TRANSID and declared != SIGN_ON_MAP:
+            problems.add(
+                f"{where}.@map", f"{declared!r}: {SIGN_ON_TRANSID} starts COSGN00C, which sends {SIGN_ON_MAP}"
+            )
         previous = _previous_screen_map(steps, screens, index)
         if isinstance(declared, str) and "transid" not in step and previous is not None and previous != declared:
             problems.add(
@@ -1409,6 +1786,26 @@ def _check_inputs(s: Scenario, problems: _Problems, sessions: int, screens: list
 # --------------------------------------------------------------------------
 
 
+def _dataset_asserts(value: Any) -> bool:
+    """Whether an expected dataset value asserts the dataset's content, judged
+    on its well-formed parts: ``baseline``, a ``records`` list (``[]`` asserts
+    an empty dataset), a ``count``, or ``contains`` holding at least one record
+    (a non-empty field map or a text line). ``matchers`` only qualify fields of
+    the records given, so alone they assert nothing."""
+    if value == BASELINE:
+        return True
+    if not isinstance(value, dict):
+        return False
+    count, contains = value.get("count"), value.get("contains")
+    return (
+        isinstance(value.get("records"), list)
+        or (_is_int(count) and count >= 0)
+        or (isinstance(contains, list) and any(
+            isinstance(record, str) or (isinstance(record, dict) and bool(record)) for record in contains
+        ))
+    )
+
+
 def _check_expected_dataset(problems: _Problems, where: str, name: Any, value: Any, reserved_ok: bool) -> None:
     datasets = _datasets()
     spec: dict | None = None
@@ -1438,8 +1835,12 @@ def _check_expected_dataset(problems: _Problems, where: str, name: Any, value: A
         problems.add(where, "must be 'baseline' or a mapping of records, contains, count and matchers")
         return
     _unknown(problems, where, value, _DATASET_VALUE_KEYS)
-    if not value:
-        problems.add(where, "asserts nothing: give records, contains, count or 'baseline'")
+    if not _dataset_asserts(value):
+        problems.add(
+            where,
+            "asserts nothing: give records ([] for an empty dataset), count, contains with at least one record, "
+            "or 'baseline'; matchers alone assert nothing",
+        )
     for key in ("records", "contains"):
         if key not in value:
             continue
@@ -1451,13 +1852,36 @@ def _check_expected_dataset(problems: _Problems, where: str, name: Any, value: A
                 if not isinstance(record, str):
                     problems.add(f"{where}.{key}[{index}]", "must be a line of text")
             else:
-                _check_record(problems, f"{where}.{key}[{index}]", record, spec, False, text_ok)
+                _check_record(problems, f"{where}.{key}[{index}]", record, spec, False, text_ok, expected=True)
     if "count" in value and not (_is_int(value["count"]) and value["count"] >= 0):
         problems.add(f"{where}.count", "must be a record count, 0 or more")
     if "matchers" in value and not (
         isinstance(value["matchers"], dict) and all(_is_matcher(item) for item in value["matchers"].values())
     ):
         problems.add(f"{where}.matchers", "must be a mapping of field -> matcher {match: ...}")
+
+
+def _screen_text_fault(value: Any) -> str | None:
+    """Why ``value`` is not an ``@text`` a conforming adapter can return, or
+    ``None``: that value is the full screen as one string, ``SCREEN_ROWS`` rows
+    of ``SCREEN_COLS`` characters joined by ``"\\n"`` with every space kept
+    (``adapters.base.screen_text``), and it is compared exactly."""
+    from adapters.base import SCREEN_COLS, SCREEN_ROWS  # adapters.base imports this module
+
+    shape = f"the full screen as one string, {SCREEN_ROWS} rows of {SCREEN_COLS} characters joined by line breaks"
+    if not isinstance(value, str):
+        kind = "a list of rows" if isinstance(value, list) else type(value).__name__
+        return f"must be {shape} (adapters.base.screen_text), not {kind}"
+    if "\r" in value:
+        return f"holds a carriage return; it must be {shape}"
+    rows = value.split("\n")
+    if len(rows) != SCREEN_ROWS:
+        after = ", with no line break after the last row" if value.endswith("\n") else ""
+        return f"holds {len(rows)} row{'' if len(rows) == 1 else 's'}; it must be {shape}{after}"
+    for number, row in enumerate(rows, start=1):
+        if len(row) != SCREEN_COLS:
+            return f"row {number} is {len(row)} characters; it must be {shape}, every space kept"
+    return None
 
 
 def _check_screens(problems: _Problems, screens: Any, steps: Any) -> bool:
@@ -1488,10 +1912,9 @@ def _check_screens(problems: _Problems, screens: Any, steps: Any) -> bool:
             if name == SCREEN_TEXT:
                 if mapset != TEXT_SCREEN:
                     problems.add(field_where, "belongs to an unformatted screen (@map: TEXT)")
-                if not (isinstance(value, str) or (
-                    isinstance(value, list) and all(isinstance(line, str) for line in value)
-                )):
-                    problems.add(field_where, "must be the screen text, or a list of its rows")
+                fault = _screen_text_fault(value)
+                if fault:
+                    problems.add(field_where, fault)
                 continue
             if mapset == TEXT_SCREEN:
                 problems.add(field_where, "an unformatted screen has no fields; assert @text")
@@ -1525,10 +1948,20 @@ def _check_expected(s: Scenario, problems: _Problems, steps: Any) -> None:
             problems.add("expected.messages", "must be a list of text lines or 'baseline'")
     if "reject_reason_codes" in expected:
         codes = expected["reject_reason_codes"]
-        if codes == BASELINE or (isinstance(codes, list) and all(_is_reason_code(code) for code in codes)):
+        if codes == BASELINE:
             outcome = True
+        elif isinstance(codes, list):
+            faults = [(index, _reason_code_problem(code)) for index, code in enumerate(codes)]
+            for index, fault in faults:
+                if fault:
+                    problems.add(f"expected.reject_reason_codes[{index}]", fault)
+            # An empty list asserts that no record is rejected.
+            outcome = outcome or not any(fault for _, fault in faults)
         else:
-            problems.add("expected.reject_reason_codes", "must be a list of reason codes (0100, 102) or 'baseline'")
+            problems.add(
+                "expected.reject_reason_codes",
+                "must be a list of CBTRN02C reason codes ('0102' or 102) or 'baseline'",
+            )
     for section in ("datasets", "file_state"):
         if section not in expected:
             continue
@@ -1538,7 +1971,7 @@ def _check_expected(s: Scenario, problems: _Problems, steps: Any) -> None:
             continue
         for name, item in value.items():
             _check_expected_dataset(problems, f"expected.{section}.{name}", name, item, section == "file_state")
-        outcome = outcome or bool(value)
+        outcome = outcome or any(_dataset_asserts(item) for item in value.values())
     if "screens" in expected:
         outcome = _check_screens(problems, expected["screens"], steps) or outcome
     elif isinstance(steps, list) and steps:
@@ -1661,15 +2094,25 @@ def _check_scenario_files(root: Path, problems: list[str]) -> None:
     """(a) and (e): the scenario files against the manifest."""
     folder = root / "scenarios"
     found: dict[str, set[str]] = {level: set() for level in LEVELS}
-    if not folder.is_dir():
+    # A symbolic link is reported and never followed, so its files count as missing.
+    if folder.is_symlink():
+        problems.append("scenarios: a symbolic link, not the scenarios folder")
+    elif not folder.is_dir():
         problems.append("scenarios: the folder is missing")
     else:
         for entry in sorted(folder.iterdir()):
+            if entry.is_symlink():
+                problems.append(f"scenarios/{entry.name}: a symbolic link, not a level folder ({', '.join(LEVELS)})")
+                continue
             if not (entry.is_dir() and entry.name in LEVELS):
                 problems.append(f"scenarios/{entry.name}: not a level folder ({', '.join(LEVELS)})")
                 continue
             for path in sorted(entry.iterdir()):
-                if path.is_file() and path.suffix == ".yaml":
+                if path.is_symlink():
+                    problems.append(
+                        f"scenarios/{entry.name}/{path.name}: a symbolic link, not a scenario file <id>.yaml"
+                    )
+                elif _scenario_file(path):
                     found[entry.name].add(path.stem)
                 else:
                     problems.append(f"scenarios/{entry.name}/{path.name}: not a scenario file <id>.yaml")
@@ -1691,12 +2134,19 @@ def _check_scenario_files(root: Path, problems: list[str]) -> None:
 
 def _check_baseline_dirs(root: Path, problems: list[str]) -> None:
     """(b): one baseline directory per manifest id, holding expected.yaml and
-    manifest.yaml, and raw datasets only under datasets/*.bin."""
+    manifest.yaml, and raw datasets only under datasets/*.bin. A symbolic link
+    is reported and never followed, so a linked baseline directory counts as
+    missing and a linked expected.yaml or manifest.yaml as lacking."""
     folder = root / "baselines"
     present: set[str] = set()
     lacking: list[str] = []
-    if folder.is_dir():
+    if folder.is_symlink():
+        problems.append("baselines: a symbolic link, not the baselines folder")
+    elif folder.is_dir():
         for entry in sorted(folder.iterdir()):
+            if entry.is_symlink():
+                problems.append(f"baselines/{entry.name}: a symbolic link, not a baseline directory")
+                continue
             if not entry.is_dir():
                 problems.append(f"baselines/{entry.name}: not a baseline directory")
                 continue
@@ -1704,29 +2154,55 @@ def _check_baseline_dirs(root: Path, problems: list[str]) -> None:
             if entry.name not in ALL_IDS:
                 continue
             for required in ("expected.yaml", "manifest.yaml"):
-                if not (entry / required).is_file():
+                if not _regular_file(entry / required):
                     lacking.append(f"{entry.name}/{required}")
             for item in sorted(entry.iterdir()):
+                if item.is_symlink():
+                    problems.append(f"baselines/{entry.name}/{item.name}: a symbolic link, not part of a baseline")
+                    continue
                 if item.name in ("expected.yaml", "manifest.yaml"):
                     continue
                 if item.name != "datasets" or not item.is_dir():
                     problems.append(f"baselines/{entry.name}/{item.name}: not part of a baseline")
                     continue
                 for raw in sorted(item.iterdir()):
-                    if not (raw.is_file() and raw.suffix == ".bin"):
+                    if raw.is_symlink():
+                        problems.append(
+                            f"baselines/{entry.name}/datasets/{raw.name}: a symbolic link, not a <LOGICAL>.bin dataset"
+                        )
+                    elif not (raw.is_file() and raw.suffix == ".bin"):
                         problems.append(f"baselines/{entry.name}/datasets/{raw.name}: not a <LOGICAL>.bin dataset")
     _listed(problems, "baselines", "directory(ies) outside the manifest", present - ALL_IDS)
     _listed(problems, "baselines", "manifest id(s) without a baseline directory", ALL_IDS - present)
     _listed(problems, "baselines", "required file(s) missing", lacking)
 
 
+def _reports_folder(root: Path, name: str, what: str, problems: list[str]) -> Path | None:
+    """``root/reports/<name>`` when it is a folder to check, else ``None``:
+    absent or not a folder, or ``reports`` or the folder itself is a symbolic
+    link, which is reported and never followed."""
+    reports = root / "reports"
+    folder = reports / name
+    if reports.is_symlink():
+        problems.append(f"reports: a symbolic link, so reports/{name} is not checked")
+        return None
+    if folder.is_symlink():
+        problems.append(f"reports/{name}: a symbolic link, not the {what} folder")
+        return None
+    return folder if folder.is_dir() else None
+
+
 def _check_result_files(root: Path, problems: list[str]) -> None:
-    """(c): result records only for manifest ids that gnucobol-batch can run."""
-    folder = root / "reports" / "results"
-    if not folder.is_dir():
+    """(c): result records only for manifest ids that gnucobol-batch can run.
+    A symbolic link is reported and never followed."""
+    folder = _reports_folder(root, "results", "result records", problems)
+    if folder is None:
         return
     for path in sorted(folder.iterdir()):
         where = f"reports/results/{path.name}"
+        if path.is_symlink():
+            problems.append(f"{where}: a symbolic link, not a result record <id>.yaml")
+            continue
         if not (path.is_file() and path.suffix == ".yaml"):
             problems.append(f"{where}: not a result record <id>.yaml")
             continue
@@ -1739,7 +2215,7 @@ def _check_result_files(root: Path, problems: list[str]) -> None:
         located = [
             (other, root / "scenarios" / other / f"{path.stem}.yaml")
             for other in candidates
-            if (root / "scenarios" / other / f"{path.stem}.yaml").is_file()
+            if _scenario_file(root / "scenarios" / other / f"{path.stem}.yaml")
         ]
         if not located:
             problems.append(f"{where}: no scenario file scenarios/{level}/{path.stem}.yaml")
@@ -1755,15 +2231,23 @@ def _check_result_files(root: Path, problems: list[str]) -> None:
 
 
 def _check_evidence_dirs(root: Path, problems: list[str]) -> None:
-    """(d): UniKix evidence only for manifest ids."""
-    folder = root / "reports" / "unikix"
-    if not folder.is_dir():
+    """(d): UniKix evidence only for manifest ids. A symbolic link is reported
+    and never followed."""
+    folder = _reports_folder(root, "unikix", "UniKix evidence", problems)
+    if folder is None:
         return
     for execution in sorted(folder.iterdir()):
+        if execution.is_symlink():
+            problems.append(f"reports/unikix/{execution.name}: a symbolic link, not an evidence folder or file")
+            continue
         if not execution.is_dir():
             continue
         for entry in sorted(execution.iterdir()):
-            if entry.is_dir() and entry.name not in ALL_IDS:
+            if entry.is_symlink():
+                problems.append(
+                    f"reports/unikix/{execution.name}/{entry.name}: a symbolic link, not a scenario evidence folder"
+                )
+            elif entry.is_dir() and entry.name not in ALL_IDS:
                 problems.append(f"reports/unikix/{execution.name}/{entry.name}: not a scenario id of the manifest")
 
 
@@ -1772,8 +2256,17 @@ def check_manifest(tests_root: str | Path = TESTS_ROOT) -> list[str]:
     manifest: (a) scenario files per level folder (missing, outside the
     manifest, misplaced, or not ``<id>.yaml``); (b) baseline directories, each
     with ``expected.yaml`` and ``manifest.yaml``; (c) result records, each for
-    a scenario gnucobol-batch can run (missing records are not reported); (d)
-    UniKix evidence directories; (e) the fixed ids. Empty when the tree conforms."""
+    a scenario gnucobol-batch can run (missing records are not reported);
+    (d) UniKix evidence directories; (e) the fixed ids. In (a) to (d) a
+    symbolic link, whatever it points to, is a departure and is never
+    followed: the ``scenarios``, ``baselines``, ``reports``,
+    ``reports/results`` or ``reports/unikix`` folder, or an entry of
+    ``scenarios``, a level folder, ``baselines``, a baseline directory or its
+    ``datasets``, ``reports/results``, ``reports/unikix`` or an execution
+    folder. Nothing under a linked folder is checked, a linked scenario file
+    or baseline directory does not count for its id, and a linked
+    ``expected.yaml`` or ``manifest.yaml`` counts as missing. Empty when the
+    tree conforms."""
     root = Path(tests_root)
     problems: list[str] = []
     _check_scenario_files(root, problems)

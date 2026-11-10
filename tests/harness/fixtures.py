@@ -4,7 +4,9 @@
 turns a scenario's ``preconditions.datasets`` (and its parameter files) into
 the exact bytes the adapters load, and cross-checks the repository's ASCII
 data against the EBCDIC copies. It reads ``app/`` and writes nothing: the
-runner writes the returned bytes into the scenario's working directory.
+runner writes the returned bytes into the scenario's working directory. A
+source or cross-check path is read only when, symbolic links followed, it
+leads to a regular file inside the repository; any other is refused unread.
 
 Repository data (``repository_dataset``)
     ``ascii`` sources are split on ``\\n``; one trailing empty line is dropped,
@@ -47,6 +49,7 @@ from __future__ import annotations
 
 import functools
 import re
+import stat
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -687,22 +690,43 @@ def _root(repo_root: str | Path) -> str:
 
 
 def _read_repository_file(definition: DatasetSpec, relative: str, root: str, purpose: str) -> bytes:
-    """The bytes of a repository file the dataset needs. An absent file is a
-    missing prerequisite under the dataset's ``GAP-MIS`` entry; without one
-    it is an error in the checkout or in the definition."""
+    """The bytes of a repository file the dataset needs. ``root`` is the
+    resolved repository root. The path is read only when, symbolic links
+    followed, it leads to a regular file inside the repository: one that
+    leads out of it, or to a directory, device or FIFO, is refused unread.
+    An absent file is a missing prerequisite under the dataset's ``GAP-MIS``
+    entry; without one it is an error in the checkout or in the definition.
+    Messages name only the repository-relative path, never where it leads."""
+    what = f"{definition.name}: its {purpose} {relative}"
     try:
-        return (Path(root) / relative).read_bytes()
+        resolved = (Path(root) / relative).resolve()
+        if not resolved.is_relative_to(root):
+            raise FixtureError(
+                f"{what} resolves outside the repository through a symbolic link, so it is not read",
+                definition.name,
+            )
+        if not stat.S_ISREG(resolved.stat().st_mode):
+            raise FixtureError(f"{what} is not a regular file, so it is not read", definition.name)
+        return resolved.read_bytes()
     except FileNotFoundError:
-        need = f"{definition.name}: its {purpose} {relative} is absent from the checkout"
+        need = f"{what} is absent from the checkout"
         gap_id = definition.missing_input_gap
         if gap_id is not None:
             raise MissingPrerequisite(need, gap_id) from None
         raise FixtureError(
             f"{need}, and the dataset declares no GAP-MIS entry", definition.name
         ) from None
+    except RuntimeError:
+        # Path.resolve reports a symbolic link loop as RuntimeError on Python 3.11.
+        raise FixtureError(f"{what} is a symbolic link loop, so it is not read", definition.name) from None
+    except ValueError as exc:
+        # A path holding a NUL byte cannot name a file.
+        raise FixtureError(f"{what} is not a usable path ({exc}), so it is not read", definition.name) from None
     except OSError as exc:
         raise FixtureError(
-            f"{definition.name}: cannot read its {purpose} {relative}: {exc}", definition.name
+            f"{definition.name}: cannot read its {purpose} {relative}: "
+            f"{exc.strerror or type(exc).__name__}",
+            definition.name,
         ) from None
 
 

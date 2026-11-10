@@ -17,7 +17,7 @@
 # this account in account master file' [app/cbl/COACTVWC.cbl:131-132]. Its only
 # SET, in the NOTFND branch of 9300-GETACCTDATA-BYACCT, is commented out
 # [app/cbl/COACTVWC.cbl:792], so that text can never reach the screen. Pinned as
-# observed (observed-only, GAP-UNC-013), the NOTFND branch instead STRINGs into
+# observed (observed-only, GAP-UNC-014), the NOTFND branch instead STRINGs into
 # the 75-byte WS-RETURN-MSG: 'Account:' 00000000001 ' not found in' ' Acct
 # Master file.Resp:' ERROR-RESP ' Reas:' ERROR-RESP2 [app/cbl/COACTVWC.cbl:793-806].
 # ERROR-RESP and ERROR-RESP2 are X(10) fields that receive the S9(09) COMP
@@ -40,7 +40,9 @@
 # asserted, and an observed run pins them in the promoted baseline. The
 # 9000-READ-ACCT reset of the info message makes 1200 show the prompt again
 # [app/cbl/COACTVWC.cbl:689,527-530], and the rejected id stays in ACCTSID
-# [app/cbl/COACTVWC.cbl:465-469].
+# [app/cbl/COACTVWC.cbl:465-469]. Whether the lookup is meant to go on after the
+# account NOTFND is the suspected defect GAP-DEF-020, hence the suspected-defect
+# tag beside observed-only.
 #
 # Screen fields are compared at their full BMS length with trailing spaces. The
 # 12th byte of ACSTSSN is left LOW-VALUES by the STRING of the 11-character
@@ -85,10 +87,12 @@ inventory_ids:
 tags:
 - inferred-not-observed
 - observed-only
+- suspected-defect
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-- GAP-UNC-013  # message condition defined but never set: the 88-level text cannot appear
+- GAP-UNC-014  # message condition tested but never set: the 88-level text cannot appear
+- GAP-DEF-020  # the failed account read goes on to the customer read and shows the customer
 - GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
 preconditions:
   datasets:

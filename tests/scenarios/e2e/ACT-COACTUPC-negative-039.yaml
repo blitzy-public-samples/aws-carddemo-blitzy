@@ -28,7 +28,7 @@
 # Why observed-only: the CSUTLDTC check runs only after the COBOL checks have
 # passed, and every date they pass (1900-01-01 to 2099-12-31) is a real date
 # that CEEDAYS is expected to accept, so the severity branch has no known
-# trigger; GAP-UNC-013 asks what code that never executes is for. The
+# trigger; GAP-UNC-017 asks what that branch and its message are for. The
 # accepting outcome is pinned as derived. It is inferred, not observed
 # (GAP-INF-001): CSUTLDTC declares LS-DATE and LS-DATE-FORMAT as X(10)
 # [app/cbl/CSUTLDTC.cbl:84-113], so CEEDAYS receives the 8-byte date followed
@@ -98,7 +98,7 @@ gap_ids:
 - GAP-DOC-024  # the UniKix CSUTLDPY date edits differ from app/
 - GAP-INF-001  # which dates CEEDAYS accepts is known only through the stub
 - GAP-MIS-010  # whether UniKix supplies CEEDAYS
-- GAP-UNC-013  # purpose of code that never executes: the severity branch has no known trigger
+- GAP-UNC-017  # purpose of the CSUTLDTC severity branch and its message, which have no known trigger
 # Not in the planned gap list. Scenarios cite each place where the deployed
 # UniKix copy differs from app/ on their path: its CSUTLDTC passes trimmed
 # Vstring lengths to CEEDAYS, its COACTUPC changes the amount edits and the

@@ -28,7 +28,9 @@
 # ACCTSID keeps the entered id (the filter is not blank), the customer fields
 # come from the CUSTDATA record, INFOMSG is the prompt again because 9000-READ-ACCT
 # cleared the info message, and ERRMSG is the composed file error padded to 78
-# [app/cbl/COACTVWC.cbl:460-536].
+# [app/cbl/COACTVWC.cbl:460-536]. Whether the lookup is meant to go on after the
+# failed account read is the suspected defect GAP-DEF-020, hence the
+# suspected-defect tag.
 #
 # ERROR-RESP and ERROR-RESP2 are PIC X(10) receiving the S9(9) COMP response
 # codes, so each holds the 9 unsigned digits followed by one blank. The values
@@ -77,10 +79,12 @@ inventory_ids:
 - INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID shown back in ACCTSID
 tags:
 - inferred-not-observed
+- suspected-defect
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
 - GAP-MIS-011  # no confirmed region file control to make ACCTDAT unavailable
+- GAP-DEF-020  # the failed account read goes on to the customer read and shows the customer
 - GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
 preconditions:
   datasets:

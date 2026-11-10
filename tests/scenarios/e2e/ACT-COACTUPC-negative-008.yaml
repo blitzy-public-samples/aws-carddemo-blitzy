@@ -29,6 +29,8 @@
 # prompt in INFOMSG and WS-RETURN-MSG in ERRMSG
 # [app/cbl/COACTUPC.cbl:2787-2864,2955-2983]. 3300 leaves ACCTSID as entered
 # (the filter is NOT-OK, not BLANK) [app/cbl/COACTUPC.cbl:3180-3189].
+# Whether the fetch is meant to go on after the account NOTFND is the suspected
+# defect GAP-DEF-020, hence the suspected-defect tag.
 #
 # Expected values are derived from the source (no TPE region runs in CI):
 # - ERROR-RESP and ERROR-RESP2 are PIC X(10) receiving the S9(9) COMP RESP
@@ -87,9 +89,11 @@ inventory_ids:
 - INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
 tags:
 - inferred-not-observed
+- suspected-defect
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DEF-020  # the failed account read goes on to the customer read and the details screen
 - GAP-DOC-025  # the UniKix COACTUP.bms differs from app/ at row 1, columns 1-9
 preconditions:
   datasets:

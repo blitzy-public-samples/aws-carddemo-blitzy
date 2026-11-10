@@ -4508,7 +4508,7 @@ items:
   source: app/cbl/COTRN02C.cbl:444-449
   status: not-covered
 - activation: always
-  description: PF5 fills the input fields from the last TRANSACT record of the card or account entered.
+  description: 'PF5 validates the account or card number entered, then reads the TRANSACT record with the highest TRAN-ID (STARTBR at HIGH-VALUES, READPREV) and copies its type, category, source, amount, description, original and processing timestamps and merchant id, name, city and zip into the input fields; a key or browse error ends PF5 with its message. The record is not checked against the card or account entered, so the copied data may come from another card (GAP-UNC-015). Enter processing then follows: the fields are validated and the transaction is added only when Confirm is Y.'
   gap_ids: []
   id: INV-TRN-068
   kind: rule
@@ -5416,7 +5416,7 @@ items:
   source: app/cbl/CBSTM03A.CBL:416-456
   status: not-covered
 - activation: always
-  description: CBSTM03A calls CBSTM03B with a DD name (TRNXFILE, XREFFILE, CUSTFILE, ACCTFILE), an operation (O open, C close, R read next, K read by key, W write, Z rewrite), a key and its length; CBSTM03B performs it and returns the file status in LK-M03B-RC and the record in LK-M03B-FLDT.
+  description: CBSTM03A calls CBSTM03B with a DD name (TRNXFILE, XREFFILE, CUSTFILE, ACCTFILE), an operation code, a key and its length. CBSTM03B declares six operations (O open, C close, R read next, K read by key, W write, Z rewrite) but implements only O, R and C for TRNXFILE and XREFFILE and O, K and C for CUSTFILE and ACCTFILE, opening each file for input; any other operation, W and Z included, which no caller passes, does no I/O and returns that DD's last file status (GAP-UNC-016). An unknown DD name returns at once with LK-M03B-RC unchanged. CBSTM03B returns the file status in LK-M03B-RC and the record in LK-M03B-FLDT.
   gap_ids: []
   id: INV-RPT-049
   kind: interface

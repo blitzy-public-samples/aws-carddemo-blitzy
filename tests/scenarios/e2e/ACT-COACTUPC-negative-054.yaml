@@ -116,10 +116,10 @@ gap_ids:
 # UniKix supplies CEEDAYS at all is unknown.
 - GAP-INF-001
 - GAP-MIS-010
-# The open uncertain-purpose question for COACTUPC code that no known input
-# runs: here the EDIT-DATE-LE refusal and its composed message, so the
-# accepting outcome is pinned as observed.
-- GAP-UNC-013
+# The open uncertain-purpose question of the EDIT-DATE-LE refusal and its
+# composed message, which no known input runs, so the accepting outcome is
+# pinned as observed.
+- GAP-UNC-017
 # The UniKix copy changes code this scenario passes through: CSUTLDTC's
 # Vstring lengths (021), COACTUPC's amount edits and change detection (022),
 # CSUTLDPY's date edits and message names (024) and COACTUP's row 1, where

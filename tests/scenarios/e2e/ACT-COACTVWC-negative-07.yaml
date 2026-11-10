@@ -30,6 +30,8 @@
 #
 # The customer read is part of this NOTFND path, so CUSTDAT (INV-CFG-005) is
 # listed and the customer fields asserted, beside the CXACAIX and ACCTDAT files.
+# Whether the lookup is meant to go on after the account NOTFND is the suspected
+# defect GAP-DEF-020, hence the suspected-defect tag.
 #
 # Expected values are derived from the source (no TPE region runs in CI). Text
 # fields are whole BMS fields with trailing blanks; CURDATE and CURTIME come
@@ -63,9 +65,11 @@ inventory_ids:
 - INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID and the AID flags
 tags:
 - inferred-not-observed
+- suspected-defect
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DEF-020  # the failed account read goes on to the customer read and shows the customer
 - GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
 preconditions:
   datasets:

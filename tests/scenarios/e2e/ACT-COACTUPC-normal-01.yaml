@@ -23,7 +23,7 @@
 # state before INFOMSG is sent [app/cbl/COACTUPC.cbl:2955-2981]. On this fetch both
 # 3202 and 3250 set PROMPT-FOR-CHANGES, so INFOMSG shows 'Update account details
 # presented above.' The scenario pins that observed text rather than the message
-# the item names, hence observed-only with the open question in GAP-UNC-013.
+# the item names, hence observed-only with the open question in GAP-UNC-014.
 #
 # Expected values are derived from the source (no TPE region runs in CI):
 # - Screen values are whole fields at their BMS length, trailing spaces kept.
@@ -86,7 +86,7 @@ gap_ids:
 # where TRNNAME is asserted.
 - GAP-DOC-025
 # FOUND-ACCOUNT-DATA's message is set but always overwritten before the send.
-- GAP-UNC-013
+- GAP-UNC-014
 preconditions:
   datasets:
     USRSEC: {base: USRSEC}

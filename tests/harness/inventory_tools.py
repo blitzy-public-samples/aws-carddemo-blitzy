@@ -1617,7 +1617,12 @@ SIDE_EFFECTS: tuple[tuple[str, str, str, tuple[Anchor, ...], str], ...] = (
      "The new transaction id is the highest TRANSACT key (STARTBR at HIGH-VALUES, READPREV) plus 1."),
     ("COTRN02C", "rule", "PF5 copy of the last transaction",
      (("regex", r"WHEN\s+DFHPF5\s+PERFORM\s+COPY-LAST-TRAN-DATA"),),
-     "PF5 fills the input fields from the last TRANSACT record of the card or account entered."),
+     "PF5 validates the account or card number entered, then reads the TRANSACT record with the highest "
+     "TRAN-ID (STARTBR at HIGH-VALUES, READPREV) and copies its type, category, source, amount, description, "
+     "original and processing timestamps and merchant id, name, city and zip into the input fields; a key or "
+     "browse error ends PF5 with its message. The record is not checked against the card or account entered, "
+     "so the copied data may come from another card (GAP-UNC-015). Enter processing then follows: the fields "
+     "are validated and the transaction is added only when Confirm is Y."),
     ("COBIL00C", "interface", "TRANSACT WRITE", (("cics", "WRITE", "WS-TRANSACT-FILE"),),
      "A confirmed payment writes a TRANSACT record of type 02, category 2, source 'POS TERM', description "
      "'BILL PAYMENT - ONLINE', amount equal to the current balance; observed in file_state."),
@@ -2096,9 +2101,13 @@ BATCH_ROWS += (
      "always", ()),
     ("RPT", "CBSTM03B", "interface", "file service operations O/C/R/K/W/Z",
      (("regex", r"05\s+LK-M03B-OPER.*?88\s+M03B-REWRITE[^\n]*"), ("paragraph", "0000-START")),
-     "CBSTM03A calls CBSTM03B with a DD name (TRNXFILE, XREFFILE, CUSTFILE, ACCTFILE), an operation (O open, C "
-     "close, R read next, K read by key, W write, Z rewrite), a key and its length; CBSTM03B performs it and "
-     "returns the file status in LK-M03B-RC and the record in LK-M03B-FLDT.",
+     "CBSTM03A calls CBSTM03B with a DD name (TRNXFILE, XREFFILE, CUSTFILE, ACCTFILE), an operation code, a key "
+     "and its length. CBSTM03B declares six operations (O open, C close, R read next, K read by key, W write, Z "
+     "rewrite) but implements only O, R and C for TRNXFILE and XREFFILE and O, K and C for CUSTFILE and "
+     "ACCTFILE, opening each file for input; any other operation, W and Z included, which no caller passes, "
+     "does no I/O and returns that DD's last file status (GAP-UNC-016). An unknown DD name returns at once "
+     "with LK-M03B-RC unchanged. CBSTM03B returns the file status in LK-M03B-RC and the record in "
+     "LK-M03B-FLDT.",
      "always", ()),
     ("RPT", "CBSTM03A", "rule", "51-card x 10-transaction table limit",
      (("regex", r"05\s+WS-CARD-TBL\s+OCCURS\s+51\s+TIMES.*?WS-TRCT[^\n]*"), ("paragraph", "8500-READTRNX-READ")),

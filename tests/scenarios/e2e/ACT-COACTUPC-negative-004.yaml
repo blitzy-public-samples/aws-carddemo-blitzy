@@ -40,8 +40,10 @@
 #
 # The account fields of step 3 are moved from ACCOUNT-RECORD, which the failed
 # READ leaves as the task's uninitialised working storage, so their content is
-# undefined and none of them is asserted. Whether this continuation is intended
-# is the doubtful behaviour pinned as observed (observed-only, GAP-UNC-013).
+# undefined and none of them is asserted. What the never-shown message text is
+# for is the doubtful behaviour pinned as observed (observed-only, GAP-UNC-014);
+# whether the fetch is meant to go on after the account NOTFND is the suspected
+# defect GAP-DEF-020 (suspected-defect).
 #
 # Screen values are whole fields at their BMS length, trailing spaces kept:
 # comparison never trims. ERRMSG is the 75-byte WS-RETURN-MSG in the 78-byte
@@ -84,12 +86,14 @@ inventory_ids:
 tags:
 - inferred-not-observed
 - observed-only
+- suspected-defect
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-# The message condition is tested but never set, the same open question of
-# purpose as the message conditions GAP-UNC-013 registers as never set.
-- GAP-UNC-013
+# The message condition is tested but never set; GAP-UNC-014 asks what such
+# never-shown message texts are for.
+- GAP-UNC-014
+- GAP-DEF-020  # the failed account read goes on to the customer read and the details screen
 # The UniKix copy of COACTUP.bms drops the unnamed field at row 1, columns
 # 1-9, beside the TRNNAME asserted on the COACTUP screens.
 - GAP-DOC-025

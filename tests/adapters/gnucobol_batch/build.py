@@ -22,6 +22,9 @@ the adapter runs into ``<work root>/_build/<build key>/``:
 ``logs/<unit>.log``, ``src/``, ``manifest.yaml``, ``COMPLETE``
     Each compile's command line, stdout and stderr; generated sources; the
     evidence of what was built; the marker written last.
+``logs/CLOCKCHK.probe.log``
+    Each clock-probe run's command line, ``COB_CURRENT_DATE``, status, stdout
+    and stderr: the evidence of ``clock_fraction_mode``.
 
 Compile options (GAP-STB-011). Every COBOL compile uses ``COMMON_FLAGS`` plus
 ``-I app/cpy``. They reproduce the Enterprise COBOL build of
@@ -41,9 +44,16 @@ so the key is the same on every checkout of one commit with one toolchain.
 
 Atomic cache. A build runs in a private temporary directory under ``_build``
 and is renamed to its final name only when complete, so concurrent sessions
-on one work root either reuse a finished cache or discard their own copy. A
-failed build is kept as ``_build/<key>.failed`` and the ``BuildError`` names
-the unit and its log there. A failed build is a harness error, never a gap.
+on one work root either reuse a finished cache or discard their own copy. The
+key lock ``_build/<key>.lock``, an ``fcntl.flock`` that excludes other
+processes and threads and is never deleted, serializes everything that
+inspects or renames the key's directories: the check of ``_build/<key>/`` with
+the removal of an unfinished or mismatched one, its publication and the check
+after it, the set-aside of a failed build or profile, and the publication of
+an on-demand profile. The compiles run outside it, so the first session to
+publish wins. A failed build, whether a compile or the clock probe failed, is
+kept as ``_build/<key>.failed`` and the ``BuildError`` names the unit or the
+probe and its log there. A failed build is a harness error, never a gap.
 
 Indexed files. GnuCOBOL 3.2 with Berkeley DB keeps alternate key *i* in
 ``<file>.i``. ``OPEN`` fails with status 35 when a declared alternate's file
@@ -88,6 +98,7 @@ module starts no process and reads no file.
 
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import shlex
@@ -95,8 +106,9 @@ import shutil
 import subprocess
 import tempfile
 import threading
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -136,7 +148,7 @@ COPYBOOK_DIR = "app/cpy"
 # Changed whenever the generated loader, unloader or clock-probe programs, or
 # the layout of the build directory, change in a way the hashed sources do not
 # show.
-TEMPLATE_VERSION = "1"
+TEMPLATE_VERSION = "2"
 
 # Seconds one compile or probe may take. The build is session-level, so no
 # scenario deadline bounds it.
@@ -165,6 +177,7 @@ _STUBS_DIR = "tests/stubs"
 _COMPLETE = "COMPLETE"
 _MANIFEST = "manifest.yaml"
 _BUILD_SUBDIR = "_build"
+_LOCK_SUFFIX = ".lock"
 _SETUP_HINT = (
     "GnuCOBOL 3.2 built --with-db (Berkeley DB) must be on PATH, with its lib "
     "directory on LD_LIBRARY_PATH; see tests/README.md"
@@ -196,11 +209,13 @@ _PARALLEL_COMPILES = max(1, min(4, os.cpu_count() or 1))
 
 class BuildError(HarnessError):
     """The toolchain is missing or unsuitable, the build configuration is
-    inconsistent, or a compile failed.
+    inconsistent, or a compile or the clock probe failed.
 
     ``unit`` names the compilation unit and ``log_path`` its compile log when
-    the error comes from a compile. The runner reports a harness error as
-    ``failing`` with reason ``error``; it is never turned into a skip."""
+    the error comes from a compile, or ``CLOCKCHK`` and its probe log when the
+    clock probe failed; the failed build keeps both. The runner reports a
+    harness error as ``failing`` with reason ``error``; it is never turned
+    into a skip."""
 
     def __init__(
         self, message: str, *, unit: str | None = None, log_path: Path | None = None
@@ -706,6 +721,10 @@ def _loader_source(profile: KeyProfile) -> str:
         "           END-PERFORM",
         "           CLOSE SFILE",
         "           MOVE 'N' TO WS-SOPEN",
+        "           IF WS-SSTAT NOT = '00'",
+        f"               DISPLAY '{SEQIN_DD} CLOSE STATUS ' WS-SSTAT",
+        "               PERFORM 9000-FAIL",
+        "           END-IF",
         "           PERFORM 3000-CLOSE-KFILE",
         "           DISPLAY 'LOADED ' WS-COUNT.",
         "       2100-WRITE-RECORD.",
@@ -828,6 +847,10 @@ def _unloader_source(profile: KeyProfile) -> str:
         "           END-PERFORM",
         "           CLOSE KFILE",
         "           MOVE 'N' TO WS-KOPEN",
+        "           IF WS-KSTAT NOT = '00'",
+        f"               DISPLAY '{KSDS_DD} CLOSE STATUS ' WS-KSTAT",
+        "               PERFORM 9000-FAIL",
+        "           END-IF",
         "           CLOSE SFILE",
         "           MOVE 'N' TO WS-SOPEN",
         "           IF WS-SSTAT NOT = '00'",
@@ -1232,6 +1255,19 @@ class _CompileFailure(Exception):
         super().__init__(unit, log, detail)
         self.unit, self.log, self.detail = unit, log, detail
 
+    def message(self, log: Path) -> str:
+        """The ``BuildError`` text, naming ``log``, the retained log."""
+        return f"cannot compile {self.unit}: {self.detail}; log {log}"
+
+
+class _ProbeFailure(_CompileFailure):
+    """The clock probe, run once every compile succeeded, could not tell how
+    libcob reads ``COB_CURRENT_DATE``; ``unit`` is the probe program and
+    ``log`` its probe log. The build fails, and is kept, as for a compile."""
+
+    def message(self, log: Path) -> str:
+        return f"the clock probe {self.unit} failed: {self.detail}; log {log}"
+
 
 @dataclass(frozen=True)
 class _Task:
@@ -1313,31 +1349,109 @@ def _profile_tasks(profile: KeyProfile, directory: Path) -> list[_Task]:
 
 def _probe_clock(toolchain: _Toolchain, directory: Path) -> str:
     """Run the clock probe with hundredths 37 in each COB_CURRENT_DATE form and
-    return the first mode whose FUNCTION CURRENT-DATE shows them."""
+    return the first mode whose FUNCTION CURRENT-DATE shows them.
+
+    ``logs/CLOCKCHK.probe.log`` gets each run's command line,
+    ``COB_CURRENT_DATE``, status, result, stdout and stderr, and is kept on
+    success as the evidence of the mode. When no form shows the hundredths,
+    or the probe cannot run, ``_ProbeFailure`` names that log."""
     program = directory / "bin" / _CLOCK_PROGRAM
-    seen = []
+    argv = [str(program)]
+    log = directory / "logs" / f"{_CLOCK_PROGRAM}.probe.log"
+    blocks = [
+        f"clock probe {_CLOCK_PROGRAM}: a match is FUNCTION CURRENT-DATE(1:16) "
+        f"{_CLOCK_EXPECTED} for the clock {_CLOCK_PROBE}",
+    ]
+    seen: list[str] = []
+    found: str | None = None
+    completed_every_run = True
     for mode in _CLOCK_MODES:
         value = cob_current_date(_CLOCK_PROBE, mode)
+        stdout = stderr = b""
+        started = True
         try:
             completed = subprocess.run(
-                [str(program)], cwd=directory, env=toolchain.env(directory, COB_CURRENT_DATE=value),
+                argv, cwd=directory, env=toolchain.env(directory, COB_CURRENT_DATE=value),
                 stdin=subprocess.DEVNULL, capture_output=True, timeout=_TOOL_PROBE_TIMEOUT_S,
                 check=False,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise BuildError(f"cannot run the clock probe {program}: {exc}") from None
-        output = completed.stdout.decode("latin-1").strip()
-        if completed.returncode == 0 and output[:16] == _CLOCK_EXPECTED:
-            return mode
-        seen.append(f"COB_CURRENT_DATE={value!r} gave exit {completed.returncode}, {output!r}")
-    raise BuildError(
-        f"libcob does not report the hundredths of COB_CURRENT_DATE in either form, so runs "
-        f"cannot be made reproducible: {'; '.join(seen)}"
+        except subprocess.TimeoutExpired as exc:
+            stdout, stderr = exc.stdout or b"", exc.stderr or b""
+            status = f"timed out after {_TOOL_PROBE_TIMEOUT_S} s with partial output"
+            completed_every_run = False
+        except OSError as exc:
+            status = f"cannot start {argv[0]}: {exc}"
+            started = completed_every_run = False
+        else:
+            stdout, stderr = completed.stdout, completed.stderr
+            status = f"exit {completed.returncode}"
+            if (
+                completed.returncode == 0
+                and stdout.decode("latin-1").strip()[:16] == _CLOCK_EXPECTED
+            ):
+                found = mode
+        output = stdout.decode("utf-8", "replace").rstrip("\n")
+        errors = stderr.decode("utf-8", "replace").rstrip("\n")
+        blocks.append("\n".join([
+            f"--- attempt: {mode} ---",
+            f"command: {shlex.join(argv)}",
+            f"COB_CURRENT_DATE: {value}",
+            f"status: {status}",
+            f"result: {'match' if found == mode else 'no match'}",
+            "--- stdout ---",
+            output,
+            "--- stderr ---",
+            errors,
+        ]))
+        if found is not None:
+            break
+        summary = f"COB_CURRENT_DATE={value!r}: {status}"
+        if started:
+            summary += f", stdout {output.strip()!r}"
+        if errors.strip():
+            summary += f", stderr {errors.strip()!r}"
+        seen.append(summary)
+    # The workspace is renamed when complete or failed, so the log names it <build>.
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("\n".join([*blocks, ""]).replace(str(directory), "<build>"), encoding="utf-8")
+    if found is not None:
+        return found
+    reason = (
+        "libcob does not report the hundredths of COB_CURRENT_DATE in either form, so runs "
+        "cannot be made reproducible"
+        if completed_every_run
+        else "it did not complete in every COB_CURRENT_DATE form, so how libcob reads the "
+        "fraction is unknown"
     )
+    detail = f"{reason}: {'; '.join(seen)}".replace(str(directory), "<build>")
+    raise _ProbeFailure(_CLOCK_PROGRAM, log.relative_to(directory).as_posix(), detail)
 
 
 def _remove_tree(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
+
+
+@contextmanager
+def _key_lock(build_root: Path, key: str) -> Iterator[None]:
+    """Hold the exclusive lock of one build key, ``<build root>/<key>.lock``.
+
+    ``fcntl.flock`` locks an open file description, so the lock excludes other
+    processes and other threads alike, and the kernel releases it when its
+    holder exits, however it ends. The lock file is never deleted: removing it
+    would let two sessions lock two different files of the same name."""
+    path = build_root / f"{key}{_LOCK_SUFFIX}"
+    try:
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o666)
+    except OSError as exc:
+        raise BuildError(f"cannot open the build lock {path}: {exc}") from None
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as exc:
+            raise BuildError(f"cannot lock the build lock {path}: {exc}") from None
+        yield
+    finally:
+        os.close(descriptor)
 
 
 def _set_aside(directory: Path, target: Path) -> Path:
@@ -1353,7 +1467,8 @@ def _set_aside(directory: Path, target: Path) -> Path:
 
 def _publish(workspace: Path, final: Path) -> None:
     """Rename a finished workspace to its final name. When another session
-    published the same name first, its copy is used and this one dropped."""
+    published the same name first, its copy is used and this one dropped.
+    The caller holds the key lock."""
     try:
         os.replace(workspace, final)
     except OSError as exc:
@@ -1363,13 +1478,11 @@ def _publish(workspace: Path, final: Path) -> None:
 
 
 def _build_failure(failure: _CompileFailure, workspace: Path, target: Path) -> BuildError:
+    """Keep the failed ``workspace`` as ``target`` and return the error naming
+    the failed unit or probe and its log there. The caller holds the key lock."""
     kept = _set_aside(workspace, target)
     log = kept / failure.log
-    return BuildError(
-        f"cannot compile {failure.unit}: {failure.detail}; log {log}",
-        unit=failure.unit,
-        log_path=log,
-    )
+    return BuildError(failure.message(log), unit=failure.unit, log_path=log)
 
 
 def _populate(
@@ -1404,7 +1517,9 @@ def _populate(
 def _complete_mode(directory: Path, key: str) -> str | None:
     """The clock fraction mode of a finished build directory, or ``None`` when
     there is none. A directory that is unfinished or whose manifest does not
-    match is removed, so it gets rebuilt."""
+    match is removed, so it gets rebuilt. The caller holds the key lock, so no
+    other session publishes the directory between the inspection and the
+    removal."""
     if not directory.exists():
         return None
     try:
@@ -1521,11 +1636,20 @@ class BuildCache:
             (workspace / _COMPLETE).write_text("", encoding="utf-8")
         except _CompileFailure as failure:
             target = directory.with_name(f"{profile.name}.failed")
-            raise _build_failure(failure, workspace, target) from None
+            with _key_lock(self.dir.parent, self.key):
+                error = _build_failure(failure, workspace, target)
+            raise error from None
         except BaseException:
             _remove_tree(workspace)
             raise
-        _publish(workspace, directory)
+        # The compiles ran unlocked; only the rename is serialized, so the first
+        # session to publish the profile wins and the others use its copy.
+        try:
+            with _key_lock(self.dir.parent, self.key):
+                _publish(workspace, directory)
+        except BaseException:
+            _remove_tree(workspace)  # a no-op once the workspace is published
+            raise
 
 
 _CACHES: dict[tuple[str, str], BuildCache] = {}
@@ -1555,18 +1679,28 @@ def ensure_built(repo_root: Path | str, work_root: Path | str) -> BuildCache:
         build_root = work / _BUILD_SUBDIR
         build_root.mkdir(parents=True, exist_ok=True)
         final = build_root / key
-        mode = _complete_mode(final, key)
+        with _key_lock(build_root, key):
+            mode = _complete_mode(final, key)
         if mode is None:
+            # The compiles run unlocked in a private workspace, so concurrent
+            # sessions build side by side and the first to publish wins.
             workspace = Path(tempfile.mkdtemp(prefix=f".{key[:16]}-", dir=build_root))
             try:
                 _populate(workspace, key, plan, toolchain, root)
             except _CompileFailure as failure:
-                raise _build_failure(failure, workspace, build_root / f"{key}.failed") from None
+                with _key_lock(build_root, key):
+                    error = _build_failure(failure, workspace, build_root / f"{key}.failed")
+                raise error from None
             except BaseException:
                 _remove_tree(workspace)
                 raise
-            _publish(workspace, final)
-            mode = _complete_mode(final, key)
+            try:
+                with _key_lock(build_root, key):
+                    _publish(workspace, final)
+                    mode = _complete_mode(final, key)
+            except BaseException:
+                _remove_tree(workspace)  # a no-op once the workspace is published
+                raise
             if mode is None:
                 raise BuildError(f"the build directory {final} is incomplete after publishing")
         cache = BuildCache(

@@ -13,7 +13,7 @@
 # The program's only SET of DID-NOT-FIND-CUST-IN-CUSTDAT is commented out
 # [app/cbl/COACTVWC.cbl:842], and the condition is only tested
 # [app/cbl/COACTVWC.cbl:713], so its text cannot reach the screen. That is the
-# observed-only behaviour pinned here; GAP-UNC-013 asks what this never-executed
+# observed-only behaviour pinned here; GAP-UNC-014 asks what this never-shown
 # message code is for. The NOTFND branch instead composes 'CustId:... not found
 # in customer master.Resp: <RESP> REAS:<RESP2>' with STRING into the 75-byte
 # WS-RETURN-MSG [app/cbl/COACTVWC.cbl:839-857]. ERROR-RESP and ERROR-RESP2 are
@@ -63,7 +63,7 @@ tags:
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-- GAP-UNC-013  # purpose of message code that never executes (the commented-out SET)
+- GAP-UNC-014  # purpose of message code that never reaches the screen (the commented-out SET)
 # Not in the planned gap list. The UniKix COACTVW.bms lacks the unnamed field
 # at row 1, columns 1-9, of the map this scenario asserts, and scenarios cite
 # each place where the deployed UniKix copy differs from app/.
