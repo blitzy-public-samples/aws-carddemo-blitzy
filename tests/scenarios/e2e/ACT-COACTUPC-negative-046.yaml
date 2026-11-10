@@ -1,53 +1,45 @@
-# COACTUPC refuses a reissue month that is not a number: the TEST-NUMVAL
-# predicate of EDIT-MONTH, which COACTUPC copies from CSUTLDPY, for the Reissue
-# Date field [app/cpy/CSUTLDPY.cpy:91-147] [app/cbl/COACTUPC.cbl:1503-1507].
+# COACTUPC refuses a reissue month outside 1-12: the "month 1-12" predicate of
+# EDIT-MONTH, which the procedure copybook CSUTLDPY contributes, for the
+# Reissue Date field [app/cpy/CSUTLDPY.cpy:91-147].
 #
 # Steps 1-3 sign on as USER0001, choose main-menu option 2 and fetch account
 # 00000000001, as ACT-COACTUPC-alternate-04 does: CXACAIX gives customer
-# 000000001 (card 9680294154603697, line 49 of app/data/ASCII/cardxref.txt),
-# ACCTDAT and CUSTDAT are read without UPDATE, and 3202-SHOW-ORIGINAL-VALUES
-# shows the records with 'Update account details presented above.'; every
-# editable field is DFHBMFSE (unprotected, MDT on), so all of them come back
-# on the next AID [app/cbl/COACTUPC.cbl:2568-2580,2787-2865,3500-3561,3608-3884].
-# Step 4 types 1A over the reissue month and presses ENTER.
-# - 1100-RECEIVE-MAP moves the 1A to ACUP-NEW-REISSUE-MON. RISMON fills its two
-#   positions, so JUSTIFY=(RIGHT) pads nothing [app/cbl/COACTUPC.cbl:1197-1202]
-#   [app/bms/COACTUP.bms:188-192].
-# - 1205-COMPARE-OLD-NEW finds the reissue date changed from 20250520, so
-#   1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the field edits in
-#   screen order [app/cbl/COACTUPC.cbl:1460-1476,1681-1705].
-# - Account Status, Open Date, Credit Limit, Expiry Date and Cash Credit Limit
-#   pass on the fetched values. Reissue Date moves 'Reissue Date' to
-#   WS-EDIT-VARIABLE-NAME and runs EDIT-DATE-CCYYMMDD through its exit: the
-#   year 2025 passes EDIT-YEAR-CCYY [app/cbl/COACTUPC.cbl:1472-1507]
-#   [app/cpy/CSUTLDPY.cpy:18-90].
-# - EDIT-MONTH: 1A is not blank. WS-VALID-MONTH (VALUES 1 THROUGH 12) tests
-#   the PIC 9(2) WS-EDIT-DATE-MM-N that redefines the month, and 1A (x'F1C1')
-#   reads as 11, whether packed (digits 1 and 1, sign C) or compared as
-#   characters (between '01' and '12'), so that test passes
-#   [app/cpy/CSUTLDWY.cpy:16-20]. FUNCTION TEST-NUMVAL(1A) is not 0, so the
-#   ELSE sets INPUT-ERROR and FLG-MONTH-NOT-OK and, the message being still
-#   off, STRINGs the trimmed field name and ': Month must be a number between
-#   1 and 12.' into WS-RETURN-MSG [app/cpy/CSUTLDPY.cpy:110-138].
-# - EDIT-DAY passes 20; EDIT-DAY-MONTH-YEAR finds no 31st, 30th or 29th, and
-#   with the month flag set the date is not valid, so EDIT-DATE-LE (the
-#   CSUTLDTC call) is skipped [app/cpy/CSUTLDPY.cpy:150-282]. Every later edit
-#   passes on the invented customer below, and an edit writes its message only
-#   while WS-RETURN-MSG-OFF holds, so this message stays.
+# 000000001, ACCTDAT and CUSTDAT are read without UPDATE, and
+# 3202-SHOW-ORIGINAL-VALUES shows the records with 'Update account details
+# presented above.'; every editable field is DFHBMFSE (unprotected, MDT on), so
+# all of them come back on the next AID [app/cbl/COACTUPC.cbl:2568-2580,
+# 2787-2865,3500-3561,3608-3884]. Step 4 types 16 over the reissue month (05)
+# and presses ENTER.
+# - 1100-RECEIVE-MAP moves 16, being neither '*' nor spaces, to
+#   ACUP-NEW-REISSUE-MON [app/cbl/COACTUPC.cbl:1197-1202].
+# - 1205-COMPARE-OLD-NEW finds the new reissue date 20251620 different from
+#   the fetched 20250520, so 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and
+#   runs the field edits in screen order [app/cbl/COACTUPC.cbl:1460-1507,
+#   1681-1705].
+# - Account Status (Y), Open Date (2014-11-20), Credit Limit, Expiry Date
+#   (2025-05-20) and Cash Credit Limit are as fetched and pass.
+# - Reissue Date is next: 'Reissue Date' goes to WS-EDIT-VARIABLE-NAME and
+#   20251620 to WS-EDIT-DATE-CCYYMMDD, and EDIT-DATE-CCYYMMDD runs through
+#   CSUTLDPY [app/cbl/COACTUPC.cbl:1503-1507]. EDIT-YEAR-CCYY accepts 2025
+#   (century 20). EDIT-MONTH finds 16 supplied, but WS-EDIT-DATE-MM-N 16 is
+#   outside WS-VALID-MONTH (1 through 12) [app/cpy/CSUTLDWY.cpy:16-20], so it
+#   sets INPUT-ERROR and FLG-MONTH-NOT-OK and, the message being still off,
+#   STRINGs the trimmed field name and ': Month must be a number between 1 and
+#   12.' into WS-RETURN-MSG [app/cpy/CSUTLDPY.cpy:110-124]. The numeric
+#   predicate after it is skipped by the GO TO; EDIT-DAY accepts 20, and
+#   EDIT-DAY-MONTH-YEAR leaves for the exit because the date flags are not all
+#   valid, so CSUTLDTC is not called [app/cpy/CSUTLDPY.cpy:150-282].
+# - Every later edit passes on the invented customer below, and an edit writes
+#   its message only while WS-RETURN-MSG-OFF holds, so this message stays.
 # - INPUT-ERROR leaves ACUP-CHANGES-NOT-OK, which 2000-DECIDE-ACTION only
 #   continues on: no READ UPDATE or REWRITE runs [app/cbl/COACTUPC.cbl:2596-2597].
-# - 3203-SHOW-UPDATED-VALUES shows the received values, 1A included, with the
-#   valid amounts re-edited through +ZZZ,ZZZ,ZZZ.99; 3250-SETUP-INFOMSG sets
+# - 3203-SHOW-UPDATED-VALUES shows the received values, 16 included, with the
+#   amounts re-edited through +ZZZ,ZZZ,ZZZ.99; 3250-SETUP-INFOMSG sets
 #   PROMPT-FOR-CHANGES and moves WS-RETURN-MSG to ERRMSG; 3300 keeps the
-#   fields editable, CSSETATY turns RISMON red and the cursor goes to it; 3390
-#   makes F12=Cancel bright, while F5=Save stays dark without a confirmation
-#   prompt [app/cbl/COACTUPC.cbl:2870-2951,2964-2981,3057-3059,3566-3581].
-#
-# The input is 1A, not C1: C1 (x'C3F1') reads as 31, or sorts below '01' as
-# characters, so it fails WS-VALID-MONTH first and is refused by the month
-# 1-12 predicate (INV-ACT-104, CSUTLDPY lines 117-121) without reaching the
-# numeric predicate this scenario verifies. Both predicates compose the same
-# text, so the asserted message is the same either way.
+#   fields editable and CSSETATY turns RISMON red (no '*', the field is not
+#   blank); 3390 makes F12=Cancel bright, while F5=Save stays dark without a
+#   confirmation prompt [app/cbl/COACTUPC.cbl:2870-2951,2964-2981,2986-3006,
+#   3269-3270,3566-3581] [app/cpy/CSSETATY.cpy].
 #
 # Expected values are derived from the source (no TPE region runs in CI):
 # - ERRMSG is 'Reissue Date' (the trimmed X(25) WS-EDIT-VARIABLE-NAME) and
@@ -55,8 +47,8 @@
 #   75-byte WS-RETURN-MSG and the 78-byte ERRMSGO.
 # - Screen fields are compared at their full BMS length, trailing spaces kept.
 #   FKEY05 is dark (ASKIP,DRK) and the s3270 capture renders it as blanks.
-# - The tpe adapter enters a field with EraseEOF before typing. No upper-case
-#   translation of input is assumed: CARDDEMO.CSD defines none for CAUP.
+# - The tpe adapter enters a field with EraseEOF before typing; 16 fills the
+#   2-byte RISMON.
 # - CURDATE and CURTIME come from the region clock, hence the matchers and
 #   clock_mode relative.
 #
@@ -72,18 +64,18 @@ type: negative
 description: >-
   USER0001 signs on, chooses main-menu option 2 (Account Update), fetches
   account 00000000001 with its customer 000000001, changes the reissue month
-  from 05 to 1A and presses ENTER. COACTUPC refuses the value: the message
-  line shows 'Reissue Date: Month must be a number between 1 and 12.', the
-  screen keeps the entered values, 1A included, editable under 'Update
-  account details presented above.', and F12=Cancel is shown while F5=Save is
-  not. Nothing is saved: ACCTDATA and CUSTDATA still hold the fetched records.
+  from 05 to 16 and presses ENTER. COACTUPC refuses the value: the message line
+  shows 'Reissue Date: Month must be a number between 1 and 12.', the screen
+  keeps the entered values, 16 included, editable under 'Update account
+  details presented above.', and F12=Cancel is shown while F5=Save is not.
+  Nothing is saved: ACCTDATA and CUSTDATA still hold the fetched records.
 # Primary item first, then the program, the maps asserted, the transaction of
 # steps 3 and 4, the CSD files COACTUPC reads, and the online-only copybooks it
 # copies. Sign-on (CC00, COSGN00, USRSEC) and the menu transaction are
 # verified by the SEC and MNU scenarios; the batch record copybooks and the
 # data files are verified at the lowest level that executes them.
 inventory_ids:
-- INV-ACT-105  # COACTUPC Reissue Date: month numeric (EDIT-MONTH TEST-NUMVAL edit)
+- INV-ACT-104  # COACTUPC Reissue Date: month 1-12 (EDIT-MONTH field edit)
 - INV-ACT-002  # COACTUPC program
 - INV-MNU-003  # COMEN01 map, where option 2 is entered
 - INV-ACT-004  # COACTUP map, the search, detail and refused-change screens
@@ -99,22 +91,24 @@ inventory_ids:
 - INV-LAY-009  # CSMSG02Y: abend data, copied by COACTUPC
 - INV-LAY-010  # CSSETATY: the error attribute set on RISMON
 - INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
-- INV-LAY-013  # CSUTLDPY: EDIT-MONTH, the refusing edit
-- INV-LAY-014  # CSUTLDWY: WS-EDIT-DATE-MM and its WS-VALID-MONTH redefinition
+- INV-LAY-013  # CSUTLDPY: EDIT-MONTH, which refuses the reissue month
+- INV-LAY-014  # CSUTLDWY: WS-EDIT-DATE-MM-N and its WS-VALID-MONTH range
 - INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
 tags:
 - inferred-not-observed
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-# The UniKix CSUTLDPY tests the month with IS NUMERIC instead of TEST-NUMVAL
-# and drops FUNCTION TRIM from the field name, so the ERRMSG of screen 4
-# differs on UniKix.
+# The UniKix CSUTLDPY drops FUNCTION TRIM from the field name of every composed
+# date-edit message, so the ERRMSG of screen 4 differs on UniKix.
 - GAP-DOC-024
-# The UniKix COACTUPC comments out the amount checks of 1250-EDIT-SIGNED-9V2,
-# whose flags decide how screen 4 shows the amounts.
+# The UniKix COACTUPC comments out the TEST-NUMVAL-C checks of the amounts that
+# 1100-RECEIVE-MAP converts and the ' is not valid' amount edit, and drops TRIM
+# from the change detection, all on this path, so the amounts on screen 4 may
+# differ on UniKix [app/cbl/COACTUPC.cbl:1072-1110,1681-1705,2180-2221].
 - GAP-DOC-022
-# The UniKix COACTUP.bms differs at row 1, columns 1-9, where TRNNAME stands.
+# The UniKix COACTUP.bms differs at row 1, columns 1-9, where TRNNAME stands;
+# the COACTUP map is asserted on screens 2 to 4.
 - GAP-DOC-025
 preconditions:
   datasets:
@@ -164,11 +158,10 @@ inputs:
     '@map': COACTUP
     fields:
       ACCTSID: '00000000001'
-  # 1A, not C1: C1 fails the month 1-12 check first (see the header).
   - aid: ENTER
     '@map': COACTUP
     fields:
-      RISMON: '1A'
+      RISMON: '16'
 expected:
   screens:
   # One entry per step, each the screen the step ends on.
@@ -239,7 +232,7 @@ expected:
     FKEYS: 'ENTER=Process F3=Exit'
     FKEY05: '       '
     FKEY12: '          '
-  # The refused change: the entered 1A kept, every field still editable, the
+  # The refused change: the entered 16 kept, every field still editable, the
   # change prompt again and the Reissue Date month message; F12=Cancel shown,
   # F5=Save dark.
   - '@map': COACTUP
@@ -260,7 +253,7 @@ expected:
     EXPDAY: '20'
     ACSHLIM: '+      1,020.00'
     RISYEAR: '2025'
-    RISMON: '1A'
+    RISMON: '16'
     RISDAY: '20'
     ACURBAL: '+        194.00'
     ACRCYCR: '+           .00'

@@ -1,108 +1,118 @@
-# COACTUPC refuses an expiry month outside 1-12: month 14 gives 'Expiry Date:
-# Month must be a number between 1 and 12.' and nothing is written.
+# COACTUPC refuses an Expiry Date month that is not a number: '1A' typed over
+# the fetched month gives 'Expiry Date: Month must be a number between 1 and 12.'
+# and nothing is rewritten.
 #
-# Steps 1-3 sign on, choose Account Update and fetch account 00000000001 as
-# ACT-COACTUPC-alternate-04 does: CXACAIX gives card 9680294154603697 and
-# customer 000000001 (line 49 of app/data/ASCII/cardxref.txt), ACCTDAT and
-# CUSTDAT are read without UPDATE, and 3320-UNPROTECT-FEW-ATTRS gives every
-# editable field DFHBMFSE, so all of them come back on the next AID
-# [app/cbl/COACTUPC.cbl:2568-2580,3500-3561,3608-3884].
-# Step 4 types 14 over the expiry month and presses ENTER. 1100-RECEIVE-MAP
-# moves it to ACUP-NEW-EXP-MON, 1205-COMPARE-OLD-NEW finds the change, and
-# 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the edits in field
-# order [app/cbl/COACTUPC.cbl:1174-1179,1429-1495,1683-1777]. Account Status,
-# Open Date and Credit Limit pass with the fetched values. For 'Expiry Date'
-# EDIT-DATE-CCYYMMDD accepts the year 2025; EDIT-MONTH finds the month
-# supplied but WS-VALID-MONTH (VALUES 1 THROUGH 12 on WS-EDIT-DATE-MM-N) false,
-# sets INPUT-ERROR and FLG-MONTH-NOT-OK and, with WS-RETURN-MSG still blank,
-# STRINGs the trimmed field name and ': Month must be a number between 1 and
-# 12.' into it [app/cpy/CSUTLDPY.cpy:91-124] [app/cpy/CSUTLDWY.cpy:17-20].
-# EDIT-DAY accepts 20, and EDIT-DAY-MONTH-YEAR leaves for
-# EDIT-DATE-CCYYMMDD-EXIT because the date flags are not all valid, so
-# EDIT-DATE-LE never calls CSUTLDTC [app/cpy/CSUTLDPY.cpy:150-279,329].
-# Every later edit passes with the invented customer below, and each composes
-# a message only while WS-RETURN-MSG is blank, so this one stays.
-# INPUT-ERROR keeps ACUP-CHANGES-NOT-OK, on which 2000-DECIDE-ACTION only
-# continues: 9600-WRITE-PROCESSING, the sole READ UPDATE and REWRITE path, does
-# not run [app/cbl/COACTUPC.cbl:1670-1674,2596-2597]. 3203-SHOW-UPDATED-VALUES
-# shows the received values, the valid amounts re-edited through
-# +ZZZ,ZZZ,ZZZ.99, and EXPMON as typed; 3250-SETUP-INFOMSG sets
-# PROMPT-FOR-CHANGES; 3320 leaves the fields editable; CSSETATY only colours
-# EXPMON red; 3390 makes F12=Cancel bright (ACUP-CHANGES-MADE) and leaves
-# F5=Save dark, since no confirmation is prompted
-# [app/cbl/COACTUPC.cbl:2718-2720,2870-2951,2955-2982,2992-3000,3566-3581].
+# Step 1: USER0001 signs on through CC00; COSGN00C routes the type 'U' user to
+# the main menu COMEN01 [app/cbl/COSGN00C.cbl:221-237].
+# Step 2: option '2' (Account Update) makes COMEN01C XCTL to COACTUPC, which
+# takes its fresh-entry path and sends COACTUP with the search-key prompt
+# [app/cbl/COMEN01C.cbl:115-156] [app/cbl/COACTUPC.cbl:964-973,2955-2961].
+# Step 3: ENTER with account 00000000001. 9000-READ-ACCT reads CXACAIX (card
+# 9680294154603697, customer 000000001), ACCTDAT and CUSTDAT, keeps the values
+# in ACUP-OLD-DETAILS and sets ACUP-SHOW-DETAILS; 3202-SHOW-ORIGINAL-VALUES
+# fills the map, the fetched expiry month is '05', and 3320-UNPROTECT-FEW-ATTRS
+# turns every input field's MDT on [app/cbl/COACTUPC.cbl:2568-2580,2787-2865,
+# 3441-3562,3608-3884].
+# Step 4: ENTER with EXPMON '1A'. 1100-RECEIVE-MAP rebuilds ACUP-NEW-DETAILS
+# from the returned fields and 1205-COMPARE-OLD-NEW finds the month changed, so
+# 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and edits in field order
+# [app/cbl/COACTUPC.cbl:1039-1425,1452-1494]. Account Status, Open Date and
+# Credit Limit pass with the fetched values. 'Expiry Date' goes to
+# WS-EDIT-VARIABLE-NAME and 20251A20 to WS-EDIT-DATE-CCYYMMDD; EDIT-YEAR-CCYY
+# accepts 2025. EDIT-MONTH first tests WS-VALID-MONTH, an 88-level 1 THROUGH 12
+# on the PIC 9(2) redefinition of the month, then FUNCTION TEST-NUMVAL of the
+# text [app/cpy/CSUTLDPY.cpy:91-147] [app/cpy/CSUTLDWY.cpy:16-20]. The numeric
+# value of '1A' is 11 whether the compare uses the digit nibbles (PACK gives
+# +11) or the bytes (x'F1C1' lies between '01' and '12'), so the range test
+# passes, and TEST-NUMVAL('1A') is not 0: this is the month-numeric branch,
+# which composes FUNCTION TRIM(WS-EDIT-VARIABLE-NAME) and ': Month must be a
+# number between 1 and 12.' into the empty WS-RETURN-MSG
+# [app/cpy/CSUTLDPY.cpy:126-141]. Day 20 passes; EDIT-DAY-MONTH-YEAR leaves the
+# routine because the month flag is not valid, so CSUTLDTC is not called for
+# this date [app/cpy/CSUTLDPY.cpy:150-279]. The later edits all pass for this
+# customer and leave the message unchanged, because each composes only while
+# WS-RETURN-MSG is empty. 2000-DECIDE-ACTION continues on ACUP-CHANGES-NOT-OK
+# [app/cbl/COACTUPC.cbl:2596-2597], 3203-SHOW-UPDATED-VALUES echoes the received
+# values, 3250-SETUP-INFOMSG gives PROMPT-FOR-CHANGES, and 3390 makes F12=Cancel
+# bright while F5=Save stays dark [app/cbl/COACTUPC.cbl:2870-2981,3566-3581].
+# No READ UPDATE or REWRITE runs on this path.
 #
-# Expected values are derived from the source (no TPE region runs in CI):
-# - ERRMSG is the 53-character message in the 75-byte WS-RETURN-MSG, padded to
-#   the 78-byte ERRMSGO; INFOMSG is the 40-byte WS-INFO-MSG in the 45-byte
-#   INFOMSGO. Fields are compared at their full BMS length, trailing spaces
-#   kept.
-# - FKEY05 is dark (ASKIP,DRK in the map) and the s3270 capture renders a
-#   zero-intensity field as blanks; FKEY12 shows its INITIAL text.
-# - CURDATE and CURTIME come from the region clock, hence the matchers and
-#   clock_mode relative.
-#
-# Customer 000000001 is replaced by invented data that passes every COACTUPC
-# edit, so the expiry month is the only field refused: the repository record
-# has FICO 274 and zip 12546, which the FICO and state/zip edits would refuse
-# [app/cbl/COACTUPC.cbl:2514-2558]. Area code 919 and the NC/27 pair are valid
-# [app/cpy/CSLKPCDY.cpy:521,895,1186].
+# Expected values are derived from the source; no TPE region runs in CI.
+# - Text values are whole fields at their BMS length with trailing spaces:
+#   ERRMSG is the 75-byte WS-RETURN-MSG padded to 78, INFOMSG the 40-byte
+#   WS-INFO-MSG padded to 45 [app/cbl/COACTUPC.cbl:462-480,2979-2981].
+# - Amounts are shown through WS-EDIT-CURRENCY-9-2-F, PIC +ZZZ,ZZZ,ZZZ.99, once
+#   their edit has passed [app/cbl/COACTUPC.cbl:370-371,2874-2909].
+# - AADDGRP shows ACCT-GROUP-ID, blank in every repository account
+#   (GAP-DEF-005): the blank returned field becomes LOW-VALUES, sent as nulls
+#   and shown as spaces [app/cbl/COACTUPC.cbl:1213-1218,2921].
+# - The header is 3100-SCREEN-INIT's: the COTTL01Y titles, CAUP, COACTUPC and
+#   CURDATE mm/dd/yy and CURTIME hh:mm:ss of the region clock through CSDAT01Y,
+#   hence the matchers and clock_mode relative [app/cbl/COACTUPC.cbl:2668-2692].
 id: ACT-COACTUPC-negative-032
 level: e2e
 type: negative
 description: >-
-  USER0001 signs on, chooses main-menu option 2 (Account Update), fetches
-  account 00000000001 with its customer 000000001, changes the expiry month
-  from 05 to 14 and presses ENTER. COACTUPC refuses the month: the screen keeps
-  the entered values, still editable, with 'Expiry Date: Month must be a
-  number between 1 and 12.' in the message line, the prompt 'Update account
-  details presented above.' and F12=Cancel shown. Nothing is saved: ACCTDATA
-  and CUSTDATA still hold the fetched records.
-# Primary item first, then the program, the maps asserted, the transaction of
-# steps 3 and 4, the CSD files COACTUPC reads, and the online-only copybooks it
-# copies. The prompt message (INV-ACT-030) is asserted but verified by its own
-# scenario; sign-on (CC00, COSGN00, USRSEC) and the menu transaction are
-# verified by the SEC and MNU scenarios; the batch record copybooks and the
+  USER0001 signs on, chooses main menu option 2 'Account Update', fetches
+  account 00000000001 and types '1A' over the expiry month 05. COACTUPC finds
+  the month not numeric and keeps the update screen with the values entered,
+  the prompt 'Update account details presented above.' and the message
+  'Expiry Date: Month must be a number between 1 and 12.'; ACCTDAT and CUSTDAT
+  are not updated.
+# Primary item first, then the program, the maps the steps enter on and land
+# on, the transaction the fetch and the edit run under, the CSD files the fetch
+# reads, and the online-only copybooks COACTUPC copies. The sign-on items are
+# verified by the SEC-COSGN00C scenarios; the batch record copybooks and the
 # data files are verified at the lowest level that executes them.
 inventory_ids:
-- INV-ACT-089  # COACTUPC Expiry Date: month 1-12 (field edit, rule)
+- INV-ACT-090  # COACTUPC Expiry Date: month numeric (rule)
 - INV-ACT-002  # COACTUPC program
-- INV-MNU-003  # COMEN01 map, where option 2 is entered
-- INV-ACT-004  # COACTUP map, the search, detail and refused-edit screens
-- INV-CFG-009  # CAUP transaction, which runs the fetch and the edits
-- INV-CFG-006  # CXACAIX CSD file: card cross-reference by account id
-- INV-CFG-001  # ACCTDAT CSD file: account master read
-- INV-CFG-005  # CUSTDAT CSD file: customer master read
-- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and ids
-- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
-- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
-- INV-LAY-007  # CSLKPCDY: the area-code and state/zip lookups the later edits pass
-- INV-LAY-008  # CSMSG01Y, copied by COACTUPC
-- INV-LAY-009  # CSMSG02Y: abend data, copied by COACTUPC
-- INV-LAY-010  # CSSETATY: the error attribute of the refused month
-- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
-- INV-LAY-013  # CSUTLDPY: EDIT-MONTH, which refuses the month
-- INV-LAY-014  # CSUTLDWY: WS-EDIT-DATE-MM-N and its WS-VALID-MONTH condition
-- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+- INV-MNU-003  # COMEN01 map, the screen option 2 is entered on
+- INV-ACT-004  # COACTUP map, the account update screen of steps 2-4
+- INV-CFG-009  # CAUP transaction, under which the fetch and the edit run
+- INV-CFG-006  # CXACAIX CSD file, the cross-reference path read by account id
+- INV-CFG-001  # ACCTDAT CSD file, read by the fetch and left unchanged
+- INV-CFG-005  # CUSTDAT CSD file, read by the fetch and left unchanged
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the fetched values between steps
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COACTUPC
+- INV-LAY-007  # CSLKPCDY copybook, the phone area code and state tables of the later edits
+- INV-LAY-009  # CSMSG02Y copybook, the abend data COACTUPC copies
+- INV-LAY-010  # CSSETATY copybook, the field attribute setting of 3300
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping that turns ENTER into CCARD-AID-ENTER
+- INV-LAY-013  # CSUTLDPY copybook, EDIT-MONTH and its month-numeric message
+- INV-LAY-014  # CSUTLDWY copybook, WS-EDIT-DATE-MM and WS-VALID-MONTH
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID and the AID flags
 tags:
 - inferred-not-observed
 gap_ids:
-- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-# The UniKix CSUTLDPY drops FUNCTION TRIM from the field name of every composed
-# date-edit message, so the ERRMSG of screen 4 differs on UniKix.
+# The UniKix CSUTLDPY tests the month with IS NUMERIC instead of TEST-NUMVAL and
+# drops FUNCTION TRIM from the field name of the composed message, so a unikix
+# run never verifies this item while that entry is open.
 - GAP-DOC-024
-# The UniKix COACTUPC comments out the amount checks this path runs and drops
-# TRIM from its change detection, so the amounts on screen 4 may differ.
+# Not in the planned gap list. The Open Date edit runs before Expiry Date and
+# calls CSUTLDTC, so the expected message rests on CEEDAYS accepting 20141120
+# (GAP-INF-001); the UniKix copy changes code step 4 passes through: CSUTLDTC's
+# Vstring lengths for that call (GAP-DOC-021), COACTUPC's amount receive,
+# change detection and Credit Limit edit (GAP-DOC-022), and COACTUP's row 1,
+# where TRNNAME is asserted (GAP-DOC-025).
+- GAP-INF-001
+- GAP-DOC-021
 - GAP-DOC-022
-# The UniKix COACTUP.bms differs at row 1, columns 1-9, where TRNNAME stands.
 - GAP-DOC-025
 preconditions:
   datasets:
+    # The 10 repository users, for the USER0001 sign-on.
+    USRSEC: {base: USRSEC}
+    # Account 00000000001 and its cross-reference record (card 9680294154603697,
+    # customer 000000001, read through the CXACAIX path) as in the repository.
     ACCTDATA: {base: ACCTDATA}
     CARDXREF: {base: CARDXREF}
-    # Customer 000000001 replaced by invented data, as in the other COACTUPC
-    # scenarios; the 168-byte FILLER keeps the repository record's spaces.
+    # Customer 000000001 replaced by invented values that pass every edit of
+    # 1200-EDIT-MAP-INPUTS, so the Expiry Date month is the only field refused.
     CUSTDATA:
       base: CUSTDATA
       records:
@@ -116,28 +126,39 @@ preconditions:
         CUST-ADDR-STATE-CD: NC
         CUST-ADDR-COUNTRY-CD: USA
         CUST-ADDR-ZIP: '27601'
-        CUST-PHONE-NUM-1: (919)555-0101
-        CUST-PHONE-NUM-2: (919)555-0102
+        CUST-PHONE-NUM-1: '(919)555-0101'
+        CUST-PHONE-NUM-2: '(919)555-0102'
         CUST-SSN: '123456789'
         CUST-GOVT-ISSUED-ID: TESTGOVT0001
         CUST-DOB-YYYY-MM-DD: '1961-06-08'
         CUST-EFT-ACCOUNT-ID: '0053581756'
-        CUST-PRI-CARD-HOLDER-IND: Y
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
         CUST-FICO-CREDIT-SCORE: '700'
-    USRSEC: {base: USRSEC}
   parameters:
     clock_mode: relative
   faults: []
 # PASSWORD is the documented demo password of README.md, not a secret.
 inputs:
   steps:
-  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
-  - {aid: ENTER, fields: {OPTION: '2'}, '@map': COMEN01}
-  - {aid: ENTER, fields: {ACCTSID: '00000000001'}, '@map': COACTUP}
-  - {aid: ENTER, fields: {EXPMON: '14'}, '@map': COACTUP}
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000001'}
+    '@map': COACTUP
+  # '1A', not a value such as 'B5': 'B5' is 25 as a number, so the range test
+  # before TEST-NUMVAL would refuse it and the month-numeric branch would never
+  # run. Both branches show the same text, so only the input decides which
+  # predicate the scenario verifies.
+  - aid: ENTER
+    fields: {EXPMON: '1A'}
+    '@map': COACTUP
 expected:
   screens:
-  # One entry per step, each the screen the step ends on.
   - '@map': COMEN01
     TRNNAME: CM00
     PGMNAME: COMEN01C
@@ -149,64 +170,18 @@ expected:
     ACCTSID: '           '
     INFOMSG: 'Enter or update id of account to update      '
     ERRMSG: '                                                                              '
-  # The fetched account and customer, editable, with the change prompt.
   - '@map': COACTUP
     TRNNAME: CAUP
-    TITLE01: '      AWS Mainframe Modernization       '
-    CURDATE: {match: run-date, format: '%m/%d/%y'}
     PGMNAME: COACTUPC
-    TITLE02: '              CardDemo                  '
-    CURTIME: {match: run-time}
     ACCTSID: '00000000001'
-    ACSTTUS: 'Y'
-    OPNYEAR: '2014'
-    OPNMON: '11'
-    OPNDAY: '20'
-    ACRDLIM: '+      2,020.00'
     EXPYEAR: '2025'
     EXPMON: '05'
     EXPDAY: '20'
-    ACSHLIM: '+      1,020.00'
-    RISYEAR: '2025'
-    RISMON: '05'
-    RISDAY: '20'
-    ACURBAL: '+        194.00'
-    ACRCYCR: '+           .00'
-    AADDGRP: '          '
-    ACRCYDB: '+           .00'
     ACSTNUM: '000000001'
-    ACTSSN1: '123'
-    ACTSSN2: '45'
-    ACTSSN3: '6789'
-    DOBYEAR: '1961'
-    DOBMON: '06'
-    DOBDAY: '08'
-    ACSTFCO: '700'
     ACSFNAM: 'Testfirst                '
-    ACSMNAM: 'Testmiddle               '
-    ACSLNAM: 'Testlast                 '
-    ACSADL1: '100 Test Street                                   '
-    ACSSTTE: 'NC'
-    ACSADL2: 'Suite 1                                           '
-    ACSZIPC: '27601'
-    ACSCITY: 'Raleigh                                           '
-    ACSCTRY: 'USA'
-    ACSPH1A: '919'
-    ACSPH1B: '555'
-    ACSPH1C: '0101'
-    ACSGOVT: 'TESTGOVT0001        '
-    ACSPH2A: '919'
-    ACSPH2B: '555'
-    ACSPH2C: '0102'
-    ACSEFTC: '0053581756'
-    ACSPFLG: 'Y'
     INFOMSG: 'Update account details presented above.      '
     ERRMSG: '                                                                              '
-    FKEYS: 'ENTER=Process F3=Exit'
-    FKEY05: '       '
-    FKEY12: '          '
-  # The refused change: the received values, the month as typed, the change
-  # prompt kept, the month message, and F12=Cancel made visible.
+  # The values received, echoed with the month as typed, and the message.
   - '@map': COACTUP
     TRNNAME: CAUP
     TITLE01: '      AWS Mainframe Modernization       '
@@ -221,7 +196,7 @@ expected:
     OPNDAY: '20'
     ACRDLIM: '+      2,020.00'
     EXPYEAR: '2025'
-    EXPMON: '14'
+    EXPMON: '1A'
     EXPDAY: '20'
     ACSHLIM: '+      1,020.00'
     RISYEAR: '2025'
@@ -261,10 +236,18 @@ expected:
     ERRMSG: 'Expiry Date: Month must be a number between 1 and 12.                         '
     FKEYS: 'ENTER=Process F3=Exit'
     FKEY05: '       '
-    FKEY12: 'F12=Cancel'
-  # The refused edit writes nothing: both files keep their 50 records, and
-  # account 00000000001 keeps its expiry date 2025-05-20.
+    FKEY12: F12=Cancel
+  # One ERRMSG value per step: blank on the menu, the fresh and the fetched
+  # update screens, the month-numeric message after the edit.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - '                                                                              '
+  - 'Expiry Date: Month must be a number between 1 and 12.                         '
   file_state:
+    # Nothing is rewritten: account 00000000001 keeps its expiry date
+    # 2025-05-20, customer 000000001 the values loaded, and each dataset its 50
+    # records.
     ACCTDATA:
       count: 50
       contains:
@@ -278,6 +261,7 @@ expected:
         ACCT-REISSUE-DATE: '2025-05-20'
         ACCT-CURR-CYC-CREDIT: '0.00'
         ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: A000000000
         ACCT-GROUP-ID: '          '
     CUSTDATA:
       count: 50

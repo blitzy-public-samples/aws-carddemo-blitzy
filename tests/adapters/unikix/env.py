@@ -16,16 +16,27 @@ under GAP-MIS-009 and this module writes nothing.
     ``commands.yaml`` by id and nothing else. Each outcome follows the
     adapter's command rule: a missing capability (command ``null``, failed
     probe, non-zero exit, own ``timeout_s`` exceeded) is
-    ``AdapterUnavailable`` with the entry's gap, and expiry of the scenario
-    deadline is ``ScenarioTimeout``. ``CommandResult`` carries only the
-    return code and the output, so no application outcome is ever inferred
-    from a command failure.
+    ``AdapterUnavailable`` with the entry's gap while the scenario deadline
+    has not passed, and expiry of the deadline is ``ScenarioTimeout``. The
+    deadline takes precedence: it is checked again once a probe or command
+    has ended and been logged, so an outcome reached after it, failure or
+    success, is ``ScenarioTimeout``, with any superseded
+    ``AdapterUnavailable`` kept only as its cause and in the command log.
+    A command or ``cwd`` that uses ``$MBMSUB``, the BPE submission
+    directory, runs only while ``MBMSUB``, which only the deployment's
+    ``batchenv`` supplies, resolves (symlinks followed) inside the
+    deployment root; otherwise it is ``AdapterUnavailable`` too.
+    ``CommandResult`` carries only the return code and the output, so no
+    application outcome is ever inferred from a command failure.
 
 Probe results are cached per environment *generation*. ``load`` starts
 generation 0, and every ``source_runtime_scripts`` call, made once the
 deployment exists, starts the next one. Probes that test the deployed tree
 (``$MBMSUB``, ``$EBMHOME/batchenv``, ``$KIXSYS/unikixrc.cfg``) are therefore
 re-run against it instead of keeping the answer they gave before deployment.
+The ``$MBMSUB`` containment check is never cached: it is made on every probe
+and run, so a submission directory changed within a generation is seen at
+once.
 
 Every write stays inside the deployment root: the empty ``home/`` used as
 ``HOME``, ``logs/commands.log``, and unlinked spool files for command output.
@@ -49,7 +60,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, NoReturn
 
 _TESTS_ROOT = str(Path(__file__).resolve().parents[2])
 if _TESTS_ROOT not in sys.path:
@@ -253,12 +264,30 @@ def _settings(variables: Mapping[str, str]) -> dict[str, str]:
 
 
 def _inside(path: str | os.PathLike[str], root: Path) -> bool:
-    """Whether ``path`` resolves to ``root`` or below it."""
+    """Whether ``path`` resolves to ``root`` or below it. A path that cannot
+    be resolved, such as a symlink loop, is not."""
     try:
         Path(path).resolve().relative_to(root.resolve())
-    except ValueError:
+    except (ValueError, OSError, RuntimeError):
         return False
     return True
+
+
+def _mbmsub_refusal(value: str | None, root: str | os.PathLike[str] | None) -> str:
+    """Why ``value`` may not serve as ``MBMSUB``, the directory every BPE
+    submission runs in, or ``""`` when it may. It must be set, which only
+    the deployment's batchenv does, absolute, and resolve (symlinks
+    followed) to the deployment ``root`` or below it, so a submission never
+    reaches another node's BPE catalogs."""
+    if not value:
+        return "MBMSUB is not set: the deployment's batchenv has not exported it"
+    if not os.path.isabs(value):
+        return f"MBMSUB is not an absolute path: {value}"
+    if root is None:
+        return f"MBMSUB {value} cannot be checked: the environment names no deployment root"
+    if not _inside(value, Path(root)):
+        return f"MBMSUB {value} does not resolve to the deployment root {root} or below"
+    return ""
 
 
 def _derived(root: str, unikix: str, inherited_cobcpy: str) -> dict[str, str]:
@@ -302,11 +331,12 @@ class UniKixEnvironment:
     """The environment every UniKix command of one session runs with.
 
     ``vars`` is the complete environment passed to each command: what the
-    operator's file exported, with the deployment variables replaced by the
-    test-owned ones and, once the deployment exists, what ``userenv`` and
-    ``batchenv`` add. Each re-read of those scripts starts again from what
-    ``load`` produced, so repeated re-reads never accumulate. ``generation``
-    counts them (see the module docstring). Build it with ``load``."""
+    operator's file exported except ``MBMSUB``, with the deployment
+    variables replaced by the test-owned ones and, once the deployment
+    exists, what ``userenv`` and ``batchenv`` add. Each re-read of those
+    scripts starts again from what ``load`` produced, so repeated re-reads
+    never accumulate. ``generation`` counts them (see the module docstring).
+    Build it with ``load``."""
 
     def __init__(
         self,
@@ -390,6 +420,11 @@ class UniKixEnvironment:
         captured, sourcing_output = _source_env_file(env_file, home, root, source)
         inherited_cobcpy = captured.get("COBCPY", "")
         variables = _settings(captured)
+        # The BPE submission directory is the test node's, which only the
+        # deployment's batchenv supplies. A value the file exported, or left
+        # from a batchenv it sourced, names another node's directory, so
+        # MBMSUB stays unset until source_runtime_scripts brings it back.
+        variables.pop("MBMSUB", None)
         variables.update(_derived(str(root), variables.get("UNIKIX", ""), inherited_cobcpy))
         variables["HOME"] = str(home)
 
@@ -433,8 +468,12 @@ class UniKixEnvironment:
     @property
     def mbmsub(self) -> str | None:
         """The BPE submission directory ``batchenv`` exports, or ``None``
-        before it has been sourced."""
-        return self.vars.get("MBMSUB") or None
+        while it is unset (before batchenv has been sourced, or when it
+        exports none), is not an absolute path, or does not resolve, symlinks
+        followed, to the deployment root or below. ``CommandSet`` refuses
+        every command that uses ``$MBMSUB`` in the same cases."""
+        value = self.vars.get("MBMSUB")
+        return None if _mbmsub_refusal(value, self.deployment_root) else value
 
     def get(self, name: str, default: str | None = None) -> str | None:
         return self.vars.get(name, default)
@@ -476,7 +515,12 @@ class UniKixEnvironment:
         ``outside-deployment-root``. Raises ``AdapterUnavailable`` with
         GAP-MIS-003 when userenv fails, times out or moves a deployment path
         out of the deployment root, and with GAP-MIS-006 when batchenv
-        does."""
+        does. ``MBMSUB`` is kept as the scripts leave it and is not checked
+        here. ``CommandSet`` refuses each command that uses ``$MBMSUB``,
+        under that entry's own gap (GAP-MIS-006 for ``bpe_submit``,
+        GAP-MIS-007 for the dataset and catalog entries), while it does not
+        resolve inside the deployment root; the commands that do not use it
+        (region, listener, build) stay available."""
         start = dict(self._load_vars)
         start["COBCPY"] = self._load_inherited_cobcpy
         scripts = {
@@ -1344,6 +1388,37 @@ def _spool_dir(env: Any) -> Path:
     return logs
 
 
+def _submission_refusal(entry: CommandEntry, env: Any) -> str:
+    """Why ``entry`` may not run in ``env`` from its BPE submission
+    directory now (``_mbmsub_refusal``), or ``""``. Only an entry whose
+    command or ``cwd`` uses ``$MBMSUB`` is checked."""
+    if not any(
+        match.group(1) == "MBMSUB"
+        for text in (entry.command, entry.cwd)
+        if text
+        for match in _SHELL_VAR_RE.finditer(text)
+    ):
+        return ""
+    return _mbmsub_refusal(env.vars.get("MBMSUB"), getattr(env, "deployment_root", None))
+
+
+def _expired(deadline: float | None) -> bool:
+    """Whether the absolute ``time.monotonic()`` ``deadline`` has passed."""
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def _unavailable(error: AdapterUnavailable, deadline: float | None, entry_id: str) -> NoReturn:
+    """Raise ``error``, a missing capability, unless the scenario
+    ``deadline`` has passed meanwhile. Then the outcome is
+    ``ScenarioTimeout``, and ``error`` remains only as its cause and in the
+    command log."""
+    if _expired(deadline):
+        raise ScenarioTimeout(
+            f"scenario deadline passed during {entry_id}; superseded: {error}"
+        ) from error
+    raise error from None
+
+
 class CommandSet:
     """The entries of ``commands.yaml`` and the single place that runs them.
 
@@ -1358,6 +1433,9 @@ class CommandSet:
         self.path = path
         self._entries = dict(entries)
         self._probes: dict[str, _Probe] = {}
+        # The latest submission-directory refusal of each entry, which
+        # probe_reason and available report; every call checks again.
+        self._refusals: dict[str, str] = {}
         self._log: list[dict[str, Any]] = []
         self._lock = threading.RLock()
 
@@ -1421,59 +1499,91 @@ class CommandSet:
 
     def probe(self, entry_id: str, env: Any, *, refresh: bool = False) -> bool:
         """Whether ``entry_id`` is available, probing it unless a result for
-        ``env``'s current generation is cached."""
-        return self._probe(self._entries[entry_id], env, refresh=refresh, deadline=None)
+        ``env``'s current generation is cached. An entry that uses
+        ``$MBMSUB`` is unavailable while ``MBMSUB`` does not resolve inside
+        the deployment root, which is checked on every call."""
+        return self._probe(self._entries[entry_id], env, refresh=refresh, deadline=None)[0]
 
     def available(self, entry_id: str, env: Any = None) -> bool:
         """The cached availability of ``entry_id``. With ``env``, an entry not
-        yet probed for its current generation is probed first. Without it,
-        the latest cached result is returned, or ``False`` if the entry has
-        never been probed."""
+        yet probed for its current generation is probed first, and the
+        ``$MBMSUB`` check of ``probe`` is made. Without it, the latest result
+        is returned, or ``False`` if the entry has never been probed."""
         entry = self._entries[entry_id]
         if env is not None:
-            return self._probe(entry, env, refresh=False, deadline=None)
+            return self._probe(entry, env, refresh=False, deadline=None)[0]
         with self._lock:
             cached = self._probes.get(entry_id)
-        return entry.command is not None and cached is not None and cached.ok
+            refused = entry_id in self._refusals
+        return entry.command is not None and not refused and cached is not None and cached.ok
 
     def probe_reason(self, entry_id: str) -> str | None:
-        """Why the latest probe of ``entry_id`` failed, ``""`` after a
-        success, ``None`` before any probe."""
+        """Why the latest probe or ``$MBMSUB`` check of ``entry_id`` failed,
+        ``""`` after a success, ``None`` before any probe."""
         entry = self._entries[entry_id]
         if entry.command is None:
             return "no command is known (command: null)"
         with self._lock:
+            refusal = self._refusals.get(entry_id)
             cached = self._probes.get(entry_id)
+        if refusal:
+            return refusal
         return None if cached is None else cached.reason
 
     def _probe(
         self, entry: CommandEntry, env: Any, *, refresh: bool, deadline: float | None
-    ) -> bool:
+    ) -> tuple[bool, str]:
+        """Whether ``entry`` is available for ``env``, and why not.
+
+        An entry that uses ``$MBMSUB`` is first held to the deployment root
+        (``_submission_refusal``). That check is made on every call and never
+        cached, so the cache holds only what the probe command found. The
+        probe's verdict is cached for ``env``'s generation. When the probe
+        ran under a scenario ``deadline`` that has passed by the time it is
+        logged and cached, ``ScenarioTimeout`` is raised whatever it found."""
         generation = getattr(env, "generation", 0)
+        refusal = "" if entry.command is None else _submission_refusal(entry, env)
         with self._lock:
+            if refusal:
+                self._refusals[entry.id] = refusal
+            else:
+                self._refusals.pop(entry.id, None)
             cached = self._probes.get(entry.id)
+        if refusal:
+            return False, refusal
         if cached is not None and cached.generation == generation and not refresh:
-            return cached.ok
+            return cached.ok, cached.reason
         if entry.command is None:
             # Nothing to probe: command null is unavailable by definition.
             ok, reason = False, "no command is known (command: null)"
         else:
-            limit = float(min(entry.timeout_s, PROBE_TIMEOUT_CAP_S))
-            capped = False
+            own_limit = float(min(entry.timeout_s, PROBE_TIMEOUT_CAP_S))
+            limit = own_limit
             if deadline is not None:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise ScenarioTimeout(f"scenario deadline passed before probing {entry.id}")
-                if left < limit:
-                    limit, capped = left, True
-            ok, reason = self._execute_probe(entry, env, limit, capped)
+                limit = min(own_limit, left)
+            ok, reason = self._execute_probe(entry, env, limit, limit < own_limit, deadline)
         with self._lock:
             self._probes[entry.id] = _Probe(generation, ok, reason)
-        return ok
+        if _expired(deadline):
+            if ok:
+                raise ScenarioTimeout(f"scenario deadline passed while probing {entry.id}")
+            _unavailable(
+                AdapterUnavailable(f"{entry.id} unavailable: {reason}", entry.gap),
+                deadline,
+                entry.id,
+            )
+        return ok, reason
 
     def _execute_probe(
-        self, entry: CommandEntry, env: Any, limit: float, capped: bool
+        self, entry: CommandEntry, env: Any, limit: float, capped: bool, deadline: float | None
     ) -> tuple[bool, str]:
+        """Run the probe of ``entry`` for at most ``limit`` seconds and log it.
+        ``capped`` means ``limit`` is the time left before ``deadline``. A
+        probe the deadline stopped has no verdict to cache, so it raises
+        ``ScenarioTimeout``; one that exceeded its own limit has failed."""
         cwd = _default_cwd(env)
         argv = [_bash(), "--noprofile", "--norc", "-c", entry.probe]
         try:
@@ -1487,7 +1597,8 @@ class CommandSet:
             )
             return False, reason
         if done.timed_out:
-            outcome = "deadline" if capped else "timeout"
+            # Killing a group that ignores SIGTERM can outlast the deadline too.
+            outcome = "deadline" if capped or _expired(deadline) else "timeout"
         else:
             outcome = "completed"
         self._record(
@@ -1523,14 +1634,25 @@ class CommandSet:
         It is bounded by ``timeout_s``, capped at ``deadline_left``, the
         seconds left before the scenario deadline when the caller has one.
 
-        * ``command: null`` or a failed probe raise
-          ``AdapterUnavailable("<id> unavailable: <reason>", gap)`` and run
-          nothing.
+        * ``command: null``, a failed probe, a ``cwd`` whose variable is
+          unset or whose directory is missing, or, for an entry whose command
+          or ``cwd`` uses ``$MBMSUB``, an ``MBMSUB`` that is unset, relative
+          or does not resolve (symlinks followed) inside the deployment root
+          raise ``AdapterUnavailable("<id> unavailable: <reason>", gap)`` and
+          run nothing. ``bpe_submit`` therefore gives GAP-MIS-006, and the
+          dataset and catalog entries that reuse its command GAP-MIS-007.
         * At the timeout the process group is killed. If the cap was the
           scenario deadline, ``ScenarioTimeout`` is raised. Otherwise
           ``AdapterUnavailable("<id> exceeded <timeout_s>s", gap)`` is.
         * A non-zero exit raises ``AdapterUnavailable("<id> exited <rc>",
           gap)`` when ``check`` is true and is returned otherwise.
+
+        The scenario deadline takes precedence. Every outcome is logged
+        first; if the deadline has passed by then, because the probe, the
+        kill of a process group that ignores SIGTERM, or the log itself took
+        that long, ``ScenarioTimeout`` is raised instead of returning the
+        result or raising the ``AdapterUnavailable``, which is kept as its
+        ``__cause__`` and in the log.
 
         An unknown ``entry_id`` raises ``KeyError``, and a placeholder without
         a value raises ``HarnessError``: both are programming errors. A
@@ -1544,18 +1666,30 @@ class CommandSet:
                 raise ScenarioTimeout(f"scenario deadline passed before {entry_id} started")
             deadline = time.monotonic() + deadline_left
 
-        if entry.command is None or not self._probe(entry, env, refresh=False, deadline=deadline):
-            reason = self.probe_reason(entry_id) or "probe failed"
+        available, reason = self._probe(entry, env, refresh=False, deadline=deadline)
+        if entry.command is None or not available:
+            reason = reason or "probe failed"
             self._record(
                 env, "run", entry_id, entry.command, None, None, "refused", 0.0, reason=reason
             )
-            raise AdapterUnavailable(f"{entry_id} unavailable: {reason}", entry.gap)
+            _unavailable(
+                AdapterUnavailable(f"{entry_id} unavailable: {reason}", entry.gap),
+                deadline,
+                entry_id,
+            )
 
         command = _render_command(entry.command, texts)
         if entry.cwd is None:
             cwd = _default_cwd(env)
         else:
-            cwd = _expand_cwd(entry, entry.cwd, texts, env)
+            try:
+                cwd = _expand_cwd(entry, entry.cwd, texts, env)
+            except AdapterUnavailable as exc:
+                self._record(
+                    env, "run", entry_id, command, None, None, "refused", 0.0,
+                    reason=exc.reason.removeprefix(f"{entry_id} unavailable: "),
+                )
+                _unavailable(exc, deadline, entry_id)
         left = None if deadline is None else deadline - time.monotonic()
         if left is not None and left <= 0:
             raise ScenarioTimeout(f"scenario deadline passed before {entry_id} started")
@@ -1572,10 +1706,11 @@ class CommandSet:
             self._record(
                 env, "run", entry_id, command, cwd, None, "not-started", 0.0, reason=reason
             )
-            raise AdapterUnavailable(f"{entry_id} {reason}", entry.gap) from None
+            _unavailable(AdapterUnavailable(f"{entry_id} {reason}", entry.gap), deadline, entry_id)
 
         if done.timed_out:
-            outcome = "deadline" if deadline_capped else "timeout"
+            # Killing a group that ignores SIGTERM can outlast the deadline too.
+            outcome = "deadline" if deadline_capped or _expired(deadline) else "timeout"
         else:
             outcome = "completed"
         stdout, stderr = _text(done.stdout), _text(done.stderr)
@@ -1588,11 +1723,24 @@ class CommandSet:
                 raise ScenarioTimeout(
                     f"{entry_id} was stopped at the scenario deadline after {limit:.0f}s"
                 )
-            raise AdapterUnavailable(f"{entry_id} exceeded {entry.timeout_s}s", entry.gap)
+            _unavailable(
+                AdapterUnavailable(f"{entry_id} exceeded {entry.timeout_s}s", entry.gap),
+                deadline,
+                entry_id,
+            )
         # A process that was not timed out has been waited for, so it has a status.
         result = CommandResult(entry_id, int(done.returncode or 0), stdout, stderr)
         if check and not result.ok:
-            raise AdapterUnavailable(f"{entry_id} exited {result.returncode}", entry.gap)
+            _unavailable(
+                AdapterUnavailable(f"{entry_id} exited {result.returncode}", entry.gap),
+                deadline,
+                entry_id,
+            )
+        if _expired(deadline):
+            raise ScenarioTimeout(
+                f"scenario deadline passed during {entry_id}; superseded: its exit status "
+                f"{result.returncode}"
+            )
         return result
 
     # ------------------------------------------------------------------ log

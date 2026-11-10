@@ -11,11 +11,11 @@
 # - env.py runs `bash --noprofile --norc -c <command>` with the environment it derived: the test-owned
 #   deployment variables BASE_DIR, PROJECT_ROOT, PR, KIXSYS, KIXDATA, EBMHOME, EBMSYS, JOBLIB, MBM_LOCK_DIR,
 #   PARMFILES, SEQFILES, MIGAPP_DIR and COBCPY, the installation variables UNIKIX, INSTEBM, VCOBOL, KIXLICDIR
-#   and JAVA_HOME, and MBMSUB once batchenv has been sourced. The working directory is `cwd` (expanded by
-#   bash) or, when absent, $PROJECT_ROOT.
-# - Placeholders in {braces} (member, map, job, file, queue, dsn, clock, job_number) are filled by the caller
-#   with shell-quoted values; $VAR is expanded by bash. Commands therefore hold no other braces: write $VAR,
-#   never ${VAR}.
+#   and JAVA_HOME, and MBMSUB once batchenv has been sourced. It runs in the entry's `cwd` or, when absent,
+#   in the default directory: $PROJECT_ROOT once it exists, else the deployment root.
+# - Placeholders in {braces} (member, map, job, file, queue, dsn, clock, job_number) are filled by the caller.
+#   In `command` each value is shell-quoted and $VAR is expanded by bash; `cwd` is filled and expanded by
+#   env.py instead (below). Neither holds other braces: write $VAR, never ${VAR}.
 # - Shell quoting keeps a value one word of data only where its placeholder stands unquoted, as a whole word
 #   or part of one (kixfile close {file}, kixclt {member}.cl2), in the command itself or inside $( ) or ( ).
 #   A placeholder therefore never names the command and never stands inside '...', "...", $'...', $"...",
@@ -27,7 +27,20 @@
 #   ${...} or arithmetic, so it refuses every placeholder after one.
 # - The value is data only to the command it reaches: never pass a placeholder to one that re-parses its
 #   arguments as shell code or arithmetic (eval, sh -c, let, declare, local, read, printf -v).
-# - `probe` exits 0 when the command is available. env.py runs every probe once per session.
+# - No shell parses `cwd`: env.py fills each {placeholder} with the caller's value as given, not shell-quoted,
+#   and that value must be one plain path component (non-empty, not . or .., no / and no $), otherwise
+#   HarnessError. env.py then replaces each $VAR from the derived environment; an unset or empty variable,
+#   or a directory that does not exist, makes the entry unavailable under its `gap`. A relative result is
+#   taken below the default directory. Nothing else is interpreted: quotes, backslashes, ~, globs and $( )
+#   stay literal.
+# - `probe` exits 0 when the command is available. It runs as written, with the same bash flags and
+#   environment, but always in the default directory, bounded by the smaller of `timeout_s` and 30 s and,
+#   when a run triggers it, by the scenario deadline. env.py probes an entry before its first run unless
+#   probe_all or probe already did, and caches the answer per environment generation: load starts
+#   generation 0 and each source_runtime_scripts call, made once the deployment exists, starts the next, so
+#   probes of the deployed tree ($MBMSUB, $EBMHOME/batchenv, sysoutdir, unikixrc.cfg) run again against it.
+#   A failed probe refuses every run of the entry until the next generation; probe_all(refresh=True) and
+#   probe(refresh=True) probe again.
 # - `command: null` means no public source names a command. Its probe is "false", so every scenario that
 #   depends on the entry is blocked under the entry's `gap`.
 # - `timeout_s` bounds the control action itself; the caller caps it at the time left before the scenario
@@ -324,7 +337,11 @@ entries:
     notes: >-
       Submits the translated member {job} and returns once BPE has accepted it; parse.job_number reads the
       BPE job number from stdout. Legacy Sun MTP alternative: subjob $JOB -t j. The dataset and catalog
-      entries submit their generated jobs with this same command and parse.
+      entries submit their generated jobs with this same command and parse. env.py refuses this command,
+      and every entry that reuses it, unless $MBMSUB, as the deployment's batchenv exported it, resolves
+      (symlinks followed) to the deployment root or below: an unset, relative or outside value makes the
+      entry unavailable under its own gap, checked on every run, and an MBMSUB that the operator's
+      environment file exported is never used.
 
   bpe_sysout:
     action: list job output
@@ -337,8 +354,8 @@ entries:
     parse:
       job_dir: '(?m)^(?P<entry>(?:[^\n]*[^0-9\n])?0*{job_number}(?:[^0-9\n][^\n]*)?)$'
       completed: '(?im)\b(?:job\s+(?:ended|completed|terminated)|end\s+of\s+job)\b'
-      step_rc: '(?im)\bstep\s*(?:name)?\s*[:=]?\s*(?P<step>[A-Z@#$][A-Z0-9@#$]*(?:\.[A-Z@#$][A-Z0-9@#$]*)?)\b.*?\b(?:rc|cond(?:ition)?\s*code|return\s*code)\s*[:=]?\s*(?P<rc>[0-9]+)\b'
-      step_abend: '(?im)\bstep\s*(?:name)?\s*[:=]?\s*(?P<step>[A-Z@#$][A-Z0-9@#$]*(?:\.[A-Z@#$][A-Z0-9@#$]*)?)\b.*?\babend(?:ed)?\b\s*(?:code)?\s*[:=]?\s*(?P<code>[SU]?[0-9A-F]+)\b'
+      step_rc: '(?im)\bstep\s*(?:name)?\s*[:=]?\s*(?<![A-Z0-9@#$])(?P<step>[A-Z@#$][A-Z0-9@#$]*(?:\.[A-Z@#$][A-Z0-9@#$]*)*)(?![A-Z0-9@#$]|\.[A-Z@#$]).*?\b(?:rc|cond(?:ition)?\s*code|return\s*code)\s*[:=]?\s*(?P<rc>[0-9]+)\b'
+      step_abend: '(?im)\bstep\s*(?:name)?\s*[:=]?\s*(?<![A-Z0-9@#$])(?P<step>[A-Z@#$][A-Z0-9@#$]*(?:\.[A-Z@#$][A-Z0-9@#$]*)*)(?![A-Z0-9@#$]|\.[A-Z@#$]).*?\babend(?:ed)?\b\s*(?:code)?\s*[:=]?\s*(?P<code>[SU]?[0-9A-F]+)\b'
       display_files: '*SYSOUT*'
       start_date: '(?i)\bstart(?:ed)?\b.*?(?P<date>[0-9][0-9][0-9][0-9][-/.][0-9][0-9][-/.][0-9][0-9])'
     notes: >-
@@ -346,7 +363,12 @@ entries:
       stdout line naming the directory or file of job {job_number}; completed, step_rc, step_abend and
       start_date are searched in that job's sysout files, display_files is the glob of the program SYSOUT DD
       files whose lines are the DISPLAY output, and start_date gives the BPE job start date recorded as the
-      run date. The sysout format is unconfirmed, so every regex is operator-adjustable.
+      run date. The `step` group of step_rc and step_abend is the complete step identity with every dotted
+      qualifier, as in STEP10.STEP01R.PRC001 (job step STEP10, procedure step STEP01R of TRANREPT, procedure
+      step PRC001 of REPROC), never part of a longer name; bpe.py writes it unchanged into the
+      `STEP <step> RC <nnnn>` and `STEP <step> ABEND` lines of messages, which use the step names of
+      tests/adapters/gnucobol_batch/jobs.yaml and tests/adapters/unikix/resources.yaml. The sysout format is
+      unconfirmed, so every regex is operator-adjustable.
 
   bpe_cancel:
     action: cancel an unfinished job
