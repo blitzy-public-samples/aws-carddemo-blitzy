@@ -1,0 +1,182 @@
+# COUSR03C cannot delete a user because the USRSEC DELETE fails with an I/O
+# error, and reports the failure as 'Unable to Update User...' (GAP-DEF-011).
+#
+# Step 1: ADMIN001 signs on through CC00 and COSGN00C routes the type A user to
+# the admin menu COADM01 [app/cbl/COSGN00C.cbl:221-237].
+# Step 2: option '4' makes COADM01C XCTL to COADM02Y entry 4, COUSR03C 'User
+# Delete (Security)', with CDEMO-PGM-CONTEXT 0 [app/cbl/COADM01C.cbl:115-145]
+# [app/cpy/COADM02Y.cpy:39-42]. COADM01C passes only the COCOM01Y COMMAREA, so
+# the group MOVE into COUSR03C's longer CARDDEMO-COMMAREA pads
+# CDEMO-CU03-USR-SELECTED with spaces and no user is fetched. COUSR03C clears
+# COUSR3AO to LOW-VALUES, sends COUSR03 with its CU03 header, empty fields and a
+# blank ERRMSG, and returns with TRANSID CU03 [app/cbl/COUSR03C.cbl:49-58,87-105,
+# 134-137,213-225].
+# Step 3: ENTER with user id TESTU002. PROCESS-ENTER-KEY reads USRSEC by the id
+# with UPDATE; on RESP NORMAL READ-USER-SEC-FILE moves 'Press PF5 key to delete
+# this user ...' to WS-MESSAGE and sends, then the record's names and type are
+# moved into the map and the screen is sent again with the same message
+# [app/cbl/COUSR03C.cbl:142-169,267-286].
+# Step 4: PF5. DELETE-USER-INFO finds the user id supplied, reads the record
+# again with UPDATE (sending the 'Press PF5' screen once more) and issues the
+# DELETE of the record just read, all in one task [app/cbl/COUSR03C.cbl:
+# 121-122,174-192]. The injected I/O error gives a response other than NORMAL or
+# NOTFND, so WHEN OTHER sets the error flag, moves 'Unable to Update User...' to
+# WS-MESSAGE, puts the cursor on the first name and sends COUSR03 again
+# [app/cbl/COUSR03C.cbl:305-336]. The message says "Update" although the
+# operation is a delete: that is the source's text, pinned as it stands and
+# never corrected (GAP-DEF-011). Only an error on the DELETE reaches this branch:
+# an error on the READ before it ends in 'Unable to lookup User...' instead.
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values are whole fields at their BMS length with trailing spaces:
+#   ERRMSG is the first 78 bytes of the 80-byte WS-MESSAGE; FNAME and LNAME are
+#   20 bytes, the size of SEC-USR-FNAME and SEC-USR-LNAME [app/cpy/CSUSR01Y.cpy:
+#   17-23] [app/bms/COUSR03.bms:85-132].
+# - In step 4 the PF5 path moves no record field into the map, so USRIDIN,
+#   FNAME, LNAME and USRTYPE show the values just received, which are the ones
+#   step 3 sent: COUSR03's fields are FSET and COUSR3AO redefines COUSR3AI.
+# - The header is POPULATE-HEADER-INFO's: the COTTL01Y titles, CU03, COUSR03C,
+#   CURDATE mm/dd/yy and CURTIME hh:mm:ss of the run clock through CSDAT01Y,
+#   hence the matchers and clock_mode relative [app/cbl/COUSR03C.cbl:243-262].
+# - The DISPLAY of RESP and RESP2 goes to the region log, not to the terminal,
+#   and is not asserted.
+# TESTU002 and its names and password are invented data added to the USRSEC
+# fixture; the user never signs on.
+id: USR-COUSR03C-recovery-02
+level: e2e
+type: recovery
+description: >-
+  ADMIN001 signs on, chooses admin menu option 4 'User Delete (Security)',
+  fetches the invented user TESTU002 on the COUSR03 delete screen, which shows
+  its names and type with 'Press PF5 key to delete this user ...', and presses
+  PF5. The USRSEC DELETE fails with an I/O error, COUSR03C shows 'Unable to
+  Update User...' on the same screen with the user's details kept, and USRSEC
+  still holds TESTU002 beside the 10 fixture users.
+# The recovery message is the primary item, then the program, the maps the
+# option and the user id are entered on, the transaction that runs the fetch
+# and the failed delete, the CSD file the DELETE fails on, then the online-only
+# copybooks COUSR03C copies. The USRSEC DELETE interface item is left out: this
+# scenario shows a delete that does not happen, so the item's verification does
+# not depend on it. CSUSR01Y and the USRSEC data file are left out too: their
+# lowest executing level is the DUSRSECJ integration scenario.
+inventory_ids:
+- INV-USR-055  # COUSR03C message 'Unable to Update User...' (recovery)
+- INV-USR-004  # COUSR03C program
+- INV-MNU-004  # COADM01 map, the admin menu option 4 is entered on
+- INV-USR-008  # COUSR03 map, the delete screen of steps 2-4
+- INV-CFG-026  # CU03 transaction, under which the fetch and the failed delete run
+- INV-CFG-008  # USRSEC CSD file, read for update and the target of the failing DELETE
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA COADM01C passes with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR03C
+tags:
+- inferred-not-observed
+- suspected-defect
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-014  # no mechanism is known to return an I/O error in the TPE region
+- GAP-DEF-011  # the delete failure is reported as 'Unable to Update User...'
+preconditions:
+  datasets:
+    # The 10 repository users, for the ADMIN001 sign-on, plus the user whose
+    # delete fails.
+    USRSEC:
+      base: USRSEC
+      records:
+      - {SEC-USR-ID: TESTU002, SEC-USR-FNAME: TESTFIRST, SEC-USR-LNAME: TESTLAST,
+         SEC-USR-PWD: TESTPWD2, SEC-USR-TYPE: U}
+  parameters:
+    clock_mode: relative
+  # The fault vocabulary has no delete operation (open, read, write, rewrite,
+  # close), so the DELETE is declared as the write-class operation it is. No
+  # `after`: the DELETE is the scenario's only write-class USRSEC operation, so
+  # the three reads before it (the sign-on READ, the step-3 fetch and the PF5
+  # re-read) are untouched by it. No adapter can inject an I/O error in the TPE
+  # region, so unikix raises MissingPrerequisite under GAP-MIS-014 and the
+  # scenario stays implemented-unexecuted until a mechanism exists.
+  faults:
+  - target: USRSEC
+    operation: write
+    condition: io-error
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '4'}
+    '@map': COADM01
+  - aid: ENTER
+    fields: {USRIDIN: TESTU002}
+    '@map': COUSR03
+  - aid: PF5
+    fields: {}
+    '@map': COUSR03
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR03
+    TRNNAME: CU03
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR03C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: '        '
+    FNAME: '                    '
+    LNAME: '                    '
+    USRTYPE: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COUSR03
+    TRNNAME: CU03
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR03C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: TESTU002
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTLAST            '
+    USRTYPE: U
+    ERRMSG: 'Press PF5 key to delete this user ...                                         '
+  - '@map': COUSR03
+    TRNNAME: CU03
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR03C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: TESTU002
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTLAST            '
+    USRTYPE: U
+    ERRMSG: 'Unable to Update User...                                                      '
+  # The ERRMSG value of each step: blank on the admin menu and on the first
+  # COUSR03 send, the delete prompt after the fetch, then the failure message.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Press PF5 key to delete this user ...                                         '
+  - 'Unable to Update User...                                                      '
+  file_state:
+    # The failed DELETE removes nothing: every USRSEC record in key order, with
+    # TESTU002 as loaded beside the 10 fixture users.
+    USRSEC:
+      records:
+      - {SEC-USR-ID: ADMIN001, SEC-USR-FNAME: 'MARGARET            ', SEC-USR-LNAME: 'GOLD                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN002, SEC-USR-FNAME: 'RUSSELL             ', SEC-USR-LNAME: 'RUSSELL             ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN003, SEC-USR-FNAME: 'RAYMOND             ', SEC-USR-LNAME: 'WHITMORE            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN004, SEC-USR-FNAME: 'EMMANUEL            ', SEC-USR-LNAME: 'CASGRAIN            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN005, SEC-USR-FNAME: 'GRANVILLE           ', SEC-USR-LNAME: 'LACHAPELLE          ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: TESTU002, SEC-USR-FNAME: 'TESTFIRST           ', SEC-USR-LNAME: 'TESTLAST            ', SEC-USR-PWD: TESTPWD2, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0001, SEC-USR-FNAME: 'LAWRENCE            ', SEC-USR-LNAME: 'THOMAS              ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0002, SEC-USR-FNAME: 'AJITH               ', SEC-USR-LNAME: 'KUMAR               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0003, SEC-USR-FNAME: 'LAURITZ             ', SEC-USR-LNAME: 'ALME                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0004, SEC-USR-FNAME: 'AVERARDO            ', SEC-USR-LNAME: 'MAZZI               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0005, SEC-USR-FNAME: 'LEE                 ', SEC-USR-LNAME: 'TING                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}

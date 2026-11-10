@@ -1,0 +1,108 @@
+# PF3 on the COACTVW account view screen returns to the COMEN01C main menu.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00 and
+# COSGN00C XCTLs to COMEN01C, which sends the main menu and returns TRANSID
+# CM00 [app/cbl/COSGN00C.cbl:221-240] [app/cbl/COMEN01C.cbl:82-90,107-110].
+# Step 2: option '1' makes COMEN01C XCTL to COACTVWC with CDEMO-FROM-PROGRAM
+# COMEN01C, CDEMO-FROM-TRANID CM00 and CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:145-155]. Called from the menu and not re-entered,
+# COACTVWC initializes CARDDEMO-COMMAREA, which blanks both FROM fields, takes
+# the CDEMO-PGM-ENTER path, sends COACTVW with its account-id prompt, sets
+# CDEMO-PGM-REENTER and returns TRANSID CAVW with the COMMAREA
+# [app/cbl/COACTVWC.cbl:282-286,353-360,394-406,431-591]. No file is read.
+# Step 3: PF3 with nothing typed. CAVW starts COACTVWC with its COMMAREA;
+# CDEMO-FROM-PROGRAM is blank, not COMEN01C, so the COMMAREA is restored
+# [app/cbl/COACTVWC.cbl:282-293]. YYYY-STORE-PFKEY maps DFHPF3 to
+# CCARD-AID-PFK03, a valid key here [app/cpy/CSSTRPFY.cpy:34-35]
+# [app/cbl/COACTVWC.cbl:299-314]. The PF3 branch finds CDEMO-FROM-TRANID and
+# CDEMO-FROM-PROGRAM blank (step 2 initialized them), so it falls back to
+# LIT-MENUTRANID CM00 and LIT-MENUPGM COMEN01C, records CAVW/COACTVWC as the
+# caller, sets CDEMO-USRTYP-USER and CDEMO-PGM-ENTER, and XCTLs to COMEN01C
+# [app/cbl/COACTVWC.cbl:168-171,324-352]. COMEN01C receives a COMMAREA that is
+# not in re-enter state, so it sends the menu afresh with a blank message and
+# returns TRANSID CM00 [app/cbl/COMEN01C.cbl:82-90,182-231].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values are whole fields at their BMS length with trailing spaces:
+#   ERRMSG 78, INFOMSG 45, TITLE01, TITLE02 and OPTN001 40 [app/bms/COACTVW.bms]
+#   [app/bms/COMEN01.bms]; the titles are COTTL01Y's, OPTN001 is COMEN02Y's
+#   option 1 [app/cpy/COTTL01Y.cpy:17-22] [app/cpy/COMEN02Y.cpy:25-29].
+# - CURDATE (mm/dd/yy) and CURTIME (hh:mm:ss) come from the region clock
+#   through CSDAT01Y, hence the matchers and clock_mode relative.
+# - ACCTSID is not asserted on the COACTVW screen: COACTVWC sends it as
+#   LOW-VALUES on first entry [app/cbl/COACTVWC.cbl:465-466], and how a 3270
+#   read renders nulls is not a business outcome.
+# The UniKix copy of COACTVW.bms lacks the unnamed field at row 1, columns 1-9,
+# beside TRNNAME (GAP-DOC-025).
+id: ACT-COACTVWC-alternate-02
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, chooses main menu option 1 'Account View' and lands on the
+  COACTVWC account view screen (CAVW) with its account-id prompt, then presses
+  PF3 without entering an account. COACTVWC transfers control back to COMEN01C,
+  which shows the main menu (CM00) with no message.
+inventory_ids:
+- INV-ACT-025  # COACTVWC PF3 return (navigation rule)
+- INV-ACT-001  # COACTVWC program
+- INV-ACT-003  # COACTVW map, the screen PF3 is pressed on
+- INV-MNU-003  # COMEN01 map, the screen the XCTL lands on
+- INV-CFG-010  # CAVW transaction, under which the PF3 runs
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose blank FROM fields select the menu fallback
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COACTVWC
+- INV-LAY-009  # CSMSG02Y, the abend variables COACTVWC copies
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps DFHPF3 to CCARD-AID-PFK03
+- INV-LAY-019  # CVCRD01Y: CCARD-AID-PFK03 and the work area COACTVWC initializes
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '1'
+  - aid: PF3
+    '@map': COACTVW
+    fields: {}
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: '                                                                              '
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN001: '01. Account View                        '
+    ERRMSG: '                                                                              '

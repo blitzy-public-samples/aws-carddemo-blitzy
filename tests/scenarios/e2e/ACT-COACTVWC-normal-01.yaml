@@ -1,0 +1,148 @@
+# COACTVWC account view of account 00000000001, the account and customer detail
+# content of 1200-SETUP-SCREEN-VARS [app/cbl/COACTVWC.cbl:460-535].
+# Steps 1-2 reach the COACTVW prompt screen as MNU-COMEN01C-alternate-01 does.
+# Step 3 runs under CAVW, the TRANSID COACTVWC returned with: the COMMAREA
+# carries CDEMO-PGM-REENTER [app/cbl/COACTVWC.cbl:394-406,581], so ENTER takes
+# 2000-PROCESS-INPUTS. The account id is numeric and non-zero, so it becomes
+# CDEMO-ACCT-ID and the filter is valid [app/cbl/COACTVWC.cbl:622-681].
+# 9000-READ-ACCT reads CXACAIX by account id: account 00000000001 has a single
+# card in the CARDXREF fixture (9680294154603697, customer 000000001, line 49 of
+# app/data/ASCII/cardxref.txt), so the alternate key is unique and the READ is
+# NORMAL. It then reads ACCTDAT by account id and CUSTDAT by customer id, and
+# both are found [app/cbl/COACTVWC.cbl:687-869].
+#
+# Expected values come from fixture record 1 of ACCTDATA and of CUSTDATA, moved
+# to the symbolic map COACTVW.CPY:
+# - The five amounts are S9(10)V99 moved to PIC +ZZZ,ZZZ,ZZZ.99 (the BMS
+#   PICOUT): fixed '+' sign, zero suppression through the integer part, so a
+#   zero amount shows as '+           .00'.
+# - ACCTSID echoes CC-ACCT-ID.
+# - AADDGRP shows ACCT-GROUP-ID, which is blank in every acctdata.txt record;
+#   the group id sits in ACCT-ADDR-ZIP instead (GAP-DEF-005). The screen pins
+#   what the program shows of that data.
+# - ACSTSSN is built by STRING CUST-SSN(1:3) '-' (4:2) '-' (6:4): 11 characters
+#   into the 12-byte field, so its last byte keeps the LOW-VALUES of
+#   1100-SCREEN-INIT [app/cbl/COACTVWC.cbl:432] and reads as a space.
+# - ACSZIPC (X(5)), ACSPHN1 and ACSPHN2 (X(13)) are truncations of CUST-ADDR-ZIP
+#   X(10) and CUST-PHONE-NUM-1/2 X(15) [app/cpy/CVCUS01Y.cpy:14-16].
+# - 9000-READ-ACCT clears WS-INFO-MSG and no message is set, so 1200 restores
+#   the input prompt in INFOMSG, and ERRMSG is blank.
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included. CURDATE and CURTIME come from the region clock, so they are
+# matchers. The UniKix copy of COACTVW.bms lacks the unnamed field at row 1,
+# columns 1-9 (GAP-DOC-025).
+id: ACT-COACTVWC-normal-01
+level: e2e
+type: normal
+description: >-
+  USER0001 signs on, selects main-menu option 1 (Account View), and enters
+  account 00000000001 on the COACTVWC screen (CAVW). The program looks up the
+  account's card cross-reference through CXACAIX, then reads the account from
+  ACCTDAT and its customer 000000001 from CUSTDAT. The screen shows the
+  account status, dates, group and edited balances and limits, and the
+  customer's id, SSN as nnn-nn-nnnn, date of birth, FICO score, names,
+  address, phones, government id, EFT account and primary-holder flag, with
+  the input prompt and no error.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 enters, the CSD files COACTVWC reads, and the online-only copybooks it
+# copies. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC) are verified by
+# the SEC and MNU scenarios; the batch record copybooks and the data files are
+# verified at the lowest level that executes them.
+inventory_ids:
+- INV-ACT-027  # COACTVWC account and customer detail content (report)
+- INV-ACT-001  # COACTVWC program
+- INV-MNU-003  # COMEN01 map, where option 1 is entered
+- INV-ACT-003  # COACTVW map, the prompt and the detail screen
+- INV-CFG-010  # CAVW transaction, which runs the account lookup
+- INV-CFG-006  # CXACAIX CSD file: card cross-reference by account id
+- INV-CFG-001  # ACCTDAT CSD file: account master read
+- INV-CFG-005  # CUSTDAT CSD file: customer master read
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and ids
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COACTVWC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COACTVWC
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+    CARDXREF: {base: CARDXREF}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '1'
+  - aid: ENTER
+    '@map': COACTVW
+    fields:
+      ACCTSID: '00000000001'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN001: '01. Account View                        '
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTVWC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    ADTOPEN: '2014-11-20'
+    ACRDLIM: '+      2,020.00'
+    AEXPDT: '2025-05-20'
+    ACSHLIM: '+      1,020.00'
+    AREISDT: '2025-05-20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACSTSSN: '020-97-3888 '
+    ACSTDOB: '1961-06-08'
+    ACSTFCO: '274'
+    ACSFNAM: 'Immanuel                 '
+    ACSMNAM: 'Madeline                 '
+    ACSLNAM: 'Kessler                  '
+    ACSADL1: '618 Deshaun Route                                 '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Apt. 802                                          '
+    ACSZIPC: '12546'
+    ACSCITY: 'Altenwerthshire                                   '
+    ACSCTRY: 'USA'
+    ACSPHN1: '(908)119-8310'
+    ACSGOVT: '00000000000049368437'
+    ACSPHN2: '(373)693-8684'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: '                                                                              '

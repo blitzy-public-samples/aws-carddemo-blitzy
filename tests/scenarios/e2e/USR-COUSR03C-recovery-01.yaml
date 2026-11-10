@@ -1,0 +1,143 @@
+# COUSR03C cannot fetch a user for deletion while the region file USRSEC is out
+# of service. ADMIN001 signs on through CC00 while USRSEC is still available,
+# and COSGN00C routes the type 'A' user to the admin menu COADM01
+# [app/cbl/COSGN00C.cbl:209-237]. Option '4' makes COADM01C transfer control,
+# with CDEMO-PGM-CONTEXT 0, to COUSR03C, the 'User Delete (Security)' entry of
+# COADM02Y [app/cbl/COADM01C.cbl:115-145] [app/cpy/COADM02Y.cpy:39-42].
+# COADM01C passes only the COCOM01Y COMMAREA, so the group MOVE into COUSR03C's
+# longer CARDDEMO-COMMAREA pads CDEMO-CU03-USR-SELECTED with spaces and no user
+# is fetched on that first entry: COUSR03C moves LOW-VALUES to COUSR3AO, sends
+# COUSR03 with a blank message and returns with TRANSID CU03
+# [app/cbl/COUSR03C.cbl:90-105,134-137].
+#
+# The third step enters USER0004, a fixture user, and presses ENTER under CU03.
+# PROCESS-ENTER-KEY finds the id supplied, moves spaces to the first name, last
+# name and type, and READ-USER-SEC-FILE reads USRSEC by the id with UPDATE
+# [app/cbl/COUSR03C.cbl:142-163,267-278]. With the file closed or disabled the
+# response is neither NORMAL nor NOTFND, so WHEN OTHER DISPLAYs RESP and RESP2,
+# sets the error flag, moves 'Unable to lookup User...' to WS-MESSAGE, puts the
+# cursor on the first name and sends COUSR03 with ERASE
+# [app/cbl/COUSR03C.cbl:293-300,213-225]. With the error flag on, no record
+# field is moved into the map [app/cbl/COUSR03C.cbl:164-169], and MAIN-PARA
+# returns with TRANSID CU03 [app/cbl/COUSR03C.cbl:134-137].
+#
+# COUSR3AO redefines COUSR3AI [app/cpy-bms/COUSR03.CPY:85], so the received user
+# id is sent back as entered and the names and type go out as the spaces just
+# moved to them. The DISPLAY goes to the region log, not to the terminal, and is
+# not asserted. Expected text values are whole fields at their BMS length with
+# trailing spaces [app/bms/COUSR03.bms]. The clock-derived CURDATE and CURTIME
+# are matchers, so the clock is relative. The expected outcome is derived from
+# the source: no TPE region runs in CI (GAP-INF-004).
+id: USR-COUSR03C-recovery-01
+level: e2e
+type: recovery
+description: >-
+  ADMIN001 signs on, selects admin option 4 'User Delete (Security)' and enters
+  user id USER0004 on COUSR03 while the region file USRSEC is unavailable. The
+  READ for update fails with a response other than NORMAL or NOTFND, so COUSR03C
+  shows 'Unable to lookup User...' on the same screen with the user id kept and
+  no names or type, and USRSEC still holds all 10 fixture users, USER0004 among
+  them.
+# The recovery message is the primary item, then the program, the map option 4
+# is entered on and the map the failure is shown on, the transaction step 3
+# runs under, the CSD file the READ fails on, then the online-only copybooks
+# COUSR03C copies. CSUSR01Y and the USRSEC data file are left out: their lowest
+# executing level is the DUSRSECJ integration scenario.
+inventory_ids:
+- INV-USR-053  # COUSR03C message 'Unable to lookup User...' (recovery)
+- INV-USR-004  # COUSR03C program
+- INV-MNU-004  # COADM01 map, the admin menu option 4 is entered on
+- INV-USR-008  # COUSR03 map, the delete-user screen the failure is shown on
+- INV-CFG-026  # CU03 transaction, under which the failing fetch runs
+- INV-CFG-008  # USRSEC CSD file, the target of the failing READ UPDATE
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA whose context 0 selects the first-entry path
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR03C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # USR end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to make USRSEC unavailable
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user, and USER0004 is the user fetched; the
+    # unload after the run is compared with these 10 users.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  # after: 1 lets the one USRSEC operation of the sign-on step (COSGN00C's READ
+  # by user id) succeed and takes the file out of service before the option
+  # step, which is also the unikix adapter's default for an online fault. The
+  # option step touches no file, so the first USRSEC operation the fault meets
+  # is the READ UPDATE of step 3, whether `after` counts operations or steps.
+  # An adapter without a confirmed region file control raises
+  # MissingPrerequisite under GAP-MIS-011.
+  faults:
+  - target: USRSEC
+    operation: read
+    condition: unavailable
+    after: 1
+inputs:
+  # PASSWORD is the demo password the README documents for ADMIN001, the only
+  # sign-on scenarios.py accepts; it is test data for a local region, not a
+  # secret, so the secret-sanitization rule leaves it as it is.
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '4'}
+    '@map': COADM01
+  # The user to be deleted, not a sign-on.
+  - aid: ENTER
+    fields: {USRIDIN: USER0004}
+    '@map': COUSR03
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR03
+    TRNNAME: CU03
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR03C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: '        '
+    FNAME: '                    '
+    LNAME: '                    '
+    USRTYPE: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COUSR03
+    TRNNAME: CU03
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR03C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: 'USER0004'
+    FNAME: '                    '
+    LNAME: '                    '
+    USRTYPE: ' '
+    ERRMSG: 'Unable to lookup User...                                                      '
+  # The ERRMSG value of each step: blank on the admin menu and on the first
+  # COUSR03 send, then the failure message.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Unable to lookup User...                                                      '
+  # The failed fetch deletes nothing: unloaded once the file is back in service,
+  # USRSEC holds the 10 fixture users, USER0004 unchanged among them.
+  file_state:
+    USRSEC:
+      count: 10
+      contains:
+      - SEC-USR-ID: 'USER0004'
+        SEC-USR-FNAME: 'AVERARDO            '
+        SEC-USR-LNAME: 'MAZZI               '
+        SEC-USR-TYPE: 'U'
