@@ -3,12 +3,13 @@
 # performs only after the date has passed EDIT-DATE-CCYYMMDD, including its
 # CSUTLDTC call [app/cbl/COACTUPC.cbl:1533-1543] [app/cpy/CSUTLDPY.cpy:341-370].
 #
-# The date entered is fixed, not relative: a step field is literal text (no
-# harness token derives an input from the run date), so the scenario enters
-# 2099-12-31, the last valid date of century 20. It lies after every run date
-# before 2099-12-31, and EDIT-DATE-OF-BIRTH refuses the run date itself and
-# every later date alike, so the outcome is the same as for the run date plus
-# one day and does not depend on the absolute date.
+# The date entered is fixed rather than a run-date input (the
+# {run-date: {part, offset_days}} step value of harness/scenarios.py, which
+# ACT-COACTUPC-boundary-24 uses for the run date itself): 2099-12-31, the last
+# valid date of century 20. It lies after every run date before 2099-12-31,
+# and EDIT-DATE-OF-BIRTH refuses the run date itself and every later date
+# alike, so the outcome is the same as for the run date plus one day and does
+# not depend on the absolute date.
 #
 # Steps 1-3 reach the fetched account as ACT-COACTUPC-negative-083 and -085 do:
 # USER0001 signs on through CC00, chooses option 2 (Account Update) on COMEN01,
@@ -98,9 +99,9 @@ description: >-
   date, so COACTUPC refuses it: the message line shows 'Date of Birth:cannot
   be in the future ', the received values are shown again, still editable,
   with the change prompt and F12=Cancel, and neither ACCTDATA nor CUSTDATA is
-  rewritten. The fixed far-future date 2099-12-31 stands for the run date plus
-  one day, because step fields are literal text and the harness has no
-  run-date input token; the refusal holds for every date from the run date on.
+  rewritten. The fixed far-future date 2099-12-31 stands for a date after the
+  run date; the refusal holds for every date from the run date on, so the
+  outcome does not depend on the absolute date.
 # Primary item first, then the CSUTLDTC date acceptance the date passes before
 # the check, the program, the maps asserted, the transaction of steps 3 and 4,
 # the CSD files COACTUPC reads, and the online-only copybooks it copies. The

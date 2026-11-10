@@ -40,6 +40,17 @@ Capture
     value (``observed_messages``) and the first step's screen date
     (``run_date["first_step_screen_date"]``). ``step`` in those records is the
     0-based index of the step in ``inputs.steps``, as for ``before_step``.
+Run-date inputs
+    A field value ``{run-date: {part, offset_days?}}``
+    (``harness.scenarios.RUN_DATE_INPUT``) is typed as that part of the run
+    date plus ``offset_days`` days. The run date is the region's: the
+    ``CURDATE`` (``mm/dd/yy``) of the step's input screen, the date of the
+    task that sent it, with the century whose year lies nearest the host's.
+    The region clock cannot be fixed (GAP-MIS-015), and the program's own
+    date checks compare with the region's date. A run-date input on a map
+    without ``CURDATE`` is ``HarnessError``; an input screen whose ``CURDATE``
+    is not a date is the step's result and driving stops, as for an
+    unexpected map.
 Credentials
     Only the demo users ``ADMIN001`` and ``USER0001`` sign on; ``NOSUCHID`` is
     the invented id of the negative sign-on case. A step that would enter any
@@ -65,6 +76,7 @@ returned screens and messages and the ``capture`` object.
 
 from __future__ import annotations
 
+import datetime as _dt
 import functools
 import ipaddress
 import math
@@ -95,6 +107,7 @@ from adapters.base import (
 )
 from harness import ADAPTERS_DIR, HarnessError, load_yaml
 from harness import layouts
+from harness import scenarios as _scenarios
 
 __all__ = [
     "ADDRESS_ENV",
@@ -989,7 +1002,12 @@ def _validate_steps(
         for name, value in fields.items():
             if not isinstance(name, str):
                 raise HarnessError(f"{where}.fields has a non-text field name {name!r}")
-            quote_string(value)
+            if _scenarios.is_run_date_input(value):
+                problem = _scenarios.run_date_input_problem(value)
+                if problem is not None:
+                    raise HarnessError(f"{where}.fields.{name} {problem}")
+            else:
+                quote_string(value)
 
 
 def _time_left_function(deadline: Any) -> Callable[[], float]:
@@ -1056,6 +1074,53 @@ class _Observations:
             _capture_attribute(self.capture, "run_date", dict)["first_step_screen_date"] = values[
                 "CURDATE"
             ]
+
+
+_SCREEN_DATE_RE = re.compile(r"(\d{2})/(\d{2})/(\d{2})")
+
+
+def _screen_run_date(screen_date: str, today: _dt.date) -> _dt.date | None:
+    """The date a ``CURDATE`` value ``mm/dd/yy`` shows, or ``None`` when it
+    is not one. The century is the one putting the year nearest ``today``'s:
+    the region runs on this host, and only an operator-set clock, never more
+    than half a century off, would make the two differ."""
+    found = _SCREEN_DATE_RE.fullmatch(screen_date)
+    if found is None:
+        return None
+    month, day, short_year = (int(part) for part in found.groups())
+    century = today.year - today.year % 100
+    year = min(
+        (century + offset + short_year for offset in (-100, 0, 100)),
+        key=lambda candidate: abs(candidate - today.year),
+    )
+    try:
+        return _dt.date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _typed_fields(
+    identifier: ScreenIdentifier,
+    screen: Screen,
+    mapset: str,
+    fields: Mapping[str, Any],
+    index: int,
+) -> dict[str, str] | None:
+    """The text each field of a step types: text as given, a run-date input
+    resolved against the ``CURDATE`` of the input screen. ``None`` when a
+    run-date input is due and that ``CURDATE`` shows no date."""
+    if not any(_scenarios.is_run_date_input(value) for value in fields.values()):
+        return dict(fields)
+    if "CURDATE" not in identifier.fields(mapset):
+        raise HarnessError(
+            f"steps[{index}] types a run-date input on map {mapset}, which shows no CURDATE "
+            "to take the run date from"
+        )
+    shown = identifier.capture(screen.rows, mapset)["CURDATE"]
+    run_date = _screen_run_date(shown, _dt.date.today())
+    if run_date is None:
+        return None
+    return {name: _scenarios.input_text(value, run_date) for name, value in fields.items()}
 
 
 def _enter_fields(
@@ -1127,8 +1192,9 @@ def drive(
     Each step: start ``transid`` when given (``Clear``, ``String``,
     ``Enter``), identify the input screen, enter the fields in screen order,
     press the AID, wait for the keyboard and capture the result. When the
-    input screen is not the step's ``@map``, or fields are due on an
-    unformatted screen, that screen is the step's result and driving stops:
+    input screen is not the step's ``@map``, fields are due on an unformatted
+    screen, or a run-date input is due and the screen's ``CURDATE`` shows no
+    date, that screen is the step's result and driving stops:
     the comparison then reports the application's path, which is never a
     platform failure. Every session is closed before returning or raising."""
     identifier = default_identifier()
@@ -1164,7 +1230,13 @@ def drive(
                 observed.record(index, number, screen, input_map)
                 break
             if fields:
-                _enter_fields(terminal, identifier, input_map, fields, index)
+                typed = _typed_fields(identifier, screen, input_map, fields, index)
+                if typed is None:
+                    # No run date to type a run-date input from: what the
+                    # region shows is the step's result, left to the comparison.
+                    observed.record(index, number, screen, input_map)
+                    break
+                _enter_fields(terminal, identifier, input_map, typed, index)
             terminal.send_aid(step["aid"])
             terminal.wait_unlock()
             screen = terminal.read_screen()

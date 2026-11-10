@@ -49,8 +49,13 @@ Schema (``validate`` is the authority; every key not listed here is refused)
     ``job`` (integration level; an ``app/jcl`` member or ``TRNRPT00``, or an
     ordered list of them run against one catalog) and ``steps`` (e2e level;
     ``[{transid?, aid, fields?, session?, '@map'?}]`` where ``@map`` is the map
-    expected before the fields are entered). Batch inputs may add
-    ``param_files``: logical name -> list of record lines.
+    expected before the fields are entered). A field value is text, or a
+    run-date input ``{run-date: {part: year|month|day, offset_days?: <days>}}``
+    (``RUN_DATE_INPUT``, only with ``clock_mode: relative``) for input whose
+    outcome depends on its relation to the run date: the adapter types that
+    part of the run date plus ``offset_days`` days, zero-padded
+    (``input_text``). Batch inputs may add ``param_files``: logical name ->
+    list of record lines.
 ``expected``
     ``return_code`` (integer, ``null`` for an abend, or ``baseline``),
     ``messages`` (list of text, or ``baseline``), ``reject_reason_codes``
@@ -94,6 +99,7 @@ cached objects and must not modify their mappings.
 
 from __future__ import annotations
 
+import datetime as _dt
 import re
 import stat
 import sys
@@ -142,6 +148,8 @@ __all__ = [
     "MARKER_FOR_ADAPTER",
     "MATCH_KINDS",
     "RESERVED_OBSERVATIONS",
+    "RUN_DATE_INPUT",
+    "RUN_DATE_INPUT_PARTS",
     "Scenario",
     "ScenarioError",
     "asserted_keys",
@@ -151,6 +159,8 @@ __all__ = [
     "clock_mode",
     "digest",
     "get",
+    "input_text",
+    "is_run_date_input",
     "jcl_semantics_items",
     "job_names",
     "load",
@@ -158,6 +168,7 @@ __all__ = [
     "load_file",
     "marker_names",
     "only_unikix",
+    "run_date_input_problem",
     "validate",
 ]
 
@@ -233,6 +244,16 @@ MATCH_KINDS = {
     "run-year-start": frozenset({"format"}),  # 1 January of the run date's year
     "run-year-end": frozenset({"format"}),  # 31 December of the run date's year
 }
+
+# A step field value standing for a date relative to the run date, the input
+# counterpart of a run-date matcher: an outcome that hinges on the typed date's
+# relation to the run date (a date of birth equal to it is refused) cannot be
+# written as fixed text while unikix cannot fix its clock (GAP-MIS-015).
+# {run-date: {part: <part>, offset_days?: <days>}} types the part of the run
+# date plus offset_days days as zero-padded digits of the given width.
+RUN_DATE_INPUT = "run-date"
+RUN_DATE_INPUT_PARTS = {"year": 4, "month": 2, "day": 2}
+_RUN_DATE_INPUT_KEYS = frozenset({"part", "offset_days"})
 
 # Sign-on: only the demo users the README documents, against a local region.
 SIGN_ON_MAP = "COSGN00"
@@ -1033,6 +1054,52 @@ def clock_mode(s: Scenario) -> str:
     return value if isinstance(value, str) else "fixed"
 
 
+def is_run_date_input(value: Any) -> bool:
+    """Whether a step field value is a run-date input (``RUN_DATE_INPUT``)
+    rather than text; ``run_date_input_problem`` says whether it is valid."""
+    return isinstance(value, dict) and RUN_DATE_INPUT in value
+
+
+def run_date_input_problem(value: Any) -> str | None:
+    """Why ``value`` is not a valid run-date input
+    ``{run-date: {part: year|month|day, offset_days?: <days>}}``, or ``None``
+    when it is one."""
+    shape = f"{{{RUN_DATE_INPUT}: {{part: {'|'.join(RUN_DATE_INPUT_PARTS)}, offset_days?: <days>}}}}"
+    if not isinstance(value, dict) or list(value) != [RUN_DATE_INPUT]:
+        return f"must be text, or a run-date input {shape}"
+    spec = value[RUN_DATE_INPUT]
+    if not isinstance(spec, dict):
+        return f"must be a run-date input {shape}"
+    unknown = sorted(str(key) for key in spec if key not in _RUN_DATE_INPUT_KEYS)
+    if unknown:
+        return f"has unknown run-date key(s) {', '.join(unknown)}; allowed: offset_days, part"
+    if not _member(spec.get("part"), RUN_DATE_INPUT_PARTS):
+        return f"part {spec.get('part')!r} is not one of {', '.join(RUN_DATE_INPUT_PARTS)}"
+    if "offset_days" in spec and not _is_int(spec["offset_days"]):
+        return "offset_days must be a whole number of days"
+    return None
+
+
+def input_text(value: Any, run_date: _dt.date) -> str:
+    """The text a step field value types: text as it stands, and for a
+    run-date input the part of ``run_date`` plus ``offset_days`` days, as
+    zero-padded digits (``RUN_DATE_INPUT_PARTS`` gives the width). Raises
+    ``HarnessError`` for any other value or a date out of range."""
+    if isinstance(value, str):
+        return value
+    problem = run_date_input_problem(value)
+    if problem is not None:
+        raise HarnessError(f"step field value {value!r} {problem}")
+    spec = value[RUN_DATE_INPUT]
+    try:
+        day = run_date + _dt.timedelta(days=spec.get("offset_days", 0))
+    except OverflowError as exc:
+        raise HarnessError(
+            f"run-date input {value!r}: {run_date} plus the offset is out of range"
+        ) from exc
+    return f"{getattr(day, spec['part']):0{RUN_DATE_INPUT_PARTS[spec['part']]}d}"
+
+
 def _natural_key(text: str) -> tuple:
     return tuple(
         (int(part), "") if part.isdigit() else (-1, part) for part in re.split(r"(\d+)", text)
@@ -1804,8 +1871,21 @@ def _check_steps(s: Scenario, problems: _Problems, steps: Any, sessions: int, sc
                 problems.add(f"{where}.fields.{name}", f"is not a field of map {input_map}")
             elif known is None and input_map != TEXT_SCREEN and name not in any_field:
                 problems.add(f"{where}.fields.{name}", "is not a BMS field of any map")
-            if not isinstance(value, str):
-                problems.add(f"{where}.fields.{name}", f"{value!r} must be text; quote it")
+            if is_run_date_input(value):
+                problem = run_date_input_problem(value)
+                if problem is not None:
+                    problems.add(f"{where}.fields.{name}", problem)
+                elif clock_mode(s) != "relative":
+                    problems.add(
+                        f"{where}.fields.{name}",
+                        "a run-date input stands for a clock the adapter cannot fix, so it needs "
+                        "clock_mode: relative; under the fixed clock write the exact value",
+                    )
+            elif not isinstance(value, str):
+                problems.add(
+                    f"{where}.fields.{name}",
+                    f"{value!r} must be text (quote it) or a run-date input {{{RUN_DATE_INPUT}: ...}}",
+                )
         if input_map in (None, SIGN_ON_MAP):
             _check_sign_on(s, problems, where, fields)
 
