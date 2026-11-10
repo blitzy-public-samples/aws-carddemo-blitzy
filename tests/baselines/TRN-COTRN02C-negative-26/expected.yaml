@@ -1,0 +1,77 @@
+# Derived baseline of scenario TRN-COTRN02C-negative-26 (capture_platform:
+# derived), authored from the source and never observed: no TPE region runs in
+# CI. Open until a UniKix run is imported: GAP-INF-007 (derived TRN end-to-end
+# baselines) and GAP-INF-012 (online-only copybooks such as COTTL01Y and
+# CSDAT01Y).
+# Step 1: USER0001 (user type U) signs on and COSGN00C transfers control to
+# COMEN01C, which sends its menu with a blank message; option 8 is built as
+# '08. Transaction Add' [app/cbl/COSGN00C.cbl:230-237]
+# [app/cbl/COMEN01C.cbl:236-276] [app/cpy/COMEN02Y.cpy:67-72].
+# Step 2: option 8 transfers control to COTRN02C, whose first entry moves
+# LOW-VALUES to COTRN2AO and sends COTRN02 with its CT02 header and a blank
+# message; nothing is pre-filled [app/cbl/COTRN02C.cbl:115-130,516-571].
+# Step 3: ACTIDIN 99999999999 is numeric, so NUMVAL moves it back unchanged
+# through the 9(11) WS-ACCT-ID-N into XREF-ACCT-ID and ACTIDINI; the CXACAIX
+# read by account id answers NOTFND (the cross-reference holds accounts
+# 00000000001 to 00000000050), so 'Account ID NOT found...' is sent with
+# ERASE and RETURN TRANSID CT02 ends the task [app/cbl/COTRN02C.cbl:193-209,
+# 516-534,576-596]. The card number is never filled from the cross-reference,
+# the data fields are not validated, CONFIRM is not evaluated and
+# ADD-TRANSACTION never runs: the entered values are echoed as received and
+# TRANSACT keeps its 300 fixture records.
+# Values are whole BMS fields with trailing spaces kept (ERRMSG 78, TITLE01 and
+# TITLE02 40, from app/bms/COTRN02.bms and app/cpy/COTTL01Y.cpy), because
+# screens and messages compare exactly. messages holds each step's ERRMSG in
+# step order. CURDATE and CURTIME come from the region clock, so they are
+# matchers.
+file_state:
+  TRANSACT:
+    count: 300
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Account ID NOT found...                                                       '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN008: '08. Transaction Add                     '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  ACTIDIN: '           '
+  CARDNIN: '                '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CT02
+- '@map': COTRN02
+  ACTIDIN: '99999999999'
+  CARDNIN: '                '
+  CONFIRM: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Account ID NOT found...                                                       '
+  MCITY: 'Testville                '
+  MID: '800000001'
+  MNAME: 'Test Merchant                 '
+  MZIP: '27601     '
+  PGMNAME: COTRN02C
+  TCATCD: '0001'
+  TDESC: 'Test purchase                                               '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-07-01'
+  TPROCDT: '2022-07-01'
+  TRNAMT: '+00000012.34'
+  TRNNAME: CT02
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'

@@ -1,0 +1,74 @@
+# Derived baseline of scenario TRN-COTRN02C-negative-02: USER0001 signs on,
+# takes main-menu option 8 and, on COTRN02 (transaction CT02), enters a valid
+# transaction for card 0500024453765740 with CONFIRM X, which is refused.
+# Authored from the source, never captured:
+# - app/cbl/COSGN00C.cbl:230-237 (type U -> COMEN01C) and
+#   app/cbl/COMEN01C.cbl:82-90,115-156 with app/cpy/COMEN02Y.cpy (option 8
+#   'Transaction Add' -> COTRN02C, context 0, blank ERRMSG on the menu);
+# - app/cbl/COTRN02C.cbl:112-130 (first entry: LOW-VALUES map, nothing
+#   selected because COMEN01C passes only the COCOM01Y COMMAREA, blank ERRMSG);
+# - app/cbl/COTRN02C.cbl:193-230,609-637: ACTIDIN holds its INITIAL blank, so
+#   the card branch runs; the card is rewritten through PIC 9(16) unchanged and
+#   READ CCXREF returns record 1 of app/data/ASCII/cardxref.txt, whose account
+#   00000000050 is moved into ACTIDIN;
+# - app/cbl/COTRN02C.cbl:235-437: every data edit passes; NUMVAL-C and the
+#   PIC +99999999.99 edit write +00000012.34 back into TRNAMT;
+# - app/cbl/COTRN02C.cbl:169-188: CONFIRM X falls to WHEN OTHER, and
+#   SEND-TRNADD-SCREEN sends COTRN02 with ERASE, then RETURN TRANSID CT02
+#   [app/cbl/COTRN02C.cbl:516-534]; ADD-TRANSACTION never runs, so TRANSACT
+#   keeps its 300 fixture records [app/cbl/COTRN02C.cbl:442-466].
+# Header fields from app/cpy/COTTL01Y.cpy and app/cpy/CSDAT01Y.cpy via
+# POPULATE-HEADER-INFO [app/cbl/COTRN02C.cbl:552-571]; CURDATE and CURTIME
+# come from the region clock, so they are matchers. COTRN2AO redefines the
+# received COTRN2AI, so the entry fields echo as BMS padded them with blanks
+# to their app/bms/COTRN02.bms lengths; text keeps its trailing spaces.
+# One screen per step, each shown after the step's AID; messages holds each
+# step's ERRMSG. Only `report.py --import-unikix` promotes this baseline, from
+# imported UniKix evidence; it is never edited by hand to match a run.
+file_state:
+  TRANSACT:
+    count: 300
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Invalid value. Valid values are (Y/N)...                                      '
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CT02
+- '@map': COTRN02
+  ACTIDIN: '00000000050'
+  CARDNIN: '0500024453765740'
+  CONFIRM: X
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Invalid value. Valid values are (Y/N)...                                      '
+  MCITY: 'Testville                '
+  MID: '800000001'
+  MNAME: 'Test Merchant                 '
+  MZIP: '27601     '
+  PGMNAME: COTRN02C
+  TCATCD: '0001'
+  TDESC: 'Test purchase                                               '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-07-01'
+  TPROCDT: '2022-07-01'
+  TRNAMT: '+00000012.34'
+  TRNNAME: CT02
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'

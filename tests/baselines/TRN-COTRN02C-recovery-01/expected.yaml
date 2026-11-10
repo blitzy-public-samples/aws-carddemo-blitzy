@@ -1,0 +1,115 @@
+# Derived baseline of scenario TRN-COTRN02C-recovery-01: USER0001 signs on,
+# takes main menu option 8 to COTRN02C (CT02) and, on COTRN02, enters account
+# 00000000001 with Card # blank and a valid transaction confirmed with Y while
+# the region file CXACAIX is unavailable. Authored from the source, never
+# captured:
+# - app/cbl/COSGN00C.cbl:230-237 (type U routed to COMEN01C) and
+#   app/cbl/COMEN01C.cbl:79-90,182-194 (first entry: COMEN01 from a cleared
+#   map, CM00, COMEN01C, ERRMSG from the blank WS-MESSAGE);
+# - app/cbl/COMEN01C.cbl:115-156 with app/cpy/COMEN02Y.cpy:67-72 (option 8
+#   'Transaction Add', user type U, program COTRN02C; XCTL with
+#   CDEMO-PGM-CONTEXT 0 and the COCOM01Y COMMAREA only);
+# - app/cbl/COTRN02C.cbl:109-130,516-534 (first entry: the short COMMAREA
+#   leaves CDEMO-CT02-TRN-SELECTED blank, so no lookup runs; LOW-VALUES to
+#   COTRN2AO, so every input field is sent empty and captured as spaces, and
+#   ERRMSG is the blank WS-MESSAGE);
+# - app/cbl/COTRN02C.cbl:164-167,195-209 (ENTER: ACTIDIN is supplied and
+#   numeric, NUMVAL through WS-ACCT-ID-N PIC 9(11) gives the same 11 digits)
+#   and 576-604 (READ-CXACAIX-FILE: a response other than NORMAL or NOTFND
+#   moves 'Unable to lookup Acct in XREF AIX file...' to WS-MESSAGE and
+#   performs SEND-TRNADD-SCREEN; the RESP/REAS DISPLAY goes to the region log
+#   and is not asserted);
+# - app/cbl/COTRN02C.cbl:516-534 (SEND-TRNADD-SCREEN ends the task with
+#   RETURN TRANSID CT02, so the data fields are never validated, CONFIRM is
+#   never acted on and TRANSACT is neither browsed nor written: it keeps the
+#   300 records the preconditions build from DALYTRAN, the highest key intact);
+# - app/cpy-bms/COTRN02.CPY:145 (COTRN2AO redefines COTRN2AI, so the screen
+#   sent back carries the values as received, padded by BMS to field length,
+#   and the empty Card # as spaces);
+# - header fields from app/cbl/COTRN02C.cbl:552-571 with app/cpy/COTTL01Y.cpy
+#   and app/cpy/CSDAT01Y.cpy.
+# Open under GAP-INF-007 (derived TRN end-to-end baselines) and GAP-INF-012
+# (online-only copybooks); the fault needs region file control (GAP-MIS-011).
+# Only `report.py --import-unikix` replaces it, from imported UniKix evidence
+# (MINOR bump when the decoded outcome is equal, MAJOR when it differs); it is
+# never edited by hand to match a run.
+# One screen per step, each the screen shown after the step's AID; messages
+# holds each step's ERRMSG. Text is full BMS field width with trailing spaces.
+# CURDATE and CURTIME come from the region clock, which UniKix cannot fix,
+# hence the matchers.
+file_state:
+  TRANSACT:
+    contains:
+    - TRAN-AMT: '603.22'
+      TRAN-CARD-NUM: '3260763612337560'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+      TRAN-ID: 0000000996722787
+      TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+      TRAN-MERCHANT-ID: '800000000'
+      TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+      TRAN-MERCHANT-ZIP: 53200-7529
+      TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+      TRAN-PROC-TS: '                          '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    count: 300
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Unable to lookup Acct in XREF AIX file...                                     '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  ACTIDIN: '           '
+  CARDNIN: '                '
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  MCITY: '                         '
+  MID: '         '
+  MNAME: '                              '
+  MZIP: '          '
+  PGMNAME: COTRN02C
+  TCATCD: '    '
+  TDESC: '                                                            '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '          '
+  TPROCDT: '          '
+  TRNAMT: '            '
+  TRNNAME: CT02
+  TRNSRC: '          '
+  TTYPCD: '  '
+- '@map': COTRN02
+  ACTIDIN: '00000000001'
+  CARDNIN: '                '
+  CONFIRM: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Unable to lookup Acct in XREF AIX file...                                     '
+  MCITY: 'Testville                '
+  MID: '800000001'
+  MNAME: 'Test Merchant                 '
+  MZIP: '27601     '
+  PGMNAME: COTRN02C
+  TCATCD: '0001'
+  TDESC: 'Test purchase                                               '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-07-01'
+  TPROCDT: '2022-07-01'
+  TRNAMT: '+00000012.34'
+  TRNNAME: CT02
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'
