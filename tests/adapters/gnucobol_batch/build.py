@@ -1390,10 +1390,16 @@ class _Task:
 
 
 # How often a running compile checks its deadline and its cancellation, and
-# how long the output of a killed compile may stay open before it is closed
-# unread.
+# how long the kill of a compile may take to drain its output and reap its
+# leader before the output is closed unread and an unreaped leader retained.
 _COMPILE_POLL_S = 0.1
 _REAP_TIMEOUT_S = 10
+
+# The compiles whose leader was still unreaped _REAP_TIMEOUT_S after the kill
+# of their group, such as one stuck in the kernel with the kill pending. They
+# are held here, never dropped unreaped, until _reap_retained reaps them.
+_UNREAPED: set[subprocess.Popen[bytes]] = set()
+_UNREAPED_LOCK = threading.Lock()
 
 
 class _Cancel:
@@ -1415,29 +1421,80 @@ class _Cancel:
         return self._event.is_set()
 
 
-def _kill_group(process: subprocess.Popen[bytes]) -> tuple[bytes, bytes, str]:
-    """Kill the process group of ``process``, which it leads, reap it, and
-    return the stdout and stderr written until then with a note for the log
-    status, empty unless the output had to be closed unread.
+def _signal_group(process: subprocess.Popen[bytes]) -> str:
+    """Send SIGKILL to the process group of ``process``, which it leads, and
+    return a note for the log status, empty unless the signal failed.
 
     The group is signalled only while its leader is unreaped: until then the
-    leader's pid, the group id, cannot be reused, so no other group is hit."""
-    if process.returncode is None:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass  # the group has already gone
-    process.wait()
+    leader's pid, the group id, cannot be reused, so no other group is hit. A
+    failure other than a group already gone is noted, never raised, and the
+    group is not taken to be gone."""
+    if process.returncode is not None:
+        return ""
     try:
-        stdout, stderr = process.communicate(timeout=_REAP_TIMEOUT_S)
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # no process of the group is left to signal
+    except OSError as exc:
+        return f"; cannot kill process group {process.pid}: {exc}"
+    return ""
+
+
+def _reap_retained() -> None:
+    """Retry every compile in ``_UNREAPED`` without waiting: one whose leader
+    is reaped now is dropped, and one still unreaped has its group signalled
+    again and stays, also when that signal fails."""
+    with _UNREAPED_LOCK:
+        for process in list(_UNREAPED):
+            if process.poll() is None:
+                _signal_group(process)
+            if process.poll() is not None:
+                _UNREAPED.discard(process)
+
+
+def _kill_group(
+    process: subprocess.Popen[bytes], stdout: bytes, stderr: bytes
+) -> tuple[bytes, bytes, str]:
+    """Kill the process group of ``process`` (``_signal_group``), then drain
+    its output and reap its leader within ``_REAP_TIMEOUT_S``; return the
+    stdout and stderr read with a note for the log status, empty unless the
+    teardown left something unresolved. ``stdout`` and ``stderr`` are the
+    output read before the kill, returned for a stream the drain yields
+    nothing of.
+
+    Output still open at the bound is closed unread. When the leader is then
+    reaped, a process that left the group held the output; when the leader is
+    still unreaped, the process is retained in ``_UNREAPED``, so it is never
+    lost, and the note names its group and the bound. The compiles retained earlier
+    are retried first (``_reap_retained``). Nothing here waits past the
+    bound."""
+    _reap_retained()
+    note = _signal_group(process)
+    try:
+        drained_stdout, drained_stderr = process.communicate(timeout=_REAP_TIMEOUT_S)
     except subprocess.TimeoutExpired as exc:
-        # A process that left the group still holds the pipes.
+        # The output read so far. A stream nothing was read from carries none,
+        # as does a reap that times out once the output has ended, so the
+        # output read before the kill stands.
+        if exc.stdout is not None:
+            stdout = exc.stdout
+        if exc.stderr is not None:
+            stderr = exc.stderr
         for pipe in (process.stdout, process.stderr):
             if pipe is not None:
                 pipe.close()
-        note = f"; output still open {_REAP_TIMEOUT_S} s after the kill was closed unread"
-        return exc.stdout or b"", exc.stderr or b"", note
-    return stdout or b"", stderr or b"", ""
+        if process.poll() is None:
+            with _UNREAPED_LOCK:
+                _UNREAPED.add(process)
+            return stdout, stderr, (
+                f"{note}; process group {process.pid} still unreaped {_REAP_TIMEOUT_S} s after "
+                f"the kill: its output was closed unread and the process is retained to be "
+                f"reaped later"
+            )
+        # A process that left the group still holds the pipes.
+        note += f"; output still open {_REAP_TIMEOUT_S} s after the kill was closed unread"
+        return stdout, stderr, note
+    return drained_stdout or b"", drained_stderr or b"", note
 
 
 def _write_compile_log(
@@ -1466,8 +1523,11 @@ def _run_compile(
 
     The compiler starts a new session, so it and every process it starts form
     a process group of their own. When ``COMPILE_TIMEOUT_S`` passes or
-    ``cancel`` is set, that group is killed and reaped, and the log keeps the
-    output written until then. An exception while waiting, such as
+    ``cancel`` is set, that group is killed, its output drained and its leader
+    reaped within ``_REAP_TIMEOUT_S`` (``_kill_group``), and the log keeps the
+    output read until then. A teardown problem, such as a failed signal or a
+    leader still unreaped and so retained, is added to the log status and to
+    the failure detail. An exception while waiting, such as
     ``KeyboardInterrupt``, does the same and is re-raised once the log is
     written. A compile cancelled before it starts runs nothing and logs why."""
     artifact = task.base / task.job.artifact
@@ -1495,22 +1555,26 @@ def _run_compile(
                     stdout, stderr = process.communicate(
                         timeout=min(_COMPILE_POLL_S, max(0.0, deadline - time.monotonic()))
                     )
-                except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired as exc:
+                    # The output read so far, kept should the kill drain none.
+                    # A wait that times out once the output has ended carries
+                    # none, so what was read before stands.
+                    stdout, stderr = exc.stdout or stdout, exc.stderr or stderr
                     if cancel.is_set():
                         detail = f"cancelled: {cancel.reason}"
                     elif time.monotonic() >= deadline:
                         detail = f"timed out after {COMPILE_TIMEOUT_S} s"
                     else:
                         continue
-                    stdout, stderr, note = _kill_group(process)
-                    status = detail + note
+                    stdout, stderr, note = _kill_group(process, stdout, stderr)
+                    status = detail = detail + note
                 else:
                     status = f"exit {process.returncode}"
                     if process.returncode != 0:
                         detail = f"{task.job.tool} exited {process.returncode}"
                 break
         except BaseException as exc:
-            stdout, stderr, note = _kill_group(process)
+            stdout, stderr, note = _kill_group(process, stdout, stderr)
             _write_compile_log(
                 task, argv, f"interrupted by {type(exc).__name__}{note}", stdout, stderr,
                 workspace,
@@ -1597,12 +1661,17 @@ def _compile_all(
     nothing, and a running one has its process group killed, each logging
     why. Earlier tasks still finish, so the failure reported is the one a run
     without cancellation would report. An exception in the calling thread,
-    such as ``KeyboardInterrupt``, cancels every task and is re-raised once no
-    compiler process is left. In the main thread SIGTERM and SIGHUP do the
-    same as ``_Terminated`` (``_stop_signals_raise``), raised once the
-    previous dispositions are restored. Every log a task wrote stays in
-    ``workspace``; the caller keeps it and then acts on a ``_Terminated`` as
-    the signal's disposition would have (``_resume_signal``)."""
+    such as ``KeyboardInterrupt``, cancels every task and is re-raised once
+    every running task has killed its process group and, within
+    ``_REAP_TIMEOUT_S``, reaped its leader or retained it unreaped
+    (``_kill_group``), so the wait for the tasks is bounded. In the main
+    thread SIGTERM and SIGHUP do the same as ``_Terminated``
+    (``_stop_signals_raise``), raised once the previous dispositions are
+    restored. Every log a task wrote stays in ``workspace``; the caller keeps
+    it and then acts on a ``_Terminated`` as the signal's disposition would
+    have (``_resume_signal``). The compiles an earlier build retained
+    unreaped are retried first (``_reap_retained``)."""
+    _reap_retained()
     (workspace / "tmp").mkdir(parents=True, exist_ok=True)
     cancels = [_Cancel() for _ in tasks]
     first: int | None = None

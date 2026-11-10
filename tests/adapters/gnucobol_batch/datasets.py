@@ -5,11 +5,20 @@ Process helpers
     ``run_process`` runs one subprocess in its own process group under the
     scenario deadline (a ``time.monotonic()`` value, as the runner sets
     ``Adapter.deadline``) and kills the whole group when the deadline passes,
-    raising ``adapters.base.ScenarioTimeout``. ``kill_all`` kills the groups
-    still running, for ``Adapter.cleanup``. ``runtime_env`` builds the fresh
-    environment every program, loader and unloader runs with; nothing of the
-    caller's environment is inherited, and ``COB_FILE_PATH`` is never set, so
-    the absolute ``DD_<ddname>`` paths are used as given.
+    raising ``ProcessTimeout``, an ``adapters.base.ScenarioTimeout`` that
+    carries the output captured until then. A group stays registered until
+    its leader is reaped and the group is confirmed empty, every step of that
+    bounded. A group is signalled only while its leader is unreaped, as the
+    leader's pid, alive or a zombie, then reserves the group id; the check
+    and the signal hold one lock that every reap of a leader holds too, and
+    once the leader is reaped the group is only probed, so no signal reaches
+    a group that has since been given the id. ``kill_all``, for
+    ``Adapter.cleanup``, ends the groups still registered and raises
+    ``DatasetError`` for any it cannot confirm, which stay registered.
+    ``runtime_env`` builds the fresh environment every program, loader and
+    unloader runs with; nothing of the caller's environment is inherited,
+    and ``COB_FILE_PATH`` is never set, so the absolute ``DD_<ddname>``
+    paths are used as given.
 
 ``DatasetStore``
     The physical files of one scenario, all under ``<workdir>/data/``.
@@ -69,6 +78,8 @@ from __future__ import annotations
 
 import os
 import re
+import select
+import selectors
 import shutil
 import signal
 import subprocess
@@ -97,7 +108,7 @@ from adapters.gnucobol_batch.build import (
     KeyProfile,
     profile_for,
 )
-from harness import FIXTURES_FILE, HarnessError, dump_yaml, load_yaml, write_text
+from harness import FIXTURES_FILE, REPO_ROOT, HarnessError, dump_yaml, load_yaml, write_text
 
 __all__ = [
     "AIX",
@@ -116,6 +127,7 @@ __all__ = [
     "GenerationRef",
     "JobGenerations",
     "ProcessResult",
+    "ProcessTimeout",
     "dataset_specs",
     "generation_name",
     "idcams_statements",
@@ -160,6 +172,10 @@ _UNLOADED_RE = re.compile(r"^UNLOADED ([0-9]{9})\s*$")
 _OPEN_MODES = ("input", "output", "io", "extend")
 _WRITE_MODES = frozenset({"output", "io", "extend"})
 _REAP_TIMEOUT_S = 10
+_REAP_POLL_S = 0.05  # interval of the probes that confirm a killed group is empty
+_EXIT_POLL_MIN_S = 0.0005  # first interval of the wait for a leader's exit, as in Popen.wait
+_EXIT_POLL_MAX_S = 0.05  # its longest interval; each one doubles the previous
+_READ_SIZE = 32768  # bytes read from a subprocess pipe at a time
 _MAX_GENERATION = 9999
 
 
@@ -188,17 +204,283 @@ class ProcessResult:
     elapsed_s: float
 
 
-# Process groups started by run_process and not yet reaped, by group id. Only
-# kill_all reads it from outside a run; it never holds a finished process.
+class ProcessTimeout(ScenarioTimeout):
+    """The scenario deadline passed while ``run_process`` waited, and the
+    process group was killed. As a ``ScenarioTimeout`` it makes the scenario
+    ``failing`` with reason ``timeout``; its attributes are the raw evidence.
+
+    ``argv`` is the command. ``stdout`` and ``stderr`` hold every byte read
+    before the kill and from the pipes after it; ``output_complete`` is false
+    when the pipes could not be read to their end after the kill, because one
+    was still open ``_REAP_TIMEOUT_S`` later (held by a process that left the
+    group or is stuck in the kernel) or reading failed; the detail says which.
+    ``elapsed_s`` is the time from the start to the deadline. ``returncode``
+    and ``signal`` describe the reaped leader as in ``ProcessResult``; both
+    are ``None`` while it is unreaped. ``teardown_problems`` is empty when the
+    leader was reaped and the group confirmed empty; otherwise it says what
+    failed, and ``retained`` is true: the group stays registered for
+    ``kill_all``. Every argument has a default only so that the exception
+    copies and pickles as any other does."""
+
+    def __init__(
+        self,
+        detail: str = "",
+        *,
+        argv: Sequence[str] = (),
+        stdout: bytes = b"",
+        stderr: bytes = b"",
+        output_complete: bool = True,
+        elapsed_s: float = 0.0,
+        returncode: int | None = None,
+        signal: int | None = None,
+        teardown_problems: Sequence[str] = (),
+        retained: bool = False,
+    ) -> None:
+        super().__init__(detail)
+        self.argv = tuple(argv)
+        self.stdout = stdout
+        self.stderr = stderr
+        self.output_complete = output_complete
+        self.elapsed_s = elapsed_s
+        self.returncode = returncode
+        self.signal = signal
+        self.teardown_problems = tuple(teardown_problems)
+        self.retained = retained
+
+
+# Process groups started by run_process, by group id (the leader's pid). An
+# entry leaves only when its leader is reaped and its group confirmed empty,
+# so a group whose teardown failed stays for kill_all to retry. A group is
+# signalled only while its leader is unreaped, because the leader's pid,
+# alive or a zombie, then reserves the id; once the leader is reaped, the id
+# is free for any new process as soon as the last member ends, so the group
+# is only probed. A new leader given a registered id replaces that entry,
+# which proves the old group ended: the kernel reuses a pid only once no
+# process has it as its pid, group id or session id.
 _LIVE: dict[int, subprocess.Popen[bytes]] = {}
 _LIVE_LOCK = threading.Lock()
+# Held by every reap of a run_process leader (_reap) and by every signal to
+# its group (_kill_unreaped), so the check that the leader is unreaped and
+# the signal are one step against any reap; never held across a wait, and
+# never together with _LIVE_LOCK.
+_REAP_LOCK = threading.Lock()
 
 
-def _kill_group(pgid: int) -> None:
+def _release(pgid: int, process: subprocess.Popen[bytes]) -> None:
+    """Drop the confirmed group of ``process`` from ``_LIVE``, unless a newer
+    leader holds its id."""
+    with _LIVE_LOCK:
+        if _LIVE.get(pgid) is process:
+            del _LIVE[pgid]
+
+
+def _owns(pgid: int, process: subprocess.Popen[bytes]) -> bool:
+    """Whether ``process`` still holds the ``_LIVE`` entry of ``pgid``. An
+    entry it no longer holds was released once its group was confirmed, or
+    replaced by a newer leader given the id; either way its group ended."""
+    with _LIVE_LOCK:
+        return _LIVE.get(pgid) is process
+
+
+def _program(process: subprocess.Popen[bytes]) -> str:
+    return Path(os.fspath(process.args[0])).name
+
+
+def _status(code: int | None) -> tuple[int | None, int | None]:
+    """``(returncode, signal)`` of a ``Popen.returncode``, as in
+    ``ProcessResult``; ``(None, None)`` for a process not yet reaped."""
+    if code is None:
+        return None, None
+    return (code, None) if code >= 0 else (None, -code)
+
+
+def _kill_group(pgid: int) -> str:
+    """Send SIGKILL to process group ``pgid``. Only ``_kill_unreaped`` calls
+    it, holding ``_REAP_LOCK`` with the group's leader unreaped, so the id is
+    still this group's. Returns why it failed, or "" when it was sent or the
+    group has no member left (ESRCH). A failure, EPERM included, leaves
+    members unsignalled and is never taken for success; a success may still
+    have skipped members the kernel would not let this process signal, so
+    only ``_group_left`` shows the group ended."""
     try:
         os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass  # the group has already gone
+    except ProcessLookupError:
+        return ""  # ESRCH: no member is left to signal
+    except OSError as exc:
+        return f"SIGKILL to process group {pgid} failed: {exc}"
+    return ""
+
+
+def _group_left(pgid: int) -> str:
+    """Why process group ``pgid`` may still have members, or "" once it has
+    none. ``killpg(pgid, 0)`` only checks and sends nothing: ESRCH proves
+    the group empty, success or EPERM shows a member alive, and any other
+    error leaves it unknown. A member that has exited counts until its
+    parent reaps it."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return ""
+    except PermissionError:
+        return f"process group {pgid} has members this process may not signal"
+    except OSError as exc:
+        return f"process group {pgid} cannot be probed: {exc}"
+    return f"process group {pgid} still has members"
+
+
+def _unreaped(process: subprocess.Popen[bytes]) -> bool:
+    """Whether the leader ``process`` is unreaped, alive or a zombie, so that
+    its pid still reserves its group id; the caller holds ``_REAP_LOCK``.
+    The kernel confirms it: ``waitid`` with ``WNOWAIT`` reaps nothing and
+    fails with ECHILD once the pid is no longer a child of this process."""
+    if process.returncode is not None:
+        return False
+    try:
+        os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    except ChildProcessError:
+        return False
+    return True
+
+
+def _kill_unreaped(process: subprocess.Popen[bytes], pgid: int) -> str:
+    """Send SIGKILL to process group ``pgid`` if its leader ``process`` is
+    unreaped, the check and the signal under ``_REAP_LOCK``, the only way
+    the group is signalled. A reaped leader no longer reserves the id, so
+    its group is left unsignalled. Returns why the signal failed, or ""
+    (``_kill_group``)."""
+    with _REAP_LOCK:
+        if not _unreaped(process):
+            return ""
+        return _kill_group(pgid)
+
+
+def _reap(process: subprocess.Popen[bytes]) -> bool:
+    """Reap the leader ``process`` if it has exited, under ``_REAP_LOCK``,
+    the only way a ``run_process`` leader is reaped; ``Popen.poll`` never
+    blocks. Returns whether it is reaped."""
+    with _REAP_LOCK:
+        return process.poll() is not None
+
+
+def _exited(process: subprocess.Popen[bytes], until: float) -> bool:
+    """Wait, without reaping, until the leader ``process`` has exited or
+    ``time.monotonic()`` reaches ``until``; returns whether it exited. It is
+    polled with ``waitid`` and ``WNOWAIT``, which leaves an exited leader a
+    zombie that still reserves its group id, at intervals doubling from
+    ``_EXIT_POLL_MIN_S`` to ``_EXIT_POLL_MAX_S`` as in ``Popen.wait``.
+    ECHILD means it was already reaped, by another thread through ``_reap``,
+    and its ``returncode`` stands."""
+    delay = _EXIT_POLL_MIN_S
+    while True:
+        if process.returncode is not None:
+            return True
+        try:
+            state = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if state is not None:
+                return True
+        except ChildProcessError:
+            return True
+        remaining = until - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(delay, remaining))
+        delay = min(delay * 2, _EXIT_POLL_MAX_S)
+
+
+def _terminate(process: subprocess.Popen[bytes], pgid: int) -> tuple[str, ...]:
+    """End process group ``pgid``, which ``process`` leads, within
+    ``_REAP_TIMEOUT_S``: kill it while its leader is unreaped, wait for the
+    leader's exit, reap it and confirm the group is empty. Returns the
+    teardown problems, none once the leader is reaped and the group
+    confirmed empty; a failure is reported, never raised.
+
+    The SIGKILL (``_kill_unreaped``) is sent only while the leader is
+    unreaped, alive or a zombie, and reaches every member then in the group;
+    a leader already reaped, by this call or an earlier one, is never
+    signalled. After the reap the group is only probed (``_group_left``)
+    until it is empty: once its last member ends the id may pass to an
+    unrelated group, so a member that outlives the bound is reported, never
+    signalled. A group whose ``_LIVE`` entry ``process`` no longer holds
+    (``_owns``) has ended and counts as confirmed."""
+    until = time.monotonic() + _REAP_TIMEOUT_S
+    problems = [_kill_unreaped(process, pgid)]
+    if not (_exited(process, until) and _reap(process)):
+        problems.append(f"leader {process.pid} not reaped within {_REAP_TIMEOUT_S} s")
+        return tuple(problem for problem in problems if problem)
+    while _owns(pgid, process) and (left := _group_left(pgid)):
+        if time.monotonic() >= until:
+            problems.append(f"{left} after {_REAP_TIMEOUT_S} s")
+            return tuple(problem for problem in problems if problem)
+        time.sleep(_REAP_POLL_S)
+    return ()
+
+
+def _close_pipes(process: subprocess.Popen[bytes]) -> None:
+    # Nothing is ever written through the stdin buffer, so closing never writes.
+    for pipe in (process.stdin, process.stdout, process.stderr):
+        if pipe is not None:
+            pipe.close()
+
+
+def _pump(
+    process: subprocess.Popen[bytes],
+    output: Mapping[str, list[bytes]],
+    until: float,
+    stdin_bytes: bytes = b"",
+) -> bool:
+    """Write ``stdin_bytes`` to the input pipe of ``process`` and read its
+    stdout and stderr pipes into ``output`` (chunks under ``"stdout"`` and
+    ``"stderr"``), closing each pipe when it is done, until all are done or
+    ``time.monotonic()`` reaches ``until``. Returns whether all are done; the
+    others stay open. An input the child stops reading by closing it is done,
+    as in ``Popen.communicate``. The chunks belong to the caller, so nothing
+    read is lost whatever ends the exchange."""
+    view = memoryview(stdin_bytes)
+    offset = 0
+    with selectors.DefaultSelector() as selector:
+        if process.stdin is not None and not process.stdin.closed:
+            if view:
+                selector.register(process.stdin, selectors.EVENT_WRITE)
+            else:
+                process.stdin.close()
+        for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
+            if pipe is not None and not pipe.closed:
+                selector.register(pipe, selectors.EVENT_READ, name)
+        while selector.get_map():
+            remaining = until - time.monotonic()
+            if remaining <= 0:
+                return False
+            for key, _events in selector.select(remaining):
+                if key.data is None:  # the input pipe
+                    try:
+                        offset += os.write(key.fd, view[offset : offset + select.PIPE_BUF])
+                    except BrokenPipeError:
+                        offset = len(view)  # the child closed its input
+                    if offset >= len(view):
+                        selector.unregister(key.fileobj)
+                        key.fileobj.close()
+                    continue
+                data = os.read(key.fd, _READ_SIZE)
+                if data:
+                    output[key.data].append(data)
+                else:
+                    selector.unregister(key.fileobj)
+                    key.fileobj.close()
+    return True
+
+
+def _drain(process: subprocess.Popen[bytes], output: Mapping[str, list[bytes]]) -> str:
+    """Read what is left in the stdout and stderr pipes of a killed group's
+    leader into ``output`` until both end or ``_REAP_TIMEOUT_S`` passes.
+    Returns "" when both ended, else why the capture is incomplete; the
+    caller closes the pipes still open."""
+    try:
+        ended = _pump(process, output, time.monotonic() + _REAP_TIMEOUT_S)
+    except OSError as exc:
+        return f"reading its output after the kill failed: {exc}"
+    if ended:
+        return ""
+    return f"its output was still open {_REAP_TIMEOUT_S} s after the kill and was closed"
 
 
 def run_process(
@@ -212,22 +494,41 @@ def run_process(
     """Run ``argv`` in a new session (its own process group) and wait for it.
 
     ``env`` is the complete environment (``runtime_env`` builds one); when it
-    names no ``HOME``, ``HOME`` is ``cwd``. ``deadline`` is a
-    ``time.monotonic()`` value; without one the wait is bounded by
-    ``DEFAULT_DEADLINE_S``. When the deadline passes, the whole group is
-    killed with SIGKILL and reaped, and ``ScenarioTimeout`` is raised; it is
-    raised without starting anything when the deadline has already passed.
-    Any other interruption (``KeyboardInterrupt`` included) kills the group
-    before it propagates."""
+    names no ``HOME``, ``HOME`` is ``cwd``. ``stdin_bytes``, when given, is
+    written to the program's input, which is then closed; otherwise the input
+    is ``/dev/null``. ``deadline`` is a ``time.monotonic()`` value; without
+    one the wait is bounded by ``DEFAULT_DEADLINE_S``. The run lasts until
+    the leader exits and both output pipes end. A plain ``ScenarioTimeout``
+    is raised without starting anything when the deadline has already passed.
+
+    The group is registered in ``_LIVE`` from the start until its leader is
+    reaped and the group is confirmed empty, so ``kill_all`` can end it from
+    another thread or retry a teardown that failed. The leader's exit is
+    awaited without reaping it, so its pid keeps reserving the group id. A
+    teardown (``_terminate``) kills the group with SIGKILL while the leader
+    is unreaped, reaps the leader and then only probes the group until it is
+    empty, within ``_REAP_TIMEOUT_S``, and never raises:
+
+    - When the deadline passes, the pipes are read for ``_REAP_TIMEOUT_S``
+      more after the teardown, and ``ProcessTimeout`` is raised with all the
+      output captured and the teardown's outcome.
+    - Any other exception (``KeyboardInterrupt`` included) propagates
+      unchanged after the teardown, with a note when the teardown is
+      incomplete.
+    - Members a finished leader leaves in its group are killed while the
+      exited leader is still an unreaped zombie. If the teardown fails, the
+      result is still returned, as an outcome produced before the deadline
+      stands, and ``kill_all`` reports the group."""
     args = [os.fspath(arg) for arg in argv]
     if not args:
         raise DatasetError("run_process needs a command")
     environment = {str(key): str(value) for key, value in env.items()}
     environment.setdefault("HOME", os.fspath(cwd))
+    name = Path(args[0]).name
     started = time.monotonic()
     limit = deadline if deadline is not None else started + DEFAULT_DEADLINE_S
     if limit - started <= 0:
-        raise ScenarioTimeout(f"scenario deadline passed before {Path(args[0]).name} started")
+        raise ScenarioTimeout(f"scenario deadline passed before {name} started")
     try:
         process = subprocess.Popen(
             args,
@@ -243,52 +544,98 @@ def run_process(
     pgid = process.pid
     with _LIVE_LOCK:
         _LIVE[pgid] = process
+    output: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
     try:
+        finished = _pump(process, output, limit, stdin_bytes or b"") and _exited(process, limit)
+    except BaseException as exc:
         try:
-            stdout, stderr = process.communicate(
-                input=stdin_bytes, timeout=max(0.0, limit - time.monotonic())
+            problems = _terminate(process, pgid)
+        finally:
+            _close_pipes(process)
+        if problems:
+            exc.add_note(
+                f"{name}: teardown incomplete, process group {pgid} stays registered for "
+                f"kill_all: {'; '.join(problems)}"
             )
-        except subprocess.TimeoutExpired:
-            _kill_group(pgid)
-            try:
-                process.communicate(timeout=_REAP_TIMEOUT_S)
-            except subprocess.TimeoutExpired:
-                pass  # unkillable leftovers keep their pipes; the group is gone
-            raise ScenarioTimeout(
-                f"{Path(args[0]).name} killed with its process group at the scenario deadline"
-            ) from None
-        except BaseException:
-            _kill_group(pgid)
-            try:
-                process.wait(timeout=_REAP_TIMEOUT_S)
-            except subprocess.TimeoutExpired:
-                pass  # the original exception matters more than a stuck reap
-            raise
-    finally:
-        with _LIVE_LOCK:
-            _LIVE.pop(pgid, None)
-    code = process.returncode
+        else:
+            _release(pgid, process)
+        raise
+    elapsed = time.monotonic() - started
+    if not finished:
+        try:
+            problems = _terminate(process, pgid)
+            unread = _drain(process, output)
+        finally:
+            _close_pipes(process)
+        detail = f"{name} killed with its process group at the scenario deadline"
+        if unread:
+            detail += f"; {unread}"
+        if problems:
+            detail += (
+                f"; teardown incomplete, the group stays registered for kill_all: "
+                f"{'; '.join(problems)}"
+            )
+        else:
+            _release(pgid, process)
+        returncode, killed_by = _status(process.returncode)
+        raise ProcessTimeout(
+            detail,
+            argv=args,
+            stdout=b"".join(output["stdout"]),
+            stderr=b"".join(output["stderr"]),
+            output_complete=not unread,
+            elapsed_s=elapsed,
+            returncode=returncode,
+            signal=killed_by,
+            teardown_problems=problems,
+            retained=bool(problems),
+        )
+    # The leader has exited unreaped (unless a concurrent kill_all reaped it),
+    # so its zombie reserves the group id: kill the members it left in the
+    # group, then reap it and probe the group. An unconfirmed teardown keeps
+    # the group registered for kill_all to report; this outcome, produced
+    # before the deadline, stands.
+    if not _terminate(process, pgid):
+        _release(pgid, process)
+    returncode, killed_by = _status(process.returncode)
     return ProcessResult(
-        returncode=code if code >= 0 else None,
-        signal=-code if code < 0 else None,
-        stdout=stdout,
-        stderr=stderr,
-        elapsed_s=time.monotonic() - started,
+        returncode=returncode,
+        signal=killed_by,
+        stdout=b"".join(output["stdout"]),
+        stderr=b"".join(output["stderr"]),
+        elapsed_s=elapsed,
     )
 
 
 def kill_all() -> None:
-    """Kill and reap every process group ``run_process`` started that is still
-    running. Idempotent; ``Adapter.cleanup`` and ``Adapter.close`` call it."""
+    """End every process group ``run_process`` registered: one still running
+    in another thread, or one whose teardown could not be confirmed. Each is
+    torn down as ``_terminate`` does, within ``_REAP_TIMEOUT_S``, and
+    released: killed only while its leader is unreaped, its leader reaped,
+    and the group confirmed empty; the group of a leader already reaped is
+    only probed, never signalled. An entry of the snapshot that its process
+    no longer holds, because its run released it or a newer leader was
+    given the id, has ended and is skipped. A group that cannot be confirmed
+    stays registered for a later call, and once every group has been tried,
+    ``DatasetError`` names each with its id, program and problems. With no
+    group registered it does nothing; ``Adapter.cleanup`` and
+    ``Adapter.close`` call it."""
     with _LIVE_LOCK:
         live = list(_LIVE.items())
-        _LIVE.clear()
+    unconfirmed: list[str] = []
     for pgid, process in live:
-        _kill_group(pgid)
-        try:
-            process.wait(timeout=_REAP_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            pass  # a process stuck in the kernel; nothing more can be done
+        if not _owns(pgid, process):
+            continue
+        problems = _terminate(process, pgid)
+        if problems:
+            unconfirmed.append(f"group {pgid} ({_program(process)}): {'; '.join(problems)}")
+        else:
+            _release(pgid, process)
+    if unconfirmed:
+        raise DatasetError(
+            "kill_all could not confirm the end of these process groups, which stay "
+            "registered: " + " | ".join(unconfirmed)
+        )
 
 
 def runtime_env(
@@ -540,8 +887,10 @@ class DatasetStore:
     ``cache`` is the ``build.BuildCache`` whose loaders and unloaders build and
     read indexed files; ``deadline_fn`` returns the scenario deadline (a
     ``time.monotonic()`` value, or ``None``) for every subprocess, so a load
-    or unload that overruns it raises ``ScenarioTimeout``. Every path the
-    store writes must lie inside ``workdir``."""
+    or unload that overruns it raises ``ScenarioTimeout``. ``workdir`` may
+    not be the repository, lie inside it or contain it (``DatasetError``,
+    with or without a cache), and every path the store writes, its metadata
+    included, must lie inside ``workdir``."""
 
     def __init__(
         self,
@@ -550,6 +899,19 @@ class DatasetStore:
         deadline_fn: Callable[[], float | None] | None = None,
     ) -> None:
         self.workdir = Path(workdir).resolve()
+        # ``inside`` trusts the working directory as its boundary, and work on
+        # sequential files needs no build cache, so ``ensure_built``'s own
+        # repository guard may never have run: the store checks for itself.
+        repository = REPO_ROOT.resolve()
+        if (
+            self.workdir == repository
+            or repository in self.workdir.parents
+            or self.workdir in repository.parents
+        ):
+            raise DatasetError(
+                f"the scenario working directory {self.workdir} is, lies inside or contains "
+                f"the repository {repository}; nothing may be written in the repository"
+            )
         self.cache = cache
         self.data_dir = self.workdir / DATA_DIR
         self.evidence_dir = self.workdir / EVIDENCE_DIR
@@ -645,14 +1007,23 @@ class DatasetStore:
         self._write_profiles()
 
     def _write_profiles(self) -> None:
+        """Rewrite ``data/profiles.yaml``. The file and its directory are
+        resolved and confined before anything is created, because
+        ``write_text`` follows a symlink and writes beside its target: a link
+        leading outside the working directory, dangling or not, is refused
+        with ``DatasetError`` and its target is neither created nor changed."""
         records = {self.relative(path): profile.name for path, profile in self._profiles.items()}
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        write_text(self.data_dir / _PROFILES_EVIDENCE, dump_yaml(records))
+        destination = self.inside(self.data_dir / _PROFILES_EVIDENCE)
+        self.inside(destination.parent).mkdir(parents=True, exist_ok=True)
+        write_text(destination, dump_yaml(records))
 
     def log_rekey(self, line: str) -> None:
-        """Append one line to ``evidence/rekey.log``."""
-        self.evidence_dir.mkdir(parents=True, exist_ok=True)
-        with open(self.inside(self.evidence_dir / _REKEY_LOG), "a", encoding="utf-8") as log:
+        """Append one line to ``evidence/rekey.log``. The log and its
+        directory are confined, as for ``data/profiles.yaml``, before
+        anything is created."""
+        destination = self.inside(self.evidence_dir / _REKEY_LOG)
+        self.inside(destination.parent).mkdir(parents=True, exist_ok=True)
+        with open(destination, "a", encoding="utf-8") as log:
             log.write(line + "\n")
 
     # -- sequential files --------------------------------------------------
@@ -715,16 +1086,17 @@ class DatasetStore:
         )
         return f"{status}: {' | '.join(line for line in text.splitlines() if line.strip())}"
 
-    def _loader(
-        self, mode: str, path: Path, profile: KeyProfile, data: bytes | None
-    ) -> tuple[list[int], int | None]:
-        """Run ``KSLOAD <mode>``; returns the duplicate record numbers (1-based
-        SEQIN positions) and the loaded count (``None`` for ``CREATE``)."""
+    def _checked_input(
+        self, path: Path, profile: KeyProfile, data: bytes | None
+    ) -> tuple[BuildCache, bytes | None]:
+        """The build cache and ``data`` as ``bytes`` for a ``KSLOAD`` of
+        ``path`` with ``profile``, once the cache is present, ``profile`` is a
+        ``KeyProfile`` and ``data`` (``None`` for ``CREATE``) is whole records
+        of its length; ``DatasetError`` otherwise. No file is touched, so a
+        caller checks this before it replaces anything."""
         cache = self._require_cache()
         if not isinstance(profile, KeyProfile):
             raise DatasetError(f"a KeyProfile is required, got {profile!r}")
-        dds = {KSDS_DD: path}
-        seqin: Path | None = None
         if data is not None:
             if isinstance(data, bytearray):
                 data = bytes(data)
@@ -733,6 +1105,17 @@ class DatasetStore:
                     f"{len(data) if isinstance(data, bytes) else type(data).__name__} is not whole "
                     f"{profile.record_length}-byte records for {self.relative(path)}"
                 )
+        return cache, data
+
+    def _loader(
+        self, mode: str, path: Path, profile: KeyProfile, data: bytes | None
+    ) -> tuple[list[int], int | None]:
+        """Run ``KSLOAD <mode>``; returns the duplicate record numbers (1-based
+        SEQIN positions) and the loaded count (``None`` for ``CREATE``)."""
+        cache, data = self._checked_input(path, profile, data)
+        dds = {KSDS_DD: path}
+        seqin: Path | None = None
+        if data is not None:
             seqin = self._work_file("load")
             seqin.write_bytes(data)
             dds[SEQIN_DD] = seqin
@@ -787,28 +1170,51 @@ class DatasetStore:
         loaded. With ``on_duplicate="error"`` that raises ``DatasetError``
         carrying the record numbers; with ``"report"`` the load goes on, as
         IDCAMS REPRO does, and the 1-based input record numbers are
-        returned."""
+        returned.
+
+        ``on_duplicate``, the build cache, ``profile`` and the record length
+        of ``data`` are checked before any file is touched. The files of a
+        dataset already at ``path`` are then moved aside, not deleted: a load
+        that fails or is interrupted (``DatasetError``, ``ScenarioTimeout``,
+        ``KeyboardInterrupt``) removes what it built and puts them back, with
+        their recorded profile unchanged, before its exception propagates
+        (``_recover``). Recording the new profile is part of the load, so a
+        load whose profile cannot be recorded is undone in the same way, and
+        the files set aside are deleted only once it is recorded
+        (``_commit``). A completed load replaces all of them, so no
+        ``<path>.<i>`` of the earlier dataset survives it."""
         self._check_on_duplicate(on_duplicate)
         target = self.inside(path)
+        self._checked_input(target, profile, data)
         target.parent.mkdir(parents=True, exist_ok=True)
-        self.remove(target)
+        previous = self._profiles.get(target)
+        backup, saved = self._set_aside(target)
         try:
             duplicates, _ = self._loader("LOAD", target, profile, data)
             self._duplicates_outcome(target, profile, duplicates, on_duplicate)
-        except BaseException:
-            self.remove(target)  # never leave a half-built file looking loaded
+        except BaseException as error:
+            self._recover(target, saved, backup, error)
             raise
-        self.record_profile(target, profile)
+        self._commit(target, saved, backup, profile, previous)
         return duplicates
 
     def create_indexed(self, path: str | os.PathLike[str], profile: KeyProfile) -> Path:
         """Create an empty indexed file with ``profile`` (``KSLOAD CREATE``),
-        replacing any file at ``path``."""
+        replacing any file at ``path``. As in ``load_indexed``, the arguments
+        are checked first and a creation that fails or is interrupted, the
+        recording of its profile included (``_commit``), puts the previous
+        files back with their recorded profile."""
         target = self.inside(path)
+        self._checked_input(target, profile, None)
         target.parent.mkdir(parents=True, exist_ok=True)
-        self.remove(target)
-        self._loader("CREATE", target, profile, None)
-        self.record_profile(target, profile)
+        previous = self._profiles.get(target)
+        backup, saved = self._set_aside(target)
+        try:
+            self._loader("CREATE", target, profile, None)
+        except BaseException as error:
+            self._recover(target, saved, backup, error)
+            raise
+        self._commit(target, saved, backup, profile, previous)
         return target
 
     def append_indexed(
@@ -946,7 +1352,18 @@ class DatasetStore:
         put back unchanged, the failure goes to ``evidence/rekey.log`` and
         ``False`` is returned: the program that needed the profile then opens
         the file as it is, and that outcome is pinned. A different record
-        length or primary key cannot be re-keyed (``DatasetError``)."""
+        length or primary key cannot be re-keyed (``DatasetError``).
+
+        The previous files are moved aside, not deleted, until the rebuild
+        has succeeded and its profile is recorded; a rebuild that fails or is
+        interrupted, the recording of its profile included (``_commit``),
+        puts them back with their recorded profile before its exception
+        propagates. Their backup is deleted only after a rebuild whose
+        profile is recorded or a confirmed restoration. When they cannot be
+        put back, the recovery copies stay under ``data/.work`` and
+        ``evidence/rekey.log`` names them; a propagating exception carries
+        that line as a note, and on the duplicate-key path, where none
+        propagates, the line is raised as ``DatasetError`` (``_recover``)."""
         target = self.inside(path)
         recorded = self.profile(target)
         if recorded is None:
@@ -968,38 +1385,186 @@ class DatasetStore:
             self.log_rekey(f"{self.relative(target)} {recorded.name} -> {profile.name}: truncated")
             return True
         data = self.unload_indexed(target, recorded)
-        backup = self._work_file("rekey").with_suffix(".dir")
-        backup.mkdir()
-        saved = [(component, backup / component.name) for component in self.components(target)]
-        for component, copy in saved:
-            component.rename(copy)
+        backup, saved = self._set_aside(target)
         try:
-            try:
-                duplicates, _ = self._loader("LOAD", target, profile, data)
-            except BaseException:
-                self._restore(target, saved)
-                raise
-            if duplicates:
-                self._restore(target, saved)
-                self.log_rekey(
-                    f"{self.relative(target)} {recorded.name} -> {profile.name}: failed, duplicate "
-                    f"keys at records {', '.join(str(number) for number in duplicates)}; kept "
-                    f"{recorded.name}"
-                )
-                return False
-        finally:
-            shutil.rmtree(backup, ignore_errors=True)
-        self.record_profile(target, profile)
+            duplicates, _ = self._loader("LOAD", target, profile, data)
+        except BaseException as error:
+            self._recover(target, saved, backup, error)
+            raise
+        if duplicates:
+            self._recover(target, saved, backup)
+            self.log_rekey(
+                f"{self.relative(target)} {recorded.name} -> {profile.name}: failed, duplicate "
+                f"keys at records {', '.join(str(number) for number in duplicates)}; kept "
+                f"{recorded.name}"
+            )
+            return False
+        self._commit(target, saved, backup, profile, recorded)
         self.log_rekey(f"{self.relative(target)} {recorded.name} -> {profile.name}: rebuilt")
         return True
 
-    def _restore(self, target: Path, saved: list[tuple[Path, Path]]) -> None:
-        """Put back the files a failed rebuild moved aside."""
-        for component in self.components(target):
-            component.unlink()
+    def _set_aside(self, target: Path) -> tuple[Path, list[tuple[Path, Path]]]:
+        """Move the files of the dataset at ``target`` into a new backup
+        directory under ``data/.work`` (renames, on the same filesystem), so
+        ``target`` can be rebuilt in place. Returns the directory and the
+        ``(component, copy)`` pairs ``_recover`` restores from. When a rename
+        fails, the files already moved go back before the error propagates."""
+        backup = self._work_file("backup").with_suffix(".dir")
+        backup.mkdir()
+        saved: list[tuple[Path, Path]] = []
+        try:
+            saved = [(component, backup / component.name) for component in self.components(target)]
+            for component, copy in saved:
+                component.rename(copy)
+        except BaseException as error:
+            self._recover(target, saved, backup, error, built=False)
+            raise
+        return backup, saved
+
+    def _restore(
+        self, target: Path, saved: list[tuple[Path, Path]], *, built: bool = True
+    ) -> None:
+        """Rename the copies ``_set_aside`` made back to their components.
+        Once a rebuild has begun (``built``), every file at ``target`` is its
+        work and is removed first; before that, a component whose copy was
+        never made is still the original and stays."""
+        if built:
+            for component in self.components(target):
+                component.unlink()
         for component, copy in saved:
             if copy.exists():
                 copy.rename(component)
+
+    def _recover(
+        self,
+        target: Path,
+        saved: list[tuple[Path, Path]],
+        backup: Path,
+        error: BaseException | None = None,
+        *,
+        built: bool = True,
+    ) -> None:
+        """Restore the files ``_set_aside`` moved from ``target`` to
+        ``backup`` (``_restore``), then delete ``backup``. ``error`` is the
+        exception propagating, if any, which the caller re-raises.
+
+        A restoration that fails keeps ``backup`` with the recovery copies it
+        still holds, and ``evidence/rekey.log`` names them with the failure.
+        ``error`` then goes on unchanged, carrying that line as a note;
+        without ``error`` the failure is raised as ``DatasetError`` naming the
+        copies. An interrupt during the restoration (``KeyboardInterrupt``,
+        ``SystemExit``) propagates itself, with that line as a note."""
+        try:
+            self._restore(target, saved, built=built)
+        except BaseException as failure:
+            line = (
+                f"{self._shown(target)}: restoring the files set aside failed ({failure!r}); "
+                f"recovery copies kept: {self._retained(saved)}"
+            )
+            if not isinstance(failure, Exception):
+                failure.add_note(line)
+                self._log_safely(line, failure)
+                raise
+            if error is None:
+                raised = DatasetError(line)
+                self._log_safely(line, raised)
+                raise raised from failure
+            error.add_note(line)
+            self._log_safely(line, error)
+            return
+        self._discard(target, backup, error)
+
+    def _commit(
+        self,
+        target: Path,
+        saved: list[tuple[Path, Path]],
+        backup: Path,
+        profile: KeyProfile,
+        previous: KeyProfile | None,
+    ) -> None:
+        """Record ``profile`` for the rebuilt ``target``, then delete
+        ``backup``, whose copies the rebuild has replaced.
+
+        The commit is the last step of the replacement, not a step after it.
+        When ``profile`` cannot be recorded (``data/profiles.yaml`` refused
+        or unwritable, an interrupt), ``previous``, the profile recorded
+        before the rebuild, is put back in memory as it was, or the entry is
+        dropped when there was none, and ``data/profiles.yaml`` is rewritten
+        from it, since an interrupt can land after the new profile reached
+        the file; a rewrite refused or unwritable (``HarnessError``,
+        ``OSError``) goes on the exception as a note and never replaces it,
+        while an interrupt during the rewrite propagates itself after the
+        files are restored. ``_recover`` then removes the rebuilt files and puts
+        the ones in ``saved`` back, keeping and reporting ``backup`` when it
+        cannot, and the exception propagates unchanged. ``backup`` is
+        deleted on success only once ``profile`` is recorded."""
+        try:
+            self.record_profile(target, profile)
+        except BaseException as error:
+            if previous is None:
+                self._profiles.pop(target, None)
+            else:
+                self._profiles[target] = previous
+            try:
+                try:
+                    self._write_profiles()
+                except (HarnessError, OSError) as failure:
+                    error.add_note(
+                        f"{DATA_DIR}/{_PROFILES_EVIDENCE} could not be rewritten for the restored "
+                        f"profiles ({failure!r})"
+                    )
+            finally:
+                self._recover(target, saved, backup, error)
+            raise
+        self._discard(target, backup)
+
+    def _discard(self, target: Path, backup: Path, error: BaseException | None = None) -> None:
+        """Delete ``backup`` once the files of ``target`` no longer need its
+        copies. A failure leaves it in place and goes to ``evidence/rekey.log``
+        as a cleanup failure; it never replaces ``error``, the exception
+        propagating, if any."""
+        try:
+            shutil.rmtree(backup)
+        except OSError as failure:
+            self._log_safely(
+                f"{self._shown(target)}: cleanup of {self._shown(backup)} failed ({failure!r}); "
+                f"it is left in place",
+                error,
+            )
+
+    def _log_safely(self, line: str, error: BaseException | None) -> None:
+        """``log_rekey(line)``. When the log cannot take the line, the line
+        and that failure go on ``error``, the exception propagating, as a
+        note, so ``error`` is never replaced; without ``error`` they are
+        raised as ``DatasetError``."""
+        try:
+            self.log_rekey(line)
+        except Exception as failure:
+            message = f"evidence/{_REKEY_LOG} could not record {line!r} ({failure!r})"
+            if error is None:
+                raise DatasetError(message) from failure
+            error.add_note(message)
+
+    def _shown(self, path: Path) -> str:
+        """``path`` as evidence names it (``relative``), or as given when
+        that fails: a line written on a failure path never raises itself."""
+        try:
+            return self.relative(path)
+        except (DatasetError, OSError, ValueError):
+            return os.fspath(path)
+
+    def _retained(self, saved: list[tuple[Path, Path]]) -> str:
+        """The recovery copies of ``saved`` still in their backup directory,
+        as evidence names them, or ``none``."""
+        kept: list[str] = []
+        for _, copy in saved:
+            try:
+                present = copy.exists()
+            except OSError:
+                present = True  # unknown: named rather than lost track of
+            if present:
+                kept.append(self._shown(copy))
+        return ", ".join(kept) if kept else "none"
 
     def _drop_alternates_beyond(self, target: Path, count: int) -> None:
         for component in self.components(target):
