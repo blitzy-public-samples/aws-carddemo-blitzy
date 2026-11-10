@@ -1,0 +1,236 @@
+# COCRDUPC cannot save validated card changes when the READ UPDATE of the card
+# record does not answer NORMAL.
+#
+# Step 1: USER0001 signs on through CC00 and COSGN00C routes the type 'U' user
+# to the main menu COMEN01 [app/cbl/COSGN00C.cbl:221-237].
+# Step 2: option '5' makes COMEN01C set itself as the calling program, zero
+# CDEMO-PGM-CONTEXT and transfer control (XCTL) to COCRDUPC, the 'Credit Card
+# Update' entry of COMEN02Y [app/cpy/COMEN02Y.cpy:49-53]
+# [app/cbl/COMEN01C.cbl:146-156]. COCRDUPC restores the COMMAREA, and entered
+# from the menu program without CDEMO-PGM-REENTER it clears its own area, sends
+# COCRDUP with no data and the search-key prompt, and returns with TRANSID CCUP
+# [app/cbl/COCRDUPC.cbl:388-401,502-511,554-558,1084-1085,1141-1142,1161-1163].
+# Step 3: ENTER with account 00000000050 and card 0500024453765740 takes WHEN
+# OTHER; both filters are supplied and numeric, so 2000-DECIDE-ACTION runs
+# 9000-READ-DATA. 9100-GETCARD-BYACCTCARD reads CARDDAT by the card number
+# alone and the READ is NORMAL; the record is kept as the old values with the
+# embossed name upper-cased, and 3200 shows them under 'Details of selected card
+# shown above', the name, status and expiry unprotected with MDT on
+# [app/cbl/COCRDUPC.cbl:535-542,578-605,641-661,721-800,954-966,1087-1112,
+# 1145-1146,1181-1190,1343-1394].
+# Step 4: ENTER with the name typed over as TEST HOLDER. Every field comes back,
+# the new card data differs from the old, and 1230-1260 accept the name
+# (letters and spaces only), the status Y, month 03 and year 2023, so the state
+# becomes CCUP-CHANGES-OK-NOT-CONFIRMED. 3200 shows the received values under
+# 'Changes validated.Press F5 to save', every field protected with MDT on, and
+# brightens FKEYSC [app/cbl/COCRDUPC.cbl:607-635,667-714,806-944,1006-1007,
+# 1113-1123,1149-1150,1191-1199,1315-1317]. The UniKix copy rewrites the
+# letters-only test of 1230-EDIT-NAME (GAP-DOC-023); TEST HOLDER passes either
+# form.
+# Step 5: PF5 is valid in that state; 1200 returns before any edit and
+# 9200-WRITE-PROCESSING issues READ UPDATE on CARDDAT. Any response other than
+# NORMAL sets INPUT-ERROR and COULD-NOT-LOCK-FOR-UPDATE and skips 9300 and the
+# REWRITE; 2000 then sets CCUP-CHANGES-OKAYED-LOCK-ERROR, so 3200 shows the
+# received values again, 3250 puts INFORM-FAILURE in INFOMSG and the lock
+# message in ERRMSG, and 3300 makes only the account and card numbers editable
+# [app/cbl/COCRDUPC.cbl:413-420,685-692,988-994,1113-1123,1153-1154,1161-1163,
+# 1200-1207,1420-1449].
+#
+# The fault: another task holds the card record under READ UPDATE while this
+# task issues its own. Because the program tests only for NORMAL, the screen is
+# the same whatever non-NORMAL response the region gives. Whether the region
+# answers at all depends on it: a region that suspends the task until the
+# holder releases the record never reaches this branch, and since the lock is
+# held until step 5 has answered, the scenario would then end failing with
+# reason timeout. No adapter can hold an online record lock, so the scenario
+# raises MissingPrerequisite under GAP-MIS-014 and stays implemented-unexecuted
+# until a mechanism exists.
+#
+# Expected values are derived from the source (no TPE region runs in CI). The
+# card is record 1 of the CARDDATA fixture (line 1 of app/data/ASCII/carddata.txt:
+# card 0500024453765740, account 00000000050, CVV 747, embossed name 'Aniya
+# Von', expiry 2023-03-09, status Y). Screen values keep their full BMS width
+# with trailing spaces: INFOMSG takes the 40-byte WS-INFO-MSG and ERRMSG the
+# 75-byte WS-RETURN-MSG in its 80 bytes. EXPDAY is a DRK field and FKEYSC is
+# DRK unless 3300 brightens it for the confirmation prompt; the s3270 screen
+# capture shows a zero-intensity field as blanks. CURDATE and CURTIME come from
+# the run clock, hence the matchers and clock_mode relative
+# [app/cbl/COCRDUPC.cbl:1052-1074].
+id: CRD-COCRDUPC-recovery-02
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, selects main-menu option 5 (Credit Card Update), fetches
+  card 0500024453765740 of account 00000000050, changes the embossed name from
+  ANIYA VON to TEST HOLDER, has the change validated, and presses PF5 while
+  another task holds the card record for update. COCRDUPC cannot lock the card
+  record: it shows 'Could not lock record for update' with 'Changes
+  unsuccessful. Please try again', keeps the entered values on the screen,
+  makes only the account and card numbers editable again, and leaves the card
+  record unchanged. Whether a CICS READ UPDATE against a record another task
+  holds returns an error response or suspends the task until the record is
+  released depends on the region; a region that waits never reaches this
+  branch, and the scenario then ends in timeout.
+# Primary item first, then the program, the maps asserted, the transaction of
+# steps 3-5, the CSD file COCRDUPC reads and fails to lock, and the online-only
+# copybooks it copies. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC) are
+# verified by the SEC and MNU scenarios; the confirmation prompt and
+# INFORM-FAILURE by their own CRD scenarios; the batch record copybooks
+# (CVACT02Y, CVCUS01Y, CSUSR01Y) and the data files at the lowest level that
+# executes them.
+inventory_ids:
+- INV-CRD-067  # COCRDUPC message 'Could not lock record for update' (recovery)
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, where option 5 is entered
+- INV-CRD-006  # COCRDUP map, the prompt, detail, confirmation and failure screens
+- INV-CFG-015  # CCUP transaction, under which the fetch, the edits and the failing save run
+- INV-CFG-003  # CARDDAT CSD file: card read, then the READ UPDATE that fails
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and ids
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COCRDUPC
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER and PF5 paths
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, CC-CARD-NUM and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-014  # no mechanism to hold a record lock in the TPE region
+preconditions:
+  datasets:
+    CARDDATA: {base: CARDDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  # after 1: the plain READ of CARDDAT in step 3 succeeds; the lock meets the
+  # second CARDDAT read, the READ UPDATE of step 5.
+  faults:
+  - target: CARDDAT
+    operation: read
+    condition: locked
+    after: 1
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '5'
+  - aid: ENTER
+    '@map': COCRDUP
+    fields:
+      ACCTSID: '00000000050'
+      CARDSID: '0500024453765740'
+  - aid: ENTER
+    '@map': COCRDUP
+    fields:
+      CRDNAME: TEST HOLDER
+  - aid: PF5
+    '@map': COCRDUP
+    fields: {}
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN005: '05. Credit Card Update                  '
+    ERRMSG: '                                                                              '
+  # The fresh entry: no data sent, the search-key prompt in INFOMSG.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDNAME: '                                                  '
+    CRDSTCD: ' '
+    EXPMON: '  '
+    EXPYEAR: '    '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+    FKEYS: ENTER=Process F3=Exit
+    FKEYSC: '                  '
+  # The fetched card, as 3200 shows the old values.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'ANIYA VON                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    EXPDAY: '  '
+    INFOMSG: 'Details of selected card shown above    '
+    ERRMSG: '                                                                                '
+    FKEYS: ENTER=Process F3=Exit
+    FKEYSC: '                  '
+  # The received values with the new name, under the confirmation prompt.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'TEST HOLDER                                       '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    EXPDAY: '  '
+    INFOMSG: 'Changes validated.Press F5 to save      '
+    ERRMSG: '                                                                                '
+    FKEYS: ENTER=Process F3=Exit
+    FKEYSC: F5=Save F12=Cancel
+  # The failed save: the entered values kept, the lock message in ERRMSG and
+  # INFORM-FAILURE in INFOMSG.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'TEST HOLDER                                       '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    EXPDAY: '  '
+    INFOMSG: 'Changes unsuccessful. Please try again  '
+    ERRMSG: 'Could not lock record for update                                                '
+    FKEYS: ENTER=Process F3=Exit
+    FKEYSC: '                  '
+  # The ERRMSG value of each step: blank until the failed save shows the lock
+  # message.
+  messages:
+  - '                                                                              '
+  - '                                                                                '
+  - '                                                                                '
+  - '                                                                                '
+  - 'Could not lock record for update                                                '
+  file_state:
+    # The card is not rewritten: card 0500024453765740 keeps its fixture values,
+    # the embossed name still 'Aniya Von'.
+    CARDDATA:
+      count: 50
+      contains:
+      - CARD-NUM: '0500024453765740'
+        CARD-ACCT-ID: '50'
+        CARD-CVV-CD: '747'
+        CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+        CARD-EXPIRAION-DATE: '2023-03-09'
+        CARD-ACTIVE-STATUS: 'Y'

@@ -1,0 +1,117 @@
+# PF3 on the COCRDUPC 'Credit Card Update' screen returns to the main menu.
+#
+# Step 1: USER0001 signs on through CC00 and COSGN00C XCTLs to COMEN01C, which
+# sends the main menu COMEN01 headed CM00/COMEN01C and returns TRANSID CM00
+# [app/cbl/COSGN00C.cbl:221-240] [app/cbl/COMEN01C.cbl:36-37,82-110].
+# Step 2: option '5' of the COMEN02Y table is 'Credit Card Update', user type
+# U, naming COCRDUPC, so COMEN01C moves CM00 and COMEN01C to CDEMO-FROM-TRANID
+# and CDEMO-FROM-PROGRAM, zeroes CDEMO-PGM-CONTEXT and XCTLs to COCRDUPC with
+# the COMMAREA [app/cpy/COMEN02Y.cpy:49-53] [app/cbl/COMEN01C.cbl:115-156].
+# COCRDUPC, entered from LIT-MENUPGM without CDEMO-PGM-REENTER, INITIALIZEs
+# CARDDEMO-COMMAREA, which blanks the FROM fields the menu set, and sets
+# CDEMO-PGM-ENTER and CCUP-DETAILS-NOT-FETCHED [app/cbl/COCRDUPC.cbl:388-394].
+# The fresh-entry branch sends COCRDUP with its own CCUP and COCRDUPC header,
+# the PROMPT-FOR-SEARCH-KEYS info message and the message line cleared by
+# WS-RETURN-MSG-OFF, then returns TRANSID CCUP with the COMMAREA
+# [app/cbl/COCRDUPC.cbl:162-163,219-222,384,502-511,546-558,1052-1060,1138-1163].
+# Step 3: PF3 runs CCUP again. The COMMAREA's FROM-PROGRAM is blank, not
+# COMEN01C, so it is restored rather than reset [app/cbl/COCRDUPC.cbl:395-401].
+# YYYY-STORE-PFKEY maps DFHPF3 to CCARD-AID-PFK03 [app/cpy/CSSTRPFY.cpy:34-35],
+# which is always a valid key, and the PF3 branch, finding CDEMO-FROM-TRANID
+# and CDEMO-FROM-PROGRAM blank, takes LIT-MENUTRANID CM00 and LIT-MENUPGM
+# COMEN01C as the target, stores CCUP and COCRDUPC as the new FROM fields,
+# sets CDEMO-USRTYP-USER and CDEMO-PGM-ENTER, records COCRDUP/CCRDUPA as the
+# last mapset and map, issues SYNCPOINT and XCTLs to COMEN01C with
+# CARDDEMO-COMMAREA [app/cbl/COCRDUPC.cbl:235-238,413-420,435-476]. The branch
+# receives no map and issues no file command, so no CSD file is listed.
+# COMEN01C, entered with a COMMAREA whose context is 0, takes its first-entry
+# path: it clears WS-MESSAGE, ERRMSGO and COMEN1AO and sends the main menu with
+# its own CM00 and COMEN01C header, the COTTL01Y titles, the run clock's date
+# and time, and the ten COMEN02Y options built as '<nn>. <name>' in
+# 40-character fields [app/cbl/COMEN01C.cbl:48,77-90,182-277]
+# [app/cpy/COTTL01Y.cpy:17-22].
+#
+# CURDATE and CURTIME come from the region clock, so they are matchers and the
+# clock is relative. Screen values are whole fields at their BMS length with
+# every space kept: ERRMSG is 80 characters on COCRDUP and 78 on COMEN01
+# [app/bms/COCRDUP.bms] [app/bms/COMEN01.bms]. The baseline is derived from
+# the source: no TPE region runs in CI.
+id: CRD-COCRDUPC-alternate-05
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, chooses main menu option 5 'Credit Card Update' and lands
+  on the COCRDUPC card update screen COCRDUP (transaction CCUP) with its prompt
+  'Please enter Account and Card Number', then presses PF3 without entering an
+  account or a card. The calling program was blanked on the fresh entry, so
+  COCRDUPC commits (SYNCPOINT) and transfers control to its default target,
+  COMEN01C, which shows the main menu COMEN01 (CM00) with its ten options and
+  no message.
+# The sign-on step and the option step only establish the session: CC00, CM00,
+# COSGN00C, COMEN01C and USRSEC are verified by the SEC-COSGN00C and
+# MNU-COMEN01C scenarios, so they are not listed here.
+inventory_ids:
+- INV-CRD-077  # COCRDUPC PF3 return (navigation rule)
+- INV-CRD-003  # COCRDUPC program
+- INV-CRD-006  # COCRDUP map, the screen PF3 is pressed on
+- INV-MNU-003  # COMEN01 map, the screen the XCTL lands on
+- INV-CFG-015  # CCUP transaction, under which PF3 is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose blank FROM fields select the PF3 target
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y, the abend variables COCRDUPC copies
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps DFHPF3 to CCARD-AID-PFK03
+- INV-LAY-019  # CVCRD01Y: CCARD-AID-PFK03 and the work area COCRDUPC initializes
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # card list, view and update (CRD) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001 from USRSEC.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '5'}
+    '@map': COMEN01
+  - aid: PF3
+    fields: {}
+    '@map': COCRDUP
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN001: '01. Account View                        '
+    OPTN002: '02. Account Update                      '
+    OPTN003: '03. Credit Card List                    '
+    OPTN004: '04. Credit Card View                    '
+    OPTN005: '05. Credit Card Update                  '
+    OPTN006: '06. Transaction List                    '
+    OPTN007: '07. Transaction View                    '
+    OPTN008: '08. Transaction Add                     '
+    OPTN009: '09. Transaction Reports                 '
+    OPTN010: '10. Bill Payment                        '
+    ERRMSG: '                                                                              '

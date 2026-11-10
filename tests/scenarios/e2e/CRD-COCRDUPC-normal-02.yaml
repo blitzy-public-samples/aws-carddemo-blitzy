@@ -1,0 +1,264 @@
+# USER0001 changes the embossed name of card 0500024453765740 through COCRDUPC,
+# confirms with PF5 and receives 'Changes committed to database', with the
+# CARDDAT record rewritten.
+#
+# Step 1: USER0001 signs on through CC00; COSGN00C routes the type U user to the
+# main menu COMEN01 (asserted by its header and option 5 only; its content
+# belongs to SEC-COSGN00C-normal-02).
+# Step 2: option '5' makes COMEN01C XCTL to COCRDUPC with itself as the calling
+# program and CDEMO-PGM-CONTEXT 0 [app/cpy/COMEN02Y.cpy:49-53]
+# [app/cbl/COMEN01C.cbl:115-156]. COCRDUPC takes the fresh-entry branch: it
+# sends the search screen with INFOMSG 'Please enter Account and Card Number',
+# then sets CDEMO-PGM-REENTER and CCUP-DETAILS-NOT-FETCHED
+# [app/cbl/COCRDUPC.cbl:502-511,1138-1142]. (0000-MAIN tests
+# CDEMO-FROM-PROGRAM before it copies the COMMAREA in [app/cbl/COCRDUPC.cbl:
+# 388-399]; on either branch of that IF the fresh-entry WHEN is the one taken.)
+# Step 3: ENTER with account 00000000050 and card 0500024453765740 runs under
+# CCUP and takes WHEN OTHER [app/cbl/COCRDUPC.cbl:535-543]. 1210 and 1220 accept
+# both filters, 2000-DECIDE-ACTION's WHEN CCUP-DETAILS-NOT-FETCHED shares the
+# PF12 branch, and 9000-READ-DATA reads CARDDAT by card number (line 1 of
+# app/data/ASCII/carddata.txt: account 00000000050, CVV 747, 'Aniya Von',
+# expiry 2023-03-09, status Y), keeps the CVV in CCUP-OLD-CVV-CD and converts
+# the name to upper case before storing it; CCUP-SHOW-DETAILS shows the stored
+# values with 'Details of selected card shown above' [app/cbl/COCRDUPC.cbl:
+# 641-665,721-804,948-967,1082-1112,1145-1146,1343-1415].
+# Step 4: ENTER with the name 'TEST HOLDER'. The new card data differs from the
+# old, so 1230 to 1260 run: the name holds letters and a space only, Y is a
+# valid status, 03 a valid month and 2023 a year in 1950-2099, so
+# CCUP-CHANGES-OK-NOT-CONFIRMED is set; 3200 WHEN CCUP-CHANGES-MADE echoes the
+# received values (EXPDAY from the old values), INFOMSG is 'Changes
+# validated.Press F5 to save', FKEYSC turns bright and every input field
+# becomes DFHBMPRF (protected, MDT on) [app/cbl/COCRDUPC.cbl:666-716,806-945,
+# 1113-1123,1149-1150,1191-1199,1315-1317].
+# Step 5: PF5 is valid only in that state [app/cbl/COCRDUPC.cbl:413-425].
+# 1200 leaves the state unchanged and 2000 performs 9200-WRITE-PROCESSING: READ
+# UPDATE of CARDDAT is NORMAL, 9300-CHECK-CHANGE-IN-REC finds the record as
+# fetched, and the REWRITE of CARD-UPDATE-RECORD is NORMAL, so
+# CCUP-CHANGES-OKAYED-AND-DONE is set [app/cbl/COCRDUPC.cbl:988-1001,
+# 1420-1521]. 3200 WHEN CCUP-CHANGES-MADE (which includes 'C') again shows the
+# values received with the PF5, and 3250 moves CONFIRM-UPDATE-SUCCESS 'Changes
+# committed to database' to INFOMSG [app/cbl/COCRDUPC.cbl:168-169,1151-1152].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values are whole fields at their BMS length, trailing spaces kept.
+#   INFOMSG holds the 40-byte WS-INFO-MSG; ERRMSG holds the blank 75-byte
+#   WS-RETURN-MSG in its 80 bytes [app/cbl/COCRDUPC.cbl:157,173,1161-1163].
+# - The screen capture shows nulls and zero-intensity fields as blanks: EXPDAY
+#   is ATTRB=(DRK,FSET,PROT) and FKEYSC ATTRB=(ASKIP,DRK) unless 3300 makes it
+#   bright [app/bms/COCRDUP.bms:142-146,163-167]. EXPDAY is FSET, so the hidden day '09'
+#   comes back with every AID and ends up in the rewritten expiry date.
+# - The name is typed after EraseEOF, so the field returns 'TEST HOLDER' alone;
+#   BMS input mapping left-justifies it and pads it with blanks, the DFHMDF
+#   default JUSTIFY=(LEFT,BLANK).
+# - The header is the COTTL01Y titles, CCUP, COCRDUPC and CURDATE mm/dd/yy and
+#   CURTIME hh:mm:ss of the region clock through CSDAT01Y, hence the matchers
+#   and clock_mode relative [app/cbl/COCRDUPC.cbl:1052-1077].
+id: CRD-COCRDUPC-normal-02
+level: e2e
+type: normal
+description: >-
+  USER0001 signs on, chooses main menu option 5 'Credit Card Update', fetches
+  account 00000000050 and card 0500024453765740 on the COCRDUP screen, which
+  shows 'ANIYA VON', status Y and expiry 03/2023 with 'Details of selected card
+  shown above', types the name 'TEST HOLDER' and presses ENTER. COCRDUPC
+  validates the name, status, month and year and asks 'Changes validated.Press
+  F5 to save'; PF5 reads the card for update, finds it unchanged, rewrites it
+  and shows 'Changes committed to database' with the new values. The rewritten
+  CARDDAT record carries the new name, account 00000000050, expiry 2023-03-09
+  and status Y; the other 49 cards are as loaded. Finding: the rewrite does not
+  keep the card's CVV. 9200-WRITE-PROCESSING moves CCUP-NEW-CVV-CD to the record
+  through CARD-CVV-CD-X and CARD-CVV-CD-N [app/cbl/COCRDUPC.cbl:1464-1465], but
+  no input or fetched value sets CCUP-NEW-CVV-CD: 1100-RECEIVE-MAP INITIALIZEs
+  CCUP-NEW-DETAILS, leaving it spaces, and only CCUP-OLD-CVV-CD receives the
+  fetched CVV [app/cbl/COCRDUPC.cbl:586,1354]. The PIC 9(03) to PIC 9(03) MOVE
+  of those spaces is pinned as a byte copy, so CARD-CVV-CD is three spaces
+  (raw 202020) where the fixture had 747; GnuCOBOL 3.2 under the suite's IBM
+  flags stores those bytes, while Enterprise COBOL's NUMPROC(NOPFD) sign fix-up
+  would leave x'4040F0'. The record's 59-byte FILLER is not asserted: INITIALIZE
+  CARD-UPDATE-RECORD skips FILLER, so the REWRITE writes whatever the COMMAREA
+  carried there [app/cbl/COCRDUPC.cbl:314-321,1461].
+# Primary item first, then the program, the maps asserted, the transaction steps
+# 3-5 run under, the CSD file COCRDUPC reads, reads for update and rewrites, and
+# the online-only copybooks it copies. Sign-on and the menu (CC00, CM00,
+# COSGN00, USRSEC) are verified by the SEC and MNU scenarios, the other
+# COCRDUPC messages and the card REWRITE item by their own CRD scenarios, and
+# the batch record copybooks and the data files at the lowest level that
+# executes them.
+inventory_ids:
+- INV-CRD-051  # COCRDUPC message 'Changes committed to database' (rule)
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, where option 5 is entered
+- INV-CRD-006  # COCRDUP map, the search, detail, confirmation and done screens
+- INV-CFG-015  # CCUP transaction, under which the fetch, edit and save run
+- INV-CFG-003  # CARDDAT CSD file: read, read for update and rewritten
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and calling program
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COCRDUPC
+- INV-LAY-011  # CSSTRPFY: the AID mapping that accepts PF5
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, CC-CARD-NUM and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# The UniKix copy rewrites the alphabets-only test of 1230-EDIT-NAME that step 4
+# passes through; 'TEST HOLDER' is accepted by both forms, and a unikix run
+# observes the copy's form.
+- GAP-DOC-023
+preconditions:
+  datasets:
+    # The 50 repository cards; card 0500024453765740 is the one updated.
+    CARDDATA: {base: CARDDATA}
+    # The 10 repository users, for the USER0001 sign-on.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '5'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000050', CARDSID: '0500024453765740'}
+    '@map': COCRDUP
+  - aid: ENTER
+    fields: {CRDNAME: 'TEST HOLDER'}
+    '@map': COCRDUP
+  - aid: PF5
+    fields: {}
+    '@map': COCRDUP
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN005: '05. Credit Card Update                  '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'ANIYA VON                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    EXPDAY: '  '
+    INFOMSG: 'Details of selected card shown above    '
+    ERRMSG: '                                                                                '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEYSC: '                  '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'TEST HOLDER                                       '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    EXPDAY: '  '
+    INFOMSG: 'Changes validated.Press F5 to save      '
+    ERRMSG: '                                                                                '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEYSC: F5=Save F12=Cancel
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'TEST HOLDER                                       '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    EXPDAY: '  '
+    INFOMSG: 'Changes committed to database           '
+    ERRMSG: '                                                                                '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEYSC: '                  '
+  file_state:
+    # Every CARDDAT record in key order, by its named fields. Card
+    # 0500024453765740 is CARD-UPDATE-RECORD as 9200-WRITE-PROCESSING builds it:
+    # the received card number, CC-ACCT-ID-N, the CVV bytes of CCUP-NEW-CVV-CD
+    # (three spaces, not a number), the received name, the STRING of the new
+    # year, month and day, and the received status [app/cbl/COCRDUPC.cbl:
+    # 1461-1483]. Its FILLER is left out (see description); the other 49 cards
+    # are as loaded from app/data/ASCII/carddata.txt.
+    CARDDATA:
+      records:
+      - {CARD-NUM: '0500024453765740', CARD-ACCT-ID: '50', CARD-CVV-CD: {raw: '202020'}, CARD-EMBOSSED-NAME: 'TEST HOLDER                                       ', CARD-EXPIRAION-DATE: '2023-03-09', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '0683586198171516', CARD-ACCT-ID: '27', CARD-CVV-CD: '567', CARD-EMBOSSED-NAME: 'Ward Jones                                        ', CARD-EXPIRAION-DATE: '2025-07-13', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '0923877193247330', CARD-ACCT-ID: '2', CARD-CVV-CD: '28', CARD-EMBOSSED-NAME: 'Enrico Rosenbaum                                  ', CARD-EXPIRAION-DATE: '2024-08-11', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '0927987108636232', CARD-ACCT-ID: '20', CARD-CVV-CD: '3', CARD-EMBOSSED-NAME: 'Carter Veum                                       ', CARD-EXPIRAION-DATE: '2024-03-13', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '0982496213629795', CARD-ACCT-ID: '12', CARD-CVV-CD: '75', CARD-EMBOSSED-NAME: 'Maci Robel                                        ', CARD-EXPIRAION-DATE: '2023-07-07', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '1014086565224350', CARD-ACCT-ID: '44', CARD-CVV-CD: '640', CARD-EMBOSSED-NAME: 'Irving Emard                                      ', CARD-EXPIRAION-DATE: '2024-01-17', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '1142167692878931', CARD-ACCT-ID: '37', CARD-CVV-CD: '625', CARD-EMBOSSED-NAME: 'Shany Walker                                      ', CARD-EXPIRAION-DATE: '2023-10-24', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '1561409106491600', CARD-ACCT-ID: '35', CARD-CVV-CD: '31', CARD-EMBOSSED-NAME: 'Angelica Dach                                     ', CARD-EXPIRAION-DATE: '2025-09-23', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '2745303720002090', CARD-ACCT-ID: '39', CARD-CVV-CD: '33', CARD-EMBOSSED-NAME: 'Aliyah Berge                                      ', CARD-EXPIRAION-DATE: '2025-09-08', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '2760836797107565', CARD-ACCT-ID: '24', CARD-CVV-CD: '859', CARD-EMBOSSED-NAME: 'Stefanie Dickinson                                ', CARD-EXPIRAION-DATE: '2025-02-11', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '2871968252812490', CARD-ACCT-ID: '6', CARD-CVV-CD: '775', CARD-EMBOSSED-NAME: 'Ignacio Douglas                                   ', CARD-EXPIRAION-DATE: '2025-10-08', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '2940139362300449', CARD-ACCT-ID: '22', CARD-CVV-CD: '876', CARD-EMBOSSED-NAME: 'Allene Brown                                      ', CARD-EXPIRAION-DATE: '2025-12-28', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '2988091353094312', CARD-ACCT-ID: '4', CARD-CVV-CD: '795', CARD-EMBOSSED-NAME: 'Delbert Parisian                                  ', CARD-EXPIRAION-DATE: '2023-12-16', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '3260763612337560', CARD-ACCT-ID: '10', CARD-CVV-CD: '342', CARD-EMBOSSED-NAME: 'Maybell Mann                                      ', CARD-EXPIRAION-DATE: '2023-01-27', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '3766281984155154', CARD-ACCT-ID: '41', CARD-CVV-CD: '622', CARD-EMBOSSED-NAME: 'Lucinda Dach                                      ', CARD-EXPIRAION-DATE: '2023-04-24', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '3940246016141489', CARD-ACCT-ID: '19', CARD-CVV-CD: '375', CARD-EMBOSSED-NAME: 'Hadley Hamill                                     ', CARD-EXPIRAION-DATE: '2025-07-23', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '3999169246375885', CARD-ACCT-ID: '3', CARD-CVV-CD: '317', CARD-EMBOSSED-NAME: 'Larry Homenick                                    ', CARD-EXPIRAION-DATE: '2024-01-10', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '4011500891777367', CARD-ACCT-ID: '13', CARD-CVV-CD: '390', CARD-EMBOSSED-NAME: 'Mariane Fadel                                     ', CARD-EXPIRAION-DATE: '2024-08-04', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '4385271476627819', CARD-ACCT-ID: '34', CARD-CVV-CD: '709', CARD-EMBOSSED-NAME: 'Faustino Schmidt                                  ', CARD-EXPIRAION-DATE: '2025-10-06', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '4534784102713951', CARD-ACCT-ID: '36', CARD-CVV-CD: '644', CARD-EMBOSSED-NAME: 'Toney Gerhold                                     ', CARD-EXPIRAION-DATE: '2024-12-23', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '4859452612877065', CARD-ACCT-ID: '7', CARD-CVV-CD: '321', CARD-EMBOSSED-NAME: 'Cooper Mayert                                     ', CARD-EXPIRAION-DATE: '2024-12-13', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '5407099850479866', CARD-ACCT-ID: '21', CARD-CVV-CD: '524', CARD-EMBOSSED-NAME: 'Jerrold Maggio                                    ', CARD-EXPIRAION-DATE: '2023-01-06', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '5656830544981216', CARD-ACCT-ID: '46', CARD-CVV-CD: '196', CARD-EMBOSSED-NAME: 'Cindy Cremin                                      ', CARD-EXPIRAION-DATE: '2025-06-20', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '5671184478505844', CARD-ACCT-ID: '18', CARD-CVV-CD: '137', CARD-EMBOSSED-NAME: 'Emile White                                       ', CARD-EXPIRAION-DATE: '2023-09-10', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '5787351228879339', CARD-ACCT-ID: '47', CARD-CVV-CD: '67', CARD-EMBOSSED-NAME: 'Rigoberto Hoeger                                  ', CARD-EXPIRAION-DATE: '2025-08-23', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '5975117516616077', CARD-ACCT-ID: '42', CARD-CVV-CD: '426', CARD-EMBOSSED-NAME: 'Heather Nienow                                    ', CARD-EXPIRAION-DATE: '2025-09-19', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '6009619150674526', CARD-ACCT-ID: '5', CARD-CVV-CD: '21', CARD-EMBOSSED-NAME: 'Treva Schowalter                                  ', CARD-EXPIRAION-DATE: '2025-03-09', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '6349250331648509', CARD-ACCT-ID: '15', CARD-CVV-CD: '735', CARD-EMBOSSED-NAME: 'Aubree Hermann                                    ', CARD-EXPIRAION-DATE: '2025-06-09', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '6503535181795992', CARD-ACCT-ID: '48', CARD-CVV-CD: '413', CARD-EMBOSSED-NAME: 'Lyric Pacocha                                     ', CARD-EXPIRAION-DATE: '2025-02-06', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '6509230362553816', CARD-ACCT-ID: '30', CARD-CVV-CD: '236', CARD-EMBOSSED-NAME: 'Layla Ullrich                                     ', CARD-EXPIRAION-DATE: '2024-06-27', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '6723000463207764', CARD-ACCT-ID: '28', CARD-CVV-CD: '486', CARD-EMBOSSED-NAME: 'Hester Hane                                       ', CARD-EXPIRAION-DATE: '2024-05-09', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '6727055190616014', CARD-ACCT-ID: '16', CARD-CVV-CD: '641', CARD-EMBOSSED-NAME: 'Carroll Bergstrom                                 ', CARD-EXPIRAION-DATE: '2024-01-25', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '6832676047698087', CARD-ACCT-ID: '33', CARD-CVV-CD: '983', CARD-EMBOSSED-NAME: 'Bernice Herman                                    ', CARD-EXPIRAION-DATE: '2025-10-07', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '7026637615032277', CARD-ACCT-ID: '31', CARD-CVV-CD: '920', CARD-EMBOSSED-NAME: 'Lucious O''Connell                                 ', CARD-EXPIRAION-DATE: '2025-06-08', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '7058267261837752', CARD-ACCT-ID: '43', CARD-CVV-CD: '401', CARD-EMBOSSED-NAME: 'Britney Waters                                    ', CARD-EXPIRAION-DATE: '2025-08-29', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '7094142751055551', CARD-ACCT-ID: '32', CARD-CVV-CD: '659', CARD-EMBOSSED-NAME: 'Stephany Fisher                                   ', CARD-EXPIRAION-DATE: '2025-05-19', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '7251508149188883', CARD-ACCT-ID: '29', CARD-CVV-CD: '717', CARD-EMBOSSED-NAME: 'Rickie Daugherty                                  ', CARD-EXPIRAION-DATE: '2024-06-04', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '7379335634661142', CARD-ACCT-ID: '45', CARD-CVV-CD: '134', CARD-EMBOSSED-NAME: 'Dixie Beier                                       ', CARD-EXPIRAION-DATE: '2025-07-09', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '7427684863423209', CARD-ACCT-ID: '11', CARD-CVV-CD: '892', CARD-EMBOSSED-NAME: 'Hayden Pfannerstill                               ', CARD-EXPIRAION-DATE: '2025-03-12', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '7443870988897530', CARD-ACCT-ID: '38', CARD-CVV-CD: '708', CARD-EMBOSSED-NAME: 'Angela Ankunding                                  ', CARD-EXPIRAION-DATE: '2023-07-23', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '8040580410348680', CARD-ACCT-ID: '26', CARD-CVV-CD: '971', CARD-EMBOSSED-NAME: 'Marjory Stracke                                   ', CARD-EXPIRAION-DATE: '2024-12-19', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '8112545834239735', CARD-ACCT-ID: '23', CARD-CVV-CD: '440', CARD-EMBOSSED-NAME: 'Johnson Ruecker                                   ', CARD-EXPIRAION-DATE: '2025-03-18', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '8262593602473076', CARD-ACCT-ID: '49', CARD-CVV-CD: '457', CARD-EMBOSSED-NAME: 'Immanuel Bednar                                   ', CARD-EXPIRAION-DATE: '2023-09-17', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '8517866958206008', CARD-ACCT-ID: '14', CARD-CVV-CD: '955', CARD-EMBOSSED-NAME: 'Chelsea Marks                                     ', CARD-EXPIRAION-DATE: '2025-12-11', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '8931369351894783', CARD-ACCT-ID: '8', CARD-CVV-CD: '230', CARD-EMBOSSED-NAME: 'Kelsie Dicki                                      ', CARD-EXPIRAION-DATE: '2024-05-20', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '9056297931664011', CARD-ACCT-ID: '25', CARD-CVV-CD: '931', CARD-EMBOSSED-NAME: 'Elliott Howell                                    ', CARD-EXPIRAION-DATE: '2025-07-10', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '9349107475869214', CARD-ACCT-ID: '17', CARD-CVV-CD: '218', CARD-EMBOSSED-NAME: 'Sigrid Mann                                       ', CARD-EXPIRAION-DATE: '2025-03-01', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '9501733721429893', CARD-ACCT-ID: '9', CARD-CVV-CD: '725', CARD-EMBOSSED-NAME: 'Melvin Ondricka                                   ', CARD-EXPIRAION-DATE: '2024-12-27', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '9680294154603697', CARD-ACCT-ID: '1', CARD-CVV-CD: '45', CARD-EMBOSSED-NAME: 'Immanuel Kessler                                  ', CARD-EXPIRAION-DATE: '2025-05-20', CARD-ACTIVE-STATUS: 'Y'}
+      - {CARD-NUM: '9805583408996588', CARD-ACCT-ID: '40', CARD-CVV-CD: '908', CARD-EMBOSSED-NAME: 'Davon Emmerich                                    ', CARD-EXPIRAION-DATE: '2023-10-27', CARD-ACTIVE-STATUS: 'Y'}

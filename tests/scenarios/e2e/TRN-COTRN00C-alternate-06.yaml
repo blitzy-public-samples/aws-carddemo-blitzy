@@ -1,0 +1,93 @@
+# PF3 on the transaction list returns to the main menu. USER0001 signs on and
+# reaches COMEN01C; option 6 'Transaction List' transfers control to COTRN00C
+# with the program context reset, so COTRN00C browses TRANSACT from its lowest
+# key, sends COTRN00 under its own CT00 and returns with TRANSID CT00
+# [app/cbl/COMEN01C.cbl:115-156] [app/cbl/COTRN00C.cbl:36-37,107-116,138-141].
+# PF3 restarts COTRN00C as a reentry: after RECEIVE MAP, EVALUATE EIBAID reaches
+# WHEN DFHPF3, which moves the fixed name 'COMEN01C' (not CDEMO-FROM-PROGRAM)
+# to CDEMO-TO-PROGRAM, and RETURN-TO-PREV-SCREEN sets the from-transaction
+# CT00, the from-program COTRN00C and a zero program context before the XCTL
+# with the COMMAREA [app/cbl/COTRN00C.cbl:117-124,510-521]. Because the context
+# is zero, COMEN01C takes its first-entry path: it clears its output map to
+# LOW-VALUES and sends COMEN01 with its own CM00 and COMEN01C, the COTTL01Y
+# titles, the run date and time, the ten COMEN02Y options and WS-MESSAGE still
+# spaces [app/cbl/COMEN01C.cbl:77-90,182-193,212-277] [app/cpy/COMEN02Y.cpy:21-84].
+# The list content is the item of the COTRN00C content scenario, so screen 2
+# asserts identification only.
+id: TRN-COTRN00C-alternate-06
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, chooses option 6 on the main menu to reach the COTRN00C
+  transaction list (CT00), and presses PF3; COTRN00C transfers control to
+  COMEN01C, which sends the main menu COMEN01 afresh under CM00 with its ten
+  options and no message.
+# Primary item first, then the program, the maps the PF3 step enters on and
+# lands on, the transaction PF3 runs under, the CSD file COTRN00C browses, and
+# the online-only copybooks COTRN00C copies. The sign-on step's own items
+# (COSGN00, CC00, USRSEC) belong to the SEC scenarios, and COMEN01C's, COMEN02Y
+# included, to the MNU scenarios.
+inventory_ids:
+- INV-TRN-019  # COTRN00C PF3 return (rule)
+- INV-TRN-001  # COTRN00C program
+- INV-TRN-004  # COTRN00 map, the input map of the PF3 step
+- INV-MNU-003  # COMEN01 map, the screen PF3 lands on
+- INV-CFG-020  # CT00 transaction, under which COTRN00C receives the PF3
+- INV-CFG-007  # TRANSACT CSD file, browsed when the list is first sent
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA passed on the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # derived TRN end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# TRANSACT is built from the repository's daily transactions, as the COTRN00C
+# scenarios specify: the TRANSACT entry of the fixtures holds no repository data
+# of its own, so the harness accepts DALYTRAN, with the same 350-byte record,
+# as its base, and COTRN00C's first browse finds records to list.
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '6'}, '@map': COMEN01}
+  - {aid: PF3, fields: {}, '@map': COTRN00}
+# Screen values are whole fields at their BMS length, trailing spaces kept,
+# because comparison never trims. Fields COMEN01C leaves at LOW-VALUES
+# (OPTN011, OPTN012, OPTION) and the blank message line show as spaces.
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COTRN00
+    TRNNAME: CT00
+    PGMNAME: COTRN00C
+  - '@map': COMEN01
+    TRNNAME: CM00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COMEN01C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    OPTN001: '01. Account View                        '
+    OPTN002: '02. Account Update                      '
+    OPTN003: '03. Credit Card List                    '
+    OPTN004: '04. Credit Card View                    '
+    OPTN005: '05. Credit Card Update                  '
+    OPTN006: '06. Transaction List                    '
+    OPTN007: '07. Transaction View                    '
+    OPTN008: '08. Transaction Add                     '
+    OPTN009: '09. Transaction Reports                 '
+    OPTN010: '10. Bill Payment                        '
+    OPTN011: '                                        '
+    OPTN012: '                                        '
+    OPTION: '  '
+    ERRMSG: '                                                                              '

@@ -1,0 +1,161 @@
+# The card update refuses a fetched card whose embossed name is erased.
+# USER0001 signs on through CC00 and reaches the main menu, whose option 5
+# 'Credit Card Update' makes COMEN01C XCTL to COCRDUPC with CDEMO-FROM-PROGRAM
+# COMEN01C and the program context reset to enter [app/cbl/COMEN01C.cbl:117-155]
+# [app/cpy/COMEN02Y.cpy:49-53]. COCRDUPC takes the fresh-entry WHEN (from the
+# menu, not reentered), initializes its own COMMAREA area, so the details count
+# as not fetched, and sends COCRDUP with both search filters blank and
+# unprotected, the details protected, 'Please enter Account and Card Number' in
+# INFOMSG and no error; then it sets CDEMO-PGM-REENTER and returns TRANSID CCUP
+# [app/cbl/COCRDUPC.cbl:502-511,546-558,1082-1085,1138-1180].
+#
+# Step 3 runs under CCUP and takes WHEN OTHER [app/cbl/COCRDUPC.cbl:535-542].
+# Both filters are supplied, numeric and non-zero [app/cbl/COCRDUPC.cbl:641-661,
+# 721-800], so 2000-DECIDE-ACTION reads CARDDAT by the card number, the READ is
+# NORMAL, and the details count as shown [app/cbl/COCRDUPC.cbl:954-966,
+# 1343-1394]. 9000-READ-DATA upper-cases the embossed name in storage only
+# [app/cbl/COCRDUPC.cbl:1356-1360]. The detail screen protects the filters and
+# sends the name, status, month and year with FSET, so ENTER returns them
+# [app/cbl/COCRDUPC.cbl:1107-1112,1145-1146,1181-1190].
+#
+# Step 4 erases the name (an empty value: EraseEOF, nothing typed) and presses
+# ENTER. Whether BMS returns the erased field as LOW-VALUES or as spaces,
+# 1100-RECEIVE-MAP leaves CCUP-NEW-CRDNAME at LOW-VALUES
+# [app/cbl/COCRDUPC.cbl:607-612]. The new card data then differs from the
+# fetched data, so 1200-EDIT-MAP-INPUTS marks the changes not OK and performs the
+# field edits [app/cbl/COCRDUPC.cbl:668-708]. 1230-EDIT-NAME finds the name
+# blank, sets INPUT-ERROR and FLG-CARDNAME-BLANK and, since WS-RETURN-MSG is
+# still off from the start of the task, WS-PROMPT-FOR-NAME 'Card name not
+# provided' [app/cbl/COCRDUPC.cbl:181-182,384,806-819]. The returned status Y,
+# month 03 and year 2023 pass their edits and leave the message in place
+# [app/cbl/COCRDUPC.cbl:845-944]. 2000-DECIDE-ACTION continues on changes not OK
+# [app/cbl/COCRDUPC.cbl:982-983], so no READ UPDATE or REWRITE is issued. The
+# screen shows the new values, PROMPT-FOR-CHANGES in INFOMSG, and '*' in the
+# blank name field [app/cbl/COCRDUPC.cbl:1113-1117,1147-1148,1163,1268-1272].
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included; positions the program leaves as LOW-VALUES read back as spaces.
+# ERRMSG is the 75-byte WS-RETURN-MSG in the 80-byte field at row 23, column 1,
+# whose last position is the FKEYS attribute byte at row 24, column 1 and reads
+# as a space. INFOMSG is the 40-byte WS-INFO-MSG. EXPDAY is a dark field and is
+# not asserted. CURDATE and CURTIME come from the region clock, so they are
+# matchers in the MM/DD/YY and HH:MM:SS forms 3100-SCREEN-INIT builds
+# [app/cbl/COCRDUPC.cbl:1052-1074]. The baseline is derived from the source: no
+# TPE region runs in CI.
+id: CRD-COCRDUPC-negative-03
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 5 'Credit Card Update' on the main menu,
+  fetches card 0500024453765740 of account 00000000050 on the COCRDUPC update
+  screen (CCUP), erases the name on card and presses ENTER. COCRDUPC sends the
+  update screen again with 'Card name not provided' in the message line, '*'
+  in the name field, the status, expiry month and year kept, 'Update card
+  details presented above.' in INFOMSG, and leaves CARDDATA unchanged.
+# Primary item first, then the program, the maps asserted, the transaction
+# steps 3 and 4 run under, the CSD file step 3 reads, and the online-only
+# copybooks COCRDUPC copies. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC)
+# are verified by the SEC and MNU scenarios, the information messages by their
+# own CRD scenarios, and the batch record copybooks and the data files at the
+# lowest level that executes them.
+inventory_ids:
+- INV-CRD-056  # COCRDUPC message 'Card name not provided' (rule)
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, the main menu option 5 is entered on
+- INV-CRD-006  # COCRDUP map, the search, detail and refusal screens
+- INV-CFG-015  # CCUP transaction, the TRANSID COCRDUPC returns with
+- INV-CFG-003  # CARDDAT CSD file: card master read by card number, never rewritten here
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA whose reenter flag routes ENTER to the edits
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y copybook, the abend data COCRDUPC copies
+- INV-LAY-011  # CSSTRPFY copybook, YYYY-STORE-PFKEY mapping ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y copybook, CCARD-AID and the CC-ACCT-ID and CC-CARD-NUM filters
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# GAP-DOC-023 is not cited: the UniKix copy of COCRDUPC rewrites only the
+# alphabets-only test of 1230-EDIT-NAME (line 828), which a blank name never
+# reaches (GO TO 1230-EDIT-NAME-EXIT at line 819), and its COCRDUP.bms equals
+# app/bms/COCRDUP.bms. The entry lists only INV-CRD-057, so a UniKix run of this
+# scenario observes the app/ behaviour pinned here.
+preconditions:
+  datasets:
+    # COSGN00C reads USER0001 from USRSEC; COCRDUPC reads the card from CARDDATA.
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '5'}, '@map': COMEN01}
+  - {aid: ENTER, fields: {ACCTSID: '00000000050', CARDSID: '0500024453765740'}, '@map': COCRDUP}
+  # An empty value erases the 50-character name the detail screen filled in.
+  - {aid: ENTER, fields: {CRDNAME: ''}, '@map': COCRDUP}
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN005: '05. Credit Card Update                  '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDNAME: '                                                  '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'ANIYA VON                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Details of selected card shown above    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: '*                                                 '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Update card details presented above.    '
+    ERRMSG: 'Card name not provided                                                          '
+  # One ERRMSG value per step: blank on the menu, the search screen and the
+  # detail screen, then the refusal of the erased name.
+  messages:
+  - '                                                                              '
+  - '                                                                                '
+  - '                                                                                '
+  - 'Card name not provided                                                          '
+  file_state:
+    # The refused ENTER issues no READ UPDATE or REWRITE, so CARDDATA keeps its
+    # 50 records and card 0500024453765740 its repository values, the embossed
+    # name in its original case.
+    CARDDATA:
+      count: 50
+      contains:
+      - CARD-NUM: '0500024453765740'
+        CARD-ACCT-ID: '50'
+        CARD-CVV-CD: '747'
+        CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+        CARD-EXPIRAION-DATE: '2023-03-09'
+        CARD-ACTIVE-STATUS: 'Y'
