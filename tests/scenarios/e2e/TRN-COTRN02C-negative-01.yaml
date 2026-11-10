@@ -1,0 +1,97 @@
+# An AID key other than ENTER, PF3, PF4 and PF5 on the Add Transaction screen.
+# USER0001 signs on through CC00 and reaches the main menu COMEN01; option '8'
+# is 'Transaction Add', so COMEN01C sets CDEMO-PGM-CONTEXT to 0 and transfers
+# control with XCTL to CDEMO-MENU-OPT-PGMNAME(8) = 'COTRN02C'
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:67-72]. COMEN01C passes
+# only the COCOM01Y COMMAREA, so the group MOVE into COTRN02C's longer
+# CARDDEMO-COMMAREA pads CDEMO-CT02-TRN-SELECTED with spaces and nothing is
+# pre-filled. On that first entry COTRN02C sets CDEMO-PGM-REENTER, clears
+# COTRN2AO to LOW-VALUES, sends COTRN02 with its own header and a blank message
+# line, and returns with TRANSID(CT02) and the COMMAREA
+# [app/cbl/COTRN02C.cbl:71-80,107-130,156-159,516-534]. PF7 then starts CT02
+# again with that COMMAREA: COTRN02C receives the map, EVALUATE EIBAID handles
+# only ENTER, PF3, PF4 and PF5, and WHEN OTHER sets WS-ERR-FLG and moves
+# CCDA-MSG-INVALID-KEY of CSMSG01Y to WS-MESSAGE; SEND-TRNADD-SCREEN rebuilds
+# the header from COTTL01Y and CSDAT01Y and moves the message to ERRMSG
+# [app/cbl/COTRN02C.cbl:131-152,516-571] [app/cpy/CSMSG01Y.cpy:20-21].
+# Neither entry validates a field or reaches PROCESS-ENTER-KEY, so CXACAIX,
+# CCXREF and TRANSACT are never read or written: the scenario loads only the
+# sign-on user and asserts no file_state.
+# ACTIDIN, CARDNIN and the transaction fields are not asserted: on this path
+# they are whatever the received map held, sent back unchanged because
+# COTRN2AO redefines COTRN2AI, and carry no business outcome.
+# Text fields are compared at their full BMS length with trailing spaces:
+# ERRMSG is 78 bytes, the 40-character message followed by spaces from the
+# 80-byte WS-MESSAGE. CURDATE and CURTIME come from the region clock, hence the
+# matchers and clock_mode relative. The baseline is derived from the source:
+# no TPE region runs in CI.
+id: TRN-COTRN02C-negative-01
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 8 'Transaction Add' on the main menu and
+  presses PF7 on the empty Add Transaction screen COTRN02. COTRN02C accepts
+  only ENTER, PF3, PF4 and PF5, so it sends COTRN02 again with its header
+  (CT02, COTRN02C, the titles, the run date and time) and 'Invalid key
+  pressed. Please see below...' in the message line; no transaction is
+  validated, read or written.
+# The sign-on step's own items (COSGN00, CC00, USRSEC) and the option-8
+# navigation belong to the SEC and MNU scenarios.
+inventory_ids:
+- INV-TRN-030  # COTRN02C message 'Invalid key pressed. Please see below...' (rule)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, the main menu option 8 is entered on
+- INV-TRN-006  # COTRN02 map, the screen PF7 is pressed on and sent again
+- INV-CFG-022  # CT02 transaction, under which PF7 is processed
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the PF7 entry a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, CCDA-MSG-INVALID-KEY
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; this path reads nothing else.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '8'}
+    '@map': COMEN01
+  - aid: PF7
+    fields: {}
+    '@map': COTRN02
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    PGMNAME: COTRN02C
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    PGMNAME: COTRN02C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ERRMSG: 'Invalid key pressed. Please see below...                                      '
+  # One ERRMSG value per step: blank on the main menu and on the first Add
+  # Transaction screen, the invalid-key message after PF7.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Invalid key pressed. Please see below...                                      '

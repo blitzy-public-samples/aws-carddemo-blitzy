@@ -1,0 +1,201 @@
+# PF5 on the Add Transaction screen copies the last transaction into the input
+# fields, validates them and asks for confirmation; nothing is written
+# [app/cbl/COTRN02C.cbl:146-147,471-495].
+#
+# Steps 1-2 reach the empty Add Transaction screen as MNU-COMEN01C-alternate-08
+# does: USER0001 (type U) is routed to COMEN01C, and option 8 transfers control
+# to COTRN02C with the program context reset, so COTRN02C sets the re-enter
+# flag, finds no transaction selected and sends COTRN02 with a blank ERRMSG
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:115-156,236-264]
+# [app/cbl/COTRN02C.cbl:119-130,516-528].
+# Step 3 enters only the card number and presses PF5 under the CT02 that step 2
+# returned with, so COTRN02C receives the map and performs COPY-LAST-TRAN-DATA
+# [app/cbl/COTRN02C.cbl:131-133,146-147,539-547]:
+# - VALIDATE-INPUT-KEY-FIELDS: ACTIDIN is blank, so the card path reads CCXREF
+#   by card number; card 0500024453765740 is record 1 of the CARDXREF fixture,
+#   and its account 00000000050 moves into ACTIDIN [app/cbl/COTRN02C.cbl:193-223,609-623].
+# - STARTBR at HIGH-VALUES positions past the last key, READPREV reads the
+#   highest key 0000000000000002, not the first record, and ENDBR ends the browse
+#   [app/cbl/COTRN02C.cbl:475-478,642-706].
+# - No error is flagged, so the record's fields move into the input fields, each
+#   cut or converted to the field's picture: TRAN-AMT through WS-TRAN-AMT-E
+#   (+99999999.99) gives +00000045.67; the PIC 9(04) category 1 gives 0001; the
+#   26-byte timestamps keep their first 10 characters, the dates; the 100-byte
+#   description, the 50-byte merchant name and city keep their first 60, 30 and
+#   25 [app/cbl/COTRN02C.cbl:480-493] [app/cpy/CVTRA05Y.cpy:4-18].
+# - PROCESS-ENTER-KEY then validates again. ACTIDIN now holds 00000000050, so
+#   this pass takes the account path and reads CXACAIX by account id, which
+#   returns card 0500024453765740, the only card of account 50 in CARDXREF
+#   [app/cbl/COTRN02C.cbl:164-167,195-209,576-590]. Every data field is supplied;
+#   type and category are numeric, the amount has the sign, eight digits, point
+#   and two decimals, both dates have the YYYY-MM-DD shape and CSUTLDTC accepts
+#   them with that mask, and the merchant id is nine digits; the amount goes
+#   back through NUMVAL-C unchanged [app/cbl/COTRN02C.cbl:251-437].
+# - CONFIRM was never filled, so it is blank or low-values: COTRN02C moves
+#   'Confirm to add this transaction...' to the message, sets the cursor on
+#   CONFIRM and sends the screen with the copied fields; ADD-TRANSACTION is not
+#   performed [app/cbl/COTRN02C.cbl:169-181,516-534].
+# TRANSACT therefore holds the two invented records unchanged. Both belong to
+# the entered card, so the outcome is the same whether PF5 is meant to copy the
+# last transaction of the file or of the card (the open question of
+# GAP-UNC-015); this scenario pins neither reading. The 20-byte FILLER is not
+# asserted. BMS pads each field with blanks to its length, and expected text
+# values are full field width with their trailing spaces. CURDATE and CURTIME
+# come from the region clock, so they are matchers and the clock is relative.
+id: TRN-COTRN02C-alternate-04
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add), enters card
+  0500024453765740 and presses PF5 while TRANSACT holds the transactions
+  0000000000000001 and 0000000000000002. COTRN02C copies the type, category,
+  source, amount, description, dates and merchant fields of 0000000000000002,
+  the highest key, into the input fields, fills in account 00000000050, and
+  asks 'Confirm to add this transaction...' without writing anything.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the CSD files COTRN02C reads, and the online-only copybooks it
+# copies. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC, the option-8
+# navigation) are verified by the SEC and MNU scenarios, the confirmation
+# message by its own TRN-COTRN02C scenario, and the batch record copybooks and
+# data files at the lowest level that executes them.
+inventory_ids:
+- INV-TRN-068  # COTRN02C PF5 copy of the last transaction (rule)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the PF5
+- INV-CFG-004  # CCXREF CSD file, read by card number in the copy's key check
+- INV-CFG-006  # CXACAIX CSD file, read by account id in the Enter processing that follows
+- INV-CFG-007  # TRANSACT CSD file, browsed backwards for the last transaction
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    CARDXREF: {base: CARDXREF}
+    # Invented transactions for the repository card. The first differs from the
+    # last in every copied field, so the screen shows which record was read.
+    TRANSACT:
+      records:
+      - TRAN-ID: '0000000000000001'
+        TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '2'
+        TRAN-SOURCE: OPERATOR
+        TRAN-DESC: Test first transaction
+        TRAN-AMT: '-12.50'
+        TRAN-MERCHANT-ID: '800000001'
+        TRAN-MERCHANT-NAME: First Shop
+        TRAN-MERCHANT-CITY: Firstville
+        TRAN-MERCHANT-ZIP: '27601'
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-01 09:00:00.000000'
+        TRAN-PROC-TS: '2022-06-02 09:00:00.000000'
+      - TRAN-ID: '0000000000000002'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Test last transaction
+        TRAN-AMT: '45.67'
+        TRAN-MERCHANT-ID: '800000002'
+        TRAN-MERCHANT-NAME: Test Shop
+        TRAN-MERCHANT-CITY: Testburg
+        TRAN-MERCHANT-ZIP: '27602'
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-15 10:00:00.000000'
+        # A processing date must be present, or the copy stops at
+        # 'Proc Date can NOT be empty...'.
+        TRAN-PROC-TS: '2022-06-16 10:00:00.000000'
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  - aid: PF5
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN008: '08. Transaction Add                     '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    PGMNAME: COTRN02C
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test last transaction                                       '
+    TRNAMT: '+00000045.67'
+    TORIGDT: '2022-06-15'
+    TPROCDT: '2022-06-16'
+    MID: '800000002'
+    MNAME: 'Test Shop                     '
+    MCITY: 'Testburg                 '
+    MZIP: '27602     '
+    CONFIRM: ' '
+    ERRMSG: 'Confirm to add this transaction...                                            '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Confirm to add this transaction...                                            '
+  file_state:
+    # PF5 stops at the confirmation, so no record is added or changed.
+    TRANSACT:
+      records:
+      - TRAN-ID: '0000000000000001'
+        TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '2'
+        TRAN-SOURCE: 'OPERATOR  '
+        TRAN-DESC: 'Test first transaction                                                                              '
+        TRAN-AMT: '-12.50'
+        TRAN-MERCHANT-ID: '800000001'
+        TRAN-MERCHANT-NAME: 'First Shop                                        '
+        TRAN-MERCHANT-CITY: 'Firstville                                        '
+        TRAN-MERCHANT-ZIP: '27601     '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-01 09:00:00.000000'
+        TRAN-PROC-TS: '2022-06-02 09:00:00.000000'
+      - TRAN-ID: '0000000000000002'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Test last transaction                                                                               '
+        TRAN-AMT: '45.67'
+        TRAN-MERCHANT-ID: '800000002'
+        TRAN-MERCHANT-NAME: 'Test Shop                                         '
+        TRAN-MERCHANT-CITY: 'Testburg                                          '
+        TRAN-MERCHANT-ZIP: '27602     '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-15 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-16 10:00:00.000000'

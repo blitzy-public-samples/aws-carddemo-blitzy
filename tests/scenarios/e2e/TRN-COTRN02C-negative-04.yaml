@@ -1,0 +1,156 @@
+# A non-numeric account id on the Add Transaction screen. The first failing
+# key check ends the task, so the message is the only outcome and nothing
+# entered is cleared or written.
+#
+# Step 1 signs on as USER0001 through CC00; the type-U user is routed to the
+# main menu COMEN01 (asserted here by its header only; its content belongs to
+# SEC-COSGN00C-normal-02) [app/cbl/COSGN00C.cbl:230-237].
+# Step 2 enters option 8, 'Transaction Add' (user type U, program COTRN02C):
+# COMEN01C transfers control with CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:67-72]. With no
+# transaction selected, COTRN02C sets the re-enter flag, moves LOW-VALUES to
+# COTRN2AO and sends COTRN02 with its CT02 header, empty entry fields and a
+# blank ERRMSG [app/cbl/COTRN02C.cbl:115-130,516-571].
+# Step 3 enters the valid field set of TRN-COTRN02C-normal-01, except that
+# Acct # holds 'ABC' and Card # is left empty, and presses ENTER:
+# - PROCESS-ENTER-KEY performs VALIDATE-INPUT-KEY-FIELDS first. ACTIDINI is
+#   neither SPACES nor LOW-VALUES, so the account branch is taken, and 'ABC'
+#   (received as 'ABC' padded with blanks) IS NOT NUMERIC: WS-ERR-FLG is set,
+#   'Account ID must be Numeric...' goes to WS-MESSAGE, the cursor to ACTIDIN,
+#   and SEND-TRNADD-SCREEN is performed [app/cbl/COTRN02C.cbl:164-167,195-203].
+# - SEND-TRNADD-SCREEN rebuilds the header from COTTL01Y and CSDAT01Y, moves
+#   WS-MESSAGE to ERRMSG, sends COTRN02 with ERASE and CURSOR, and issues
+#   RETURN TRANSID(CT02) [app/cbl/COTRN02C.cbl:516-571]. That RETURN ends the
+#   task inside the key check: the NUMVAL, the CXACAIX read,
+#   VALIDATE-INPUT-DATA-FIELDS (which would blank the data fields on an error)
+#   and the CONFIRM evaluation never run, so no file is read or written.
+# - COTRN2AO redefines COTRN2AI, so every entry field is sent back as it was
+#   received: Acct # 'ABC' and the data fields as entered, Card # blank.
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# Screen values are whole fields at their BMS length with trailing spaces
+# (BMS pads each received field with blanks). ERRMSG is 78 bytes, the
+# 29-character message followed by spaces from WS-MESSAGE. CURDATE and CURTIME
+# come from the run clock, hence the matchers and clock_mode relative.
+id: TRN-COTRN02C-negative-04
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 8 'Transaction Add' and, on
+  COTRN02, enters account id 'ABC' with no card number and an otherwise valid
+  transaction confirmed with Y. COTRN02C refuses the key before any lookup:
+  it sends COTRN02 again with the entered values kept and 'Account ID must be
+  Numeric...' in the message line, and adds no transaction.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under and the online-only copybooks COTRN02C copies. No CSD file
+# is listed: the task ends before CXACAIX or TRANSACT is touched. The sign-on
+# step's own items (COSGN00, CC00, USRSEC) and the menu transaction (CM00)
+# belong to the SEC and MNU scenarios.
+inventory_ids:
+- INV-TRN-033  # COTRN02C message 'Account ID must be Numeric...' (rule)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, the menu option 8 is entered on
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the entry
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes step 3 a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # derived TRN end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001. The cross-reference is loaded
+    # so that the refusal comes from the format check alone, never from a
+    # missing file; this path does not reach it.
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      ACTIDIN: 'ABC'
+      CARDNIN: ''
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CARDNIN: '                '
+    TTYPCD: '  '
+    TCATCD: '    '
+    TRNSRC: '          '
+    TDESC: '                                                            '
+    TRNAMT: '            '
+    TORIGDT: '          '
+    TPROCDT: '          '
+    MID: '         '
+    MNAME: '                              '
+    MCITY: '                         '
+    MZIP: '          '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: 'ABC        '
+    CARDNIN: '                '
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: 'Y'
+    ERRMSG: 'Account ID must be Numeric...                                                 '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Account ID must be Numeric...                                                 '
