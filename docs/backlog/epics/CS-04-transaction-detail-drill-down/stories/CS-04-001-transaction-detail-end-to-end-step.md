@@ -101,95 +101,66 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A, which chains the detail step on step three's first row and checks every stub log once after the last step.
+Recommended: Design Option A.
 
-Rationale: a detail step that opens the transaction the list step returned, as the deferred screen will, proves the list-to-detail hop along the real request path, and one log check after the last step proves that every upstream service took part in the run.
-
-- Rejected: Design Option B, a fixed transaction identifier with a log check after every step — it skips the drill-down hop and changes the three earlier steps, which other stories own.
-
-```mermaid
-sequenceDiagram
-    participant Client as End-to-end client
-    participant Service as Card servicing service
-    participant Auth as Auth stub
-    participant Activity as Transaction activity stub
-    participant Card as Card data stub
-    Client->>Service: List call for the first sample account
-    Service-->>Client: First row with its transaction number
-    Client->>Service: Detail call for that transaction number
-    Service->>Auth: Token check
-    Service->>Auth: Account authorization
-    par Transaction read
-        Service->>Activity: Read the transaction
-    and Cross-reference read
-        Service->>Card: Read the account cross-references
-    end
-    Service-->>Client: Detail answer with fresh data status
-    Note over Client: Reads all five stub<br/>request logs after<br/>the last call
-```
+Rationale: opening the listed row proves the drill-down hop and one final log check covers every upstream; Design Option B is rejected because it skips the hop and edits three earlier steps other stories own.
 
 ### Shared by both options
 
-- Topology: one Compose stack holds the service and five stub containers, with the end-to-end client outside it on the build host.
-- Naming: the step is step four, the last of the four-step flow, named for the transaction detail screen.
-- Addressing: the client calls the service's published port with the account and the transaction number in the request path, and reads the stub request logs through the end-to-end client.
-- Isolation: the step reads sample accounts only, as the first regular fixture user, leaving the synthetic range untouched, and its rejected calls run first so no background configuration refresh falls inside their log windows.
-- Fallback: none, because an unexpected status fails the step.
-- Provisioning: the stack starts before the suite and stops after it, and the shared loader seeds the sample set the step reads.
-- Cut-over: the deferred UI replaces the end-to-end client on the same path, and real services replace stubs by address and credential only.
-- Failures: injection stays off, any unexpected status fails the step and names it, and degraded or failed upstream outcomes are proven under injection by the detail retrieval story and the integration suites.
+- Topology: Compose stack of service and five stubs, client outside.
+- Naming: step four of four, the transaction detail step.
+- Addressing: published port, account and transaction number in the path, stub logs via the client.
+- Isolation: sample accounts only, first regular user, rejected calls first, clear of configuration refreshes.
+- Fallback: none, unexpected statuses fail the step.
+- Provisioning: stack up and down per suite, sample set from the shared loader.
+- Cut-over: the deferred UI replaces the client, real services replace stubs by address and credential only.
+- Failures: injection off, degraded outcomes proven by the detail retrieval story and integration suites.
 
-### Design Option A — identifier chained from the list step
+### Design Option A — chained identifier
 
-The step reads the transaction number from the first row the list step returned and opens that transaction for the first sample account. It sends the short-number, expired-token and denied-account calls first, then the allowed call, then the two not-found calls, one at a time. It checks each answer by status, fields, data status and error object, and after its last call it reads all five stub request logs once and requires at least one call on each.
+The step opens step three's first row for the first account, one call at a time. A failed list step halts this step, naming it. The allowed call passes the token check and account authorization, then reads the transaction and the card cross-reference in parallel for a fresh answer.
 
 How it behaves:
 
-- A failed list step stops this step before its first call, with a message naming that step.
-- The allowed answer must carry all thirteen screen fields with the sample values, compared with the interface example.
-- The second sample account must answer not found, because the transaction's card belongs to the first sample account.
-- An unknown sixteen-character number must answer not found, and a five-character number must answer bad request with no stub call.
-- The denied and expired-token calls must leave the transaction and card stub logs untouched.
-- The allowed call must show each upstream operation at most once, so no retry happened.
-- Every call must pass the client's deadline check on the logged cut-off time and the client latency.
-- The final log read covers every stub, so a stub the run never reached fails the step.
+- All thirteen screen fields match the sample values and interface example, and no operation repeats.
+- A wrong account or unknown number gets not found; a short number gets bad request with no stub call.
+- Short-number, expired-token and denied-account calls go first and spare the transaction and card logs.
+- Each call meets the cut-off and latency check, and one final whole-log read covers every stub.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Identifier from step three's first row (vs a fixed literal) | it proves the list-to-detail hop | step four cannot run alone |
-| 2 | One stub-log check after the last step (vs a check after every step) | it proves every upstream once per run | a missing call is not tied to one step |
-| 3 | Negative cases reuse the chained identifier (vs separate fixtures) | the ownership check uses a real transaction | negative cases also wait on step three |
-| 4 | Rejected calls ahead of the allowed call (vs the order of the criteria) | no configuration refresh can land in a rejected call's log window | the call order differs from the criteria order |
+| 1 | Chained identifier (vs fixed literal) | proves the drill-down hop | step four cannot run alone |
+| 2 | One final log check (vs per step) | proves every upstream once | a missing call's step is unknown |
+| 3 | Chained negative cases (vs own fixtures) | a real transaction tests ownership | they wait on step three |
+| 4 | Rejected calls first (vs criteria order) | no refresh enters their log windows | order differs from the criteria |
 
 Effort and risk: small effort in one existing file, low risk.
 
-### Design Option B — fixed identifier and per-step log checks
+### Design Option B — fixed identifier, per-step checks
 
-The step opens a fixed transaction number written into the step instead of the one the list step returned, so it can run without the earlier steps. Each of the four steps checks its own stub log entries for at least one call on every stub it reaches, instead of one check after the last step. The field, status and deadline checks match Option A, but the drill-down hop goes unproven, and the per-step checks edit the three earlier steps, which other stories own.
+The step opens a fixed transaction number. Each step checks its own stub logs.
 
 How it differs:
 
-- The detail call always opens the same transaction, whatever the list step returned.
-- A broken hand-off from the list step goes unnoticed.
-- The step runs alone, so a failed list step no longer stops it.
-- Each step checks the stubs it reaches, so a missing call points at one step.
-- A configuration refresh that an earlier test on the stack already made falls outside every step's window.
+- The fixed transaction hides a broken hand-off but lets the step run alone.
+- Per-step checks point a missing call at one step.
+- An earlier test's configuration refresh falls outside every step's window.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Fixed transaction number (vs the row from step three) | the step runs without the earlier steps | the drill-down hop goes unchecked |
-| 2 | Log check after every step (vs one check after the last step) | a missing call points at one step | it edits three steps that other stories own |
-| 3 | Negative cases on the fixed number (vs the chained number) | negative cases run without step three | a fixture change needs edits in two steps |
+| 1 | Fixed number (vs step three's row) | the step runs alone | the drill-down hop goes unchecked |
+| 2 | Per-step log checks (vs one final check) | a missing call names its step | it edits three steps other stories own |
+| 3 | Fixed negative cases (vs chained) | they skip step three | a fixture change edits two steps |
 
 Effort and risk: medium effort across all four steps, medium risk.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: it proves the drill-down hop and every upstream in one file.
+- Why: one file proves the drill-down hop and every upstream.
 - Strongest argument against: a step-three failure masks step four.
-- Shared items that do not decide the choice: the stack, the end-to-end client, the first regular fixture user, injection off and the expected statuses.
-- Flip conditions: the steps must run in isolation or in parallel, or the list order stops being deterministic.
+- Shared items that do not decide the choice: stack, client, fixture user, injection off, expected statuses.
+- Flip conditions: isolated or parallel steps, or a nondeterministic list order.
 
 ## Design Validation
 
@@ -197,57 +168,48 @@ Effort and risk: medium effort across all four steps, medium risk.
 
 Settled assumptions:
 
-- Identical sample timestamps make step three's first row the highest identifier.
-- Compose defaults keep injection off.
-- The first regular fixture user's entitlement covers the first ten sample accounts and excludes the eleventh.
-- The end-to-end client closes each call's log window only once the stub logs have settled, so no background refresh lands in a negative case.
-- The sample cross-reference links the transaction's card to the first sample account alone.
-- Card cross-references are never cached, so every allowed detail call reads them from the card stub.
-- The end-to-end client reads each stub's whole request log on demand, earlier entries included.
+- Identical timestamps make step three's first row the highest identifier; injection is off by default.
+- The first regular user holds sample accounts one to ten, not eleven; the card links to account one alone.
+- Cross-references are never cached; the client closes log windows after logs settle and reads whole logs.
 
 Open assumptions:
 
-- Open → whether the end-to-end client exposes the service completion log with its cut-off time → settled by the end-to-end harness story.
+- Open → whether the client exposes the cut-off time → settled by the harness story.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the chained identifier names a sample transaction with fixed values |
-| AC2 | Holds | the transaction's card is absent from the second sample account |
-| AC3 | Holds | the unknown number has no sample row |
-| AC4 | Holds | the length rule rejects the number before any upstream call |
-| AC5 | Holds | the access guard denies the eleventh sample account before any data read |
-| AC6 | Holds | token validation fails ahead of the authorization and data stages |
-| AC7 | Holds | the harness reads each stub's whole request log |
-| AC8 | Holds | with injection off each upstream operation runs once |
-| AC9 | Conditional | it rests on the harness exposing the cut-off time |
-| AC10 | Holds | with injection off no call returns an unavailable or timed-out status |
+| AC1 | Holds | the chained row has fixed values |
+| AC2 | Holds | the second account lacks the card |
+| AC3 | Holds | the unknown number has no row |
+| AC4 | Holds | validation precedes every stub call |
+| AC5 | Holds | denial precedes any data read |
+| AC6 | Holds | the token check fails first |
+| AC7 | Holds | the harness reads whole stub logs |
+| AC8 | Holds | with injection off nothing retries |
+| AC9 | Conditional | the harness must expose cut-off time |
+| AC10 | Holds | injection off rules out unavailable or timed-out answers |
 
 ### Design Option B
 
-Settled assumptions:
-
-- Compose defaults keep injection off.
-- The first regular fixture user's entitlement covers the first ten sample accounts and excludes the eleventh.
-- The fixed number names the first sample account's purchase with the highest identifier.
-- Each step reads only the log entries recorded since it began.
+Settled assumptions: Option A's injection and entitlement items, a fixed number naming the first account's highest-identifier purchase, and step logs read only from each step's start.
 
 Open assumptions:
 
-- Open → whether the end-to-end client exposes the service completion log with its cut-off time → settled by the end-to-end harness story.
-- Open → whether the fixed transaction stays in the sample set → settled by the transaction fixture load report on each stack start.
+- Open → whether the client exposes the cut-off time → settled by the harness story.
+- Open → whether the fixed transaction stays in the sample set → settled by each stack start's fixture load report.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Breaks | the step takes no chained first item from step three |
-| AC2 | Holds | the transaction's card is absent from the second sample account |
-| AC3 | Holds | the unknown number has no sample row |
-| AC4 | Holds | the length rule rejects the number before any upstream call |
-| AC5 | Holds | the access guard denies the eleventh sample account before any data read |
-| AC6 | Holds | token validation fails ahead of the authorization and data stages |
-| AC7 | At risk | a configuration refresh made before the flow falls outside every step's window |
-| AC8 | Holds | with injection off each upstream operation runs once |
-| AC9 | Conditional | it rests on the harness exposing the cut-off time |
-| AC10 | Holds | with injection off no call returns an unavailable or timed-out status |
+| AC1 | Breaks | nothing is chained from step three |
+| AC2 | Holds | the second account lacks the card |
+| AC3 | Holds | the unknown number has no row |
+| AC4 | Holds | validation precedes every stub call |
+| AC5 | Holds | denial precedes any data read |
+| AC6 | Holds | the token check fails first |
+| AC7 | At risk | an earlier refresh escapes every step's window |
+| AC8 | Holds | with injection off nothing retries |
+| AC9 | Conditional | the harness must expose cut-off time |
+| AC10 | Holds | injection off rules out unavailable or timed-out answers |
 
 ## Metadata
 

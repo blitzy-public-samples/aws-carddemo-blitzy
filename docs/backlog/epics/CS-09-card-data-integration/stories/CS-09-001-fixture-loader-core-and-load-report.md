@@ -134,76 +134,70 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A — one parser driven by a table of field descriptors per record layout.
+Recommended: Option A — one parser over declared layouts.
 
-Rationale: one declared layout per record keeps every column position, every field check and both accepted line lengths in one place that each later loader reuses.
+Rationale: one declared layout serves every loader's columns, checks and lengths.
 
-- Rejected: Option B, hand-written substring slicing per record, because it repeats offset arithmetic in every loader and spreads the sign rule and the field checks.
+- Rejected: Option B, per-loader slicing, which repeats offsets and checks.
 
 Shared by both options:
 
-- Topology: a one-shot loader job runs beside the stubs and before them, outside the request path.
-- Naming: field descriptors and report entries carry the data-model field and entity names.
-- Addressing: the relational store is reached through its three connection settings only, the address, the user name and the password.
-- Isolation: each entity loads in its own transaction, and the loader writes nothing to the cache.
-- Fallback: none, because a malformed line stops that entity and every later one.
-- Provisioning: fixture files travel on the class path inside the service package.
+- Topology: a one-shot job runs beside and before the stubs, off request paths.
+- Naming: fields and report entries use the data-model names.
+- Addressing: the store is reached by address, user name and password only.
+- Isolation: one transaction per entity, no cache writes.
+- Fallback: none, since a malformed line stops later entities too.
+- Provisioning: fixture files ship inside the service package.
 - Cut-over: the loader retires with the stubs, with no request-path change.
-- Failures: the first malformed line rolls back its entity with the file and line named, leaves no report entry for it, keeps every earlier committed entity, starts no later entity and ends the job with a non-zero status, while a row with a broken parent link is skipped and counted only after it passes every check.
+- Failures: a malformed line rolls back its entity and ends the job non-zero, while a parentless row is skipped and counted.
 
 ### Design Option A — declared field layouts
 
-Each record layout is declared once as its full record length, its key fields and an ordered list of fields, each with its start column, length and kind: text, unsigned number, signed zoned amount with its scale, calendar date or timestamp, with a text field optionally marked not blank. One parser reads any layout and accepts exactly two line lengths, the full record and the end of the last real field. Entity loaders receive parsed rows by field name and never count columns.
+Each layout declares its length, keys and fields by start column, length and kind. One parser reads any layout, giving loaders rows by field name.
 
 How it behaves:
 
-- The parser accepts a line only at the full record length or at the end of the last real field, so a short line, a partial filler and an overlong line all fail.
-- Before it returns any field, the parser checks every digit field, amount, date, timestamp, not-blank text field and repeated key, and the entity's own row check runs after it.
-- A signed amount field reads its last character as sign and final digit, then applies the field's scale.
-- A timestamp field accepts the space-and-colon form and the dash-and-dot form within real dates and clock ranges, and a field of spaces yields no value.
-- Every failed check names the fixture file and the line number, and the loader rolls back that entity, adds no report entry for it and stops with a non-zero exit.
-- The loader core applies each registration's parent-key check only to a row that passed every check, and counts each row that check rejects as skipped.
-- A report entry for an entity appears only once its transaction has committed.
-- The store connection opens on first use, so a service start without the loader profile touches no store.
+- A line parses only at full record length or the last real field's end.
+- Field and key checks run first, then the row check, then the parent-key check.
+- An amount's scale comes from the layout, its sign from its last character.
+- The store connection opens only on first use.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Declared layouts (vs per-loader slicing) | every offset lives in one declaration | a new field kind edits the shared parser |
-| 2 | Two accepted lengths, the full record and the end of the last real field (vs the full record only) | short cross-reference lines without filler parse | the parser compares each line with two lengths instead of one |
-| 3 | Report entry after commit (vs during load) | the report never claims rows a rollback removed | a failed entity leaves no partial counts to inspect |
-| 4 | One transaction per entity (vs one for the whole load) | a failure keeps every earlier committed entity | a failed run leaves the store part loaded |
-| 5 | Every field checked in the parser before use (vs checks left to each loader) | no row is converted or stored in part | one bad sample byte stops its whole entity |
+| 1 | Declared layouts (vs per-loader slicing) | offsets live in one place | new kinds edit the parser |
+| 2 | Two accepted lengths (vs full record only) | short cross-reference lines parse | each line meets two length tests |
+| 3 | Report entry after commit (vs during load) | rolled-back rows go uncounted | failed entities leave no counts |
+| 4 | Commit per entity (vs per load) | prior commits stay | a load can end partial |
+| 5 | Parser checks every field first (vs each loader) | no row is half stored | one bad byte stops an entity |
 
-Effort and risk: one parser with five field kinds and their checks, one loader core and one report, with the risk in a layout declaration that mistypes a start column or a key.
+Effort and risk: one parser, core and report, risking a mistyped column or key.
 
 ### Design Option B — per-loader slicing
 
-Each entity loader slices its own columns from the line and calls shared sign and timestamp helpers. The loader core still runs registrations in order, one transaction per entity, keeps the load report and stops at the first failed entity. No layout declaration exists, so each loader states its own positions, its own accepted lengths and its own field checks.
+Each loader slices its own columns and calls shared helpers. The loader core is unchanged.
 
 How it differs:
 
-- Column positions sit inside each entity loader as start and end numbers.
-- Each loader computes and checks its own accepted line lengths, or omits the check.
-- Each loader writes its own digit, date, blank and repeated-key checks, or calls shared helpers for them by convention.
-- Use of the shared sign helper is a convention, so a loader can decode an amount its own way.
-- A new record layout adds slicing code instead of a field list.
+- Each loader sets its own line lengths, or omits the check.
+- Digit, date, blank and key checks sit in each loader or shared helpers.
+- A loader can skip the sign helper and decode amounts its own way.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Per-loader slicing (vs declared layouts) | no shared parser layer to learn | offset arithmetic repeats in every loader |
-| 2 | Accepted lengths per loader (vs two lengths from the layout) | each loader picks its own rule | the short cross-reference line depends on one loader's choice |
-| 3 | Shared helpers by convention (vs one parser that always applies them) | the helpers stay small | an unguarded loader can accept a bad sign character or date |
-| 4 | One transaction per entity (vs one for the whole load) | a failure keeps every earlier committed entity | a failed run leaves the store part loaded |
+| 1 | Per-loader slicing (vs layouts) | no parser to learn | offsets repeat per loader |
+| 2 | Lengths per loader (vs layout) | each loader picks | one loader owns short lines |
+| 3 | Opt-in helpers (vs one parser) | helpers stay small | bad signs can slip through |
+| 4 | Commit per entity (vs per load) | prior commits stay | a load can end partial |
 
-Effort and risk: less code in the core but more in every loader, with the risk in a sign, offset or field check that drifts between loaders.
+Effort and risk: more code per loader, risking checks that drift apart.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: one place holds every offset and field check, so the sign, timestamp, date, digit, blank, key and accepted-length rules reach every entity without each loader repeating them.
-- Strongest argument against: one extra layer of indirection for a handful of small layouts.
-- Shared items that do not decide the choice: the sign rule, the timestamp rule, the transaction per entity, the report after commit and the malformed-line disposition.
-- Flip conditions: a layout that needs a redefined area a flat field list cannot express, or a load that only ever reads a single layout.
+- Why: one place holds every offset and check for all loaders.
+- Strongest argument against: an extra layer for a few small layouts.
+- Shared items that do not decide the choice: the sign and timestamp rules, the per-entity transaction and the report after commit.
+- Flip conditions: a redefined area a flat list cannot express, or a one-layout load.
 
 ## Design Validation
 
@@ -211,81 +205,74 @@ Effort and risk: less code in the core but more in every loader, with the risk i
 
 Settled assumptions:
 
-- The sample files are fixed-width with known line lengths: 300 bytes for accounts, 36 for cross-references, 50 for category balances and 350 for transactions.
-- Sign letters appear only in the last position of an amount field.
-- Both timestamp forms appear in the mainframe source application, the space-and-colon form in the sample and the dash-and-dot form in batch posting.
-- The sample skips zero rows in every entity.
-- Every sample row passes every record check.
+- Sample lines are fixed-width, with 36-byte cross-references.
+- Sign letters sit only in an amount's last position.
+- Every sample row passes every check, with none skipped.
 
 Open assumptions:
 
-- Open → whether a later record layout needs a redefined area → settled by the transaction fixture load story's layout review.
-- Open → whether the reference seed rows reach the loader without the parser → settled by the reference data tables story.
+- Open → redefined areas in later layouts → settled by the transaction fixture load story.
+- Open → whether seed rows skip the parser → settled by the reference data tables story.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the amount kind decodes a positive sign letter at scale two |
-| AC2 | Holds | the amount kind decodes a negative sign letter at scale two |
-| AC3 | Holds | the field length sets the digit count of a twelve-position amount |
-| AC4 | Holds | both zero sign characters sit in the one decode table |
-| AC5 | Holds | the amount kind rejects any character outside the decode table |
-| AC6 | Holds | the timestamp kind accepts both forms and reads them as UTC |
-| AC7 | Holds | the timestamp kind rejects an invalid month and a wrong separator |
-| AC8 | Holds | the end of the last non-filler field is one of the two accepted lengths |
-| AC9 | Holds | the loader core applies each registration's parent-key check |
-| AC10 | Holds | the report adds an entry only after commit |
-| AC11 | Holds | a rollback discards the rows before any report entry exists |
-| AC12 | Holds | the store connection reads only its three settings |
-| AC13 | Holds | the loader core starts each registration after the previous commit |
-| AC14 | Holds | the loader core stops at the first failed entity |
-| AC15 | Holds | the timestamp kind maps a field of spaces to no value |
-| AC16 | Holds | the store connection opens only on first use |
-| AC17 | Holds | the parser accepts only the full record and the end of the last real field |
-| AC18 | Holds | the digit kind and the not-blank mark reject any other character and an all-space field |
-| AC19 | Holds | the date and timestamp kinds check real calendar dates and clock ranges |
-| AC20 | Holds | the parser tracks each layout's declared key within one file |
-| AC21 | Holds | the parent-key check runs only after the parser checks and the row check pass |
-| AC22 | Holds | the loader core stops at the first failed entity and keeps earlier commits |
+| AC1 | Holds | the amount kind decodes positive sign letters |
+| AC2 | Holds | the amount kind decodes negative sign letters |
+| AC3 | Holds | the field length sets the digit count |
+| AC4 | Holds | the decode table holds both zero signs |
+| AC5 | Holds | the amount kind checks every position |
+| AC6 | Holds | both forms parse as UTC |
+| AC7 | Holds | the timestamp kind checks months and separators |
+| AC8 | Holds | the last real field's end is accepted |
+| AC9 | Holds | the core skips parentless rows |
+| AC10 | Holds | entries follow the commit |
+| AC11 | Holds | a rollback precedes any entry |
+| AC12 | Holds | only three settings are read |
+| AC13 | Holds | loaders wait for prior commits |
+| AC14 | Holds | the core stops at a failure |
+| AC15 | Holds | the timestamp kind maps spaces to no value |
+| AC16 | Holds | the connection opens on first use |
+| AC17 | Holds | the layout declares the only two lengths |
+| AC18 | Holds | digit and not-blank checks reject bad fields |
+| AC19 | Holds | calendar and clock ranges are checked |
+| AC20 | Holds | the parser tracks declared keys |
+| AC21 | Holds | the parent-key check runs last |
+| AC22 | Holds | earlier commits survive the stop |
 
 ### Validation of Option B
 
-Settled assumptions:
+Settled assumptions: those of Option A, plus:
 
-- The sample files are fixed-width with known line lengths: 300 bytes for accounts, 36 for cross-references, 50 for category balances and 350 for transactions.
-- Sign letters appear only in the last position of an amount field.
-- Both timestamp forms appear in the mainframe source application, the space-and-colon form in the sample and the dash-and-dot form in batch posting.
-- The sample skips zero rows in every entity.
-- Every sample row passes every record check.
-- The data model fixes two accepted line lengths for each fixture file, 36 and 50 bytes for cross-references.
+- The data model fixes two lengths per file, 36 and 50 for cross-references.
 
 Open assumptions:
 
-- Open → whether every later loader calls the shared sign, timestamp and field-check helpers and names its key → settled by the review of each entity loader story.
+- Open → whether each loader calls the helpers and names its key → settled by each entity loader story.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the shared sign helper decodes a positive sign letter |
-| AC2 | Holds | the shared sign helper decodes a negative sign letter |
-| AC3 | Conditional | the value holds only while the loader slices all twelve positions |
-| AC4 | Holds | both zero sign characters sit in the shared helper |
-| AC5 | At risk | a loader that bypasses the shared helper can accept a bad sign character |
-| AC6 | Holds | the shared timestamp helper accepts both forms |
-| AC7 | Conditional | the rejection holds only while each loader calls the shared timestamp helper |
-| AC8 | At risk | each loader computes its own accepted line lengths |
-| AC9 | Holds | the loader core applies each registration's parent-key check |
-| AC10 | Holds | the report adds an entry only after commit |
-| AC11 | Holds | a rollback discards the rows before any report entry exists |
-| AC12 | Holds | the store connection reads only its three settings |
-| AC13 | Holds | the loader core starts each registration after the previous commit |
-| AC14 | Holds | the loader core stops at the first failed entity |
-| AC15 | Conditional | the blank rule holds only while each loader calls the shared timestamp helper |
-| AC16 | Holds | the store connection opens only on first use |
-| AC17 | At risk | each loader computes its own accepted line lengths |
-| AC18 | Conditional | the checks hold only while each loader calls the shared digit and blank helpers |
-| AC19 | Conditional | the checks hold only while each loader calls the shared date and timestamp helpers |
-| AC20 | Conditional | the check holds only while each loader names its key |
-| AC21 | At risk | a loader that bypasses the shared sign helper sends the bad row to the parent-key skip |
-| AC22 | Holds | the loader core stops at the first failed entity and keeps earlier commits |
+| AC1 | Holds | the sign helper decodes positive signs |
+| AC2 | Holds | the sign helper decodes negative signs |
+| AC3 | Conditional | the value needs all twelve positions sliced |
+| AC4 | Holds | the sign helper holds both zero signs |
+| AC5 | At risk | a loader can bypass the sign helper |
+| AC6 | Holds | the timestamp helper accepts both forms |
+| AC7 | Conditional | loaders must call the timestamp helper |
+| AC8 | At risk | loaders compute their own lengths |
+| AC9 | Holds | same core as Option A |
+| AC10 | Holds | same report as Option A |
+| AC11 | Holds | same rollback as Option A |
+| AC12 | Holds | same connection as Option A |
+| AC13 | Holds | same core as Option A |
+| AC14 | Holds | same core as Option A |
+| AC15 | Conditional | blank handling needs the timestamp helper |
+| AC16 | Holds | same connection as Option A |
+| AC17 | At risk | loaders compute their own lengths |
+| AC18 | Conditional | loaders must call the digit and blank helpers |
+| AC19 | Conditional | loaders must call the date and timestamp helpers |
+| AC20 | Conditional | loaders must name their keys |
+| AC21 | At risk | a bad-sign row can be skipped instead |
+| AC22 | Holds | same core as Option A |
 
 ## Metadata
 

@@ -110,73 +110,68 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Design Option A — distinct transactions sampled from each user's entitled synthetic accounts.
+Recommended: Design Option A — distinct sampled transactions.
 
-Rationale: a detail view opened from a list reaches a transaction the cache has not seen, so the scenario times that uncached lookup at full volume.
+Rationale: a detail view opened from a list reaches an uncached transaction, so the scenario times that lookup at full volume.
 
 - Rejected: Design Option B, one hot transaction repeated — it measures the cached transaction read only.
 
-No sequence diagram: the load loop adds nothing the bullets do not already say.
-
 ### Shared by both options
 
-- Topology: one Compose stack holds sample and synthetic data, and the load runner sits outside it.
-- Naming: the transaction detail scenario, one of four SLA scenarios.
-- Addressing: the service's published port, with each virtual user carrying its identity's fixture token.
-- Isolation: synthetic accounts only, disjoint from the sample accounts the end-to-end suite reads.
-- Fallback: none, because a non-success fails the run.
-- Provisioning: volume is loaded at stack start and checked in the load report first.
-- Cut-over: the same scenario reruns after the real-service swap with only addresses and credentials changed.
-- Failures: injection off, and denial calls sit outside the percentiles.
+- Topology: one Compose stack of sample and synthetic data, runner outside.
+- Naming: transaction detail, one of four SLA scenarios.
+- Addressing: the published service port, with per-identity fixture tokens.
+- Isolation: synthetic accounts only, never end-to-end sample accounts.
+- Fallback: none; a non-success fails the run.
+- Provisioning: volume loaded at stack start, load report checked first.
+- Cut-over: reruns after the real-service swap, only addresses and credentials changed.
+- Failures: injection off, denials outside the percentiles.
 
 ### Design Option A — distinct sampled transactions
 
-Before timing starts, an untimed setup pass lists the first page of the first ten synthetic accounts of each regular identity and keeps two hundred transaction identifiers per identity. The cache is then emptied, and each virtual user opens a hundred of its identity's transactions, none twice, so every timed call reads the transaction and the account's card links from the upstream services. After the timed window, one denied call per identity confirms that access is checked before any account data is read.
+Each timed call opens a different transaction its identity holds. None is cached.
 
 How it behaves:
 
-- Two virtual users share each regular identity, and the runner gives the first hundred of its two hundred identifiers to one and the second hundred to the other.
-- The listing calls run before the cache is emptied and stay out of the timed set.
-- Every timed call must succeed with a fresh data status header, and an answer check confirms the requested transaction in each answer.
-- The median, 95th and 99th percentile of the thousand timed calls must each stay below one second.
-- The upstream request logs must show one transaction read and one card-link read per timed call, with no retry.
-- The service completion log must show a cut-off time of at most 900 ms for every timed call.
-- One call per identity for an account of the next identity must end permission denied with no upstream data read.
+- Untimed setup lists each identity's first ten synthetic accounts before the cache is emptied; its two users get a hundred identifiers each, none repeated.
+- Every timed call succeeds with fresh data, the answer check confirming its transaction.
+- Median, 95th and 99th percentiles of the thousand calls stay below one second.
+- Logs show one transaction read and one card-link read upstream per call, no retry, and completion cut-offs within 900 ms.
+- After the window, each identity's denied call ends permission denied with no upstream read.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Distinct transactions per call (vs one repeated) | exercises the upstream read path | the setup pass lengthens the run |
-| 2 | Identifiers from a setup listing (vs derived from the synthetic generation rule) | no coupling to generation internals | the listing warms list cache entries |
-| 3 | Large-history account inside the first identity's sample (vs excluded) | shows lookup cost independent of history | one account shapes part of one user's sample |
+| 1 | Distinct transactions (vs one repeated) | times upstream reads | setup lengthens the run |
+| 2 | Setup listing (vs generation rule) | no tie to generation internals | it warms list cache entries |
+| 3 | Large-history account kept (vs excluded) | shows history-independent lookup cost | it shapes one user's sample |
 
-Effort and risk: small effort in one scenario file, low risk.
+Effort and risk: small effort in one file, low risk.
 
 ### Design Option B — one repeated transaction
 
-Every virtual user opens one fixed transaction of its identity's first synthetic account a hundred times. After the first call every transaction read is a cache hit, and no setup pass is needed. The card-link read still reaches its upstream service on every call.
+Each user reopens one fixed transaction a hundred times. Its identity's first synthetic account holds it.
 
 How it differs:
 
-- No setup pass runs, because each identity's one identifier is fixed in the scenario.
-- After the first calls of an identity, the cache answers every transaction read.
-- The upstream transaction log holds one or two entries per identity instead of one per timed call.
-- The few cold reads rank above the 99th percentile position of a thousand samples, so a slow uncached lookup never moves a threshold.
+- No setup pass runs; identifiers are fixed.
+- After the first calls the cache answers every transaction read; card-link reads still reach upstream.
+- The few cold reads rank above the 99th percentile, so a slow uncached lookup moves no threshold.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | One repeated transaction per identity (vs distinct transactions) | no setup pass is needed | the cache answers nearly every transaction read |
-| 2 | Identifier fixed in the scenario (vs a setup listing) | the scenario stands alone | the scenario couples to the generation rule |
-| 3 | Cache left warm (vs emptied before timing) | timing starts at once | cold reads fall outside the 99th percentile rank |
+| 1 | One repeated transaction (vs distinct ones) | no setup pass | the cache answers nearly every read |
+| 2 | Fixed identifier (vs setup listing) | the scenario stands alone | it couples to the generation rule |
+| 3 | Warm cache (vs emptied first) | timing starts at once | it hides the uncached lookup |
 
-Effort and risk: smallest effort, high risk, because it passes while the uncached path could breach.
+Effort and risk: smallest effort, high risk.
 
 ### Recommendation
 
 - Option: Design Option A.
-- Why: it measures the uncached lookup path the one-second threshold governs.
+- Why: it times the uncached lookup the one-second threshold governs.
 - Strongest argument against: cold reads make the 99th percentile noisier.
 - Shared items that do not decide the choice: stack, volume, injection off, identities, thresholds.
-- Flip conditions: real-UI telemetry showing detail views are mostly repeat opens of one transaction, or a harness switch that bypasses the cache.
+- Flip conditions: telemetry showing detail opens mostly repeat, or a harness cache bypass.
 
 ## Design Validation
 
@@ -184,54 +179,51 @@ Effort and risk: smallest effort, high risk, because it passes while the uncache
 
 Settled assumptions:
 
-- Each regular identity's first ten synthetic accounts hold history.
-- Compose defaults keep injection off.
-- Synthetic rows match sample shape.
-- The load runner hands each of an identity's two virtual users its own half of that identity's targets when the scenario asks for split targets.
-- The load runner hands the scenario's answer check every successful answer with the target it was sent for.
+- Each identity's first ten synthetic accounts hold history.
+- Injection is off by default; synthetic rows match sample shape.
+- The runner splits targets between an identity's two users on request.
+- The runner gives the answer check each successful answer with its target.
 
 Open assumptions:
 
-- Open → whether cold card-link reads stay inside the threshold at full volume → settled by the first scenario run.
-- Open → whether the service container log carries one completion line per call with its cut-off time → settled by the first scenario run against the call policy story's log line.
+- Open → cold card-link reads within the threshold → settled by the first run.
+- Open → a per-call completion line with its cut-off time → settled by the first run on the call policy log line.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | split targets give each virtual user its own hundred identifiers with none repeated |
-| AC2 | Conditional | cold-path latency at full volume is unproven until the first run |
-| AC3 | Holds | the answer check compares each returned identifier with its target's identifier |
-| AC4 | Holds | the precheck reads each stub's injection values before timing |
-| AC5 | Holds | the setup pass ends before the timed window opens |
-| AC6 | Holds | the denied calls run after the timed window with both upstream logs compared |
+| AC1 | Holds | split targets keep each user's hundred identifiers distinct |
+| AC2 | Conditional | cold-path latency awaits the first run |
+| AC3 | Holds | each answer is checked against its target |
+| AC4 | Holds | the precheck reads every stub's injection values |
+| AC5 | Holds | setup ends before timing starts |
+| AC6 | Holds | denied calls follow the window with upstream logs compared |
 | AC7 | Holds | injection off leaves no failed or timed-out attempt |
-| AC8 | Conditional | the check rests on the completion log carrying the cut-off time per call |
-| AC9 | Holds | any unavailable, deadline or stale answer fails the scenario with injection off |
+| AC8 | Conditional | the check needs each cut-off time logged |
+| AC9 | Holds | any unavailable, deadline or stale answer fails the run |
 
 ### Design Option B
 
-Settled assumptions:
+Settled assumptions: Option A's injection and answer-check items, plus:
 
-- Compose defaults keep injection off.
-- The card-link read is never cached, so it reaches its upstream service on every call.
+- Card-link reads, never cached, reach upstream every call.
 - Each repeated transaction belongs to an account its identity holds.
-- The load runner hands the scenario's answer check every successful answer with the target it was sent for.
 
 Open assumptions:
 
-- Open → whether each fixed identifier matches the synthetic generation rule → settled by the first stack load.
-- Open → whether the service container log carries one completion line per call with its cut-off time → settled by the first scenario run against the call policy story's log line.
+- Open → fixed identifiers match the generation rule → settled by the first stack load.
+- Open → a per-call completion line with its cut-off time → settled by the first run on the call policy log line.
 
 | AC | Verdict | Why |
 |---|---|---|
 | AC1 | Breaks | one transaction is not a distinct sample |
-| AC2 | Holds | cached transaction reads keep every percentile low |
-| AC3 | Holds | the answer check compares the repeated identifier on every call |
-| AC4 | Holds | the precheck reads each stub's injection values before timing |
+| AC2 | Holds | cached reads keep every percentile low |
+| AC3 | Holds | the answer check matches the repeated identifier |
+| AC4 | Holds | the precheck reads every stub's injection values |
 | AC5 | Holds | no setup calls exist |
-| AC6 | Holds | the denied calls run after the timed window with both upstream logs compared |
+| AC6 | Holds | denied calls follow the window with upstream logs compared |
 | AC7 | Holds | injection off leaves no failed or timed-out attempt |
-| AC8 | Conditional | the check rests on the completion log carrying the cut-off time per call |
-| AC9 | Holds | any unavailable, deadline or stale answer fails the scenario with injection off |
+| AC8 | Conditional | the check needs each cut-off time logged |
+| AC9 | Holds | any unavailable, deadline or stale answer fails the run |
 
 ## Metadata
 

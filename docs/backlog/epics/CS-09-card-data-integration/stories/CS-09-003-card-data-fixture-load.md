@@ -125,74 +125,69 @@ Completed during implementation.
 
 ## Implementation Design
 
-Recommended: Option A, load from copies of the sample files carried on the class path.
+Recommended: Option A, class-path sample copies.
 
-Rationale: sample file copies carried inside the service package keep the fixture set with the service wherever it runs, and one parser builds both the relational load and the in-memory fixture set.
+Rationale: packaged copies travel with the service; one parser builds load and in-memory set.
 
-- Rejected: Option B, reading the reference repository's data folder at run time, because it breaks the rule that no deliverable reads the mainframe source application's folders and that the set moves unchanged.
+- Rejected: Option B, because no deliverable may read the reference folder if the set is to move unchanged.
 
 ### Shared by both options
 
-- Topology: three loader steps inside the one-shot loader job, outside the request path.
-- Naming: every stored field carries its data-model name.
-- Addressing: the relational store is reached through the loader's connection settings only.
-- Isolation: one transaction per entity, with each load report entry written after its commit.
-- Fallback: none, because a stub has no card data to serve until the load commits.
-- Provisioning: account, then cross-reference, then category balance, after the reference data.
-- Cut-over: the real card data owner holds the real rows, and the sample file copies stay test-only.
-- Failures: a malformed line, whether truncated, overlong or failing a field or key check, stops its entity and every later one with no report entry for it, and a broken parent link is skipped and counted only after its row passes every record check.
+- Topology: three steps in the one-shot loader job.
+- Naming: stored fields keep their data-model names.
+- Addressing: only loader connection settings reach the store.
+- Isolation: one transaction per entity, reported after commit.
+- Fallback: none; stubs serve nothing before the load.
+- Provisioning: account, cross-reference, category balance, after reference data.
+- Cut-over: the card data owner holds real rows; the sample is test-only.
+- Failures: malformed lines halt remaining loads; broken parent links are skipped and counted.
 
 ### Design Option A — sample file copies on the class path
 
-The three sample files are copied once, byte for byte, into the service's resources and read from the class path. Three entity loaders declare their record layouts and register with the loader core in the order account, cross-reference, category balance, after the reference data. The in-memory fixture set for unit suites is built by the same parser from the same copies, so unit and relational values agree.
+The sample files are copied once, byte for byte, into the package. One parser feeds the load and in-memory set.
 
 How it behaves:
 
-- The account loader reads each line at its record positions, decodes the signed amounts and reads the zip and the group strictly at their own positions.
-- A blank group becomes no value, and the zip keeps the letter-led value the sample carries in that position.
-- Each loader accepts only its two line lengths, the full record and the end of its last real field, so the cross-reference loader accepts a line that ends after the account number and a line that carries the trailing filler.
-- Every line passes the digit, amount, date, not-blank and repeated-key checks of its layout before any value is used, and only then is a cross-reference or category balance row whose parent link names no loaded row skipped and counted.
-- A line that fails any check stops that entity with the file and the line number named, leaves no report entry for it, and no later loader starts.
-- The load report gains one entry per entity after its transaction commits.
-- A digest of each reference file taken at the copy is checked against the packaged copy, so any changed byte fails the unit suite.
+- Zip and group are read strictly by offset; a blank group becomes no value.
+- Lines end only at the full record or the last real field.
+- Field and repeated-key checks run before parent links are tested.
+- A digest taken at the copy fails the unit suite on any changed byte.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Sample file copies on the class path (vs reading the reference folder) | the fixture set moves with the service | a later reference file change never reaches the copies |
-| 2 | In-memory set from the same parser (vs hand-written values) | unit and relational values come from one source | every unit suite start parses three files |
-| 3 | Strict offsets for zip and group (vs re-aligning the position quirk) | stored values match the record layout exactly | the sample zip holds a letter-led value |
-| 4 | Both cross-reference line lengths accepted (vs padding the files) | the copies stay byte-identical to the sample | the loader accepts a second line length |
+| 1 | Class-path copies (vs the reference folder) | the set moves with the service | copies miss later reference changes |
+| 2 | Parser-built in-memory set (vs hand-written values) | unit and relational values agree | unit suites parse three files |
+| 3 | Strict zip and group offsets (vs re-aligning them) | values match the layout | the sample zip stays letter-led |
+| 4 | Both cross-reference lengths accepted (vs padding the files) | copies stay byte-identical | a second length is accepted |
 
-Effort and risk: low effort with three small layouts, with the risk confined to a later reference file change that never reaches its copy.
+Effort and risk: low effort; the one risk is reference changes missing copies.
 
 ### Design Option B — reference folder read at run time
 
-The loader reads the three sample files from the reference repository's data folder, found by a relative location from the working directory at run time. The parser, the record layouts, the load order and the skip rule are the same as in Option A. The in-memory fixture set reads the same folder.
+The loader and in-memory set read the reference folder at run time. Parser, layouts, order and skip rule match Option A.
 
 How it differs:
 
-- No copy exists inside the service package, so the reference folder must sit beside the service at run time.
-- A container image of the service carries no fixture input unless the reference folder is mounted into it.
-- Moving the service set into its own repository leaves the loader with no input.
-- The unit suite finds its fixture set only inside the reference checkout.
-- The rule that no deliverable reads the mainframe source application's folders is broken.
+- The reference folder must sit beside the service.
+- A container image needs that folder mounted as input.
+- Moving the set to its own repository leaves no input.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
-| 1 | Reading the reference folder at run time (vs class-path copies) | no copy can drift from the reference files | the load depends on the reference checkout layout |
-| 2 | In-memory set from the reference folder (vs from class-path copies) | every suite reads one physical source | the unit suite fails outside the reference checkout |
-| 3 | Strict offsets for zip and group (vs re-aligning the position quirk) | stored values match the record layout exactly | the sample zip holds a letter-led value |
-| 4 | Both cross-reference line lengths accepted (vs padding the files) | the reference files stay untouched | the loader accepts a second line length |
+| 1 | Folder read at run time (vs class-path copies) | no copy can drift | the load depends on checkout layout |
+| 2 | In-memory set from the folder (vs class-path copies) | every suite reads one source | unit suites need the checkout |
+| 3 | Strict zip and group offsets (vs re-aligning them) | values match the layout | the sample zip stays letter-led |
+| 4 | Both cross-reference lengths accepted (vs padding the files) | reference files stay untouched | a second length is accepted |
 
-Effort and risk: lowest effort with no copy step, with high risk that the load finds no input once the set moves.
+Effort and risk: lowest effort; moving the set risks no input.
 
 ### Recommendation
 
 - Option: Option A.
-- Why: the fixture set travels with the service, so every suite and every container reads the same bytes.
-- Strongest argument against: a later change to a reference file never reaches the copies, and the digests guard only the copies.
-- Shared items that do not decide the choice: the load order, the offset rule, the record checks and the skip counts.
-- Flip conditions: the reference data becomes a published artifact versioned with the service.
+- Why: every suite and container reads the same packaged bytes.
+- Strongest argument against: copies and digests miss later reference changes.
+- Shared items that do not decide the choice: load order, offsets, record checks, skip counts.
+- Flip conditions: the reference data ships versioned with the service.
 
 ## Design Validation
 
@@ -200,73 +195,66 @@ Effort and risk: lowest effort with no copy step, with high risk that the load f
 
 Settled assumptions:
 
-- The sample holds zero parent-link violations in every entity.
-- Each sample account has one card and one category balance.
-- The zip position holds the same letter-led value in every sample account, and the group position is blank in every one.
-- The reference data loads first, through the reference data tables story.
-- Every sample row passes every record check.
-- Each packaged copy equals its reference file byte for byte, as the digest recorded at the copy proves.
-- A later change to a reference file never reaches the copies, because the copies are made once and never regenerated.
+- Every sample row passes every check and names a loaded parent.
+- Each sample account has one card, one balance, a letter-led zip, no group.
+- Reference data loads first; digests prove each copy matches its reference.
 
 Open assumptions:
 
-- Open → whether the in-memory set should shrink below the full sample → settled by the card data stub story's boundary tests.
+- Open → whether the in-memory set shrinks → settled by the card data stub story.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | Holds | the complete copies hold no broken parent link |
-| AC2 | Holds | the account layout reads every field at its record position |
-| AC3 | Holds | the zip and the group are read strictly at their own positions |
-| AC4 | Holds | identifiers are carried as text with their leading zeros |
-| AC5 | Holds | the copies hold exactly the fifty sample accounts |
-| AC6 | Holds | the two accepted lengths end at the account number and at the full record |
-| AC7 | Holds | the loader core skips a row whose account is not loaded |
-| AC8 | Holds | the loader core skips a row whose category pair is not seeded |
-| AC9 | Holds | the loader core rolls back an entity at its first line shorter than the last real field |
-| AC10 | Holds | each loader declares its order after the reference data |
-| AC11 | Holds | digest-checked copies travel inside the service package |
-| AC12 | Holds | the in-memory set comes from the same parser and the same copies |
-| AC13 | Holds | each layout accepts only its full record and the end of its last real field |
-| AC14 | Holds | the layouts mark each digit, amount, date and not-blank field for the parser |
-| AC15 | Holds | each layout names its key for the parser's repeat check |
-| AC16 | Holds | the parent-key check runs only after every record check passes |
-| AC17 | Holds | the loader core rolls back the entity and stops every later loader |
-| AC18 | Holds | the in-memory set uses the same parser and layouts as the loaders |
+| AC1 | Holds | the copies break no parent link |
+| AC2 | Holds | fields sit at record positions |
+| AC3 | Holds | strict offsets separate zip and group |
+| AC4 | Holds | identifiers keep leading zeros |
+| AC5 | Holds | the copies hold exactly fifty accounts |
+| AC6 | Holds | only the declared lengths load |
+| AC7 | Holds | missing accounts are skipped and counted |
+| AC8 | Holds | unseeded pairs are skipped and counted |
+| AC9 | Holds | short lines roll back the load |
+| AC10 | Holds | declared orders follow reference data |
+| AC11 | Holds | digest-checked copies ship packaged |
+| AC12 | Holds | the set shares parser and copies |
+| AC13 | Holds | layouts accept two lengths only |
+| AC14 | Holds | layouts declare every field check |
+| AC15 | Holds | layouts declare each key |
+| AC16 | Holds | parent keys are tested last |
+| AC17 | Holds | rollback halts every later loader |
+| AC18 | Holds | the set runs the same checks |
 
 ### Option B validation
 
-Settled assumptions:
+Settled assumptions: Option A's sample assumptions, plus:
 
-- The sample holds zero parent-link violations in every entity.
-- Each sample account has one card and one category balance.
-- The reference repository's data folder holds the same three files.
-- Every sample row passes every record check.
+- The reference folder holds the same three files.
 
 Open assumptions:
 
-- Open → where the reference folder sits relative to the service at run time → settled by the test stack story.
-- Open → whether the service set keeps living inside the reference repository → settled by the delivery repository handoff.
+- Open → the reference folder's run-time location → settled by the test stack story.
+- Open → whether the set leaves the reference repository → settled by the delivery handoff.
 
 | AC | Verdict | Why |
 |---|---|---|
-| AC1 | At risk | the load finds its input only where the reference folder sits beside the service |
-| AC2 | Holds | the same account layout reads the same bytes |
-| AC3 | Holds | the zip and the group are read strictly at their own positions |
-| AC4 | Holds | identifiers are carried as text with their leading zeros |
-| AC5 | Holds | the reference files hold exactly the fifty sample accounts |
-| AC6 | Holds | the two accepted lengths end at the account number and at the full record |
-| AC7 | Holds | the loader core skips a row whose account is not loaded |
-| AC8 | Holds | the loader core skips a row whose category pair is not seeded |
-| AC9 | Holds | the loader core rolls back an entity at its first line shorter than the last real field |
-| AC10 | Holds | each loader declares its order after the reference data |
-| AC11 | Breaks | the loader opens files outside the class path by design |
-| AC12 | Conditional | the unit suite finds its input only inside the reference checkout |
-| AC13 | Holds | the same layouts accept only their full record and the end of their last real field |
-| AC14 | Holds | the same layouts mark each digit, amount, date and not-blank field for the parser |
-| AC15 | Holds | the same layouts name their keys for the parser's repeat check |
-| AC16 | Holds | the parent-key check runs only after every record check passes |
-| AC17 | Holds | the loader core rolls back the entity and stops every later loader |
-| AC18 | Conditional | the unit suite finds its input only inside the reference checkout |
+| AC1 | At risk | the load needs the folder beside it |
+| AC2 | Holds | Option A's layouts apply |
+| AC3 | Holds | Option A's layouts apply |
+| AC4 | Holds | Option A's layouts apply |
+| AC5 | Holds | the reference files hold exactly fifty accounts |
+| AC6 | Holds | Option A's layouts apply |
+| AC7 | Holds | Option A's loader core applies |
+| AC8 | Holds | Option A's loader core applies |
+| AC9 | Holds | Option A's loader core applies |
+| AC10 | Holds | Option A's load orders apply |
+| AC11 | Breaks | the loader reads outside the class path |
+| AC12 | Conditional | unit suites need the reference checkout |
+| AC13 | Holds | Option A's layouts apply |
+| AC14 | Holds | Option A's layouts apply |
+| AC15 | Holds | Option A's layouts apply |
+| AC16 | Holds | Option A's loader core applies |
+| AC17 | Holds | Option A's loader core applies |
+| AC18 | Conditional | unit suites need the reference checkout |
 
 ## Metadata
 
