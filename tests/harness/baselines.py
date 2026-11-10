@@ -125,6 +125,7 @@ __all__ = [
     "FIXED_CLOCK_ADAPTERS",
     "MATCHERS",
     "NEW_VERSION",
+    "SCREEN_CLOCK_FIELDS",
     "Baseline",
     "BaselineError",
     "BumpCheckError",
@@ -181,6 +182,13 @@ MATCHERS = {
     "run-year-start": "%Y-%m-%d",
     "run-year-end": "%Y-%m-%d",
 }
+
+# Screen field -> the matcher kind the projection shows in its place. Every
+# online program moves CSDAT01Y's WS-CURDATE-MM-DD-YY and WS-CURTIME-HH-MM-SS,
+# built from the run clock, to these two fields of its map before sending it
+# [app/cpy/CSDAT01Y.cpy:30-41] [app/cbl/COSGN00C.cbl:190-196], so their
+# observed values are the run clock whether or not a step asserts them.
+SCREEN_CLOCK_FIELDS = {"CURDATE": "run-date", "CURTIME": "run-time"}
 
 # Markers of the decoded projection for what a result does not hold.
 MISSING = "@missing"
@@ -1486,8 +1494,12 @@ def projection(decoded: Mapping[str, Any], scenario: Any, baseline: Baseline | N
     """The deterministic projection stored in result records: ``decoded``
     (from ``decode_result``) with every field whose expected value is a
     matcher, in the baseline or in the scenario, holding the matcher's kind
-    (``run-timestamp``) instead of the observed value. Nothing else changes:
-    no value is trimmed, case-folded, reordered or dropped."""
+    (``run-timestamp``) instead of the observed value. The screen clock
+    fields (``SCREEN_CLOCK_FIELDS``) hold their kind on every captured screen
+    whether or not the step names them, because their observed value is the
+    run clock; a matcher the step or a top-level ``matchers`` entry names
+    still decides the kind shown. Nothing else changes: no value is trimmed,
+    case-folded, reordered or dropped."""
     out = copy.deepcopy(dict(decoded))
     inline = scenario.expected if isinstance(scenario.expected, Mapping) else {}
     stored = baseline.expected if baseline is not None else {}
@@ -1507,6 +1519,12 @@ def projection(decoded: Mapping[str, Any], scenario: Any, baseline: Baseline | N
                 _apply_marks(records, _list_marks(spec, records, global_matchers, True, False))
     screens = out.get("screens")
     if isinstance(screens, list):
+        for screen in screens:
+            if not isinstance(screen, dict) or MISSING in screen:
+                continue
+            for name, kind in SCREEN_CLOCK_FIELDS.items():
+                if name in screen:
+                    screen[name] = kind
         for spec in (stored.get("screens"), inline.get("screens")):
             steps = spec if isinstance(spec, list) else []
             for index, screen in enumerate(screens):
