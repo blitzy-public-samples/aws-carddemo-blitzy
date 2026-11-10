@@ -61,10 +61,10 @@
  * This check never re-validates metadata form (check-backlog-structure owns that); a metadata
  * value it needs for a comparison or a sum and cannot parse is reported here.
  */
-import path from 'node:path';
 import {
   readText,
   exists,
+  pathKind,
   listFiles,
   parseHeadings,
   sections,
@@ -1685,12 +1685,13 @@ function checkGapList(plan, backlog) {
 }
 
 /**
- * True when a root-relative path is a regular file, a symlink to one included: it is listed by
- * listFiles of its parent directory. exists() is also true for a directory, which readText cannot
+ * True when a root-relative path is a regular file, a symbolic link the shared library's guard
+ * resolves to one included: pathKind(rel) is 'file'. A link that leads off-limits gives false and
+ * is reported as a guard violation. exists() is also true for a directory, which readText cannot
  * read, so each file this check reads by a fixed path passes this test first.
  */
 function isRegularFile(rel) {
-  return listFiles(path.posix.dirname(rel)).includes(rel);
+  return pathKind(rel) === 'file';
 }
 
 /* ------------------------------------------------------------------------------------------------

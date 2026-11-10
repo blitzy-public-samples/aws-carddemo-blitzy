@@ -38,6 +38,7 @@ import {
   repoRoot,
   readText,
   exists,
+  pathKind,
   listFiles,
   sectionByHeading,
   parseTables,
@@ -1586,8 +1587,11 @@ async function main() {
   let catalogue = new Map();
   let controls = new Map();
   let secretConsumers = new Map();
-  if (!exists(TRD)) {
+  const trdKind = pathKind(TRD);
+  if (trdKind === null) {
     violations.push({ path: TRD, line: 1, message: 'Technical Requirements Document is missing' });
+  } else if (trdKind !== 'file') {
+    violations.push({ path: TRD, line: 1, message: 'Technical Requirements Document is not a regular file' });
   } else {
     const trdText = readText(TRD);
     catalogue = loadCatalogue(trdText, violations);

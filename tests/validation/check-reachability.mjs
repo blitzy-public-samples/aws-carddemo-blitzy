@@ -42,6 +42,7 @@ import {
   fencedBlocks,
   findCodeSpans,
   isReferencePath,
+  isDeliveryPath,
   report,
   escapeControls,
   formatError,
@@ -51,13 +52,6 @@ const CHECK = 'check-reachability';
 const ENTRY = 'docs/implementation-plan.md';
 const DESIGN_HEADING = '4. Design';
 const STORY_RE = /^docs\/backlog\/epics\/[^/]+\/stories\/[^/]+\.md$/;
-
-// The delivery set is what moves to the delivery repository: these top-level directories and
-// .spectral.yaml. Besides escapes and the CardDemo reference roots, this also rejects links to
-// CardDemo's own root files (README.md, LICENSE and the like): they resolve in this checkout but
-// would break after the move, so the check gives the same result in both places.
-const DELIVERY_DIRS = new Set(['docs', 'card-servicing-contracts', 'card-servicing-service', 'tests']);
-const DELIVERY_FILES = new Set(['.spectral.yaml']);
 
 // The universe every file of which must be reached: each root with the extensions it contributes
 // (null for every file) and the family a root without one of them lacks.
@@ -79,14 +73,6 @@ const RUN_ROOT_RE = /^(?:docs|card-servicing-contracts|card-servicing-service|te
 const BARE_FILE_RE = /^[^\s/]+\.(?:md|mmd|proto|yaml|yml|json)$/;
 const URI_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 
-/** True for a normalised root-relative path inside the delivery set; pure. */
-function inDeliverySet(rel) {
-  if (rel === '.') return true;
-  if (DELIVERY_FILES.has(rel)) return true;
-  const first = rel.split('/')[0];
-  return DELIVERY_DIRS.has(first);
-}
-
 // Story section headings that carry the word Design yet are not the Design section.
 const OTHER_DESIGN_HEADINGS = new Set(['implementation design', 'design validation']);
 
@@ -101,7 +87,11 @@ function looksLikeDesignHeading(heading) {
 }
 
 /**
- * Classifies a link target written in `fromRel` without touching the filesystem.
+ * Classifies a link target written in `fromRel` without touching the filesystem. A link must
+ * stay inside the delivery set (isDeliveryPath), what moves to the delivery repository. Besides
+ * escapes and the CardDemo reference roots, this also rejects links to CardDemo's own root files
+ * (README.md, LICENSE and the like): they resolve in this checkout but would break after the move,
+ * so the check gives the same result in both places.
  * @returns {{ path: string, anchor: string | null } | { violation: string }}
  */
 function classifyLink(fromRel, target) {
@@ -111,7 +101,7 @@ function classifyLink(fromRel, target) {
   const resolved = resolveLink(fromRel, target);
   // Percent-decoding inside resolveLink can still yield a leading slash ("%2Fdocs").
   if (resolved.path.startsWith('/')) return { violation: `non-relative link: ${target}` };
-  if (!inDeliverySet(resolved.path)) return { violation: `link leaves the delivery set: ${target}` };
+  if (!isDeliveryPath(resolved.path)) return { violation: `link leaves the delivery set: ${target}` };
   return resolved;
 }
 
@@ -123,8 +113,9 @@ function isFsError(err) {
 /**
  * 'file' for a regular file, 'dir' for a directory, 'other' for anything else (a FIFO, socket or
  * device, never opened) and null when nothing is there. Callers classify delivery-set membership
- * first; pathKind runs the shared library's guard, which rejects a path or symbolic link leading
- * outside the repository or into a reference root, before the stat that tells them apart.
+ * first; pathKind runs the shared library's guard, which gives null for a symbolic link leading
+ * outside the repository, into a reference root or out of the delivery set, before anything at its
+ * destination is touched, and report() prints that link as a guard violation.
  */
 function kindOf(rel) {
   return pathKind(rel);
@@ -323,7 +314,7 @@ function checkDesignPaths(story, design, basenames, violations) {
         continue;
       }
       if (resolved.length > 1 && resolved.endsWith('/')) resolved = resolved.slice(0, -1);
-      if (!inDeliverySet(resolved)) {
+      if (!isDeliveryPath(resolved)) {
         violations.push({ path: story, line, message: `Design path leaves the delivery set: \`${token}\`` });
       } else if (!exists(resolved)) {
         violations.push({ path: story, line, message: `Design path does not exist: \`${token}\`` });

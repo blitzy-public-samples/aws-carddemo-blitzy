@@ -60,13 +60,15 @@
  * resolvable YAML parser or @stoplight/spectral-rulesets (the count is still printed).
  */
 import { spawnSync } from 'node:child_process';
-import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import {
   repoRoot,
   readText,
   exists,
+  pathKind,
+  listEntries,
+  linkedComponent,
   toolBin,
   report,
   escapeControls,
@@ -1866,26 +1868,15 @@ const SYMLINK_MESSAGE =
   'is a symbolic link inside a module root: buf lint is not run while one is present, because a proto behind it would drop out of the lint unseen; the delivery set must hold the real file or directory, so replace the link with its target';
 
 /**
- * The first component of a root-relative path that is a symbolic link, checked with
- * lstat from the repository root down to the path itself, as a root-relative path;
- * null when no component is a link or the path is missing (a component that does not
- * exist, or is not a directory, ends the walk). No link is followed, so its target is
- * never statted.
+ * The first component of a root-relative path that is a symbolic link, checked from the
+ * repository root down to the path itself, as a root-relative path; null when no
+ * component is a link or the path is missing (a component that does not exist, or is
+ * not a directory, ends the walk). The shared linkedComponent classifies each component
+ * relative to its held parent folder and follows no link, so a link's target is never
+ * statted and a component swapped for a link mid-walk cannot redirect the walk.
  */
 function symlinkedComponent(rel) {
-  const segments = rel.split('/');
-  for (let i = 1; i <= segments.length; i++) {
-    const part = segments.slice(0, i).join('/');
-    let stat;
-    try {
-      stat = fs.lstatSync(path.join(repoRoot, part));
-    } catch (err) {
-      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return null;
-      throw err;
-    }
-    if (stat.isSymbolicLink()) return part;
-  }
-  return null;
+  return linkedComponent(rel);
 }
 
 /**
@@ -1951,25 +1942,15 @@ function checkLintIgnoreComments(violations, links) {
       bufBlocked.push(linkReason(root, link));
       continue;
     }
-    let isDir;
-    try {
-      isDir = fs.lstatSync(path.join(repoRoot, root)).isDirectory();
-    } catch (err) {
-      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') continue;
-      throw err;
-    }
-    if (!isDir) continue;
+    // The root is reached through no link, so pathKind has none to follow.
+    if (pathKind(root) !== 'dir') continue;
+    // listEntries never follows a link and opens each folder relative to its held parent;
+    // its entries come in path order, code unit by code unit.
     const found = [];
-    const walk = (rel) => {
-      for (const entry of fs.readdirSync(path.join(repoRoot, rel), { withFileTypes: true })) {
-        const child = `${rel}/${entry.name}`;
-        if (entry.isSymbolicLink()) found.push({ rel: child, link: true });
-        else if (entry.isDirectory()) walk(child);
-        else if (entry.isFile() && path.extname(entry.name) === '.proto') found.push({ rel: child, link: false });
-      }
-    };
-    walk(root);
-    found.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+    for (const { path: rel, type } of listEntries(root)) {
+      if (type === 'symlink') found.push({ rel, link: true });
+      else if (type === 'file' && path.extname(rel) === '.proto') found.push({ rel, link: false });
+    }
     const inRoot = found.filter((f) => f.link).length;
     if (inRoot > 0) bufBlocked.push(`module root ${root} holds ${inRoot} symbolic link(s)`);
     for (const { rel, link } of found) {

@@ -7,18 +7,30 @@
  * check-diagrams, check-contracts, check-dependency-order and check-reachability.
  * Each imports its helpers from here and re-implements none of them.
  *
- * Portability guard: the suite moves unchanged to the delivery repository, so no
- * helper ever opens, stats or lists anything under the CardDemo reference roots
- * (app/, diagrams/, samples/) or outside the repository. File helpers take
- * repository-root-relative POSIX paths and throw on such a path, judged lexically and
- * then through every symbolic link in it: each component is examined with lstat from
- * the repository root, a link's relative target is resolved from the link's own folder,
- * and a destination outside the repository or inside a reference root, an absolute link
- * target, or a chain of more than 40 links throws before the destination is touched.
- * Past a missing component the path is judged by its lexical destination, so a dangling
- * link into a reference root throws here and in the delivery repository alike. Walks
- * confine every link they meet the same way, and listEntries never follows one.
- * Callers classify link targets with isReferencePath before touching the filesystem.
+ * Portability guard: the suite moves unchanged to the delivery repository, so the file
+ * helpers reach only the delivery set (isDeliveryPath: docs/, card-servicing-contracts/,
+ * card-servicing-service/ and tests/ without tests/validation/node_modules, plus
+ * .spectral.yaml) and never open, stat or list anything under the CardDemo reference roots
+ * (app/, diagrams/, samples/), elsewhere in the repository or outside it. They take
+ * repository-root-relative POSIX paths; a caller's path outside the delivery set throws,
+ * judged lexically. The path is then resolved one component at a time from the repository
+ * root, held open as a descriptor: a symbolic link's target is resolved from the link's own
+ * folder, and every destination is tested before it is touched. A link whose target is
+ * absolute, leaves the repository, enters a reference root, leaves the delivery set or ends
+ * a chain of more than 40 links is a guard violation: it is recorded, report() prints and
+ * counts it with the check's own violations, and the helper treats the path as absent. Past
+ * a missing component the path is judged by its lexical destination, so a dangling link into
+ * a reference root or out of the delivery set is a violation here and in the delivery
+ * repository alike. Where /proc/self/fd exists (Linux), every lookup is relative to a held
+ * folder descriptor and every folder is opened without following a link, so a component
+ * swapped for a link during the walk makes it throw instead of redirecting it. Elsewhere
+ * lookups go by physical path and each opened folder is compared with its lstat, a best
+ * effort that a concurrent swap of an ancestor can defeat. readText reads only a descriptor
+ * it has verified as a regular file, up to 8 MiB. Walks list held folders and never descend a
+ * link, listEntries never follows one, and linkedComponent names the first link on a path
+ * without following it or recording it. buf, Spectral and mmdc open the paths they are
+ * given themselves, outside this guard. Callers classify link targets with isReferencePath
+ * and isDeliveryPath before touching the filesystem.
  *
  * Node.js built-ins (node:fs, node:os, node:path, node:url) and the suite's own entity table,
  * html-entities.mjs, only; no side effect at import time beyond computing repoRoot.
@@ -73,184 +85,541 @@ export function isReferencePath(rel) {
 /** Most symbolic links one path may pass through, the same limit Linux applies. */
 const MAX_LINK_HOPS = 40;
 
+/** Most bytes readText reads from one file; the largest artifact, the TRD, is about 86 KB. */
+const MAX_READ_BYTES = 8 * 1024 * 1024;
+
+/** Bytes readText asks for in one read call. */
+const READ_CHUNK_BYTES = 64 * 1024;
+
+// The delivery set moves unchanged to the delivery repository, so a destination outside it
+// changes or disappears after the handoff. tests/validation/node_modules is installed there,
+// never copied, so it is outside the set.
+const DELIVERY_ROOTS = Object.freeze(['docs', 'card-servicing-contracts', 'card-servicing-service', 'tests']);
+const DELIVERY_FILES = Object.freeze(['.spectral.yaml']);
+
 /**
- * Resolves a root-relative path to an absolute one, enforcing the portability guard: the
- * lexical path is tested first, then every symbolic link in it is followed by confineLinks
- * before anything touches the destination. The returned path is the lexical one, which
- * reaches only the destination confined here.
- * @param {string} rel
- * @returns {string}
- * @throws {Error} `path outside repository: <rel>`, `reference source is off-limits to
- *   validation: <rel>` or `too many symbolic links: <rel>`; when a symbolic link led there,
- *   the message ends with `(symbolic link <link> -> <target>)`
+ * True when root-relative components, [] being the repository root, lie in the delivery set.
+ * Each component is taken literally: a backslash in a name is part of the name.
+ * @param {string[]} parts
+ * @returns {boolean}
  */
-function toAbs(rel) {
-  const r = String(rel ?? '');
-  const abs = path.resolve(repoRoot, r === '' ? '.' : r);
-  const fromRoot = path.relative(repoRoot, abs);
-  const segments = fromRoot.split(path.sep);
-  if (segments[0] === '..' || path.isAbsolute(fromRoot)) {
-    throw new Error(`path outside repository: ${r}`);
-  }
-  if (REFERENCE_ROOTS.includes(segments[0])) {
-    throw new Error(`reference source is off-limits to validation: ${r}`);
-  }
-  confineLinks(r, fromRoot === '' ? [] : segments);
-  return abs;
+function inDeliverySet(parts) {
+  if (parts.length === 0) return true;
+  if (parts.length === 1 && DELIVERY_FILES.includes(parts[0])) return true;
+  if (!DELIVERY_ROOTS.includes(parts[0])) return false;
+  return !(parts[0] === 'tests' && parts[1] === 'validation' && parts[2] === 'node_modules');
 }
 
 /**
- * The physical half of the guard. Walks the lexically normalised components of `rel` from
- * repoRoot one at a time with lstat, which never follows a link. A symbolic link is replaced
- * by its target, resolved from the link's own folder: each `..` leaves a folder already
- * resolved, and leaving repoRoot is outside the repository. Each resolved prefix is tested
- * against the reference roots before it is touched, so nothing under them is ever statted.
- * An absolute target throws, because it does not move with the repository, and so does a
- * chain of more than MAX_LINK_HOPS links. Once a component is missing (ENOENT) or sits
- * under a non-folder (ENOTDIR), the rest of the path is judged by its lexical destination,
- * so a dangling link into a reference root throws here and in the delivery repository alike.
- * @param {string} r the caller's path, for messages
- * @param {string[]} segments lexically normalised components below repoRoot
+ * True when a root-relative path lies in the delivery set: the repository root ('' or '.') as a
+ * folder; any path whose first component is docs, card-servicing-contracts,
+ * card-servicing-service or tests, except tests/validation/node_modules and everything below it;
+ * and exactly .spectral.yaml. Normalised like isReferencePath. A path that reads differently once
+ * its backslashes are taken as separators must lie in the set both ways, so the file helpers
+ * never refuse a path accepted here. Pure: never touches disk.
+ * @param {string} rel
+ * @returns {boolean}
  */
-function confineLinks(r, segments) {
-  const resolved = [];
-  const pending = [...segments];
+export function isDeliveryPath(rel) {
+  const inSet = (p) => {
+    let q = p;
+    while (q.startsWith('./')) q = q.slice(2);
+    q = path.posix.normalize(q);
+    return inDeliverySet(q === '.' ? [] : q.split('/'));
+  };
+  const raw = String(rel ?? '');
+  return inSet(raw) && inSet(raw.replace(/\\/g, '/'));
+}
+
+/**
+ * The lexically normalised components of a caller's root-relative path, [] for the repository
+ * root. The caller's path is a contract: one outside the repository, in a reference root or
+ * outside the delivery set throws before anything is touched.
+ * @param {string} r
+ * @returns {string[]}
+ * @throws {Error} `path outside repository: <rel>`, `reference source is off-limits to
+ *   validation: <rel>` or `path outside the delivery set: <rel>`
+ */
+function callerComponents(r) {
+  const fromRoot = path.relative(repoRoot, path.resolve(repoRoot, r === '' ? '.' : r));
+  const parts = fromRoot === '' ? [] : fromRoot.split(path.sep);
+  if (parts[0] === '..' || path.isAbsolute(fromRoot)) {
+    throw new Error(`path outside repository: ${r}`);
+  }
+  if (REFERENCE_ROOTS.includes(parts[0])) {
+    throw new Error(`reference source is off-limits to validation: ${r}`);
+  }
+  if (!inDeliverySet(parts)) {
+    throw new Error(`path outside the delivery set: ${r}`);
+  }
+  return parts;
+}
+
+/** Guard violation reasons; each message continues `: <link> -> <target>`. */
+const LEAVES_REPOSITORY = 'symbolic link leaves the repository';
+const ABSOLUTE_TARGET = ' (an absolute target does not move with the repository)';
+const INTO_REFERENCE = 'symbolic link leads into the CardDemo reference source';
+const LEAVES_DELIVERY = 'symbolic link leaves the delivery set';
+const TOO_MANY_LINKS = 'too many symbolic links';
+
+/** Guard violations recorded in this process, by path and message: { path, message, reported }. */
+const guardRecords = new Map();
+let exitNetArmed = false;
+
+const byPathThenMessage = (a, b) => compareCodeUnits(a.path, b.path) || compareCodeUnits(a.message, b.message);
+
+/**
+ * Records a guard violation at the link's own physical root-relative path, once per path and
+ * message, and returns its record. The first record arms the exit safety net.
+ */
+function recordGuardViolation(link, target, reason, note = '') {
+  const message = `${reason}: ${link} -> ${target}${note}`;
+  const key = `${link}\u0000${message}`;
+  let record = guardRecords.get(key);
+  if (record === undefined) {
+    record = { path: link, message, reported: false };
+    guardRecords.set(key, record);
+  }
+  if (!exitNetArmed) {
+    exitNetArmed = true;
+    process.once('exit', printUnreportedGuardViolations);
+  }
+  return record;
+}
+
+/**
+ * Every guard violation recorded so far as { path, message }, sorted by path, then message, in
+ * code-unit order. A copy: changing it changes nothing here.
+ * @returns {{ path: string, message: string }[]}
+ */
+export function guardViolations() {
+  return [...guardRecords.values()].map((v) => ({ path: v.path, message: v.message })).sort(byPathThenMessage);
+}
+
+/**
+ * The exit safety net, so a check that stops before report() still fails: each guard violation
+ * report() never printed goes to stderr as `<check>: <path>: <message>`, printed as report()
+ * prints it (URL userinfo redacted, then escapeControls), and an exit code of 0 becomes 1.
+ */
+function printUnreportedGuardViolations() {
+  const pending = [...guardRecords.values()].filter((v) => !v.reported).sort(byPathThenMessage);
+  if (pending.length === 0) return;
+  const check = escapeControls(path.basename(process.argv[1] ?? 'validation', '.mjs'));
+  const shown = (s) => escapeControls(redactUserinfo(s));
+  for (const v of pending) process.stderr.write(`${check}: ${shown(v.path)}: ${shown(v.message)}\n`);
+  if (Number(process.exitCode ?? 0) === 0) process.exitCode = 1;
+}
+
+/** `scheme://` and every `@`-ended run of userinfo characters after it; no scheme character before it. */
+const URL_USERINFO_RE = /(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*:\/\/)(?:[^\s/?#@]+@)+/g;
+
+/**
+ * The text with the userinfo of every `scheme://userinfo@` replaced by `***`, so a credential in
+ * a URL is never printed: `https://token:secret@host/x` gives `https://***@host/x`. Userinfo is
+ * any run of characters other than `/`, `?`, `#`, `@` and whitespace. Pure.
+ * @param {string} s
+ * @returns {string}
+ */
+function redactUserinfo(s) {
+  return s.replace(URL_USERINFO_RE, '$1***@');
+}
+
+// Open flags; a platform that lacks one opens without it.
+const O_RDONLY = fs.constants.O_RDONLY ?? 0;
+const O_DIRECTORY = fs.constants.O_DIRECTORY ?? 0;
+const O_NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
+const O_NONBLOCK = fs.constants.O_NONBLOCK ?? 0;
+const O_NOCTTY = fs.constants.O_NOCTTY ?? 0;
+/** A folder, never through a link in its place. */
+const DIR_FLAGS = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK;
+/** A file to read, never through a link, without waiting on a FIFO or taking a terminal. */
+const FILE_FLAGS = O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_NOCTTY;
+/**
+ * Codes an open gives when what was examined is gone or a link or non-folder took its place
+ * (ELOOP and ENOTDIR on Linux, EMLINK on FreeBSD).
+ */
+const CHANGED_CODES = new Set(['ENOENT', 'ENOTDIR', 'ELOOP', 'EMLINK']);
+
+/** The repository root, held open for the process from first use: { fd, parts: [] }. */
+let rootDir = null;
+/** True once /proc/self/fd/<fd> is known to reach the folder a held descriptor holds (Linux). */
+let viaProcfs = false;
+
+/** True for an error a system call raised: it carries code and syscall. */
+function isSystemError(err) {
+  return err instanceof Error && typeof err.code === 'string' && typeof err.syscall === 'string';
+}
+
+/**
+ * The held repository root, opened on first use, never at import. procfs support is settled here
+ * once: /proc/self/fd/<fd> must be a folder with the root's own device and inode.
+ */
+function heldRoot() {
+  if (rootDir !== null) return rootDir;
+  const fd = fs.openSync(repoRoot, O_RDONLY | O_DIRECTORY);
+  try {
+    const seen = fs.statSync(`/proc/self/fd/${fd}`, { bigint: true });
+    const held = fs.fstatSync(fd, { bigint: true });
+    viaProcfs = seen.isDirectory() && seen.dev === held.dev && seen.ino === held.ino;
+  } catch (err) {
+    if (!isSystemError(err)) {
+      fs.closeSync(fd);
+      throw err;
+    }
+    viaProcfs = false;
+  }
+  rootDir = { fd, parts: [] };
+  return rootDir;
+}
+
+/**
+ * The path that reaches entry `name` of held folder `dir` ({ fd, parts }). Through procfs the
+ * kernel follows only the descriptor's own link, so lstat, readlink and open act relative to the
+ * held folder; without it, the folder's physical path joined with the name.
+ */
+function at(dir, name) {
+  return viaProcfs ? `/proc/self/fd/${dir.fd}/${name}` : path.join(repoRoot, ...dir.parts, name);
+}
+
+function changedError(r) {
+  return new Error(`path changed while it was being validated: ${r}`);
+}
+
+/**
+ * Opens entry `name` of held folder `dir` as a folder without following a link in its place and
+ * returns it held as { fd, parts }. An entry gone, or swapped for a link or a non-folder, since it
+ * was examined throws `path changed while it was being validated: <r>`. Without procfs the opened
+ * folder must also carry the device and inode of `seen`, its lstat, taken here when not given.
+ */
+function openDirAt(dir, name, r, seen = null) {
+  let before = seen;
+  if (!viaProcfs && before === null) {
+    try {
+      before = fs.lstatSync(at(dir, name), { bigint: true });
+    } catch (err) {
+      if (CHANGED_CODES.has(err.code)) throw changedError(r);
+      throw err;
+    }
+    if (!before.isDirectory()) throw changedError(r);
+  }
+  let fd;
+  try {
+    fd = fs.openSync(at(dir, name), DIR_FLAGS);
+  } catch (err) {
+    if (CHANGED_CODES.has(err.code)) throw changedError(r);
+    throw err;
+  }
+  if (!viaProcfs) {
+    let held;
+    try {
+      held = fs.fstatSync(fd, { bigint: true });
+    } catch (err) {
+      fs.closeSync(fd);
+      throw err;
+    }
+    if (held.dev !== before.dev || held.ino !== before.ino) {
+      fs.closeSync(fd);
+      throw changedError(r);
+    }
+  }
+  return { fd, parts: [...dir.parts, name] };
+}
+
+/**
+ * Resolves root-relative path `rel` from the held repository root and calls use(result) while
+ * every folder the walk opened is still held; they are closed afterwards, the root excepted. The
+ * caller's path passes callerComponents first. Each component's physical root-relative path is
+ * tested before the component is touched: outside the reference roots, then inside the delivery
+ * set. The component is then classified with lstat relative to its held folder. A folder is
+ * entered through openDirAt. A symbolic link is read with readlink and replaced by its target's
+ * components, resolved from the link's own folder: `..` leaves, and closes, the folder entered
+ * last. A link whose target is absolute, leaves the repository, enters a reference root, leaves
+ * the delivery set or makes the chain longer than MAX_LINK_HOPS links is recorded as one guard
+ * violation at the link, and the path is absent. Past a missing component (ENOENT, ENOTDIR) or a
+ * non-folder in mid-path, the rest is judged by its lexical destination: a dangling link into a
+ * reference root or outside the delivery set is recorded, any other dangling path is absent.
+ *
+ * result is { kind: 'dir', dir } with dir the held folder itself; { kind: 'file' | 'other', dir,
+ * name, seen } with dir its held folder and seen its lstat; or { kind: null, violation } with the
+ * recorded guard violation, or null when the path is simply absent.
+ * @template T
+ * @param {string} rel
+ * @param {(result: object) => T} use
+ * @returns {T}
+ * @throws {Error} callerComponents' errors, or `path changed while it was being validated: <rel>`
+ */
+function resolve(rel, use) {
+  const r = String(rel ?? '');
+  const pending = callerComponents(r);
+  const stack = [heldRoot()];
+  try {
+    return use(walkComponents(r, pending, stack));
+  } finally {
+    while (stack.length > 1) fs.closeSync(stack.pop().fd);
+  }
+}
+
+/** resolve()'s walk: consumes `pending`, pushing each folder it enters onto `stack`. */
+function walkComponents(r, pending, stack) {
   let hops = 0;
-  let physical = true;
-  let via = '';
+  /** The symbolic link followed last, { link, target }; null while none was. */
+  let via = null;
+  const blocked = (reason, note = '') => {
+    // A caller path passed callerComponents, so only a link's target can lead off-limits.
+    if (via === null) throw new Error(`guard reached an off-limits path without a symbolic link: ${r}`);
+    return { kind: null, violation: recordGuardViolation(via.link, via.target, reason, note) };
+  };
+  const offLimits = (parts) =>
+    REFERENCE_ROOTS.includes(parts[0]) ? INTO_REFERENCE : inDeliverySet(parts) ? null : LEAVES_DELIVERY;
+  const judgeRest = (parts) => {
+    const dest = [...parts];
+    for (const name of pending) {
+      if (name === '..') {
+        if (dest.length === 0) return blocked(LEAVES_REPOSITORY);
+        dest.pop();
+        continue;
+      }
+      dest.push(name);
+      const reason = offLimits(dest);
+      if (reason !== null) return blocked(reason);
+    }
+    return { kind: null, violation: null };
+  };
   while (pending.length > 0) {
     const name = pending.shift();
-    if (name === '' || name === '.') continue;
+    const dir = stack[stack.length - 1];
     if (name === '..') {
-      if (resolved.length === 0) throw new Error(`path outside repository: ${r}${via}`);
-      resolved.pop();
+      if (stack.length === 1) return blocked(LEAVES_REPOSITORY);
+      fs.closeSync(stack.pop().fd);
       continue;
     }
-    resolved.push(name);
-    if (REFERENCE_ROOTS.includes(resolved[0])) {
-      throw new Error(`reference source is off-limits to validation: ${r}${via}`);
-    }
-    if (!physical) continue;
-    const abs = path.join(repoRoot, ...resolved);
-    let stat;
+    const parts = [...dir.parts, name];
+    const reason = offLimits(parts);
+    if (reason !== null) return blocked(reason);
+    let seen;
     try {
-      stat = fs.lstatSync(abs);
+      seen = fs.lstatSync(at(dir, name), { bigint: true });
     } catch (err) {
       if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw err;
-      physical = false;
+      return judgeRest(parts);
+    }
+    if (seen.isSymbolicLink()) {
+      let target;
+      try {
+        target = fs.readlinkSync(at(dir, name), 'utf8');
+      } catch (err) {
+        // Examined as a link and no longer one: EINVAL for a non-link, ENOENT once removed.
+        if (err.code === 'EINVAL' || err.code === 'ENOENT') throw changedError(r);
+        throw err;
+      }
+      via = { link: parts.join('/'), target };
+      if (path.isAbsolute(target)) return blocked(LEAVES_REPOSITORY, ABSOLUTE_TARGET);
+      hops += 1;
+      if (hops > MAX_LINK_HOPS) return blocked(TOO_MANY_LINKS);
+      pending.unshift(...target.split('/').filter((s) => s !== '' && s !== '.'));
       continue;
     }
-    if (!stat.isSymbolicLink()) continue;
-    const target = fs.readlinkSync(abs, 'utf8');
-    via = ` (symbolic link ${resolved.join('/')} -> ${target})`;
-    if (path.isAbsolute(target)) {
-      throw new Error(`path outside repository: ${r}${via.slice(0, -1)}, an absolute target that does not move with the repository)`);
+    if (seen.isDirectory()) {
+      stack.push(openDirAt(dir, name, r, seen));
+      continue;
     }
-    hops += 1;
-    if (hops > MAX_LINK_HOPS) throw new Error(`too many symbolic links: ${r}${via}`);
-    resolved.pop();
-    pending.unshift(...target.split('/'));
+    if (pending.length > 0) return judgeRest(parts);
+    return { kind: seen.isFile() ? 'file' : 'other', dir, name, seen };
   }
+  return { kind: 'dir', dir: stack[stack.length - 1] };
 }
 
 /**
  * Reads a UTF-8 text file by root-relative path, removing one leading byte-order mark.
- * Line endings are left as they are; the parsers accept LF and CRLF.
+ * Line endings are left as they are; the parsers accept LF and CRLF. The path is resolved as
+ * resolve() does; its final component is then opened relative to its held folder without
+ * following a link, blocking on a FIFO or taking a terminal, and only that descriptor is read,
+ * once fstat shows a regular file of at most 8 MiB (MAX_READ_BYTES). The read stops there too
+ * if the file grows meanwhile, and the bytes decode as readFileSync(path, 'utf8') decodes them.
  * @param {string} rel
  * @returns {string}
+ * @throws {Error} an ENOENT system error when the path is absent; `not a regular file: <rel>`;
+ *   `file exceeds the 8 MiB read limit: <rel>`; `<rel>: <guard violation message>` for a path
+ *   that reaches an unsafe symbolic link, recorded first; `path changed while it was being
+ *   validated: <rel>`; callerComponents' errors
  */
 export function readText(rel) {
-  const text = fs.readFileSync(toAbs(rel), 'utf8');
+  const r = String(rel ?? '');
+  const bytes = resolve(r, (res) => {
+    if (res.kind === null) {
+      if (res.violation !== null) throw new Error(`${r}: ${res.violation.message}`);
+      throw Object.assign(new Error(`ENOENT: no such file or directory, open '${r}'`), {
+        code: 'ENOENT',
+        syscall: 'open',
+        path: r,
+      });
+    }
+    if (res.kind !== 'file') throw new Error(`not a regular file: ${r}`);
+    return readVerified(res.dir, res.name, res.seen, r);
+  });
+  const text = bytes.toString('utf8');
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
+function readLimitError(r) {
+  return new Error(`file exceeds the ${MAX_READ_BYTES / (1024 * 1024)} MiB read limit: ${r}`);
+}
+
 /**
- * True for an existing file or directory. A caller that needs a file specifically
- * checks the path's extension or its presence in listFiles.
+ * The bytes of entry `name` of held folder `dir`, read from one descriptor that fstat shows is a
+ * regular file of at most MAX_READ_BYTES; without procfs it must also carry the device and inode
+ * of `seen`, the lstat that classified it. The descriptor is always closed.
+ */
+function readVerified(dir, name, seen, r) {
+  let fd;
+  try {
+    fd = fs.openSync(at(dir, name), FILE_FLAGS);
+  } catch (err) {
+    if (CHANGED_CODES.has(err.code)) throw changedError(r);
+    throw err;
+  }
+  try {
+    const held = fs.fstatSync(fd, { bigint: true });
+    if (!held.isFile()) throw new Error(`not a regular file: ${r}`);
+    if (!viaProcfs && (held.dev !== seen.dev || held.ino !== seen.ino)) throw changedError(r);
+    if (held.size > BigInt(MAX_READ_BYTES)) throw readLimitError(r);
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const chunk = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+      const n = fs.readSync(fd, chunk, 0, chunk.length, null);
+      if (n === 0) break;
+      total += n;
+      if (total > MAX_READ_BYTES) throw readLimitError(r);
+      chunks.push(n === chunk.length ? chunk : chunk.subarray(0, n));
+    }
+    return Buffer.concat(chunks, total);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * True for an existing file, folder or other entry: pathKind(rel) !== null, so a symbolic link
+ * that leads off-limits gives false and is recorded as a guard violation. A caller that needs a
+ * regular file uses pathKind(rel) === 'file' or membership in listFiles.
  * @param {string} rel
  * @returns {boolean}
  */
 export function exists(rel) {
-  return fs.existsSync(toAbs(rel));
+  return pathKind(rel) !== null;
 }
 
 /**
- * 'file', 'dir' or 'other' for an existing root-relative path, null when it is missing or
- * sits under a non-directory (ENOENT, ENOTDIR). The portability guard runs first, so a
- * symbolic link is followed only once its destination is confined.
+ * 'file', 'dir' or 'other' for an existing root-relative path, following its symbolic links
+ * through resolve(); null when it is missing, sits under a non-directory (ENOENT, ENOTDIR) or
+ * reaches a symbolic link that leads off-limits, which is recorded as a guard violation.
  * @param {string} rel
  * @returns {'file' | 'dir' | 'other' | null}
+ * @throws {Error} callerComponents' errors, or `path changed while it was being validated: <rel>`
  */
 export function pathKind(rel) {
-  return statKind(toAbs(rel));
+  return resolve(rel, (res) => res.kind);
 }
 
-/** pathKind for an absolute path the guard has already confined; follows symbolic links. */
-function statKind(abs) {
-  let stat;
+/**
+ * The root-relative POSIX path of the first component of root-relative `rel`, the path itself
+ * included, that is a symbolic link; null when none is, or when the path is missing or passes a
+ * non-folder (ENOENT, ENOTDIR). The caller's path passes callerComponents first. From the held
+ * repository root down, each component is classified with lstat relative to its held folder and
+ * a folder is entered through openDirAt, so no link is followed, nothing at a link's target is
+ * statted or read, and a folder swapped for a link once examined is never entered. A link found
+ * is returned, never recorded as a guard violation: what it means is the caller's to report.
+ * Every folder the walk opened is closed before it returns, the root excepted.
+ * @param {string} rel
+ * @returns {string | null}
+ * @throws {Error} callerComponents' errors, or `path changed while it was being validated: <rel>`
+ */
+export function linkedComponent(rel) {
+  const r = String(rel ?? '');
+  const pending = callerComponents(r);
+  const stack = [heldRoot()];
   try {
-    stat = fs.statSync(abs);
-  } catch (err) {
-    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return null;
-    throw err;
+    for (let i = 0; i < pending.length; i++) {
+      const dir = stack[stack.length - 1];
+      let seen;
+      try {
+        seen = fs.lstatSync(at(dir, pending[i]), { bigint: true });
+      } catch (err) {
+        if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return null;
+        throw err;
+      }
+      if (seen.isSymbolicLink()) return [...dir.parts, pending[i]].join('/');
+      if (i === pending.length - 1 || !seen.isDirectory()) return null;
+      stack.push(openDirAt(dir, pending[i], r, seen));
+    }
+    return null;
+  } finally {
+    while (stack.length > 1) fs.closeSync(stack.pop().fd);
   }
-  return stat.isFile() ? 'file' : stat.isDirectory() ? 'dir' : 'other';
 }
 
 /**
- * The guarded start of a walk as { abs, rel } with rel in root-relative POSIX form, or null
- * when the directory is missing or is not a directory.
+ * Depth-first walk of the folder at root-relative `relDir`, resolved through resolve(); a start
+ * that is missing, not a folder or behind an off-limits link visits nothing. Entries come from
+ * readdir of the held folder, so a link is seen as itself and its target is neither statted nor
+ * read here. visit(entry, childRel) sees every entry with childRel its lexical root-relative POSIX
+ * path, except an entry in LISTING_EXCLUSIONS or one whose lexical or physical root-relative path
+ * lies outside the delivery set. The walk descends into an entry only when visit returns true and
+ * its Dirent is a folder, by opening it relative to the held parent without following a link.
  */
-function walkStart(relDir) {
-  const abs = toAbs(relDir);
-  if (statKind(abs) !== 'dir') return null;
-  return { abs, rel: path.relative(repoRoot, abs).split(path.sep).join('/') };
+function walkFrom(relDir, visit) {
+  const r = String(relDir ?? '');
+  const start = callerComponents(r).join('/');
+  resolve(r, (res) => {
+    if (res.kind === 'dir') walkHeld(res.dir, start, visit);
+  });
 }
 
-/**
- * Depth-first walk that never follows a symbolic link: entries come from readdir's Dirents,
- * so a link is seen as itself and its target is neither statted nor read here.
- * visit(entry, childRel, childAbs) sees every entry, and the walk descends into a real
- * directory only when visit returns true.
- */
-function walkDirents(absDir, relPosix, visit) {
-  for (const entry of fs.readdirSync(absDir, { withFileTypes: true })) {
+/** walkFrom's walk of held folder `dir`, whose lexical root-relative POSIX path is `relPosix`. */
+function walkHeld(dir, relPosix, visit) {
+  const listed = viaProcfs ? `/proc/self/fd/${dir.fd}` : path.join(repoRoot, ...dir.parts);
+  for (const entry of fs.readdirSync(listed, { withFileTypes: true })) {
     const childRel = relPosix === '' ? entry.name : `${relPosix}/${entry.name}`;
-    const childAbs = path.join(absDir, entry.name);
-    if (visit(entry, childRel, childAbs) && entry.isDirectory()) walkDirents(childAbs, childRel, visit);
+    if (LISTING_EXCLUSIONS.has(childRel)) continue;
+    if (!inDeliverySet(childRel.split('/')) || !inDeliverySet([...dir.parts, entry.name])) continue;
+    if (!visit(entry, childRel) || !entry.isDirectory()) continue;
+    const child = openDirAt(dir, entry.name, childRel);
+    try {
+      walkHeld(child, childRel, visit);
+    } finally {
+      fs.closeSync(child.fd);
+    }
   }
 }
 
 /**
  * Lists every file below a root-relative directory, recursively, as sorted root-relative
  * POSIX paths. Dotfiles are included so the path-form gate of the Epic and Story
- * Structure — Multi-File Variant rule sees stray files. Only LISTING_EXCLUSIONS are left
- * out: .git and node_modules directly under the repository root, tests/validation/node_modules,
- * and the reference roots when walking from the root; a node_modules or .git anywhere else
- * is listed like other content. The start directory and every symbolic link met pass the
- * portability guard before anything stats them, and an unsafe link throws. A safe link to a
- * file is listed under its own path, a link to a folder is not descended, so a link can
- * neither loop nor widen the walk, and a dangling link is skipped. A missing path or a
- * non-directory gives [].
+ * Structure — Multi-File Variant rule sees stray files. Left out: LISTING_EXCLUSIONS, that is
+ * .git and node_modules directly under the repository root, tests/validation/node_modules,
+ * and the reference roots when walking from the root, and any entry outside the delivery set;
+ * a node_modules or .git anywhere else in the set is listed like other content. Every symbolic
+ * link met is resolved through pathKind: one that resolves to a regular file is listed under its
+ * own path, a link to a folder is not descended, so a link can neither loop nor widen the walk,
+ * a dangling link is skipped, and a link that leads off-limits is recorded as a guard violation
+ * and skipped. A missing path, a non-directory or a start behind an off-limits link gives [].
  * @param {string} relDir
  * @param {{ exts?: string[] }} [options] extensions matched case-sensitively against path.extname
  * @returns {string[]}
- * @throws {Error} the portability guard's error for an unsafe start directory or link
+ * @throws {Error} callerComponents' errors for relDir, or `path changed while it was being
+ *   validated: <path>` when a folder is swapped for a link or a non-folder during the walk
  */
 export function listFiles(relDir, { exts } = {}) {
   if (exts != null && !Array.isArray(exts)) {
     throw new TypeError('listFiles: exts must be an array of extensions such as [".md"]');
   }
-  const start = walkStart(relDir);
-  if (start === null) return [];
   const extSet = exts ? new Set(exts) : null;
   const wanted = (name) => !extSet || extSet.has(path.extname(name));
   const out = [];
-  walkDirents(start.abs, start.rel, (entry, childRel, childAbs) => {
-    if (LISTING_EXCLUSIONS.has(childRel)) return false;
+  walkFrom(relDir, (entry, childRel) => {
     if (entry.isSymbolicLink()) {
-      toAbs(childRel);
-      if (statKind(childAbs) === 'file' && wanted(entry.name)) out.push(childRel);
+      if (pathKind(childRel) === 'file' && wanted(entry.name)) out.push(childRel);
       return false;
     }
     if (entry.isFile() && wanted(entry.name)) out.push(childRel);
@@ -263,20 +632,20 @@ export function listFiles(relDir, { exts } = {}) {
  * Every entry below a root-relative directory, recursively, as { path, type } sorted by
  * path in code-unit order, with type 'file', 'dir', 'symlink' or 'other'. A symbolic link
  * is reported as 'symlink' and never followed, statted or read; only real directories are
- * descended. LISTING_EXCLUSIONS are neither reported nor descended, the same as in
- * listFiles, so the reference roots are never listed, even from the repository root; a
- * node_modules or .git anywhere else is reported like other content. The start directory
- * passes the portability guard first. A missing path or a non-directory gives [].
+ * descended, each opened relative to its held parent without following a link.
+ * LISTING_EXCLUSIONS and entries outside the delivery set are neither reported nor descended,
+ * the same as in listFiles, so the reference roots are never listed, even from the repository
+ * root; a node_modules or .git anywhere else in the set is reported like other content. The
+ * start directory is resolved through resolve() first. A missing path, a non-directory or a
+ * start behind an off-limits link, recorded as a guard violation, gives [].
  * @param {string} relDir
  * @returns {{ path: string, type: 'file' | 'dir' | 'symlink' | 'other' }[]}
- * @throws {Error} the portability guard's error for an unsafe start directory
+ * @throws {Error} callerComponents' errors for relDir, or `path changed while it was being
+ *   validated: <path>` when a folder is swapped for a link or a non-folder during the walk
  */
 export function listEntries(relDir) {
-  const start = walkStart(relDir);
-  if (start === null) return [];
   const out = [];
-  walkDirents(start.abs, start.rel, (entry, childRel) => {
-    if (LISTING_EXCLUSIONS.has(childRel)) return false;
+  walkFrom(relDir, (entry, childRel) => {
     let type = 'other';
     if (entry.isSymbolicLink()) type = 'symlink';
     else if (entry.isDirectory()) type = 'dir';
@@ -2454,6 +2823,10 @@ export function intStrict(s) {
  * and no repository text reaches the terminal as a control or bidi character; sorting
  * uses the raw values. Sets process.exitCode to 0 or 1 and returns N; never calls
  * process.exit.
+ * The guard violations the file helpers recorded (guardViolations) not yet printed are added
+ * to the caller's violations, printed and counted with them. In the printed path and message
+ * the userinfo of every `scheme://userinfo@` becomes `***`, so a credential in a URL never
+ * prints: `https://token:secret@host/x` prints as `https://***@host/x`.
  * @param {string} check
  * @param {{ path: string, line?: number, message: string }[]} violations
  * @returns {number}
@@ -2464,13 +2837,18 @@ export function report(check, violations) {
     line: v?.line == null ? undefined : Number(v.line),
     message: String(v?.message ?? ''),
   }));
+  for (const g of guardRecords.values()) {
+    if (g.reported) continue;
+    g.reported = true;
+    list.push({ path: g.path, line: undefined, message: g.message });
+  }
   list.sort(
     (a, b) =>
       compareCodeUnits(a.path, b.path) || (a.line ?? 0) - (b.line ?? 0) || compareCodeUnits(a.message, b.message),
   );
   for (const v of list) {
-    const p = escapeControls(v.path);
-    const m = escapeControls(v.message);
+    const p = escapeControls(redactUserinfo(v.path));
+    const m = escapeControls(redactUserinfo(v.message));
     if (p === '') console.log(`${check}: ${m}`);
     else if (v.line === undefined) console.log(`${check}: ${p}: ${m}`);
     else console.log(`${check}: ${p}:${v.line}: ${m}`);

@@ -779,8 +779,9 @@ function checkInventory(edges, storyTable, derived, epicTable, add) {
 /**
  * True when the root-relative path is a regular file, or a symbolic link the portability
  * guard confines to one; false when it is missing, sits under a non-directory or is not a
- * file. exists() is also true for a directory, which readText cannot read. The guard throws
- * for an unsafe link before its target is statted.
+ * file. exists() is also true for a directory, which readText cannot read. A link that leads
+ * off-limits gives false: the shared guard records it as a guard violation, which report()
+ * prints, and pathKind gives null, before anything at its destination is touched.
  */
 function isFile(rel) {
   return pathKind(rel) === 'file';
