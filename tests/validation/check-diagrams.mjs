@@ -45,6 +45,9 @@ import {
   surplusCellRows,
   toolBin,
   report,
+  escapeControls,
+  relativizeHostPaths,
+  formatError,
 } from './lib/markdown.mjs';
 import { NAMED_CHARACTER_REFERENCES, C1_NUMERIC_REFERENCES } from './lib/html-entities.mjs';
 
@@ -298,16 +301,29 @@ const sameColour = (token, rgb) => {
   return parsed !== null && parsed.every((v, i) => v === rgb[i]);
 };
 
-/** First stderr lines of a failed tool run, with the repository root removed. */
+/**
+ * First stderr lines of a failed tool run, split at every line break (CR LF, LF, CR,
+ * U+2028, U+2029), with host paths relativized and controls escaped, joined with ` | `.
+ * Past 400 characters it keeps the leading characters whose escaped form fits in 397 and
+ * ends in `...`, so the cut never splits an escape.
+ */
 function firstLines(buffer, count = 4) {
   const text = Buffer.isBuffer(buffer) ? buffer.toString('utf8') : String(buffer ?? '');
   const lines = text
-    .split(/\r?\n/)
-    .map((l) => l.split(`${repoRoot}${path.sep}`).join('').trimEnd())
+    .split(/\r\n|[\n\r\u2028\u2029]/)
+    .map((l) => relativizeHostPaths(l).trimEnd())
     .filter((l) => l.trim() !== '')
     .slice(0, count);
-  const joined = lines.join(' | ');
-  return joined.length > 400 ? `${joined.slice(0, 397)}...` : joined || 'no stderr output';
+  const raw = lines.join(' | ');
+  const joined = escapeControls(raw);
+  if (joined.length <= 400) return joined || 'no stderr output';
+  let cut = '';
+  for (const ch of raw) {
+    const shown = escapeControls(ch);
+    if (cut.length + shown.length > 397) break;
+    cut += shown;
+  }
+  return `${cut}...`;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -369,7 +385,7 @@ async function renderAll(files, violations) {
       try {
         fs.rmSync(tmp, { recursive: true, force: true });
       } catch (err) {
-        console.error(`${CHECK}: could not remove ${tmp}: ${err?.message ?? err}`);
+        console.error(`${CHECK}: could not remove its temporary render folder: ${formatError(err)}`);
       }
       process.exit(128 + os.constants.signals[signal]);
     };
@@ -408,7 +424,7 @@ async function renderAll(files, violations) {
           err.killed ? `timed out after ${RENDER_TIMEOUT_MS / 1000} s`
           : typeof err.code === 'number' ? `exit status ${err.code}`
           : err.signal ? `killed by ${err.signal}`
-          : String(err.message ?? err);
+          : formatError(err);
         violations.push({ path: rel, line: 1, message: `mmdc render failed (${why}): ${firstLines(stderr)}` });
         continue;
       }
@@ -1622,7 +1638,7 @@ const USAGE = [
 const args = process.argv.slice(2);
 const unexpected = args.filter((arg) => arg !== '-h' && arg !== '--help');
 if (unexpected.length > 0) {
-  const shown = unexpected.map((arg) => (arg === '' || /\s/.test(arg) ? JSON.stringify(arg) : arg));
+  const shown = unexpected.map((arg) => escapeControls(arg === '' || /\s/.test(arg) ? JSON.stringify(arg) : arg));
   console.error(`${CHECK}: unexpected argument(s): ${shown.join(' ')}`);
   console.error(USAGE);
   process.exitCode = 2;
@@ -1632,7 +1648,7 @@ if (unexpected.length > 0) {
   try {
     await main();
   } catch (err) {
-    console.error(`${CHECK}: internal error: ${err?.stack ?? err}`);
+    console.error(`${CHECK}: internal error: ${formatError(err)}`);
     process.exitCode = 2;
   }
 }

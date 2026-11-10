@@ -26,7 +26,7 @@
  * then `check-forbidden-terms: <N> violation(s)`. Exit status is 0 when N = 0, 1 when
  * N > 0, and 2 on an internal error or an invalid argument.
  */
-import { listFiles, pathKind, readText, report } from './lib/markdown.mjs';
+import { escapeControls, formatError, listFiles, pathKind, readText, report } from './lib/markdown.mjs';
 
 const CHECK = 'check-forbidden-terms';
 const BACKLOG_DIR = 'docs/backlog';
@@ -135,7 +135,7 @@ function main() {
 try {
   const cli = parseArgs(process.argv.slice(2));
   if (cli.mode === 'invalid') {
-    console.error(`${CHECK}: unknown argument: ${cli.arg}`);
+    console.error(`${CHECK}: unknown argument: ${escapeControls(cli.arg)}`);
     console.error(USAGE);
     process.exitCode = 2;
   } else if (cli.mode === 'help') {
@@ -144,6 +144,6 @@ try {
     main();
   }
 } catch (err) {
-  console.error(err?.stack ?? String(err));
+  console.error(`${CHECK}: internal error: ${formatError(err)}`);
   process.exitCode = 2;
 }

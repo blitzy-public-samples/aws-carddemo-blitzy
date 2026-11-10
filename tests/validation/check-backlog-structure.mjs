@@ -102,6 +102,8 @@ import {
   plainText,
   unescapeInline,
   report,
+  escapeControls,
+  formatError,
 } from './lib/markdown.mjs';
 
 const CHECK = 'check-backlog-structure';
@@ -3664,7 +3666,8 @@ function acceptArguments(args) {
   if (unknown.length === 0) {
     console.log(USAGE);
   } else {
-    console.error(`${CHECK}: unknown argument(s): ${unknown.map((arg) => JSON.stringify(arg)).join(', ')}`);
+    const shown = unknown.map((arg) => escapeControls(JSON.stringify(arg)));
+    console.error(`${CHECK}: unknown argument(s): ${shown.join(', ')}`);
     console.error(USAGE);
     process.exitCode = 2;
   }
@@ -3674,7 +3677,6 @@ function acceptArguments(args) {
 try {
   if (acceptArguments(process.argv.slice(2))) main();
 } catch (err) {
-  console.error(`${CHECK}: internal error`);
-  console.error(err && err.stack ? err.stack : String(err));
+  console.error(`${CHECK}: internal error: ${formatError(err)}`);
   process.exitCode = 2;
 }

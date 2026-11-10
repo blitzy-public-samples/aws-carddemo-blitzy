@@ -63,7 +63,16 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { repoRoot, readText, exists, toolBin, report } from './lib/markdown.mjs';
+import {
+  repoRoot,
+  readText,
+  exists,
+  toolBin,
+  report,
+  escapeControls,
+  relativizeHostPaths,
+  formatError,
+} from './lib/markdown.mjs';
 
 const CHECK = 'check-contracts';
 
@@ -342,15 +351,15 @@ function runBuf(violations) {
     maxBuffer: 64 * 1024 * 1024,
   });
   if (res.error) {
-    violations.push({ path: BUF_CONFIG, message: `buf lint could not run: ${res.error.message}` });
+    violations.push({ path: BUF_CONFIG, message: `buf lint could not run: ${formatError(res.error)}` });
     return;
   }
   const lines = `${res.stdout ?? ''}\n${res.stderr ?? ''}`.split(/\r?\n/).filter((l) => l.trim() !== '');
   for (const line of lines) {
     const m = BUF_FINDING_RE.exec(line.trim());
     const file = m ? repoRelative(m[1]) : null;
-    if (m && file) violations.push({ path: file, line: Number(m[2]), message: `buf: ${m[3]}` });
-    else violations.push({ path: BUF_CONFIG, message: `buf: ${line.trim()}` });
+    if (m && file) violations.push({ path: file, line: Number(m[2]), message: `buf: ${relativizeHostPaths(m[3])}` });
+    else violations.push({ path: BUF_CONFIG, message: `buf: ${relativizeHostPaths(line.trim())}` });
   }
   if (res.status !== 0 && lines.length === 0) {
     violations.push({
@@ -447,9 +456,12 @@ function balancedEnd(src, start) {
   return -1;
 }
 
-/** `text` cut to `max` characters, ending in `…` when it was cut, so one violation stays one readable line. */
+/**
+ * `text` with host paths relativized, cut to `max` characters, ending in `…` when it was
+ * cut, so one violation stays one readable line.
+ */
 function clipSpectralText(text, max = 200) {
-  const s = String(text);
+  const s = relativizeHostPaths(String(text));
   return s.length <= max ? s : `${s.slice(0, max)}…`;
 }
 
@@ -526,7 +538,7 @@ function runSpectral(files, violations, notes) {
       maxBuffer: 64 * 1024 * 1024,
     });
     if (res.error) {
-      violations.push({ path: rel, message: `spectral lint could not run: ${res.error.message}` });
+      violations.push({ path: rel, message: `spectral lint could not run: ${formatError(res.error)}` });
       continue;
     }
 
@@ -574,7 +586,11 @@ function runSpectral(files, violations, notes) {
       if (r.severity === 0) {
         errors++;
         const file = typeof r.source === 'string' ? repoRelative(r.source) ?? rel : rel;
-        violations.push({ path: file, line: r.range.start.line + 1, message: `spectral ${r.code}: ${r.message}` });
+        violations.push({
+          path: file,
+          line: r.range.start.line + 1,
+          message: `spectral ${r.code}: ${relativizeHostPaths(r.message)}`,
+        });
       } else {
         belowError[r.severity]++;
       }
@@ -939,7 +955,7 @@ function loadYaml(rel, parseYaml, violations) {
   try {
     text = readText(rel);
   } catch (err) {
-    violations.push({ path: rel, message: `cannot be read: ${String(err?.message ?? err).split('\n')[0]}` });
+    violations.push({ path: rel, message: `cannot be read: ${formatError(err)}` });
     return undefined;
   }
   let parsed;
@@ -4117,7 +4133,7 @@ function main() {
   const args = process.argv.slice(2);
   const unknown = args.find((arg) => arg !== '-h' && arg !== '--help');
   if (unknown !== undefined) {
-    console.error(`${CHECK}: unknown argument "${unknown}"; run with --help for usage`);
+    console.error(`${CHECK}: unknown argument "${escapeControls(unknown)}"; run with --help for usage`);
     process.exitCode = 2;
     return;
   }
@@ -4257,7 +4273,7 @@ function main() {
   }
 
   // `<check> (note): …` can never be read as a `<check>: <path>: <message>` violation line.
-  for (const note of notes) console.log(`${CHECK} (note): ${note}`);
+  for (const note of notes) console.log(`${CHECK} (note): ${escapeControls(relativizeHostPaths(note))}`);
   report(CHECK, distinctViolations(violations));
   // report() sets exit 0 or 1; a setup failure overrides it after the count is printed.
   if (setupFailure) process.exitCode = 2;
@@ -4266,6 +4282,6 @@ function main() {
 try {
   main();
 } catch (err) {
-  console.error(`${CHECK}: internal error: ${err?.stack ?? err}`);
+  console.error(`${CHECK}: internal error: ${formatError(err)}`);
   process.exitCode = 2;
 }

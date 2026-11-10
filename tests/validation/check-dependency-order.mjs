@@ -23,8 +23,10 @@
  */
 import path from 'node:path';
 import {
+  escapeControls,
   exists,
   fencedBlocks,
+  formatError,
   intStrict,
   isTotalsRow,
   listFiles,
@@ -35,7 +37,6 @@ import {
   plainText,
   readText,
   report,
-  repoRoot,
   sectionByHeading,
   sections,
   surplusCellRows,
@@ -857,7 +858,7 @@ const USAGE = [
 const args = process.argv.slice(2);
 const unknownArg = args.find((arg) => arg !== '-h' && arg !== '--help');
 if (unknownArg !== undefined) {
-  console.error(`${CHECK}: unknown argument "${unknownArg}"`);
+  console.error(`${CHECK}: unknown argument "${escapeControls(unknownArg)}"`);
   console.error(USAGE);
   process.exitCode = 2;
 } else if (args.length > 0) {
@@ -867,7 +868,7 @@ if (unknownArg !== undefined) {
   try {
     main();
   } catch (err) {
-    console.error(`${CHECK}: internal error in ${repoRoot}: ${err?.stack ?? err}`);
+    console.error(`${CHECK}: internal error: ${formatError(err)}`);
     process.exitCode = 2;
   }
 }

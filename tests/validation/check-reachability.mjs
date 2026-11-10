@@ -43,6 +43,8 @@ import {
   findCodeSpans,
   isReferencePath,
   report,
+  escapeControls,
+  formatError,
 } from './lib/markdown.mjs';
 
 const CHECK = 'check-reachability';
@@ -355,7 +357,7 @@ Exit: 0 with no violations, 1 with violations, 2 on an internal error or a bad a
 const args = process.argv.slice(2);
 const unknown = args.find((arg) => arg !== '-h' && arg !== '--help');
 if (unknown !== undefined) {
-  process.stderr.write(`${CHECK}: unknown argument: ${JSON.stringify(unknown)}\n${USAGE}`);
+  process.stderr.write(`${CHECK}: unknown argument: ${escapeControls(JSON.stringify(unknown))}\n${USAGE}`);
   process.exitCode = 2;
 } else if (args.length > 0) {
   process.stdout.write(USAGE);
@@ -364,7 +366,7 @@ if (unknown !== undefined) {
   try {
     main();
   } catch (err) {
-    console.error(`${CHECK}: internal error: ${err && err.stack ? err.stack : err}`);
+    console.error(`${CHECK}: internal error: ${formatError(err)}`);
     process.exitCode = 2;
   }
 }

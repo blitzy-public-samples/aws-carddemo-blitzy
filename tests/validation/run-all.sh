@@ -152,31 +152,52 @@ fi
 
 summary=()
 failed=0
+# Check output carries repository text: file names, link targets, document excerpts and
+# tool messages. A GitHub Actions runner executes any output line that starts with `::`
+# as a workflow command, so under GITHUB_ACTIONS=true command processing is stopped for
+# the checks and resumed only by a random token made here, which no repository content
+# can know. When no token can be made or announced, the run stops before any check
+# rather than run them unprotected.
+stop_token=""
+if [[ "${GITHUB_ACTIONS-}" == "true" ]]; then
+  stop_token="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  if [[ ! "$stop_token" =~ ^[0-9a-f]{32}$ ]] || ! echo "::stop-commands::${stop_token}"; then
+    echo "run-all: cannot stop workflow commands for the check output; no check was run" >&2
+    exit 1
+  fi
+fi
 for check in "${CHECKS[@]}"; do
-  # A check passes only when its header and output were written, node exited 0, its
-  # count was read back from the capture, and that count is 0. A failed write or
-  # count read is an error even when a count was captured: a broken stdout or
-  # capture file must not turn into PASS.
+  # A check passes only when its header and output were written, node exited 0, and
+  # the capture's final line is its count line reading 0. It fails with its count
+  # only when node exited 1 and that final line reads a count above 0. Every other
+  # outcome fails as an error: an exit status other than 0 or 1, no count line as the
+  # final line (a count line anywhere earlier, such as one inside quoted repository
+  # text, is never read), a count that disagrees with the exit status, or a failed
+  # write or count read, since a broken stdout or capture file must not turn into PASS.
   output_ok=1
   echo "== ${check} ==" || output_ok=0
   node "tests/validation/${check}.mjs" 2>&1 | tee "$tmp"
   pipe_status=("${PIPESTATUS[@]}")
   status="${pipe_status[0]}"
   [[ "${pipe_status[1]}" -eq 0 ]] || output_ok=0
-  if ! count="$(sed -nE "s/^${check}: ([0-9]+) violation\\(s\\)\$/\\1/p" "$tmp" | tail -n 1)"; then
+  if ! count="$(tail -n 1 "$tmp" | sed -nE "s/^${check}: ([0-9]+) violation\\(s\\)\$/\\1/p")"; then
     output_ok=0
   fi
   if [[ "$output_ok" -eq 1 && "$status" -eq 0 && "$count" == "0" ]]; then
     summary+=("PASS ${check} (${count} violations)")
   else
     failed=$((failed + 1))
-    if [[ "$output_ok" -eq 0 || -z "$count" ]]; then
-      summary+=("FAIL ${check} (error)")
-    else
+    if [[ "$output_ok" -eq 1 && "$status" -eq 1 && "$count" =~ ^[1-9][0-9]*$ ]]; then
       summary+=("FAIL ${check} (${count} violations)")
+    else
+      summary+=("FAIL ${check} (error)")
     fi
   fi
 done
+if [[ -n "$stop_token" ]] && ! echo "::${stop_token}::"; then
+  echo "run-all: cannot resume workflow commands after the check output" >&2
+  exit 1
+fi
 
 # The summary opens with a blank line and is written in one checked write, so a run
 # whose summary cannot be written exits non-zero whatever its checks found.

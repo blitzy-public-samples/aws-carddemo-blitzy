@@ -20,7 +20,7 @@
  * confine every link they meet the same way, and listEntries never follows one.
  * Callers classify link targets with isReferencePath before touching the filesystem.
  *
- * Node.js built-ins (node:fs, node:path, node:url) and the suite's own entity table,
+ * Node.js built-ins (node:fs, node:os, node:path, node:url) and the suite's own entity table,
  * html-entities.mjs, only; no side effect at import time beyond computing repoRoot.
  * Every parser skips fenced code and HTML comments:
  * headings, tables, links and metadata inside a fenced code block or an HTML comment
@@ -38,8 +38,9 @@
  * list item opens, or inline raw HTML other than comments.
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { NAMED_CHARACTER_REFERENCES } from './html-entities.mjs';
 
 /** Absolute repository root; this file sits at <root>/tests/validation/lib/. */
@@ -444,6 +445,7 @@ function blankRunComments(s) {
   // offset it examines and `span` the span it found that the main scan has not yet passed.
   let scan = 0;
   let span = null;
+  const spanEnd = codeSpanReader(s);
   const spanUpTo = (at) => {
     while (span === null && scan <= at && scan < s.length) {
       if (s[scan] === '\\') {
@@ -451,10 +453,10 @@ function blankRunComments(s) {
       } else if (s[scan] !== '`') {
         scan++;
       } else {
-        const found = codeSpanAt(s, scan);
-        if (found) {
-          span = { start: scan, end: found.end };
-          scan = found.end;
+        const end = spanEnd(scan);
+        if (end >= 0) {
+          span = { start: scan, end };
+          scan = end;
         } else {
           while (scan < s.length && s[scan] === '`') scan++;
         }
@@ -653,34 +655,59 @@ export function blankComments(text) {
 }
 
 /**
- * The code span opened by the whole backtick run that starts at `i`, CommonMark style: the
- * next run of exactly the same length closes it. Line endings in the content become
- * spaces, then one leading and one trailing space are removed from content that has both
- * and is not all spaces. Returns { end, content } with `end` exclusive, or null when no
- * run closes it, in which case the opening run is literal text.
+ * The code spans of one string, CommonMark style, for callers that ask about many of its
+ * backtick runs. The returned function gives, for the backtick run that starts at `i` and
+ * runs to the end of the maximal run holding `i` (`i` sits inside one after an escaped
+ * backtick), the end, exclusive, of the code span it opens: the next maximal run of exactly
+ * the same length closes it. It gives -1 when no run closes it, in which case the opening
+ * run is literal text. The first query indexes the maximal runs of `s` by length, each
+ * length's starts ascending, and every query finds its closer there by binary search, so
+ * runs that nothing closes rescan nothing.
+ * @param {string} s
+ * @returns {(i: number) => number}
  */
-function codeSpanAt(s, i) {
-  let j = i;
-  while (j < s.length && s[j] === '`') j++;
-  const len = j - i;
-  let k = j;
-  while (k < s.length) {
-    if (s[k] !== '`') {
-      k++;
-      continue;
-    }
-    let m = k;
-    while (m < s.length && s[m] === '`') m++;
-    if (m - k === len) {
-      let content = s.slice(j, k).replace(/\r\n|\r|\n/g, ' ');
-      if (content.length >= 2 && content[0] === ' ' && content[content.length - 1] === ' ' && /[^ ]/.test(content)) {
-        content = content.slice(1, -1);
+function codeSpanReader(s) {
+  let startsByLength = null;
+  return (i) => {
+    let j = i;
+    while (j < s.length && s[j] === '`') j++;
+    if (startsByLength === null) {
+      startsByLength = new Map();
+      for (let k = s.indexOf('`'); k >= 0; ) {
+        let m = k;
+        while (m < s.length && s[m] === '`') m++;
+        const starts = startsByLength.get(m - k);
+        if (starts) starts.push(k);
+        else startsByLength.set(m - k, [k]);
+        k = s.indexOf('`', m);
       }
-      return { end: m, content };
     }
-    k = m;
+    const starts = startsByLength.get(j - i);
+    if (!starts) return -1;
+    let lo = 0;
+    let hi = starts.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (starts[mid] < j) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo < starts.length ? starts[lo] + (j - i) : -1;
+  };
+}
+
+/**
+ * The content of the code span that a codeSpanReader of `s` finds from `start` to `end`:
+ * the text between its opening and closing runs, with line endings turned into spaces, then
+ * one leading and one trailing space removed from content that has both and is not all spaces.
+ */
+function codeSpanContent(s, start, end) {
+  let j = start;
+  while (s[j] === '`') j++;
+  let content = s.slice(j, end - (j - start)).replace(/\r\n|\r|\n/g, ' ');
+  if (content.length >= 2 && content[0] === ' ' && content[content.length - 1] === ' ' && /[^ ]/.test(content)) {
+    content = content.slice(1, -1);
   }
-  return null;
+  return content;
 }
 
 /**
@@ -688,12 +715,14 @@ function codeSpanAt(s, i) {
  * next run of the same length closes, and an unmatched run is literal. A backslash
  * outside code escapes the next character, so an escaped backtick never opens a span. A
  * span may cross a line ending, which its content holds as a space; one leading and one
- * trailing space are trimmed from content that has both and is not all spaces.
+ * trailing space are trimmed from content that has both and is not all spaces. One
+ * codeSpanReader finds every closer, so unmatched runs cost no rescan of the string.
  * @param {string} s
  * @returns {{ start: number, end: number, content: string }[]} offsets into `s`, `end` exclusive
  */
 export function findCodeSpans(s) {
   asText(s, 'findCodeSpans');
+  const spanEnd = codeSpanReader(s);
   const spans = [];
   let i = 0;
   while (i < s.length) {
@@ -706,13 +735,13 @@ export function findCodeSpans(s) {
       i++;
       continue;
     }
-    const span = codeSpanAt(s, i);
-    if (!span) {
+    const end = spanEnd(i);
+    if (end < 0) {
       while (i < s.length && s[i] === '`') i++;
       continue;
     }
-    spans.push({ start: i, end: span.end, content: span.content });
-    i = span.end;
+    spans.push({ start: i, end, content: codeSpanContent(s, i, end) });
+    i = end;
   }
   return spans;
 }
@@ -1352,7 +1381,8 @@ function makeSection(lines, heading, endLine) {
  * One section per non-quoted heading of `level`, ending before the next non-quoted heading
  * of level ≤ `level` or at the last line. Quoted headings never start or end a section.
  * `text` holds lines startLine..endLine, heading included: line k of it is document line
- * startLine + k - 1.
+ * startLine + k - 1. One backward pass over the headings finds every end line, so the work
+ * stays linear in the heading count.
  * @param {string} text
  * @param {number} level
  * @returns {{ heading: string, level: number, text: string, startLine: number, endLine: number }[]}
@@ -1363,11 +1393,17 @@ export function sections(text, level) {
   }
   const lines = splitLines(asText(text, 'sections'));
   const heads = parseHeadings(text).filter((h) => !h.quoted);
+  // `boundary` is the line before the nearest later heading of level ≤ `level`. A heading's
+  // end is recorded before the heading moves the boundary, so it never bounds itself.
+  const ends = new Array(heads.length);
+  let boundary = lines.length;
+  for (let k = heads.length - 1; k >= 0; k--) {
+    if (heads[k].level === level) ends[k] = boundary;
+    if (heads[k].level <= level) boundary = heads[k].line - 1;
+  }
   const out = [];
   heads.forEach((h, i) => {
-    if (h.level !== level) return;
-    const next = heads.slice(i + 1).find((n) => n.level <= level);
-    out.push(makeSection(lines, h, next ? next.line - 1 : lines.length));
+    if (h.level === level) out.push(makeSection(lines, h, ends[i]));
   });
   return out;
 }
@@ -1472,18 +1508,37 @@ const ALIGN_RE = /^ {0,3}(?:\|\s*)?:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 const CODE_INDENT_RE = /^(?: {0,3}\t| {4})/;
 
 /**
+ * Padded-cell budget of one parseTables call: PAD_CELLS_BASE plus PAD_CELLS_PER_CHAR for
+ * every character of its text, shared by every table in that text. Padding short rows to
+ * their header's width costs width times rows, so a wide header over many short rows
+ * would turn under a megabyte of Markdown into billions of cells. Tying the budget to the
+ * input keeps padding linear in it across every call; a fixed per-call or per-table cap,
+ * such as cmark-gfm's 0x80000 cells per table, still lets many small sections or tables
+ * multiply it. Real tables pad a handful of cells, far inside the base.
+ */
+const PAD_CELLS_BASE = 4096;
+const PAD_CELLS_PER_CHAR = 4;
+
+/**
  * GFM pipe tables outside fenced code and HTML comment blocks, blockquoted ones included.
  * A table is a line with a cell separator followed by an alignment row with the same cell
  * count, each indented at most three spaces (more, or a tab, is indented code); body rows
  * run until a blank line, a line without a separator, a heading, a fence, an HTML comment
- * block or a change of quote depth. Short rows are padded with ''; extra cells are kept so
- * a malformed row shows as row.length > header.length. `headingPath` lists the enclosing
- * heading texts, outermost first, with quoted headings counted.
+ * block or a change of quote depth. Short rows are padded with '' within a budget of
+ * PAD_CELLS_BASE + PAD_CELLS_PER_CHAR × text.length padded cells (4096 plus 4 per
+ * character) shared by every table in the text; extra cells are kept so a malformed row
+ * shows as row.length > header.length. `headingPath` lists the enclosing heading texts,
+ * outermost first, with quoted headings counted.
  * @param {string} text
  * @returns {{ header: string[], rows: string[][], line: number, rowLines: number[], headingPath: string[] }[]}
+ * @throws {RangeError} when rows shorter than their header would need more padded cells
+ *   than the budget; thrown before the row is padded, and the message carries only the
+ *   budget and 1-based line numbers, never cell text.
  */
 export function parseTables(text) {
   const lines = splitLines(asText(text, 'parseTables'));
+  const budget = PAD_CELLS_BASE + PAD_CELLS_PER_CHAR * text.length;
+  let padded = 0;
   const mask = hiddenMask(lines);
   const tables = [];
   const stack = [];
@@ -1516,6 +1571,11 @@ export function parseTables(text) {
               break;
             }
             const cells = splitCells(row.rest);
+            const need = Math.max(0, header.length - cells.length);
+            if (padded + need > budget) {
+              throw new RangeError(`parseTables: rows shorter than their header need more than ${budget} padded cells (table at line ${i + 1}, row at line ${j + 1}); input rejected`);
+            }
+            padded += need;
             while (cells.length < header.length) cells.push('');
             rows.push(cells);
             rowLines.push(j + 1);
@@ -1612,6 +1672,8 @@ const EMAIL_AUTOLINK_RE = new RegExp(`<([A-Za-z0-9.!#$%&'*+/=?^_\`{|}~-]+@${HOST
 const URI_AUTOLINK_RE = /<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^\x00-\x20\x7f<>]*)>/y;
 const LINK_LABEL_RE = /\[((?:[^\\[\]]|\\[\s\S]){0,999})\]/y;
 const LABEL_TEXT_RE = /^(?:[^\\[\]]|\\[\s\S]){0,999}$/;
+// The longest text LABEL_TEXT_RE accepts: 999 units, each a character or a backslash pair.
+const LABEL_TEXT_MAX = 2 * 999;
 // GitHub's extended autolink literals: www. and http(s):// at a line start or after
 // whitespace, *, _, ~ or (, and bare email addresses.
 const URL_LITERAL_RE = /(?<=^|[\s*_~(])(?:https?:\/\/|www\.)[^\s<]*/g;
@@ -1632,10 +1694,33 @@ function labelKey(label) {
   return label.trim().replace(/[ \t\r\n]+/g, ' ').toUpperCase().toLowerCase();
 }
 
-/** One-line diagnostic excerpt: whitespace runs collapsed, at most MAX_EXCERPT characters. */
-function excerpt(s) {
-  const one = s.replace(/\s+/g, ' ').trim();
-  return one.length > MAX_EXCERPT ? `${one.slice(0, MAX_EXCERPT - 1)}…` : one;
+/** True when s.slice(from, to) holds only whitespace, the text whose labelKey is empty. */
+function isBlank(s, from, to) {
+  let k = from;
+  while (k < to && WHITESPACE_RE.test(s[k])) k++;
+  return k >= to;
+}
+
+/**
+ * One-line diagnostic excerpt of s.slice(from, to): whitespace runs collapsed to one space
+ * and trimmed, at most MAX_EXCERPT characters, a longer one cut to MAX_EXCERPT - 1 of them
+ * and `…`. Reading stops at the first character past that limit, so a long range costs no
+ * more than MAX_EXCERPT + 1 other characters and the whitespace among them.
+ */
+function excerpt(s, from, to) {
+  let out = '';
+  let gap = false;
+  for (let k = from; k < to; k++) {
+    if (WHITESPACE_RE.test(s[k])) {
+      gap = out !== '';
+      continue;
+    }
+    if (gap) out += ' ';
+    gap = false;
+    out += s[k];
+    if (out.length > MAX_EXCERPT) return `${out.slice(0, MAX_EXCERPT - 1)}…`;
+  }
+  return out;
 }
 
 /** Skips optional spaces and tabs holding at most one line ending. */
@@ -1773,7 +1858,10 @@ function autolinkAt(s, i) {
  * each `]` closes the nearest one as an inline link or, failing that, as a full, collapsed
  * or shortcut reference to `definitions`. A link deactivates the link openers before it, so
  * a link inside a link's text wins and the outer brackets stay text; images may hold links
- * and links may hold images. Offsets index `s`. Returns `links`
+ * and links may hold images. No `]` rescans the rest of `s`: one codeSpanReader finds code
+ * spans, one destinationReader reads inline tails, a barrier offset deactivates openers, a
+ * link's text is read only as far as a reference name or an excerpt needs, and links take
+ * their text when they are made. Offsets index `s`. Returns `links`
  * [{ start, end, text, target, image?, autolink?, inline? }], `problems` [{ start, message }]
  * and `covered`, the [start, end) ranges of code spans, autolinks, links and images.
  */
@@ -1784,14 +1872,22 @@ function scanInline(s, definitions) {
   const openers = [];
   const sites = []; // every `](` outside code: { from, at, closed }
   const reportedLabels = new Set();
+  const spanEnd = codeSpanReader(s);
+  let destinations = null;
+  // Openers are pushed in offset order and a link stops every link opener pushed before its
+  // end: an opener is active when it is an image's or starts at or after `barrier`.
+  let barrier = 0;
 
   const closeBracket = (i) => {
     const opener = openers.pop();
     const site = s[i + 1] === '(' ? { from: opener ? opener.start : i, at: i, closed: false } : null;
     if (site) sites.push(site);
-    if (!opener || !opener.active) return i + 1;
-    const text = s.slice(opener.textStart, i);
-    const tail = site ? inlineTail(s, i + 1) : null;
+    if (!opener || !(opener.image || opener.start >= barrier)) return i + 1;
+    let tail = null;
+    if (site) {
+      destinations ??= destinationReader(s);
+      tail = inlineTail(s, i + 1, destinations);
+    }
     let link = null;
     if (tail) {
       site.closed = true;
@@ -1800,18 +1896,29 @@ function scanInline(s, definitions) {
       LINK_LABEL_RE.lastIndex = i + 1;
       const label = LINK_LABEL_RE.exec(s);
       const full = label !== null && label[1] !== '';
-      const name = full ? label[1] : text;
       const end = label ? i + 1 + label[0].length : i + 1;
-      const key = labelKey(name);
+      // The name is the full label, else the link text when LABEL_TEXT_RE accepts it; text it
+      // rejects names no definition, and text longer than it can accept is never read.
+      let name = full ? label[1] : null;
+      if (!full && i - opener.textStart <= LABEL_TEXT_MAX) {
+        const text = s.slice(opener.textStart, i);
+        if (LABEL_TEXT_RE.test(text)) name = text;
+      }
+      const key = name === null ? '' : labelKey(name);
       // A `[^…]` label is a footnote and a blank one names nothing: neither is a reference.
-      if (key !== '' && !name.startsWith('^')) {
-        const target = full || LABEL_TEXT_RE.test(name) ? definitions.get(key) : undefined;
+      // A label key is empty exactly when its text is all whitespace.
+      const reference =
+        name === null
+          ? !isBlank(s, opener.textStart, i) && s[opener.textStart] !== '^'
+          : key !== '' && !name.startsWith('^');
+      if (reference) {
+        const target = name === null ? undefined : definitions.get(key);
         if (target !== undefined) {
           link = { end, target };
         } else if (label && !reportedLabels.has(opener.start)) {
           // Only the full and collapsed forms are reported: a shortcut without a definition
           // is ordinary bracketed text such as [Name] or a task-list [ ].
-          const message = `undefined link reference: ${excerpt(s.slice(opener.start, end))}`;
+          const message = `undefined link reference: ${excerpt(s, opener.start, end)}`;
           problems.push({ start: opener.start, message });
           if (full) reportedLabels.add(i + 1);
         }
@@ -1821,13 +1928,13 @@ function scanInline(s, definitions) {
     links.push({
       start: opener.start,
       end: link.end,
-      text,
+      text: s.slice(opener.textStart, i),
       target: link.target,
       image: opener.image,
       inline: link.inline,
     });
     covered.push([opener.start, link.end]);
-    if (!opener.image) for (const o of openers) if (!o.image) o.active = false;
+    if (!opener.image) barrier = link.end;
     return link.end;
   };
 
@@ -1837,10 +1944,10 @@ function scanInline(s, definitions) {
     if (c === '\\' && i + 1 < s.length && ASCII_PUNCT_RE.test(s[i + 1])) {
       i += 2;
     } else if (c === '`') {
-      const span = codeSpanAt(s, i);
-      if (span) {
-        covered.push([i, span.end]);
-        i = span.end;
+      const end = spanEnd(i);
+      if (end >= 0) {
+        covered.push([i, end]);
+        i = end;
       } else {
         while (s[i] === '`') i++;
       }
@@ -1855,7 +1962,7 @@ function scanInline(s, definitions) {
       }
     } else if (c === '[' || (c === '!' && s[i + 1] === '[')) {
       const image = c === '!';
-      openers.push({ start: i, textStart: i + (image ? 2 : 1), image, active: true });
+      openers.push({ start: i, textStart: i + (image ? 2 : 1), image });
       i += image ? 2 : 1;
     } else if (c === ']') {
       i = closeBracket(i);
@@ -1871,23 +1978,45 @@ function scanInline(s, definitions) {
     if (site.from < reportedTo) continue;
     const eol = s.indexOf('\n', site.at);
     reportedTo = eol < 0 ? s.length : eol;
-    problems.push({ start: site.from, message: `malformed link: ${excerpt(s.slice(site.from, reportedTo))}` });
+    problems.push({ start: site.from, message: `malformed link: ${excerpt(s, site.from, reportedTo)}` });
   }
   problems.sort((a, b) => a.start - b.start);
   links.sort((a, b) => a.start - b.start);
   return { links, problems, covered };
 }
 
-/** Removes the trailing characters GitHub leaves out of an autolink literal. */
+/**
+ * Removes the trailing characters GitHub leaves out of an autolink literal, repeatedly: one
+ * of `?!.,:*_~`, a `)` while the rest holds more `)` than `(`, and an entity-like `&name;`.
+ * The parentheses are counted once and each removal moves the end back, so the work is
+ * linear in the literal's length.
+ */
 function trimLiteral(text) {
-  let t = text;
-  for (;;) {
-    const last = t.slice(-1);
-    if (last !== '' && '?!.,:*_~'.includes(last)) t = t.slice(0, -1);
-    else if (last === ')' && t.split(')').length > t.split('(').length) t = t.slice(0, -1);
-    else if (last === ';' && /&[A-Za-z0-9]+;$/.test(t)) t = t.replace(/&[A-Za-z0-9]+;$/, '');
-    else return t;
+  let opens = 0;
+  let closes = 0;
+  for (let k = 0; k < text.length; k++) {
+    if (text[k] === '(') opens++;
+    else if (text[k] === ')') closes++;
   }
+  let end = text.length;
+  while (end > 0) {
+    const last = text[end - 1];
+    if ('?!.,:*_~'.includes(last)) {
+      end--;
+    } else if (last === ')' && closes > opens) {
+      end--;
+      closes--;
+    } else if (last === ';') {
+      // `&`, then one or more ASCII letters and digits, then this `;`.
+      let k = end - 1;
+      while (k > 0 && /[A-Za-z0-9]/.test(text[k - 1])) k--;
+      if (k === end - 1 || k === 0 || text[k - 1] !== '&') break;
+      end = k - 1;
+    } else {
+      break;
+    }
+  }
+  return text.slice(0, end);
 }
 
 /** True when `host` opens with a domain GitHub autolinks: no `_` in its last two labels. */
@@ -1902,20 +2031,31 @@ function validDomain(host, needPeriod) {
  * GitHub's extended autolink literals in `s` outside the `covered` ranges: `www.` (target
  * `http://…`), `http://` and `https://` links, and bare email addresses (target `mailto:…`).
  * A literal ends at whitespace, `<` or a covered range; trailing `?!.,:*_~`, an unbalanced
- * `)` and an entity-like `&name;` are left out of it.
+ * `)` and an entity-like `&name;` are left out of it. The covered ranges are merged once
+ * into their sorted union, which each pass over the matches walks forward with its offsets,
+ * and an email is checked against the URL literals the same way, so no match rescans them.
  */
 function literalAutolinks(s, covered) {
   const found = [];
-  const stopAt = (start) => {
-    let stop = s.length;
-    for (const [from, to] of covered) {
-      if (start >= from && start < to) return -1;
-      if (from > start && from < stop) stop = from;
-    }
-    return stop;
+  const union = [];
+  for (const [from, to] of [...covered].sort((a, b) => a[0] - b[0])) {
+    const last = union[union.length - 1];
+    if (last && from <= last[1]) last[1] = Math.max(last[1], to);
+    else union.push([from, to]);
+  }
+  // For rising offsets: -1 for a start inside a covered range, else the offset where the next
+  // covered range opens, or s.length when none does.
+  const stopper = () => {
+    let next = 0;
+    return (start) => {
+      while (next < union.length && union[next][1] <= start) next++;
+      if (next === union.length) return s.length;
+      return union[next][0] <= start ? -1 : union[next][0];
+    };
   };
+  const urlStop = stopper();
   for (const m of s.matchAll(URL_LITERAL_RE)) {
-    const stop = stopAt(m.index);
+    const stop = urlStop(m.index);
     if (stop < 0) continue;
     const text = trimLiteral(m[0].slice(0, stop - m.index));
     const www = m[0].startsWith('www.');
@@ -1925,10 +2065,16 @@ function literalAutolinks(s, covered) {
     const target = www ? `http://${text}` : text;
     found.push({ start: m.index, end: m.index + text.length, text, target, autolink: true });
   }
+  // The URL literals are sorted and disjoint, and email matches never overlap one another,
+  // so an email can overlap only the first URL literal that ends after it starts.
+  const urls = found.length;
+  let url = 0;
+  const emailStop = stopper();
   for (const m of s.matchAll(EMAIL_LITERAL_RE)) {
     const end = m.index + m[0].length;
-    if (stopAt(m.index) < end || /[-_]$/.test(m[0])) continue;
-    if (found.some((f) => m.index < f.end && end > f.start)) continue;
+    if (emailStop(m.index) < end || /[-_]$/.test(m[0])) continue;
+    while (url < urls && found[url].end <= m.index) url++;
+    if (url < urls && found[url].start < end) continue;
     found.push({ start: m.index, end, text: m[0], target: `mailto:${m[0]}`, autolink: true });
   }
   return found;
@@ -2087,10 +2233,16 @@ function scanDocument(text) {
       starts.push(s.length);
       s += unquote(visible[i]).rest;
     }
+    // The line holding `offset`: the last line whose start is at or before it, by binary search.
     const lineOf = (offset) => {
-      let k = starts.length - 1;
-      while (k > 0 && starts[k] > offset) k--;
-      return block[k] + 1;
+      let lo = 0;
+      let hi = starts.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >>> 1;
+        if (starts[mid] <= offset) lo = mid;
+        else hi = mid - 1;
+      }
+      return block[lo] + 1;
     };
     const scan = scanInline(s, definitions);
     const found = [...scan.links, ...literalAutolinks(s, scan.covered)].sort((a, b) => a.start - b.start);
@@ -2282,8 +2434,10 @@ export function parseMetadata(sectionText) {
 }
 
 /**
- * A non-negative integer written as digits only, else null: '12' → 12; '1-2', 'TBD',
- * '' and '5 files' → null.
+ * Text of ASCII digits only, after trimming, converted with Number, else null: '12' → 12;
+ * '1-2', 'TBD', '' and '5 files' → null. There is no finite or safe-integer validation,
+ * so a long digit run gives Infinity or a rounded unsafe integer; callers needing exact
+ * values check the digit length or Number.isSafeInteger themselves.
  * @param {unknown} s
  * @returns {number | null}
  */
@@ -2295,10 +2449,10 @@ export function intStrict(s) {
 /**
  * Prints each violation as `<check>: <path>:<line>: <message>` (`:<line>` omitted when
  * absent, `<check>: <message>` when path is empty), sorted by path, line and message,
- * then the final line `<check>: <N> violation(s)` that run-all.sh parses. Each
- * violation is exactly one physical line: every CR in path or message prints as the
- * two characters `\r` and every LF as `\n`; nothing else is escaped, and sorting uses
- * the raw values. Sets process.exitCode to 0 or 1 and returns N; never calls
+ * then the final line `<check>: <N> violation(s)` that run-all.sh parses. Path and
+ * message print through escapeControls, so each violation is exactly one physical line
+ * and no repository text reaches the terminal as a control or bidi character; sorting
+ * uses the raw values. Sets process.exitCode to 0 or 1 and returns N; never calls
  * process.exit.
  * @param {string} check
  * @param {{ path: string, line?: number, message: string }[]} violations
@@ -2314,12 +2468,9 @@ export function report(check, violations) {
     (a, b) =>
       compareCodeUnits(a.path, b.path) || (a.line ?? 0) - (b.line ?? 0) || compareCodeUnits(a.message, b.message),
   );
-  // Printed text only: CR and LF become the two characters \r and \n, so each
-  // violation stays one physical line and the count line stays the last one.
-  const oneLine = (s) => s.replace(/[\r\n]/g, (c) => (c === '\r' ? '\\r' : '\\n'));
   for (const v of list) {
-    const p = oneLine(v.path);
-    const m = oneLine(v.message);
+    const p = escapeControls(v.path);
+    const m = escapeControls(v.message);
     if (p === '') console.log(`${check}: ${m}`);
     else if (v.line === undefined) console.log(`${check}: ${p}: ${m}`);
     else console.log(`${check}: ${p}:${v.line}: ${m}`);
@@ -2327,6 +2478,170 @@ export function report(check, violations) {
   console.log(`${check}: ${list.length} violation(s)`);
   process.exitCode = list.length === 0 ? 0 : 1;
   return list.length;
+}
+
+/**
+ * Characters escapeControls rewrites: the C0 controls, DEL, the C1 controls, and the
+ * format characters that reorder or break a printed line (U+061C, U+200E, U+200F,
+ * U+2028, U+2029, U+202A–U+202E, U+2066–U+2069).
+ */
+const CONTROL_CHAR_RE = /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
+/**
+ * `text` made safe to print on one physical line: CR, LF and TAB become `\r`, `\n` and
+ * `\t`; every other C0 control, DEL and every C1 control becomes `\xNN`; and the line and
+ * bidi format characters of CONTROL_CHAR_RE become `\uNNNN`, all in lower-case hex. A
+ * backslash stays as it is, so a message quoting a pattern such as /900\s*ms/ reads
+ * unchanged and a second pass changes nothing. Every dynamic value a check prints passes
+ * through it, so repository text can neither start a new output line nor move the cursor.
+ * @param {unknown} text
+ * @returns {string}
+ */
+export function escapeControls(text) {
+  return String(text ?? '').replace(CONTROL_CHAR_RE, (c) => {
+    if (c === '\r') return '\\r';
+    if (c === '\n') return '\\n';
+    if (c === '\t') return '\\t';
+    const code = c.charCodeAt(0);
+    return code <= 0xff ? `\\x${code.toString(16).padStart(2, '0')}` : `\\u${code.toString(16).padStart(4, '0')}`;
+  });
+}
+
+/** Characters that continue a path name, as a character-class body for a 'u' regex. */
+const PATH_NAME_CLASS = String.raw`\p{L}\p{N}\p{M}_~+@%\-`;
+const PATH_CONTINUES_RE = new RegExp(`[.${PATH_NAME_CLASS}]`, 'u');
+
+/**
+ * `text` with the host's own locations named without their absolute paths, for messages
+ * that tools and the filesystem build: the repository root followed by `/` is removed,
+ * leaving a repository-relative path (`./` when no name follows), and on its own becomes
+ * `.`; os.tmpdir() becomes `$TMPDIR` and os.homedir() becomes `~`. Each location matches
+ * in its file:// URL form too. Longer locations are tried first, because the repository
+ * may sit inside the temporary or home folder. A location matches only as a whole path:
+ * never right after a dot or path-name character, nor before a path-name character (after
+ * any dots), so /tmpfoo, /tmp.d and /var/tmp stay as written. A location that is empty,
+ * relative or the filesystem root is never replaced.
+ * @param {unknown} text
+ * @returns {string}
+ */
+export function relativizeHostPaths(text) {
+  const s = String(text ?? '');
+  let home;
+  try {
+    home = os.homedir();
+  } catch {
+    home = '';
+  }
+  // The first label set for a form wins, so the repository keeps its own when it is also
+  // the temporary or home folder.
+  const labels = new Map();
+  for (const [dir, label] of [
+    [repoRoot, ''],
+    [os.tmpdir(), '$TMPDIR'],
+    [home, '~'],
+  ]) {
+    const bare = String(dir ?? '').replace(/\/+$/, '');
+    if (bare === '' || !path.isAbsolute(bare)) continue;
+    for (const form of [bare, pathToFileURL(bare).href]) if (!labels.has(form)) labels.set(form, label);
+  }
+  if (labels.size === 0) return s;
+  const forms = [...labels.keys()]
+    .sort((a, b) => b.length - a.length)
+    .map((form) => form.replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&'));
+  const re = new RegExp(`(?<![.${PATH_NAME_CLASS}])(${forms.join('|')})(?:(/)|(?!\\.*[${PATH_NAME_CLASS}]))`, 'gu');
+  return s.replace(re, (match, form, sep, offset) => {
+    const label = labels.get(form);
+    if (label !== '') return `${label}${sep ?? ''}`;
+    if (sep === undefined) return '.';
+    return PATH_CONTINUES_RE.test(s.charAt(offset + match.length)) ? '' : './';
+  });
+}
+
+/**
+ * `<file>:<line>` of the first frame of a V8 stack that lies in a file inside the
+ * repository, the file repository-relative with its controls escaped, or null. The first
+ * headerLines lines are the error's own name and message, which are never read as frames.
+ */
+function errorSite(stack, headerLines) {
+  if (typeof stack !== 'string') return null;
+  const roots = [`${pathToFileURL(repoRoot).href}/`, `${repoRoot}${path.sep}`];
+  for (const frame of stack.split('\n').slice(headerLines)) {
+    if (!/^\s*at\s/.test(frame)) continue;
+    for (const root of roots) {
+      const start = frame.indexOf(root);
+      if (start < 0) continue;
+      const m = /^([^:()\s]+):(\d+)/.exec(frame.slice(start + root.length));
+      if (!m) continue;
+      let file = m[1];
+      if (root.startsWith('file:')) {
+        try {
+          file = decodeURIComponent(file);
+        } catch {
+          file = m[1];
+        }
+      }
+      return `${escapeControls(file)}:${m[2]}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * An absolute filesystem path as one token of a message: `/` or `file:///` at the start of
+ * the text or right after whitespace or one of ' " ` ( [ = , < >, then one or more
+ * characters that are none of whitespace, a quote, a backtick, a parenthesis, a square or
+ * angle bracket, a comma or a semicolon. A lone `/`, a `/` before a bracket as in `/(a/`,
+ * a URL with a host such as http://h/p, and paths that start with a name or a label such
+ * as docs/c, $TMPDIR/a, ~/b or #/components/schemas/X never match.
+ */
+const ABSOLUTE_PATH_RE = /(?<=^|[\s'"`(\[=,<>])(?:file:\/\/)?\/[^\s'"`()\[\]<>,;]+/gu;
+
+/**
+ * A thrown value as one line for a check's internal-error diagnostic, never its stack:
+ * `<code>: <message> (at <file>:<line>)`. The code is err.code when it is an upper-case
+ * identifier such as ENOENT or ERR_INVALID_ARG_TYPE, else err.name when it is a plain
+ * identifier such as TypeError, else `Error`. The message is err.message for an object
+ * that carries a string one, else String(err); a leading repeat of `<code>: ` is dropped,
+ * host locations are relativized, every absolute filesystem path left after that (an
+ * ABSOLUTE_PATH_RE token, such as a symbolic link's absolute target) becomes
+ * `<absolute path>`, and controls are escaped, so a raw line break ends a path and the
+ * escaped text after it stays visible. An empty message prints the code alone. The site
+ * is the first stack frame in a file inside the repository, given repository-relative,
+ * and is omitted when no frame lies there. A property getter that throws, or a value that
+ * String cannot convert, still gives a line: this never throws.
+ * @param {unknown} err
+ * @returns {string}
+ */
+export function formatError(err) {
+  const read = (key) => {
+    try {
+      return err === null || err === undefined ? undefined : err[key];
+    } catch {
+      return undefined;
+    }
+  };
+  const code = read('code');
+  const name = read('name');
+  const id =
+    typeof code === 'string' && /^[A-Z][A-Z0-9_]*$/.test(code) ? code
+    : typeof name === 'string' && /^[A-Za-z][A-Za-z0-9]*$/.test(name) ? name
+    : 'Error';
+  const carried = read('message');
+  let text;
+  if ((typeof err === 'object' || typeof err === 'function') && err !== null && typeof carried === 'string') {
+    text = carried;
+  } else {
+    try {
+      text = String(err);
+    } catch {
+      text = 'the thrown value cannot be converted to text';
+    }
+  }
+  if (text.startsWith(`${id}: `)) text = text.slice(id.length + 2);
+  const message = escapeControls(relativizeHostPaths(text).replace(ABSOLUTE_PATH_RE, '<absolute path>'));
+  const site = errorSite(read('stack'), typeof carried === 'string' ? carried.split('\n').length : 1);
+  const head = message === '' ? id : `${id}: ${message}`;
+  return site === null ? head : `${head} (at ${site})`;
 }
 
 /**

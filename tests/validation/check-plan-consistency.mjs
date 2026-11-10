@@ -80,6 +80,8 @@ import {
   fencedBlocks,
   plainText,
   report,
+  escapeControls,
+  formatError,
 } from './lib/markdown.mjs';
 
 const CHECK = 'check-plan-consistency';
@@ -147,10 +149,42 @@ const COL = Object.freeze({
 const violations = [];
 const fail = (path, line, message) => violations.push({ path, line, message });
 
+/**
+ * `s` with each `[text](…)` and `![text](…)` replaced by its text, left to right: the text
+ * runs from a `[` to the first `]` after it, a `(` must follow that `]` at once, and the
+ * markup ends at the first `)` after that `(`; an optional `!` just before the `[` goes with
+ * it. One pass with forward searches, so an unmatched `[` costs no rescan of the cell.
+ * @param {string} s
+ * @returns {string}
+ */
+function linkMarkupText(s) {
+  let out = '';
+  let pos = 0;
+  let from = 0;
+  for (;;) {
+    const open = s.indexOf('[', from);
+    if (open < 0) break;
+    const close = s.indexOf(']', open + 1);
+    if (close < 0) break;
+    // Every later `[` before this `]` closes there too, so none of them starts markup either.
+    if (s[close + 1] !== '(') {
+      from = close + 1;
+      continue;
+    }
+    // Without a `)` after this `(`, no later `[` can end its markup either.
+    const paren = s.indexOf(')', close + 2);
+    if (paren < 0) break;
+    const start = open > pos && s[open - 1] === '!' ? open - 1 : open;
+    out += s.slice(pos, start) + s.slice(open + 1, close);
+    pos = paren + 1;
+    from = pos;
+  }
+  return out + s.slice(pos);
+}
+
 /** Cell text for comparison: link markup reduced to its text, `**` and backticks removed, spaces collapsed. */
 function norm(cell) {
-  return String(cell ?? '')
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+  return linkMarkupText(String(cell ?? ''))
     .replace(/\*\*/g, '')
     .replace(/`/g, '')
     .replace(/\s+/g, ' ')
@@ -1725,7 +1759,7 @@ const HELP_ARGS = new Set(['-h', '--help']);
 const args = process.argv.slice(2);
 const unknownArg = args.find((arg) => !HELP_ARGS.has(arg));
 if (unknownArg !== undefined) {
-  console.error(`${CHECK}: unknown argument ${JSON.stringify(unknownArg)}`);
+  console.error(`${CHECK}: unknown argument ${escapeControls(JSON.stringify(unknownArg))}`);
   console.error(USAGE);
   process.exitCode = 2;
 } else if (args.length > 0) {
@@ -1736,7 +1770,7 @@ if (unknownArg !== undefined) {
     run();
     report(CHECK, violations);
   } catch (err) {
-    console.error(`${CHECK}: internal error: ${err?.stack ?? err}`);
+    console.error(`${CHECK}: internal error: ${formatError(err)}`);
     process.exitCode = 2;
   }
 }
