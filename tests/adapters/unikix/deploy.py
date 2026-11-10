@@ -28,6 +28,14 @@ copies and moves are done in Python; every UniKix command goes through
     its own ``timeout_s`` raises ``AdapterUnavailable`` with its entry's gap,
     so the scenarios that needed the deployment are ``blocked``.
 
+    The deployment runs under the deadline of the scenario that asked for
+    it. Every command's ``timeout_s`` is capped at the time left, the
+    runtime scripts are sourced within it, and it is checked again before
+    each filesystem step. Its expiry is never a command failure: it raises
+    ``ScenarioTimeout``, so that scenario is ``failing`` with reason
+    ``timeout``, and an ``AdapterUnavailable`` raised once it has passed
+    becomes the cause of a ``ScenarioTimeout``.
+
 Writes go only to ``<work root>/_unikix_zip`` (once), its ``.sha256`` marker
 and ``.lock`` file beside it, and ``<work root>/unikix/<execution_id>/``.
 Nothing under ``app/``, ``samples/`` or ``diagrams/`` is written, the zip is
@@ -44,8 +52,9 @@ import shutil
 import stat
 import sys
 import threading
+import time
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -54,8 +63,8 @@ _TESTS_ROOT = str(Path(__file__).resolve().parents[2])
 if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
 
-from adapters.base import AdapterUnavailable  # noqa: E402
-from adapters.unikix.env import CommandSet, UniKixEnvironment  # noqa: E402
+from adapters.base import DEFAULT_DEADLINE_S, AdapterUnavailable, ScenarioTimeout  # noqa: E402
+from adapters.unikix.env import CommandResult, CommandSet, UniKixEnvironment  # noqa: E402
 from harness import REPO_ROOT, HarnessError, sha256_file, sha256_hex, write_text  # noqa: E402
 
 __all__ = [
@@ -389,13 +398,18 @@ def deploy(
     zip_dir: str | os.PathLike[str] | None = None,
     *,
     repo_root: str | os.PathLike[str] = REPO_ROOT,
+    deadline: float | Callable[[], float] | None = None,
 ) -> Deployment:
     """Deploy and build the UniKix copy in ``env.deployment_root``.
 
     ``env`` is the session's ``UniKixEnvironment``, loaded with the
     deployment root ``deployment_root(work_root, execution_id)``, and
     ``commands`` its ``CommandSet``. ``zip_dir`` is what ``extract_zip``
-    returned for the same work root; ``None`` extracts it here. In order:
+    returned for the same work root; ``None`` extracts it here.
+    ``deadline`` is the deadline of the scenario that needs the deployment:
+    a ``time.monotonic()`` value, a function returning the seconds left
+    (such as ``Adapter.time_left``), or ``None`` for ``DEFAULT_DEADLINE_S``
+    from this call; anything else raises ``HarnessError``. In order:
 
     1. the staging copy ``<root>/staging/migrated_app`` and its ``vct.lst``
        BPE node path (missing → GAP-MIS-003);
@@ -415,7 +429,23 @@ def deploy(
     deployment root names one execution, so a second call for it returns
     the same ``Deployment``, or raises again what ended the first attempt;
     a root that already holds a deployment this process did not make
-    raises ``HarnessError``."""
+    raises ``HarnessError``.
+
+    Every command's ``timeout_s`` is capped at the seconds ``deadline``
+    leaves, ``env.source_runtime_scripts`` is bounded by them, and the
+    deadline is checked before and after the extraction and before each
+    filesystem step. Once it has passed this call raises ``ScenarioTimeout``,
+    with an ``AdapterUnavailable`` raised after it as its cause. A later
+    call for the same root, under its own deadline, gets:
+
+    * nothing cached when the deadline stopped the attempt before the
+      staging copy, so it deploys afresh;
+    * once the root holds a partial deployment, which cannot be redeployed
+      this session, ``AdapterUnavailable`` with the gap of the step in
+      progress and the ``ScenarioTimeout`` as its cause;
+    * the ``Deployment``, when the deadline passed only after the last
+      step."""
+    time_left = _time_left_function(deadline)
     root = Path(os.path.abspath(env.deployment_root))
     key = str(root.resolve())
     with _ATTEMPTS_LOCK:
@@ -424,13 +454,92 @@ def deploy(
             return previous
         if previous is not None:
             raise previous
+        progress = _Progress(time_left)
         try:
-            deployment = _deploy(env, commands, root, zip_dir, Path(repo_root))
+            deployment = _deploy(env, commands, root, zip_dir, Path(repo_root), progress)
+        except ScenarioTimeout as exc:
+            # Only this caller's deadline has passed: a later scenario gets
+            # the partial root as unavailable, never this timeout.
+            if progress.occupied:
+                stopped = AdapterUnavailable(
+                    f"the deployment of {root} was stopped at an earlier scenario's deadline "
+                    f"during {progress.step} ({exc}), so it cannot be redeployed this session",
+                    progress.gap,
+                )
+                stopped.__cause__ = exc
+                _ATTEMPTS[key] = stopped
+            raise
         except Exception as exc:
             _ATTEMPTS[key] = exc
+            if isinstance(exc, AdapterUnavailable) and time_left() <= 0:
+                raise ScenarioTimeout(
+                    f"scenario deadline passed during the deployment of {root}; "
+                    f"superseded: {exc}"
+                ) from exc
             raise
         _ATTEMPTS[key] = deployment
+        if time_left() <= 0:
+            raise ScenarioTimeout(
+                f"scenario deadline passed during the deployment of {root}, which completed "
+                f"and is kept for later scenarios"
+            )
         return deployment
+
+
+def _time_left_function(deadline: Any) -> Callable[[], float]:
+    """``deadline`` as a seconds-left function, never negative: a
+    ``time.monotonic()`` value, a function returning the seconds left (such
+    as ``Adapter.time_left``), or ``None`` for ``DEFAULT_DEADLINE_S`` from
+    now. A ``bool`` or any other value raises ``HarnessError``."""
+    if callable(deadline):
+        return lambda: max(0.0, float(deadline()))
+    if deadline is None:
+        end = time.monotonic() + DEFAULT_DEADLINE_S
+    elif isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
+        raise HarnessError(f"deadline must be a monotonic time or a function, got {deadline!r}")
+    else:
+        end = float(deadline)
+    return lambda: max(0.0, end - time.monotonic())
+
+
+class _Progress:
+    """The deadline of one deployment attempt and the step it has reached.
+
+    ``step`` and ``gap`` name the step in progress, which a passed deadline
+    stopped; ``occupied`` becomes true once the deployment root holds
+    something a new attempt would refuse."""
+
+    def __init__(self, time_left: Callable[[], float]) -> None:
+        self.time_left = time_left
+        self.step = "the checks before the staging copy"
+        self.gap = _GAP_REGION
+        self.occupied = False
+
+    def check(self, when: str) -> None:
+        """``ScenarioTimeout`` when the deadline has passed ``when``."""
+        if self.time_left() <= 0:
+            raise ScenarioTimeout(f"scenario deadline passed {when}")
+
+    def begin(self, step: str, gap: str) -> None:
+        """Enter the filesystem ``step``, whose stop leaves ``gap`` open;
+        ``ScenarioTimeout`` instead when the deadline has passed."""
+        self.step, self.gap = step, gap
+        self.check(f"before {step}")
+
+    def run(
+        self,
+        commands: CommandSet,
+        entry_id: str,
+        env: UniKixEnvironment,
+        *,
+        subject: str = "",
+        **arguments: Any,
+    ) -> CommandResult:
+        """``commands.run(entry_id, env, **arguments)`` capped at the
+        seconds left now; ``subject`` names the member or map built."""
+        self.step = f"{entry_id} for {subject}" if subject else entry_id
+        self.gap = commands.entry(entry_id).gap
+        return commands.run(entry_id, env, deadline_left=self.time_left(), **arguments)
 
 
 def _deploy(
@@ -439,6 +548,7 @@ def _deploy(
     root: Path,
     zip_dir: str | os.PathLike[str] | None,
     repo_root: Path,
+    progress: _Progress,
 ) -> Deployment:
     work = Path(os.path.abspath(env.work_root))
     _refuse_protected(work, "work root", repo_root)
@@ -447,7 +557,12 @@ def _deploy(
     staging = root / _STAGING_DIR / APP_DIR_NAME
     _check_environment(env, root, staging)
 
-    extraction = extract_zip(work, repo_root) if zip_dir is None else Path(zip_dir)
+    if zip_dir is None:
+        progress.check("before extracting the zip")
+        extraction = extract_zip(work, repo_root)
+        progress.check("after extracting the zip")
+    else:
+        extraction = Path(zip_dir)
     if extraction.resolve() != (work / ZIP_DIR_NAME).resolve():
         raise HarnessError(f"{extraction} is not the extraction {work / ZIP_DIR_NAME}")
     source = extraction / APP_DIR_NAME
@@ -464,21 +579,29 @@ def _deploy(
     for directory in (root / "home", log_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
+    progress.begin("the staging copy", _GAP_REGION)
+    progress.occupied = True
     _stage(source, staging)
+    progress.begin(f"the {VCT_FILE} BPE node substitution", _GAP_REGION)
     substitutions = [_substitute_bpe_node(staging, env)]
 
+    progress.begin("the bin/create_project tree", _GAP_REGION)
     _create_project_tree(root)
-    commands.run("region_create", env)
-    commands.run("region_create_script", env)
+    progress.run(commands, "region_create", env)
+    progress.run(commands, "region_create_script", env)
+    progress.begin("the bin/deploy_app copies", _GAP_REGION)
     _copy_application(staging, env)
-    commands.run("region_install", env)
+    progress.run(commands, "region_install", env)
 
-    commands.run("bpe_node_create", env)
-    _import_bpe_catalog(staging, env, commands)
-    env.source_runtime_scripts()
+    progress.run(commands, "bpe_node_create", env)
+    _import_bpe_catalog(staging, env, commands, progress)
+    # userenv and batchenv are sourced in one bash, so a stop there is
+    # attributed to region creation, of which userenv, sourced first, is part.
+    progress.step, progress.gap = "sourcing userenv and batchenv", _GAP_REGION
+    env.source_runtime_scripts(deadline_left=progress.time_left())
 
-    built_members = _build_programs(staging, env, commands, log_dir)
-    maps = _build_maps(staging, env, commands, log_dir)
+    built_members = _build_programs(staging, env, commands, log_dir, progress)
+    maps = _build_maps(staging, env, commands, log_dir, progress)
     return Deployment(
         root=root,
         staging=staging,
@@ -588,9 +711,12 @@ def _copy_application(staging: Path, env: UniKixEnvironment) -> None:
             shutil.copyfile(item, target / item.name)
 
 
-def _import_bpe_catalog(staging: Path, env: UniKixEnvironment, commands: CommandSet) -> None:
+def _import_bpe_catalog(
+    staging: Path, env: UniKixEnvironment, commands: CommandSet, progress: _Progress
+) -> None:
     """``bpe_catalog_import`` of the staging copy's ``catlg/bpe`` files, which
     the entry reads from ``$MIGAPP_DIR/catlg/bpe`` itself."""
+    progress.begin("the BPE catalog file check", _GAP_CATALOG)
     directory = staging / "catlg" / "bpe"
     missing = [name for name in BPE_CATALOG_FILES if not (directory / name).is_file()]
     if missing:
@@ -598,7 +724,7 @@ def _import_bpe_catalog(staging: Path, env: UniKixEnvironment, commands: Command
             f"the staging copy lacks catlg/bpe/{', '.join(missing)} for the BPE catalog import",
             _GAP_CATALOG,
         )
-    commands.run("bpe_catalog_import", env)
+    progress.run(commands, "bpe_catalog_import", env)
 
 
 # --------------------------------------------------------------------------
@@ -607,7 +733,11 @@ def _import_bpe_catalog(staging: Path, env: UniKixEnvironment, commands: Command
 
 
 def _build_programs(
-    staging: Path, env: UniKixEnvironment, commands: CommandSet, log_dir: Path
+    staging: Path,
+    env: UniKixEnvironment,
+    commands: CommandSet,
+    log_dir: Path,
+    progress: _Progress,
 ) -> list[str]:
     """Translate and compile every ``.cl2``, then compile every ``.cbl``, as
     ``bin/compile`` does for each file; return the members in build order."""
@@ -623,25 +753,32 @@ def _build_programs(
     built: list[str] = []
     for member in online:
         log = log_dir / f"{member}.log"
-        _run_build(commands, env, "build_kixclt", log, member=member)
+        _run_build(commands, env, "build_kixclt", log, progress, member=member)
         translated = source / f"{member}.cbl"
         if not translated.is_file():
             raise AdapterUnavailable(
                 f"build_kixclt left no translated {member}.cbl to compile", _GAP_BUILD
             )
-        _run_build(commands, env, "build_vcc_online", log, member=member)
+        _run_build(commands, env, "build_vcc_online", log, progress, member=member)
+        progress.begin(f"the moves of member {member}'s build output", _GAP_BUILD)
         _move_compiler_output(source, member, loadlib)
         translated.unlink()
         built.append(member)
     for member in batch:
-        _run_build(commands, env, "build_vcc_batch", log_dir / f"{member}.log", member=member)
+        log = log_dir / f"{member}.log"
+        _run_build(commands, env, "build_vcc_batch", log, progress, member=member)
+        progress.begin(f"the moves of member {member}'s build output", _GAP_BUILD)
         _move_compiler_output(source, member, loadlib)
         built.append(member)
     return built
 
 
 def _build_maps(
-    staging: Path, env: UniKixEnvironment, commands: CommandSet, log_dir: Path
+    staging: Path,
+    env: UniKixEnvironment,
+    commands: CommandSet,
+    log_dir: Path,
+    progress: _Progress,
 ) -> list[str]:
     """Compile every ``.bms`` and move its ``.map`` to ``$PR/maps``, as
     ``bin/compbms`` does; return the maps in build order."""
@@ -649,12 +786,13 @@ def _build_maps(
     target = env.path("PR") / "maps"
     maps: list[str] = []
     for name in sorted(path.stem for path in source.glob("*.bms") if path.is_file()):
-        _run_build(commands, env, "build_kixbms", log_dir / f"{name}.log", map=name)
+        _run_build(commands, env, "build_kixbms", log_dir / f"{name}.log", progress, map=name)
         produced = source / f"{name}.map"
         if not produced.is_file():
             # bin/compbms only warns here, but a region without the map
             # cannot send it, so the deployment is refused instead.
             raise AdapterUnavailable(f"build_kixbms left no {name}.map for $PR/maps", _GAP_BUILD)
+        progress.begin(f"the move of map {name}", _GAP_BUILD)
         shutil.move(str(produced), str(target / produced.name))
         maps.append(name)
     return maps
@@ -675,16 +813,33 @@ def _move_compiler_output(source: Path, member: str, loadlib: Path) -> None:
 
 
 def _run_build(
-    commands: CommandSet, env: UniKixEnvironment, entry_id: str, log: Path, **values: str
+    commands: CommandSet,
+    env: UniKixEnvironment,
+    entry_id: str,
+    log: Path,
+    progress: _Progress,
+    **values: str,
 ) -> None:
-    """Run one build entry, append its outcome and output to ``log``, and
-    raise ``AdapterUnavailable`` with the entry's gap unless it exited 0.
-    ``check=False`` lets a failing compiler's output reach the log."""
+    """Run one build entry, capped at the seconds ``progress`` leaves, append
+    its outcome and output to ``log``, and raise ``AdapterUnavailable`` with
+    the entry's gap unless it exited 0. ``check=False`` lets a failing
+    compiler's output reach the log.
+
+    Every ``AdapterUnavailable`` names the entry, the member or map and
+    the log: one the entry raised itself (failed probe, process that could
+    not start, own ``timeout_s`` exceeded) keeps its gap and is the cause.
+    A ``ScenarioTimeout`` is logged and raised unchanged."""
+    subject = ", ".join(f"{name} {value}" for name, value in sorted(values.items()))
     try:
-        result = commands.run(entry_id, env, check=False, **values)
-    except AdapterUnavailable as exc:
-        _append_log(log, f"--- {entry_id} not run: {exc} ---\n")
+        result = progress.run(commands, entry_id, env, subject=subject, check=False, **values)
+    except ScenarioTimeout as exc:
+        _append_log(log, f"--- {entry_id} stopped at the scenario deadline: {exc} ---\n")
         raise
+    except AdapterUnavailable as exc:
+        _append_log(log, f"--- {entry_id} did not complete: {exc} ---\n")
+        raise AdapterUnavailable(
+            f"{entry_id} for {subject}: {exc.reason}; see logs/build/{log.name}", exc.gap_id
+        ) from exc
     _append_log(
         log,
         f"--- {entry_id} exit status {result.returncode} ---\n"
@@ -692,7 +847,6 @@ def _run_build(
         f"--- stderr ---\n{_terminated(result.stderr)}",
     )
     if result.returncode != 0:
-        subject = ", ".join(f"{name} {value}" for name, value in sorted(values.items()))
         raise AdapterUnavailable(
             f"{entry_id} exited {result.returncode} for {subject}; output in "
             f"logs/build/{log.name}",

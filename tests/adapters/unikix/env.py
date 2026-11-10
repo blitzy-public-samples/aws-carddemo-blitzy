@@ -494,7 +494,7 @@ class UniKixEnvironment:
 
     # ------------------------------------------------------ runtime scripts
 
-    def source_runtime_scripts(self) -> dict[str, str]:
+    def source_runtime_scripts(self, *, deadline_left: float | None = None) -> dict[str, str]:
         """Merge ``$KIXSYS/bin/userenv`` and then ``$EBMHOME/batchenv sys1``
         into ``vars``, as ``carddemo.env`` sources them once they exist.
 
@@ -520,7 +520,24 @@ class UniKixEnvironment:
         under that entry's own gap (GAP-MIS-006 for ``bpe_submit``,
         GAP-MIS-007 for the dataset and catalog entries), while it does not
         resolve inside the deployment root; the commands that do not use it
-        (region, listener, build) stay available."""
+        (region, listener, build) stay available.
+
+        ``deadline_left`` is the seconds left before the scenario deadline
+        when the caller has one; ``None`` bounds the sourcing by
+        ``SOURCE_TIMEOUT_S`` alone. With it, the sourcing is bounded by the
+        smaller of the two, and the deadline takes precedence as it does in
+        ``CommandSet.run``: ``ScenarioTimeout`` is raised when it has passed
+        before the bash starts, when it stopped the bash, and when it passed
+        while the bash ran, the ``AdapterUnavailable`` it supersedes kept as
+        its ``__cause__``. ``vars`` and ``generation`` are then unchanged."""
+        deadline: float | None = None
+        if deadline_left is not None:
+            if deadline_left <= 0:
+                raise ScenarioTimeout(
+                    "scenario deadline passed before the runtime scripts were sourced"
+                )
+            deadline = time.monotonic() + deadline_left
+        during = "the sourcing of the runtime scripts"
         start = dict(self._load_vars)
         start["COBCPY"] = self._load_inherited_cobcpy
         scripts = {
@@ -563,29 +580,53 @@ class UniKixEnvironment:
             # line above has created the deployment root if it had gone.
             project = start.get("PROJECT_ROOT", "")
             cwd = project if os.path.isdir(project) else str(self.deployment_root)
+            left = None if deadline is None else deadline - time.monotonic()
+            if left is not None and left <= 0:
+                raise ScenarioTimeout(
+                    "scenario deadline passed before the runtime scripts were sourced"
+                )
+            limit = float(SOURCE_TIMEOUT_S) if left is None else min(float(SOURCE_TIMEOUT_S), left)
+            deadline_capped = left is not None and left <= SOURCE_TIMEOUT_S
             try:
                 done = _run_process(
                     argv,
                     env=start,
                     cwd=cwd,
-                    timeout=SOURCE_TIMEOUT_S,
+                    timeout=limit,
                     spool_dir=str(self.log_dir),
                 )
             except OSError as exc:
-                raise AdapterUnavailable(
-                    f"cannot source the runtime scripts: {exc.strerror or exc}", first_gap
-                ) from None
+                _unavailable(
+                    AdapterUnavailable(
+                        f"cannot source the runtime scripts: {exc.strerror or exc}", first_gap
+                    ),
+                    deadline,
+                    during,
+                )
             snapshots = _snapshots(done.stdout)
             # One snapshot: the failure came before the mark, so from userenv.
             failed_key = "userenv" if len(snapshots) < 2 else "batchenv"
             failed_gap = _GAP_USERENV if failed_key == "userenv" else _GAP_BATCHENV
             if done.timed_out:
-                raise AdapterUnavailable(
-                    f"sourcing {scripts[failed_key]} exceeded {SOURCE_TIMEOUT_S}s", failed_gap
+                if deadline_capped:
+                    raise ScenarioTimeout(
+                        f"sourcing {scripts[failed_key]} was stopped at the scenario deadline "
+                        f"after {limit:.0f}s"
+                    )
+                _unavailable(
+                    AdapterUnavailable(
+                        f"sourcing {scripts[failed_key]} exceeded {SOURCE_TIMEOUT_S}s", failed_gap
+                    ),
+                    deadline,
+                    during,
                 )
             if done.returncode != 0 or len(snapshots) != 2:
-                raise AdapterUnavailable(
-                    f"sourcing {scripts[failed_key]} exited {done.returncode}", failed_gap
+                _unavailable(
+                    AdapterUnavailable(
+                        f"sourcing {scripts[failed_key]} exited {done.returncode}", failed_gap
+                    ),
+                    deadline,
+                    during,
                 )
             for key, gap, snapshot in (
                 ("userenv", _GAP_USERENV, snapshots[0]),
@@ -594,9 +635,19 @@ class UniKixEnvironment:
                 outside = self._outside_paths(snapshot)
                 if outside:
                     name, value = outside[0]
-                    raise AdapterUnavailable(
-                        f"{scripts[key]} moves {name} outside the deployment root: {value}", gap
+                    _unavailable(
+                        AdapterUnavailable(
+                            f"{scripts[key]} moves {name} outside the deployment root: {value}",
+                            gap,
+                        ),
+                        deadline,
+                        during,
                     )
+            if _expired(deadline):
+                raise ScenarioTimeout(
+                    f"scenario deadline passed during {during}; superseded: its exit status "
+                    f"{done.returncode}"
+                )
             merged = _settings(snapshots[1])
             self._inherited_cobcpy = merged.get("COBCPY", "")
             merged["COBCPY"] = _cobcpy(

@@ -75,20 +75,24 @@ entries:
   # Build (zip bin/compile, bin/compbms). MIGAPP_DIR is the writable staging copy
   # <deployment root>/staging/migrated_app, never the read-only zip extraction. COBCPY is
   # $COBCPY:$MIGAPP_DIR/cpy:$MIGAPP_DIR/cpy-bms:$UNIKIX/copy (bin/compile:19), set by env.py.
+  # VCOBOL_FLAGS, which bin/compile sets differently for online and batch, is set by build_kixclt's own
+  # command for kixclt alone, not by env.py.
   # ---------------------------------------------------------------------------------------------------------
   build_kixclt:
     action: translate a CICS program
-    command: 'kixclt {member}.cl2'
+    command: 'VCOBOL_FLAGS="-align=8 -dz -ef -cv -dv=0 -dcii -pt2 -ld -aa -ce=cpy:CPY -sp=$COBCPY" kixclt {member}.cl2'
     cwd: $MIGAPP_DIR/cbl
     probe: 'command -v kixclt'
     timeout_s: 300
     gap: GAP-MIS-008
     status: unconfirmed
-    source: zip bin/compile:25-31
+    source: zip bin/compile:19-21,25-31 (KIX_VCOBOL_ONLINE_FLAGS)
     notes: >-
       Translates the online program {member}.cl2 into {member}.cbl in the staging copy, which build_vcc_online
       then compiles; deploy.py deletes the translated {member}.cbl afterwards, as bin/compile:63-65 does. The
-      app/ sources themselves are not built on UniKix; the UniKix copy is (GAP-MIS-008).
+      command exports VCOBOL_FLAGS=$KIX_VCOBOL_ONLINE_FLAGS to kixclt, as bin/compile:26 does: the online
+      flags of bin/compile:21, the same list build_vcc_online passes to vcc, with -sp=$COBCPY. The app/
+      sources themselves are not built on UniKix; the UniKix copy is (GAP-MIS-008).
 
   build_vcc_online:
     action: compile a translated online program
