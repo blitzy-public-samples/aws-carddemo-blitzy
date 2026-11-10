@@ -1,0 +1,73 @@
+# Derived baseline of scenario CRD-COCRDLIC-alternate-03: USER0001 opens the
+# credit card list from main-menu option 3 and presses PF7 on its first page.
+# Authored from the source, never captured. Option 3 XCTLs to COCRDLIC with
+# context 0 [app/cbl/COMEN01C.cbl:145-155] [app/cpy/COMEN02Y.cpy:37-41], so
+# COCRDLIC starts on the first page and browses CARDDAT forward from the lowest
+# key [app/cbl/COCRDLIC.cbl:334-343,572-582,1123-1195]. On PF7 the filters and
+# selections come back blank, CA-FIRST-PAGE still holds, and the PF7-on-first-
+# page branch reads forward again from the page's first card, so the same seven
+# rows and page 1 are sent [app/cbl/COCRDLIC.cbl:439-454,1173-1181].
+# 1400-SETUP-MESSAGE moves 'NO PREVIOUS PAGES TO DISPLAY' (WS-ERROR-MSG X(75)
+# into ERRMSG X(78)); 1100-SCREEN-INIT left the information line at spaces and
+# that branch sets none, so INFOMSG stays blank [app/cbl/COCRDLIC.cbl:665-671,
+# 895-930]. Open until a UniKix run is imported: GAP-INF-006 (derived CRD
+# end-to-end baselines) and GAP-INF-012 (online-only copybooks). Derived, so no
+# datasets/.
+# One screen per step, each the screen shown after the step's AID: COMEN01
+# after sign-on, COCRDLI after option 3, COCRDLI after PF7. Steps 1 and 2 assert
+# only the map they land on, as the scenario does. Values are whole BMS fields
+# with their trailing spaces: the rows are the first seven CARDDATA records in
+# card-number order (CVACT02Y card 1-16, account 17-27, status 91); PAGENO is
+# the PIC 9(1) counter in a PIC X(3) field; ACCTSID, CARDSID and CRDSELn go out
+# as LOW-VALUES or spaces and show as spaces. CURDATE and CURTIME come from the
+# region clock and are matchers.
+screens:
+- '@map': 'COMEN01'
+  PGMNAME: 'COMEN01C'
+  TRNNAME: 'CM00'
+- '@map': 'COCRDLI'
+  PGMNAME: 'COCRDLIC'
+  TRNNAME: 'CCLI'
+- '@map': 'COCRDLI'
+  ACCTNO1: '00000000050'
+  ACCTNO2: '00000000027'
+  ACCTNO3: '00000000002'
+  ACCTNO4: '00000000020'
+  ACCTNO5: '00000000012'
+  ACCTNO6: '00000000044'
+  ACCTNO7: '00000000037'
+  ACCTSID: '           '
+  CARDSID: '                '
+  CRDNUM1: '0500024453765740'
+  CRDNUM2: '0683586198171516'
+  CRDNUM3: '0923877193247330'
+  CRDNUM4: '0927987108636232'
+  CRDNUM5: '0982496213629795'
+  CRDNUM6: '1014086565224350'
+  CRDNUM7: '1142167692878931'
+  CRDSEL1: ' '
+  CRDSEL2: ' '
+  CRDSEL3: ' '
+  CRDSEL4: ' '
+  CRDSEL5: ' '
+  CRDSEL6: ' '
+  CRDSEL7: ' '
+  CRDSTS1: 'Y'
+  CRDSTS2: 'Y'
+  CRDSTS3: 'Y'
+  CRDSTS4: 'Y'
+  CRDSTS5: 'Y'
+  CRDSTS6: 'Y'
+  CRDSTS7: 'Y'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: 'run-date'
+  CURTIME:
+    match: 'run-time'
+  ERRMSG: 'NO PREVIOUS PAGES TO DISPLAY                                                  '
+  INFOMSG: '                                             '
+  PAGENO: '1  '
+  PGMNAME: 'COCRDLIC'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: 'CCLI'

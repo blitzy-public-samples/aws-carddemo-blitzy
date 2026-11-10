@@ -1,0 +1,192 @@
+# Derived baseline of scenario ACT-COACTUPC-boundary-25 (capture_platform:
+# derived), authored from the app/ source and never observed: no TPE region
+# runs in CI. Open until a UniKix run of the app/ build is imported:
+# GAP-INF-005 (derived ACT end-to-end baselines) and GAP-INF-012 (online-only
+# copybooks such as CSUTLDPY and CSLKPCDY).
+# Steps 1-3: USER0001 signs on, option 2 XCTLs to COACTUPC, and ENTER with
+# account 00000000001 shows the fetched account and customer with the change
+# prompt [app/cbl/COACTUPC.cbl:2787-2865,2955-2981].
+# Step 4: 665 over ACTSSN1 is a change, so 1200-EDIT-MAP-INPUTS sets
+# ACUP-CHANGES-NOT-OK and edits every field; 1265-EDIT-US-SSN finds '665'
+# supplied, numeric and not zero, and it is none of INVALID-SSN-PART1 (VALUES
+# 0, 666, 900 THRU 999), so no SSN message is composed; every other field
+# passes on the invented customer, so ACUP-CHANGES-OK-NOT-CONFIRMED is set
+# [app/cbl/COACTUPC.cbl:117-123,1460-1676,2431-2489].
+# ENTER is not PF5, so 2000-DECIDE-ACTION continues without 9600-WRITE-
+# PROCESSING and nothing is rewritten; 3203 shows the received values, 3250
+# moves 'Changes validated.Press F5 to save' to INFOMSG and the blank
+# WS-RETURN-MSG to ERRMSG, and 3390 brightens F5=Save and F12=Cancel, which
+# are dark, and so captured as blanks, on the fetched screen
+# [app/cbl/COACTUPC.cbl:2602-2621,2870-2945,2955-2983,3566-3584].
+# This pins app/ behaviour: the UniKix COACTUPC changes the edits and the
+# change detection on this path (GAP-DOC-022), and its CSUTLDTC and CSUTLDPY
+# the date edits it passes (GAP-DOC-021, GAP-DOC-024); such a record is
+# UniKix-copy behaviour and never replaces this file.
+# Screen values are full BMS width with trailing spaces kept (ERRMSG 78,
+# INFOMSG 45), because screens compare exactly. CURDATE and CURTIME come from
+# the region clock, so they are matchers. file_state holds the records as the
+# preconditions materialize them, decoded through CVACT01Y and CVCUS01Y.
+file_state:
+  ACCTDATA:
+    contains:
+    - ACCT-ACTIVE-STATUS: Y
+      ACCT-CASH-CREDIT-LIMIT: '1020.00'
+      ACCT-CREDIT-LIMIT: '2020.00'
+      ACCT-CURR-BAL: '194.00'
+      ACCT-CURR-CYC-CREDIT: '0.00'
+      ACCT-CURR-CYC-DEBIT: '0.00'
+      ACCT-EXPIRAION-DATE: '2025-05-20'
+      ACCT-GROUP-ID: '          '
+      ACCT-ID: '1'
+      ACCT-OPEN-DATE: '2014-11-20'
+      ACCT-REISSUE-DATE: '2025-05-20'
+    count: 50
+  CUSTDATA:
+    contains:
+    - CUST-ADDR-COUNTRY-CD: USA
+      CUST-ADDR-LINE-1: '100 Test Street                                   '
+      CUST-ADDR-LINE-2: 'Suite 1                                           '
+      CUST-ADDR-LINE-3: 'Raleigh                                           '
+      CUST-ADDR-STATE-CD: NC
+      CUST-ADDR-ZIP: '27601     '
+      CUST-DOB-YYYY-MM-DD: '1961-06-08'
+      CUST-EFT-ACCOUNT-ID: 0053581756
+      CUST-FICO-CREDIT-SCORE: '700'
+      CUST-FIRST-NAME: 'Testfirst                '
+      CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+      CUST-ID: '1'
+      CUST-LAST-NAME: 'Testlast                 '
+      CUST-MIDDLE-NAME: 'Testmiddle               '
+      CUST-PHONE-NUM-1: '(919)555-0101  '
+      CUST-PHONE-NUM-2: '(919)555-0102  '
+      CUST-PRI-CARD-HOLDER-IND: Y
+      CUST-SSN: '123456789'
+    count: 50
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN002: '02. Account Update                      '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
+  ACSADL1: '100 Test Street                                   '
+  ACSADL2: 'Suite 1                                           '
+  ACSCITY: 'Raleigh                                           '
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
+  ACSFNAM: 'Testfirst                '
+  ACSGOVT: 'TESTGOVT0001        '
+  ACSHLIM: +      1,020.00
+  ACSLNAM: 'Testlast                 '
+  ACSMNAM: 'Testmiddle               '
+  ACSPFLG: Y
+  ACSPH1A: '919'
+  ACSPH1B: '555'
+  ACSPH1C: '0101'
+  ACSPH2A: '919'
+  ACSPH2B: '555'
+  ACSPH2C: '0102'
+  ACSSTTE: NC
+  ACSTFCO: '700'
+  ACSTNUM: '000000001'
+  ACSTTUS: Y
+  ACSZIPC: '27601'
+  ACTSSN1: '123'
+  ACTSSN2: '45'
+  ACTSSN3: '6789'
+  ACURBAL: +        194.00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  DOBDAY: 08
+  DOBMON: '06'
+  DOBYEAR: '1961'
+  ERRMSG: '                                                                              '
+  EXPDAY: '20'
+  EXPMON: '05'
+  EXPYEAR: '2025'
+  FKEY05: '       '
+  FKEY12: '          '
+  FKEYS: ENTER=Process F3=Exit
+  INFOMSG: 'Update account details presented above.      '
+  OPNDAY: '20'
+  OPNMON: '11'
+  OPNYEAR: '2014'
+  PGMNAME: COACTUPC
+  RISDAY: '20'
+  RISMON: '05'
+  RISYEAR: '2025'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP
+- '@map': COACTUP
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
+  ACSADL1: '100 Test Street                                   '
+  ACSADL2: 'Suite 1                                           '
+  ACSCITY: 'Raleigh                                           '
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
+  ACSFNAM: 'Testfirst                '
+  ACSGOVT: 'TESTGOVT0001        '
+  ACSHLIM: +      1,020.00
+  ACSLNAM: 'Testlast                 '
+  ACSMNAM: 'Testmiddle               '
+  ACSPFLG: Y
+  ACSPH1A: '919'
+  ACSPH1B: '555'
+  ACSPH1C: '0101'
+  ACSPH2A: '919'
+  ACSPH2B: '555'
+  ACSPH2C: '0102'
+  ACSSTTE: NC
+  ACSTFCO: '700'
+  ACSTNUM: '000000001'
+  ACSTTUS: Y
+  ACSZIPC: '27601'
+  ACTSSN1: '665'
+  ACTSSN2: '45'
+  ACTSSN3: '6789'
+  ACURBAL: +        194.00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  DOBDAY: 08
+  DOBMON: '06'
+  DOBYEAR: '1961'
+  ERRMSG: '                                                                              '
+  EXPDAY: '20'
+  EXPMON: '05'
+  EXPYEAR: '2025'
+  FKEY05: F5=Save
+  FKEY12: F12=Cancel
+  FKEYS: ENTER=Process F3=Exit
+  INFOMSG: 'Changes validated.Press F5 to save           '
+  OPNDAY: '20'
+  OPNMON: '11'
+  OPNYEAR: '2014'
+  PGMNAME: COACTUPC
+  RISDAY: '20'
+  RISMON: '05'
+  RISYEAR: '2025'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP

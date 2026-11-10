@@ -1,0 +1,12 @@
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDLI
+  ERRMSG: '                                                                              '
+  PGMNAME: COCRDLIC
+  TRNNAME: CCLI
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
