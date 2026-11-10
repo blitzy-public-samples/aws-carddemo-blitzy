@@ -1,0 +1,1104 @@
+# UniKix platform mapping of the `unikix` adapter.
+#
+# Scenarios name only logical datasets, the reserved observations, programs, jobs, transaction ids, AID keys
+# and BMS fields. This file is the only place that maps those names to the UniKix copy of CardDemo: logical
+# datasets to DSNs, clusters and files, alternate-index paths, region files, the JOBS queue, transactions and
+# jobs. tests/adapters/gnucobol_batch/programs.yaml and jobs.yaml are the gnucobol-batch counterparts.
+#
+# Readers
+#   harness/scenarios.py  capability: unikix can run a scenario when every job of its inputs.job is a key of
+#                         `jobs`, and every scenario with inputs.steps; a fault target may be a `region_files`
+#                         name.
+#   bpe.py                `datasets`, `aix_paths`, `jobs`, `region_files`, `tdq`: staging, loads, unloads,
+#                         @CATALOG, @AIX:<path>, job submission and the STEP lines of `messages`.
+#   tpe.py, adapter.py    `region_files` (reset, @REGION-FILES), `tdq`, `transactions`, every `cluster` to
+#                         reload before a scenario, and each job's member, procs, ctl and programs for the
+#                         source identity.
+#
+# Sources. The zip is samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip; it is read with zipfile, skipping
+# __MACOSX/, and is never extracted into the repository or modified.
+#   zip migrated_app/catlg/tpe/CATALOG.lst          cluster record and key lengths; alternate-index lines (A)
+#   zip migrated_app/catlg/tpe/fct.lst, pct.lst, dct.lst   region files, transactions, the JOBS queue
+#   zip migrated_app/catlg/bpe/BPECAT.cluster.csv, BPECAT.gdg_base.csv, BPECAT.nonvsam.csv   the BPE catalog
+#   zip migrated_app/jcl/*, proc/REPROC, proc/TRANREPT, ctl/REPROCT   jobs, steps, load models
+#   app/cbl/CORPT00C.cbl:84-127                     the TRNRPT00 job CORPT00C writes to JOBS
+#   app/csd/CARDDEMO.CSD:1-99,306-488,499-505       the CSD files, transactions and TDQ, for cross-checking
+#   app/catlg/LISTCAT.txt                           z/OS catalog attributes where they differ from BPECAT
+#
+# Conventions
+#   - Logical names are exactly the names of tests/fixtures/datasets.yaml. Each one is a key of `datasets`
+#     or of `not_mapped`, never both.
+#   - Key offsets are 0-based {offset, length}.
+#   - $KIXDATA, $SEQFILES, $PR and the other variables are expanded by env.py from the test-owned deployment
+#     root, so every path here lies inside it. A cluster is the pair $KIXDATA/<cluster>.dta and .idx.
+#   - qualifier: unique, at most 8 characters of A-Z0-9, beginning with a letter. bpe.py forms from it the
+#     test datasets CDTEST.STAGE.<qualifier>, which records are staged in, and CDTEST.UNLOAD.<qualifier>,
+#     which a dataset or alternate-index path is unloaded into.
+#   - Physical form: the zip's own data/seqfiles are fixed-length records without terminators (ACCTDATA.PS is
+#     15000 bytes, 50 x 300) although BPECAT.nonvsam.csv declares `line` for most of them; bpe.py writes
+#     fixtures in that same fixed-length form. The zip's data equal the cp037-decoded EBCDIC files, so they
+#     carry the GAP-DOC-012 and GAP-DOC-013 values; scenario fixtures always replace them (GAP-DOC-032).
+#   - GDG generations: a GDG dataset a scenario expects is the newest generation (0) when the scenario ends;
+#     a GDG precondition is created as a new generation (+1), so the job under test reads it as (0).
+#   - Nothing here is a write target under app/, samples/ or diagrams/.
+
+schema_version: 1
+
+# -------------------------------------------------------------------------------------------------------------
+# datasets: logical name -> UniKix dataset.
+#   kind cluster  dsn, cluster ($KIXDATA file name, CATALOG.lst), region_file (fct.lst), record_length, key,
+#                 aix (keys of aix_paths), qualifier, load_model (the copy member, or members, whose IDCAMS
+#                 statements bpe.py reuses), define_statements_from ({member, step} holding the DEFINE
+#                 CLUSTER statement) and, with aix, aix_statements_from ({member, steps} holding the DEFINE
+#                 ALTERNATEINDEX, DEFINE PATH and BLDINDEX statements). SDSF steps are never reused.
+#   kind nonvsam  dsn, path, record_length, bpe_format (the `record format` column of BPECAT.nonvsam.csv, or
+#                 null when BPECAT does not catalogue the dataset), catalogued_by, qualifier.
+#   kind gdg      dsn (the base), record_length, limit, empty, scratch, directory (BPECAT.gdg_base.csv),
+#                 qualifier.
+#   notes and gap_ids where the UniKix copy or its catalog disagree with another source.
+# -------------------------------------------------------------------------------------------------------------
+datasets:
+
+  # Clusters: CATALOG.lst P lines and BPECAT.cluster.csv.
+  ACCTDATA:
+    kind: cluster
+    dsn: AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS
+    cluster: ACCTDAT
+    region_file: ACCTDAT
+    record_length: 300
+    key: {offset: 0, length: 11}
+    aix: []
+    qualifier: ACCTDATA
+    load_model: jcl/ACCTFILE
+    define_statements_from: {member: jcl/ACCTFILE, step: STEP10}
+    gap_ids: [GAP-DOC-032]
+    notes: >-
+      The zip's data/vsam ACCTDAT holds the cp037-decoded EBCDIC records, whose record 49 ACCT-ADDR-ZIP is
+      ZEROAPR (GAP-DOC-012); fixtures replace it.
+
+  CARDDATA:
+    kind: cluster
+    dsn: AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS
+    cluster: CARDDAT
+    region_file: CARDDAT
+    record_length: 150
+    key: {offset: 0, length: 16}
+    aix: [CARDAIX]
+    qualifier: CARDDATA
+    load_model: jcl/CARDFILE
+    define_statements_from: {member: jcl/CARDFILE, step: STEP10}
+    aix_statements_from: {member: jcl/CARDFILE, steps: [STEP40, STEP50, STEP60]}
+
+  CARDXREF:
+    kind: cluster
+    dsn: AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS
+    cluster: CCXREF
+    region_file: CCXREF
+    record_length: 50
+    key: {offset: 0, length: 16}
+    aix: [CXACAIX]
+    qualifier: CARDXREF
+    load_model: jcl/XREFFILE
+    define_statements_from: {member: jcl/XREFFILE, step: STEP10}
+    aix_statements_from: {member: jcl/XREFFILE, steps: [STEP20, STEP25, STEP30]}
+
+  CUSTDATA:
+    kind: cluster
+    dsn: AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS
+    cluster: CUSTDAT
+    region_file: CUSTDAT
+    record_length: 500
+    key: {offset: 0, length: 9}
+    aix: []
+    qualifier: CUSTDATA
+    load_model: jcl/CUSTFILE
+    define_statements_from: {member: jcl/CUSTFILE, step: STEP10}
+
+  DISCGRP:
+    kind: cluster
+    dsn: AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS
+    cluster: DISCGRP
+    region_file: DISCGRP
+    record_length: 50
+    key: {offset: 0, length: 16}
+    aix: []
+    qualifier: DISCGRP
+    load_model: jcl/DISCGRP
+    define_statements_from: {member: jcl/DISCGRP, step: STEP10}
+    gap_ids: [GAP-DOC-030, GAP-DOC-032]
+    notes: >-
+      DISCGRP is a region file only in the copy's fct.lst (GAP-DOC-030). The zip's data/vsam DISCGRP holds the
+      cp037-decoded EBCDIC records, whose DEFAULT group rate in record 34 is 15.00 (GAP-DOC-013); fixtures
+      replace it.
+
+  TCATBALF:
+    kind: cluster
+    dsn: AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS
+    cluster: TCATBALF
+    region_file: TCATBALF
+    record_length: 50
+    key: {offset: 0, length: 17}
+    aix: []
+    qualifier: TCATBALF
+    load_model: jcl/TCATBALF
+    define_statements_from: {member: jcl/TCATBALF, step: STEP10}
+    gap_ids: [GAP-DOC-030]
+    notes: TCATBALF is a region file only in the copy's fct.lst (GAP-DOC-030).
+
+  TRANCATG:
+    kind: cluster
+    dsn: AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS
+    cluster: TRANCATG
+    region_file: TRANCATG
+    record_length: 60
+    key: {offset: 0, length: 6}
+    aix: []
+    qualifier: TRANCATG
+    load_model: jcl/TRANCATG
+    define_statements_from: {member: jcl/TRANCATG, step: STEP10}
+    gap_ids: [GAP-DOC-030]
+    notes: TRANCATG is a region file only in the copy's fct.lst (GAP-DOC-030).
+
+  TRANTYPE:
+    kind: cluster
+    dsn: AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS
+    cluster: TRANTYPE
+    region_file: TRANTYPE
+    record_length: 60
+    key: {offset: 0, length: 2}
+    aix: []
+    qualifier: TRANTYPE
+    load_model: jcl/TRANTYPE
+    define_statements_from: {member: jcl/TRANTYPE, step: STEP10}
+    gap_ids: [GAP-DOC-030]
+    notes: TRANTYPE is a region file only in the copy's fct.lst (GAP-DOC-030).
+
+  TRANSACT:
+    kind: cluster
+    dsn: AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS
+    cluster: TRANSACT
+    region_file: TRANSACT
+    record_length: 350
+    key: {offset: 0, length: 16}
+    aix: [TRANSAIX]
+    qualifier: TRANSACT
+    load_model: [jcl/TRANFILE, jcl/TRANIDX]
+    define_statements_from: {member: jcl/TRANFILE, step: STEP10}
+    aix_statements_from: {member: jcl/TRANIDX, steps: [STEP20, STEP25, STEP30]}
+    notes: >-
+      jcl/TRANFILE STEP20-STEP30 repeat the TRANIDX alternate-index statements; TRANIDX is the model because it
+      holds them alone.
+
+  TRXFL:
+    kind: cluster
+    dsn: AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS
+    cluster: TRXFL
+    region_file: TRXFL
+    record_length: 350
+    bpecat_record_size: 80
+    key: {offset: 0, length: 32}
+    aix: []
+    qualifier: TRXFL
+    load_model: jcl/CREASTMT
+    define_statements_from: {member: jcl/CREASTMT, step: DELDEF01}
+    gap_ids: [GAP-DOC-026, GAP-DOC-030]
+    notes: >-
+      CATALOG.lst gives 350/32 and the copy's DEFINE gives RECORDSIZE(350 350) KEYS(32 0), but
+      BPECAT.cluster.csv records a record size of 80; 350 is used and both values are recorded. The copy's
+      DEFINE adds FCTNAME(TRXFL), and its DELDEF01 step also deletes TRXFL.SEQ and sets MAXCC = 0; only the
+      DEFINE CLUSTER statement is reused (GAP-DOC-026). TRXFL is a region file only in the copy's fct.lst
+      (GAP-DOC-030).
+
+  USRSEC:
+    kind: cluster
+    dsn: AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS
+    cluster: USRSEC
+    region_file: USRSEC
+    record_length: 80
+    key: {offset: 0, length: 8}
+    aix: []
+    qualifier: USRSEC
+    load_model: jcl/DUSRSECJ
+    define_statements_from: {member: jcl/DUSRSECJ, step: STEP02}
+    notes: >-
+      The DEFINE is in STEP02 and the REPRO in STEP03; the copy's DEFINE keeps KEYS(8,0) RECORDSIZE(80,80)
+      REUSE and drops the TRACKS, FREESPACE and CISZ space parameters of app/jcl/DUSRSECJ.jcl.
+
+  # Non-VSAM sequential datasets: BPECAT.nonvsam.csv, file location $SEQFILES/<DSN>. The -PS twins hold the
+  # load jobs' input; datasets created by jobs are absent from BPECAT and from the zip's data.
+  ACCTDATA-PS:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.ACCTDATA.PS
+    path: $SEQFILES/AWS.M2.CARDDEMO.ACCTDATA.PS
+    record_length: 300
+    bpe_format: line
+    catalogued_by: BPECAT.nonvsam.csv
+    qualifier: ACCTPS
+
+  CARDDATA-PS:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.CARDDATA.PS
+    path: $SEQFILES/AWS.M2.CARDDEMO.CARDDATA.PS
+    record_length: 150
+    bpe_format: line
+    catalogued_by: BPECAT.nonvsam.csv
+    qualifier: CARDPS
+
+  CARDXREF-PS:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.CARDXREF.PS
+    path: $SEQFILES/AWS.M2.CARDDEMO.CARDXREF.PS
+    record_length: 50
+    bpe_format: line
+    catalogued_by: BPECAT.nonvsam.csv
+    qualifier: XREFPS
+
+  CUSTDATA-PS:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.CUSTDATA.PS
+    path: $SEQFILES/AWS.M2.CARDDEMO.CUSTDATA.PS
+    record_length: 500
+    bpe_format: line
+    catalogued_by: BPECAT.nonvsam.csv
+    qualifier: CUSTPS
+
+  DISCGRP-PS:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.DISCGRP.PS
+    path: $SEQFILES/AWS.M2.CARDDEMO.DISCGRP.PS
+    record_length: 50
+    bpe_format: line
+    catalogued_by: BPECAT.nonvsam.csv
+    qualifier: DISCPS
+
+  TCATBALF-PS:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.TCATBALF.PS
+    path: $SEQFILES/AWS.M2.CARDDEMO.TCATBALF.PS
+    record_length: 50
+    bpe_format: line
+    catalogued_by: BPECAT.nonvsam.csv
+    qualifier: TCATPS
+
+  TRANCATG-PS:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.TRANCATG.PS
+    path: $SEQFILES/AWS.M2.CARDDEMO.TRANCATG.PS
+    record_length: 60
+    bpe_format: line
+    catalogued_by: BPECAT.nonvsam.csv
+    qualifier: TCATGPS
+
+  TRANTYPE-PS:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.TRANTYPE.PS
+    path: $SEQFILES/AWS.M2.CARDDEMO.TRANTYPE.PS
+    record_length: 60
+    bpe_format: line
+    catalogued_by: BPECAT.nonvsam.csv
+    qualifier: TTYPEPS
+
+  USRSEC-PS:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.USRSEC.PS
+    path: $SEQFILES/AWS.M2.CARDDEMO.USRSEC.PS
+    record_length: 80
+    bpe_format: record
+    catalogued_by: BPECAT.nonvsam.csv
+    qualifier: USRSECPS
+    notes: DUSRSECJ deletes it in PREDEL and recreates it in STEP01 from its in-stream SYSUT1.
+
+  DALYTRAN:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.DALYTRAN.PS
+    path: $SEQFILES/AWS.M2.CARDDEMO.DALYTRAN.PS
+    record_length: 350
+    bpe_format: record
+    catalogued_by: BPECAT.nonvsam.csv
+    qualifier: DALYTRAN
+
+  TRANSACT-INIT:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.DALYTRAN.PS.INIT
+    path: $SEQFILES/AWS.M2.CARDDEMO.DALYTRAN.PS.INIT
+    record_length: 350
+    bpe_format: line
+    catalogued_by: BPECAT.nonvsam.csv
+    qualifier: TRANINIT
+
+  TRXFL-SEQ:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.TRXFL.SEQ
+    path: $SEQFILES/AWS.M2.CARDDEMO.TRXFL.SEQ
+    record_length: 350
+    bpe_format: record
+    catalogued_by: BPECAT.nonvsam.csv
+    qualifier: TRXFLSEQ
+    notes: >-
+      CREASTMT DELDEF01 deletes it and STEP010 recreates it with DISP=(NEW,CATLG,DELETE); the zip ships no
+      data for it.
+
+  STMTFILE:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.STATEMNT.PS
+    path: $SEQFILES/AWS.M2.CARDDEMO.STATEMNT.PS
+    record_length: 80
+    bpe_format: null
+    catalogued_by: jcl/CREASTMT STEP040
+    qualifier: STMTFILE
+    notes: >-
+      Not catalogued at deployment. CREASTMT STEP030 deletes any previous copy with DISP=(MOD,DELETE,DELETE)
+      and STEP040 creates it with DISP=(NEW,CATLG,DELETE), LRECL=80.
+
+  HTMLFILE:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.STATEMNT.HTML
+    path: $SEQFILES/AWS.M2.CARDDEMO.STATEMNT.HTML
+    record_length: 100
+    bpe_format: null
+    catalogued_by: jcl/CREASTMT STEP040
+    qualifier: HTMLFILE
+    notes: >-
+      Not catalogued at deployment. CREASTMT STEP030 deletes any previous copy (its DD there says LRECL=80) and
+      STEP040 creates it with DISP=(NEW,CATLG,DELETE), LRECL=100.
+
+  TCATBALF-REPT:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.TCATBALF.REPT
+    path: $SEQFILES/AWS.M2.CARDDEMO.TCATBALF.REPT
+    record_length: 40
+    bpe_format: null
+    catalogued_by: jcl/PRTCATBL STEP10R
+    qualifier: TCATREPT
+    notes: >-
+      Not catalogued at deployment. PRTCATBL DELDEF deletes any previous copy with DISP=(MOD,DELETE) and
+      STEP10R creates it with DISP=(NEW,CATLG,DELETE), LRECL=40.
+
+  DATEPARM:
+    kind: nonvsam
+    dsn: AWS.M2.CARDDEMO.DATEPARM
+    path: $SEQFILES/AWS.M2.CARDDEMO.DATEPARM
+    record_length: 80
+    bpe_format: null
+    catalogued_by: commands.yaml dataset_define_staging
+    qualifier: DATEPARM
+    gap_ids: [GAP-MIS-001, GAP-DOC-027]
+    notes: >-
+      No job or data file creates it, although the z/OS catalog lists it [app/catlg/LISTCAT.txt:818]. The
+      adapter catalogues it with LRECL 80 after deployment so that the copy's proc TRANREPT STEP10R DATEPARM DD
+      DSN=AWS.M2.CARDDEMO.DATEPARM resolves (GAP-MIS-001). The copy's jcl/TRANREPT reads in-stream dates
+      2022-01-01 2023-04-01 instead (GAP-DOC-027), and TRNRPT00 overrides it in-stream.
+
+  # GDG bases: BPECAT.gdg_base.csv. Generations are files in $SEQFILES.
+  DALYREJS:
+    kind: gdg
+    dsn: AWS.M2.CARDDEMO.DALYREJS
+    record_length: 430
+    limit: 5
+    empty: NOEMPTY
+    scratch: SCRATCH
+    directory: $SEQFILES
+    qualifier: DALYREJS
+
+  SYSTRAN:
+    kind: gdg
+    dsn: AWS.M2.CARDDEMO.SYSTRAN
+    record_length: 350
+    limit: 5
+    empty: NOEMPTY
+    scratch: SCRATCH
+    directory: $SEQFILES
+    qualifier: SYSTRAN
+
+  TRANSACT-BKUP:
+    kind: gdg
+    dsn: AWS.M2.CARDDEMO.TRANSACT.BKUP
+    record_length: 350
+    limit: 5
+    empty: NOEMPTY
+    scratch: SCRATCH
+    directory: $SEQFILES
+    qualifier: TRANBKUP
+    notes: The z/OS catalog defines this base NOSCRATCH [app/catlg/LISTCAT.txt:1631-1637]; BPECAT says SCRATCH.
+
+  TRANSACT-DALY:
+    kind: gdg
+    dsn: AWS.M2.CARDDEMO.TRANSACT.DALY
+    record_length: 350
+    limit: 5
+    empty: NOEMPTY
+    scratch: SCRATCH
+    directory: $SEQFILES
+    qualifier: TRANDALY
+    notes: The z/OS catalog defines this base NOSCRATCH [app/catlg/LISTCAT.txt:3021-3027]; BPECAT says SCRATCH.
+
+  TRANSACT-COMBINED:
+    kind: gdg
+    dsn: AWS.M2.CARDDEMO.TRANSACT.COMBINED
+    record_length: 350
+    limit: 5
+    empty: NOEMPTY
+    scratch: SCRATCH
+    directory: $SEQFILES
+    qualifier: TRANCOMB
+
+  TRANREPT:
+    kind: gdg
+    dsn: AWS.M2.CARDDEMO.TRANREPT
+    record_length: 133
+    limit: 5
+    empty: NOEMPTY
+    scratch: SCRATCH
+    directory: $SEQFILES
+    qualifier: TRANREPT
+    notes: >-
+      DEFGDGB and BPECAT give LIMIT(5); the REPTFILE job defines the same base with LIMIT(10) and without
+      SCRATCH.
+
+  TCATBALF-BKUP:
+    kind: gdg
+    dsn: AWS.M2.CARDDEMO.TCATBALF.BKUP
+    record_length: 50
+    limit: 5
+    empty: NOEMPTY
+    scratch: SCRATCH
+    directory: $SEQFILES
+    qualifier: TCATBKUP
+
+# Logical datasets with no UniKix counterpart, each with its reason. Only gnucobol-batch scenarios name them.
+not_mapped:
+  DTCIN: >-
+    The call list of the gnucobol-batch driver tests/stubs/DTCDRV.cbl, through which CSUTLDTC is called
+    standalone (GAP-STB-004). No UniKix job or program reads it.
+
+
+# -------------------------------------------------------------------------------------------------------------
+# aix_paths: keyed by the `path` of each alternate_keys entry in tests/fixtures/datasets.yaml, which is also the
+# name of the region file that opens the path and the suffix of the observation @AIX:<path>. dsn is the PATH
+# that an unload reads, in alternate-key order; aix_dsn the alternate index that loads delete and rebuild;
+# cluster the $KIXDATA file of the alternate index; record_length that of the base, for the unload file.
+# -------------------------------------------------------------------------------------------------------------
+aix_paths:
+
+  CARDAIX:
+    base: CARDDATA
+    dsn: AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX.PATH
+    aix_dsn: AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX
+    cluster: CARDAIX
+    region_file: CARDAIX
+    key: {offset: 16, length: 11}
+    duplicates: true
+    record_length: 150
+    qualifier: CARDAIX
+    notes: >-
+      CATALOG.lst A,KIXDATA,CARDDAT,KIXDATA,CARDAIX,00011,00016; DEFINE ALTERNATEINDEX KEYS(11 16) NONUNIQUEKEY
+      in jcl/CARDFILE STEP40; CSD DEFINE FILE(CARDAIX) DSNAME(AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX.PATH).
+
+  CXACAIX:
+    base: CARDXREF
+    dsn: AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH
+    aix_dsn: AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX
+    cluster: CXACAIX
+    region_file: CXACAIX
+    key: {offset: 25, length: 11}
+    duplicates: true
+    record_length: 50
+    qualifier: CXACAIX
+    notes: >-
+      CATALOG.lst A,KIXDATA,CCXREF,KIXDATA,CXACAIX,00011,00025; DEFINE ALTERNATEINDEX KEYS(11,25) NONUNIQUEKEY
+      in jcl/XREFFILE STEP20; CSD DEFINE FILE(CXACAIX) DSNAME(AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH). INTCALC
+      allocates the same path as XREFFIL1.
+
+  TRANSAIX:
+    base: TRANSACT
+    dsn: AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX.PATH
+    aix_dsn: AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX
+    cluster: TRANSAIX
+    region_file: TRANSAIX
+    key: {offset: 304, length: 26}
+    duplicates: true
+    record_length: 350
+    qualifier: TRANSAIX
+    gap_ids: [GAP-DOC-030]
+    notes: >-
+      DEFINE ALTERNATEINDEX KEYS(26 304) NONUNIQUEKEY in jcl/TRANIDX STEP20. CATALOG.lst has no A line for
+      TRANSAIX and the zip's data/vsam has no TRANSAIX files; only fct.lst names it, and the CSD defines no file
+      for it (GAP-DOC-030). The path is built by the load of TRANSACT.
+
+# -------------------------------------------------------------------------------------------------------------
+# region_files: the 14 fct.lst entries in file order. cluster is the fct.lst cluster column; dsn the dataset
+# the file opens (the CSD DSNAME for the CSD's 8, BPECAT.cluster.csv or the PATH for the others); aix the
+# fct.lst alternate-index flag; csd whether app/csd/CARDDEMO.CSD defines the file. The 6 files without a CSD
+# definition exist only in the UniKix copy (GAP-DOC-030). @REGION-FILES reports these 14.
+# -------------------------------------------------------------------------------------------------------------
+region_files:
+- name: ACCTDAT
+  cluster: ACCTDAT
+  dsn: AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS
+  aix: false
+  csd: true
+- name: CARDAIX
+  cluster: CARDAIX
+  dsn: AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX.PATH
+  aix: true
+  csd: true
+- name: CARDDAT
+  cluster: CARDDAT
+  dsn: AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS
+  aix: false
+  csd: true
+- name: CCXREF
+  cluster: CCXREF
+  dsn: AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS
+  aix: false
+  csd: true
+- name: CUSTDAT
+  cluster: CUSTDAT
+  dsn: AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS
+  aix: false
+  csd: true
+- name: CXACAIX
+  cluster: CXACAIX
+  dsn: AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH
+  aix: true
+  csd: true
+- name: DISCGRP
+  cluster: DISCGRP
+  dsn: AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS
+  aix: false
+  csd: false
+- name: TCATBALF
+  cluster: TCATBALF
+  dsn: AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS
+  aix: false
+  csd: false
+- name: TRANCATG
+  cluster: TRANCATG
+  dsn: AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS
+  aix: false
+  csd: false
+- name: TRANSACT
+  cluster: TRANSACT
+  dsn: AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS
+  aix: false
+  csd: true
+- name: TRANSAIX
+  cluster: TRANSAIX
+  dsn: AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX.PATH
+  aix: true
+  csd: false
+- name: TRANTYPE
+  cluster: TRANTYPE
+  dsn: AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS
+  aix: false
+  csd: false
+- name: TRXFL
+  cluster: TRXFL
+  dsn: AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS
+  aix: false
+  csd: false
+- name: USRSEC
+  cluster: USRSEC
+  dsn: AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS
+  aix: false
+  csd: true
+
+# The transient data queue CORPT00C writes its job to: dct.lst line 1, and the CSD's DEFINE TDQUEUE(JOBS)
+# TYPE(EXTRA) DDNAME(INREADER) RECORDSIZE(80) [app/csd/CARDDEMO.CSD:499-505]. On z/OS the queue feeds the
+# internal reader; on UniKix the records are observed as the job BPE receives (@TDQ:JOBS, GAP-MIS-017).
+tdq:
+  name: JOBS
+  definition: 'ED,JOBS,,,,JOB           ,80,Y,O'
+  record_length: 80
+  csd: true
+
+# -------------------------------------------------------------------------------------------------------------
+# transactions: the 18 pct.lst entries in file order, transaction id -> program. They equal the 18 CSD
+# TRANSACTION definitions [app/csd/CARDDEMO.CSD:306-488].
+# -------------------------------------------------------------------------------------------------------------
+transactions:
+  CA00: {program: COADM01C}
+  CAUP: {program: COACTUPC}
+  CAVW: {program: COACTVWC}
+  CB00: {program: COBIL00C}
+  CC00: {program: COSGN00C}
+  CCDL: {program: COCRDSLC}
+  CCLI: {program: COCRDLIC}
+  CCUP: {program: COCRDUPC}
+  CDV1:
+    program: COCRDSEC
+    activation: unreachable
+    gap_ids: [GAP-DOC-001]
+    notes: >-
+      COCRDSEC has no source in app/cbl or in the copy's migrated_app/cbl; pct.lst and ppt.lst define it as the
+      CSD does, so entering CDV1 cannot reach a program.
+  CM00: {program: COMEN01C}
+  CR00: {program: CORPT00C}
+  CT00: {program: COTRN00C}
+  CT01: {program: COTRN01C}
+  CT02: {program: COTRN02C}
+  CU00: {program: COUSR00C}
+  CU01: {program: COUSR01C}
+  CU02: {program: COUSR02C}
+  CU03: {program: COUSR03C}
+
+
+# -------------------------------------------------------------------------------------------------------------
+# jobs: the 29 jobs of app/jcl, run from the copy's members, and TRNRPT00, the job CORPT00C writes to JOBS.
+# The copy-only member MFCATLG1 is not a CardDemo job and is not listed. Keys are the scenario job names.
+#   member          the copy member (no extension), deployed to $PR/jcl/jmvs/<NAME>; null for TRNRPT00, which
+#                   bpe.py generates from `template`
+#   card_name       the job name on the member's JOB card, which BPE reports
+#   steps           every executed step in JCL order: {name, exec, proc?, cond?, parm?}. exec is the EXEC
+#                   operand of the executed step (PGM=<x>); proc the procedure the step comes from; cond and
+#                   parm verbatim. COND is evaluated by BPE, never by the adapter: a step BPE does not run
+#                   produces no STEP line.
+#   programs        the application programs the steps run (migrated_app/cbl/<P>.cbl), for the source
+#                   identity; utilities (IDCAMS, SORT, IEBGENER, IEFBR14) are the installation's
+#   procs, ctl      the copy's proc/<P> and ctl/<C> members the job uses
+#   region_actions  the CEMT SET FIL commands of the job's SDSF steps: {step, action: close|open, files}
+#
+# Step names are the names bpe.py writes in `messages` as STEP <name> RC <nnnn> or STEP <name> ABEND. A job
+# step keeps its own name; a step inside a procedure is named by the job step and every procedure step above
+# it, joined with dots (STEP05R.PRC001, STEP10.STEP01R.PRC001), even when the procedure has a single step.
+# These are the step names of tests/adapters/gnucobol_batch/jobs.yaml, so that both adapters write the same
+# STEP lines for the same job; bpe.py reports each step BPE ran under the name listed here, in this order.
+# Duplicate step names are kept as the JCL writes them (DEFCUST, TRANREPT; GAP-DEF-009).
+# -------------------------------------------------------------------------------------------------------------
+jobs:
+
+  ACCTFILE:
+    member: jcl/ACCTFILE
+    card_name: ACCTFILE
+    steps:
+    - {name: STEP05, exec: PGM=IDCAMS}
+    - {name: STEP10, exec: PGM=IDCAMS}
+    - {name: STEP15, exec: PGM=IDCAMS}
+    programs: []
+    procs: []
+    ctl: []
+    region_actions: []
+
+  CARDFILE:
+    member: jcl/CARDFILE
+    card_name: CARDFILE
+    steps:
+    - {name: CLCIFIL, exec: PGM=SDSF}
+    - {name: STEP05, exec: PGM=IDCAMS}
+    - {name: STEP10, exec: PGM=IDCAMS}
+    - {name: STEP15, exec: PGM=IDCAMS}
+    - {name: STEP40, exec: PGM=IDCAMS}
+    - {name: STEP50, exec: PGM=IDCAMS}
+    - {name: STEP60, exec: PGM=IDCAMS}
+    - {name: OPCIFIL, exec: PGM=SDSF}
+    programs: [SDSF]
+    procs: []
+    ctl: []
+    region_actions:
+    - {step: CLCIFIL, action: close, files: [CARDDAT, CARDAIX]}
+    - {step: OPCIFIL, action: open, files: [CARDDAT, CARDAIX]}
+    gap_ids: [GAP-DOC-031, GAP-MIS-011]
+    notes: &sdsf_noop >-
+      The copy's SDSF.cbl only displays DUMMY PROGRAM FOR SDSF and returns, so on UniKix the CEMT SET FIL
+      commands of the SDSF steps are never performed (GAP-DOC-031). The adapter controls region files through
+      commands.yaml instead and observes them through @REGION-FILES (GAP-MIS-011).
+
+  CBADMCDJ:
+    member: jcl/CBADMCDJ
+    card_name: CBADMCDJ
+    steps:
+    - {name: STEP1, exec: PGM=DFHCSDUP, parm: 'CSD(READWRITE),PAGESIZE(60),NOCOMPAT'}
+    programs: []
+    procs: []
+    ctl: []
+    region_actions: []
+    gap_ids: [GAP-MIS-016, GAP-DOC-017]
+    notes: >-
+      STEP1 runs the z/OS CICS utility DFHCSDUP from OEM.CICSTS.V05R06M0.CICS.SDFHLOAD against
+      OEM.CICSTS.DFHCSD; no UniKix equivalent is known (GAP-MIS-016). The test-owned region takes its resources
+      from the copy's catlg/tpe lists, installed at region creation, never from this job. The job defines
+      resources the CSD lacks (GAP-DOC-017).
+
+  CLOSEFIL:
+    member: jcl/CLOSEFIL
+    card_name: CLOSEFIL
+    steps:
+    - {name: CLCIFIL, exec: PGM=SDSF}
+    programs: [SDSF]
+    procs: []
+    ctl: []
+    region_actions:
+    - {step: CLCIFIL, action: close, files: [TRANSACT, CCXREF, ACCTDAT, CXACAIX, USRSEC]}
+    gap_ids: [GAP-DOC-031, GAP-MIS-011]
+    notes: *sdsf_noop
+
+  COMBTRAN:
+    member: jcl/COMBTRAN
+    card_name: COMBTRAN
+    steps:
+    - {name: STEP05R, exec: PGM=SORT}
+    - {name: STEP10, exec: PGM=IDCAMS}
+    programs: []
+    procs: []
+    ctl: []
+    region_actions: []
+    gap_ids: [GAP-DOC-029]
+    notes: >-
+      The copy's STEP05R SORTOUT has DCB=(LRECL=350,RECFM=FB,BLKSIZE=0) in place of DCB=(*.SORTIN)
+      (GAP-DOC-029).
+
+  CREASTMT:
+    member: jcl/CREASTMT
+    card_name: CREASTMT
+    steps:
+    - {name: DELDEF01, exec: PGM=IDCAMS}
+    - {name: STEP010, exec: PGM=SORT}
+    - {name: STEP020, exec: PGM=IDCAMS, cond: '(0,NE)'}
+    - {name: STEP030, exec: PGM=IEFBR14, cond: '(0,NE)'}
+    - {name: STEP040, exec: PGM=CBSTM03A, cond: '(0,NE)'}
+    programs: [CBSTM03A, CBSTM03B]
+    procs: []
+    ctl: []
+    region_actions: []
+    gap_ids: [GAP-DOC-026, GAP-DOC-020]
+    notes: >-
+      The copy's STEP010 sort is RECORD: KEYS=(263 16)(1 16) ARRANGE=(263 16)(1 262)(279 50)(22 '<22 spaces>')
+      ENDSORT: in place of SORT FIELDS=(263,16,CH,A,1,16,CH,A) with OUTREC, and DELDEF01 adds FCTNAME(TRXFL)
+      to the DEFINE (GAP-DOC-026). The copy's CBSTM03A has the PSA/TCB/TIOT walk commented out, so it writes
+      no Running JCL or DD lines (GAP-DOC-020). CBSTM03A calls CBSTM03B.
+
+  CUSTFILE:
+    member: jcl/CUSTFILE
+    card_name: CUSTFILE
+    steps:
+    - {name: CLCIFIL, exec: PGM=SDSF}
+    - {name: STEP05, exec: PGM=IDCAMS}
+    - {name: STEP10, exec: PGM=IDCAMS}
+    - {name: STEP15, exec: PGM=IDCAMS}
+    - {name: OPCIFIL, exec: PGM=SDSF}
+    programs: [SDSF]
+    procs: []
+    ctl: []
+    region_actions:
+    - {step: CLCIFIL, action: close, files: [CUSTDAT]}
+    - {step: OPCIFIL, action: open, files: [CUSTDAT]}
+    gap_ids: [GAP-DOC-031, GAP-MIS-011]
+    notes: *sdsf_noop
+
+  DALYREJS:
+    member: jcl/DALYREJS
+    card_name: DALYREJS
+    steps:
+    - {name: STEP05, exec: PGM=IDCAMS}
+    programs: []
+    procs: []
+    ctl: []
+    region_actions: []
+
+  DEFCUST:
+    member: jcl/DEFCUST
+    card_name: DEFCUST
+    steps:
+    - {name: STEP05, exec: PGM=IDCAMS}
+    - {name: STEP05, exec: PGM=IDCAMS}
+    programs: []
+    procs: []
+    ctl: []
+    region_actions: []
+    gap_ids: [GAP-DEF-009]
+    notes: >-
+      Both steps are named STEP05; the first deletes AWS.CCDA.CUSTDATA.CLUSTER and the second defines
+      AWS.CUSTDATA.CLUSTER (GAP-DEF-009).
+
+  DEFGDGB:
+    member: jcl/DEFGDGB
+    card_name: DEFGDGB
+    steps:
+    - {name: STEP05, exec: PGM=IDCAMS}
+    programs: []
+    procs: []
+    ctl: []
+    region_actions: []
+
+  DISCGRP:
+    member: jcl/DISCGRP
+    card_name: DISCGRP
+    steps:
+    - {name: STEP05, exec: PGM=IDCAMS}
+    - {name: STEP10, exec: PGM=IDCAMS}
+    - {name: STEP15, exec: PGM=IDCAMS}
+    programs: []
+    procs: []
+    ctl: []
+    region_actions: []
+
+  DUSRSECJ:
+    member: jcl/DUSRSECJ
+    card_name: DUSRSECJ
+    steps:
+    - {name: PREDEL, exec: PGM=IEFBR14}
+    - {name: STEP01, exec: PGM=IEBGENER}
+    - {name: STEP02, exec: PGM=IDCAMS}
+    - {name: STEP03, exec: PGM=IDCAMS}
+    programs: []
+    procs: []
+    ctl: []
+    region_actions: []
+
+  INTCALC:
+    member: jcl/INTCALC
+    card_name: INTCALC
+    steps:
+    - {name: STEP15, exec: PGM=CBACT04C, parm: '2022071800'}
+    programs: [CBACT04C]
+    procs: []
+    ctl: []
+    region_actions: []
+
+  OPENFIL:
+    member: jcl/OPENFIL
+    card_name: OEPNFIL
+    steps:
+    - {name: OPCIFIL, exec: PGM=SDSF}
+    programs: [SDSF]
+    procs: []
+    ctl: []
+    region_actions:
+    - {step: OPCIFIL, action: open, files: [TRANSACT, CCXREF, ACCTDAT, CXACAIX, USRSEC]}
+    gap_ids: [GAP-DOC-031, GAP-MIS-011]
+    notes: >-
+      The JOB card names the job OEPNFIL, as app/jcl/OPENFIL.jcl does. The copy's SDSF.cbl only displays DUMMY
+      PROGRAM FOR SDSF and returns, so on UniKix the CEMT SET FIL commands are never performed (GAP-DOC-031);
+      region files are observed through @REGION-FILES (GAP-MIS-011).
+
+  POSTTRAN:
+    member: jcl/POSTTRAN
+    card_name: POSTTRAN
+    steps:
+    - {name: STEP15, exec: PGM=CBTRN02C}
+    programs: [CBTRN02C]
+    procs: []
+    ctl: []
+    region_actions: []
+
+  PRTCATBL:
+    member: jcl/PRTCATBL
+    card_name: PRTCATBL
+    steps:
+    - {name: DELDEF, exec: PGM=IEFBR14}
+    - {name: STEP05R.PRC001, exec: PGM=IDCAMS, proc: REPROC}
+    - {name: STEP10R, exec: PGM=SORT}
+    programs: []
+    procs: [REPROC]
+    ctl: [REPROCT]
+    region_actions: []
+
+  READACCT:
+    member: jcl/READACCT
+    card_name: READACCT
+    steps:
+    - {name: STEP05, exec: PGM=CBACT01C}
+    programs: [CBACT01C]
+    procs: []
+    ctl: []
+    region_actions: []
+
+  READCARD:
+    member: jcl/READCARD
+    card_name: READCARD
+    steps:
+    - {name: STEP05, exec: PGM=CBACT02C}
+    programs: [CBACT02C]
+    procs: []
+    ctl: []
+    region_actions: []
+
+  READCUST:
+    member: jcl/READCUST
+    card_name: READCUST
+    steps:
+    - {name: STEP05, exec: PGM=CBCUS01C}
+    programs: [CBCUS01C]
+    procs: []
+    ctl: []
+    region_actions: []
+
+  READXREF:
+    member: jcl/READXREF
+    card_name: READXREF
+    steps:
+    - {name: STEP05, exec: PGM=CBACT03C}
+    programs: [CBACT03C]
+    procs: []
+    ctl: []
+    region_actions: []
+
+  REPTFILE:
+    member: jcl/REPTFILE
+    card_name: REPTFILE
+    steps:
+    - {name: STEP05, exec: PGM=IDCAMS}
+    programs: []
+    procs: []
+    ctl: []
+    region_actions: []
+    notes: >-
+      Defines the TRANREPT GDG base with LIMIT(10), where DEFGDGB and BPECAT.gdg_base.csv give LIMIT(5).
+
+  TCATBALF:
+    member: jcl/TCATBALF
+    card_name: TCATBALF
+    steps:
+    - {name: STEP05, exec: PGM=IDCAMS}
+    - {name: STEP10, exec: PGM=IDCAMS}
+    - {name: STEP15, exec: PGM=IDCAMS}
+    programs: []
+    procs: []
+    ctl: []
+    region_actions: []
+
+  TRANBKP:
+    member: jcl/TRANBKP
+    card_name: TRANBKP
+    steps:
+    - {name: STEP05R.PRC001, exec: PGM=IDCAMS, proc: REPROC}
+    - {name: STEP05, exec: PGM=IDCAMS}
+    - {name: STEP10, exec: PGM=IDCAMS, cond: '(4,LT)'}
+    programs: []
+    procs: [REPROC]
+    ctl: [REPROCT]
+    region_actions: []
+
+  TRANCATG:
+    member: jcl/TRANCATG
+    card_name: TRANCATG
+    steps:
+    - {name: STEP05, exec: PGM=IDCAMS}
+    - {name: STEP10, exec: PGM=IDCAMS}
+    - {name: STEP15, exec: PGM=IDCAMS}
+    programs: []
+    procs: []
+    ctl: []
+    region_actions: []
+
+  TRANFILE:
+    member: jcl/TRANFILE
+    card_name: TRANFILE
+    steps:
+    - {name: CLCIFIL, exec: PGM=SDSF}
+    - {name: STEP05, exec: PGM=IDCAMS}
+    - {name: STEP10, exec: PGM=IDCAMS}
+    - {name: STEP15, exec: PGM=IDCAMS}
+    - {name: STEP20, exec: PGM=IDCAMS}
+    - {name: STEP25, exec: PGM=IDCAMS}
+    - {name: STEP30, exec: PGM=IDCAMS}
+    - {name: OPCIFIL, exec: PGM=SDSF}
+    programs: [SDSF]
+    procs: []
+    ctl: []
+    region_actions:
+    - {step: CLCIFIL, action: close, files: [TRANSACT, CXACAIX]}
+    - {step: OPCIFIL, action: open, files: [TRANSACT, CXACAIX]}
+    gap_ids: [GAP-DOC-031, GAP-MIS-011]
+    notes: *sdsf_noop
+
+  TRANIDX:
+    member: jcl/TRANIDX
+    card_name: TRANIDX
+    steps:
+    - {name: STEP20, exec: PGM=IDCAMS}
+    - {name: STEP25, exec: PGM=IDCAMS}
+    - {name: STEP30, exec: PGM=IDCAMS}
+    programs: []
+    procs: []
+    ctl: []
+    region_actions: []
+
+  TRANREPT:
+    member: jcl/TRANREPT
+    card_name: TRANREPT
+    steps:
+    - {name: STEP05R.PRC001, exec: PGM=IDCAMS, proc: REPROC}
+    - {name: STEP05R, exec: PGM=SORT}
+    - {name: STEP10R, exec: PGM=CBTRN03C}
+    programs: [CBTRN03C]
+    procs: [REPROC]
+    ctl: [REPROCT]
+    region_actions: []
+    gap_ids: [GAP-DOC-027, GAP-DEF-009]
+    notes: >-
+      The copy's STEP05R sort is RECORD: INCLUDE=(305 10 GE '2022-01-01') AND (305 10 LE '2022-07-06')
+      KEYS=(263 16 UDEC) ENDSORT: with SORTOUT DCB=(LRECL=350,RECFM=FB,BLKSIZE=0), and STEP10R reads the
+      in-stream DATEPARM 2022-01-01 2023-04-01 in place of DSN=AWS.M2.CARDDEMO.DATEPARM (GAP-DOC-027). The proc
+      step and the sort step are both named STEP05R (GAP-DEF-009).
+
+  TRANTYPE:
+    member: jcl/TRANTYPE
+    card_name: TRANTYPE
+    steps:
+    - {name: STEP05, exec: PGM=IDCAMS}
+    - {name: STEP10, exec: PGM=IDCAMS}
+    - {name: STEP15, exec: PGM=IDCAMS}
+    programs: []
+    procs: []
+    ctl: []
+    region_actions: []
+
+  XREFFILE:
+    member: jcl/XREFFILE
+    card_name: XREFFILE
+    steps:
+    - {name: STEP05, exec: PGM=IDCAMS}
+    - {name: STEP10, exec: PGM=IDCAMS}
+    - {name: STEP15, exec: PGM=IDCAMS}
+    - {name: STEP20, exec: PGM=IDCAMS}
+    - {name: STEP25, exec: PGM=IDCAMS}
+    - {name: STEP30, exec: PGM=IDCAMS}
+    programs: []
+    procs: []
+    ctl: []
+    region_actions: []
+
+  # The job CORPT00C writes to JOBS for a report request: //STEP10 EXEC PROC=TRANREPT, with in-stream
+  # overrides of STEP05R.SYMNAMES and STEP10R.DATEPARM. It resolves the copy's proc TRANREPT, whose header
+  # reads //TRANREPT PROC and whose STEP01R calls EXEC REPROC, where app/proc/TRANREPT.prc reads //REPROC PROC
+  # and EXEC PROC=REPROC (GAP-DOC-028).
+  TRNRPT00:
+    generated: true
+    member: null
+    card_name: TRNRPT00
+    steps:
+    - {name: STEP10.STEP01R.PRC001, exec: PGM=IDCAMS, proc: REPROC}
+    - {name: STEP10.STEP05R, exec: PGM=SORT, proc: TRANREPT}
+    - {name: STEP10.STEP10R, exec: PGM=CBTRN03C, proc: TRANREPT}
+    programs: [CBTRN03C]
+    procs: [TRANREPT, REPROC]
+    ctl: [REPROCT]
+    region_actions: []
+    gap_ids: [GAP-DOC-028]
+    notes: >-
+      The copy's proc TRANREPT sorts with SORT FIELDS=(TRAN-CARD-NUM,A) and INCLUDE COND on the SYMNAMES, which
+      this job replaces in-stream, and writes TRANSACT.DALY with DCB=(LRECL=350,RECFM=FB,BLKSIZE=0) in place of
+      DCB=(*.SORTIN).
+    # The 80-column records CORPT00C writes to JOBS, in order [app/cbl/CORPT00C.cbl:84-127]. {start} and {end}
+    # are YYYY-MM-DD dates filled with str.format; bpe.py pads each record to 80 bytes. CORPT00C writes the
+    # /*EOF record too: its loop writes each record after testing it for /*EOF [app/cbl/CORPT00C.cbl:497-505].
+    template:
+    - "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,"
+    - "// NOTIFY=&SYSUID"
+    - "//*"
+    - "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')"
+    - "//*"
+    - "//STEP10 EXEC PROC=TRANREPT"
+    - "//*"
+    - "//STEP05R.SYMNAMES DD *"
+    - "TRAN-CARD-NUM,263,16,ZD"
+    - "TRAN-PROC-DT,305,10,CH"
+    - "PARM-START-DATE,C'{start}'"
+    - "PARM-END-DATE,C'{end}'"
+    - "/*"
+    - "//STEP10R.DATEPARM DD *"
+    - "{start} {end}"
+    - "/*"
+    - "/*EOF"
+
