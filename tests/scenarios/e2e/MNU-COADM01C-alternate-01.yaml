@@ -1,0 +1,60 @@
+# Admin menu option 1 of COADM01C. ADMIN001 signs on through CC00 and COSGN00C
+# routes the type 'A' user to COADM01C [app/cbl/COSGN00C.cbl:221-237], which
+# sends the COADM01 menu and returns with TRANSID CA00
+# [app/cbl/COADM01C.cbl:85-90,107-110]. Entering option '1'
+# runs CA00 again: PROCESS-ENTER-KEY right-justifies the option, checks it
+# against CDEMO-ADMIN-OPT-COUNT (4), and transfers control with XCTL to
+# CDEMO-ADMIN-OPT-PGMNAME(1) = 'COUSR00C', the 'User List (Security)' entry,
+# after setting CDEMO-PGM-CONTEXT to 0 [app/cbl/COADM01C.cbl:115-145]
+# [app/cpy/COADM02Y.cpy:20-27]. COUSR00C, entered for the first time, browses
+# USRSEC and sends COUSR00 with its own header, TRNNAME 'CU00' and PGMNAME
+# 'COUSR00C' [app/cbl/COUSR00C.cbl:36-37,114-119]. The user list rows belong to
+# the COUSR00C scenarios; this scenario asserts only the map the XCTL lands on.
+# The baseline is derived from the source: no TPE region runs in CI.
+id: MNU-COADM01C-alternate-01
+level: e2e
+type: alternate
+description: >-
+  ADMIN001 signs on, reaches the admin menu COADM01 and selects option 1 'User
+  List (Security)'. COADM01C transfers control to COUSR00C, whose user list
+  screen COUSR00 appears with transaction CU00 and program COUSR00C in its
+  header.
+inventory_ids:
+- INV-MNU-024  # COADM01C option 1 User List (Security) to COUSR00C (rule)
+- INV-MNU-002  # COADM01C program
+- INV-MNU-004  # COADM01 map, the admin menu the option is entered on
+- INV-USR-005  # COUSR00 map, the screen the XCTL lands on
+- INV-CFG-011  # CA00 transaction, under which the option is processed
+- INV-LAY-001  # COADM02Y copybook, the admin option table
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA passed with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, the common messages
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003  # menu (MNU) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user and COUSR00C browses the users on its
+    # first display.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '1'}
+    '@map': COADM01
+expected:
+  screens:
+  - '@map': COADM01
+  - '@map': COUSR00
+    TRNNAME: CU00
+    PGMNAME: COUSR00C

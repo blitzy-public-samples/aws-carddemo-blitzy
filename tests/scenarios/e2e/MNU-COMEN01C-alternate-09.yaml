@@ -1,0 +1,69 @@
+# USER0001 picks option 9 of the main menu and COMEN01C transfers control to
+# CORPT00C, which shows the Transaction Reports screen.
+# Step 1 signs on through CC00; COSGN00C routes the type-U user to COMEN01C,
+# which sends the COMEN01 menu (the sign-on and the full menu screen are
+# asserted by SEC-COSGN00C-normal-02, so only the map is pinned here).
+# Step 2 enters '9' in OPTION. The field is JUSTIFY=(RIGHT,ZERO), so it is
+# received as '09' [app/bms/COMEN01.bms:145-149]. PROCESS-ENTER-KEY takes 9 as
+# a valid option (numeric, not zero, not above CDEMO-MENU-OPT-COUNT 10) of user
+# type U whose program CORPT00C does not begin 'DUMMY', sets CDEMO-FROM-TRANID
+# CM00 and CDEMO-FROM-PROGRAM COMEN01C, zeroes CDEMO-PGM-CONTEXT and issues
+# XCTL to CORPT00C with the COMMAREA [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:21,74-78].
+# Because the context is zero, CORPT00C takes its first-entry path: it clears
+# its output map, puts the cursor on MONTHLY and sends CORPT00 with its own
+# transaction CR00 and program name CORPT00C in the header and WS-MESSAGE
+# (spaces) in ERRMSG [app/cbl/CORPT00C.cbl:163-181,556-580,609-628]. The blank
+# ERRMSG is what tells that path from a re-entry, which would receive the map
+# and process the ENTER key instead. Text values are whole fields at their BMS
+# length, trailing spaces kept.
+id: MNU-COMEN01C-alternate-09
+level: e2e
+type: alternate
+description: >-
+  Signed on as USER0001, the user enters option 9 'Transaction Reports' on the
+  COMEN01 main menu; COMEN01C transfers control to CORPT00C, whose first entry
+  shows the CORPT00 report-selection screen under transaction CR00 with no
+  message.
+inventory_ids:
+- INV-MNU-017  # COMEN01C option 9 Transaction Reports to CORPT00C (rule)
+- INV-MNU-001  # COMEN01C program
+- INV-MNU-003  # COMEN01 map, the input map of the option step
+- INV-RPT-002  # CORPT00 map, the screen the option lands on
+- INV-CFG-018  # CM00 transaction, the menu's pseudo-conversation the option is entered under
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA passed on the XCTL
+- INV-LAY-003  # COMEN02Y copybook, the menu option table
+- INV-LAY-005  # COTTL01Y copybook, copied by COMEN01C
+- INV-LAY-006  # CSDAT01Y copybook, copied by COMEN01C
+- INV-LAY-008  # CSMSG01Y copybook, copied by COMEN01C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003  # derived MNU end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+    aid: ENTER
+  - '@map': COMEN01
+    fields:
+      OPTION: '9'
+    aid: ENTER
+expected:
+  screens:
+  - '@map': COMEN01
+  - '@map': CORPT00
+    TRNNAME: 'CR00'
+    PGMNAME: 'CORPT00C'
+    ERRMSG: '                                                                              '

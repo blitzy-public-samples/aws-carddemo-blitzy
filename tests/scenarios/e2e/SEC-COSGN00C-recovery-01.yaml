@@ -1,0 +1,73 @@
+id: SEC-COSGN00C-recovery-01
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on with valid credentials while the region file USRSEC is
+  unavailable. CC00 starts COSGN00C, whose first send of the sign-on map reads no
+  file. On ENTER the program reads USRSEC by the upper-cased user id; the response
+  is neither NORMAL (0) nor NOTFND (13), so the WHEN OTHER branch sets the error
+  flag, moves 'Unable to verify the User ...' to the message, places the cursor on
+  the user id and sends the sign-on map again. No XCTL to a menu takes place
+  [app/cbl/COSGN00C.cbl:108-140,145-157,177-204,209-219,252-257]. The fault
+  (condition unavailable) closes or disables the region file; an adapter without
+  a confirmed region file control raises MissingPrerequisite under GAP-MIS-011.
+  The expected screen is derived from the source (GAP-INF-002).
+# The recovery message is the primary item, then the program, its map, the CC00
+# transaction and the CSD file the READ fails on, then the online-only copybooks
+# COSGN00C copies. CSUSR01Y and the USRSEC data file are left out: their lowest
+# executing level is the DUSRSECJ integration scenario.
+inventory_ids:
+- INV-SEC-009
+- INV-SEC-001
+- INV-SEC-002
+- INV-CFG-016
+- INV-CFG-008
+- INV-LAY-002
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-002
+- GAP-INF-012
+- GAP-MIS-011
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+  parameters:
+    clock_mode: relative
+  # after: 0 puts the file out of service before the only step. The unikix
+  # adapter otherwise applies an online fault after the first (sign-on) step,
+  # which this scenario does not have; the initial CC00 send reads no file, so
+  # the first USRSEC operation is the READ on ENTER.
+  faults:
+  - target: USRSEC
+    operation: read
+    condition: unavailable
+    after: 0
+inputs:
+  steps:
+  - transid: CC00
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+    aid: ENTER
+expected:
+  # Screen fields keep their full BMS length with trailing spaces: ERRMSG is 78
+  # characters, the titles 40. APPLID and SYSID come from the region (EXEC CICS
+  # ASSIGN) and are not asserted.
+  screens:
+  - '@map': COSGN00
+    TRNNAME: CC00
+    PGMNAME: COSGN00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    # The 8-character hh:mm:ss moved into the 9-character CURTIME field ends in a space.
+    CURTIME: {match: run-time, format: '%H:%M:%S '}
+    ERRMSG: 'Unable to verify the User ...                                                 '
+  messages:
+  - 'Unable to verify the User ...                                                 '

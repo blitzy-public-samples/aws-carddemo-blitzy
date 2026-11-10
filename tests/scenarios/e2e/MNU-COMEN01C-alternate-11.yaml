@@ -1,0 +1,74 @@
+# PF3 on the main menu. USER0001 signs on and COSGN00C transfers control to
+# COMEN01C with the COMMAREA, which sends map COMEN1A of mapset COMEN01 and
+# returns with TRANSID(CM00) [app/cbl/COSGN00C.cbl:235-239]
+# [app/cbl/COMEN01C.cbl:86-90,107-110]. PF3 restarts COMEN01C as a reentry:
+# EVALUATE EIBAID reaches WHEN DFHPF3, which moves 'COSGN00C' to
+# CDEMO-TO-PROGRAM, and RETURN-TO-SIGNON-SCREEN issues XCTL PROGRAM('COSGN00C')
+# with no COMMAREA [app/cbl/COMEN01C.cbl:92-98,170-177].
+#
+# COSGN00C therefore starts with EIBCALEN = 0, not as the reentry a COMMAREA
+# would make it: EIBAID still holds PF3, but the EIBCALEN test comes first, so
+# the 'Thank you for using CardDemo application...' branch is never evaluated.
+# It clears its output map to LOW-VALUES and sends a fresh sign-on screen with
+# the cursor on the user id [app/cbl/COSGN00C.cbl:75-83,145-157,177-204].
+#
+# Screen values are whole fields at their BMS length, trailing spaces kept,
+# because comparison never trims. USERID has no INITIAL, so the cleared field
+# shows as 8 spaces; ERRMSG receives the blank WS-MESSAGE. PASSWD is not
+# asserted: it is a dark field showing its BMS INITIAL '________'. APPLID and
+# SYSID come from EXEC CICS ASSIGN and name the region, so neither is asserted.
+id: MNU-COMEN01C-alternate-11
+level: e2e
+type: alternate
+description: >-
+  A regular user on the CardDemo main menu presses PF3. COMEN01C leaves the
+  menu and transfers control to the sign-on program COSGN00C without a
+  COMMAREA, so the user sees a fresh sign-on screen: its header (transaction
+  CC00, program COSGN00C, the two titles, the run date and time), an empty user
+  id and no message. COSGN00C does not take the PF3 as a request to end the
+  session, so no farewell text appears.
+# Primary item first, then the program, the maps the steps land on, the
+# transaction PF3 runs under, and the online-only copybooks COMEN01C copies.
+# CC00, USRSEC and COSGN00C's own items are verified by the SEC scenarios.
+inventory_ids:
+- INV-MNU-019  # COMEN01C PF3 return (rule)
+- INV-MNU-001  # COMEN01C program
+- INV-MNU-003  # COMEN01 map, shown after sign-on
+- INV-SEC-002  # COSGN00 map, the screen PF3 lands on
+- INV-CFG-018  # CM00 transaction, under which COMEN01C receives the PF3
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA and CDEMO-TO-PROGRAM
+- INV-LAY-003  # COMEN02Y copybook, the menu options of the first screen
+- INV-LAY-005  # COTTL01Y copybook, the menu titles
+- INV-LAY-006  # CSDAT01Y copybook, the menu date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COMEN01C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003  # the MNU end-to-end baselines are derived, never observed
+- GAP-INF-012  # the online-only copybooks are covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: PF3, fields: {}, '@map': COMEN01}
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COSGN00
+    TRNNAME: CC00
+    PGMNAME: COSGN00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    # CSDAT01Y gives CURDATE as mm/dd/yy. CURTIME is the 8-character hh:mm:ss
+    # moved to the 9-character CURTIMEO, which pads it with one space.
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S '}
+    USERID: '        '
+    ERRMSG: '                                                                              '

@@ -1,0 +1,77 @@
+id: MNU-COMEN01C-alternate-02
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on through CC00 and reaches the main menu, whose second line
+  offers option 2 'Account Update' of the COMEN02Y table
+  [app/cpy/COMEN02Y.cpy:31-35]. Entering '2' in OPTION and pressing ENTER runs
+  CM00: COMEN01C right-justifies and zero-fills the option to 02, finds it
+  within CDEMO-MENU-OPT-COUNT and of user type U, and, since the program name
+  does not begin 'DUMMY', moves CM00 and COMEN01C to CDEMO-FROM-TRANID and
+  CDEMO-FROM-PROGRAM, zeroes CDEMO-PGM-CONTEXT and transfers control (XCTL) to
+  COACTUPC [app/cbl/COMEN01C.cbl:115-156]. COACTUPC, entered from LIT-MENUPGM
+  without CDEMO-PGM-REENTER, takes its fresh-entry path and sends COACTUP from a
+  cleared output map: transaction CAUP and program COACTUPC, the account number
+  left blank, the search-key prompt 'Enter or update id of account to update'
+  in INFOMSG because CDEMO-PGM-ENTER is set, and an empty message line
+  [app/cbl/COACTUPC.cbl:964-972,2668-2702,2955-2983].
+# Primary item first, then the program, the maps the option step enters on and
+# lands on, the transaction that step runs, and the online-only copybooks
+# COMEN01C copies (CSUSR01Y is a batch copybook, covered by the batch levels).
+# The sign-on step only establishes the session: CC00, COSGN00, COSGN00C and the
+# USRSEC read are verified by the SEC-COSGN00C scenarios, and COACTUPC's own
+# items by the ACT-COACTUPC scenarios, so they are not listed here.
+inventory_ids:
+- INV-MNU-010
+- INV-MNU-001
+- INV-MNU-003
+- INV-ACT-004
+- INV-CFG-018
+- INV-LAY-002
+- INV-LAY-003
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+# GAP-DOC-025: the UniKix copy of COACTUP.bms drops the unnamed field at row 1,
+# columns 1-9, where the landing screen's TRNNAME is asserted, so a UniKix run
+# of this scenario never verifies the COACTUP map item while that entry is open.
+gap_ids:
+- GAP-INF-003
+- GAP-INF-012
+- GAP-DOC-025
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '2'
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. ACCTSID, left at LOW-VALUES, and the blank message
+# lines show as spaces.
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '

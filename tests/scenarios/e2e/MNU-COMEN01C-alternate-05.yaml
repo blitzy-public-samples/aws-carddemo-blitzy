@@ -1,0 +1,44 @@
+id: MNU-COMEN01C-alternate-05
+level: e2e
+type: alternate
+description: >-
+  USER0001 (user type U) signs on and reaches the main menu, which COMEN01C
+  sends on its first entry with its own transaction and program in the header
+  [app/cbl/COMEN01C.cbl:36-37,87-90,182-194,212-219]. Option 5 is a valid
+  number within CDEMO-MENU-OPT-COUNT, its table entry 'Credit Card Update' is
+  user type U and names COCRDUPC, so COMEN01C sets itself as the calling
+  program, zeroes CDEMO-PGM-CONTEXT and transfers control to COCRDUPC
+  [app/cpy/COMEN02Y.cpy:21,49-53] [app/cbl/COMEN01C.cbl:115-156]. COCRDUPC,
+  entered from the menu program, treats this as a fresh entry and sends its
+  card update screen with TRNNAME CCUP and PGMNAME COCRDUPC
+  [app/cbl/COCRDUPC.cbl:219-226,235-236,387-394,502-512,1052-1060,1324-1336].
+inventory_ids:
+- INV-MNU-013
+- INV-MNU-001
+- INV-MNU-003
+- INV-CRD-006
+- INV-CFG-018
+- INV-LAY-002
+- INV-LAY-003
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003
+- GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '5'}, '@map': COMEN01}
+expected:
+  screens:
+  - {'@map': COMEN01, TRNNAME: CM00, PGMNAME: COMEN01C}
+  - {'@map': COCRDUP, TRNNAME: CCUP, PGMNAME: COCRDUPC}
