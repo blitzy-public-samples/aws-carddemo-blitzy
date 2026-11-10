@@ -1,0 +1,126 @@
+# PF3 on the COTRN02 Add Transaction screen returns to the COMEN01C main menu.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00 and
+# COSGN00C XCTLs to COMEN01C, which sends the main menu and returns TRANSID
+# CM00 [app/cbl/COSGN00C.cbl:221-240] [app/cbl/COMEN01C.cbl:82-90,107-110].
+# Step 2: option '8' of the COMEN02Y table is 'Transaction Add', user type U,
+# program COTRN02C, so COMEN01C moves CM00 and COMEN01C to CDEMO-FROM-TRANID and
+# CDEMO-FROM-PROGRAM, zeroes CDEMO-PGM-CONTEXT and XCTLs to COTRN02C
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:67-72]. COTRN02C copies
+# the shorter COCOM01Y COMMAREA into its own, so the CDEMO-CT02-INFO extension
+# is padded with spaces and CDEMO-CT02-TRN-SELECTED is blank: on this first
+# entry it sets CDEMO-PGM-REENTER, moves LOW-VALUES to COTRN2AO, performs no
+# PROCESS-ENTER-KEY (so no file is read) and sends COTRN02 with its own CT02
+# and COTRN02C header and a blank ERRMSG, then returns with TRANSID CT02 and the
+# COMMAREA [app/cbl/COTRN02C.cbl:36-38,71-75,107-130,516-534,550-571].
+# Step 3: PF3 with nothing typed. CT02 starts COTRN02C with the re-entered
+# COMMAREA, so it receives the map and takes the DFHPF3 branch:
+# CDEMO-FROM-PROGRAM still holds COMEN01C, set by the menu's XCTL, and becomes
+# CDEMO-TO-PROGRAM (a blank FROM-PROGRAM would fall back to the same literal
+# 'COMEN01C'). RETURN-TO-PREV-SCREEN records CT02/COTRN02C as the caller, zeroes
+# CDEMO-PGM-CONTEXT and XCTLs to COMEN01C with the COMMAREA
+# [app/cbl/COTRN02C.cbl:131-143,500-512].
+# COMEN01C, entered with a COMMAREA whose context is zero, takes its first-entry
+# path: it clears its output map and sends the main menu afresh with its own
+# CM00 and COMEN01C header, the ten COMEN02Y options built as '<nn>. <name>' in
+# 40-character fields and WS-MESSAGE still spaces in ERRMSG
+# [app/cbl/COMEN01C.cbl:77-90,182-277] [app/cpy/COMEN02Y.cpy:21-84].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values are whole fields at their BMS length with trailing spaces kept:
+#   ERRMSG 78 on both COTRN02 and COMEN01, the titles and options 40
+#   [app/bms/COTRN02.bms] [app/bms/COMEN01.bms]; the titles are COTTL01Y's
+#   [app/cpy/COTTL01Y.cpy:17-22].
+# - CURDATE (mm/dd/yy) and CURTIME (hh:mm:ss, an 8-character field on both
+#   maps) come from the region clock through CSDAT01Y, hence the matchers and
+#   clock_mode relative.
+# - The adapter copies the ERRMSG of every step's screen into the message list,
+#   so the three blank ERRMSG values are the expected messages.
+# - The empty entry fields of screen 2 are not asserted: the first-entry content
+#   belongs to the other COTRN02C scenarios, and this one pins the PF3 return.
+id: TRN-COTRN02C-alternate-02
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, chooses main menu option 8 'Transaction Add' and lands on
+  the COTRN02C Add Transaction screen (CT02) with nothing pre-filled, then
+  presses PF3 without entering any transaction data. COTRN02C transfers control
+  back to the calling program COMEN01C, which shows the main menu (CM00) with
+  its ten options and no message.
+# Primary item first, then the program, the maps asserted, the transaction PF3
+# is processed under, and the online-only copybooks COTRN02C copies. The
+# sign-on step and the option step only establish the session: CC00, CM00,
+# COSGN00, COSGN00C, COMEN01C and USRSEC are verified by the SEC-COSGN00C and
+# MNU-COMEN01C scenarios, so they are not listed here. Neither the first entry
+# nor the PF3 branch issues a file command, so no CSD file is listed.
+inventory_ids:
+- INV-TRN-064  # COTRN02C PF3 return (navigation rule)
+- INV-TRN-003  # COTRN02C program
+- INV-TRN-006  # COTRN02 map, the screen PF3 is pressed on
+- INV-MNU-003  # COMEN01 map, the screen the XCTL lands on
+- INV-CFG-022  # CT02 transaction, under which PF3 is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose CDEMO-FROM-PROGRAM selects the PF3 target
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # online transaction (TRN) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001 from USRSEC. Nothing else on
+    # this path reads a file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '8'}
+    '@map': COMEN01
+  - aid: PF3
+    fields: {}
+    '@map': COTRN02
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    PGMNAME: COTRN02C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN001: '01. Account View                        '
+    OPTN002: '02. Account Update                      '
+    OPTN003: '03. Credit Card List                    '
+    OPTN004: '04. Credit Card View                    '
+    OPTN005: '05. Credit Card Update                  '
+    OPTN006: '06. Transaction List                    '
+    OPTN007: '07. Transaction View                    '
+    OPTN008: '08. Transaction Add                     '
+    OPTN009: '09. Transaction Reports                 '
+    OPTN010: '10. Bill Payment                        '
+    ERRMSG: '                                                                              '
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - '                                                                              '
