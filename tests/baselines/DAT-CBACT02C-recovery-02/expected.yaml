@@ -1,0 +1,21 @@
+# Derived baseline of DAT-CBACT02C-recovery-02, derived from
+# app/cbl/CBACT02C.cbl:71-174 and never observed: no adapter can fail a READ
+# after a successful OPEN (GAP-MIS-013), so capture.py refuses this scenario
+# and the expectation is inferred (GAP-INF-013); it has no datasets/ folder.
+# CARDFILE opens INPUT; the first READ returns record 1 of the repository
+# CARDDATA (card 0500024453765740, the lowest key), which the main loop shows
+# as its full 150-byte CARD-RECORD [app/cbl/CBACT02C.cbl:74-81,92-116]. The
+# second READ's io-error is taken as file status 30: numeric and not 9x, so
+# 9910-DISPLAY-IO-STATUS shows NNNN0030 [app/cbl/CBACT02C.cbl:161-174].
+# 9999-ABEND-PROGRAM calls CEE3ABD without parameters (GAP-DEF-001); the stub
+# ends the run, the adapter appends its marker last and reports return_code
+# null (GAP-STB-001). The close and 'END OF EXECUTION' lines are never reached.
+# Pinned, never corrected.
+messages:
+- START OF EXECUTION OF PROGRAM CBACT02C
+- '050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           '
+- ERROR READING CARDFILE
+- 'FILE STATUS IS: NNNN0030'
+- ABENDING PROGRAM
+- CARDDEMO-ABEND CEE3ABD
+return_code: null
