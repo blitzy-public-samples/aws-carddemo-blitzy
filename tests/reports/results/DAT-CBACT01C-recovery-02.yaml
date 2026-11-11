@@ -1,0 +1,17 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded: null
+evidence_path: tests/reports/results/DAT-CBACT01C-recovery-02.yaml
+execution_fingerprint: 20cf82228f6ae7d2fc70fc3525d37a60f8315b530113ae07625eb4d9dd9e68da
+execution_id: gnucobol-batch-1fce06f72724b43c
+gap_id: GAP-MIS-013
+reason: missing-prerequisite
+scenario_digest: f7bd44e49c4f332431675242a5165483cc6426b8b3a5c48c5e5031b97fed8f8f
+scenario_id: DAT-CBACT01C-recovery-02
+source_identity:
+  commit: e5efe25babd80bcd8653ae033cd2ea3ae0df2aa7
+  tree: app
+  units:
+    app/cbl/CBACT01C.cbl: 426cf9bd190b777104bb964e9d5a2929197ed7621f8b334f229ef12e60e63966
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+status: implemented-unexecuted
