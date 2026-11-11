@@ -17,26 +17,43 @@ Job scenarios (``inputs.job``, one job or a chain)
     ``expected`` names that exists at the end, a GDG logical as its newest
     generation.
 
-Observations: business datasets, ``@CATALOG`` and ``@AIX:<path>``, produced
-only when ``expected`` names them. Screens, ``@REGION-FILES`` and
-``@TDQ:JOBS`` need a UniKix region and are never produced here.
+Observations: business datasets, ``@CATALOG`` and ``@AIX:<path>``. Business
+datasets are read back on every run, whether or not ``expected`` names them,
+as the program and job paragraphs above describe, with every other dataset
+of the run that ``expected`` names and that exists. ``@CATALOG`` and
+``@AIX:<path>`` are produced only when ``expected`` names them, and an
+``@AIX:<path>`` whose path, alternate index or base cluster is not catalogued
+is omitted. Screens, ``@REGION-FILES`` and ``@TDQ:JOBS`` need a UniKix
+region and are never produced here.
 
 Faults: an ``open`` fault with condition ``unavailable`` leaves its dataset
 out, so the program's OPEN fails with status 35; every other fault raises
 ``MissingPrerequisite(need, "GAP-MIS-013")``, since nothing here injects a
-failure after a successful open.
+failure after a successful open. An ``open``/``unavailable`` fault is
+refused the same way when the run never needs its target. A program run
+needs only the logical and ``also_accepts`` names of the dds that the unit,
+or a unit it calls, opens INPUT, I-O or EXTEND: no SELECT in ``app/cbl`` is
+OPTIONAL, so such an OPEN fails on a missing file, while OPEN OUTPUT
+creates one. A job run needs only the datasets that a dd or IDCAMS command
+of its jobs uses. Every fault is refused before any dataset is laid out.
 
 Page zero (GAP-MIS-002): a scenario that runs CBSTM03A (a unit with a
 ``tiot`` in ``programs.yaml``), directly or as a step of its jobs, needs the
 page-zero shim. ``page0_probe`` from the build cache decides once per session
 whether page zero can be mapped; when it cannot, the scenario raises
-``AdapterUnavailable("page zero not mappable: ...", "GAP-MIS-002")``. The
-adapter only reads ``/proc/sys/vm/mmap_min_addr`` and never changes a kernel
-setting; that value alone is never taken as proof.
+``AdapterUnavailable(reason, "GAP-MIS-002")`` with the reason
+``page zero not mappable: <errno>; vm.mmap_min_addr=<n>``, ``<errno>`` the
+number the probe reports and ``<n>`` the minimum, each ``unknown`` when there
+is none. The adapter only reads ``/proc/sys/vm/mmap_min_addr`` and never
+changes a kernel setting; that value alone is never taken as proof.
 
 Session and state: the build (``build.ensure_built``) and the probe are
 session-level work, not scenario time, so ``prepare`` moves the scenario
-deadline on by the time they took. Everything a scenario writes lies in its
+deadline on by the time they took, whether they succeed or raise; a deadline
+already past when ``prepare`` began stays past. A missing or unsuitable
+toolchain (GAP-MIS-019) is a missing runtime: every scenario raises
+``AdapterUnavailable`` and ``build_key`` is ``None``; a failed build is a
+harness error, never a gap. Everything a scenario writes lies in its
 working directory; the build cache under ``<work root>/_build/`` is the only
 state shared between scenarios. Construction builds nothing, starts no
 process and creates no file or directory.
@@ -66,6 +83,7 @@ from adapters.base import (
     TDQ_JOBS,
     Adapter,
     AdapterUnavailable,
+    MissingPrerequisite,
     Result,
     required_observations,
 )
@@ -87,6 +105,7 @@ _GAP_PAGE_ZERO = "GAP-MIS-002"
 _GAP_UNIKIX = "GAP-MIS-009"
 _GAP_REGION_FILES = "GAP-MIS-011"
 _GAP_JOBS_CAPTURE = "GAP-MIS-017"
+_GAP_TOOLCHAIN = "GAP-MIS-019"
 
 _OBSERVATIONS = frozenset({BUSINESS_DATASETS, CATALOG, AIX_PREFIX + "*"})
 _SCREEN_NAMES = frozenset({SCREENS, SCREEN_MAP, SCREEN_TEXT})
@@ -132,7 +151,8 @@ def _read_mmap_min_addr() -> int | None:
 @dataclass(frozen=True)
 class _ProbeResult:
     """What ``page0_probe`` found. ``detail`` is its line, which carries no
-    path, date or duration; ``minimum`` the ``vm.mmap_min_addr`` in force."""
+    path, date or duration; ``errno`` the number that line starts with;
+    ``minimum`` the ``vm.mmap_min_addr`` in force."""
 
     ok: bool
     detail: str
@@ -141,9 +161,15 @@ class _ProbeResult:
 
     @property
     def reason(self) -> str:
-        cause = _PROBE_MINIMUM_RE.sub("", self.detail).strip() or self.detail
+        """The ``AdapterUnavailable`` reason of a failed probe,
+        ``page zero not mappable: <errno>; vm.mmap_min_addr=<n>``: ``<errno>``
+        is ``errno`` (``0`` for a misplaced mapping or a read-back mismatch)
+        and ``<n>`` is ``minimum``, each ``unknown`` when there is none (a
+        timeout, a signal before any line, no output). ``detail`` keeps the
+        probe's own words."""
+        shown_errno = self.errno if self.errno is not None else "unknown"
         shown = self.minimum if self.minimum is not None else "unknown"
-        return f"page zero not mappable: {cause}; vm.mmap_min_addr={shown}"
+        return f"page zero not mappable: {shown_errno}; vm.mmap_min_addr={shown}"
 
     def as_environment(self) -> dict[str, Any]:
         return {"ok": self.ok, "detail": self.detail, "errno": self.errno}
@@ -240,11 +266,17 @@ class GnuCOBOLBatchAdapter(Adapter):
 
     def _ensure_cache(self) -> tuple[_build.BuildCache, bool]:
         """The session's build cache and whether this call built or first
-        loaded it. ``BuildError`` propagates: a failed build is a harness
-        error, never a registered gap."""
+        loaded it. A missing or unsuitable toolchain
+        (``build.ToolchainUnavailable``) is a missing runtime:
+        ``AdapterUnavailable`` under GAP-MIS-019, so the scenario is
+        ``blocked``. Every other ``BuildError`` propagates: a failed build is
+        a harness error, never a registered gap."""
         with self._lock:
             self._build_attempted = True
-            cache = _build.ensure_built(self.repo_root, self.work_root)
+            try:
+                cache = _build.ensure_built(self.repo_root, self.work_root)
+            except _build.ToolchainUnavailable as exc:
+                raise AdapterUnavailable(str(exc), _GAP_TOOLCHAIN) from exc
             fresh = cache is not self._cache
             self._cache = cache
             self._build_key = cache.key
@@ -322,7 +354,9 @@ class GnuCOBOLBatchAdapter(Adapter):
 
     def warm_up(self) -> None:
         """Build the cache and run the page-zero probe now, before any
-        scenario deadline runs; ``prepare`` otherwise does both on first use."""
+        scenario deadline runs; ``prepare`` otherwise does both on first use.
+        Raises ``AdapterUnavailable`` (GAP-MIS-019) when the toolchain is
+        unavailable, and ``BuildError`` when the build fails."""
         cache, _ = self._ensure_cache()
         self._probe(cache)
 
@@ -378,8 +412,15 @@ class GnuCOBOLBatchAdapter(Adapter):
         scenario_id = _scenario_id(scenario)
         root = self._checked_workdir(workdir)
         started = time.monotonic()
-        cache, built = self._ensure_cache()
-        probe, probed = self._probe(cache) if self._needs_page_zero(scenario) else (None, False)
+        try:
+            cache, built = self._ensure_cache()
+            probe, probed = self._probe(cache) if self._needs_page_zero(scenario) else (None, False)
+        except BaseException:
+            # A build or probe that fails took session time as well, so what it
+            # raises keeps its own outcome (blocked, or failing with reason
+            # error) instead of a timeout; a deadline already past stays past.
+            self._extend_deadline(time.monotonic() - started)
+            raise
         if built or probed:
             # The build and the probe are session setup, not scenario time: the
             # scenario keeps its whole deadline, which harness/runner.py reads back.
@@ -428,6 +469,39 @@ class GnuCOBOLBatchAdapter(Adapter):
     ) -> None:
         unit_cfg = _jobs.unit_config(program)
         called = tuple(_jobs.called_configs(program))
+        # Leaving a dataset out fails an OPEN only for a dd of the run opened
+        # INPUT, I-O or EXTEND, under the names materialize_program tries (its
+        # logical, then its also_accepts): no SELECT in app/cbl is OPTIONAL, so
+        # such an OPEN ends with status 35, while OPEN OUTPUT creates the file.
+        # A target that only OUTPUT dds name, or that no dd names, cannot be
+        # provided, so it is refused before a dataset is laid out.
+        dds = _datasets.program_dds(unit_cfg, called)
+        opened = {
+            name
+            for _, dd in dds
+            if dd.get("open") != "output"
+            for name in [dd.get("logical"), *(dd.get("also_accepts") or [])]
+        }
+        created = {dd.get("logical") for _, dd in dds if dd.get("open") == "output"}
+        refused = sorted(left_out - opened)
+        if refused:
+            units = " or ".join([program, *(unit_cfg.get("calls") or [])])
+            unmapped = [name for name in refused if name not in created]
+            output_only = [name for name in refused if name in created]
+            them = "it" if len(refused) == 1 else "them"
+            causes = []
+            if unmapped:
+                named = ", ".join(unmapped) if output_only else them
+                causes.append(f"no DD of {units} maps {named}")
+            if output_only:
+                named = ", ".join(output_only) if unmapped else them
+                creates = "it" if len(output_only) == 1 else "them"
+                causes.append(f"{units} opens {named} only OUTPUT, which creates {creates}")
+            raise MissingPrerequisite(
+                f"open fault (unavailable) on {', '.join(refused)}: {', and '.join(causes)}, "
+                f"so leaving {them} out fails no OPEN of the run",
+                "GAP-MIS-013",
+            )
         store = state.store
         dd_paths = _datasets.materialize_program(
             unit_cfg, called, state.workdir, inputs_dir, faults, store=store
@@ -629,10 +703,16 @@ class GnuCOBOLBatchAdapter(Adapter):
 
     def build_key(self, scenario: Any = None) -> str | None:
         """The session build key: the content hash ``build.py`` names the
-        cache by, the same for every run of the same sources and toolchain."""
+        cache by, the same for every run of the same sources and toolchain.
+        ``None`` while the toolchain is unavailable, since nothing can be
+        built, so a scenario blocked under GAP-MIS-019 keeps that verdict and
+        its execution id; any other ``BuildError`` propagates."""
         with self._lock:
             if self._build_key is None:
-                self._build_key = _build.compute_build_key(self.repo_root)
+                try:
+                    self._build_key = _build.compute_build_key(self.repo_root)
+                except _build.ToolchainUnavailable:
+                    return None
             return self._build_key
 
     def environment(self) -> dict[str, Any] | None:

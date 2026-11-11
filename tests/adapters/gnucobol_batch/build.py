@@ -59,7 +59,10 @@ too, with the logs its compiles wrote, before the exception goes on or the
 signal is acted on; an on-demand profile is kept as
 ``profiles/<profile>.failed`` in either case. A ``.failed`` directory is never
 complete, so the next session rebuilds. A failed build is a harness error,
-never a gap.
+never a gap. A missing or unsuitable toolchain is not a failed build: the
+probe of ``cobc`` and ``cc`` raises ``ToolchainUnavailable`` before anything
+is written or compiled, and the adapter reports that missing runtime as
+``blocked`` under its registered gap.
 
 Indexed files. GnuCOBOL 3.2 with Berkeley DB keeps alternate key *i* in
 ``<file>.i``. ``OPEN INPUT`` fails with status 35 when a declared alternate's
@@ -159,6 +162,7 @@ __all__ = [
     "BuildCache",
     "BuildError",
     "KeyProfile",
+    "ToolchainUnavailable",
     "compute_build_key",
     "ensure_built",
     "profile_for",
@@ -244,9 +248,10 @@ class BuildError(HarnessError):
 
     ``unit`` names the compilation unit and ``log_path`` its compile log when
     the error comes from a compile, or ``CLOCKCHK`` and its probe log when the
-    clock probe failed; the failed build keeps both. The runner reports a
-    harness error as ``failing`` with reason ``error``; it is never turned
-    into a skip."""
+    clock probe failed; the failed build keeps both. A missing or unsuitable
+    toolchain is the subclass ``ToolchainUnavailable``; every other
+    ``BuildError`` is a harness error, which the runner reports as
+    ``failing`` with reason ``error`` and never turns into a skip."""
 
     def __init__(
         self, message: str, *, unit: str | None = None, log_path: Path | None = None
@@ -254,6 +259,15 @@ class BuildError(HarnessError):
         super().__init__(message)
         self.unit = unit
         self.log_path = log_path
+
+
+class ToolchainUnavailable(BuildError):
+    """The toolchain the build needs is absent or unsuitable: ``cobc`` is not
+    on ``PATH``, is not GnuCOBOL 3.2 or lacks the Berkeley DB indexed file
+    handler, no C compiler is on ``PATH``, or one of their version or
+    ``--info`` probes cannot run or exits non-zero. Nothing was compiled. It
+    is a missing runtime, which the adapter reports ``blocked`` under its
+    registered gap, not a harness error."""
 
 
 # --------------------------------------------------------------------------
@@ -1027,16 +1041,19 @@ class _Toolchain:
 
 
 def _tool_output(argv: Sequence[str], env: Mapping[str, str]) -> str:
+    """The stdout of one toolchain probe (``cobc --version``, ``cobc --info``,
+    ``cc --version``). A probe that cannot run or exits non-zero leaves the
+    toolchain unusable: ``ToolchainUnavailable``."""
     try:
         completed = subprocess.run(
             list(argv), env=dict(env), stdin=subprocess.DEVNULL, capture_output=True,
             timeout=_TOOL_PROBE_TIMEOUT_S, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise BuildError(f"cannot run {shlex.join(argv)}: {exc}. {_SETUP_HINT}") from None
+        raise ToolchainUnavailable(f"cannot run {shlex.join(argv)}: {exc}. {_SETUP_HINT}") from None
     if completed.returncode != 0:
         stderr = completed.stderr.decode("utf-8", "replace").strip()
-        raise BuildError(
+        raise ToolchainUnavailable(
             f"{shlex.join(argv)} exited {completed.returncode}: {stderr}. {_SETUP_HINT}"
         )
     return completed.stdout.decode("utf-8", "replace").strip()
@@ -1086,7 +1103,7 @@ def _probe_toolchain(
         return _TOOLCHAINS[memo_key]
     cobc = shutil.which("cobc", path=path)
     if cobc is None:
-        raise BuildError(f"cobc is not on PATH. {_SETUP_HINT}")
+        raise ToolchainUnavailable(f"cobc is not on PATH. {_SETUP_HINT}")
     cobc = os.path.abspath(cobc)
     # The probes run in the caller's environment: it is what lets cobc find
     # libcob, whose directory the compile environment then names explicitly.
@@ -1094,19 +1111,19 @@ def _probe_toolchain(
     cobc_version = _tool_output([cobc, "--version"], probe_env)
     first_line = cobc_version.splitlines()[0].strip() if cobc_version else ""
     if not _COBC_VERSION_RE.match(first_line):
-        raise BuildError(
+        raise ToolchainUnavailable(
             f"{cobc} reports {first_line!r}, but GnuCOBOL 3.2 is required. {_SETUP_HINT}"
         )
     info = _tool_output([cobc, "--info"], probe_env)
     if not _BDB_RE.search(info):
-        raise BuildError(
+        raise ToolchainUnavailable(
             f"{cobc} has no Berkeley DB indexed file handler ('indexed file handler : BDB' is "
             f"missing from cobc --info). {_SETUP_HINT}"
         )
     entries = _info_entries(info)
     cc = shutil.which("cc", path=path) or shutil.which("gcc", path=path)
     if cc is None:
-        raise BuildError(
+        raise ToolchainUnavailable(
             f"no C compiler (cc or gcc) is on PATH; the stubs and cobc need one. {_SETUP_HINT}"
         )
     cc = os.path.abspath(cc)

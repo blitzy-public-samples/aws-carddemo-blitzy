@@ -853,7 +853,10 @@ def unavailable_targets(faults: Iterable[Mapping[str, Any]] | None) -> set[str]:
     materialized nor catalogued, so the program's OPEN fails with status 35.
     The adapter refuses every other fault with ``MissingPrerequisite(...,
     "GAP-MIS-013")`` before preparing anything; one that still reaches this
-    module is refused the same way, never silently ignored."""
+    module is refused the same way, never silently ignored. A target the run
+    never needs (named by no INPUT, I-O or EXTEND dd of a program run, or used
+    by no dd or IDCAMS command of a job run) cannot be left out, and the
+    adapter and ``Catalog.seed`` refuse it the same way."""
     targets: set[str] = set()
     for fault in faults or ():
         if not isinstance(fault, Mapping):
@@ -2177,8 +2180,10 @@ class Catalog:
         A dataset an ``open``/``unavailable`` fault targets is neither
         materialized nor catalogued, and a precondition neither a dd nor an
         IDCAMS command of the jobs uses is ignored; both are logged in
-        ``evidence/catalog.yaml``. ``faults`` defaults to the scenario's
-        ``preconditions.faults``."""
+        ``evidence/catalog.yaml``. Leaving out a dataset the jobs never use
+        fails no OPEN, so such a fault raises ``MissingPrerequisite(...,
+        "GAP-MIS-013")`` before any GDG base or dataset is seeded. ``faults``
+        defaults to the scenario's ``preconditions.faults``."""
         jobs = _jobs_mapping(jobs_cfg)
         names = scenario_jobs(scenario)
         if not names:
@@ -2214,6 +2219,14 @@ class Catalog:
                         logical = mapping.logical_for(dsn)
                         if logical is not None:
                             used.add(logical)
+        unused = sorted(left_out - used)
+        if unused:
+            them = "it" if len(unused) == 1 else "them"
+            raise MissingPrerequisite(
+                f"open fault (unavailable) on {', '.join(unused)}: no dd or IDCAMS command of "
+                f"{', '.join(names)} uses {them}, so leaving {them} out fails no OPEN of the run",
+                "GAP-MIS-013",
+            )
         for name in sorted(referenced - defined):
             attributes = catalog.gdg_definitions.get(name)
             if attributes is None:
