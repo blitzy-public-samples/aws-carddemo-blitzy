@@ -492,7 +492,9 @@ def _tiot_environment(
 ) -> dict[str, str]:
     """The shim's environment, for the unit ``programs.yaml`` gives a
     ``tiot`` (CBSTM03A): ``LD_PRELOAD`` applies to every process started with
-    it, so no other unit gets it. ``LD_PRELOAD`` names the shim relative to
+    it, so no other unit gets it. The job, the step and each ddname must be a
+    JCL name, refused otherwise, because the shim puts them into the TIOT
+    CBSTM03A DISPLAYs. ``LD_PRELOAD`` names the shim relative to
     ``root``, the run's ``cwd``, because ld.so splits it at every space and
     colon, which the work root's path may hold; a relative path that still
     holds one is refused."""
@@ -508,17 +510,17 @@ def _tiot_environment(
     if not isinstance(chosen, Mapping):
         raise HarnessError(f"the tiot of {unit} must be a mapping of job, step and dds")
     job, step, dds = chosen.get("job"), chosen.get("step"), chosen.get("dds")
+    rule = "a JCL name (1-8 characters of A-Z, 0-9, #, @ or $, not starting with a digit)"
     for what, value in (("job", job), ("step", step)):
-        if not isinstance(value, str) or not value or "," in value:
-            raise HarnessError(f"the tiot {what} of {unit} must be a name, got {value!r}")
-    if (
-        not isinstance(dds, list)
-        or not dds
-        or not all(isinstance(name, str) and name and "," not in name for name in dds)
-    ):
+        if not isinstance(value, str) or not _DDNAME_RE.fullmatch(value):
+            raise HarnessError(f"the tiot {what} of {unit} must be {rule}, got {value!r}")
+    if not isinstance(dds, list) or not dds:
         raise HarnessError(
             f"the tiot dds of {unit} must be a non-empty list of ddnames, got {dds!r}"
         )
+    for name in dds:
+        if not isinstance(name, str) or not _DDNAME_RE.fullmatch(name):
+            raise HarnessError(f"each tiot dd of {unit} must be {rule}, got {name!r}")
     shim = os.path.relpath(os.path.realpath(cache.shim), root)
     if os.sep not in shim:
         shim = os.path.join(os.curdir, shim)  # without a slash ld.so would search for the name
@@ -630,8 +632,8 @@ def run_program(
     libcob reads it. ``parm`` is the PARM text of a ``parmdrv`` unit and is
     ignored by the others, as z/OS passes a PARM a program never reads.
     ``ceedays_feedback`` is the 4-hex-digit token the ``CEEDAYS`` stub
-    returns instead of computing one. ``tiot`` (``{job, step, dds}``)
-    overrides the ``programs.yaml`` ``tiot`` of the unit that has one.
+    returns instead of computing one. ``tiot`` (``{job, step, dds}``, all
+    JCL names) overrides the ``programs.yaml`` ``tiot`` of the unit that has one.
     ``evidence_dir`` (default ``<workdir>/evidence``) receives
     ``stdout.txt``, ``stderr.txt`` and ``command.yaml``, also when the
     deadline kills the run.

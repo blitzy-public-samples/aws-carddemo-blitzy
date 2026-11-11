@@ -1619,6 +1619,21 @@ LAUNCH_SEPARATOR_ROOTS = [
 ]
 LAUNCH_CC_TIMEOUT_S = 120
 
+# Names no JCL name can be, put in CBSTM03A's programs.yaml tiot as its job,
+# its step or an added ddname: the shim would copy them into the TIOT whose
+# names CBSTM03A DISPLAYs, splitting, forging or truncating message lines.
+LAUNCH_BAD_TIOT_NAMES = [
+    pytest.param("dds", "\nlibcob:", id="dd-newline-libcob-prefix"),
+    pytest.param("dds", "A\nCARDDEMO-ABEND CEE3ABD", id="dd-newline-abend-marker"),
+    pytest.param("dds", "AB\x00CD", id="dd-nul"),
+    pytest.param("dds", "VERYLONGDDNAME16", id="dd-over-8-characters"),
+    pytest.param("job", "CREA\x1bSTMT", id="job-escape"),
+    pytest.param("step", "ST\nEP040", id="step-newline"),
+    pytest.param("step", "STEP040\r", id="step-carriage-return"),
+    pytest.param("dds", "sysout", id="dd-lowercase"),
+    pytest.param("step", "1STEP", id="step-leading-digit"),
+]
+
 # Runs that end as the program ended: stderr ({workdir} is the working
 # directory), exit status, then return code, abended, and the libcob_error
 # command.yaml shows. CBACT01C's OPEN and its other file verbs check a FILE
@@ -1705,16 +1720,19 @@ def _launch_case(launch_root: Path, work_root_name: str) -> tuple[_LaunchCache, 
     return _LaunchCache(work_root), workdir
 
 
-def _launch(cache: _LaunchCache, unit: str, workdir: Path) -> jobs.ProgramOutcome:
+def _launch(
+    cache: _LaunchCache, unit: str, workdir: Path, *, tiot: Mapping[str, object] | None = None
+) -> jobs.ProgramOutcome:
     """Run ``unit`` with a path in ``<workdir>/data`` for every dd it and the
-    units it calls declare, none of which exists."""
+    units it calls declare, none of which exists, and ``tiot`` when given."""
     config = jobs.unit_config(unit)
     dd_paths = {
         ddname: workdir / "data" / ddname
         for ddname, _ in datasets.program_dds(config, jobs.called_configs(unit))
     }
     return jobs.run_program(
-        cache, unit, dd_paths, workdir=workdir, deadline=time.monotonic() + LAUNCH_DEADLINE_S
+        cache, unit, dd_paths, workdir=workdir, deadline=time.monotonic() + LAUNCH_DEADLINE_S,
+        tiot=tiot,
     )
 
 
@@ -1815,6 +1833,21 @@ def test_run_program_refuses_a_shim_path_ld_so_would_split(
     cache = _LaunchCache(launch_root / cache_root_name)
     with pytest.raises(HarnessError, match="at which ld.so splits LD_PRELOAD"):
         _launch(cache, "CBSTM03A", workdir)
+    assert not (workdir / jobs.EVIDENCE_SUBDIR).exists()
+
+
+@pytest.mark.parametrize(("field", "name"), LAUNCH_BAD_TIOT_NAMES)
+def test_run_program_refuses_a_tiot_name_that_is_no_jcl_name(
+    launch_root: Path, field: str, name: str
+) -> None:
+    """A job, step or ddname for the TIOT that is no JCL name is refused
+    unrun, the error showing it escaped."""
+    cache, workdir = _launch_case(launch_root, LAUNCH_WORK_ROOT)
+    tiot = dict(jobs.unit_config("CBSTM03A")["tiot"])
+    tiot[field] = [*tiot["dds"], name] if field == "dds" else name
+    with pytest.raises(HarnessError, match="must be a JCL name") as refusal:
+        _launch(cache, "CBSTM03A", workdir, tiot=tiot)
+    assert repr(name) in str(refusal.value)
     assert not (workdir / jobs.EVIDENCE_SUBDIR).exists()
 
 
