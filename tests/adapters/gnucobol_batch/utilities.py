@@ -41,7 +41,7 @@ Contract with the job driver
     as uncatalogued in the catalog evidence.
     ``UtilityResult.created`` names the catalog entries the step added (IDCAMS
     ``DEFINE`` and ``DISP=CATLG``) and ``deleted`` the ones it removed (IDCAMS
-    ``DELETE``, ``DISP=DELETE`` and generations rolled off).
+    ``DELETE``, ``DISP=DELETE``, ``DISP=UNCATLG`` and generations rolled off).
 
 Output
     The utility's message dataset (SYSPRINT; SYSOUT for SORT; ISFOUT for
@@ -463,11 +463,12 @@ def apply_normal_dispositions(
     ``CATLG`` catalogues a dataset the step wrote: a relative generation as
     its generation (rolling off the oldest past the GDG ``LIMIT``), any other
     as ``NONVSAM``. ``DELETE`` removes it from the catalog and the store.
-    ``UNCATLG`` drops the entry and keeps the file. ``KEEP`` and ``PASS``
-    change nothing; a new dataset kept that way stays uncatalogued. An
-    omitted disposition is ``DELETE`` for a new dataset and ``KEEP``
-    otherwise, as in JCL. The abnormal-termination subparameter is never
-    applied: the job driver applies no disposition to a step that abends.
+    ``UNCATLG`` drops the entry, keeps the file and reports the name as
+    removed. ``KEEP`` and ``PASS`` change nothing; a new dataset kept that
+    way stays uncatalogued. An omitted disposition is ``DELETE`` for a new
+    dataset and ``KEEP`` otherwise, as in JCL. The abnormal-termination
+    subparameter is never applied: the job driver applies no disposition to
+    a step that abends.
 
     The call is idempotent, so the driver may apply the dispositions of a
     step ``run_utility`` already applied."""
@@ -492,6 +493,10 @@ def apply_normal_dispositions(
                     catalog.note_uncatalogued(
                         resolved.dsn, resolved.path, f"DISP=UNCATLG in step {bound.step_name}"
                     )
+                    catalog.log.append(
+                        f"step {bound.step_name}: uncatalogued {resolved.dsn} (DISP=UNCATLG)"
+                    )
+                    deleted.append(resolved.dsn)
             elif (
                 resolved.is_new
                 and resolved.dsn is not None
@@ -616,11 +621,13 @@ def _fit(record: bytes, length: int) -> bytes:
 
 
 def _split(data: bytes, length: int | None, shown: str) -> list[bytes]:
+    """The ``length``-byte records of ``data``, framed by ``codec.split_records``."""
     if length is None:
         raise UtilityError(f"{shown} has no known record length")
-    if len(data) % length:
-        raise UtilityError(f"{shown} holds {len(data)} bytes, not whole {length}-byte records")
-    return [data[start : start + length] for start in range(0, len(data), length)]
+    try:
+        return codec.split_records(data, length, dataset=shown)
+    except codec.CodecError as exc:
+        raise UtilityError(str(exc)) from exc
 
 
 def _instream_records(resolved: ResolvedDD) -> list[bytes]:
@@ -1795,7 +1802,7 @@ def _expand(tokens: Iterable[str], symbols: Mapping[str, Symbol]) -> list[str]:
 
 
 def _number_token(tokens: Sequence[str], index: int, what: str, where: str) -> int:
-    if index >= len(tokens) or not tokens[index].isdigit() or int(tokens[index]) == 0:
+    if index >= len(tokens) or not tokens[index].isdecimal() or int(tokens[index]) == 0:
         found = tokens[index] if index < len(tokens) else "nothing"
         raise UtilityError(f"{where}: {what} must be a positive number, found {found}")
     return int(tokens[index])
@@ -1996,7 +2003,8 @@ def _sort_statements(lines: Iterable[Any], where: str) -> list[tuple[str, str]]:
     """``(operation, operand)`` of each control statement. Column 1 holds a
     label, a line starting with ``*`` is a comment, the operand ends at the
     first blank outside quotes, and an operand ending in a comma continues
-    on the next line."""
+    on the next line. A label without an operation raises ``UtilityError``,
+    except after ``END``, whose following cards ``parse_sort`` ignores."""
     statements: list[tuple[str, str]] = []
     pending: tuple[str, str] | None = None
     for number, raw in enumerate(lines, start=1):
@@ -2008,10 +2016,16 @@ def _sort_statements(lines: Iterable[Any], where: str) -> list[tuple[str, str]]:
         if pending is not None:
             pending = (pending[0], pending[1] + _first_field(line.lstrip()))
         else:
-            body = line if line.startswith(" ") else line.partition(" ")[2]
+            label, _, labelled = line.partition(" ")
+            body = line if line.startswith(" ") else labelled
             operation, _, rest = body.strip().partition(" ")
             if not operation:
-                continue
+                if any(statement[0] == "END" for statement in statements):
+                    continue
+                raise UtilityError(
+                    f"{where} line {number}: {raw.rstrip()!r} has the label {label} in column 1 "
+                    f"but no operation"
+                )
             pending = (operation.upper(), _first_field(rest.lstrip()))
         if not pending[1].endswith(","):
             statements.append(pending)
@@ -2105,9 +2119,12 @@ def _outrec_items(value: str, symbols: Mapping[str, Symbol], where: str) -> tupl
             item = OutItem(start, len(data), data=data)
         elif symbol is not None or token.isdigit():
             if symbol is not None:
-                position, length, fmt = symbol.position or 0, symbol.length or 0, symbol.format
+                named = f"OUTREC field symbol {token}"
+                position = _positive_int(symbol.position, f"{where}: the position of {named}")
+                length = _positive_int(symbol.length, f"{where}: the length of {named}")
+                fmt = symbol.format
             else:
-                position = int(token)
+                position = _number_token((token,), 0, "an OUTREC field position", where)
                 length = _number_token(tokens, index, "an OUTREC field length", where)
                 index += 1
                 fmt = tokens[index].upper() if index < len(tokens) else None

@@ -41,6 +41,7 @@ import contextlib
 import datetime as _dt
 import fnmatch
 import functools
+import math
 import os
 import re
 import sys
@@ -288,7 +289,8 @@ class Resources:
         """resources.yaml, parsed once per path and checked against
         ``tests/fixtures/datasets.yaml``: every mapped logical dataset must be
         defined there with the same record length and primary key, and every
-        alternate-index path with the same base and key."""
+        alternate-index path with the same base and key. A file that cannot be
+        read, is not valid or fails these checks raises ``HarnessError``."""
         return _load_resources(str(Path(path).resolve() if path else RESOURCES_FILE))
 
     def dataset(self, logical: str) -> DatasetResource:
@@ -323,7 +325,10 @@ class Resources:
 @functools.cache
 def _load_resources(path: str) -> Resources:
     file = Path(path)
-    data = load_yaml(file)
+    try:
+        data = load_yaml(file)
+    except OSError as exc:
+        raise HarnessError(f"{file}: cannot read: {exc.strerror or exc}") from None
     if not isinstance(data, Mapping) or data.get("schema_version") != 1:
         raise HarnessError(f"{file}: expected a mapping with schema_version: 1")
     problems: list[str] = []
@@ -574,7 +579,11 @@ def _check_against_fixtures(
 ) -> None:
     """The mapping must describe the same records as the logical datasets
     the runner hands over, or a load or unload would cut them wrongly."""
-    data = load_yaml(FIXTURES_FILE)
+    try:
+        data = load_yaml(FIXTURES_FILE)
+    except OSError as exc:
+        problems.append(f"{FIXTURES_FILE.name} cannot be read: {exc.strerror or exc}")
+        return
     entries = data.get("datasets") if isinstance(data, Mapping) else None
     if not isinstance(entries, list):
         problems.append(f"{FIXTURES_FILE.name} holds no datasets list")
@@ -886,6 +895,15 @@ class BatchOutcome:
         return self.runs[0].start_date if self.runs else None
 
 
+def _finite(number: float) -> bool:
+    """Whether the int or float ``number`` is a finite float: false for NaN,
+    an infinity and an int beyond the float range."""
+    try:
+        return math.isfinite(number)
+    except OverflowError:
+        return False
+
+
 class _Budget:
     """The time one service call may take.
 
@@ -898,7 +916,9 @@ class _Budget:
 
     def __init__(self, deadline: float | None) -> None:
         if deadline is not None and (
-            isinstance(deadline, bool) or not isinstance(deadline, (int, float))
+            isinstance(deadline, bool)
+            or not isinstance(deadline, (int, float))
+            or not _finite(deadline)
         ):
             raise HarnessError(
                 f"deadline must be a time.monotonic() value or None, got {deadline!r}"
@@ -992,8 +1012,10 @@ class BatchService:
     ) -> None:
         if isinstance(poll_interval, bool) or not isinstance(poll_interval, (int, float)):
             raise HarnessError(f"poll_interval must be a number of seconds, got {poll_interval!r}")
-        if poll_interval <= 0:
-            raise HarnessError(f"poll_interval must be positive, got {poll_interval!r}")
+        if not _finite(poll_interval) or poll_interval <= 0:
+            raise HarnessError(
+                f"poll_interval must be a positive, finite number of seconds, got {poll_interval!r}"
+            )
         self.env = env
         self.commands = commands
         self.resources = resources if resources is not None else Resources.load()
@@ -1412,7 +1434,12 @@ class BatchService:
         the first job in which a step abended. ``TRNRPT00`` is rendered with
         ``trnrpt00_jcl`` from ``dateparm`` (``preconditions.parameters.DATEPARM``,
         ``"YYYY-MM-DD YYYY-MM-DD"``)."""
-        names = [jobs] if isinstance(jobs, str) else list(jobs)
+        if isinstance(jobs, str):
+            names = [jobs]
+        elif isinstance(jobs, Sequence):
+            names = list(jobs)
+        else:  # not iterable, or unordered like a set: it gives no chain order
+            names = []
         if not names or not all(isinstance(name, str) for name in names):
             raise HarnessError(f"inputs.job must name one job or a list of jobs, got {jobs!r}")
         budget = _Budget(deadline)
@@ -1843,7 +1870,8 @@ class BatchService:
     ) -> None:
         """Restore the catalog to ``snapshot``.
 
-        With ``catalog_reset`` available its command does it. Otherwise one
+        With ``catalog_reset`` available, as probed within the time left
+        before the scenario deadline, its command does it. Otherwise one
         generated IDCAMS job deletes every listed entry the snapshot lacks
         (generations first, then paths, alternate indexes, clusters, non-VSAM
         datasets and GDG bases) and re-defines every snapshot GDG base that is
@@ -1858,7 +1886,11 @@ class BatchService:
         and this reset removes."""
         target = frozenset(snapshot)
         budget = _Budget(deadline)
-        if self.commands.available("catalog_reset", self.env):
+        if self.commands.available(
+            "catalog_reset",
+            self.env,
+            deadline_left=budget.command_left("probing catalog_reset"),
+        ):
             self._run("catalog_reset", budget)
         else:
             current = set(self._list_catalog(budget))

@@ -1555,14 +1555,29 @@ class CommandSet:
         the deployment root, which is checked on every call."""
         return self._probe(self._entries[entry_id], env, refresh=refresh, deadline=None)[0]
 
-    def available(self, entry_id: str, env: Any = None) -> bool:
+    def available(
+        self, entry_id: str, env: Any = None, *, deadline_left: float | None = None
+    ) -> bool:
         """The cached availability of ``entry_id``. With ``env``, an entry not
         yet probed for its current generation is probed first, and the
         ``$MBMSUB`` check of ``probe`` is made. Without it, the latest result
-        is returned, or ``False`` if the entry has never been probed."""
+        is returned, or ``False`` if the entry has never been probed, and
+        nothing runs.
+
+        ``deadline_left`` is, as for ``run``, the seconds left before the
+        scenario deadline when the caller has one. The probe is then capped
+        at that time, and ``ScenarioTimeout`` is raised when the deadline has
+        passed before, while or after it runs. A probe that fails within the
+        deadline makes the entry unavailable: ``False``. Without
+        ``deadline_left`` the probe is bounded by its own limit only."""
         entry = self._entries[entry_id]
         if env is not None:
-            return self._probe(entry, env, refresh=False, deadline=None)[0]
+            deadline: float | None = None
+            if deadline_left is not None:
+                if deadline_left <= 0:
+                    raise ScenarioTimeout(f"scenario deadline passed before probing {entry_id}")
+                deadline = time.monotonic() + deadline_left
+            return self._probe(entry, env, refresh=False, deadline=deadline)[0]
         with self._lock:
             cached = self._probes.get(entry_id)
             refused = entry_id in self._refusals

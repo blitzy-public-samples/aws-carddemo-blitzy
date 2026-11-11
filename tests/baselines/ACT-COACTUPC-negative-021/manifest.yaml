@@ -11,19 +11,21 @@
 # source_identity.units are the app/ sources the four steps execute: the COPY
 # closure (inventory_tools.copy_closure) of COSGN00C, which signs USER0001 on
 # and XCTLs to COMEN01C [app/cbl/COSGN00C.cbl:230-240]; of COMEN01C, whose
-# option 2 XCTLs to COACTUPC [app/cpy/COMEN02Y.cpy:31-35]; and of COACTUPC,
-# whose Open Date edit runs EDIT-DATE-CCYYMMDD from CSUTLDPY with the
+# option 2 XCTLs to COACTUPC [app/cpy/COMEN02Y.cpy:31-35]; of COACTUPC, whose
+# Open Date edit runs EDIT-DATE-CCYYMMDD from CSUTLDPY with the
 # WS-31-DAY-MONTH and WS-DAY-31 conditions of CSUTLDWY
-# [app/cbl/COACTUPC.cbl:1477-1481] [app/cpy/CSUTLDPY.cpy:209-226]; plus the
-# BMS sources of their maps COSGN00, COMEN01 and COACTUP. The sign-on and
-# menu programs are listed, not only COACTUPC, because a source identity
-# names every program that ran and expected.yaml asserts the COMEN01 screen.
-# CSUTLDTC, which COACTUPC CALLs only from EDIT-DATE-LE
-# [app/cpy/CSUTLDPY.cpy:284-296], is left out: EDIT-DAY-MONTH-YEAR's GO TO
-# EDIT-DATE-CCYYMMDD-EXIT skips that call, so it does not run. DFHAID and
-# DFHBMSCA are CICS-supplied, not app/ sources. source_commit is HEAD at
-# authoring; app/ is byte-identical to the suite's starting commit
-# 93ebec71ff7b59a68cedd7c501afe496a8eaa68d.
+# [app/cbl/COACTUPC.cbl:1478-1482] [app/cpy/CSUTLDPY.cpy:209-226]; and of
+# CSUTLDTC; plus the BMS sources of their maps COSGN00, COMEN01 and COACTUP.
+# The sign-on and menu programs are listed, not only COACTUPC, because a
+# source identity names every program that ran and expected.yaml asserts the
+# COMEN01 screen. CSUTLDTC is listed: the refused Open Date 2014-06-31 leaves
+# EDIT-DATE-CCYYMMDD before EDIT-DATE-LE through EDIT-DAY-MONTH-YEAR's GO TO
+# EDIT-DATE-CCYYMMDD-EXIT [app/cpy/CSUTLDPY.cpy:213-226], but the valid Expiry
+# Date, Reissue Date and Date of Birth edited after it each reach EDIT-DATE-LE,
+# which CALLs CSUTLDTC [app/cbl/COACTUPC.cbl:1490-1538]
+# [app/cpy/CSUTLDPY.cpy:18-20,284-296]. DFHAID and DFHBMSCA are CICS-supplied,
+# not app/ sources. source_commit is HEAD at authoring; app/ is byte-identical
+# to the suite's starting commit 93ebec71ff7b59a68cedd7c501afe496a8eaa68d.
 baseline_version: 1.0.0
 capture_date: '2026-11-11'
 capture_platform: derived
@@ -38,6 +40,7 @@ source_identity:
     app/cbl/COACTUPC.cbl: e7a097a02870a13529ab846a2ddd3cf398a243263517ded399bd55a25fb9578f
     app/cbl/COMEN01C.cbl: ad5e376ac9221b21b8ce47597a5ca17fc1f39dc913793c814c6675e9b046fc09
     app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cbl/CSUTLDTC.cbl: 58c165dcfc3927232c02c152c673e3dee551587b85e7fe56ca67325c980eebb6
     app/cpy-bms/COACTUP.CPY: 2ae13a55cb35c63988c17e96744ce77dfda9663896e65061b818f47d9be983dc
     app/cpy-bms/COMEN01.CPY: 21275363519e57f47c5c7842178344208f3ad773a551e74e5eeff285c775ad5c
     app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
