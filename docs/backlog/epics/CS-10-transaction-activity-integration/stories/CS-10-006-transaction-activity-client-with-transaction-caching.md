@@ -173,7 +173,7 @@ sequenceDiagram
 
 ### Design Option A — detail entries and list pages under separate key families
 
-Detail entries are keyed by transaction, and list pages by account, paging and both filters. Only detail entries outlive their one-minute freshness, for up to five minutes.
+Detail entries are keyed by transaction, and list pages by account, paging and both filters. Only detail entries outlive their one-minute freshness, usable as stale until five minutes old.
 
 How it behaves:
 
@@ -236,7 +236,7 @@ Open assumptions:
 | AC3 | Holds | the final unavailable status fails the call |
 | AC4 | Holds | the fit check stops attempt three |
 | AC5 | Holds | lists never go stale |
-| AC6 | Holds | details serve stale for five minutes |
+| AC6 | Holds | details serve stale until their five-minute maximum age |
 | AC7 | Holds | not-found ends the call immediately |
 | AC8 | Holds | the page token field survives |
 | AC9 | Holds | fresh entries skip the call |

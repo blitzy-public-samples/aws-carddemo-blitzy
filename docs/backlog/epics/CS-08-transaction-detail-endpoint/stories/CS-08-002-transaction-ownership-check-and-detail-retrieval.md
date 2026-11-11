@@ -220,7 +220,7 @@ Effort and risk: the same files, with deadline-exceeded answers as the risk.
 Settled assumptions:
 
 - The card data client offers its own worker pool.
-- A cache entry is fresh for one minute and usable stale for five.
+- A cache entry is fresh for one minute and usable stale up to five minutes of age.
 
 Open assumptions:
 
