@@ -4664,7 +4664,11 @@ def test_add_gap_refuses_an_entry_whose_items_are_not_a_list(form: str) -> None:
 # revalidation closes, and the write that records it before gaps.yaml. Every
 # case works on copies of the committed inventory.yaml and gaps.yaml in a
 # repository root of its own inside the work root, which report.py's
-# gaps.yaml, inventory and repository root point at for the case.
+# gaps.yaml, inventory and repository root point at for the case. The
+# gaps.yaml copy starts every inferred-not-observed entry and GAP-MIS-009
+# open, without evidence and with its full membership, whatever the
+# committed register's lifecycle holds, so a valid import that closed or
+# narrowed one changes no case's outcome.
 # CLOSURE_EXECUTION is an invented execution id of valid form.
 CLOSURE_ROOT_PREFIX = "unit-closure-"
 CLOSURE_EXECUTION = "unikix-20250103T000000Z-0123abcd"
@@ -4685,6 +4689,23 @@ CLOSURE_SETTLINGS = [
     pytest.param(True, False, [(CLOSURE_INFERRED, CLOSURE_VERIFIED)], id="inferred-entry-all-verified"),
     pytest.param(False, True, [(CLOSURE_INSTALLATION, CLOSURE_VERSIONS_RECORDED)], id="installation-versions"),
     pytest.param(False, False, [], id="nothing-settled"),
+]
+
+# The resolving_evidence of an earlier closing of each entry: an invented
+# commit id and an invented earlier execution id, both of valid form.
+CLOSURE_PRIOR_EXECUTION = "unikix-20241215T000000Z-89abcdef"
+CLOSURE_PRIOR_EVIDENCE = {
+    CLOSURE_INFERRED: {"commit": "89abcdef" * 5},
+    CLOSURE_INSTALLATION: {"execution_id": CLOSURE_PRIOR_EXECUTION,
+                           "evidence_path": f"tests/reports/unikix/{CLOSURE_PRIOR_EXECUTION}"},
+}
+
+# Each case: the entries an earlier closing already closed when the settling
+# would close both.
+CLOSURE_ALREADY_CLOSED = [
+    pytest.param([CLOSURE_INFERRED], id="inferred-closed"),
+    pytest.param([CLOSURE_INSTALLATION], id="installation-closed"),
+    pytest.param([CLOSURE_INFERRED, CLOSURE_INSTALLATION], id="both-closed"),
 ]
 
 # A gap id of valid form that no register entry has, put together at run time
@@ -4730,7 +4751,16 @@ def closure_root(monkeypatch: pytest.MonkeyPatch, carddemo_work_root: Path) -> I
     given by its real path, holding copies of the committed
     ``inventory.yaml`` and ``gaps.yaml`` under ``tests/inventory/``, which
     ``report.GAPS_FILE``, ``inventory_tools.INVENTORY_FILE`` and
-    ``report.REPO_ROOT`` name for the case; removed afterwards."""
+    ``report.REPO_ROOT`` name for the case; removed afterwards.
+
+    The ``gaps.yaml`` copy holds a controlled lifecycle state rather than the
+    committed one: every inferred-not-observed entry and GAP-MIS-009 is
+    ``open`` with ``resolving_evidence: null`` and no
+    ``superseded_evidence``, and a narrowed entry has the full membership its
+    ``narrowed_from`` kept (``affected_inventory_ids``, and ``affected`` only
+    when it held clauses) with ``narrowed_from`` dropped. The copy is
+    rewritten, its comments kept, only when the committed register differs
+    from that state."""
     directory = Path(tempfile.mkdtemp(prefix=CLOSURE_ROOT_PREFIX, dir=carddemo_work_root)).resolve()
     try:
         copies = directory / "tests" / "inventory"
@@ -4740,6 +4770,24 @@ def closure_root(monkeypatch: pytest.MonkeyPatch, carddemo_work_root: Path) -> I
         monkeypatch.setattr(report, "GAPS_FILE", copies / "gaps.yaml")
         monkeypatch.setattr(inventory_tools, "INVENTORY_FILE", copies / "inventory.yaml")
         monkeypatch.setattr(report, "REPO_ROOT", directory)
+        original = report.GAPS_FILE.read_text(encoding="utf-8")
+        committed = load_yaml(report.GAPS_FILE)
+        controlled = copy.deepcopy(committed)
+        for gap_id, entry in report._gap_entries(controlled).items():
+            if entry.get("category") != report.CATEGORIES["INF"] and gap_id != report.GAP_NO_INSTALLATION:
+                continue
+            entry["status"], entry["resolving_evidence"] = "open", None
+            entry.pop("superseded_evidence", None)
+            if "narrowed_from" in entry:
+                narrowed = entry.pop("narrowed_from")
+                assert isinstance(narrowed, dict), f"{gap_id}: narrowed_from is not a mapping: {narrowed!r}"
+                entry["affected_inventory_ids"] = list(narrowed.get("affected_inventory_ids") or [])
+                if narrowed.get("affected"):
+                    entry["affected"] = list(narrowed["affected"])
+                else:
+                    entry.pop("affected", None)
+        if controlled != committed:
+            report.GAPS_FILE.write_text(report._gaps_text(controlled, original), encoding="utf-8")
         yield directory
     finally:
         shutil.rmtree(directory)
@@ -4748,12 +4796,14 @@ def closure_root(monkeypatch: pytest.MonkeyPatch, carddemo_work_root: Path) -> I
 def _closed_inferred_entry() -> tuple[dict, str, list, list]:
     """The register copy as ``report.GAPS_FILE`` holds it, read as a document
     and as text, with GAP-INF-001 closed on CLOSURE_EXECUTION through
-    ``report._close``, the changes noted and the closings queued."""
+    ``report._close``, the changes noted and the closings queued. The entry
+    starts open without evidence, as ``closure_root`` sets it."""
     original = report.GAPS_FILE.read_text(encoding="utf-8")
     document = load_yaml(report.GAPS_FILE)
     changes: list[str] = []
     closures: list = []
     entry = report._gap_entries(document)[CLOSURE_INFERRED]
+    assert (entry["status"], entry["resolving_evidence"]) == ("open", None)
     report._close(CLOSURE_INFERRED, entry, dict(CLOSURE_EVIDENCE), CLOSURE_VERIFIED, changes, closures)
     return document, original, changes, closures
 
@@ -4866,6 +4916,42 @@ def test_settling_closes_each_entry_through_one_queued_closure_record(
         (gap_id, _closure_reason(gap_id, why)) for gap_id, why in closed
     ]
     assert all(closure.entry is report._gap_entries(document)[closure.gap_id] for closure in closures)
+
+
+@pytest.mark.parametrize("preclosed", CLOSURE_ALREADY_CLOSED)
+def test_settling_leaves_an_already_closed_entry_as_it_is(closure_root: Path, preclosed: list[str]) -> None:
+    items = inventory_tools.load(inventory_tools.INVENTORY_FILE)["items"]
+    document = load_yaml(report.GAPS_FILE)
+    entries = report._gap_entries(document)
+    for gap_id in preclosed:
+        entries[gap_id].update(status="closed", resolving_evidence=copy.deepcopy(CLOSURE_PRIOR_EVIDENCE[gap_id]))
+    members = report._resolve(CLOSURE_INFERRED, entries[CLOSURE_INFERRED], report._Universe.build(items, []))
+    assert members
+    state = SimpleNamespace(
+        items=items, scenarios={}, statuses={}, item_scenarios={},
+        item_status={item_id: report.VERIFIED for item_id in members},
+    )
+    # Every GAP-INF-001 item is verified and the installation's versions are
+    # recorded, so each entry still open closes, inferred before installation.
+    closing = [(gap_id, why) for gap_id, why in ((CLOSURE_INFERRED, CLOSURE_VERIFIED),
+                                                (CLOSURE_INSTALLATION, CLOSURE_VERSIONS_RECORDED))
+               if gap_id not in preclosed]
+    expected = copy.deepcopy(document)
+    for gap_id, _ in closing:
+        report._gap_entries(expected)[gap_id].update(status="closed", resolving_evidence=CLOSURE_EVIDENCE)
+    summary = report.ImportSummary(CLOSURE_EXECUTION)
+    closures: list = []
+    report._settle_gaps(document, state, CLOSURE_EXECUTION, [CLOSURE_ENVIRONMENT], summary, closures)
+    assert document == expected
+    for gap_id in preclosed:
+        entry = entries[gap_id]
+        assert (entry["status"], entry["resolving_evidence"]) == ("closed", CLOSURE_PRIOR_EVIDENCE[gap_id])
+        assert "superseded_evidence" not in entry
+    assert summary.gaps_changed == [f"{gap_id}: closed, {why}" for gap_id, why in closing]
+    assert [(closure.gap_id, closure.reason) for closure in closures] == [
+        (gap_id, _closure_reason(gap_id, why)) for gap_id, why in closing
+    ]
+    assert all(closure.entry is entries[closure.gap_id] for closure in closures)
 
 
 @pytest.mark.parametrize(("gap_id", "revalidating"), [
@@ -5019,7 +5105,9 @@ def test_write_register_rollback_preserves_a_concurrent_inventory_addition(
     shutil.copyfile(carddemo_repo_root / "app" / "cbl" / source.name, source)
     document, original, changes, closures = _closed_inferred_entry()
     assigned: list[str] = []
+    during: list[list] = []
     reason = "New behavior observed while the import updates the register"
+    first = datetime.date.today().isoformat()
 
     def add_then_refuse(document: dict, original: str) -> None:
         assigned.extend(inventory_tools.append_items([{
@@ -5027,24 +5115,34 @@ def test_write_register_rollback_preserves_a_concurrent_inventory_addition(
             "source": "app/cbl/COSGN00C.cbl:1", "description": "A behavior found by another inventory writer.",
             "level": "e2e", "gap_ids": [report.GAP_COMPLETENESS],
         }], reason, path, repo_root=closure_root))
-        during = inventory_tools.load(path)
-        assert any(change.get("gap_id") == CLOSURE_INFERRED for change in during["header"]["changes"])
+        during.append(inventory_tools.load(path)["header"]["changes"])
         raise PermissionError(13, "simulated gaps.yaml write refusal")
 
     monkeypatch.setattr(report, "_write_gaps", add_then_refuse)
     with pytest.raises(PermissionError, match="simulated gaps.yaml write refusal"):
         report._write_register(document, original, closures, changes)
+    days = {first, datetime.date.today().isoformat()}
     after = inventory_tools.load(path)
-    assert len(assigned) == 1
-    assert after["header"]["total"] == len(after["items"]) == 685
+    earlier = before["header"]["changes"]
+    assert len(assigned) == 1 and len(during) == 1
+    dates = [change.get("date") for change in during[0][len(earlier):]]
+    assert len(dates) == 2 and set(dates) <= days
+    attempted = {"date": dates[0], "gap_id": CLOSURE_INFERRED,
+                 "reason": _closure_reason(CLOSURE_INFERRED, CLOSURE_VERIFIED)}
+    addition = {"date": dates[1], "inventory_id": assigned[0], "reason": reason}
+    # While gaps.yaml is written, the inventory holds every earlier change,
+    # this write's closure record, and then the concurrent addition.
+    assert during[0] == [*earlier, attempted, addition]
+    assert after["header"]["total"] == before["header"]["total"] + 1 == len(after["items"]) == (
+        len(before["items"]) + 1
+    )
     assert set(inventory_tools.item_ids(after)) == {*inventory_tools.item_ids(before), *assigned}
     assert next(item for item in after["items"] if item["id"] == assigned[0])["name"] == (
         "Concurrent newly observed behavior"
     )
-    *earlier, addition = after["header"]["changes"]
-    assert earlier == before["header"]["changes"]
-    assert addition == {"date": addition["date"], "inventory_id": assigned[0], "reason": reason}
-    assert not any("gap_id" in change for change in after["header"]["changes"])
+    # The rollback withdrew only the attempted closure record: every earlier
+    # change, closure records included, and the concurrent addition remain.
+    assert after["header"]["changes"] == [*earlier, addition]
     assert report.GAPS_FILE.read_text(encoding="utf-8") == original
 
 
@@ -5312,6 +5410,17 @@ REGISTERED_MISMATCHES = {
     ("DISCGRP", 34): ((17, 22), "GAP-DOC-013"),
 }
 
+# The columns that actually differ in each registered record, established
+# from the source bytes: the ASCII line right-padded to the record length
+# against the cp037-decoded EBCDIC record. ACCTDATA record 49 is
+# 'A000000000' against 'ZEROAPR   ' across all of ACCT-ADDR-ZIP; DISCGRP
+# record 34 is '00' against '15' in columns 19-20 only, so its registered
+# field (17-22, the whole DIS-INT-RATE) is deliberately broader.
+ACTUAL_MISMATCH_COLUMNS = {
+    ("ACCTDATA", 49): (103, 112),
+    ("DISCGRP", 34): (19, 20),
+}
+
 
 def test_cross_check_registered_mismatches(carddemo_repo_root: Path) -> None:
     found = fixtures.cross_check(carddemo_repo_root)
@@ -5320,8 +5429,10 @@ def test_cross_check_registered_mismatches(carddemo_repo_root: Path) -> None:
     for mismatch in found:
         (first, last), gap_id = REGISTERED_MISMATCHES[(mismatch.dataset, mismatch.record)]
         assert mismatch.gap_id == gap_id, shown
-        # A mismatch spans the columns that differ, inside the registered
-        # field: DISCGRP record 34 differs in columns 19-20 of DIS-INT-RATE.
+        # A mismatch spans exactly the columns that differ, inside the
+        # registered field: DISCGRP record 34 differs in columns 19-20 of
+        # DIS-INT-RATE.
+        assert mismatch.columns == ACTUAL_MISMATCH_COLUMNS[(mismatch.dataset, mismatch.record)], shown
         assert first <= mismatch.columns[0] <= mismatch.columns[1] <= last, shown
     for (dataset, record), (columns, gap_id) in REGISTERED_MISMATCHES.items():
         registered = fixtures.spec(dataset).registered_mismatches
