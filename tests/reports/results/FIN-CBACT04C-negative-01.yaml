@@ -1,0 +1,33 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  datasets:
+    SYSTRAN: []
+  messages:
+  - START OF EXECUTION OF PROGRAM CBACT04C
+  - '000000009080100010000012000{                      '
+  - DISCLOSURE GROUP RECORD MISSING
+  - TRY WITH DEFAULT GROUP CODE
+  - ERROR READING DEFAULT DISCLOSURE GROUP
+  - 'FILE STATUS IS: NNNN0023'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD
+  return_code: null
+evidence_path: tests/reports/results/FIN-CBACT04C-negative-01.yaml
+execution_fingerprint: cd63f37a30f261649c1225d5d4c757418154ecbd357582fb1f1c511f5f083850
+execution_id: gnucobol-batch-d1ceb6b92098781b
+gap_id: null
+reason: null
+scenario_digest: 0da4da57e59829982af53eb932fb3b334b978f5d3632f5d1562df98160f01dd0
+scenario_id: FIN-CBACT04C-negative-01
+source_identity:
+  commit: 33191534c42cb9685055e0d72b5f7a52bb516b13
+  tree: app
+  units:
+    app/cbl/CBACT04C.cbl: 76dea08b410b653ee2fa967c564e9f2e992b7c09f52b2d1fbb5a212149aefbce
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA01Y.cpy: 50637f13692c89b17a2fc60d249dc54e9eb3569d933afca3cdcf65b491a9d5ba
+    app/cpy/CVTRA02Y.cpy: 7828fae489c59944b4310e223028a8d3a525ccf4ead113c062bcaff04b52bf9c
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
+status: passed

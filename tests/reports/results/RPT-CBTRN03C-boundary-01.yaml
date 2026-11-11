@@ -1,0 +1,33 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  datasets:
+    TRANREPT:
+    - 'DALYREPT                              Daily Transaction Report                 Date Range: 2022-07-01 to 2022-07-31                  '
+    - '                                                                                                                                     '
+    - 'Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     '
+    - '-------------------------------------------------------------------------------------------------------------------------------------'
+    - '9900000000000511 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                11.00                     '
+    - '9900000000000512 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                22.00                     '
+    - 'Page Total ......................................................................................+         55.00                     '
+    - '-------------------------------------------------------------------------------------------------------------------------------------'
+    - 'Grand Total......................................................................................+         55.00                     '
+  return_code: 0
+evidence_path: tests/reports/results/RPT-CBTRN03C-boundary-01.yaml
+execution_fingerprint: 4f34d5c8f123dab6e23aee7056cfec80d7087fa2b5ba1cf5ee1bf37008656383
+execution_id: gnucobol-batch-82cf709cddac70de
+gap_id: null
+reason: null
+scenario_digest: d8b48f6d15598d0bf5847855003c6a9dffc923d5226caeb18aa0dff21a50ea15
+scenario_id: RPT-CBTRN03C-boundary-01
+source_identity:
+  commit: 33191534c42cb9685055e0d72b5f7a52bb516b13
+  tree: app
+  units:
+    app/cbl/CBTRN03C.cbl: c9c5428073cbe19c1cd19fc066ed99972560c209a80b4aea3bae3cc5e20a3536
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA03Y.cpy: fb15dbc4a6924cbddce0704932f9e61c067ac10004cd00839dff0ed7c7bb0667
+    app/cpy/CVTRA04Y.cpy: 89803bc13a06347e1f3d8a599a5383b87235b203dce9f18a486bc233186479f8
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
+    app/cpy/CVTRA07Y.cpy: 72ba597b1a40e1e6cf908e15da9e6a818a0ab899ef1d27d15edeb074963102fa
+status: passed
