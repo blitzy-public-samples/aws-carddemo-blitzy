@@ -1,0 +1,32 @@
+# Derived baseline of DAT-POSTTRAN-alternate-01: POSTTRAN, TRANBKP and POSTTRAN
+# again run against one catalog, so the second run catalogues DALYREJS
+# G0002V00 and (0) resolves to it. Only unikix runs JCL generation semantics,
+# so expected.yaml was authored from app/ sources, not captured, and is
+# inferred-not-observed (GAP-INF-011). It names no execution_id or
+# execution_fingerprint and holds no datasets/ until report.py --import-unikix
+# promotes an eligible UniKix run.
+# source_identity names the app tree, not unikix-copy: the expectation is
+# derived from app/, and the item is a JCL-semantics item of app/jcl. Its units
+# are what the three jobs execute (harness.results.source_identity from the
+# jobs.yaml step tables): both jobs' JCL, TRANBKP's procedure REPROC and its
+# REPRO control card REPROCT, and CBTRN02C with its COPY closure. source_commit
+# is HEAD at authoring; app/ there is byte-identical to the suite's starting
+# commit 93ebec71ff7b59a68cedd7c501afe496a8eaa68d.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: 1cb86ff9135b33aa50b652ee9dee065d47e913bd
+source_identity:
+  commit: 1cb86ff9135b33aa50b652ee9dee065d47e913bd
+  tree: app
+  units:
+    app/cbl/CBTRN02C.cbl: 136ab808a10d01814269a4a29bd6c249b1b86952d0abded98419458db43f2aef
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA01Y.cpy: 50637f13692c89b17a2fc60d249dc54e9eb3569d933afca3cdcf65b491a9d5ba
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
+    app/cpy/CVTRA06Y.cpy: c5c69f1b86c5a10156d3c5881d7cf387e6b925aae32825360f85bf4056a554a1
+    app/ctl/REPROCT.ctl: 5c6b8f26aa53c23131265e715b53130a1a7afd88b5bd3319aeca91f3d1a55bf5
+    app/jcl/POSTTRAN.jcl: ecff62c691e6ce101de08690e72ec065bc98bd845744ddf914899097d37c9191
+    app/jcl/TRANBKP.jcl: 457cd00d14a1d9ac9983d92212541df3456e8428862b97cf10bab7249b9e6183
+    app/proc/REPROC.prc: 4562039d1c7b90f05cc946dd1cd1cb93571bb279740c5c9777acfa3ea23fbc9f

@@ -1,0 +1,17 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded: null
+evidence_path: tests/reports/results/DAT-CBCUS01C-recovery-03.yaml
+execution_fingerprint: 2e721ddab609e6c8a13565b679cd105456efe16a1fc28759e9d6648ab272d4ec
+execution_id: gnucobol-batch-9f9a11850b5013fc
+gap_id: GAP-MIS-013
+reason: missing-prerequisite
+scenario_digest: 677976dc32ee04f770aba9e76c60c29d4baa4c97da7c0af3fe2f0dee61308be5
+scenario_id: DAT-CBCUS01C-recovery-03
+source_identity:
+  commit: 1cb86ff9135b33aa50b652ee9dee065d47e913bd
+  tree: app
+  units:
+    app/cbl/CBCUS01C.cbl: 494b1ca4ab8a4334eef77d2b87cc7df266f80cbeab2a3f191e9c776d4437d497
+    app/cpy/CVCUS01Y.cpy: 944fd9a8eb10a683d0db97b9a87f2151982f649970287eb74358826056af25f8
+status: implemented-unexecuted

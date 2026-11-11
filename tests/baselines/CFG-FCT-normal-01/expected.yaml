@@ -1,0 +1,37 @@
+# Derived baseline (capture_platform: derived in manifest.yaml) of scenario
+# CFG-FCT-normal-01: authored from the UniKix copy's region resource list
+# [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/catlg/tpe/fct.lst:1-14]
+# and the CSD FILE definitions [app/csd/CARDDEMO.CSD:1-99]; tagged
+# inferred-not-observed (GAP-INF-010) and pinned, never corrected. Only unikix
+# can run it, and only with a confirmed region file inquiry (GAP-MIS-011).
+#
+# file_state @REGION-FILES: the region file inquiry after the region is started
+# and reset, as adapters.base.format_region_files writes it, one line per file
+# '<name> open|closed enabled|disabled', sorted by name, which is also the
+# fct.lst order. All 14 fct.lst files are open and enabled: the CSD's 8 and the
+# 6 that no CSD definition has, DISCGRP, TCATBALF, TRANCATG, TRANSAIX, TRANTYPE
+# and TRXFL (fct.lst:7-9,11-13; GAP-DOC-030).
+#
+# The CSD defines its 8 files STATUS(ENABLED) OPENTIME(FIRSTREF)
+# [app/csd/CARDDEMO.CSD:4], under which CICS opens a file at its first
+# reference rather than at region start; "open after start" therefore rests on
+# the adapter's reset, which opens and enables every fct.lst file. A UniKix run
+# that shows another state replaces this file only through
+# `report.py --import-unikix` (MAJOR bump and a register entry).
+file_state:
+  '@REGION-FILES':
+    records:
+    - ACCTDAT open enabled
+    - CARDAIX open enabled
+    - CARDDAT open enabled
+    - CCXREF open enabled
+    - CUSTDAT open enabled
+    - CXACAIX open enabled
+    - DISCGRP open enabled
+    - TCATBALF open enabled
+    - TRANCATG open enabled
+    - TRANSACT open enabled
+    - TRANSAIX open enabled
+    - TRANTYPE open enabled
+    - TRXFL open enabled
+    - USRSEC open enabled

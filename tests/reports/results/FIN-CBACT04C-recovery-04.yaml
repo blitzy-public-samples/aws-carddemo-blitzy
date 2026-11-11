@@ -1,0 +1,21 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded: null
+evidence_path: tests/reports/results/FIN-CBACT04C-recovery-04.yaml
+execution_fingerprint: 1fda242b9e3c2835952f4e3626e7facb0af37d4c836aa570a49092c9c9f2d0e9
+execution_id: gnucobol-batch-df0609fd9804c670
+gap_id: GAP-MIS-013
+reason: missing-prerequisite
+scenario_digest: 2426ac3be08bf3abc5c3a5dc3e321227423f3ef719964c6336a20373f8af465c
+scenario_id: FIN-CBACT04C-recovery-04
+source_identity:
+  commit: 1cb86ff9135b33aa50b652ee9dee065d47e913bd
+  tree: app
+  units:
+    app/cbl/CBACT04C.cbl: 76dea08b410b653ee2fa967c564e9f2e992b7c09f52b2d1fbb5a212149aefbce
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA01Y.cpy: 50637f13692c89b17a2fc60d249dc54e9eb3569d933afca3cdcf65b491a9d5ba
+    app/cpy/CVTRA02Y.cpy: 7828fae489c59944b4310e223028a8d3a525ccf4ead113c062bcaff04b52bf9c
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
+status: implemented-unexecuted

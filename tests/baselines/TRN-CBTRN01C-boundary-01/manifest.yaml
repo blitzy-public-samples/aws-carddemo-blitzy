@@ -2,10 +2,10 @@ baseline_version: 1.0.0
 capture_date: '2026-11-11'
 capture_platform: gnucobol-batch
 execution_fingerprint: 3b00fee25adb817c4b678933a7b000d1351acb841723f66c6ccbb1ef6d045229
-execution_id: gnucobol-batch-66407542bc76618e
-source_commit: 62e89bbd0f3017e3b5d156fae9c95cb99d0ec49e
+execution_id: gnucobol-batch-ed8ebc71cb1b63c8
+source_commit: 1cb86ff9135b33aa50b652ee9dee065d47e913bd
 source_identity:
-  commit: 62e89bbd0f3017e3b5d156fae9c95cb99d0ec49e
+  commit: 1cb86ff9135b33aa50b652ee9dee065d47e913bd
   tree: app
   units:
     app/cbl/CBTRN01C.cbl: 18cebdd95bff49b5316c271204fb20f59d2dd72615bc1715498c9cc8a50187f7
