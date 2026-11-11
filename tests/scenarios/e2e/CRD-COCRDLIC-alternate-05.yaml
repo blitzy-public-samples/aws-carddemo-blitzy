@@ -26,6 +26,9 @@
 #    without subscript checking that byte is the last byte of the packed
 #    WS-EDIT-SELECT-COUNTER (x'0C'), neither 'S' nor 'U', so WHEN OTHER browses
 #    forward from WS-CA-FIRST-CARD-NUM [app/cbl/COCRDLIC.cbl:69-76,517-519,572-582].
+#    The same test, with I-SELECTED still 0, runs in step 2. This is the suspected
+#    defect GAP-DEF-024, pinned as derived and never fixed; a region that checks
+#    subscripts would abend the task instead.
 #    9500-FILTER-RECORDS keeps only cards of account 00000000050: its one card,
 #    0500024453765740 (status Y), fills row 1 and the other 49 cards are excluded
 #    [app/cbl/COCRDLIC.cbl:1156-1187,1382-1405]. The next READNEXT returns ENDFILE
@@ -70,9 +73,11 @@ inventory_ids:
 - INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, CC-CARD-NUM and the CCARD-AID flags
 tags:
 - inferred-not-observed
+- suspected-defect
 gap_ids:
 - GAP-INF-006  # card (CRD) e2e baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DEF-024  # the selection tests subscript WS-EDIT-SELECT with 0 when no row is selected
 preconditions:
   datasets:
     CARDDATA: {base: CARDDATA}

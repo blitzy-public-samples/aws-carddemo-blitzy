@@ -49,10 +49,16 @@ Each scenario directory holds:
       ``steps`` (the step, session, map and attempt of each captured screen)
       and ``job_numbers`` (the BPE job numbers).
 
-Evidence is never overwritten or deleted: a scenario directory that already
-holds anything is refused with ``HarnessError``, and every file is created
-exclusively. Everything to be written is checked before the first file is
-created, so a refused write leaves no file behind.
+Evidence is never overwritten or deleted. The writer claims a scenario
+directory by creating it exclusively, so only the write whose creation
+succeeds puts files in it and two writes never mix theirs; a scenario
+directory that already exists, empty or not, is refused with ``HarnessError``
+and kept as found. Every file is created exclusively. Evidence is written
+only for an id of the closed scenario id manifest
+(``harness.scenarios.ALL_IDS``) and a record that conforms to the result
+record contract as a stored record (``harness.results.record_problems``),
+the checks the import applies. Everything to be written is checked before
+the first file is created, so a refused write leaves no file behind.
 """
 
 from __future__ import annotations
@@ -70,6 +76,7 @@ from typing import Any
 from adapters.base import Result
 from harness import TESTS_ROOT, HarnessError, display_path, dump_yaml
 from harness import results as _results
+from harness import scenarios as _scenarios
 
 __all__ = [
     "DATASETS_DIR",
@@ -94,7 +101,8 @@ SYSOUT_DIR = "sysout"
 
 # The form harness.results accepts for a unikix execution id.
 EXECUTION_ID_RE = re.compile(r"unikix-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
-# A scenario id as harness.results accepts it in an evidence path.
+# A scenario id as harness.results accepts it in an evidence path; evidence
+# is further written only for the ids of the manifest (harness.scenarios.ALL_IDS).
 _SCENARIO_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _UNSAFE_CHAR_RE = re.compile(r"[^A-Za-z0-9._-]")
 _HOSTNAME_DIGITS = 8
@@ -164,9 +172,15 @@ def _execution_id(value: Any) -> str:
 
 
 def _scenario_id(value: Any) -> str:
+    """``value`` when it is an id of the closed scenario id manifest, the
+    only ids evidence directories are created for."""
     _path_component(value, "scenario_id")
     if not _SCENARIO_ID_RE.fullmatch(value):
         raise ValueError(f"scenario_id {value!r} is not a scenario id")
+    if value not in _scenarios.ALL_IDS:
+        raise ValueError(
+            f"scenario_id {value!r} is not an id of the closed scenario id manifest (harness.scenarios.ALL_IDS)"
+        )
     return value
 
 
@@ -182,7 +196,9 @@ def evidence_root(tests_root: str | os.PathLike[str] | None, execution_id: str) 
 
 def evidence_path(execution_id: str, scenario_id: str) -> str:
     """``tests/reports/unikix/<execution_id>/<scenario_id>``: the
-    repository-relative POSIX ``evidence_path`` of the scenario's records."""
+    repository-relative POSIX ``evidence_path`` of the scenario's records.
+    ``ValueError`` when ``scenario_id`` is not an id of the manifest
+    (``harness.scenarios.ALL_IDS``) or ``execution_id`` lacks its form."""
     scenario_id = _scenario_id(scenario_id)
     execution_id = _execution_id(execution_id)
     # One definition of the form, shared with validation.yaml and the matrix.
@@ -258,9 +274,9 @@ class Capture:
     environment: dict[str, Any] = field(default_factory=dict)
     run_date: dict[str, Any] = field(default_factory=dict)
     job_numbers: list[Any] = field(default_factory=list)
-    # Not in the evidence plan's field list: the import has to rebuild the
-    # Result (return code, messages, screens) to compare it, and the adapter's
-    # write_evidence hook receives only the record.
+    # Carried in the capture because the adapter's write_evidence hook receives
+    # only the record, while the import has to rebuild the Result (return code,
+    # messages, screens) to compare and revalidate it.
     result: Result | None = None
 
 
@@ -311,6 +327,37 @@ def _make_dir(path: Path) -> None:
         )
 
 
+def _claim_dir(path: Path) -> None:
+    """Create the scenario folder ``path``, which must not exist yet. The
+    creation is exclusive, so of several writes of one scenario only the one
+    that creates the folder writes into it. Whatever already stands at
+    ``path`` (a folder, empty or not, a file or a symbolic link, which is
+    never followed) is refused and kept as found."""
+    try:
+        os.mkdir(path)
+    except FileExistsError:
+        if path.is_symlink():
+            cause = "a symbolic link stands in its place"
+        elif not path.is_dir():
+            cause = "a file stands in its place"
+        elif os.path.lexists(path / RESULT_FILE):
+            cause = f"its {RESULT_FILE} already exists"
+        else:
+            cause = "another write owns it or left it incomplete"
+        raise HarnessError(
+            f"evidence is immutable: {display_path(path)} already exists ({cause}); it is kept as found"
+        ) from None
+    except OSError as exc:
+        raise HarnessError(
+            f"cannot create the evidence folder {display_path(path)}: {exc.strerror or exc}"
+        ) from None
+    if path.is_symlink() or not path.is_dir():
+        raise HarnessError(
+            f"{display_path(path)} is not a folder of its own: evidence is never written "
+            f"through a symbolic link or over a file"
+        )
+
+
 def _create(path: Path, data: bytes) -> None:
     """Write ``data`` to the new file ``path``; an existing file, or a link
     in its place, is never replaced."""
@@ -338,11 +385,16 @@ class EvidenceWriter:
         from its result ``record`` and ``capture``, and return its
         repository-relative path ``tests/reports/unikix/<execution_id>/<id>``.
 
-        ``HarnessError`` when the scenario's directory already holds anything
-        (``result.yaml`` or an earlier, incomplete write), when the record
-        names another scenario, adapter or execution or a field outside
-        ``RECORD_FIELDS``, or when the capture holds something that cannot be
-        written. Nothing is written in those cases."""
+        ``ValueError`` when the id is not an id of the closed scenario id
+        manifest (``harness.scenarios.ALL_IDS``), the only ids evidence is
+        written for. ``HarnessError`` when the scenario's directory already
+        exists, empty or not (the write claims it by creating it exclusively,
+        so of two writes of one scenario the second is refused and the files
+        are the first's alone), when the record names another scenario,
+        adapter or execution or a field outside ``RECORD_FIELDS``, when it
+        breaks the result record contract (``harness.results.record_problems``
+        of a stored record), or when the capture holds something that cannot
+        be written. Nothing is written in those cases."""
         scenario_id = _scenario_id(scenario if isinstance(scenario, str) else getattr(scenario, "id", None))
         if not isinstance(capture, Capture):
             raise TypeError(f"capture must be an evidence Capture, got {type(capture).__name__}")
@@ -355,20 +407,7 @@ class EvidenceWriter:
         for folder in (self.tests_root / "reports", self.tests_root / "reports" / "unikix", self.root):
             _make_dir(folder)
         directory = self.root / scenario_id
-        _make_dir(directory)
-        if os.path.lexists(directory / RESULT_FILE):
-            raise HarnessError(
-                f"evidence is immutable: {display_path(directory / RESULT_FILE)} already exists"
-            )
-        try:
-            earlier = sorted(os.listdir(directory))
-        except OSError as exc:
-            raise HarnessError(f"cannot read {display_path(directory)}: {exc.strerror or exc}") from None
-        if earlier:
-            raise HarnessError(
-                f"evidence is immutable: {display_path(directory)} already holds "
-                f"{', '.join(earlier)} from an earlier, incomplete write; it is kept as found"
-            )
+        _claim_dir(directory)
         # Both folders exist in every evidence directory, empty or not.
         for folder_name in (DATASETS_DIR, SYSOUT_DIR):
             _make_dir(directory / folder_name)
@@ -429,7 +468,12 @@ class EvidenceWriter:
         missing field as null. ``adapter``, ``execution_id`` and
         ``scenario_id`` are this evidence's, and ``evidence_path`` its
         directory; ``source_identity`` and ``execution_fingerprint`` are kept
-        as the record holds them."""
+        as the record holds them. ``result.yaml`` is a stored record, so the
+        fields must pass ``harness.results.record_problems`` as one, the check
+        the import applies to it: a status, reason or gap id that disagree, a
+        passed record without its source identity, fingerprint or decoded
+        outcome, or any other break of the contract raises ``HarnessError``
+        listing every problem."""
         record = _mapping(record, "the result record")
         unknown = sorted(str(name) for name in record if name not in _results.RECORD_FIELDS)
         if unknown:
@@ -449,6 +493,11 @@ class EvidenceWriter:
                 raise HarnessError(f"the result record names {name} {fields[name]!r}, this evidence is {own!r}")
             fields[name] = own
         fields["evidence_path"] = relative
+        # Immutable evidence the import would refuse could only be redone
+        # under a new execution id, so it is never written.
+        problems = _results.record_problems(fields)
+        if problems:
+            raise HarnessError("the result record breaks the result record contract: " + "; ".join(problems))
         return fields
 
     @staticmethod

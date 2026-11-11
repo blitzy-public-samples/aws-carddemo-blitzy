@@ -16,7 +16,10 @@
 # Assumption (step 3): with no row selected, VIEW-REQUESTED-ON and
 # UPDATE-REQUESTED-ON are tested with subscript 0. The byte read there, the
 # sign byte x'0C' of the packed WS-EDIT-SELECT-COUNTER, is taken as neither
-# 'S' nor 'U', and the region as raising no subscript-range abend.
+# 'S' nor 'U', and the region as raising no subscript-range abend. Step 2
+# rests on the same assumption: on the first display after the menu
+# I-SELECTED is still at its VALUE 0. The assumption is the suspected defect
+# GAP-DEF-024.
 # Values are whole BMS fields with their trailing spaces, and LOW-VALUES
 # show as spaces. CURDATE and CURTIME are run-clock matchers.
 screens:

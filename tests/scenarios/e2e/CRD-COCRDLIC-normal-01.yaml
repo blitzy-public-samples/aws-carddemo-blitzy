@@ -40,7 +40,10 @@
 # without subscript checking that byte is the last byte of the packed
 # WS-EDIT-SELECT-COUNTER (x'0C'), neither 'S' nor 'U', so WHEN OTHER browses
 # forward from WS-CA-FIRST-CARD-NUM, 0500024453765740
-# [app/cbl/COCRDLIC.cbl:69-76,517-519,572-582]. 9500-FILTER-RECORDS excludes
+# [app/cbl/COCRDLIC.cbl:69-76,517-519,572-582]. The same tests, with I-SELECTED
+# still 0, run on the first display from the menu. This is the suspected defect
+# GAP-DEF-024, pinned as derived and never fixed; a region that checks
+# subscripts would abend the task instead. 9500-FILTER-RECORDS excludes
 # every card whose CARD-NUM differs from CC-CARD-NUM-N, so only
 # 4011500891777367, the fixture's record 18 (account 00000000013, status Y)
 # [app/data/ASCII/carddata.txt:18], fills row 1, and the page number stays 1.
@@ -96,9 +99,11 @@ inventory_ids:
 - INV-LAY-019  # CVCRD01Y copybook, the AID, filter and message work area
 tags:
 - inferred-not-observed
+- suspected-defect
 gap_ids:
 - GAP-INF-006  # derived CRD end-to-end baselines, never observed on a TPE region
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DEF-024  # the selection tests subscript WS-EDIT-SELECT with 0 when no row is selected
 preconditions:
   datasets:
     USRSEC: {base: USRSEC}

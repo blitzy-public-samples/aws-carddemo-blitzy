@@ -572,9 +572,10 @@ def _passed_problems(record: Mapping, adapter: Any, stored: bool) -> list[str]:
     """What a ``passed`` record lacks of the evidence that it ran and asserted
     an outcome: only an executed, compared run verifies an item, so the nulls
     of a blocked or unexecuted record are refused here. Before it is
-    ``stored``, a record may still lack what its writer adds: the baseline
-    version a first capture creates, and the UniKix copy's identity, which the
-    unikix evidence writer records. A missing field is reported as such."""
+    ``stored``, a record may still lack the baseline version a first capture
+    creates, and the UniKix copy's identity, which the unikix adapter's own
+    ``source_identity`` names and the evidence writer requires of a passed
+    record. A missing field is reported as such."""
     problems = []
     for name, what in (("execution_id", "the execution it records"), ("execution_fingerprint", "what it executed")):
         if name in record and record[name] is None:
@@ -714,8 +715,9 @@ def build_record(
     as its text). A ``passed`` record names its execution id, fingerprint,
     decoded outcome and, on gnucobol-batch, its source identity; it may still
     lack the ``baseline_version`` a first capture creates and the unikix
-    identity its evidence writer adds, which ``write``, ``load`` and
-    ``is_current`` require. It is checked with ``record_problems(stored=False)``
+    identity of the UniKix copy (the unikix adapter's own
+    ``source_identity``), which ``write``, ``load``, ``is_current`` and the
+    unikix evidence writer require. It is checked with ``record_problems(stored=False)``
     and ``ResultError`` lists every problem, so an
     unknown status or reason, a missing gap id, a float, a date, text holding
     a lone surrogate, or an absolute path (in the checkout, under the scenario
@@ -1022,8 +1024,11 @@ def source_identity(
     nothing here and has no units. When git cannot give ``repo_root``'s
     commit, ``ResultError`` says why: an identity never lacks its commit.
 
-    unikix returns ``None``: its evidence writer records the identity of the
-    UniKix copy it deployed (``tree: unikix-copy``, ``zip_sha256``, units)."""
+    unikix returns ``None``: the unikix adapter's own ``source_identity``
+    (``adapters.base.Adapter.source_identity``, which the runner asks first)
+    names the UniKix copy it deployed (``tree: unikix-copy``, ``zip_sha256``,
+    units), and the runner puts it in the record; the evidence writer refuses
+    a passed record without it."""
     adapter_name = _adapter_name(adapter_name)
     scenario = _scenario_object(scenario)
     if adapter_name == UNIKIX:

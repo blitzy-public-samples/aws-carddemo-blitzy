@@ -16,6 +16,14 @@ Same region day: ``tpe.drive``, on a fake terminal whose region clock passes
 midnight during the ACT-COACTUPC-boundary-24 steps, must drive the steps
 again after its ``restart``, or end under GAP-MIS-015 without one, so the run
 date typed and the date the birth date is judged against are one day.
+
+Evidence ownership: ``EvidenceWriter.write``, on a tests root of the case's
+own, must refuse a scenario folder that already exists, whatever stands
+there, and keep it as found; of concurrent writes of one scenario exactly one
+must succeed, and the folder must hold its files alone. An id outside the
+scenario id manifest is refused by ``write`` and ``evidence_path``, and a
+record that breaks the result record contract by ``write``, before any folder
+is created; a conforming record must read back field-equal.
 """
 
 from __future__ import annotations
@@ -27,6 +35,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from collections.abc import Iterator, Mapping
 from decimal import Decimal
 from pathlib import Path
@@ -39,8 +48,17 @@ if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
 
 from adapters import base  # noqa: E402
-from adapters.unikix import tpe  # noqa: E402
-from harness import baselines, codec, dump_yaml, layouts, scenarios  # noqa: E402
+from adapters.unikix import evidence, tpe  # noqa: E402
+from harness import (  # noqa: E402
+    HarnessError,
+    baselines,
+    codec,
+    dump_yaml,
+    layouts,
+    load_yaml,
+    results,
+    scenarios,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -552,3 +570,259 @@ def test_tpe_drives_the_steps_again_when_the_region_day_changes(
         assert CHANGES_VALIDATED in "".join(capture.screens_raw[len(steps) - 1]["rows"])
     else:
         assert "day_changes" not in capture.run_date
+
+
+# The evidence of one blocked unikix run of EVIDENCE_SCENARIO, written to a
+# tests root of each case's own inside the work root (evidence_tests_root),
+# never to the checkout's reports.
+EVIDENCE_SCENARIO = "SEC-COSGN00C-normal-01"
+EVIDENCE_EXECUTION_ID = evidence.make_execution_id(
+    datetime.datetime(2026, 11, 11, 7, 0, 0, tzinfo=datetime.timezone.utc), "unit-harness"
+)
+# Concurrent writers of EVIDENCE_SCENARIO, each with datasets of its own, and
+# how long one waits for the others before giving up.
+EVIDENCE_WRITERS = 8
+EVIDENCE_WRITER_DATASETS = 40
+EVIDENCE_BARRIER_TIMEOUT_S = 60
+EVIDENCE_ROOT_PREFIX = "unit-evidence-"
+
+# What already stands where the scenario's evidence folder would be created,
+# and the cause the refusal names.
+EVIDENCE_OCCUPANTS = [
+    pytest.param("empty-folder", "another write owns it or left it incomplete", id="empty-folder"),
+    pytest.param("written-folder", f"its {evidence.RESULT_FILE} already exists", id="written-folder"),
+    pytest.param("file", "a file stands in its place", id="file"),
+    pytest.param("link", "a symbolic link stands in its place", id="link-to-an-empty-folder"),
+]
+
+
+def _evidence_record() -> dict:
+    """The contract-conforming result record of a blocked unikix run of
+    EVIDENCE_SCENARIO under EVIDENCE_EXECUTION_ID."""
+    return results.build_record(
+        scenarios.get(EVIDENCE_SCENARIO),
+        results.UNIKIX,
+        results.STATUS_BLOCKED,
+        reason="adapter-unavailable",
+        gap_id="GAP-MIS-009",
+        execution_id=EVIDENCE_EXECUTION_ID,
+    )
+
+
+@pytest.fixture
+def evidence_tests_root() -> Iterator[Path]:
+    """A fresh, empty tests root of this case's own inside the work root,
+    where every run writes, never under pytest's basetemp or in the checkout.
+    A configured work root is created when missing and kept; the tests root
+    is removed afterwards, with the default work root when this fixture made
+    it."""
+    configured = os.environ.get(WORK_ROOT_ENV, "")
+    made = None if configured.strip() else Path(tempfile.mkdtemp(prefix=DEFAULT_WORK_ROOT_PREFIX))
+    try:
+        root = Path(configured) if made is None else made
+        root.mkdir(parents=True, exist_ok=True)
+        directory = Path(tempfile.mkdtemp(prefix=EVIDENCE_ROOT_PREFIX, dir=root))
+        try:
+            yield directory
+        finally:
+            shutil.rmtree(directory)
+    finally:
+        if made is not None:
+            shutil.rmtree(made)
+
+
+def _evidence_folder(tests_root: Path) -> Path:
+    return evidence.evidence_root(tests_root, EVIDENCE_EXECUTION_ID) / EVIDENCE_SCENARIO
+
+
+def _tree(root: Path) -> dict[str, bytes | str | None]:
+    """Every path under ``root``: a file's bytes, a link's target, ``None``
+    for a folder. Links are never followed."""
+    tree: dict[str, bytes | str | None] = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            tree[path.relative_to(root).as_posix()] = os.readlink(path)
+        else:
+            tree[path.relative_to(root).as_posix()] = None if path.is_dir() else path.read_bytes()
+    return tree
+
+
+@pytest.mark.parametrize(("occupant", "cause"), EVIDENCE_OCCUPANTS)
+def test_evidence_writer_refuses_an_existing_scenario_folder_and_keeps_it(
+    evidence_tests_root: Path, occupant: str, cause: str
+) -> None:
+    folder = _evidence_folder(evidence_tests_root)
+    writer = evidence.EvidenceWriter(evidence_tests_root, EVIDENCE_EXECUTION_ID)
+    if occupant == "written-folder":
+        writer.write(EVIDENCE_SCENARIO, _evidence_record(), evidence.Capture())
+    else:
+        folder.parent.mkdir(parents=True)
+        if occupant == "empty-folder":
+            folder.mkdir()
+        elif occupant == "file":
+            folder.write_bytes(b"")
+        else:
+            (evidence_tests_root / "elsewhere").mkdir()
+            folder.symlink_to(evidence_tests_root / "elsewhere", target_is_directory=True)
+    before = _tree(evidence_tests_root)
+    with pytest.raises(HarnessError) as caught:
+        writer.write(EVIDENCE_SCENARIO, _evidence_record(), evidence.Capture())
+    message = str(caught.value)
+    assert message.startswith("evidence is immutable: ")
+    assert f"/{EVIDENCE_SCENARIO} already exists ({cause}); it is kept as found" in message
+    assert _tree(evidence_tests_root) == before
+
+
+def test_concurrent_evidence_writes_of_one_scenario_leave_one_writers_files(
+    evidence_tests_root: Path,
+) -> None:
+    record = _evidence_record()
+    barrier = threading.Barrier(EVIDENCE_WRITERS)
+    outcomes: dict[int, str | BaseException] = {}
+
+    def names(writer: int) -> list[str]:
+        return [f"DS{writer:02d}-{number:02d}" for number in range(EVIDENCE_WRITER_DATASETS)]
+
+    def write(writer: int) -> None:
+        try:
+            capture = evidence.Capture(datasets={name: bytes([writer]) * 64 for name in names(writer)})
+            own = evidence.EvidenceWriter(evidence_tests_root, EVIDENCE_EXECUTION_ID)
+            barrier.wait(EVIDENCE_BARRIER_TIMEOUT_S)
+            outcomes[writer] = own.write(EVIDENCE_SCENARIO, record, capture)
+        except Exception as exc:
+            outcomes[writer] = exc
+
+    threads = [threading.Thread(target=write, args=(writer,)) for writer in range(EVIDENCE_WRITERS)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    winners = [writer for writer, outcome in outcomes.items() if isinstance(outcome, str)]
+    refusals = [outcome for outcome in outcomes.values() if not isinstance(outcome, str)]
+    assert sorted(outcomes) == list(range(EVIDENCE_WRITERS))
+    assert len(winners) == 1, outcomes
+    assert all(
+        isinstance(refusal, HarnessError) and str(refusal).startswith("evidence is immutable: ")
+        for refusal in refusals
+    ), refusals
+    folder = _evidence_folder(evidence_tests_root)
+    files = sorted(os.listdir(folder / evidence.DATASETS_DIR))
+    assert files == sorted(evidence.dataset_file_name(name) for name in names(winners[0]))
+    written = load_yaml(folder / evidence.RESULT_FILE)
+    assert sorted(written["capture_summary"]["datasets"]) == files
+
+
+# Ids of a valid form that the closed scenario id manifest does not hold: an
+# invented id, a number past its range, the names of the reports' own folders
+# and files, and a one-letter id.
+NON_MANIFEST_IDS = [
+    pytest.param(scenario_id, id=scenario_id)
+    for scenario_id in (
+        "NOT-A-SCENARIO",
+        "SEC-COSGN00C-normal-99",
+        "baselines",
+        "results",
+        "README.md",
+        "validation.yaml",
+        "x",
+    )
+]
+NON_MANIFEST_REFUSAL = "is not an id of the closed scenario id manifest"
+
+
+@pytest.mark.parametrize("as_object", [False, True], ids=["id", "scenario-object"])
+@pytest.mark.parametrize("scenario_id", NON_MANIFEST_IDS)
+def test_evidence_writer_refuses_an_id_outside_the_manifest(
+    evidence_tests_root: Path, scenario_id: str, as_object: bool
+) -> None:
+    assert scenario_id not in scenarios.ALL_IDS
+    scenario = SimpleNamespace(id=scenario_id) if as_object else scenario_id
+    with pytest.raises(ValueError, match=NON_MANIFEST_REFUSAL):
+        evidence.evidence_path(EVIDENCE_EXECUTION_ID, scenario_id)
+    writer = evidence.EvidenceWriter(evidence_tests_root, EVIDENCE_EXECUTION_ID)
+    with pytest.raises(ValueError, match=NON_MANIFEST_REFUSAL):
+        writer.write(scenario, {}, evidence.Capture())
+    assert list(evidence_tests_root.iterdir()) == []
+
+
+# Records that break the result record contract, as changes to the
+# conforming blocked record (None: the empty record), with problems
+# record_problems names for each.
+CONTRACT_BREAKING_RECORDS = [
+    pytest.param(
+        {"status": "bogus", "reason": "nonsense", "gap_id": None},
+        ("status: 'bogus' is not one of",),
+        id="bogus-status",
+    ),
+    pytest.param(
+        {
+            "status": results.STATUS_PASSED,
+            "reason": None,
+            "gap_id": None,
+            "source_identity": None,
+            "execution_fingerprint": None,
+            "decoded": None,
+        },
+        (
+            "source_identity: a passed record names the sources it ran",
+            "execution_fingerprint: a passed record names what it executed",
+            "decoded: a passed record carries the decoded outcome it asserted",
+        ),
+        id="passed-without-identity-fingerprint-or-outcome",
+    ),
+    pytest.param(
+        {"gap_id": None},
+        ("gap_id: a blocked record names its gap",),
+        id="blocked-without-gap",
+    ),
+    pytest.param(
+        None,
+        ("status: None is not one of", "scenario_digest: None is not a sha256 hex digest"),
+        id="empty-record",
+    ),
+]
+CONTRACT_REFUSAL = (
+    f"{EVIDENCE_SCENARIO}: evidence not written: "
+    "the result record breaks the result record contract: "
+)
+
+
+@pytest.mark.parametrize(("changes", "problems"), CONTRACT_BREAKING_RECORDS)
+def test_evidence_writer_refuses_a_record_that_breaks_the_contract(
+    evidence_tests_root: Path, changes: dict | None, problems: tuple[str, ...]
+) -> None:
+    record = {} if changes is None else {**_evidence_record(), **changes}
+    writer = evidence.EvidenceWriter(evidence_tests_root, EVIDENCE_EXECUTION_ID)
+    with pytest.raises(HarnessError) as caught:
+        writer.write(EVIDENCE_SCENARIO, record, evidence.Capture())
+    message = str(caught.value)
+    assert message.startswith(CONTRACT_REFUSAL)
+    for problem in problems:
+        assert problem in message
+    assert list(evidence_tests_root.iterdir()) == []
+
+
+def test_evidence_writer_writes_a_conforming_record_that_reads_back_equal(
+    evidence_tests_root: Path,
+) -> None:
+    record = _evidence_record()
+    capture = evidence.Capture(
+        datasets={"USRSEC": b"\x00\x01abc", "@CATALOG": b"X\n"}, sysout={"1/SYSOUT": b"RC 0\n"}
+    )
+    writer = evidence.EvidenceWriter(evidence_tests_root, EVIDENCE_EXECUTION_ID)
+    relative = writer.write(scenarios.get(EVIDENCE_SCENARIO), record, capture)
+    assert relative == record["evidence_path"]
+    folder = _evidence_folder(evidence_tests_root)
+    assert sorted(os.listdir(folder)) == sorted(
+        (
+            evidence.DATASETS_DIR,
+            evidence.ENVIRONMENT_FILE,
+            evidence.RESULT_FILE,
+            evidence.SCREENS_FILE,
+            evidence.SYSOUT_DIR,
+        )
+    )
+    written = load_yaml(folder / evidence.RESULT_FILE)
+    fields = {name: written.get(name) for name in results.RECORD_FIELDS}
+    assert fields == record
+    assert results.record_problems(fields) == []
