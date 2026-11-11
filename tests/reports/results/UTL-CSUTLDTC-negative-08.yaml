@@ -1,0 +1,19 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  messages:
+  - 'DTCDRV DATE=2022-07-18 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2509 Invalid Era     TstDate: ..2022-07- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A203235303920496E76616C6964204572612020202020547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D4D4D2D444420202020'
+  return_code: 0
+evidence_path: tests/reports/results/UTL-CSUTLDTC-negative-08.yaml
+execution_fingerprint: 72144fef9eb1f5e22893cfa33bf132b6470e6f2d3483952a8267332c9af9b9dc
+execution_id: gnucobol-batch-aac8e0310c7cd2c6
+gap_id: null
+reason: null
+scenario_digest: f110466873f967c94125ce4a68f7d3f83ae393d7a4cc03b64270f5791cf76c7a
+scenario_id: UTL-CSUTLDTC-negative-08
+source_identity:
+  commit: ab3f66e8e82d6a0f204d218435c52b0662a2f5df
+  tree: app
+  units:
+    app/cbl/CSUTLDTC.cbl: 58c165dcfc3927232c02c152c673e3dee551587b85e7fe56ca67325c980eebb6
+status: passed

@@ -1,0 +1,41 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  datasets:
+    HTMLFILE: []
+    STMTFILE: []
+  messages:
+  - 'Running JCL : CREASTMT Step STEP040 '
+  - 'DD Names from TIOT: '
+  - ': STEPLIB  -- valid UCB'
+  - ': SYSPRINT -- valid UCB'
+  - ': SYSOUT   -- valid UCB'
+  - ': TRNXFILE -- valid UCB'
+  - ': XREFFILE -- valid UCB'
+  - ': ACCTFILE -- valid UCB'
+  - ': CUSTFILE -- valid UCB'
+  - ': STMTFILE -- valid UCB'
+  - ': HTMLFILE -- valid UCB'
+  - ERROR OPENING TRNXFILE
+  - 'RETURN CODE: 35'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD
+  return_code: null
+evidence_path: tests/reports/results/RPT-CBSTM03A-recovery-01.yaml
+execution_fingerprint: b470f26d49d564966df5a51e11228fd676577c5ad291221a8e1ac0f6d230d549
+execution_id: gnucobol-batch-729492a1bce2dea3
+gap_id: null
+reason: null
+scenario_digest: 41a0da77b7ac1ad86f99618c07ebe2bff75eda7688dc73a4e3db3047102a49af
+scenario_id: RPT-CBSTM03A-recovery-01
+source_identity:
+  commit: ab3f66e8e82d6a0f204d218435c52b0662a2f5df
+  tree: app
+  units:
+    app/cbl/CBSTM03A.CBL: 54210164f798c7b38609400d846d4b03f46da2c67cdf69e968951cfc3e8caf3e
+    app/cbl/CBSTM03B.CBL: c183707f0dae0b5e9387373fc3624f0462ad95ccbbb6c8a34167591e206bcbf8
+    app/cpy/COSTM01.CPY: 660aa12a59dc411cf9e9b5ab2deb7b097802f73e4269518b7cea74d8f8e9df5c
+    app/cpy/CUSTREC.cpy: f87a0a041fbd8f38dc9c23a9519b917af9c7008527e9cb924f91c2fb4e0a2ecc
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+status: passed

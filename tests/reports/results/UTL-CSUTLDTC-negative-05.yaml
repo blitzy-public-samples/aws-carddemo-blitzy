@@ -1,0 +1,19 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  messages:
+  - 'DTCDRV DATE=2022-07-18 MASK=YYYY-XX-DD RC=0003 RESULT=0003Mesg Code: 2518 Bad Pic String  TstDate: ..2022-07- Mask used:YYYY-XX-DD     HEX=303030334D65736720436F64653A2032353138204261642050696320537472696E672020547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D58582D444420202020'
+  return_code: 0
+evidence_path: tests/reports/results/UTL-CSUTLDTC-negative-05.yaml
+execution_fingerprint: f2800173f772abfce90fb6edbe88b851822da12e65541e57673fbb09b8247922
+execution_id: gnucobol-batch-81c0acfd79db88ec
+gap_id: null
+reason: null
+scenario_digest: ab3512111a3e2fb9caad47fe42aaa65265b0ed445bfbf3d55f2bd2282bfb8837
+scenario_id: UTL-CSUTLDTC-negative-05
+source_identity:
+  commit: ab3f66e8e82d6a0f204d218435c52b0662a2f5df
+  tree: app
+  units:
+    app/cbl/CSUTLDTC.cbl: 58c165dcfc3927232c02c152c673e3dee551587b85e7fe56ca67325c980eebb6
+status: passed

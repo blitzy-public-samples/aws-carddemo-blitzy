@@ -1,0 +1,19 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  messages:
+  - 'DTCDRV DATE=20220718   MASK=YYYYMMDD   RC=0000 RESULT=0000Mesg Code: 0000 Date is valid   TstDate: ..20220718 Mask used:YYYYMMDD       HEX=303030304D65736720436F64653A203030303020446174652069732076616C6964202020547374446174653A20000A3230323230373138204D61736B20757365643A595959594D4D4444202020202020'
+  return_code: 0
+evidence_path: tests/reports/results/UTL-CSUTLDTC-normal-02.yaml
+execution_fingerprint: 029f9b42d160160f7c7ebe934835bc0b1e011885402b079014f066b77fae6b28
+execution_id: gnucobol-batch-4087dd2a66dab238
+gap_id: null
+reason: null
+scenario_digest: 0893115cf39cade9f9b07785b8279e66f59990a5f3441ee849436f2e0f13cfa4
+scenario_id: UTL-CSUTLDTC-normal-02
+source_identity:
+  commit: ab3f66e8e82d6a0f204d218435c52b0662a2f5df
+  tree: app
+  units:
+    app/cbl/CSUTLDTC.cbl: 58c165dcfc3927232c02c152c673e3dee551587b85e7fe56ca67325c980eebb6
+status: passed
