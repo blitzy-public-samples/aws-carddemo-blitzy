@@ -83,14 +83,14 @@ python tests/harness/report.py --import-unikix <execution_id>
 Imports and revalidations hold an exclusive lock on `tests/`, so they run one at a time. The import does the following, in order.
 
 1. **Read.** It reads every scenario directory of `tests/reports/unikix/<execution_id>/`. `result.yaml` and the other raw files stay immutable.
-2. **Check.** It checks each record's `source_identity` and `environment.yaml`. The identity must name the zip's UniKix copy as committed: tree `unikix-copy`, the zip's sha256, and unit hashes equal to the zip's members, covering every unit the scenario executes. `environment.yaml` must record the run date and the installation, deployment and version facts. A record that fails a check is reported and not imported. A record whose `execution_fingerprint` no longer equals the scenario's current one is skipped as stale.
+2. **Check.** It checks each record's `source_identity` and `environment.yaml`. The identity must name the zip's UniKix copy as committed: tree `unikix-copy`, the zip's sha256, and unit hashes equal to the zip's members, covering every unit the scenario executes. `environment.yaml` must record the run date and the installation, deployment and version facts. A record that fails a check is reported and not imported. A record whose `execution_fingerprint` no longer equals the scenario's current one is skipped as stale. A record not skipped as stale whose scenario fails the schema check of `tests/harness/scenarios.py` (one whose `expected` asserts only `return_code`, for example) is rejected: it is never judged, nothing is promoted for it, and its `validation.yaml` records `failing` with reason `error`, as a live run records such a scenario.
 3. **Eligibility.** The register entries GAP-DOC-020 to GAP-DOC-032 list, in `affected_inventory_ids`, every item whose behavior passes through a part of the UniKix copy that differs from `app/`: for example the `COACTUPC` amount edits (GAP-DOC-022), the `CSUTLDPY` date edits (GAP-DOC-024), the `CBSTM03A` JCL and DD display (GAP-DOC-020) and the region actions behind the no-op `SDSF.cbl` (GAP-DOC-031). A record counts toward its scenario's items only when none of those items is in those lists. Otherwise the record is kept and reported in the "UniKix-copy behavior" section of `tests/reports/coverage-report.md`: it never verifies the `app/` item, never replaces its baseline, and the GAP-DOC entry stays open.
    - **Exception:** the 6 UniKix-only `fct.lst` files (`DISCGRP`, `TCATBALF`, `TRANCATG`, `TRANSAIX`, `TRANTYPE`, `TRXFL`; GAP-DOC-030) have no `app/` counterpart. A record whose `source_identity` holds the zip's `fct.lst` hash verifies them, through scenario `CFG-FCT-normal-01`.
 4. **Promotion.** Each derived baseline whose scenario ran and whose items are all eligible becomes an observed baseline. Its `manifest.yaml` gets `capture_platform: unikix` with the `execution_id`, `execution_fingerprint` and `source_identity`; the business datasets' bytes are copied from the evidence into its `datasets/*.bin`; and the scenario loses its `inferred-not-observed` tag. The version bump follows the comparison:
    - **Equal decoded outcome:** **MINOR**.
    - **Different decoded outcome:** the observed outcome replaces the expected one, in the baseline and in the scenario, and the version bumps **MAJOR**. A register entry quoting both outcomes is opened: `doc-conflict` when the derived expectation came from the tech spec (`derived_from: tech-spec` in its manifest), `uncertain-purpose` otherwise.
 
-   Each promotion is journalled in `promotion.yaml` beside `result.yaml`. An import that stops part-way leaves the journal, and the next `--import-unikix` of the same execution completes the promotion from it.
+   Each promotion is journalled in `promotion.yaml` beside `result.yaml`. An import that stops part-way leaves the journal, and the next `--import-unikix` of the same execution completes the promotion from it. If the scenario has since come to fail the schema check, the promotion still completes, but the record is not judged: its `validation.yaml` records `failing` with reason `error`, and the record is rejected.
 5. **Revalidation without rerun.** It compares the immutable observed payload again, against the baseline as it now stands, through the same decoded comparison as a live run, and writes `validation.yaml` beside `result.yaml`. Promotion changes only tags, versions and expected values, so a pre-promotion failure never remains the verdict. A record with no outcome to compare (blocked, implemented-unexecuted, or failing on timeout) keeps its recorded status, reason and gap.
 6. **Inferred-not-observed entries.** A GAP-INF entry closes only when every item in its `affected_inventory_ids` is `verified` by current records. Otherwise the importer narrows `affected_inventory_ids` to the items still unverified, keeps the earlier list under `narrowed_from`, and leaves the entry open.
 7. **Unmatched messages.** Each observed `ERRMSG` or `@text` value that matches no inventory item becomes an inventory addition, with its reason in `header.changes`, and raises the total. GAP-UNC-012 lists the additions and stays open until a full `unikix` run reports none.
@@ -112,8 +112,9 @@ Run it after any later change to a scenario or baseline. It rewrites a `validati
 - **Change to anything that affects execution** (fixtures, faults, the AID sequence): the record is left `stale` until a new run, because re-comparing old output cannot show that the new inputs were executed.
 - **Pending promotion:** the record is skipped until `--import-unikix` of its execution completes the promotion.
 - **No recorded fingerprint:** the record is never revalidated.
+- **Scenario failing the schema check:** a record that would otherwise be rewritten is rejected and never judged; its `validation.yaml` records `failing` with reason `error`, as on import.
 
-It then judges the GAP-INF entries again and regenerates the reports. It exits 0 when it only leaves records stale, 1 when it rejects evidence or cannot compare a record, and 2 when it cannot run.
+Revalidation registers each cross-adapter divergence an eligible record now shows, as the import does: its `stub-limitation` or `uncertain-purpose` entry is added, reopened or extended, printed as `gap added …` or `gap updated …`, and no baseline or scenario changes ([Cross-adapter divergence](#cross-adapter-divergence)). It then judges the GAP-INF entries again. It regenerates the reports only when a `validation.yaml`, `gaps.yaml` or the inventory changed. Otherwise it writes nothing at all: when there is no `validation.yaml` to revalidate, or every one was left stale, rejected before it was written, or already held what revalidation would write, and the register is unchanged. It exits 0 when it only leaves records stale, 1 when it rejects evidence, cannot compare a record or refuses one whose scenario fails the schema check, and 2 when it cannot run.
 
 ## Comparing two executions
 
@@ -125,12 +126,12 @@ It compares each scenario's status and decoded outcome between two executions, t
 
 ## Cross-adapter divergence
 
-For a scenario both adapters run, the `gnucobol-batch` baseline stays authoritative. An eligible UniKix outcome that differs from it in decoded comparison makes the scenario `failing` with reason `cross-adapter-divergence`, and the import opens a register entry:
+For a scenario both adapters run, the `gnucobol-batch` baseline stays authoritative. An eligible UniKix outcome that differs from it in decoded comparison makes the scenario `failing` with reason `cross-adapter-divergence`. The import, and any later `--revalidate`, registers it in `tests/inventory/gaps.yaml` as:
 
 - `stub-limitation` when every difference lies within the scope of the GAP-STB entries the scenario cites;
 - `uncertain-purpose` otherwise.
 
-Neither the baseline nor the adapter is changed, and nothing under `app/` is changed.
+An entry of that category that already asks about the scenario's divergence keeps its id: a closed one reopens, and an open one adds the scenario's items it does not yet list. Otherwise a new entry is added. Neither the baseline nor the adapter is changed, and nothing under `app/` is changed.
 
 ## Committing evidence
 

@@ -161,6 +161,7 @@ __all__ = [
     "BumpCheckError",
     "BumpNeed",
     "Matcher",
+    "asserted_records",
     "bind_matchers",
     "bump",
     "bump_needed",
@@ -169,6 +170,7 @@ __all__ = [
     "compare",
     "decode_result",
     "expected_problems",
+    "field_identities",
     "is_matcher",
     "load",
     "main",
@@ -1617,6 +1619,71 @@ def decode_result(scenario: Any, result: _base.Result) -> dict:
     cannot be decoded is ``{"@error": <reason>}``. The result is plain
     YAML-safe data; raw bytes are never changed."""
     return _decode(scenario, result).decoded
+
+
+def asserted_records(
+    scenario: Any, result: _base.Result, names: Mapping[tuple[str, str], Sequence[str] | None]
+) -> dict[tuple[str, str], Any]:
+    """The records of ``result`` as ``compare`` reads an expected record's
+    fields: ``(section, name)`` of each ``datasets``/``file_state`` entry the
+    scenario's ``expected`` names -> one value per record, in
+    ``decode_result`` order.
+
+    Where ``names`` gives the entry field names, each record is ``{field:
+    value}`` holding every one of them the record denotes as
+    ``_View.field_value`` reads it: its decoded value, else, read from the raw
+    record, a group, a field path with its COBOL subscripts, one of the
+    dataset's own ``fields`` or ``@raw``. A name the record does not denote
+    is left out, and a line no raw record stands behind (``@CATALOG``,
+    ``@REGION-FILES``) stays the line. Every other record is as
+    ``decode_result`` gives it, and an entry whose records ``compare`` cannot
+    read (not produced, not decodable) is its ``decode_result`` marker. The
+    values are plain YAML-safe data; raw bytes are never changed. A raw
+    record a named group or own field cannot be decoded from raises
+    ``HarnessError``, as it does in ``compare``."""
+    bundle = _decode(scenario, result)
+    out: dict[tuple[str, str], Any] = {}
+    for key, view in bundle.views.items():
+        fields = list(names.get(key) or ())
+        if view.problem is not None or not fields:
+            out[key] = view.value()
+            continue
+        records: list[Any] = []
+        for index, record in enumerate(view.records):
+            if isinstance(record, str) and view.raw is None:
+                records.append(record)
+                continue
+            read: dict[str, Any] = {}
+            for name in fields:
+                value = view.field_value(index, name)
+                if value is not _ABSENT:
+                    read[name] = value
+            records.append(read)
+        out[key] = records
+    return out
+
+
+def field_identities(dataset: str, names: Iterable[str]) -> dict[str, str]:
+    """Each of ``names`` -> the field it denotes in a record of the
+    ``datasets``/``file_state`` entry ``dataset``, as ``compare`` reads it,
+    so the names of one field map to one value: a field path, with its COBOL
+    subscripts, maps to the ``decode_record`` key of that field with the same
+    subscripts (``ACCOUNT-RECORD.ACCT-CURR-BAL`` and ``ACCT-CURR-BAL`` both to
+    ``ACCT-CURR-BAL``, a group's path to its key); every other name, a
+    dataset's own field and ``@raw`` included, maps to itself. An entry
+    decoded without a layout (the line observations), or one
+    ``tests/fixtures/datasets.yaml`` does not define, maps every name to
+    itself."""
+    # The layout compare decodes the entry by: _dataset_view's, read from a
+    # result holding none of its records.
+    layout = _dataset_view(dataset, b"").layout
+    paths = _path_keys(layout) if layout is not None else {}
+    identities: dict[str, str] = {}
+    for name in names:
+        base, bracket, subscripts = name.partition("(")
+        key = paths.get(base)
+        identities[name] = name if key is None else key + bracket + subscripts
+    return identities
 
 
 # --------------------------------------------------------------------------

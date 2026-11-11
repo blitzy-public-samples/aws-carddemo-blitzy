@@ -1873,6 +1873,18 @@ def _imported_is_current(record: Mapping[str, Any], scenario: Any, baseline: Any
     return recorded is None or fingerprint.value == recorded
 
 
+def _schema_problem(scenario: Any) -> str | None:
+    """Why ``scenario`` fails the schema check (``harness.scenarios.validate``)
+    on one line, led by its id, or ``None`` when it passes. Every verdict
+    starts from that check: a live run records a scenario that fails it as
+    ``failing`` with reason ``error`` before anything executes, so neither an
+    imported nor a recorded outcome may pass it."""
+    problems = _scenarios.validate(scenario)
+    if not problems:
+        return None
+    return f"{scenario.id}: the scenario fails the schema check: {_clip('; '.join(problems), 600)}"
+
+
 def build_state() -> State:
     """Read the inventory, the gap register, the scenarios, their baselines
     and every record, and apply the status rules. An inventory header whose
@@ -1881,7 +1893,9 @@ def build_state() -> State:
     record that cannot be read, breaks the record contract or is refused as
     a symbolic link (``harness.results.refused_link``: the record file, the
     results folder or its parent) counts as no record, and is recorded in
-    ``unread_records`` and ``problems``."""
+    ``unread_records`` and ``problems``. A counted passed record of a
+    scenario that fails the schema check counts as failing with reason
+    ``error``, and ``problems`` names the scenario."""
     inventory = _inventory.load()
     header = dict(inventory["header"])
     _frozen_total(header)
@@ -1947,6 +1961,21 @@ def build_state() -> State:
                     counted.append(entry.record)
                 else:
                     stale.append(display_path(entry.path))
+        # A passed record counts only while its scenario passes the schema
+        # check: one edited to assert only return_code, or citing an entry the
+        # register no longer holds, verifies nothing, whatever wrote the
+        # record. Such a record counts as failing with reason error, in memory
+        # only, and --check names the scenario. Only scenarios with a counted
+        # passed record are checked.
+        if any(record.get("status") == _results.STATUS_PASSED for record in counted):
+            schema = _schema_problem(scenario)
+            if schema is not None:
+                problems.append(f"{schema}; its passed record counts as failing with reason error")
+                counted = [
+                    dict(record, status=_results.STATUS_FAILING, reason=_baselines.REASON_ERROR)
+                    if record.get("status") == _results.STATUS_PASSED else record
+                    for record in counted
+                ]
         statuses[scenario_id] = scenario_status(scenario, counted, stale, ineligible)
 
     item_scenarios = {item["id"]: universe.listed_by.get(item["id"], []) for item in items}
@@ -5226,27 +5255,45 @@ def _overlay_matchers(records: list, observed: Sequence[Any], spec: Any, exact: 
                     record[name] = dict(value)
 
 
+def _section_spec(expected: Mapping[str, Any], section: str, name: Any) -> Any:
+    """The value ``expected`` gives the ``datasets``/``file_state`` entry
+    ``name``, or ``None`` when it gives none."""
+    values = expected.get(section)
+    return values.get(name) if isinstance(values, Mapping) else None
+
+
+def _asserted_fields(stored: Any, own: Any) -> tuple[list, list[str] | None]:
+    """The expectations of one dataset that give records, the baseline's
+    (``stored``) first and then the scenario's (``own``), leaving out an
+    absent value and ``baseline``; and the field names their records name
+    (``_named_fields``: ``None`` for lines)."""
+    specs = [spec for spec in (stored, own) if spec is not None and spec != _scenarios.BASELINE]
+    items: list[Any] = []
+    for spec in specs:
+        positional, ordered = _spec_items(spec, True)
+        items.extend(positional + ordered)
+    return specs, _named_fields(items)
+
+
 def _restricted_records(observed: Any, stored: Any, own: Any, top_matchers: Iterable[str],
                         run_date: str | None, where: str) -> Any:
     """The observed records of one dataset as its promoted expectation,
     restricted to the fields the baseline's and the scenario's expectations
     (``stored``, ``own``) name, with every record or field matcher they give
     carried over where the observed value satisfies it, the baseline's first
-    (``_overlay_matchers``). The value keeps the form of the expectation it
-    replaces, and is ``{records: ...}`` whenever the scenario holds its own
-    value, which its schema takes only as a mapping; that form keeps every
-    field-level ``matchers`` entry either expectation held, the baseline's
-    where both name a field. ``ReportError`` when a record lacks a field the
-    expectations name; ``_RunDateUnknown`` when a matcher applies to a
-    promoted record and ``run_date`` is ``None``."""
+    (``_overlay_matchers``). ``observed`` holds the records as the comparison
+    reads those fields (``baselines.asserted_records``): a decoded field, a
+    group, a field path, one of the dataset's own fields or ``@raw``, each
+    kept under the name the expectation gives it. The value keeps the form of
+    the expectation it replaces, and is ``{records: ...}`` whenever the
+    scenario holds its own value, which its schema takes only as a mapping;
+    that form keeps every field-level ``matchers`` entry either expectation
+    held, the baseline's where both name a field. ``ReportError`` when a
+    record denotes no field by a name the expectations give; ``_RunDateUnknown``
+    when a matcher applies to a promoted record and ``run_date`` is ``None``."""
     if not isinstance(observed, list):
         return observed
-    specs = [spec for spec in (stored, own) if spec is not None and spec != _scenarios.BASELINE]
-    items: list[Any] = []
-    for spec in specs:
-        positional, ordered = _spec_items(spec, True)
-        items.extend(positional + ordered)
-    fields = _named_fields(items)
+    specs, fields = _asserted_fields(stored, own)
     records: list[Any] = []
     for number, record in enumerate(observed, start=1):
         if not isinstance(record, Mapping):
@@ -5257,8 +5304,10 @@ def _restricted_records(observed: Any, stored: Any, own: Any, top_matchers: Iter
             continue
         absent = [name for name in fields if name not in record]
         if absent:
-            raise ReportError(f"{where} record {number} has no decoded field {', '.join(absent)}, which the "
-                              f"expectation names, so its observed value cannot be promoted")
+            raise ReportError(f"{where} record {number} has no field {', '.join(absent)} as the comparison reads "
+                              f"it (a decoded field, a group, a field path, one of the dataset's own fields or "
+                              f"{_baselines.RAW_KEY}), which the expectation names, so its observed value cannot be "
+                              f"promoted")
         records.append({name: record[name] for name in fields})
     field_level = [
         {str(name): matcher for name, matcher in spec["matchers"].items() if _baselines.is_matcher(matcher)}
@@ -5357,12 +5406,15 @@ def observed_expectation(evidence: Evidence, scenario: Any, baseline: Any) -> di
     from the run's own observations (``evidence_result``, decoded), never from
     the normalized projection: exactly the keys the scenario's ``expected``
     names; each dataset's records restricted to the fields the old
-    expectations named; every screen step they assert, with every field they
-    name; the union of their top-level ``matchers``, or the baseline's alone
-    when the scenario names no ``matchers`` key; and each other matcher
-    they held, or a screen clock field's, wherever the observed value
-    satisfies it. The expectation is checked against the observed outcome
-    before it is returned (``_check_observed``).
+    expectations named, each read under its name as the comparison reads it
+    (``baselines.asserted_records``: a decoded field, a group, a field path,
+    one of the dataset's own fields or ``@raw``); every screen step they
+    assert, with every field they name; the union of their top-level
+    ``matchers``, or the baseline's alone when the scenario names no
+    ``matchers`` key; and each other matcher they held, or a screen clock
+    field's, wherever the observed value satisfies it. The expectation is
+    checked against the observed outcome before it is returned
+    (``_check_observed``).
     ``ReportError`` when the evidence keeps no observed payload or lacks an
     asserted observation, when a matcher has to be judged and the evidence
     records no run date (``evidence_run_date``), or when the check fails.
@@ -5372,12 +5424,20 @@ def observed_expectation(evidence: Evidence, scenario: Any, baseline: Any) -> di
                           f"normalized projection, so no observed outcome can replace the expectation")
     run_date = evidence_run_date(evidence.environment, scenario)
     result = evidence_result(evidence)
-    try:
-        decoded = _baselines.decode_result(scenario, result)
-    except HarnessError as exc:
-        raise ReportError(f"{scenario.id}: the observed outcome cannot be decoded: {_clip(exc, 300)}") from None
     old = baseline.expected if baseline is not None else {}
     inline = scenario.expected
+    # The field names each dataset's old expectations give its records, read
+    # from the observed records as the comparison reads them.
+    names = {
+        (section, str(name)): _asserted_fields(_section_spec(old, section, name), value)[1]
+        for section in ("datasets", "file_state") if isinstance(inline.get(section), Mapping)
+        for name, value in inline[section].items()
+    }
+    try:
+        decoded = _baselines.decode_result(scenario, result)
+        asserted = _baselines.asserted_records(scenario, result, names)
+    except HarnessError as exc:
+        raise ReportError(f"{scenario.id}: the observed outcome cannot be decoded: {_clip(exc, 300)}") from None
     top_matchers = {
         str(name) for expected in (old, inline) if isinstance(expected.get("matchers"), Mapping)
         for name, matcher in expected["matchers"].items() if _baselines.is_matcher(matcher)
@@ -5407,12 +5467,10 @@ def observed_expectation(evidence: Evidence, scenario: Any, baseline: Any) -> di
                     _overlay_matchers(lines, decoded[key], inline.get(key), False, (), run_date)
                 out[key] = lines
             elif key in ("datasets", "file_state"):
-                observed = decoded.get(key) or {}
-                stored = old.get(key) if isinstance(old.get(key), Mapping) else {}
                 own = inline[key] if isinstance(inline[key], Mapping) else {}
                 out[key] = {
-                    str(name): _restricted_records(observed.get(str(name)), stored.get(name), value, top_matchers,
-                                                   run_date, f"{scenario.id}: {key}.{name}")
+                    str(name): _restricted_records(asserted.get((key, str(name))), _section_spec(old, key, name),
+                                                   value, top_matchers, run_date, f"{scenario.id}: {key}.{name}")
                     for name, value in own.items()
                 }
             elif key == "screens":
@@ -5443,7 +5501,9 @@ def _inline_expectation(scenario: Any, observed: Mapping[str, Any]) -> dict:
     text only, and the scenario's lines are compared as an ordered
     subsequence, while the baseline keeps every line, matchers included. A
     ``matchers`` map the scenario does not name stays the baseline's alone,
-    which the comparison applies to the scenario's values as well."""
+    which the comparison applies to the scenario's values as well. Its
+    dataset records leave out the names the scenario schema refuses there
+    and only the baseline gave (``_inline_records``)."""
     inline = scenario.expected
     out: dict[str, Any] = {}
     for key, value in observed.items():
@@ -5455,12 +5515,51 @@ def _inline_expectation(scenario: Any, observed: Mapping[str, Any]) -> dict:
             out[key] = [line for line in value if not _baselines.is_matcher(line)]
         elif key in ("datasets", "file_state") and isinstance(inline.get(key), Mapping):
             out[key] = {
-                name: _scenarios.BASELINE if inline[key].get(name) == _scenarios.BASELINE else records
+                name: _scenarios.BASELINE if inline[key].get(name) == _scenarios.BASELINE
+                else _inline_records(str(name), records, inline[key].get(name))
                 for name, records in value.items()
             }
         else:
             out[key] = value
     return out
+
+
+def _inline_records(dataset: str, value: Any, own: Any) -> Any:
+    """The promoted value of the dataset ``dataset`` as the scenario's own
+    expectation ``own`` takes it. Each promoted record names every field
+    either old expectation named, under the name each gave, while the
+    scenario schema refuses ``@raw`` in an expected record and two names of
+    one field (a decoded key beside its field path). So a name only the
+    baseline gave is left out of each record when it is ``@raw`` or names a
+    field the record already holds under another name, the scenario's own
+    name first (``baselines.field_identities``); every other name and value
+    is kept as promoted."""
+    records = value.get("records") if isinstance(value, Mapping) and not _baselines.is_matcher(value) else value
+    if not isinstance(records, list):
+        return value
+    field_maps = [record for record in records if isinstance(record, Mapping) and not _baselines.is_matcher(record)]
+    names = sorted({str(name) for record in field_maps for name in record})
+    if not names:
+        return value
+    _specs, given = _asserted_fields(None, own)
+    mine = set(given or ())
+    identities = _baselines.field_identities(dataset, names)
+    kept_records: list[Any] = []
+    for record in records:
+        if not isinstance(record, Mapping) or _baselines.is_matcher(record):
+            kept_records.append(record)
+            continue
+        held = {identities[str(name)] for name in record if str(name) in mine}
+        kept: dict[str, Any] = {}
+        for name, field_value in record.items():
+            name = str(name)
+            if name not in mine:
+                if name == _baselines.RAW_KEY or identities[name] in held:
+                    continue
+                held.add(identities[name])
+            kept[name] = field_value
+        kept_records.append(kept)
+    return {**value, "records": kept_records} if isinstance(value, Mapping) else kept_records
 
 
 def _business_datasets(expected: Mapping[str, Any]) -> list[str]:
@@ -5780,6 +5879,18 @@ def _promotion_writes(evidence: Evidence, scenario: Any, journal: Mapping[str, A
     return _PromotionWrites(text if text != original else None, baseline, registered, gaps_document, gaps_text)
 
 
+class _SchemaRefusal(ReportError):
+    """A record refused because its scenario fails the schema check
+    (``_schema_problem``), raised once its ``validation.yaml`` records
+    ``failing`` with reason ``error``, as a live run records such a scenario,
+    so that the caller reports the record rejected."""
+
+
+def _schema_refusal(schema: str) -> _SchemaRefusal:
+    return _SchemaRefusal(f"{schema}; {VALIDATION_FILE} records failing (error), as a live run does, and it verifies "
+                          "nothing until the scenario passes the check")
+
+
 def _commit_promotion(evidence: Evidence, scenario: Any, journal: Mapping[str, Any], writes: _PromotionWrites,
                       document: dict, summary: ImportSummary, completing: bool) -> tuple[str, str | None]:
     """Make the writes of ``journal``, whose file is written, in the order a
@@ -5789,7 +5900,13 @@ def _commit_promotion(evidence: Evidence, scenario: Any, journal: Mapping[str, A
     ``validation.yaml`` of the promoted state as it reads back, and last the
     removal of the journal. The promotion, and the entry it added, reopened
     or extended, are reported only once committed. Returns the status and
-    reason written."""
+    reason written. The promoted scenario is judged only once it passes the
+    schema check; otherwise ``validation.yaml`` records failing with reason
+    error and ``_SchemaRefusal`` is raised after the journal is removed. Only
+    a completed journal can meet that, because an import checks the
+    scenario before it promotes; the check is not made before the writes,
+    because a scenario whose tag an interrupted promotion has already
+    removed fails it while its baseline is still the derived one."""
     scenario_id = scenario.id
     if writes.scenario_text is not None:
         write_text(scenario.path, writes.scenario_text)
@@ -5801,7 +5918,11 @@ def _commit_promotion(evidence: Evidence, scenario: Any, journal: Mapping[str, A
     baseline, problem = _load_baseline(scenario_id)
     if problem is not None:
         raise ReportError(f"{scenario_id}: the promoted baseline cannot be read: {problem}")
-    status, reason, _, projected = _judge(evidence, promoted, baseline)
+    schema = _schema_problem(promoted)
+    if schema is None:
+        status, reason, _, projected = _judge(evidence, promoted, baseline)
+    else:
+        status, reason, projected = _results.STATUS_FAILING, _baselines.REASON_ERROR, None
     _write_validation(evidence, _validation(evidence, promoted, baseline, status, reason, None, projected))
     _remove_evidence_file(evidence, PROMOTION_FILE)
     how = f"{journal['how']}, completing an interrupted promotion" if completing else journal["how"]
@@ -5814,6 +5935,8 @@ def _commit_promotion(evidence: Evidence, scenario: Any, journal: Mapping[str, A
             change = "reopened" if registered == "reopened" else "lists more items"
             summary.gaps_changed.append(f"{gap_id}: {change}, the observed outcome of {scenario_id} differs from its "
                                         f"derived expectation again in {journal['execution_id']}")
+    if schema is not None:
+        raise _schema_refusal(schema)
     return status, reason
 
 
@@ -6060,17 +6183,25 @@ def _divergence_entry(evidence: Evidence, scenario: Any, baseline: Any, diff: st
 
 def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
                        summary: ImportSummary | None, copy_gaps: _CopyGaps,
-                       zip_info: tuple[str, dict] | None) -> tuple[str, str | None] | None:
-    """Write the ``validation.yaml`` of one evidence directory; with a
-    ``document`` (import), promote an eligible derived baseline (or complete
-    the promotion an interrupted import journalled) and register a
-    divergence first, refusing a record whose comparison could not be made.
+                       zip_info: tuple[str, dict] | None, *, importing: bool) -> tuple[str, str | None] | None:
+    """Write the ``validation.yaml`` of one evidence directory. Only
+    ``importing`` (an import, not a revalidation) promotes an eligible
+    derived baseline, or completes the promotion an interrupted import
+    journalled. Given ``document``, the register the import or revalidation
+    writes, a cross-adapter divergence an eligible record shows adds,
+    reopens or extends its entry there, alike on import and revalidation,
+    and leaves the baseline and the scenario as they are. Promotion and
+    registration both need a ``summary`` to report what they change, and
+    both refuse a record whose comparison could not be made.
     A record is written only when the evidence holds every observation the
     current ``expected`` names (``missing_observations``), with one
     exception: on import, a record with no outcome to compare
     (``Evidence.ran`` false: blocked, implemented-unexecuted, or failing on
     timeout) keeps its recorded status, reason and gap whatever its evidence
-    holds; while revalidating it keeps them only under that rule. Returns
+    holds; while revalidating it keeps them only under that rule. A
+    scenario that fails the schema check is never judged and nothing is
+    promoted for it: ``validation.yaml`` records failing with reason error,
+    as a live run records it, and ``_SchemaRefusal`` is raised. Returns
     the status written, or ``None`` when nothing is written because the
     evidence no longer describes the scenario (its execution fingerprint
     changed, or it lacks such an observation) or a promotion is pending
@@ -6089,12 +6220,12 @@ def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
                 summary.skipped.append((scenario.id, "stale: the scenario's inputs or preconditions changed since "
                                                      "this execution"))
             return None
-    elif document is None:
+    elif not importing:
         if summary is not None:
             summary.skipped.append((scenario.id, "no execution fingerprint to confirm"))
         return None
     if _promotion_pending(evidence):
-        if document is None or summary is None:
+        if not importing or document is None or summary is None:
             if summary is not None:
                 summary.skipped.append((scenario.id, "an interrupted promotion is pending; run --import-unikix "
                                         f"{evidence.execution_id} to complete it"))
@@ -6107,11 +6238,19 @@ def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
     # A revalidation rewrites a record only from evidence holding every
     # observation the current expected names, a verdict with no outcome to
     # compare included; the import carries that verdict forward as recorded.
-    missing = missing_observations(evidence, scenario, baseline) if evidence.ran or document is None else []
+    missing = missing_observations(evidence, scenario, baseline) if evidence.ran or not importing else []
     if missing:
         if summary is not None:
             summary.skipped.append((scenario.id, f"stale: the evidence lacks {', '.join(missing)}"))
         return None
+    # Every verdict starts from the schema check, as in a live run: a scenario
+    # that fails it (one asserting only return_code, say) is failing with
+    # reason error whatever the evidence shows, and nothing is promoted.
+    schema = _schema_problem(scenario)
+    if schema is not None:
+        _write_validation(evidence, _validation(evidence, scenario, baseline, _results.STATUS_FAILING,
+                                                _baselines.REASON_ERROR, None, None))
+        raise _schema_refusal(schema)
     if not evidence.ran:
         record = _validation(evidence, scenario, baseline, str(raw.get("status")), raw.get("reason"),
                              raw.get("gap_id"), None)
@@ -6122,12 +6261,13 @@ def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
         raise ReportError(problem)
     eligible = _ineligibility(raw, scenario, copy_gaps, zip_info) is None
     status, reason, diff, projected = _judge(evidence, scenario, baseline)
-    importing = document is not None and summary is not None and eligible and baseline is not None
-    if importing and (baseline.derived or reason == _baselines.REASON_DIVERGENCE):
+    registering = document is not None and summary is not None and eligible and baseline is not None
+    promoting = registering and importing and baseline.derived
+    if promoting or (registering and reason == _baselines.REASON_DIVERGENCE):
         problem = _comparison_problem(evidence, scenario, baseline, reason, diff, projected)
         if problem is not None:
             raise ReportError(problem)
-        if baseline.derived:
+        if promoting:
             return _promote(evidence, scenario, baseline, status, diff, projected, document, summary)
         # The validation is written before the entry is registered, so a record
         # refused on the way registers nothing; a retry judges again and finds
@@ -6596,7 +6736,7 @@ def _problem_text(exc: BaseException) -> str:
     return _os_problem(exc) if isinstance(exc, OSError) else " ".join(str(exc).split()) or type(exc).__name__
 
 
-def _write_register(document: dict, original: str, closures: Sequence[_Closure], changes: list) -> None:
+def _write_register(document: dict, original: str, closures: Sequence[_Closure], changes: list) -> bool:
     """Write ``gaps.yaml`` from ``document`` when it differs from the file,
     the inventory update of every closing in ``closures`` recorded first
     (``inventory_tools.append_closures``), so that no entry closes without
@@ -6608,7 +6748,7 @@ def _write_register(document: dict, original: str, closures: Sequence[_Closure],
     concurrent additions and every other change, and propagate the error.
     Neither file records a closing the other lacks unless that withdrawal
     also fails, which ``_withdraw_closures`` reports with both failures and
-    the records left behind."""
+    the records left behind. Returns whether either file was written."""
     recorded: list[dict[str, Any]] = []
     try:
         if closures:
@@ -6620,6 +6760,8 @@ def _write_register(document: dict, original: str, closures: Sequence[_Closure],
                     closure.revert(changes, _problem_text(exc))
         if document != load_yaml(GAPS_FILE):
             _write_gaps(document, original)
+            return True
+        return bool(recorded)
     except BaseException as exc:
         if recorded:
             _withdraw_closures(recorded, exc)
@@ -6688,7 +6830,9 @@ def import_unikix(execution_id: str) -> ImportSummary:
     record stays open, listed with the reason under ``gaps_changed``;
     that is a register outcome, not a rejected record,
     so it leaves the exit status to the records. A record whose current
-    execution fingerprint cannot be computed is rejected. Imports and
+    execution fingerprint cannot be computed is rejected, and so is one
+    whose scenario fails the schema check, after its ``validation.yaml``
+    records failing with reason error and with nothing promoted. Imports and
     revalidations run one at a time (``_exclusive``). An invalid
     ``CARDDEMO_ADAPTER``, which the final regeneration refuses, raises
     ``ReportError`` before anything is written, and so do a missing
@@ -6747,7 +6891,8 @@ def _import_execution(execution_id: str, execution_dir: Path) -> ImportSummary:
             summary.rejected.append((evidence.scenario_id, "no scenario file"))
             continue
         try:
-            written = _validate_evidence(evidence, scenario, document, summary, state.copy_gaps, state.zip_info)
+            written = _validate_evidence(evidence, scenario, document, summary, state.copy_gaps, state.zip_info,
+                                         importing=True)
         except HarnessError as exc:
             summary.rejected.append((evidence.scenario_id, str(exc)))
             continue
@@ -6771,16 +6916,18 @@ class RevalidationSummary:
     """What one revalidation did, for the operator. ``left`` holds the
     records that stay stale until a new run because the execution no longer
     describes the scenario; ``rejected`` holds the records that could not be
-    revalidated at all and those whose observed payload could not be compared
-    with the baseline, whose ``validation.yaml`` records that comparison
-    error as a live run would. ``gaps_changed`` lists each change to the
-    register, an entry left open because the inventory could not record its
-    closing included; like a stale record, that leaves the exit status as
-    it is."""
+    revalidated at all, those whose observed payload could not be compared
+    with the baseline and those whose scenario fails the schema check, whose
+    ``validation.yaml`` records that error as a live run would.
+    ``gaps_added`` and ``gaps_changed`` list each change to the register: the
+    entry a cross-adapter divergence adds, reopens or extends, and an entry
+    left open because the inventory could not record its closing; like a
+    stale record, that leaves the exit status as it is."""
 
     revalidated: list = field(default_factory=list)  # (execution/scenario, status, reason)
     left: list = field(default_factory=list)  # (execution/scenario, why it stays stale)
     rejected: list = field(default_factory=list)  # (execution/scenario, why it cannot be revalidated or compared)
+    gaps_added: list = field(default_factory=list)
     gaps_changed: list = field(default_factory=list)
 
     def lines(self) -> list[str]:
@@ -6790,6 +6937,7 @@ class RevalidationSummary:
         ]
         out += [f"left {label}: {why}" for label, why in self.left]
         out += [f"rejected {label}: {why}" for label, why in self.rejected]
+        out += [f"gap added {gap_id}" for gap_id in self.gaps_added]
         out += [f"gap updated {text}" for text in self.gaps_changed]
         return out
 
@@ -6801,16 +6949,23 @@ def revalidate() -> RevalidationSummary:
     in the evidence) and rewrite it; leave every other one, stale until a new
     run; reject the evidence that fails its checks, whose scenario file is
     gone or that cannot be judged, and the records whose observed payload
-    cannot be compared with the baseline (rewritten failing with reason
-    error, as a live run records it, and reported with the comparison's
-    diagnostic). Then judge the inferred-not-observed entries of
+    cannot be compared with the baseline or whose scenario fails the schema
+    check (rewritten failing with reason error, as a live run records it,
+    and reported with the comparison's diagnostic or the schema problems).
+    Register each cross-adapter divergence an eligible record now shows as
+    the import does: its stub-limitation or uncertain-purpose entry is
+    added, reopened or extended, and no baseline or scenario changes.
+    Then judge the inferred-not-observed entries of
     ``gaps.yaml`` again, closing only once the inventory holds the additions
     the closing evidence entails and an activation it does not contradict.
     Write the register when it changes, each closing's reason recorded first
     in the inventory's ``header.changes`` (an entry whose evidence the
     inventory does not yet reflect or whose closing it cannot record stays
     open, listed with the reason under ``gaps_changed``), and regenerate the
-    reports. A symbolic link at
+    reports when a ``validation.yaml``, ``gaps.yaml`` or the inventory
+    changed. Otherwise (no ``validation.yaml`` to revalidate, or every one
+    left stale, rejected before it was written or rewritten unchanged, and
+    the register unchanged) nothing is written at all. A symbolic link at
     ``tests/reports`` or ``tests/reports/unikix`` raises ``ReportError``
     before anything is read or written; one in place of an execution or
     scenario directory is rejected, and reported as such. An invalid
@@ -6846,6 +7001,15 @@ def _comparison_error(evidence: Evidence, scenario: Any) -> str | None:
     return _clip("; ".join(line for line in lines if line) or fallback, 600)
 
 
+def _validation_bytes(path: Path) -> bytes | None:
+    """The bytes of the ``validation.yaml`` at ``path``; ``None`` when it is
+    a symbolic link, which is never read through, or cannot be read."""
+    try:
+        return None if path.is_symlink() else path.read_bytes()
+    except OSError:
+        return None
+
+
 def _revalidate() -> RevalidationSummary:
     """The revalidation itself, run while the lock is held."""
     result = RevalidationSummary()
@@ -6855,32 +7019,42 @@ def _revalidate() -> RevalidationSummary:
     original = GAPS_FILE.read_text(encoding="utf-8")
     document = load_yaml(GAPS_FILE)
     links: list[Path] = []
+    rewritten = False  # whether any validation.yaml changed
     for execution_dir in _evidence_executions(evidence_dir, links):
         for scenario_dir in _scenario_dirs(execution_dir, links):
             label = f"{execution_dir.name}/{scenario_dir.name}"
+            path = scenario_dir / VALIDATION_FILE
             try:
-                if not (scenario_dir / VALIDATION_FILE).is_file():
+                if not path.is_file():
                     continue
             except OSError as exc:
-                result.rejected.append((label, f"cannot read {_os_problem(exc, scenario_dir / VALIDATION_FILE)}"))
+                result.rejected.append((label, f"cannot read {_os_problem(exc, path)}"))
                 continue
             evidence, why = read_evidence(execution_dir.name, scenario_dir, state.zip_info)
             if evidence is None:
                 result.rejected.append((label, why))
                 continue
             summary = ImportSummary(execution_dir.name)
+            before = _validation_bytes(path)
             try:
                 scenario = _scenarios.get(scenario_dir.name, missing_ok=True)
                 if scenario is None:
                     result.rejected.append((label, "no scenario file"))
                     continue
-                written = _validate_evidence(evidence, scenario, None, summary, state.copy_gaps, state.zip_info)
+                written = _validate_evidence(evidence, scenario, document, summary, state.copy_gaps, state.zip_info,
+                                             importing=False)
             except HarnessError as exc:
                 result.rejected.append((label, str(exc)))
                 continue
             except OSError as exc:
                 result.rejected.append((label, _os_problem(exc)))
                 continue
+            finally:
+                # A record refused after its validation.yaml was written (the
+                # schema check's refusal) changed that file too.
+                rewritten = rewritten or _validation_bytes(path) != before
+            result.gaps_added.extend(summary.gaps_added)
+            result.gaps_changed.extend(summary.gaps_changed)
             if written is None:
                 result.left.append((label, "; ".join(why for _, why in summary.skipped)))
                 continue
@@ -6893,8 +7067,11 @@ def _revalidate() -> RevalidationSummary:
     result.rejected.extend((link.relative_to(evidence_dir).as_posix(), _ENTRY_LINK) for link in links)
     closures: list[_Closure] = []
     _settle_inferred(document, build_state(), None, result.gaps_changed, closures)
-    _write_register(document, original, closures, result.gaps_changed)
-    regenerate()
+    # Regenerate only when a validation.yaml, gaps.yaml or the inventory
+    # changed: otherwise this run changed nothing the reports are computed
+    # from, and regenerating would rewrite only the host's Environment section.
+    if _write_register(document, original, closures, result.gaps_changed) or rewritten:
+        regenerate()
     return result
 
 

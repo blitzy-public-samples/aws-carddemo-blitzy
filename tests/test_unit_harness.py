@@ -269,6 +269,16 @@ payload holding every observation the scenario and its baseline name;
 without one it writes nothing and reports the record stale for lacking
 ``observed``.
 
+Schema gate: ``report._validate_evidence``, on an eligible, passed UniKix
+record with a current execution fingerprint of a scenario edited to assert
+only its return code (inputs and preconditions kept), must write its
+``validation.yaml`` failing with reason ``error`` and raise
+``_SchemaRefusal`` naming the schema problem, on import as on revalidation,
+and never promote the derived baseline or write a baseline. ``build_state``,
+given a current passed gnucobol-batch or imported UniKix record of such a
+scenario, must count it as failing with reason ``error``, leave every item
+it lists unverified and name the scenario among its problems.
+
 Recurring questions: ``report._add_gap``, on in-memory registers whose
 ``gaps`` is a list of entries or a mapping of gap id to entry, must reopen
 the closed entry of the raise's category that asks its question (the text of
@@ -281,6 +291,38 @@ all; give a new id, the category's next free number, only to another
 question or to the same question in another category; and refuse, changing
 nothing, an entry asking the question whose ``affected_inventory_ids`` is
 not a list.
+
+Divergence on revalidation: ``report._validate_evidence``, revalidating an
+eligible UniKix record whose observed messages differ from its scenario's
+authoritative gnucobol-batch baseline, must write it failing with reason
+``cross-adapter-divergence`` and register the divergence in the register it
+is given as the import does: add an entry when none asks the question,
+reopen a closed one, add the scenario's item to an open one and change
+nothing when an open one lists it. The baseline and the scenario stay byte
+for byte as they were, and nothing is promoted.
+
+Revalidation writes: ``report.revalidate``, on an evidence tree of the
+case's own and copies of the register and inventory, must hand each record
+its loaded register while not importing, report each revalidated, stale and
+rejected record and each entry a divergence adds, write ``gaps.yaml`` only
+when the register changed, and regenerate the reports only when a
+``validation.yaml`` (a schema-refused one included) or the register
+changed: with no ``validation.yaml`` to revalidate, or a record left stale,
+rejected before anything was written or rewritten unchanged, it writes
+nothing.
+
+Promotion field names: ``report.observed_expectation``, on in-memory copies
+of the derived DAT-ACCTFILE-recovery-01 whose evidence observes another
+outcome than the derived one, must promote a dataset expectation under every
+name the comparison reads a record field by (a decoded field, a field path, a
+group, one of the dataset's own fields and ``@raw``), each name holding the
+observed value read from the raw record, and the line observation
+``@CATALOG`` as its lines. A run-date matcher the baseline gives a
+dataset's own field must be carried where the observed value satisfies it.
+The promoted scenario must keep its own names, leave out ``@raw`` and the
+baseline's second name of a field it names, pass the schema, and pass
+``baselines.compare`` with the promoted baseline. A name that denotes no
+field of the record must be refused.
 
 Closure records: ``inventory_tools.append_closures``, on copies of the
 committed inventory and register in a repository root of the case's own,
@@ -5662,7 +5704,7 @@ NON_RAN_RECORDS = [
     pytest.param(results.STATUS_UNEXECUTED, "missing-prerequisite", "GAP-MIS-014", id="implemented-unexecuted"),
     pytest.param(results.STATUS_FAILING, "timeout", None, id="failing-timeout"),
 ]
-# Each judgement: the import (a gaps document) or a revalidation, whether the
+# Each judgement: the import or a revalidation (``importing``), whether the
 # observed payload holds every observation the scenario and its baseline name
 # or is absent, and whether the recorded verdict is then written.
 NON_RAN_JUDGEMENTS = [
@@ -5722,10 +5764,11 @@ def test_a_verdict_with_no_outcome_to_compare_is_revalidated_only_from_every_obs
     writes: list[dict] = []
     monkeypatch.setattr(report, "current_fingerprint", lambda current: (NON_RAN_FINGERPRINT, None))
     monkeypatch.setattr(report, "_write_validation", lambda evidence, validation: writes.append(dict(validation)))
-    document: dict | None = {} if importing else None
+    document: dict = {}
     summary = report.ImportSummary(EVIDENCE_EXECUTION_ID)
-    outcome = report._validate_evidence(found, scenario, document, summary, report._CopyGaps({}, frozenset()), None)
-    assert document == ({} if importing else None) and summary.gaps_added == []
+    outcome = report._validate_evidence(found, scenario, document, summary, report._CopyGaps({}, frozenset()), None,
+                                        importing=importing)
+    assert document == {} and summary.gaps_added == []
     if not written:
         assert outcome is None and writes == []
         assert summary.skipped == [(NON_RAN_SCENARIO, f"stale: the evidence lacks {NON_RAN_LACKS}")]
@@ -5742,6 +5785,148 @@ def test_a_verdict_with_no_outcome_to_compare_is_revalidated_only_from_every_obs
     }
     assert writes[0]["baseline_version"] == baseline.version
     assert writes[0]["scenario_digest"] == scenarios.digest(scenario)
+
+
+# Schema gate: report._validate_evidence on an eligible, passed UniKix record,
+# whose execution fingerprint is current, of a scenario edited to assert only
+# its return code (_return_code_only): on import of CFG-OPENFIL-normal-01,
+# whose derived baseline an agreeing record would promote, and of
+# DAT-READACCT-normal-01, whose gnucobol-batch baseline it is compared with,
+# and on revalidation of either. The validation.yaml writer records the
+# record instead of writing it, and a promotion or baseline write fails the
+# case.
+SCHEMA_GATE_CASES = [
+    pytest.param("CFG-OPENFIL-normal-01", True, id="import-derived"),
+    pytest.param("DAT-READACCT-normal-01", True, id="import-observed"),
+    pytest.param("CFG-OPENFIL-normal-01", False, id="revalidation-derived"),
+    pytest.param("DAT-READACCT-normal-01", False, id="revalidation-observed"),
+]
+SCHEMA_GATE_FINGERPRINT = "6" * 64
+# A UniKix-copy identity of the record contract's shape; eligibility is
+# granted by the case, so no zip is read.
+SCHEMA_GATE_IDENTITY = {"tree": "unikix-copy", "commit": "a" * 40, "zip_sha256": "7" * 64, "units": {}}
+RETURN_CODE_ONLY = "asserts no business outcome beyond return_code"
+# report.build_state over the committed tree with SCHEMA_DEMOTION_SCENARIO
+# replaced by its return-code-only copy, given a current passed record of the
+# copy on each adapter: the committed gnucobol-batch record carrying the
+# copy's digest, or an eligible, current imported UniKix record.
+SCHEMA_DEMOTION_SCENARIO = "DAT-READACCT-normal-01"
+SCHEMA_DEMOTION_ADAPTERS = [
+    pytest.param(results.GNUCOBOL, id="gnucobol-batch"),
+    pytest.param(results.UNIKIX, id="unikix"),
+]
+
+
+def _return_code_only(scenario: scenarios.Scenario) -> scenarios.Scenario:
+    """``scenario`` with every business assertion removed: its ``expected``
+    holds only its ``return_code``, and its inputs and preconditions, so its
+    execution fingerprint, are kept."""
+    expected = {"return_code": scenario.expected["return_code"]}
+    return dataclasses.replace(scenario, data=dict(scenario.data, expected=expected), expected=expected)
+
+
+def _refuse(what: str) -> Callable[..., None]:
+    def refused(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"{what} was called")
+
+    return refused
+
+
+@pytest.mark.parametrize(("scenario_id", "importing"), SCHEMA_GATE_CASES)
+def test_a_scenario_failing_the_schema_check_is_validated_failing_and_never_promoted(
+    monkeypatch: pytest.MonkeyPatch,
+    work_root_case: Path,
+    scenario_id: str,
+    importing: bool,
+) -> None:
+    committed = scenarios.get(scenario_id)
+    assert scenarios.validate(committed) == []
+    scenario = _return_code_only(committed)
+    baseline = baselines.load(scenario_id)
+    code = scenario.expected["return_code"]
+    record = results.build_record(
+        scenario,
+        results.UNIKIX,
+        results.STATUS_PASSED,
+        decoded={"return_code": code},
+        execution_fingerprint=SCHEMA_GATE_FINGERPRINT,
+        source_identity=SCHEMA_GATE_IDENTITY,
+        execution_id=EVIDENCE_EXECUTION_ID,
+    )
+    raw = dict(record, observed={"return_code": code, "messages": [], "screens": []})
+    found = report.Evidence(EVIDENCE_EXECUTION_ID, scenario_id, work_root_case / scenario_id, raw, {}, {})
+    assert found.ran and report.missing_observations(found, scenario, baseline) == []
+    writes: list[dict] = []
+    monkeypatch.setattr(report, "current_fingerprint", lambda current: (SCHEMA_GATE_FINGERPRINT, None))
+    monkeypatch.setattr(report, "_write_validation", lambda evidence, validation: writes.append(dict(validation)))
+    monkeypatch.setattr(report, "_ineligibility", lambda *args: None)
+    monkeypatch.setattr(report, "_promote", _refuse("the promotion"))
+    monkeypatch.setattr(baselines, "write", _refuse("baselines.write"))
+    document: dict = {"gaps": []}
+    summary = report.ImportSummary(EVIDENCE_EXECUTION_ID)
+    with pytest.raises(report._SchemaRefusal) as refused:
+        report._validate_evidence(found, scenario, document, summary, report._CopyGaps({}, frozenset()), None,
+                                  importing=importing)
+    assert str(refused.value).startswith(f"{scenario_id}: the scenario fails the schema check: ")
+    assert RETURN_CODE_ONLY in str(refused.value) and "records failing (error)" in str(refused.value)
+    assert len(writes) == 1
+    written = {name: writes[0][name] for name in ("status", "reason", "gap_id", "decoded", "execution_fingerprint")}
+    assert written == {
+        "status": results.STATUS_FAILING,
+        "reason": baselines.REASON_ERROR,
+        "gap_id": None,
+        "decoded": None,
+        "execution_fingerprint": SCHEMA_GATE_FINGERPRINT,
+    }
+    assert writes[0]["baseline_version"] == baseline.version
+    assert writes[0]["scenario_digest"] == scenarios.digest(scenario) != scenarios.digest(committed)
+    assert document == {"gaps": []}
+    assert (summary.promoted, summary.gaps_added, summary.gaps_changed, summary.skipped) == ([], [], [], [])
+
+
+@pytest.mark.parametrize("adapter", SCHEMA_DEMOTION_ADAPTERS)
+def test_a_passed_record_of_a_scenario_failing_the_schema_check_verifies_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    adapter: str,
+) -> None:
+    scenario = _return_code_only(scenarios.get(SCHEMA_DEMOTION_SCENARIO))
+    present = report._present_scenarios
+
+    def with_copy() -> tuple[dict, list[str]]:
+        found, problems = present()
+        return dict(found, **{SCHEMA_DEMOTION_SCENARIO: scenario}), problems
+
+    monkeypatch.setattr(report, "_present_scenarios", with_copy)
+    recorded = results.load(SCHEMA_DEMOTION_SCENARIO)
+    assert recorded is not None and recorded["status"] == results.STATUS_PASSED
+    passed = dict(recorded, scenario_digest=scenarios.digest(scenario))
+    if adapter == results.GNUCOBOL:
+        load = results.load
+        monkeypatch.setattr(results, "load", lambda scenario_id, **kwargs: (
+            dict(passed) if scenario_id == SCHEMA_DEMOTION_SCENARIO else load(scenario_id, **kwargs)))
+    else:
+        # The committed gnucobol-batch record no longer matches the copy's
+        # digest, so it is stale and only the imported record counts.
+        passed = dict(passed, adapter=results.UNIKIX, execution_id=EVIDENCE_EXECUTION_ID,
+                      evidence_path=results.evidence_path_for(results.UNIKIX, SCHEMA_DEMOTION_SCENARIO,
+                                                              EVIDENCE_EXECUTION_ID))
+        path = UNIKIX_EVIDENCE_DIR / EVIDENCE_EXECUTION_ID / SCHEMA_DEMOTION_SCENARIO / report.VALIDATION_FILE
+        imported = report.UnikixRecord(EVIDENCE_EXECUTION_ID, SCHEMA_DEMOTION_SCENARIO, passed, path)
+        monkeypatch.setattr(report, "load_unikix_records", lambda *args: ([imported], []))
+        monkeypatch.setattr(report, "_ineligibility", lambda *args: None)
+        monkeypatch.setattr(report, "_imported_is_current", lambda *args: True)
+    state = report.build_state()
+    status = state.statuses[SCHEMA_DEMOTION_SCENARIO]
+    assert (status.status, status.reason) == (results.STATUS_FAILING, baselines.REASON_ERROR)
+    counted = [(record["adapter"], record["execution_id"], record["status"], record["reason"])
+               for record in status.records]
+    assert counted == [(adapter, passed["execution_id"], results.STATUS_FAILING, baselines.REASON_ERROR)]
+    assert passed["status"] == results.STATUS_PASSED  # demoted in memory only
+    assert scenario.inventory_ids and all(
+        state.item_status[str(item_id)] == report.FAILING for item_id in scenario.inventory_ids)
+    named = [problem for problem in state.problems
+             if problem.startswith(f"{SCHEMA_DEMOTION_SCENARIO}: the scenario fails the schema check: ")]
+    assert len(named) == 1 and RETURN_CODE_ONLY in named[0], state.problems
 
 
 # Recurring questions: report._add_gap on in-memory registers, whose entries
@@ -5877,6 +6062,407 @@ def test_add_gap_refuses_an_entry_whose_items_are_not_a_list(form: str) -> None:
         report._add_gap(document, "uncertain-purpose", _raised_unknown(RAISE_QUESTION, RAISE_RECURRING),
                         RAISE_ITEMS, RAISE_NEEDED)
     assert document == before
+
+
+# Promotion field names: report.observed_expectation on in-memory copies of
+# PROMOTION_SCENARIO, a derived baseline only unikix runs, and of its
+# baseline, whose ACCTDATA (file_state) or, added here, DATEPARM (datasets)
+# records name the fields of a case. Their derived values are read from the
+# repository accounts and PROMOTION_DATEPARM's first record; the evidence,
+# in memory and under EVIDENCE_EXECUTION_ID, observes PROMOTION_BALANCE as
+# the first account's ACCT-CURR-BAL, or DATEPARM's second record, so the
+# derived expectation fails and an import would promote MAJOR. Nothing is
+# written.
+PROMOTION_SCENARIO = "DAT-ACCTFILE-recovery-01"
+PROMOTION_ACCOUNT_LAYOUT = "CVACT01Y/ACCOUNT-RECORD"
+PROMOTION_BALANCE = "999.00"
+PROMOTION_DATEPARM = (b"2022-01-01 2022-07-06".ljust(80), b"2022-02-01 2022-07-06".ljust(80))
+# Each case: the dataset, its section, the names the baseline's records give,
+# the names the scenario's records give (None: it defers with 'baseline',
+# since its schema refuses @raw in an expected record) and the names the
+# promoted scenario's records keep (None: 'baseline'). The promoted baseline
+# keeps every name either gives.
+PROMOTION_FORMS = [
+    pytest.param("ACCTDATA", "file_state", ("ACCT-ID", "ACCT-CURR-BAL"), ("ACCT-ID", "ACCT-CURR-BAL"),
+                 ("ACCT-ID", "ACCT-CURR-BAL"), id="decoded-field"),
+    pytest.param("ACCTDATA", "file_state", ("ACCT-ID", "ACCOUNT-RECORD.ACCT-CURR-BAL"),
+                 ("ACCT-ID", "ACCOUNT-RECORD.ACCT-CURR-BAL"), ("ACCT-ID", "ACCOUNT-RECORD.ACCT-CURR-BAL"),
+                 id="field-path"),
+    pytest.param("ACCTDATA", "file_state", ("ACCT-ID", "ACCOUNT-RECORD"), ("ACCT-ID", "ACCOUNT-RECORD"),
+                 ("ACCT-ID", "ACCOUNT-RECORD"), id="group"),
+    pytest.param("DATEPARM", "datasets", ("START-DATE", "END-DATE"), ("START-DATE", "END-DATE"),
+                 ("START-DATE", "END-DATE"), id="dataset-own-field"),
+    pytest.param("ACCTDATA", "file_state", ("@raw",), None, None, id="raw"),
+    pytest.param("ACCTDATA", "file_state", ("ACCT-ID", "ACCT-CURR-BAL", "ACCT-ACTIVE-STATUS"),
+                 ("ACCT-ID", "ACCOUNT-RECORD.ACCT-CURR-BAL"),
+                 ("ACCT-ID", "ACCT-ACTIVE-STATUS", "ACCOUNT-RECORD.ACCT-CURR-BAL"), id="field-path-beside-its-key"),
+    pytest.param("ACCTDATA", "file_state", ("ACCT-ID", "@raw"), ("ACCT-ID",), ("ACCT-ID",), id="raw-beside-a-field"),
+]
+# The run date the evidence records for the matcher case, DATEPARM's END-DATE
+# in both of PROMOTION_DATEPARM's records, and the matcher the baseline gives
+# that field, one of DATEPARM's own fields, which its decoded line lacks.
+PROMOTION_RUN_DATE = "2022-07-06"
+PROMOTION_END_DATE_MATCHER = {"match": "run-date"}
+# Names the baseline gives that denote no field of an ACCTDATA record: a
+# field path the layout lacks, and a subscript on a field that is no table
+# item.
+PROMOTION_UNRESOLVED = [
+    pytest.param("ACCOUNT-RECORD.ACCT-NO-SUCH-FIELD", id="unknown-field-path"),
+    pytest.param("ACCT-CURR-BAL(1)", id="subscript-outside-a-table"),
+]
+
+
+def _promotion_value(dataset: str, record: bytes, name: str) -> str:
+    """Field ``name`` of the raw ``record`` of ``dataset``, read here from its
+    bytes rather than through the harness's resolver: the whole record for
+    ``@raw``; a dataset's own field, or a group of its layout, as the text of
+    its bytes; any other layout field, named by its key or its path, as
+    ``codec.decode_record`` decodes it."""
+    text = codec.ENCODINGS["ascii"]
+    if name == baselines.RAW_KEY:
+        return record.decode(text)
+    own = {field.name: (field.offset, field.length) for field in fixtures.spec(dataset).fields}
+    layout = fixtures.spec(dataset).layout
+    entry = layouts.field_map(layout)[name] if name not in own else None
+    if entry is None or entry["type"] == "group":
+        offset, length = own[name] if entry is None else (entry["offset"], entry["length"])
+        return record[offset:offset + length].decode(text)
+    return codec.to_plain(codec.decode_record(record, layout)[codec.field_key(entry, layout)])
+
+
+def _promotion_records(dataset: str, data: bytes, names: tuple[str, ...]) -> list[dict]:
+    """Every record of ``data``, a ``dataset`` file, as ``{name: value}`` over
+    ``names`` (``_promotion_value``)."""
+    length = fixtures.spec(dataset).record_length
+    return [{name: _promotion_value(dataset, data[start:start + length], name) for name in names}
+            for start in range(0, len(data), length)]
+
+
+def _promotion_case(
+    dataset: str, section: str, stored_names: tuple[str, ...], own_names: tuple[str, ...] | None
+) -> tuple[scenarios.Scenario, baselines.Baseline, report.Evidence]:
+    """PROMOTION_SCENARIO and its baseline, their ``dataset`` records naming
+    ``stored_names`` and ``own_names`` with the derived values, and the
+    evidence of a run that observes every other outcome they assert as
+    derived and ``dataset`` as observed."""
+    scenario = scenarios.get(PROMOTION_SCENARIO)
+    baseline = baselines.load(PROMOTION_SCENARIO)
+    accounts = fixtures.repository_dataset("ACCTDATA-PS")
+    length = fixtures.spec("ACCTDATA").record_length
+    first = codec.encode_record({"ACCT-CURR-BAL": PROMOTION_BALANCE}, PROMOTION_ACCOUNT_LAYOUT, base=accounts[:length])
+    files = {"ACCTDATA": first + accounts[length:]}
+    derived = accounts
+    if dataset == "DATEPARM":
+        files = {"ACCTDATA": accounts, "DATEPARM": PROMOTION_DATEPARM[1]}
+        derived = PROMOTION_DATEPARM[0]
+    catalog = baseline.expected["file_state"]["@CATALOG"]["contains"]
+    files["@CATALOG"] = "".join(f"{line}\n" for line in catalog).encode("ascii")
+    stored = {**baseline.expected, section: {**baseline.expected.get(section, {}),
+                                             dataset: _promotion_records(dataset, derived, stored_names)}}
+    own = scenarios.BASELINE if own_names is None else {"records": _promotion_records(dataset, derived, own_names)}
+    expected = {**scenario.expected, section: {**scenario.expected.get(section, {}), dataset: own}}
+    scenario = dataclasses.replace(scenario, expected=expected, data={**scenario.data, "expected": expected})
+    baseline = baselines.Baseline(PROMOTION_SCENARIO, stored, dict(baseline.manifest), {})
+    observed = {"return_code": baseline.expected["return_code"], "messages": list(baseline.expected["messages"]),
+                "screens": []}
+    found = report.Evidence(EVIDENCE_EXECUTION_ID, PROMOTION_SCENARIO,
+                            UNIKIX_EVIDENCE_DIR / EVIDENCE_EXECUTION_ID / PROMOTION_SCENARIO,
+                            {"observed": observed}, {}, files)
+    return scenario, baseline, found
+
+
+@pytest.mark.parametrize(("dataset", "section", "stored_names", "own_names", "inline_names"), PROMOTION_FORMS)
+def test_observed_expectation_promotes_each_name_the_comparison_reads(
+    dataset: str,
+    section: str,
+    stored_names: tuple[str, ...],
+    own_names: tuple[str, ...] | None,
+    inline_names: tuple[str, ...] | None,
+) -> None:
+    scenario, baseline, found = _promotion_case(dataset, section, stored_names, own_names)
+    result = report.evidence_result(found)
+    assert scenarios.validate(scenario) == []
+    assert baselines.compare(scenario, baseline, result, results.UNIKIX)[:2] == (results.STATUS_FAILING, "assertion")
+    promoted = report.observed_expectation(found, scenario, baseline)
+    every_name = tuple(dict.fromkeys(stored_names + (own_names or ())))
+    records = _promotion_records(dataset, found.datasets[dataset], every_name)
+    assert promoted[section][dataset] == (records if own_names is None else {"records": records})
+    assert promoted["file_state"]["@CATALOG"] == {"records": baseline.expected["file_state"]["@CATALOG"]["contains"]}
+    inline = report._inline_expectation(scenario, promoted)
+    kept = scenarios.BASELINE if inline_names is None else {
+        "records": _promotion_records(dataset, found.datasets[dataset], inline_names)}
+    assert inline[section][dataset] == kept
+    candidate = dataclasses.replace(scenario, expected=inline, data={**scenario.data, "expected": inline})
+    assert scenarios.validate(candidate) == []
+    promoted_baseline = baselines.Baseline(PROMOTION_SCENARIO, promoted, dict(baseline.manifest), {})
+    assert baselines.compare(candidate, promoted_baseline, result, results.UNIKIX) == (results.STATUS_PASSED, None, "")
+
+
+def test_observed_expectation_carries_a_matcher_given_under_a_dataset_own_field() -> None:
+    scenario, baseline, found = _promotion_case("DATEPARM", "datasets", ("START-DATE", "END-DATE"), ("START-DATE",))
+    stored = copy.deepcopy(baseline.expected)
+    stored["datasets"]["DATEPARM"][0]["END-DATE"] = dict(PROMOTION_END_DATE_MATCHER)
+    baseline = baselines.Baseline(PROMOTION_SCENARIO, stored, dict(baseline.manifest), {})
+    run_date = {"bpe_job_start_date": PROMOTION_RUN_DATE, "first_step_screen_date": None}
+    found = dataclasses.replace(found, environment={"run_date": run_date})
+    result = report.evidence_result(found)
+    promoted = report.observed_expectation(found, scenario, baseline)
+    start = _promotion_value("DATEPARM", PROMOTION_DATEPARM[1], "START-DATE")
+    records = [{"START-DATE": start, "END-DATE": PROMOTION_END_DATE_MATCHER}]
+    assert promoted["datasets"]["DATEPARM"] == {"records": records}
+    inline = report._inline_expectation(scenario, promoted)
+    assert inline["datasets"]["DATEPARM"] == {"records": records}
+    candidate = dataclasses.replace(scenario, expected=inline, data={**scenario.data, "expected": inline})
+    assert scenarios.validate(candidate) == []
+    promoted_baseline = baselines.Baseline(PROMOTION_SCENARIO, promoted, dict(baseline.manifest), {})
+    assert baselines.compare(candidate, promoted_baseline, result, results.UNIKIX, PROMOTION_RUN_DATE) == (
+        results.STATUS_PASSED, None, "")
+
+
+@pytest.mark.parametrize("name", PROMOTION_UNRESOLVED)
+def test_observed_expectation_refuses_a_name_no_record_denotes(name: str) -> None:
+    scenario, baseline, found = _promotion_case("ACCTDATA", "file_state", ("ACCT-ID",), ("ACCT-ID",))
+    stored = copy.deepcopy(baseline.expected)
+    for record in stored["file_state"]["ACCTDATA"]:
+        record[name] = PROMOTION_BALANCE
+    baseline = baselines.Baseline(PROMOTION_SCENARIO, stored, dict(baseline.manifest), {})
+    refusal = f"{PROMOTION_SCENARIO}: file_state.ACCTDATA record 1 has no field {name} as the comparison reads it"
+    with pytest.raises(report.ReportError, match=re.escape(refusal)):
+        report.observed_expectation(found, scenario, baseline)
+
+
+# Divergence on revalidation: report._validate_evidence, revalidating an
+# eligible UniKix record of DIVERGENCE_SCENARIO (both adapters run it, and
+# its gnucobol-batch baseline stays authoritative) whose execution
+# fingerprint is current and whose observed messages now differ from that
+# baseline in their last line, against an in-memory register beside
+# GAP-UNC-001. Each case: the status of RAISE_ENTRY asking the divergence's
+# question there (absent, closed on RAISE_CLOSING, open), the items it lists
+# and how _add_gap changes it. The validation.yaml writer records the record
+# instead of writing it; a promotion, a baseline write or a file write fails
+# the case.
+DIVERGENCE_SCENARIO = "DAT-READACCT-normal-01"
+DIVERGENCE_QUESTION = f"Cross-adapter divergence of {DIVERGENCE_SCENARIO}"
+DIVERGENCE_ITEM = "INV-DAT-014"
+DIVERGENCE_OTHER_ITEM = "INV-DAT-015"
+DIVERGENCE_CASES = [
+    pytest.param(None, [], "added", id="new-question"),
+    pytest.param("closed", [DIVERGENCE_ITEM], "reopened", id="closed-question"),
+    pytest.param("open", [DIVERGENCE_OTHER_ITEM], "extended", id="open-question-another-item"),
+    pytest.param("open", [DIVERGENCE_ITEM], None, id="open-question-every-item"),
+]
+
+
+def _tree_bytes(folder: Path) -> dict[str, bytes]:
+    return {path.relative_to(folder).as_posix(): path.read_bytes() for path in sorted(folder.rglob("*"))
+            if path.is_file()}
+
+
+def _divergent_evidence(directory: Path) -> report.Evidence:
+    """The evidence, in ``directory``, of a UniKix run of DIVERGENCE_SCENARIO
+    that agreed with its gnucobol-batch baseline when it ran and whose
+    observed messages differ from that baseline in their last line: the
+    record carries SCHEMA_GATE_FINGERPRINT and SCHEMA_GATE_IDENTITY."""
+    scenario = scenarios.get(DIVERGENCE_SCENARIO)
+    baseline = baselines.load(DIVERGENCE_SCENARIO)
+    assert baseline.capture_platform == results.GNUCOBOL
+    messages = list(baseline.expected["messages"])
+    messages[-1] += " ON THE UNIKIX COPY"
+    record = results.build_record(
+        scenario,
+        results.UNIKIX,
+        results.STATUS_PASSED,
+        decoded={"return_code": 0, "messages": list(baseline.expected["messages"])},
+        execution_fingerprint=SCHEMA_GATE_FINGERPRINT,
+        source_identity=SCHEMA_GATE_IDENTITY,
+        execution_id=EVIDENCE_EXECUTION_ID,
+    )
+    raw = dict(record, observed={"return_code": 0, "messages": messages, "screens": []})
+    return report.Evidence(EVIDENCE_EXECUTION_ID, DIVERGENCE_SCENARIO, directory, raw, {}, {})
+
+
+def _judged_eligible(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Let ``report._validate_evidence`` judge a record of the divergent
+    evidence as eligible and current, recording each ``validation.yaml``
+    in the list returned instead of writing it; a promotion, a baseline
+    write or a file write fails the case."""
+    writes: list[dict] = []
+    monkeypatch.setattr(report, "current_fingerprint", lambda current: (SCHEMA_GATE_FINGERPRINT, None))
+    monkeypatch.setattr(report, "_write_validation", lambda evidence, validation: writes.append(dict(validation)))
+    monkeypatch.setattr(report, "_ineligibility", lambda *args: None)
+    monkeypatch.setattr(report, "_promote", _refuse("the promotion"))
+    monkeypatch.setattr(baselines, "write", _refuse("baselines.write"))
+    return writes
+
+
+@pytest.mark.parametrize(("asking", "listed", "how"), DIVERGENCE_CASES)
+def test_a_divergence_found_on_revalidation_registers_its_entry_and_changes_no_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+    work_root_case: Path,
+    asking: str | None,
+    listed: list[str],
+    how: str | None,
+) -> None:
+    scenario = scenarios.get(DIVERGENCE_SCENARIO)
+    found = _divergent_evidence(work_root_case / DIVERGENCE_SCENARIO)
+    entries = [{"gap_id": "GAP-UNC-001", "category": "uncertain-purpose", "status": "open",
+                "unknown": "Whether UNUSED1Y is used: no program copies it.",
+                "needed": "The owner's statement of purpose.", "affected_inventory_ids": ["INV-DAT-001"],
+                "resolving_evidence": None}]
+    if asking is not None:
+        entries.append({"gap_id": RAISE_ENTRY, "category": "uncertain-purpose", "status": asking,
+                        "unknown": f"{DIVERGENCE_QUESTION}: UniKix execution {RAISE_FIRST} differed.",
+                        "needed": RAISE_NEEDED, "affected_inventory_ids": list(listed),
+                        "resolving_evidence": dict(RAISE_CLOSING) if asking == "closed" else None})
+    document = {"gaps": entries}
+    before = copy.deepcopy(document)
+    baseline_files = _tree_bytes(BASELINES_DIR / DIVERGENCE_SCENARIO)
+    scenario_file = scenario.path.read_bytes()
+    writes = _judged_eligible(monkeypatch)
+    monkeypatch.setattr(report, "write_text", _refuse("write_text"))
+    summary = report.ImportSummary(EVIDENCE_EXECUTION_ID)
+    outcome = report._validate_evidence(found, scenario, document, summary, report._CopyGaps({}, frozenset()), None,
+                                        importing=False)
+    assert outcome == (results.STATUS_FAILING, baselines.REASON_DIVERGENCE)
+    assert len(writes) == 1 and (writes[0]["status"], writes[0]["reason"]) == outcome
+    assert writes[0]["decoded"] is not None and writes[0]["scenario_digest"] == scenarios.digest(scenario)
+    assert _tree_bytes(BASELINES_DIR / DIVERGENCE_SCENARIO) == baseline_files
+    assert scenario.path.read_bytes() == scenario_file and summary.promoted == []
+    if how is None:
+        assert document == before and (summary.gaps_added, summary.gaps_changed) == ([], [])
+        return
+    if how == "added":
+        assert len(summary.gaps_added) == 1 and summary.gaps_changed == []
+        gap_id = summary.gaps_added[0]
+        assert gap_id not in report._gap_entries(before)
+    else:
+        gap_id = RAISE_ENTRY
+        change = "reopened" if how == "reopened" else "lists more items"
+        assert summary.gaps_added == []
+        assert summary.gaps_changed == [f"{gap_id}: {change}, cross-adapter divergence of {DIVERGENCE_SCENARIO} "
+                                        f"recurs in {EVIDENCE_EXECUTION_ID}"]
+    entry = report._gap_entries(document)[gap_id]
+    assert (entry["category"], entry["status"]) == ("uncertain-purpose", "open")
+    assert entry["unknown"].split(":", 1)[0] == DIVERGENCE_QUESTION
+    assert entry["affected_inventory_ids"] == sorted({*listed, DIVERGENCE_ITEM})
+    assert report._entry_problems(gap_id, entry) == []
+
+
+# Revalidation writes: report.revalidate over an evidence tree of the case's
+# own, holding either no execution or one with the validation.yaml of
+# DIVERGENCE_SCENARIO (_divergent_evidence), with report.py's register and
+# inventory pointed at the case's copies (closure_root), the state build and
+# the inferred settling replaced, and regenerate recorded instead of run.
+# Each case: how the record is judged (none to judge; passed and rewritten;
+# passed and rewritten unchanged; left stale; rejected before anything is
+# written; refused by the schema check once its validation.yaml is written;
+# or judged for real, divergent, under _judged_eligible), whether the
+# settling changes the register, the start of each line the revalidation
+# reports and whether the reports are regenerated. The validation.yaml
+# writer writes the record's YAML into the case's tree.
+REVALIDATION_LABEL = f"{EVIDENCE_EXECUTION_ID}/{DIVERGENCE_SCENARIO}"
+REVALIDATION_RECORDED = "{}\n"  # the validation.yaml the tree starts with
+REVALIDATION_CASES = [
+    pytest.param(None, False, [], False, id="nothing-to-revalidate"),
+    pytest.param(None, True, [], True, id="register-changed"),
+    pytest.param("passed", False, [f"revalidated {REVALIDATION_LABEL}: passed"], True, id="record-revalidated"),
+    pytest.param("unchanged", False, [f"revalidated {REVALIDATION_LABEL}: passed"], False,
+                 id="record-rewritten-unchanged"),
+    pytest.param("stale", False, [f"left {REVALIDATION_LABEL}: stale: "], False, id="record-left-stale"),
+    pytest.param("unjudged", False, [f"rejected {REVALIDATION_LABEL}: {DIVERGENCE_SCENARIO}: the baseline cannot"],
+                 False, id="record-rejected-unwritten"),
+    pytest.param("schema", False,
+                 [f"rejected {REVALIDATION_LABEL}: {DIVERGENCE_SCENARIO}: the scenario fails the schema check"],
+                 True, id="record-refused-by-the-schema-check"),
+    pytest.param("divergent", False,
+                 [f"revalidated {REVALIDATION_LABEL}: failing ({baselines.REASON_DIVERGENCE})", "gap added GAP-UNC-"],
+                 True, id="divergence-registered"),
+]
+
+
+@pytest.mark.parametrize(("judgement", "settled", "shown", "regenerated"), REVALIDATION_CASES)
+def test_revalidation_regenerates_the_reports_only_when_it_changed_a_record_or_the_register(
+    monkeypatch: pytest.MonkeyPatch,
+    closure_root: Path,
+    work_root_case: Path,
+    judgement: str | None,
+    settled: bool,
+    shown: list[str],
+    regenerated: bool,
+) -> None:
+    scenario_dir = work_root_case / EVIDENCE_EXECUTION_ID / DIVERGENCE_SCENARIO
+    scenario_dir.mkdir(parents=True)
+    validation = scenario_dir / report.VALIDATION_FILE
+    validation.write_text(REVALIDATION_RECORDED, encoding="utf-8")
+    found = _divergent_evidence(scenario_dir)
+    original = report.GAPS_FILE.read_text(encoding="utf-8")
+    # A state the reports can be regenerated from (_refuse_unreportable): no
+    # inventory drift and no unread gnucobol-batch record.
+    state = SimpleNamespace(zip_info=None, copy_gaps=report._CopyGaps({}, frozenset()), items=[], total=0,
+                            unread_records={})
+    monkeypatch.setattr(report, "build_state", lambda: state)
+    monkeypatch.setattr(report, "_evidence_folder", lambda *parts: work_root_case)
+    monkeypatch.setattr(report, "_evidence_executions",
+                        lambda folder, links: [scenario_dir.parent] if judgement is not None else [])
+    monkeypatch.setattr(report, "_scenario_dirs", lambda folder, links: [scenario_dir])
+    monkeypatch.setattr(report, "read_evidence", lambda execution_id, folder, zip_info: (found, None))
+
+    def settle(document: dict, current: object, execution_id: str | None, changes: list, closures: list) -> None:
+        if settled:
+            entry = report._gap_entries(document)["GAP-UNC-001"]
+            entry["needed"] = f"{entry['needed']} Asked again."
+
+    monkeypatch.setattr(report, "_settle_inferred", settle)
+    regenerations: list[bool] = []
+    monkeypatch.setattr(report, "regenerate", lambda: regenerations.append(True))
+    judge = report._validate_evidence
+    writes = _judged_eligible(monkeypatch)
+
+    def write(evidence: report.Evidence, record: Mapping) -> None:
+        writes.append(dict(record))
+        (evidence.directory / report.VALIDATION_FILE).write_text(dump_yaml(dict(record)), encoding="utf-8")
+
+    monkeypatch.setattr(report, "_write_validation", write)
+    received: list[tuple[bool, bool]] = []
+
+    def judged(evidence: report.Evidence, scenario: scenarios.Scenario, document: dict, summary: report.ImportSummary,
+               copy_gaps: object, zip_info: object, *, importing: bool) -> tuple[str, str | None] | None:
+        received.append((document == load_yaml(report.GAPS_FILE), importing))
+        if judgement in ("passed", "unchanged"):
+            if judgement == "passed":
+                write(evidence, {"status": results.STATUS_PASSED, "reason": None})
+            else:
+                validation.write_text(REVALIDATION_RECORDED, encoding="utf-8")
+            return results.STATUS_PASSED, None
+        if judgement == "stale":
+            summary.skipped.append((scenario.id, "stale: the scenario's inputs or preconditions changed"))
+            return None
+        if judgement == "unjudged":
+            raise report.ReportError(f"{scenario.id}: the baseline cannot be read: it is gone")
+        if judgement == "schema":
+            write(evidence, {"status": results.STATUS_FAILING, "reason": baselines.REASON_ERROR})
+            raise report._SchemaRefusal(f"{scenario.id}: the scenario fails the schema check: expected: "
+                                        f"{RETURN_CODE_ONLY}")
+        return judge(evidence, scenario, document, summary, copy_gaps, zip_info, importing=importing)
+
+    monkeypatch.setattr(report, "_validate_evidence", judged)
+    summary = report.revalidate()
+    lines = summary.lines()
+    assert len(lines) == len(shown) and all(line.startswith(start) for line, start in zip(lines, shown)), lines
+    assert received == ([] if judgement is None else [(True, False)])
+    assert bool(regenerations) == regenerated
+    written = report.GAPS_FILE.read_text(encoding="utf-8")
+    assert (written != original) == (settled or judgement == "divergent")
+    assert (validation.read_text(encoding="utf-8") != REVALIDATION_RECORDED) == (
+        judgement in ("passed", "schema", "divergent"))
+    if judgement == "divergent":
+        assert [(record["status"], record["reason"]) for record in writes] == [
+            (results.STATUS_FAILING, baselines.REASON_DIVERGENCE)]
+        gap_id = lines[-1].removeprefix("gap added ")
+        assert summary.gaps_added == [gap_id] and gap_id not in report._gap_entries(yaml.safe_load(original))
+        entry = report._gap_entries(load_yaml(report.GAPS_FILE))[gap_id]
+        assert (entry["status"], entry["affected_inventory_ids"]) == ("open", [DIVERGENCE_ITEM])
+        assert entry["unknown"].split(":", 1)[0] == DIVERGENCE_QUESTION
 
 
 # Closure records: the inventory update of a register entry the import or the
