@@ -1,0 +1,22 @@
+# Derived from app/cbl/CBTRN01C.cbl:155-186,202-250,469-489;
+# inferred-not-observed (GAP-INF-013, GAP-MIS-013); pinned, never corrected.
+# Record 1 of the repository DALYTRAN is displayed whole (350 bytes, trailing
+# spaces kept) and verified: card 4859452612877065 is in CARDXREF and account
+# 00000000007 in ACCTDATA. These seven lines are the ones gnucobol-batch shows
+# for the first record without a fault. The second READ fails: the io-error is
+# taken as file status 30 (numeric, not 9x), shown as NNNN0030. CEE3ABD ends
+# the run (GAP-STB-001, GAP-DEF-001), so the exact message list pins as absent
+# the close paragraphs and the end-of-execution line; return_code is null.
+messages:
+- START OF EXECUTION OF PROGRAM CBTRN01C
+- '0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              '
+- SUCCESSFUL READ OF XREF
+- 'CARD NUMBER: 4859452612877065'
+- 'ACCOUNT ID : 00000000007'
+- 'CUSTOMER ID: 000000007'
+- SUCCESSFUL READ OF ACCOUNT FILE
+- ERROR READING DAILY TRANSACTION FILE
+- 'FILE STATUS IS: NNNN0030'
+- ABENDING PROGRAM
+- CARDDEMO-ABEND CEE3ABD
+return_code: null

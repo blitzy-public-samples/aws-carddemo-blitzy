@@ -1,0 +1,48 @@
+# Derived from app/cbl/CBACT04C.cbl:181-217,372-440,462-515,628-648;
+# inferred-not-observed (GAP-INF-013, GAP-MIS-013); pinned, never corrected.
+# The first TCATBALF record (account 00000000901, 01/0001, 1200.00) is displayed
+# as its 50-byte image, filler spaces included. Its account and cross-reference
+# are found, and group A000000000 01/0001 gives rate 15.00, so no fallback lines
+# precede the WRITE to TRANSACT (logical SYSTRAN). The io-error is taken as file
+# status 30 (numeric, not 9x), shown as NNNN0030. CEE3ABD ends the run
+# (GAP-STB-001, GAP-DEF-001): no account rewrite, close or end-of-execution line,
+# and return_code is null.
+datasets:
+  SYSTRAN:
+    count: 0
+file_state:
+  ACCTDATA:
+    contains:
+    - ACCT-ACTIVE-STATUS: Y
+      ACCT-ADDR-ZIP: '00000     '
+      ACCT-CASH-CREDIT-LIMIT: '1000.00'
+      ACCT-CREDIT-LIMIT: '5000.00'
+      ACCT-CURR-BAL: '500.00'
+      ACCT-CURR-CYC-CREDIT: '40.00'
+      ACCT-CURR-CYC-DEBIT: '-15.00'
+      ACCT-EXPIRAION-DATE: '2026-01-01'
+      ACCT-GROUP-ID: A000000000
+      ACCT-ID: '901'
+      ACCT-OPEN-DATE: '2020-01-01'
+      ACCT-REISSUE-DATE: '2026-01-01'
+    - ACCT-ACTIVE-STATUS: Y
+      ACCT-ADDR-ZIP: '00000     '
+      ACCT-CASH-CREDIT-LIMIT: '1000.00'
+      ACCT-CREDIT-LIMIT: '5000.00'
+      ACCT-CURR-BAL: '800.00'
+      ACCT-CURR-CYC-CREDIT: '40.00'
+      ACCT-CURR-CYC-DEBIT: '-15.00'
+      ACCT-EXPIRAION-DATE: '2026-01-01'
+      ACCT-GROUP-ID: A000000000
+      ACCT-ID: '902'
+      ACCT-OPEN-DATE: '2020-01-01'
+      ACCT-REISSUE-DATE: '2026-01-01'
+    count: 2
+messages:
+- START OF EXECUTION OF PROGRAM CBACT04C
+- '000000009010100010000012000{                      '
+- ERROR WRITING TRANSACTION RECORD
+- 'FILE STATUS IS: NNNN0030'
+- ABENDING PROGRAM
+- CARDDEMO-ABEND CEE3ABD
+return_code: null
