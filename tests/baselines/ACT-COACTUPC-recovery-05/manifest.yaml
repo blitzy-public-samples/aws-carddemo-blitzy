@@ -1,0 +1,23 @@
+# Derived baseline of ACT-COACTUPC-recovery-05. Only unikix can run the
+# scenario, and no adapter can force the abend it needs in the TPE region
+# (GAP-MIS-014), so expected.yaml is authored from the source and is
+# inferred-not-observed (GAP-INF-005, GAP-INF-012). It names no execution_id or
+# execution_fingerprint and holds no datasets/ until an eligible UniKix run is
+# imported (report.py --import-unikix).
+#
+# source_identity.units are the app/ sources of the branch under test:
+# COACTUPC's WHEN OTHER of 2000-DECIDE-ACTION, which names LIT-THISPGM as the
+# culprit with code 0001 and 'UNEXPECTED DATA SCENARIO', and its ABEND-ROUTINE,
+# which sends ABEND-DATA with SEND FROM ... ERASE and abends with 9999
+# [app/cbl/COACTUPC.cbl:533-534,2633-2640,4203-4228], and the ABEND-DATA layout
+# that fixes the text screen [app/cpy/CSMSG02Y.cpy:21-29].
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: 5bb7123079deda5fdb4c41ed5dc8f04fdd522173
+source_identity:
+  commit: 5bb7123079deda5fdb4c41ed5dc8f04fdd522173
+  tree: app
+  units:
+    app/cbl/COACTUPC.cbl: e7a097a02870a13529ab846a2ddd3cf398a243263517ded399bd55a25fb9578f
+    app/cpy/CSMSG02Y.cpy: 0238a3a75e723272e0c287b46a52d365de8549dada1a73d15df75660ad7bd2ea
