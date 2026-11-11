@@ -1,0 +1,56 @@
+# Derived baseline (capture_platform: derived) of CRD-COCRDUPC-recovery-06,
+# authored from app/cbl/COCRDUPC.cbl:370-372,1376-1390,1531-1556 and
+# app/cpy/CSMSG02Y.cpy:12-20; never observed (inferred-not-observed,
+# GAP-INF-006, GAP-INF-012). No mechanism forces an abend in the TPE region
+# (GAP-MIS-014), and no TPE region runs in CI. report.py --import-unikix
+# replaces it with an eligible observed run: MINOR when the decoded outcome is
+# equal, MAJOR and a register entry when it differs.
+#
+# Step 1: USER0001 signs on through CC00 and COSGN00C XCTLs to the main menu
+# [app/cbl/COSGN00C.cbl:221-240], asserted with the COMEN01 fields the
+# CRD-COCRDUPC siblings assert.
+# Step 2: option '5' XCTLs to COCRDUPC with context 0
+# [app/cbl/COMEN01C.cbl:146-156]. The fresh-entry send of COCRDUP carries CCUP
+# and COCRDUPC [app/cbl/COCRDUPC.cbl:219-222], the PROMPT-FOR-SEARCH-KEYS text
+# in INFOMSG [app/cbl/COCRDUPC.cbl:162-163,1142], ACCTSID and CARDSID at
+# LOW-VALUES (read as spaces) and the blank 75-byte WS-RETURN-MSG in the
+# 80-byte ERRMSG [app/cbl/COCRDUPC.cbl:173,1163].
+# Step 3: the CARDDAT read of 9100-GETCARD-BYACCTCARD abends under the
+# injected fault, so its RESP is never evaluated
+# [app/cbl/COCRDUPC.cbl:1382-1392], and the HANDLE ABEND of the task
+# [app/cbl/COCRDUPC.cbl:370-372] passes control to ABEND-ROUTINE.
+#
+# ABEND-ROUTINE moves 'UNEXPECTED ABEND OCCURRED.' to ABEND-MSG only when
+# ABEND-MSG equals LOW-VALUES [app/cbl/COCRDUPC.cbl:1533-1535]. CSMSG02Y gives
+# every ABEND-DATA field VALUE SPACES, and on this path nothing moves to
+# ABEND-MSG or ABEND-CODE (only the WHEN OTHER of 2000-DECIDE-ACTION does
+# [app/cbl/COCRDUPC.cbl:1019-1026]), so the test is false and the text is
+# absent (GAP-DEF-014). The test plan expected @text to begin with that text;
+# a derived baseline pins what the source does, as CRD-COCRDSLC-recovery-04,
+# ACT-COACTVWC-recovery-05 and ACT-COACTUPC-recovery-09 do, and app/ is never
+# changed. Had the text been moved it would stand at row 1, column 63.
+#
+# The routine moves LIT-THISPGM 'COCRDUPC' to ABEND-CULPRIT and sends the 134
+# bytes of ABEND-DATA (code X(4), culprit X(8), reason X(50), message X(72))
+# with SEND FROM ... NOHANDLE ERASE [app/cbl/COCRDUPC.cbl:1537-1544]. On the
+# erased, unformatted screen row 1 holds four blanks, COCRDUPC and 68 blanks,
+# row 2 the other 54 blank bytes, and rows 3-24 are blank. @text is that
+# screen as adapters/base.py screen_text gives it: 24 rows of 80 characters
+# joined by line breaks, every space kept. What the region shows for the
+# ABEND ABCODE('9999') that follows [app/cbl/COCRDUPC.cbl:1546-1552] is not
+# defined by app/ and is not pinned; the unikix evidence settles it.
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN005: '05. Credit Card Update                  '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDUP
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': TEXT
+  '@text': "    COCRDUPC                                                                    \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                "
