@@ -1,0 +1,38 @@
+# Manifest of the derived baseline of CRD-COCRDSLC-alternate-03: CCDL entered
+# directly, with no COMMAREA and no sign-on, starts COCRDSLC on its own COCRDSL
+# screen (GAP-UNC-010). Only unikix can run the scenario, so expected.yaml is
+# authored from the source (derived_from: source) and is inferred-not-observed
+# (GAP-INF-006, GAP-INF-012). It names no execution_id or execution_fingerprint
+# and holds no datasets/*.bin until an eligible UniKix run is imported with
+# report.py --import-unikix <execution_id>, which sets capture_platform: unikix,
+# the execution_id and the UniKix source_identity, and bumps MINOR for an equal
+# decoded outcome or MAJOR for a different one.
+#
+# source_identity.units are COCRDSLC's COPY closure, as
+# harness.inventory_tools.copy_closure resolves it (it brings
+# app/cpy-bms/COCRDSL.CPY), plus the BMS source of its map COCRDSL, whose
+# INITIAL text FKEYS shows. COCRDSLC CALLs no app/cbl unit, and no sign-on
+# program runs. CVACT01Y and CVACT03Y are commented out in COCRDSLC, and DFHAID
+# and DFHBMSCA are CICS-supplied and not in the repository.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+derived_from: source
+source_commit: 6fb7b1d668ffe1aaf040c8a9acc75e0e001bb6a3
+source_identity:
+  commit: 6fb7b1d668ffe1aaf040c8a9acc75e0e001bb6a3
+  tree: app
+  units:
+    app/bms/COCRDSL.bms: 93feec4d134e991a81320d8c2f19e1aba19937753a1972d7d07f8a24973c9af6
+    app/cbl/COCRDSLC.cbl: d5af307fb4b1a155f03df9eea14b402d866a332360e14a1e37dbefe59b73363b
+    app/cpy-bms/COCRDSL.CPY: 3e099c4a1857986dd7fa5253d4419aeee0a2f27c76f34d9081ac5a724f45bfd1
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSMSG02Y.cpy: 0238a3a75e723272e0c287b46a52d365de8549dada1a73d15df75660ad7bd2ea
+    app/cpy/CSSTRPFY.cpy: 751bc1a625114a8660ee2172b70cdea135c259652d2305a2bfda25ff4cf34853
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb
+    app/cpy/CVACT02Y.cpy: 9f1c62ef31b9d541712f1ed28f79e011ea7338611f5e0f30f2e1cbf624181223
+    app/cpy/CVCRD01Y.cpy: 52b6dbe09f7648f3fdbd7c00f4683d434fe6b631f6c8854466a24f42c1c92445
+    app/cpy/CVCUS01Y.cpy: 944fd9a8eb10a683d0db97b9a87f2151982f649970287eb74358826056af25f8
