@@ -590,15 +590,15 @@ D4 filter scenarios: CS-03-003 runs the four transaction-list shapes on the larg
 | P1 | `CardServicingUi` | Outside `AzureSubscription` | The deferred UI; its only edge is north–south HTTPS to the gateway. |
 | P2 | `ApiGateway` | `AksSubnet`, at the cluster edge outside `AzureAKS` | Ingress that terminates TLS and forwards east–west to the service. |
 | P3 | `CardServicingService` | Pods in `AzureAKS` | The service; calls the five external systems, Redis and Key Vault east–west. |
-| P4 | `FixtureLoader` | Job in `AzureAKS` | One-shot load into PostgreSQL through its private endpoint. |
-| P5 | `CardDataService` | Stub pods in `AzureAKS` | Card Data stub, replaced at the swap; reads PostgreSQL. |
-| P6 | `TransactionActivityService` | Stub pods in `AzureAKS` | Transaction Activity stub, replaced at the swap; reads PostgreSQL. |
+| P4 | `FixtureLoader` | Job in `AzureAKS` | One-shot load into PostgreSQL through its private endpoint; reads its database secret through the Key Vault private endpoint. |
+| P5 | `CardDataService` | Stub pods in `AzureAKS` | Card Data stub, replaced at the swap; reads PostgreSQL, and its database secret through the Key Vault private endpoint. |
+| P6 | `TransactionActivityService` | Stub pods in `AzureAKS` | Transaction Activity stub, replaced at the swap; reads PostgreSQL, and its database secret through the Key Vault private endpoint. |
 | P7 | `ConfigService` | Stub pods in `AzureAKS` | Config stub, replaced at the swap; reads bound properties. |
-| P8 | `ReferenceDataService` | Stub pods in `AzureAKS` | Reference Data stub, replaced at the swap; reads PostgreSQL. |
+| P8 | `ReferenceDataService` | Stub pods in `AzureAKS` | Reference Data stub, replaced at the swap; reads PostgreSQL, and its database secret through the Key Vault private endpoint. |
 | P9 | `AuthService` | Stub pods in `AzureAKS` | Auth stub, replaced at the swap; reads its fixture identity file. |
 | P10 | `PepPostgres` | `PepSubnet` | Private endpoint for PostgreSQL. |
 | P11 | `PepRedis` | `PepSubnet` | Private endpoint for Azure Managed Redis. |
-| P12 | `PepKeyVault` | `PepSubnet` | Private endpoint for Key Vault. |
+| P12 | `PepKeyVault` | `PepSubnet` | Private endpoint for Key Vault, through which the service, the fixture loader and the three database-reading stubs read their secrets. |
 | P13 | `AzurePostgres` | Inside `AzureSubscription`, outside `AzureVNet` | Managed PostgreSQL Flexible Server, reached only through `PepPostgres`. |
 | P14 | `AzureManagedRedis` | Inside `AzureSubscription`, outside `AzureVNet` | Managed Redis, reached only through `PepRedis`. |
 | P15 | `AzureKeyVault` | Inside `AzureSubscription`, outside `AzureVNet` | Managed Key Vault, reached only through `PepKeyVault`. |

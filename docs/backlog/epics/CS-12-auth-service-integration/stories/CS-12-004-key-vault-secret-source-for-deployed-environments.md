@@ -110,7 +110,7 @@ Rationale: the framework source reads the three secrets during startup into the 
 
 Shared by both options:
 
-- Topology: the service pods reach the secret vault through its private endpoint inside the cluster network.
+- Topology: the service pods, the pods of the three database-reading stubs and the fixture loader job reach the secret vault through its private endpoint inside the cluster network.
 - Naming: one vault secret per credential, for the service key, the cache password and the database password.
 - Addressing: the vault address comes from one environment value, and the vault credential is the workload identity of the pod.
 - Isolation: no vault access happens locally or in the compose stack, where the vault address stays unset.

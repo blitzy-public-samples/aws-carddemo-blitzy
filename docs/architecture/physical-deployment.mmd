@@ -1,5 +1,8 @@
 ---
 title: Card Servicing physical deployment
+config:
+  flowchart:
+    rankSpacing: 150
 ---
 flowchart TB
     CardServicingUi["P1 Card Servicing UI"]
@@ -39,17 +42,21 @@ flowchart TB
 
     CardServicingUi -->|north–south| ApiGateway
     ApiGateway -->|east–west| CardServicingService
+    CardServicingService -->|east–west| AuthService
     CardServicingService -->|east–west| CardDataService
     CardServicingService -->|east–west| TransactionActivityService
     CardServicingService -->|east–west| ConfigService
     CardServicingService -->|east–west| ReferenceDataService
-    CardServicingService -->|east–west| AuthService
     CardServicingService -->|east–west| PepRedis
     CardServicingService -->|east–west| PepKeyVault
     FixtureLoader -->|east–west| PepPostgres
+    FixtureLoader -->|east–west| PepKeyVault
     CardDataService -->|east–west| PepPostgres
+    CardDataService -->|east–west| PepKeyVault
     TransactionActivityService -->|east–west| PepPostgres
+    TransactionActivityService -->|east–west| PepKeyVault
     ReferenceDataService -->|east–west| PepPostgres
+    ReferenceDataService -->|east–west| PepKeyVault
     PepPostgres -->|east–west| AzurePostgres
     PepRedis -->|east–west| AzureManagedRedis
     PepKeyVault -->|east–west| AzureKeyVault
