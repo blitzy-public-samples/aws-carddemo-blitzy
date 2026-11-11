@@ -1,0 +1,46 @@
+# Manifest of the derived baseline of BIL-COBIL00C-negative-03: USER0001 takes
+# main-menu option 10 to the bill payment COBIL00C and enters account
+# 00000000001 with CONFIRM X, which falls to WHEN OTHER, so COBIL00 shows
+# 'Invalid value. Valid values are (Y/N)...' and neither ACCTDAT nor TRANSACT
+# is read or changed [app/cbl/COBIL00C.cbl:154-191]. Only unikix can run the
+# scenario, so expected.yaml was authored from the source (inferred-not-observed,
+# GAP-INF-008, GAP-INF-012); the manifest names no execution_id or
+# execution_fingerprint and the baseline holds no datasets/ until an eligible
+# UniKix run is imported (report.py --import-unikix).
+#
+# source_identity.units are the app/ units the three steps execute, not only
+# COBIL00C's: harness.results.source_identity gives a steps scenario no units,
+# and the expectation also pins the COMEN01 menu screen. So each program the
+# steps pass through is listed with its COPY closure
+# (inventory_tools.copy_closure) and the BMS source of its map: COSGN00C signs
+# USER0001 on and routes it to COMEN01C [app/cbl/COSGN00C.cbl:230-237],
+# COMEN01C XCTLs option 10 to COBIL00C [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:80-84], and COBIL00C refuses the confirmation. DFHAID
+# and DFHBMSCA are CICS-supplied and not in the repository. source_commit is
+# HEAD at authoring; app/ is byte-identical to the suite's starting commit.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: 4c711953fe962dfa8b46c5fb7a80d36d0cbeb5f2
+source_identity:
+  commit: 4c711953fe962dfa8b46c5fb7a80d36d0cbeb5f2
+  tree: app
+  units:
+    app/bms/COBIL00.bms: f2101ff2143cd4746a5ffe0c4eeec977dfdad8410dee19236e0bdfb5ad58657f
+    app/bms/COMEN01.bms: f87af09e6f60ab198d5c05817e3007361a6d29ed957322ef25b11c5420c84b4c
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
+    app/cbl/COBIL00C.cbl: b5c46039eb8fd2f7ed7d3ca379172e56fa87385a369023bef706b04986fe1cfb
+    app/cbl/COMEN01C.cbl: ad5e376ac9221b21b8ce47597a5ca17fc1f39dc913793c814c6675e9b046fc09
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cpy-bms/COBIL00.CPY: a8d1a371182c73b41b4effd2d2a9c3b005f503cb0c8e88f5b2f5b5062e739e85
+    app/cpy-bms/COMEN01.CPY: 21275363519e57f47c5c7842178344208f3ad773a551e74e5eeff285c775ad5c
+    app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COMEN02Y.cpy: 22b1be06734c9ae91a25c4b544f9a9c4c85ab3f281a3d3bcc0765fb17e585d85
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
