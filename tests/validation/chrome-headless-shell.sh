@@ -2,7 +2,9 @@
 # Browser launcher for mmdc. check-diagrams.mjs passes this script to mmdc as
 # the browser executable through PUPPETEER_EXECUTABLE_PATH, which replaces any
 # value the host sets and outranks an executablePath in a .puppeteerrc
-# configuration file, so every mmdc render launches the chrome-headless-shell
+# configuration file. check-diagrams.mjs also refuses any puppeteer-config.json
+# key other than args, so no launch option such as executablePath or channel
+# overrides it, and every mmdc render launches the chrome-headless-shell
 # build pinned by the locked puppeteer. That build is the one
 # tests/validation/run-all.sh installs: puppeteer's pinned revision, passed
 # explicitly as `chrome-headless-shell@<build id>`, in puppeteer's cache

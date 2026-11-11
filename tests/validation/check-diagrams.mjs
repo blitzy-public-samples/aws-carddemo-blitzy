@@ -12,9 +12,13 @@
  *   holds only a title and flowchart or sequence layout settings; and a flowchart or
  *   sequenceDiagram header. A file that fails is reported and never rendered;
  * - every file that passes renders to a non-empty SVG, from the text the preflight read, in
- *   a browser that resolves no host, so a render reaches no network; a puppeteer
- *   configuration that does not pass that browser argument is reported and renders nothing;
- * - a flowchart draws at most 500 links, the pinned Mermaid's maxEdges;
+ *   the pinned chrome-headless-shell build with a browser argument that resolves no host, so
+ *   a render reaches no network; a puppeteer configuration that sets any key other than args
+ *   (a launch option such as executablePath or channel would choose another browser) or does
+ *   not pass that browser argument is reported and renders nothing;
+ * - a flowchart draws at most 500 links, the pinned Mermaid's maxEdges; one that draws more
+ *   is reported once, its links past the limit unread, and no missing-edge rule is applied
+ *   to it or to a security view it is part of;
  * - the logical (flowchart LR), physical (flowchart TB) and four sequence diagrams
  *   (sequenceDiagram) exist at their fixed paths, and the security view is
  *   security-architecture.mmd (flowchart TB) or its split into
@@ -470,8 +474,11 @@ function preflight(rel, text, violations) {
  * the renderer never sees a repository file that changed after the check read it. Renders
  * run without blocking the event loop, so SIGINT, SIGTERM or SIGHUP stops the running mmdc,
  * removes the folder and exits with 128 + the signal number. Nothing renders, and one
- * violation says why, while the puppeteer configuration does not pass NO_NETWORK_ARG as the
- * resolver switch Chrome applies.
+ * violation says why, while the puppeteer configuration sets any key other than args, or does
+ * not pass NO_NETWORK_ARG as the resolver switch Chrome applies. mmdc hands that whole
+ * configuration to puppeteer.launch, where a launch option such as executablePath or channel
+ * outranks PUPPETEER_EXECUTABLE_PATH, so allowing args alone keeps every render on the pinned
+ * chrome-headless-shell build.
  */
 async function renderAll(sources, violations) {
   const mmdc = toolBin('mmdc');
@@ -491,7 +498,8 @@ async function renderAll(sources, violations) {
     });
     return;
   }
-  // The render browser stays off the network only while the configuration passes NO_NETWORK_ARG.
+  // The render browser is the pinned build only while the configuration sets args alone, and
+  // stays off the network only while those args pass NO_NETWORK_ARG.
   const rejectConfig = (message) =>
     violations.push({ path: PUPPETEER_CONFIG, line: 1, message: `${message}; no diagram was rendered` });
   let configJson;
@@ -504,6 +512,19 @@ async function renderAll(sources, violations) {
   }
   if (configJson === null || typeof configJson !== 'object' || Array.isArray(configJson)) {
     rejectConfig('puppeteer configuration is not a JSON object');
+    return;
+  }
+  // mmdc hands the whole object to puppeteer.launch, where executablePath or channel outranks
+  // PUPPETEER_EXECUTABLE_PATH and every other key changes the launch. Object.keys includes an
+  // own "__proto__" key, through which mmdc's Object.assign would give the launch options
+  // inherited launch settings such as browser or env.
+  const launchKeys = Object.keys(configJson).filter((key) => key !== 'args');
+  if (launchKeys.length > 0) {
+    const shown = launchKeys.map(showKey).join(', ');
+    rejectConfig(
+      `puppeteer configuration ${launchKeys.length === 1 ? `key ${shown} is` : `keys ${shown} are`} not allowed; ` +
+        'only args is, so that mmdc launches the pinned chrome-headless-shell through PUPPETEER_EXECUTABLE_PATH',
+    );
     return;
   }
   if (!Array.isArray(configJson.args) || !configJson.args.every((arg) => typeof arg === 'string')) {
@@ -568,7 +589,8 @@ async function renderAll(sources, violations) {
     cwd: workDir,
     // Chrome leaves scratch directories in TMPDIR; pointing it at this run's
     // temporary folder removes them with that folder. PUPPETEER_EXECUTABLE_PATH
-    // selects the pinned browser over any host value or .puppeteerrc setting.
+    // selects the pinned browser over any host value or .puppeteerrc setting, and no
+    // launch option overrides it, because the puppeteer configuration sets args alone.
     env: { ...process.env, TMPDIR: tmp, PUPPETEER_EXECUTABLE_PATH: path.join(repoRoot, BROWSER_LAUNCHER) },
     encoding: 'buffer',
     timeout: RENDER_TIMEOUT_MS,
@@ -833,6 +855,35 @@ function loadSecretConsumers(trdText, catalogue, violations) {
 
 /** The pinned Mermaid's frontmatter pattern, with match indices for line numbers. */
 const FRONTMATTER_RE = /^([^\S\n\r]*)-{3}\s*[\n\r](.*?)[\n\r]\1-{3}\s*[\n\r]+/ds;
+/** FRONTMATTER_RE's opener: the indentation it captures and the three dashes after it. */
+const FRONTMATTER_OPENER_RE = /^([^\S\n\r]*)-{3}/;
+/** What follows a closing line's dashes where FRONTMATTER_RE can end: whitespace that holds a line break. */
+const FRONTMATTER_CLOSE_TAIL_RE = /\s*\n/y;
+
+/**
+ * The pinned Mermaid's cleanupText tag normalisation: the double-quoted attribute values of
+ * every `<tag …>` single-quoted. It changes no length and no line break.
+ */
+const normaliseTagAttributes = (text) =>
+  text.replace(/<(\w+)([^>]*)>/g, (_, tag, attrs) => `<${tag}${attrs.replace(/="([^"]*)"/g, "='$1'")}>`);
+
+/**
+ * True when LF-only `cleaned`, after the FRONTMATTER_RE `opener` it starts with, holds a
+ * line FRONTMATTER_RE can close on: a line break, the opener's indentation exactly, three
+ * dashes and whitespace that holds a line break. FRONTMATTER_RE matches only when such a
+ * line exists, and without one it backtracks over the opener's whitespace in quadratic
+ * time. This search is linear, and once it finds such a line FRONTMATTER_RE makes at most
+ * one failed attempt, so it runs in linear time too.
+ */
+function frontmatterCanClose(cleaned, opener) {
+  const marker = `\n${opener[1]}---`;
+  // The marker holds one line break, at its start, so two occurrences never overlap.
+  for (let at = cleaned.indexOf(marker, opener[0].length); at !== -1; at = cleaned.indexOf(marker, at + 1)) {
+    FRONTMATTER_CLOSE_TAIL_RE.lastIndex = at + marker.length;
+    if (FRONTMATTER_CLOSE_TAIL_RE.test(cleaned)) return true;
+  }
+  return false;
+}
 
 /** js-yaml's `{ load, JSON_SCHEMA }`: undefined until first use, null when it does not resolve. */
 let frontmatterYaml;
@@ -872,7 +923,10 @@ const CONFIG_KEY_RE = /^[A-Za-z][A-Za-z0-9]*$/;
 const CONFIG_STRING_RE = /^[A-Za-z0-9_.-]+$/;
 
 const isMapping = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-/** A frontmatter key as a message shows it: plain names as written, any other key quoted and cut to 40 characters. */
+/**
+ * A frontmatter or puppeteer configuration key as a message shows it: plain names as written,
+ * any other key quoted and cut to 40 characters.
+ */
 const showKey = (key) => (CONFIG_KEY_RE.test(key) ? key : JSON.stringify([...key].slice(0, 40).join('')));
 const keyPath = (at, key) => (at === '' ? showKey(key) : `${at}.${showKey(key)}`);
 
@@ -936,34 +990,47 @@ function frontmatterShapeError(parsed) {
 }
 
 /**
- * Decodes frontmatter as the pinned Mermaid does before rendering: line endings and tag
- * attributes normalised first, the opener's indentation stripped from the body, the body
- * loaded with js-yaml's JSON schema, a non-mapping read as no keys, and the title kept
- * only when truthy, as its string. Before Mermaid's reading applies, the body must fit
- * MAX_FRONTMATTER_CHARS, decode within frontmatterBudgetError's budgets and hold only what
- * frontmatterShapeError allows; a breach is returned as the error. Returns null when
- * Mermaid sees no frontmatter, else `{ start, title, titleType, error }`: the 0-based line
- * index the diagram body starts at, the title (null when Mermaid shows none, undefined when
- * not decoded), the decoded title's YAML type (string, boolean, number, sequence or
- * mapping; null when the key is absent or null, undefined when not decoded) and an error
- * located at its file line, or at the first YAML line when no finer one is known.
+ * Decodes frontmatter as the pinned Mermaid does before rendering: line endings normalised
+ * first, the body's tag attributes normalised as normaliseTagAttributes does, the opener's
+ * indentation stripped from the body, the body loaded with js-yaml's JSON schema, a
+ * non-mapping read as no keys, and the title kept only when truthy, as its string. Before
+ * Mermaid's reading applies, the body must fit MAX_FRONTMATTER_CHARS, decode within
+ * frontmatterBudgetError's budgets and hold only what frontmatterShapeError allows; a breach
+ * is returned as the error. Returns null when Mermaid sees no frontmatter, else
+ * `{ start, title, titleType, error }`: the 0-based line index the diagram body starts at,
+ * the title (null when Mermaid shows none, undefined when not decoded), the decoded title's
+ * YAML type (string, boolean, number, sequence or mapping; null when the key is absent or
+ * null, undefined when not decoded) and an error located at its file line, or at the first
+ * YAML line when no finer one is known.
+ *
+ * FRONTMATTER_RE runs only once frontmatterCanClose has found a closing line, which keeps it
+ * linear in the source. Mermaid normalises tag attributes over the whole text before it
+ * matches; that swaps only quote characters, which FRONTMATTER_RE does not tell apart, so the
+ * match and its line numbers are the same on the text with only its line endings normalised.
+ * Tag attributes are therefore normalised once the body fits its cap, and only from the
+ * body's start, before which no tag can open, to the first `>` at or after its end, where a
+ * tag opened in the body closes: that span gives the body exactly as Mermaid reads it.
  */
 function decodeFrontmatter(text, violations) {
-  const cleaned = text
-    .replace(/\r\n?/g, '\n')
-    .replace(/<(\w+)([^>]*)>/g, (_, tag, attrs) => `<${tag}${attrs.replace(/="([^"]*)"/g, "='$1'")}>`);
+  const cleaned = text.replace(/\r\n?/g, '\n');
+  const opener = FRONTMATTER_OPENER_RE.exec(cleaned);
+  if (!opener || !frontmatterCanClose(cleaned, opener)) return null;
   const m = FRONTMATTER_RE.exec(cleaned);
   if (!m) return null;
   const start = m[0].split('\n').length - 1;
-  const yamlLine = cleaned.slice(0, m.indices[2][0]).split('\n').length;
+  const [bodyFrom, bodyTo] = m.indices[2];
+  const yamlLine = cleaned.slice(0, bodyFrom).split('\n').length;
   const indent = m[1];
   const failed = (line, message) => ({ start, title: undefined, titleType: undefined, error: { line, message } });
   if (m[2].length > MAX_FRONTMATTER_CHARS) {
     return failed(yamlLine, `frontmatter holds ${m[2].length} characters; at most ${MAX_FRONTMATTER_CHARS} are read`);
   }
+  const tagEnd = cleaned.indexOf('>', bodyTo);
+  const reach = tagEnd === -1 ? bodyTo : tagEnd + 1;
+  const body = normaliseTagAttributes(cleaned.slice(bodyFrom, reach)).slice(0, bodyTo - bodyFrom);
   const yamlText = indent
-    ? m[2].split('\n').map((l) => (l.startsWith(indent) ? l.slice(indent.length) : l)).join('\n')
-    : m[2];
+    ? body.split('\n').map((l) => (l.startsWith(indent) ? l.slice(indent.length) : l)).join('\n')
+    : body;
   const yaml = yamlLoader(violations);
   if (yaml === null) return { start, title: undefined, titleType: undefined, error: null };
   let parsed;
@@ -1214,10 +1281,10 @@ function parseFlowchart(rel, statements, violations) {
     classDefs: new Map(),
     styles: new Map(),
     statements: [],
+    // True once a statement passes the links budget: `edges` then lacks links the file draws.
+    linksOverflowed: false,
   };
   const stack = [];
-  // The links budget is reported once per file, at the statement that first passes it.
-  let linksOverflowed = false;
   const touch = (n, line) => {
     let node = fc.nodes.get(n.id);
     if (!node) {
@@ -1281,8 +1348,9 @@ function parseFlowchart(rel, statements, violations) {
         violations.push({ path: rel, line, message: `cannot parse flowchart statement: ${chain.error}` });
         continue;
       }
-      if (chain.overflow && !linksOverflowed) {
-        linksOverflowed = true;
+      // The links budget is reported once per file, at the statement that first passes it.
+      if (chain.overflow && !fc.linksOverflowed) {
+        fc.linksOverflowed = true;
         const limit = `flowchart draws more than ${MAX_LINKS} links, the pinned Mermaid's maxEdges`;
         violations.push({ path: rel, line, message: `${limit}; links past that were not read` });
       }
@@ -1333,9 +1401,7 @@ function parseSequence(rel, statements, violations) {
     }
     if (box !== null && p.box === null) {
       p.box = box;
-      const members = sq.boxes[box].participants;
-      members.push(id);
-      members.sort((a, b) => sq.order.indexOf(a) - sq.order.indexOf(b));
+      sq.boxes[box].participants.push(id);
     }
   };
   const openBox = () => {
@@ -1381,6 +1447,9 @@ function parseSequence(rel, statements, violations) {
     }
     sq.last = { kind, line, note: kind === 'note' ? sq.notes[sq.notes.length - 1] : null };
   }
+  // A box lists its actors in the order the diagram first names them, wherever that is.
+  const position = new Map(sq.order.map((id, i) => [id, i]));
+  for (const box of sq.boxes) box.participants.sort((a, b) => position.get(a) - position.get(b));
   for (const open of stack) {
     const box = open.kind === 'box' ? sq.boxes[open.index] : null;
     const what = box ? `box "${box.name}"` : 'a block';
@@ -1491,7 +1560,8 @@ function checkFlowchart(fc, catalogue, violations) {
       }
       continue;
     }
-    if (!linked.has(node.id)) v(node.line, `component ${node.id} has no edge`);
+    // Past the links budget the file's links were not read, so only its overflow is reported.
+    if (!fc.linksOverflowed && !linked.has(node.id)) v(node.line, `component ${node.id} has no edge`);
     const category = componentCategory(catalogue, node.id);
     if (!category) {
       v(node.line, `node ID ${node.id} is not a component name in the TRD component catalogue`);
@@ -1652,6 +1722,9 @@ function checkSecurity(parts, catalogue, controls, secretConsumers, violations) 
   const joins = (e, from, to) =>
     (e.from === from && e.to === to && e.arrowAtTo) || (e.from === to && e.to === from && e.arrowAtFrom);
   const hasEdge = (from, to, token) => set.edges.some((e) => joins(e, from, to) && hasToken(e.label, token));
+  // A part past the links budget has links that were not read, so no form that needs an edge
+  // is sought; that part's overflow is reported once, and the edges that were read are checked.
+  const edgesUnread = parts.some((p) => p.linksOverflowed);
 
   const texts = [
     ...parts.map((p) => ({ rel: p.rel, line: 1, what: 'title', text: p.title ?? '' })),
@@ -1698,7 +1771,7 @@ function checkSecurity(parts, catalogue, controls, secretConsumers, violations) 
       for (const c of control.protectedComponents) {
         if (!MTLS_CATEGORIES.has(categoryOf(c))) {
           v(TRD, control.line, `${id} (mTLS) protects ${c}, which is not a Compute or External-systems component`);
-        } else if (!mtlsEdges.some((e) => (e.from === c || e.to === c) && re.test(e.label))) {
+        } else if (!edgesUnread && !mtlsEdges.some((e) => (e.from === c || e.to === c) && re.test(e.label))) {
           const node = set.nodes.get(c);
           const edge = `edge between ${c} and another Compute or External-systems component`;
           const message = `${id} (mTLS) protects ${c}, but no ${edge} is labelled "${id} mTLS"`;
@@ -1709,7 +1782,7 @@ function checkSecurity(parts, catalogue, controls, secretConsumers, violations) 
       const consumers = new Set([...control.protectedComponents, ...secretConsumers.keys()]);
       consumers.delete('AzureKeyVault');
       for (const c of consumers) {
-        if (!hasEdge('AzureKeyVault', c, id)) {
+        if (!edgesUnread && !hasEdge('AzureKeyVault', c, id)) {
           // At the consumer's node, else at the TRD row that names it.
           const node = set.nodes.get(c);
           const row = control.protectedComponents.includes(c) ? control.line : secretConsumers.get(c)[0].line;
@@ -1735,7 +1808,7 @@ function checkSecurity(parts, catalogue, controls, secretConsumers, violations) 
           v(TRD, control.line, `${id} (AuthN/authZ) protects ${c}, but ${form} does not reach ${c}`);
         }
       }
-      if (!hasEdge('AccountAccessGuard', 'AuthService', id)) {
+      if (!edgesUnread && !hasEdge('AccountAccessGuard', 'AuthService', id)) {
         const node = set.nodes.get('AccountAccessGuard') ?? set.nodes.get('AuthService');
         const message = `${id} (AuthN/authZ) needs an edge AccountAccessGuard → AuthService labelled ${id}`;
         v(node?.rel ?? TRD, node?.line ?? control.line, message);
@@ -1776,7 +1849,7 @@ function checkSecurity(parts, catalogue, controls, secretConsumers, violations) 
     const linked = set.edges.some(
       (e) => (e.from === n.id && e.to === 'AccountAccessGuard') || (e.to === n.id && e.from === 'AccountAccessGuard'),
     );
-    if (!linked) v(n.rel, n.line, `access-control row ${n.id} has no edge to AccountAccessGuard`);
+    if (!edgesUnread && !linked) v(n.rel, n.line, `access-control row ${n.id} has no edge to AccountAccessGuard`);
   }
 }
 
@@ -1954,7 +2027,8 @@ const USAGE = [
   'syntax (directives, HTML, Markdown strings, @{...} metadata, url(), URLs, click or link',
   'statements), with frontmatter beyond a title and flowchart or sequence layout settings,',
   'or without a flowchart or sequenceDiagram header is reported and never rendered. The',
-  'render browser resolves no host: puppeteer-config.json must pass',
+  'render browser is the pinned chrome-headless-shell build and resolves no host:',
+  'puppeteer-config.json must set args alone, and they must pass',
   `${NO_NETWORK_ARG}, or no diagram is rendered.`,
   '',
   "Takes no arguments. Run it from the repository root, or from any directory by the script's absolute path.",

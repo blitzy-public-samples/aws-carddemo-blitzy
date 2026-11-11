@@ -353,7 +353,7 @@ function resolveYamlParser() {
           const line = error.range?.start?.line;
           throw new YamlSyntaxError(String(error.message ?? 'syntax error'), Number.isInteger(line) ? line + 1 : undefined);
         }
-        const locate = result.ast ? (jsonPath) => astKeyLine(result.ast, Kind, jsonPath, lineAt) : null;
+        const locate = result.ast ? astKeyLocator(result.ast, Kind, lineAt) : null;
         return { data: result.data, locate };
       };
     }
@@ -389,32 +389,46 @@ function resolveYamlParser() {
 }
 
 /**
- * 1-based line of the deepest key a JSON path reaches in a @stoplight/yaml AST: the
- * line of the path's last mapping key (or sequence item), so a path whose tail does
- * not exist gives its nearest existing ancestor, and the empty path gives line 1. A
- * key is matched as the data is built, the last of duplicate keys winning.
+ * The `locate` of one @stoplight/yaml AST: `locate(jsonPath)` gives the 1-based line of
+ * the deepest key a JSON path reaches, the line of the path's last mapping key (or
+ * sequence item), so a path whose tail does not exist gives its nearest existing
+ * ancestor, and the empty path gives line 1. A key is matched as the data is built, the
+ * last of duplicate keys winning. Each mapping's scalar keys are indexed once, at its
+ * first lookup, so a lookup never scans a mapping's keys again.
  */
-function astKeyLine(ast, Kind, jsonPath, lineAt) {
-  let node = ast;
-  let offset = 0;
-  for (const segment of jsonPath) {
-    while (node?.kind === Kind.ANCHOR_REF) node = node.value;
-    if (node?.kind === Kind.MAP && Array.isArray(node.mappings)) {
-      const key = String(segment);
-      const mapping = node.mappings.findLast((m) => m?.key?.kind === Kind.SCALAR && m.key.value === key);
-      if (!mapping) break;
-      offset = mapping.key.startPosition;
-      node = mapping.value;
-    } else if (node?.kind === Kind.SEQ && Array.isArray(node.items)) {
-      const item = /^\d+$/.test(String(segment)) ? node.items[Number(segment)] : undefined;
-      if (!item) break;
-      offset = item.startPosition;
-      node = item;
-    } else {
-      break;
+function astKeyLocator(ast, Kind, lineAt) {
+  // Mapping node → Map of each scalar key's value to the last pair that carries it.
+  const keyIndexes = new WeakMap();
+  const pairOf = (map, key) => {
+    let index = keyIndexes.get(map);
+    if (!index) {
+      index = new Map();
+      for (const m of map.mappings) if (m?.key?.kind === Kind.SCALAR) index.set(m.key.value, m);
+      keyIndexes.set(map, index);
     }
-  }
-  return lineAt(offset);
+    return index.get(key);
+  };
+  return (jsonPath) => {
+    let node = ast;
+    let offset = 0;
+    for (const segment of jsonPath) {
+      while (node?.kind === Kind.ANCHOR_REF) node = node.value;
+      if (node?.kind === Kind.MAP && Array.isArray(node.mappings)) {
+        const mapping = pairOf(node, String(segment));
+        if (!mapping) break;
+        offset = mapping.key.startPosition;
+        node = mapping.value;
+      } else if (node?.kind === Kind.SEQ && Array.isArray(node.items)) {
+        const item = /^\d+$/.test(String(segment)) ? node.items[Number(segment)] : undefined;
+        if (!item) break;
+        offset = item.startPosition;
+        node = item;
+      } else {
+        break;
+      }
+    }
+    return lineAt(offset);
+  };
 }
 
 /** Location of every object and array loadYaml returned: node → { locate, path }. */
