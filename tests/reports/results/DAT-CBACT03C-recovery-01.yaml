@@ -1,0 +1,24 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  messages:
+  - START OF EXECUTION OF PROGRAM CBACT03C
+  - ERROR OPENING XREFFILE
+  - 'FILE STATUS IS: NNNN0035'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD
+  return_code: null
+evidence_path: tests/reports/results/DAT-CBACT03C-recovery-01.yaml
+execution_fingerprint: e01d5f1769790f38f3897daf667d34699c8b6685eb87288a28e7752e46a8e2c6
+execution_id: gnucobol-batch-2339e4217462d39d
+gap_id: null
+reason: null
+scenario_digest: 2e079015ff79dd246e0914960910d3ad5c37f95b2b8395b716ba14c0ce76fd1e
+scenario_id: DAT-CBACT03C-recovery-01
+source_identity:
+  commit: e5efe25babd80bcd8653ae033cd2ea3ae0df2aa7
+  tree: app
+  units:
+    app/cbl/CBACT03C.cbl: 2e16c29ee12fd20eec4500278f49d1430fe6aec4dd0a0963188ed62ccce9e171
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+status: passed

@@ -1,0 +1,31 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN01C
+  - '9900000000000201010001POS TERM  Synthetic unknown card                                                                              0000000100{999000201Synthetic Merchant 201                            Synthetic City                                    99999     99990000111100012022-07-05 09:15:00.000000                                              '
+  - INVALID CARD NUMBER FOR XREF
+  - CARD NUMBER 9999000011110001 COULD NOT BE VERIFIED. SKIPPING TRANSACTION ID-9900000000000201
+  - INVALID CARD NUMBER FOR XREF
+  - CARD NUMBER 9999000011110001 COULD NOT BE VERIFIED. SKIPPING TRANSACTION ID-9900000000000201
+  - END OF EXECUTION OF PROGRAM CBTRN01C
+  return_code: 0
+evidence_path: tests/reports/results/TRN-CBTRN01C-negative-01.yaml
+execution_fingerprint: 3a97be00c09a7997822cbd1d34e44343674a1d9b5e7d439540965607477ba3ed
+execution_id: gnucobol-batch-7227ce2e369f1b58
+gap_id: null
+reason: null
+scenario_digest: f7a54c6c99f69a83fd94ee8e9a6c97e80b2f5e759d1031a23fb5d8f592abb4e7
+scenario_id: TRN-CBTRN01C-negative-01
+source_identity:
+  commit: e5efe25babd80bcd8653ae033cd2ea3ae0df2aa7
+  tree: app
+  units:
+    app/cbl/CBTRN01C.cbl: 18cebdd95bff49b5316c271204fb20f59d2dd72615bc1715498c9cc8a50187f7
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT02Y.cpy: 9f1c62ef31b9d541712f1ed28f79e011ea7338611f5e0f30f2e1cbf624181223
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVCUS01Y.cpy: 944fd9a8eb10a683d0db97b9a87f2151982f649970287eb74358826056af25f8
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
+    app/cpy/CVTRA06Y.cpy: c5c69f1b86c5a10156d3c5881d7cf387e6b925aae32825360f85bf4056a554a1
+status: passed
