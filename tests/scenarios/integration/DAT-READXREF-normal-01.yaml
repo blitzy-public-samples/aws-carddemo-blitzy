@@ -32,6 +32,7 @@ inventory_ids:
 - INV-DAT-017
 tags: []
 gap_ids:
+- GAP-STB-009
 - GAP-STB-010
 - GAP-STB-011
 - GAP-DOC-004

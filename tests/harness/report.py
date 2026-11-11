@@ -248,6 +248,42 @@ _SEAM_OF_UTILITY_STEP = {
     "sdsf": "GAP-STB-008",
 }
 _SEAM_OF_CATALOG = "GAP-STB-009"  # the emulated catalog every job's datasets go through
+# The seams a gnucobol-batch unit runs through, from its programs.yaml entry:
+# every unit through the compile and runtime mapping, an indexed dd through
+# Berkeley DB, a PARM or CALL driver launch through PARMDRV or DTCDRV,
+# CSUTLDTC's CALL 'CEEDAYS' through the CEEDAYS stub, and a TIOT through the
+# page-zero shim.
+_SEAM_OF_UNIT = "GAP-STB-011"
+_SEAM_OF_INDEXED = "GAP-STB-010"
+_SEAM_OF_DRIVER = {"parmdrv": "GAP-STB-004", "dtcdrv": "GAP-STB-004"}
+_SEAM_OF_STUB_CALLER = {"CSUTLDTC": "GAP-STB-002"}
+_SEAM_OF_TIOT = "GAP-STB-003"
+# A job step goes through Berkeley DB (_SEAM_OF_INDEXED) when a dd or
+# concatenation member names an indexed dataset, or when its IDCAMS SYSIN
+# defines an indexed cluster, an alternate index or a path, builds an
+# alternate index, or copies to or from an indexed dataset by name. The
+# keywords are whole tokens, abbreviations included, as the IDCAMS
+# replacement reads them; a cluster is indexed unless it codes an
+# organization the replacement refuses.
+_IDCAMS_ALIASES = {
+    "DEF": "DEFINE", "BIX": "BLDINDEX", "CL": "CLUSTER", "AIX": "ALTERNATEINDEX", "NIXD": "NONINDEXED",
+    "NUMD": "NUMBERED", "LIN": "LINEAR", "IDS": "INDATASET", "ODS": "OUTDATASET",
+}
+_INDEXED_DEFINES = frozenset({"ALTERNATEINDEX", "PATH"})
+_NONINDEXED_CLUSTERS = frozenset({"NONINDEXED", "NUMBERED", "LINEAR"})
+_IDCAMS_DSN_OPERANDS = frozenset({"INDATASET", "OUTDATASET"})
+_IDCAMS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+# A quoted string, a parenthesis, or a word; blanks and commas separate.
+_IDCAMS_TOKEN_RE = re.compile(r"'(?:[^']|'')*'?|[()]|[^\s(),']+")
+# A job step goes through the DISP emulation (utilities.py
+# apply_normal_dispositions, which the job driver applies to every step that
+# ends normally, program steps included) for each dataset whose normal-end
+# disposition is CATLG, DELETE or UNCATLG, or whose status is NEW (coded or
+# omitted) or MOD, a dataset the step may allocate: its omitted disposition
+# is then DELETE, and KEEP or PASS leave it noted as uncatalogued.
+_SEAM_OF_DISPOSITION = "GAP-STB-007"
+_ACTED_DISPOSITIONS = frozenset({"CATLG", "DELETE", "UNCATLG"})
+_ALLOCATING_STATUSES = frozenset({"NEW", "MOD"})
 # The seams that produce a reserved observation on gnucobol-batch.
 _SEAMS_OF_OBSERVATION = {
     "@CATALOG": ("GAP-STB-005", "GAP-STB-007", "GAP-STB-009"),
@@ -3126,7 +3162,9 @@ def check_proof(state: State | None = None) -> tuple[bool, str]:
 
 def check_seams(state: State | None = None) -> list[str]:
     """The seam rule: every seam of the gnucobol-batch adapter has its
-    ``stub-limitation`` entry, and a closed one holds valid resolving
+    ``stub-limitation`` entry; every scenario gnucobol-batch can run cites,
+    in its ``gap_ids``, the entry of each seam its program or job steps use
+    (``_seam_citations``); and a closed entry holds valid resolving
     evidence, the mapping ``{execution_id, scenario_id, counterpart_of?,
     evidence_path}``:
 
@@ -3205,7 +3243,259 @@ def check_seams(state: State | None = None) -> list[str]:
                 disagreement = _seam_disagreement(state, gap_id, execution_id, scenario, record, counterpart)
                 if disagreement is not None:
                     problems.append(disagreement)
+    problems.extend(_seam_citations(state))
     return problems
+
+
+def _seam_citations(state: State) -> list[str]:
+    """One finding per scenario gnucobol-batch can run whose ``gap_ids`` do
+    not cite the entry of every seam its program or job steps use
+    (``_used_seams``), naming each missing entry; a single finding instead
+    when the gnucobol-batch ``programs.yaml`` or ``jobs.yaml`` cannot be read
+    or holds no ``programs`` or ``jobs`` mapping, or when
+    ``tests/fixtures/datasets.yaml``, whose ``ksds`` datasets are the indexed
+    ones (``_indexed_dsns``), cannot be read or parsed."""
+    tables: dict[str, Mapping[str, Any]] = {}
+    for name, path in (("programs", _scenarios.GNUCOBOL_PROGRAMS_FILE), ("jobs", _results.GNUCOBOL_JOBS_FILE)):
+        try:
+            document = load_yaml(path)
+        except OSError as exc:
+            return [f"the seam citations cannot be checked: cannot read {_os_problem(exc, path)}"]
+        except YAMLLoadError as exc:
+            return [f"the seam citations cannot be checked: {_clip(exc, 300)}"]
+        section = document.get(name) if isinstance(document, Mapping) else None
+        if not isinstance(section, Mapping):
+            return [f"the seam citations cannot be checked: {display_path(path)} holds no {name} mapping"]
+        tables[name] = section
+    try:
+        definitions = _fixtures.specs()
+    except OSError as exc:
+        return [f"the seam citations cannot be checked: cannot read {_os_problem(exc, _fixtures.FIXTURES_FILE)}"]
+    except HarnessError as exc:
+        return [f"the seam citations cannot be checked: {_clip(exc, 300)}"]
+    indexed = _indexed_dsns(tables["jobs"], {name for name, definition in definitions.items() if definition.keyed})
+    described = {gap_id: what for what, gap_id in SEAMS}
+    problems = []
+    for scenario_id, scenario in sorted(state.scenarios.items()):
+        if _results.GNUCOBOL not in _scenarios.capable_adapters(scenario):
+            continue
+        cited = {str(gap_id) for gap_id in scenario.gap_ids}
+        missing = sorted(_used_seams(scenario, tables["programs"], tables["jobs"], indexed) - cited)
+        if missing:
+            several = len(missing) > 1
+            named = [f"{gap_id} ({described.get(gap_id, 'a gnucobol-batch seam')})" for gap_id in missing]
+            problems.append(f"{scenario_id} uses the seam{'s' if several else ''} of {_listed(named)} but its "
+                            f"gap_ids do not cite {'them' if several else 'it'}")
+    return problems
+
+
+def _used_seams(
+    scenario: Any, programs: Mapping[str, Any], jobs: Mapping[str, Any], indexed: frozenset[str]
+) -> set[str]:
+    """The entries of the seams gnucobol-batch runs ``scenario`` through,
+    from its ``programs`` and ``jobs`` tables. Each unit executed, the
+    scenario's ``inputs.program`` or the program of each ``program`` step of
+    its jobs, and each unit that one ``calls`` gives ``_SEAM_OF_UNIT``,
+    ``_SEAM_OF_INDEXED`` for an indexed dd, ``_SEAM_OF_DRIVER`` for its run,
+    ``_SEAM_OF_STUB_CALLER`` for its name and ``_SEAM_OF_TIOT`` for a TIOT.
+    Each job gives the emulated catalog and the replacement of each utility
+    step kind (``_SEAM_OF_UTILITY_STEP``). Each step of a job, whatever its
+    kind, gives ``_SEAM_OF_INDEXED`` for a dd or concatenation member whose
+    DSN is one of the ``indexed`` DSNs (``_indexed_dsns``) and for an IDCAMS
+    SYSIN that goes through indexed files (``_idcams_uses_indexed``), and
+    ``_SEAM_OF_DISPOSITION`` for a dataset whose disposition the DISP
+    emulation acts on (``_disposition_acted_on``). An expected
+    ``return_code`` of null gives the CEE3ABD stub that ends the run."""
+    seams: set[str] = set()
+    units: list[str] = []
+    program = scenario.inputs.get("program")
+    if isinstance(program, str):
+        units.append(program)
+    else:
+        for job in _scenarios.job_names(scenario):
+            seams.add(_SEAM_OF_CATALOG)
+            for step in _job_steps(jobs, job):
+                kind = step.get("kind")
+                if kind == "program" and isinstance(step.get("program"), str):
+                    units.append(step["program"])
+                elif isinstance(kind, str) and kind in _SEAM_OF_UTILITY_STEP:
+                    seams.add(_SEAM_OF_UTILITY_STEP[kind])
+                for entry in _step_datasets(step):
+                    dsn = entry.get("dsn")
+                    if isinstance(dsn, str) and dsn.upper() in indexed:
+                        seams.add(_SEAM_OF_INDEXED)
+                    if _disposition_acted_on(entry):
+                        seams.add(_SEAM_OF_DISPOSITION)
+                params = step.get("params")
+                sysin = params.get("sysin") if kind == "idcams" and isinstance(params, Mapping) else None
+                if isinstance(sysin, list) and _idcams_uses_indexed(sysin, indexed):
+                    seams.add(_SEAM_OF_INDEXED)
+    seen: set[str] = set()
+    while units:
+        unit = units.pop()
+        config = programs.get(unit)
+        if unit in seen or not isinstance(config, Mapping):
+            continue
+        seen.add(unit)
+        seams.add(_SEAM_OF_UNIT)
+        dds = config.get("dd")
+        if isinstance(dds, Mapping) and any(
+            isinstance(dd, Mapping) and dd.get("organization") == "indexed" for dd in dds.values()
+        ):
+            seams.add(_SEAM_OF_INDEXED)
+        run = config.get("run")
+        if isinstance(run, str) and run in _SEAM_OF_DRIVER:
+            seams.add(_SEAM_OF_DRIVER[run])
+        if unit in _SEAM_OF_STUB_CALLER:
+            seams.add(_SEAM_OF_STUB_CALLER[unit])
+        if config.get("tiot") is not None:
+            seams.add(_SEAM_OF_TIOT)
+        calls = config.get("calls")
+        units.extend(called for called in (calls if isinstance(calls, list) else ()) if isinstance(called, str))
+    if "return_code" in scenario.expected and scenario.expected["return_code"] is None:
+        seams.add(_SEAM_OF_ABEND)
+    return seams
+
+
+def _job_steps(jobs: Mapping[str, Any], job: str) -> list[Mapping[str, Any]]:
+    """The steps of ``job`` in the ``jobs`` table that are mappings; none for
+    a job the table lacks or holds without a list of steps."""
+    entry = jobs.get(job)
+    steps = entry.get("steps") if isinstance(entry, Mapping) else None
+    return [step for step in steps if isinstance(step, Mapping)] if isinstance(steps, list) else []
+
+
+def _step_datasets(step: Mapping[str, Any]) -> Iterator[Mapping[str, Any]]:
+    """Each dd entry of a ``jobs.yaml`` step and each member of its
+    concatenation, in transcription order, as ``datasets.DsnMap`` reads
+    them; an entry that is not a mapping is skipped."""
+    dds = step.get("dd")
+    for dd in dds.values() if isinstance(dds, Mapping) else ():
+        if not isinstance(dd, Mapping):
+            continue
+        yield dd
+        concat = dd.get("concat")
+        yield from (member for member in (concat if isinstance(concat, list) else ()) if isinstance(member, Mapping))
+
+
+def _indexed_dsns(jobs: Mapping[str, Any], keyed: set[str]) -> frozenset[str]:
+    """The DSNs, in upper case, that a dd or concatenation member of any job
+    in ``jobs`` maps to one of the ``keyed`` logical datasets (organization
+    ``ksds`` in ``tests/fixtures/datasets.yaml``) or to an alternate-index
+    path (``aix_path``): the datasets gnucobol-batch holds as Berkeley DB
+    indexed files. ``jobs.yaml`` maps every DSN to at most one logical
+    dataset, so the DSN also names the dataset where an IDCAMS command
+    gives it directly."""
+    return frozenset(
+        entry["dsn"].upper()
+        for job in jobs
+        for step in _job_steps(jobs, job)
+        for entry in _step_datasets(step)
+        if isinstance(entry.get("dsn"), str)
+        and (entry.get("aix_path") is not None or entry.get("logical") in keyed)
+    )
+
+
+def _disposition_acted_on(entry: Mapping[str, Any]) -> bool:
+    """Whether ``utilities.apply_normal_dispositions`` acts on the dataset
+    of a ``jobs.yaml`` dd entry or concatenation member: the entry names a
+    dataset of the store (a DSN, and not in-stream data, ``DUMMY``,
+    ``SYSOUT`` or a PDS member), and its normal-end disposition is
+    ``_ACTED_DISPOSITIONS`` or its status, ``NEW`` when omitted, is one of
+    ``_ALLOCATING_STATUSES``. ``disp`` is read as ``utilities._disp`` reads
+    it: absent is no subparameter, each one stripped and in upper case; one
+    that is not a list of text fails the step before any disposition."""
+    if (
+        entry.get("instream") is not None
+        or entry.get("dummy")
+        or entry.get("sysout") is not None
+        or entry.get("member") is not None
+        or not isinstance(entry.get("dsn"), str)
+        or not entry["dsn"]
+    ):
+        return False
+    raw = entry.get("disp")
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list) or not all(isinstance(part, str) for part in raw):
+        return False
+    disp = [part.strip().upper() for part in raw]
+    status = disp[0] if disp and disp[0] else "NEW"
+    normal = disp[1] if len(disp) > 1 and disp[1] else None
+    return normal in _ACTED_DISPOSITIONS or status in _ALLOCATING_STATUSES
+
+
+def _idcams_statements(lines: Sequence[Any]) -> Iterator[str]:
+    """The commands of an IDCAMS SYSIN as the replacement reads them:
+    ``/* ... */`` comments removed and a line ending in ``-`` or ``+``
+    continued on the next. A line that is not text, which fails the step,
+    is left out."""
+    text = _IDCAMS_COMMENT_RE.sub(" ", "\n".join(line for line in lines if isinstance(line, str)))
+    pending: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.rstrip()
+        if stripped.endswith(("-", "+")):
+            pending.append(stripped[:-1])
+            continue
+        pending.append(stripped)
+        yield " ".join(pending)
+        pending = []
+    if pending:
+        yield " ".join(pending)
+
+
+def _idcams_uses_indexed(lines: Sequence[Any], indexed: frozenset[str]) -> bool:
+    """Whether an IDCAMS SYSIN goes through Berkeley DB indexed files: a
+    command outside every parameter list (after ``IF ... THEN`` or ``ELSE``
+    too) that is ``DEFINE`` of an ``ALTERNATEINDEX`` or ``PATH``, or of a
+    ``CLUSTER`` whose parameter list codes none of
+    ``_NONINDEXED_CLUSTERS`` (``INDEXED`` is the default, and the only
+    organization the replacement emulates), or that is ``BLDINDEX``; or an
+    ``INDATASET`` or ``OUTDATASET`` naming one of the ``indexed`` DSNs.
+    Keywords are whole tokens, so a dataset name such as
+    ``AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX`` is never one."""
+    for statement in _idcams_statements(lines):
+        tokens = _IDCAMS_TOKEN_RE.findall(statement)
+        words = [_IDCAMS_ALIASES.get(token.upper(), token.upper()) for token in tokens]
+        depth = 0
+        for index, word in enumerate(words):
+            if word == "(":
+                depth += 1
+            elif word == ")":
+                depth -= 1
+            elif word in _IDCAMS_DSN_OPERANDS:
+                if words[index + 1:index + 2] == ["("] and tokens[index + 2:index + 3]:
+                    if tokens[index + 2].upper() in indexed:
+                        return True
+            elif depth == 0 and word == "BLDINDEX":
+                return True
+            elif depth == 0 and word == "DEFINE" and index + 1 < len(words):
+                kind = words[index + 1]
+                if kind in _INDEXED_DEFINES:
+                    return True
+                if kind == "CLUSTER" and not _parameter_keywords(words, index + 2) & _NONINDEXED_CLUSTERS:
+                    return True
+    return False
+
+
+def _parameter_keywords(words: Sequence[str], start: int) -> set[str]:
+    """The words of the parameter list that opens at ``words[start]`` at
+    that list's own level, without those inside a keyword's value: the
+    keywords of ``DEFINE CLUSTER (...)``. Empty when no list opens there."""
+    keywords: set[str] = set()
+    if words[start:start + 1] != ["("]:
+        return keywords
+    depth = 0
+    for word in words[start:]:
+        if word == "(":
+            depth += 1
+        elif word == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        elif depth == 1:
+            keywords.add(word)
+    return keywords
 
 
 # The line the gnucobol-batch adapter adds to ``messages`` when the CEE3ABD
@@ -3477,12 +3767,49 @@ def _matrix_findings(state: State) -> list[str]:
     return findings
 
 
+def _uncovered_items(state: State) -> list[str]:
+    """Every item that is not verified and that no open register entry
+    affects, in id order, as ``<item id> (<why>)``. Only an open entry whose
+    resolved affected items (``state.affected``, the ids ``gap-register.csv``
+    renders) include the item covers it: an open gap that a scenario listing
+    the item merely cites does not. ``<why>`` sorts the gap ids the item
+    carries into open but not affecting the item, closed, neither open nor
+    closed, and not in gaps.yaml, or reads 'no register entry' when it carries
+    none."""
+    covered = {
+        item_id
+        for gap_id, item_ids in state.affected.items() if state.gaps.is_open(gap_id)
+        for item_id in item_ids
+    }
+    lacking: list[str] = []
+    for item in state.items:
+        if item["status"] == VERIFIED or item["id"] in covered:
+            continue
+        # Name the gap ids that left the item uncovered, so the closure to revisit is plain.
+        kinds: dict[str, list[str]] = {
+            "open, not affecting the item": [], "closed": [], "not open": [], "not in gaps.yaml": [],
+        }
+        for gap_id in sorted(set(item["gap_ids"])):
+            entry = state.gaps.get(gap_id)
+            if entry is None:
+                kinds["not in gaps.yaml"].append(gap_id)
+            elif state.gaps.is_open(gap_id):
+                kinds["open, not affecting the item"].append(gap_id)
+            else:
+                kinds["closed" if entry.get("status") == "closed" else "not open"].append(gap_id)
+        named = "; ".join(f"{kind}: {', '.join(gap_ids)}" for kind, gap_ids in kinds.items() if gap_ids)
+        lacking.append(f"{item['id']} ({named or 'no register entry'})")
+    return lacking
+
+
 def check(state: State | None = None) -> list[str]:
     """Every finding of the register and matrix rules; empty when they hold:
-    one matrix row per inventory item, an open register entry for every item
-    that is not verified, status counts adding up to the header total, every
-    cited gap id registered, register entries well formed, the seam rule,
-    and report files and inventory fields as ``regenerate`` writes them."""
+    one matrix row per inventory item, every item that is not verified among
+    the resolved affected items of an open register entry (an open gap a
+    listing scenario merely cites does not cover it), status counts adding up
+    to the header total, every cited gap id registered, register entries well
+    formed, the seam rule, and report files and inventory fields as
+    ``regenerate`` writes them."""
     state = state if state is not None else build_state()
     findings = list(state.problems)
     for gap_id, entry in state.gaps.entries.items():
@@ -3508,20 +3835,7 @@ def check(state: State | None = None) -> list[str]:
     if sum(counts.values()) != state.header.get("total"):
         findings.append(f"the status counts add up to {sum(counts.values())}, not the header total "
                         f"{state.header.get('total')}")
-    lacking: list[str] = []
-    for item in state.items:
-        if item["status"] == VERIFIED or any(state.gaps.is_open(gap_id) for gap_id in item["gap_ids"]):
-            continue
-        # Name the gap ids that left the item uncovered, so the closure to revisit is plain.
-        kinds: dict[str, list[str]] = {"closed": [], "not open": [], "not in gaps.yaml": []}
-        for gap_id in sorted(set(item["gap_ids"])):
-            entry = state.gaps.get(gap_id)
-            if entry is None:
-                kinds["not in gaps.yaml"].append(gap_id)
-            else:
-                kinds["closed" if entry.get("status") == "closed" else "not open"].append(gap_id)
-        named = "; ".join(f"{kind}: {', '.join(gap_ids)}" for kind, gap_ids in kinds.items() if gap_ids)
-        lacking.append(f"{item['id']} ({named or 'no register entry'})")
+    lacking = _uncovered_items(state)
     if lacking:
         findings.append(f"{len(lacking)} items that are not verified have no open register entry: "
                         + ", ".join(lacking[:40]) + (" ..." if len(lacking) > 40 else ""))

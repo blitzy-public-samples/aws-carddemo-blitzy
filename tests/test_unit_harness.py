@@ -25,8 +25,12 @@ Instruments every business assertion depends on:
   scenarios carry the ``chain`` marker.
 - Gaps: every gap id the scenarios, the inventory, the fixtures, the
   adapters and the harness cite exists in ``gaps.yaml``, whose entries are
-  unique and well formed, and each seam keeps its ``stub-limitation`` entry
-  (the seam rule).
+  unique and well formed, and each seam keeps its ``stub-limitation`` entry,
+  closed only on valid resolving evidence; every scenario gnucobol-batch runs
+  cites in ``gap_ids`` the entry of each seam its program or job steps use
+  (the seam rule). An item that is not verified is covered only by an open
+  entry whose resolved affected items include it, never by an open gap a
+  listing scenario merely cites.
 - Configuration: the six markers are registered, every ``commands.yaml``
   entry has a probe, a timeout, a status and a gap (open while unconfirmed),
   and both adapters implement ``adapters.base.Adapter``.
@@ -4348,6 +4352,30 @@ def _cited_gap_ids() -> dict[str, set[str]]:
     return cited
 
 
+def test_open_gap_gate_needs_an_open_entry_that_affects_the_item() -> None:
+    # An item that is not verified is covered only by an open entry whose
+    # resolved affected items, the ids gap-register.csv renders, include it.
+    # An open gap a listing scenario merely cites, which build_state adds to
+    # the item's gap_ids, does not cover it.
+    state = report.build_state()
+    assert report._uncovered_items(state) == []
+    # The open gap affects the first item alone; the second, not verified,
+    # carries the gap as a scenario citation would; the third is verified.
+    gap_id = next(iter(state.gaps.entries))
+    affected, citing, verified = state.items[:3]
+    gated = dataclasses.replace(
+        state,
+        items=[
+            {**affected, "status": report.BLOCKED, "gap_ids": [gap_id]},
+            {**citing, "status": report.BLOCKED, "gap_ids": [gap_id]},
+            {**verified, "status": report.VERIFIED, "gap_ids": []},
+        ],
+        gaps=dataclasses.replace(state.gaps, entries={gap_id: {**state.gaps.entries[gap_id], "status": "open"}}),
+        affected={gap_id: [affected["id"]]},
+    )
+    assert report._uncovered_items(gated) == [f"{citing['id']} (open, not affecting the item: {gap_id})"]
+
+
 def test_gap_ids_exist() -> None:
     entries = _gap_entries()
     ids = [entry.get("gap_id") for entry in entries]
@@ -4387,6 +4415,48 @@ def test_seam_rule() -> None:
     # Whether a closing record is current, passed and eligible, and agrees
     # with the gnucobol-batch outcome, is the seam rule of harness/report.py.
     assert report.check_seams() == []
+
+
+SEAM_CITATIONS = [
+    # Every gnucobol-batch job seeds the emulated catalog and resolves its
+    # DDs by DSN through it.
+    pytest.param("DAT-READACCT-normal-01", "GAP-STB-009", (), id="catalog"),
+    # These jobs hold utility steps only, so no programs.yaml unit gives the
+    # Berkeley DB seam. ACCTFILE's IDCAMS DEFINE CLUSTER ... INDEXED and its
+    # REPRO into the ksds ACCTDATA both give it; DEFCUST's DEFINE CLUSTER and
+    # TRANIDX's DEFINE ALTERNATEINDEX and PATH and BLDINDEX give it with no dd
+    # naming an indexed dataset; PRTCATBL's REPRO reads the ksds TCATBALF
+    # through a dd, its SYSIN being the REPROCT member.
+    pytest.param("DAT-ACCTFILE-normal-01", "GAP-STB-010", ("program",), id="indexed-utility-job"),
+    pytest.param("DAT-DEFCUST-normal-01", "GAP-STB-010", ("program",), id="indexed-cluster-define"),
+    pytest.param("DAT-TRANIDX-normal-01", "GAP-STB-010", ("program",), id="alternate-index-define"),
+    pytest.param("RPT-PRTCATBL-normal-01", "GAP-STB-010", ("program",), id="indexed-dd"),
+    # POSTTRAN holds one program step and no IEBGENER or IEFBR14 step, so
+    # only the DISP=(NEW,CATLG,DELETE) of its DALYREJS generation, applied
+    # when the step ends normally, gives the seam.
+    pytest.param("TRN-POSTTRAN-normal-01", "GAP-STB-007", ("iebgener", "iefbr14"), id="program-step-disp"),
+]
+
+
+@pytest.mark.parametrize(("scenario_id", "gap_id", "absent_kinds"), SEAM_CITATIONS)
+def test_seam_rule_names_a_scenario_that_does_not_cite_a_seam_it_uses(
+    scenario_id: str, gap_id: str, absent_kinds: tuple[str, ...]
+) -> None:
+    # An in-memory copy of the scenario without its citation of a seam its
+    # job steps use is the one finding.
+    state = report.build_state()
+    scenario = state.scenarios[scenario_id]
+    assert gap_id in scenario.gap_ids
+    table = load_yaml(results.GNUCOBOL_JOBS_FILE)["jobs"]
+    kinds = {step["kind"] for job in scenarios.job_names(scenario) for step in table[job]["steps"]}
+    assert kinds and not kinds & set(absent_kinds), (scenario_id, sorted(kinds))
+    data = copy.deepcopy(scenario.data)
+    data["gap_ids"] = [cited for cited in data["gap_ids"] if cited != gap_id]
+    state.scenarios[scenario.id] = dataclasses.replace(scenario, data=data, gap_ids=tuple(data["gap_ids"]))
+    seam = dict((entry, what) for what, entry in report.SEAMS)[gap_id]
+    assert report.check_seams(state) == [
+        f"{scenario_id} uses the seam of {gap_id} ({seam}) but its gap_ids do not cite it"
+    ]
 
 
 MARKERS = {"unit", "integration", "e2e", "chain", "gnucobol_batch", "unikix"}

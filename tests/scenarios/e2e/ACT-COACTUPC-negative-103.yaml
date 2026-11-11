@@ -112,9 +112,15 @@ inventory_ids:
 - INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
 tags:
 - inferred-not-observed
+- suspected-defect
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# The fields are sent back unchanged, so the edits run only because the blank
+# Account Group and Country come back as LOW-VALUES, which 1205-COMPARE-OLD-NEW
+# counts as a change against the fetched spaces; otherwise the screen would show
+# 'No change detected with respect to values fetched.' instead.
+- GAP-DEF-019
 # The UniKix 1225-EDIT-ALPHA-REQD drops the TRIM-length blank check and strings
 # the untrimmed 25-byte WS-EDIT-VARIABLE-NAME (COACTUPC.cl2:1903-1918), so its
 # message would read 'Country                   must be supplied.'; a UniKix

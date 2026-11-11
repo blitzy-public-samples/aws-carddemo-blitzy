@@ -18,6 +18,7 @@ inventory_ids:
 - INV-DAT-014  # READACCT job
 tags: []
 gap_ids:
+- GAP-STB-009  # per-scenario catalog in place of the z/OS catalog
 - GAP-STB-010  # Berkeley DB indexed file in place of the VSAM KSDS
 - GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
 - GAP-DOC-004  # the tech spec calls CBACT01C a loader; it only lists the file
