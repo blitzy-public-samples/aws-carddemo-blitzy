@@ -9,7 +9,10 @@
 # list-valued key matches any of its values (grammar in selector_keys). Every set the frozen inventory
 # fixes is listed as explicit ids; `affected` carries only the clauses that depend on scenarios. When the UniKix
 # importer narrows a GAP-INF entry it sets affected_inventory_ids to the items still unverified and drops
-# `affected`.
+# `affected`, keeping the earlier membership under narrowed_from. Every import and every revalidation judges the
+# entry again against that membership: an item no longer verified returns to it, a closed entry reopens with its
+# resolving_evidence moved to superseded_evidence, and once every item is verified the entry closes with its full
+# membership restored.
 categories:
   DEF: suspected-defect
   DOC: doc-conflict
@@ -1815,6 +1818,13 @@ gaps:
   resolving_evidence: null
   status: open
   unknown: No confirmed way captures the 80-byte records the region writes to TDQ JOBS [app/cbl/CORPT00C.cbl:517-523] and correlates them with the BPE job TRNRPT00 they submit (job number, submission time).
+- affected_inventory_ids: []
+  category: missing-input
+  gap_id: GAP-MIS-018
+  needed: A gnucobol-batch result record for each scenario gnucobol-batch can run, written by a full pytest tests/ session, and the reports regenerated from it.
+  resolving_evidence: null
+  status: open
+  unknown: 'The session the reports come from wrote no gnucobol-batch result record for these scenarios, which gnucobol-batch can run: it did not select them (pytest -k or -m, CARDDEMO_ADAPTER=unikix) or ended before their records were written. Whether they pass on gnucobol-batch is unknown, so tests/harness/report.py reports them blocked (no capable adapter ran them) under this entry; a full pytest tests/ run writes a record for each, after which no item cites it.'
 - affected:
   - via_scenarios: true
   affected_inventory_ids:

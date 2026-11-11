@@ -15,20 +15,37 @@ Status rules
     under ``tests/reports/results/`` and the ``validation.yaml`` files of
     imported UniKix evidence under ``tests/reports/unikix/<execution_id>/
     <scenario_id>/`` (``result.yaml`` beside it is raw, immutable evidence).
-    A UniKix record counts only when it is *eligible* (``unikix_eligible``):
-    it ran the UniKix copy of the zip as committed, and none of the
-    scenario's items passes through a part of the copy that differs from
-    ``app/`` (GAP-DOC-020 to GAP-DOC-032; the ``fct.lst`` items of
-    GAP-DOC-030 count when the record ran the zip's ``fct.lst``). An
-    ineligible record is reported as UniKix-copy behaviour and never
-    verifies an ``app/`` item.
+    A ``validation.yaml`` is a record only beside that raw evidence: a
+    regular ``result.yaml`` and the ``environment.yaml`` of its scenario or
+    execution directory; one whose evidence is missing or unreadable is a
+    ``--check`` problem and counts nowhere. An imported record is current
+    only under the fingerprint rule too: a recorded ``execution_fingerprint``
+    must equal the scenario's as it stands (one that cannot be computed
+    matches none), and a passed record always carries one by the record
+    contract, so a change to what executes (fixture bytes, the effective
+    clock, faults, inputs) leaves it stale until a new run, whatever
+    ``validation.yaml`` still says; a record without one is decided by its
+    version and digest alone. A UniKix record counts only when it is
+    *eligible* (``unikix_eligible``): it ran the UniKix copy of the zip as
+    committed, its source identity holds the zip's hash of every unit the
+    scenario executes (the programs, copybooks, maps, job sources and
+    resource lists of its steps or jobs) and of each listed item's UniKix
+    counterpart, and none of the scenario's items passes through a part of
+    the copy that differs from ``app/`` (GAP-DOC-020 to GAP-DOC-032; the
+    ``fct.lst`` items of GAP-DOC-030 count when the record ran the zip's
+    ``fct.lst``). Eligibility is judged first: an ineligible record, current
+    or stale, is reported as UniKix-copy behaviour, is neither counted nor
+    stale, and never verifies an ``app/`` item.
 
     A scenario is ``failing`` when any counted record fails, else ``passed``
-    when any passed, else ``blocked`` when every counted record is blocked or
-    no capable adapter ran it, else ``implemented-unexecuted``. An item takes
-    the worst status of the scenarios that list it (failing > blocked >
-    implemented-unexecuted > verified); an item no scenario lists is
-    ``not-covered``.
+    when any passed, else ``blocked`` when it has no stale record and either
+    every counted record is blocked or it has no counted record (no capable
+    adapter ran it: reason ``adapter-unavailable``), else
+    ``implemented-unexecuted``. A stale record counts as
+    ``implemented-unexecuted`` in that decision, and the reason ``stale``
+    names only a record that exists. An item takes the worst status of the
+    scenarios that list it (failing > blocked > implemented-unexecuted >
+    verified); an item no scenario lists is ``not-covered``.
 
 Outputs (``regenerate``, run at the end of every pytest session and by
 ``python tests/harness/report.py``)
@@ -49,17 +66,20 @@ Command line (from the repository root)::
     python tests/harness/report.py --revalidate
     python tests/harness/report.py --compare-executions <id1> <id2>
 
-The module writes only under ``tests/``: the report files, the inventory's
-report fields and, on import, baselines, scenario tags and expectations,
-``gaps.yaml``, inventory additions and ``validation.yaml`` beside the UniKix
-evidence. The UniKix zip is only read, in memory.
+The module writes only under ``tests/``: the report files and the
+inventory's report fields; on import, baselines, scenario tags and
+expectations, ``gaps.yaml``, inventory additions and ``validation.yaml``
+beside the UniKix evidence; on revalidation, ``validation.yaml`` and
+``gaps.yaml``. The UniKix zip is only read, in memory.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import datetime as _dt
+import fcntl
 import fnmatch
 import functools
 import importlib.metadata
@@ -67,6 +87,7 @@ import io
 import os
 import platform
 import re
+import stat
 import subprocess
 import sys
 import zipfile
@@ -74,7 +95,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 import yaml
 
@@ -123,6 +144,7 @@ __all__ = [
     "check_seams",
     "compare_executions",
     "import_unikix",
+    "item_statuses",
     "load_gaps",
     "main",
     "referenced_gap_ids",
@@ -185,7 +207,8 @@ CATEGORY_ORDER = (
 GAP_STATUSES = ("open", "closed")
 GAP_ID_RE = re.compile(r"GAP-(DOC|DEF|STB|MIS|INF|UNC)-\d{3}")
 _GAP_ID_FULL_RE = re.compile(r"^GAP-(DOC|DEF|STB|MIS|INF|UNC)-(\d{3})$")
-_UNIKIX_ID_RE = re.compile(r"^unikix-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$")
+# Matched only with fullmatch: '$' would also accept a name ending in a newline.
+_UNIKIX_ID_RE = re.compile(r"unikix-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
 
 # The seams of the gnucobol-batch adapter and the stub-limitation entry each
 # must have (the seam rule).
@@ -215,6 +238,7 @@ _ZIP_SKIPPED_PREFIX = "__MACOSX/"
 
 GAP_NO_INSTALLATION = "GAP-MIS-009"
 GAP_APP_NOT_ON_UNIKIX = "GAP-MIS-008"
+GAP_NOT_RUN = "GAP-MIS-018"
 GAP_PAGE_ZERO = "GAP-MIS-002"
 GAP_COMPLETENESS = "GAP-UNC-012"
 
@@ -371,6 +395,37 @@ def _entry_problems(gap_id: str, entry: Mapping[str, Any]) -> list[str]:
     else:
         for index, clause in enumerate(clauses):
             problems.extend(f"{gap_id}: affected[{index}]: {problem}" for problem in clause_problems(clause))
+    problems.extend(_history_problems(gap_id, entry))
+    return problems
+
+
+def _history_problems(gap_id: str, entry: Mapping[str, Any]) -> list[str]:
+    """How an entry's ``narrowed_from`` (the membership an inferred-not-observed
+    entry held before it was narrowed) and ``superseded_evidence`` (the
+    resolving evidence of earlier closures) break the register contract."""
+    problems = []
+    narrowed = entry.get("narrowed_from")
+    if narrowed is not None:
+        if entry.get("category") != CATEGORIES["INF"]:
+            problems.append(f"{gap_id}: only an inferred-not-observed entry is narrowed, so only it has narrowed_from")
+        if not isinstance(narrowed, Mapping) or set(narrowed) - {"affected_inventory_ids", "affected"}:
+            problems.append(f"{gap_id}: narrowed_from must map affected_inventory_ids (and affected, when the entry "
+                            "had clauses) to what the entry listed before it was narrowed")
+        else:
+            ids = narrowed.get("affected_inventory_ids", [])
+            if not isinstance(ids, list) or not all(isinstance(item_id, str) for item_id in ids):
+                problems.append(f"{gap_id}: narrowed_from.affected_inventory_ids must be a list of inventory ids")
+            clauses = narrowed.get("affected", [])
+            if not isinstance(clauses, list):
+                problems.append(f"{gap_id}: narrowed_from.affected must be a list of selector clauses")
+            else:
+                for index, clause in enumerate(clauses):
+                    problems.extend(f"{gap_id}: narrowed_from.affected[{index}]: {problem}"
+                                    for problem in clause_problems(clause))
+    superseded = entry.get("superseded_evidence")
+    if superseded is not None and (not isinstance(superseded, list)
+                                   or not all(isinstance(evidence, (Mapping, str)) for evidence in superseded)):
+        problems.append(f"{gap_id}: superseded_evidence must be a list of the resolving_evidence of earlier closures")
     return problems
 
 
@@ -548,32 +603,268 @@ class UnikixRecord:
     path: Path
 
 
-def _evidence_executions(evidence_dir: Path = UNIKIX_EVIDENCE_DIR) -> list[Path]:
+_EVIDENCE_LINK = "is a symbolic link; UniKix evidence is neither read nor written through it"
+
+
+def _linked_component(path: Path) -> Path | None:
+    """The first component of ``path``, walked one at a time down from the
+    resolved ``tests/`` root, that is a symbolic link, else ``None``. A path
+    outside that root is only checked itself."""
+    try:
+        parts = path.relative_to(TESTS_ROOT).parts
+    except ValueError:
+        return path if path.is_symlink() else None
+    current = TESTS_ROOT
+    for part in parts:
+        current = current / part
+        if current.is_symlink():
+            return current
+    return None
+
+
+def _evidence_folder(*names: str) -> Path:
+    """``tests/reports/unikix/``, or the folder below it that ``names`` lead
+    to, checked before any UniKix evidence is read or written there: each
+    name is one plain path component, no component from the resolved
+    ``tests/`` root down is a symbolic link, and the real path lies inside
+    ``tests/reports/unikix/``. Anything else raises ``ReportError`` naming
+    the offending name or link. The folder itself need not exist."""
+    for name in names:
+        if not isinstance(name, str) or name in ("", ".", "..") or "/" in name or "\0" in name:
+            raise ReportError(f"{name!r} is not a single folder name under {display_path(UNIKIX_EVIDENCE_DIR)}")
+    path = UNIKIX_EVIDENCE_DIR.joinpath(*names)
+    try:
+        link = _linked_component(path)
+        real = os.path.realpath(path)
+    except OSError as exc:
+        raise ReportError(f"{display_path(path)} cannot be examined: {exc.strerror or exc}") from None
+    if link is not None:
+        raise ReportError(f"{display_path(link)} {_EVIDENCE_LINK}")
+    root = str(UNIKIX_EVIDENCE_DIR)
+    if real != root and not real.startswith(root + os.sep):
+        raise ReportError(f"{display_path(path)} resolves outside {display_path(UNIKIX_EVIDENCE_DIR)}")
+    return path
+
+
+def _evidence_executions(evidence_dir: Path = UNIKIX_EVIDENCE_DIR, links: list[Path] | None = None) -> list[Path]:
     """The execution directories under ``tests/reports/unikix/``, in name
-    order; files (the folder's README) and symbolic links are not executions."""
-    if evidence_dir.is_symlink() or not evidence_dir.is_dir():
+    order; files (the folder's README) and symbolic links are not executions.
+    Nothing is listed, so nothing is read, when a component from the
+    ``tests/`` root down (``tests/reports``, ``tests/reports/unikix``) is a
+    symbolic link. An entry named as an execution that is a symbolic link is
+    appended to ``links`` when it is given, so the caller can report it."""
+    if _linked_component(evidence_dir) is not None or not evidence_dir.is_dir():
         return []
-    return [
-        entry for entry in sorted(evidence_dir.iterdir())
-        if entry.is_dir() and not entry.is_symlink() and _UNIKIX_ID_RE.match(entry.name)
-    ]
+    executions = []
+    for entry in sorted(evidence_dir.iterdir()):
+        if not _UNIKIX_ID_RE.fullmatch(entry.name):
+            continue
+        if entry.is_symlink():
+            if links is not None:
+                links.append(entry)
+        elif entry.is_dir():
+            executions.append(entry)
+    return executions
 
 
-def _scenario_dirs(execution_dir: Path) -> list[Path]:
-    return [
-        entry for entry in sorted(execution_dir.iterdir())
-        if entry.is_dir() and not entry.is_symlink()
-    ]
+_ENTRY_LINK = "is a symbolic link; evidence is never read through it"
+
+
+def _scenario_dirs(execution_dir: Path, links: list[Path] | None = None) -> list[Path]:
+    """The scenario directories of an execution directory, in name order.
+    Evidence is never read through a symbolic link, so a linked entry is
+    never one of them; each is appended to ``links`` when it is given, so
+    the caller can report it."""
+    found = []
+    for entry in sorted(execution_dir.iterdir()):
+        if entry.is_symlink():
+            if links is not None:
+                links.append(entry)
+        elif entry.is_dir():
+            found.append(entry)
+    return found
+
+
+def _unikix_record_problems(record: Any, execution_id: str, scenario_id: str) -> list[str]:
+    """Every way the record of the scenario directory ``scenario_id`` of the
+    execution directory ``execution_id`` is not a valid UniKix record of it:
+    it breaks the result record contract, names another adapter, execution
+    or scenario, or the directory is not named by an id of the closed
+    scenario id manifest."""
+    issues = _results.record_problems(record)
+    if isinstance(record, Mapping):
+        if record.get("adapter") != _results.UNIKIX:
+            issues.append(f"adapter: {record.get('adapter')!r} is not unikix")
+        if record.get("execution_id") != execution_id:
+            issues.append(f"execution_id: {record.get('execution_id')!r} is not {execution_id}")
+        if record.get("scenario_id") != scenario_id:
+            issues.append(f"scenario_id: {record.get('scenario_id')!r} is not {scenario_id}")
+    if scenario_id not in _scenarios.ALL_IDS:
+        issues.append(f"{scenario_id} is not an id of the closed scenario id manifest")
+    return issues
+
+
+# The members of a decoded outcome: harness.baselines.decode_result always
+# records the return code and adds the others the scenario asserts.
+_DECODED_MEMBERS = ("return_code", "messages", "screens", "reject_reason_codes", "datasets", "file_state")
+_MARKER_FORMS = {_baselines.MISSING: '{"@missing": true}', _baselines.ERROR: '{"@error": <text>}'}
+_RECORDS_FORMS = 'a list of records, {"@missing": true} or {"@error": <text>}'
+
+
+def _kind(value: Any) -> str:
+    """The kind of a refused decoded value, as a problem names it."""
+    return "null" if value is None else type(value).__name__
+
+
+def _key_text(key: Any) -> str:
+    """A key of a decoded outcome as a problem's path shows it: printable
+    text as it is, other text as its repr, any other key by its kind."""
+    if isinstance(key, str):
+        return _clip(key if key.isprintable() else repr(key), 80)
+    return f"<{_kind(key)} key>"
+
+
+def _items_problems(items: list, where: str, wanted: str, kinds: tuple[type, ...]) -> list[str]:
+    """The first item of the list ``items`` at ``where`` that is none of
+    ``kinds``, with the count of the others like it, so a corrupt list of any
+    length is one problem."""
+    refused = [index for index, item in enumerate(items) if not isinstance(item, kinds)]
+    if not refused:
+        return []
+    more = f" ({len(refused) - 1} more item(s) like it)" if len(refused) > 1 else ""
+    return [f"{where}[{refused[0]}]: must be {wanted}, not {_kind(items[refused[0]])}{more}"]
+
+
+def _marker_problems(value: Mapping, where: str, markers: tuple[str, ...]) -> list[str]:
+    """Why the mapping ``value`` at ``where`` is not exactly one of the
+    projection's ``markers``: ``{"@missing": true}`` (nothing was produced)
+    or ``{"@error": <text>}`` (it cannot be decoded)."""
+    keys = list(value)
+    if len(keys) == 1 and keys[0] in markers:
+        mark = value[keys[0]]
+        if keys[0] == _baselines.MISSING and mark is not True:
+            return [f"{where}.{_baselines.MISSING}: must be true"]
+        if keys[0] == _baselines.ERROR and not isinstance(mark, str):
+            return [f"{where}.{_baselines.ERROR}: must be text, not {_kind(mark)}"]
+        return []
+    forms = " or ".join(_MARKER_FORMS[marker] for marker in markers)
+    held = ", ".join(sorted(_key_text(key) for key in keys)) or "no key"
+    return [f"{where}: a mapping here must be exactly {forms}, not one holding {held}"]
+
+
+def _screens_problems(screens: Any) -> list[str]:
+    """Why ``screens`` is not one entry per step: a mapping of field names to
+    text (``@map`` and ``@text`` included), or ``{"@missing": true}`` for a
+    step without a screen."""
+    if not isinstance(screens, list):
+        return [f"decoded.screens: must be a list of screens, not {_kind(screens)}"]
+    problems = []
+    for index, screen in enumerate(screens):
+        where = f"decoded.screens[{index}]"
+        if not isinstance(screen, Mapping):
+            problems.append(f"{where}: must be a mapping of field names to text or "
+                            f"{_MARKER_FORMS[_baselines.MISSING]}, not {_kind(screen)}")
+        elif _baselines.MISSING in screen:
+            problems.extend(_marker_problems(screen, where, (_baselines.MISSING,)))
+        else:
+            for name, value in screen.items():
+                if not isinstance(name, str):
+                    problems.append(f"{where}: field name {_key_text(name)} is not text")
+                elif not isinstance(value, str):
+                    problems.append(f"{where}.{_key_text(name)}: must be text, not {_kind(value)}")
+    return problems
+
+
+def _section_problems(section: Any, where: str) -> list[str]:
+    """Why the ``datasets`` or ``file_state`` member at ``where`` does not map
+    each dataset or observation name to its records (decoded field maps, or
+    lines of text for TEXT layouts and line observations), to
+    ``{"@missing": true}`` or to ``{"@error": <text>}``."""
+    if not isinstance(section, Mapping):
+        return [f"{where}: must be a mapping of dataset names to their records, not {_kind(section)}"]
+    problems = []
+    for name, value in section.items():
+        if not isinstance(name, str) or not name:
+            problems.append(f"{where}: {repr(name) if name == '' else _key_text(name)} is not a dataset name")
+            continue
+        path = f"{where}.{_key_text(name)}"
+        if isinstance(value, list):
+            problems.extend(_items_problems(value, path, "a record field map or a line of text", (Mapping, str)))
+        elif isinstance(value, Mapping):
+            problems.extend(_marker_problems(value, path, (_baselines.MISSING, _baselines.ERROR)))
+        else:
+            problems.append(f"{path}: must be {_RECORDS_FORMS}, not {_kind(value)}")
+    return problems
+
+
+def _decoded_problems(decoded: Any) -> list[str]:
+    """Every way the decoded outcome of a record is not the normalized
+    projection ``harness.baselines.decode_result`` and ``projection`` give,
+    each led by its path (``decoded.messages[1]``). ``null`` (a blocked,
+    unexecuted or error record) has none; a value that is not a mapping is
+    ``results.record_problems``' to report. A mapping holds ``return_code``
+    (an integer or null) and nothing but the members a scenario asserts:
+    ``messages`` (a list of text), ``reject_reason_codes`` (a list of text,
+    null without DALYREJS, or ``{"@error": <text>}``), ``screens``
+    (``_screens_problems``) and ``datasets`` and ``file_state``
+    (``_section_problems``). A matcher field holds its kind, which is text,
+    so the shape is the same with or without matchers."""
+    if not isinstance(decoded, Mapping):
+        return []
+    problems = []
+    unknown = sorted(_key_text(key) for key in decoded if key not in _DECODED_MEMBERS)
+    if unknown:
+        problems.append(f"decoded: unknown member(s) {', '.join(unknown)}; the members are "
+                        f"{', '.join(_DECODED_MEMBERS)}")
+    if "return_code" not in decoded:
+        problems.append("decoded.return_code: missing; a decoded outcome always records the return code")
+    else:
+        code = decoded["return_code"]
+        if code is not None and (isinstance(code, bool) or not isinstance(code, int)):
+            problems.append(f"decoded.return_code: must be an integer or null, not {_kind(code)}")
+    if "messages" in decoded:
+        messages = decoded["messages"]
+        if isinstance(messages, list):
+            problems.extend(_items_problems(messages, "decoded.messages", "text", (str,)))
+        else:
+            problems.append(f"decoded.messages: must be a list of text, not {_kind(messages)}")
+    if "reject_reason_codes" in decoded:
+        codes, where = decoded["reject_reason_codes"], "decoded.reject_reason_codes"
+        if isinstance(codes, list):
+            problems.extend(_items_problems(codes, where, "text", (str,)))
+        elif isinstance(codes, Mapping):
+            problems.extend(_marker_problems(codes, where, (_baselines.ERROR,)))
+        elif codes is not None:
+            problems.append(f"{where}: must be a list of text, null or {_MARKER_FORMS[_baselines.ERROR]}, "
+                            f"not {_kind(codes)}")
+    if "screens" in decoded:
+        problems.extend(_screens_problems(decoded["screens"]))
+    for section in ("datasets", "file_state"):
+        if section in decoded:
+            problems.extend(_section_problems(decoded[section], f"decoded.{section}"))
+    return problems
 
 
 def load_unikix_records(evidence_dir: Path = UNIKIX_EVIDENCE_DIR) -> tuple[list[UnikixRecord], list[str]]:
-    """Every ``validation.yaml`` that keeps the result record contract, and
-    the problems of those that do not."""
+    """Every ``validation.yaml`` that keeps the result record contract and
+    lies beside its raw evidence (a regular ``result.yaml``, and the
+    ``environment.yaml`` the import reads: the scenario directory's, else
+    the execution directory's), and the problems of those that do not, which
+    ``check`` reports. A symbolic link on the way to the evidence
+    (``tests/reports``, ``tests/reports/unikix``), in place of an execution
+    or scenario directory or in place of a ``validation.yaml`` is a problem
+    too, and nothing is read through it."""
     found: list[UnikixRecord] = []
     problems: list[str] = []
-    for execution_dir in _evidence_executions(evidence_dir):
-        for scenario_dir in _scenario_dirs(execution_dir):
+    link = _linked_component(evidence_dir)
+    if link is not None:
+        problems.append(f"{display_path(link)} {_EVIDENCE_LINK}")
+    links: list[Path] = []
+    for execution_dir in _evidence_executions(evidence_dir, links):
+        for scenario_dir in _scenario_dirs(execution_dir, links):
             path = scenario_dir / VALIDATION_FILE
+            if path.is_symlink():
+                links.append(path)
             if path.is_symlink() or not path.is_file():
                 continue
             shown = display_path(path)
@@ -582,20 +873,25 @@ def load_unikix_records(evidence_dir: Path = UNIKIX_EVIDENCE_DIR) -> tuple[list[
             except YAMLLoadError as exc:
                 problems.append(f"{shown}: {exc}")
                 continue
-            issues = _results.record_problems(record)
-            if isinstance(record, Mapping):
-                if record.get("adapter") != _results.UNIKIX:
-                    issues.append(f"adapter: {record.get('adapter')!r} is not unikix")
-                if record.get("execution_id") != execution_dir.name:
-                    issues.append(f"execution_id: {record.get('execution_id')!r} is not {execution_dir.name}")
-                if record.get("scenario_id") != scenario_dir.name:
-                    issues.append(f"scenario_id: {record.get('scenario_id')!r} is not {scenario_dir.name}")
-            if scenario_dir.name not in _scenarios.ALL_IDS:
-                issues.append(f"{scenario_dir.name} is not an id of the closed scenario id manifest")
+            issues = _unikix_record_problems(record, execution_dir.name, scenario_dir.name)
             if issues:
                 problems.append(f"{shown}: " + "; ".join(issues))
                 continue
+            # An item leaves blocked only on the immutable raw evidence the
+            # import read; a verdict whose evidence is gone does not count.
+            missing = []
+            result = scenario_dir / RESULT_FILE
+            if result.is_symlink() or not result.is_file():
+                missing.append(f"no {RESULT_FILE} beside it")
+            _, why = _read_environment(scenario_dir)
+            if why is not None:
+                missing.append(why)
+            if missing:
+                problems.append(f"{shown}: the raw evidence ({RESULT_FILE} / {ENVIRONMENT_FILE}) is missing or "
+                                f"unreadable: {'; '.join(missing)}; the record does not count")
+                continue
             found.append(UnikixRecord(execution_dir.name, scenario_dir.name, dict(record), path))
+    problems.extend(f"{display_path(path)} {_ENTRY_LINK}" for path in links)
     return found, problems
 
 
@@ -628,10 +924,332 @@ def zip_identity(path: Path = UNIKIX_ZIP) -> tuple[str, dict] | None:
         return None
 
 
-def identity_problem(identity: Any, zip_info: tuple[str, dict] | None = None) -> str | None:
+# Where the UniKix copy keeps what a run executes, inside the zip.
+_ZIP_APP_DIR = "migrated_app/"
+_ZIP_PROGRAM_DIR = _ZIP_APP_DIR + "cbl/"
+_ZIP_MAP_COPY_DIR = _ZIP_APP_DIR + "cpy-bms/"
+_ZIP_TPE_DIR = _ZIP_APP_DIR + "catlg/tpe/"
+_ZIP_BPE_DIR = _ZIP_APP_DIR + "catlg/bpe/"
+# Online programs are .cl2 (translated at build); batch programs, CSUTLDTC and SDSF .cbl.
+_ZIP_PROGRAM_SUFFIXES = (".cl2", ".cbl")
+# A COPY name resolves to a copybook, else to a symbolic map copybook.
+_ZIP_COPY_DIRS = ("cpy/", "cpy-bms/")
+_ZIP_SOURCE_DIRS = (_ZIP_PROGRAM_DIR, _ZIP_APP_DIR + "cpy/", _ZIP_MAP_COPY_DIR)
+# The member that is the UniKix counterpart of a source in each app/ folder,
+# formatted with the source's upper-cased stem; app/cbl resolves through
+# _zip_program and app/csd through _CSD_KIND_LISTS.
+_COUNTERPART_OF = {
+    "app/cpy": "cpy/{}",
+    "app/cpy-bms": "cpy-bms/{}",
+    "app/bms": "bms/{}.bms",
+    "app/jcl": "jcl/{}",
+    "app/proc": "proc/{}",
+    "app/ctl": "ctl/{}",
+}
+# The catlg/tpe list that defines each kind of CSD DEFINE in the UniKix copy;
+# a LIBRARY has none.
+_CSD_KIND_LISTS = {
+    "FILE": "fct.lst",
+    "TRANSACTION": "pct.lst",
+    "PROGRAM": "ppt.lst",
+    "MAPSET": "ppt.lst",
+    "TDQUEUE": "dct.lst",
+}
+_ZIP_SOURCE_PREFIX = _inventory.UNIKIX_ZIP + ":"
+_FIRST_LINE_RE = re.compile(r":(\d+)(?:-\d+)?(?:,\d+(?:-\d+)?)*$")
+_UNIT_COPY_RE = re.compile(r"(?<![A-Za-z0-9-])COPY\s+(['\"]?)([A-Za-z0-9][A-Za-z0-9-]*)\1", re.I)
+_UNIT_CALL_RE = re.compile(r"(?<![A-Za-z0-9-])CALL\s+(['\"])([A-Za-z0-9#$@-]+)\1", re.I)
+_STAMPED: dict[str, tuple[tuple[int, int], Any]] = {}
+
+
+@dataclass(frozen=True)
+class _ZipUnits:
+    """The executable sources of the UniKix copy as one zip holds them."""
+
+    names: frozenset  # every file member, __MACOSX/ resource forks skipped
+    references: dict  # cbl, cpy or cpy-bms member -> frozenset of the members it COPYs or CALLs
+    map_programs: dict  # cpy-bms member -> frozenset of the cbl members that COPY it
+
+
+def _zip_program(program: str, names: frozenset) -> str | None:
+    """The zip member holding the source of ``program``, or ``None``."""
+    for suffix in _ZIP_PROGRAM_SUFFIXES:
+        member = f"{_ZIP_PROGRAM_DIR}{program.upper()}{suffix}"
+        if member in names:
+            return member
+    return None
+
+
+def _source_references(text: str, names: frozenset) -> frozenset:
+    """The zip members a fixed-format COBOL source COPYs (``cpy/<NAME>``, else
+    ``cpy-bms/<NAME>``) or CALLs by literal (a ``cbl`` program), read from
+    columns 8-72 of its lines that are not comments (``*`` or ``/`` in
+    column 7). A name the zip lacks, such as the CICS-supplied ``DFHAID`` and
+    ``DFHBMSCA`` or a runtime routine, is no unit of the copy."""
+    found = set()
+    for line in text.splitlines():
+        if len(line) > 6 and line[6] in "*/":
+            continue
+        area = line[7:72]
+        for match in _UNIT_COPY_RE.finditer(area):
+            name = match.group(2).upper()
+            for folder in _ZIP_COPY_DIRS:
+                if f"{_ZIP_APP_DIR}{folder}{name}" in names:
+                    found.add(f"{_ZIP_APP_DIR}{folder}{name}")
+                    break
+        for match in _UNIT_CALL_RE.finditer(area):
+            member = _zip_program(match.group(2), names)
+            if member is not None:
+                found.add(member)
+    return frozenset(found)
+
+
+@functools.lru_cache(maxsize=4)
+def _zip_units(zip_sha256: str, path: str) -> _ZipUnits:
+    """The members of the UniKix zip whose sha256 is ``zip_sha256`` and the
+    COPY and CALL references of its programs and copybooks, read in memory
+    (texts decoded as latin-1). ``ReportError`` when the file at ``path`` is
+    not that zip."""
+    with zipfile.ZipFile(path) as archive:
+        if sha256_file(path) != zip_sha256:
+            raise ReportError(f"{display_path(path)} is not the zip whose sha256 is {zip_sha256}")
+        infos = [
+            info for info in archive.infolist()
+            if not info.is_dir() and not info.filename.startswith(_ZIP_SKIPPED_PREFIX)
+        ]
+        names = frozenset(info.filename for info in infos)
+        texts = {
+            info.filename: archive.read(info).decode("latin-1")
+            for info in infos if info.filename.startswith(_ZIP_SOURCE_DIRS)
+        }
+    references = {member: _source_references(text, names) for member, text in texts.items()}
+    map_programs: dict[str, set[str]] = {}
+    for member, referenced in references.items():
+        if member.startswith(_ZIP_PROGRAM_DIR):
+            for reference in referenced:
+                if reference.startswith(_ZIP_MAP_COPY_DIR):
+                    map_programs.setdefault(reference, set()).add(member)
+    return _ZipUnits(names, references, {name: frozenset(owners) for name, owners in map_programs.items()})
+
+
+def _stamped(path: Path, build: Callable[[Path], Any]) -> Any:
+    """``build(path)``, built again only when the file's modification time or
+    size changes. ``OSError`` when the file cannot be examined."""
+    status = path.stat()
+    stamp = (status.st_mtime_ns, status.st_size)
+    key = f"{build.__qualname__}:{path}"
+    hit = _STAMPED.get(key)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    value = build(path)
+    _STAMPED[key] = (stamp, value)
+    return value
+
+
+def _unikix_resources(path: Path) -> tuple[dict, dict]:
+    """The ``transactions`` and ``jobs`` mappings of the unikix adapter's
+    ``resources.yaml``."""
+    document = load_yaml(path)
+    sections = []
+    for name in ("transactions", "jobs"):
+        section = document.get(name) if isinstance(document, Mapping) else None
+        if not isinstance(section, Mapping):
+            raise ReportError(f"{display_path(path)}: {name} is not a mapping")
+        sections.append(dict(section))
+    return sections[0], sections[1]
+
+
+def _inventory_sources(path: Path) -> dict[str, str]:
+    """Each inventory item's ``source``, by id."""
+    return {
+        str(item["id"]): str(item.get("source") or "")
+        for item in _inventory.load(path).get("items") or []
+        if isinstance(item, Mapping) and item.get("id") is not None
+    }
+
+
+def _csd_entries(path: Path) -> tuple:
+    """Every ``DEFINE`` of the CSD at ``path`` (``app/csd/CARDDEMO.CSD``)."""
+    return tuple(_inventory.parse_csd(REPO_ROOT))
+
+
+def _item_counterpart(item_id: str, source: str, names: frozenset, csd: Sequence) -> tuple[str | None, str | None]:
+    """The zip member that is the UniKix counterpart of an inventory item's
+    ``source``, or why the copy has none. ``(None, None)`` for a source that
+    is no executed unit: documentation, and data files, which fixtures
+    replace."""
+    path = _source_path(source)
+    if path.startswith(_ZIP_SOURCE_PREFIX):
+        member = path[len(_ZIP_SOURCE_PREFIX):]
+        return (member, None) if member in names else (None, f"{item_id}: {member} is not a member of the zip")
+    folder, _, file_name = path.rpartition("/")
+    stem = file_name.split(".", 1)[0].upper()
+    if folder == "app/cbl":
+        member = _zip_program(stem, names)
+        return (member, None) if member else (None, f"{item_id}: program {stem} has no source in the zip")
+    if folder in _COUNTERPART_OF:
+        member = _ZIP_APP_DIR + _COUNTERPART_OF[folder].format(stem)
+        return (member, None) if member in names else (None, f"{item_id}: {member}, the counterpart of {path}, "
+                                                             "is not a member of the zip")
+    if path == _inventory.CSD_PATH:
+        match = _FIRST_LINE_RE.search(source)
+        first = int(match.group(1)) if match else None
+        entry = next((entry for entry in csd if first is not None and entry.first <= first <= entry.last), None)
+        listing = _CSD_KIND_LISTS.get(entry.kind) if entry is not None else None
+        if listing is None:
+            return None, f"{item_id} ({source}) has no counterpart among the UniKix copy's resource lists"
+        member = _ZIP_TPE_DIR + listing
+        return (member, None) if member in names else (None, f"{item_id}: {member} is not a member of the zip")
+    return None, None
+
+
+def _names(value: Any, where: str, problems: list[str]) -> list[str]:
+    """The names of a ``resources.yaml`` list; a value of another shape is a
+    problem."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
+        problems.append(f"{where} is not a list of names")
+        return []
+    return list(value)
+
+
+def _scenario_units(scenario: Any, zip_units: _ZipUnits) -> tuple[set[str], list[str]]:
+    """The zip members a UniKix run of ``scenario`` executes, and what of it
+    the zip does not hold.
+
+    * Steps (an empty list included): every ``catlg/tpe`` resource list,
+      which region creation installs; the program of each step's transid
+      (``resources.yaml`` ``transactions``); for each map a step or expected
+      screen names (``TEXT`` aside), its ``bms`` source, its ``cpy-bms``
+      copybook and the program that copies that copybook.
+    * Jobs: each job's member, procedures, control members and programs
+      (``resources.yaml`` ``jobs``), and every ``catlg/bpe`` catalog list.
+    * ``inputs.program``: that program.
+    * Every listed inventory item: its source's UniKix counterpart
+      (``_item_counterpart``); an id the inventory lacks is reported by
+      ``build_state``.
+    * The COPY and CALL closure of every program and copybook so required."""
+    names = zip_units.names
+    required: set[str] = set()
+    problems: list[str] = []
+
+    def program(name: str, why: str) -> None:
+        member = _zip_program(name, names)
+        if member is None:
+            problems.append(f"program {name} ({why}) has no source in the zip")
+        else:
+            required.add(member)
+
+    def member(relative: str, why: str) -> None:
+        name = _ZIP_APP_DIR + relative
+        if name in names:
+            required.add(name)
+        else:
+            problems.append(f"{name} ({why}) is not a member of the zip")
+
+    inputs = scenario.inputs if isinstance(scenario.inputs, Mapping) else {}
+    expected = scenario.expected if isinstance(scenario.expected, Mapping) else {}
+    steps = inputs.get("steps")
+    jobs = _scenarios.job_names(scenario)
+    transactions: dict = {}
+    job_entries: dict = {}
+    if isinstance(steps, list) or jobs:
+        transactions, job_entries = _stamped(_scenarios.UNIKIX_RESOURCES_FILE, _unikix_resources)
+    if isinstance(steps, list):
+        required.update(name for name in names if name.startswith(_ZIP_TPE_DIR) and name.endswith(".lst"))
+        maps = []
+        for step in steps:
+            if not isinstance(step, Mapping):
+                continue
+            transid = step.get("transid")
+            if isinstance(transid, str):
+                entry = transactions.get(transid)
+                target = entry.get("program") if isinstance(entry, Mapping) else None
+                if isinstance(target, str):
+                    program(target, f"transid {transid}")
+                else:
+                    problems.append(f"transid {transid} names no program in "
+                                    f"{display_path(_scenarios.UNIKIX_RESOURCES_FILE)}")
+            maps.append(step.get(_scenarios.SCREEN_MAP))
+        screens = expected.get("screens")
+        if isinstance(screens, list):
+            maps.extend(screen.get(_scenarios.SCREEN_MAP) for screen in screens if isinstance(screen, Mapping))
+        for name in sorted({value.upper() for value in maps if isinstance(value, str)} - {_scenarios.TEXT_SCREEN}):
+            member(f"bms/{name}.bms", f"map {name}")
+            member(f"cpy-bms/{name}", f"map {name}")
+            owners = zip_units.map_programs.get(_ZIP_MAP_COPY_DIR + name)
+            if owners:
+                required.update(owners)
+            else:
+                problems.append(f"no program of the zip copies {_ZIP_MAP_COPY_DIR}{name} (map {name})")
+    for job in jobs:
+        entry = job_entries.get(job)
+        if not isinstance(entry, Mapping):
+            problems.append(f"job {job} is not in {display_path(_scenarios.UNIKIX_RESOURCES_FILE)} jobs")
+            continue
+        source = entry.get("member")
+        if isinstance(source, str):
+            member(source, f"job {job}")
+        elif source is not None:
+            problems.append(f"jobs.{job}.member is not a member name")
+        for proc in _names(entry.get("procs"), f"jobs.{job}.procs", problems):
+            member(f"proc/{proc.upper()}", f"job {job}")
+        for control in _names(entry.get("ctl"), f"jobs.{job}.ctl", problems):
+            member(f"ctl/{control.upper()}", f"job {job}")
+        for name in _names(entry.get("programs"), f"jobs.{job}.programs", problems):
+            program(name, f"job {job}")
+    if jobs:
+        required.update(name for name in names if name.startswith(_ZIP_BPE_DIR) and name.endswith(".csv"))
+    if isinstance(inputs.get("program"), str):
+        program(inputs["program"], "inputs.program")
+    item_ids = sorted(set(map(str, scenario.inventory_ids)))
+    if item_ids:
+        sources = _stamped(_inventory.INVENTORY_FILE, _inventory_sources)
+        csd = _stamped(REPO_ROOT / _inventory.CSD_PATH, _csd_entries)
+        for item_id in item_ids:
+            if item_id not in sources:
+                continue
+            counterpart, problem = _item_counterpart(item_id, sources[item_id], names, csd)
+            if counterpart is not None:
+                required.add(counterpart)
+            if problem is not None:
+                problems.append(problem)
+    pending = sorted(required)
+    while pending:
+        for reference in zip_units.references.get(pending.pop(), ()):
+            if reference not in required:
+                required.add(reference)
+                pending.append(reference)
+    return required, problems
+
+
+def _required_units(scenario: Any, zip_sha256: str) -> tuple[set[str], str | None]:
+    """``_scenario_units`` of ``scenario`` in the zip whose sha256 is
+    ``zip_sha256``, or why they cannot all be derived; never raises."""
+    try:
+        required, problems = _scenario_units(scenario, _zip_units(zip_sha256, str(UNIKIX_ZIP)))
+    except OSError as exc:  # shown repository-relative: no absolute path reaches the report
+        where = display_path(exc.filename) if exc.filename else display_path(UNIKIX_ZIP)
+        return set(), f"the units {scenario.id} executes cannot be derived: {where}: {exc.strerror or exc}"
+    except (EOFError, RuntimeError, ValueError, zipfile.BadZipFile, HarnessError) as exc:
+        return set(), f"the units {scenario.id} executes cannot be derived: {_clip(exc, 300)}"
+    if problems:
+        return required, (f"the units {scenario.id} executes are not all in the UniKix copy: "
+                          f"{_clip('; '.join(sorted(set(problems))))}")
+    if not required:
+        return required, f"{scenario.id} names no steps, job or program the UniKix copy runs"
+    return required, None
+
+
+def identity_problem(identity: Any, zip_info: tuple[str, dict] | None = None,
+                     scenario: Any = None) -> str | None:
     """Why a record's ``source_identity`` is not the UniKix copy of the zip as
     committed, or ``None`` when it is: tree ``unikix-copy``, the zip's sha256,
-    and every unit hash equal to that zip member's."""
+    a non-empty ``units`` mapping whose every hash equals that zip member's
+    and, given the ``scenario``, units that hold every zip member a run of it
+    executes (``_scenario_units``), so each of those members' hashes is the
+    zip's. Never raises: an input that cannot be read is a problem."""
     if not isinstance(identity, Mapping):
         return "the record names no source identity"
     if identity.get("tree") != "unikix-copy":
@@ -645,11 +1263,22 @@ def identity_problem(identity: Any, zip_info: tuple[str, dict] | None = None) ->
     units = identity.get("units")
     if not isinstance(units, Mapping):
         return "source_identity.units is not a mapping of zip members to sha256"
+    if not units:
+        return "source_identity.units is empty: it names no executed unit of the zip"
     for member, unit_digest in sorted(units.items()):
         if member not in members:
             return f"source_identity unit {member} is not a member of the zip"
         if members[member] != unit_digest:
             return f"source_identity unit {member} differs from the zip's member"
+    if scenario is None:
+        return None
+    required, problem = _required_units(scenario, digest)
+    if problem is not None:
+        return problem
+    missing = sorted(required - set(units))
+    if missing:
+        return (f"source_identity.units does not cover what {scenario.id} executes: it lacks "
+                f"{_clip(', '.join(missing))}")
     return None
 
 
@@ -672,7 +1301,7 @@ def _copy_gaps(gaps: GapRegister, affected: Mapping[str, Sequence[str]]) -> _Cop
 
 def _ineligibility(record: Mapping[str, Any], scenario: Any, copy_gaps: _CopyGaps,
                    zip_info: tuple[str, dict] | None) -> str | None:
-    problem = identity_problem(record.get("source_identity"), zip_info)
+    problem = identity_problem(record.get("source_identity"), zip_info, scenario)
     if problem is not None:
         return problem
     units = record["source_identity"].get("units") or {}
@@ -690,17 +1319,24 @@ def _ineligibility(record: Mapping[str, Any], scenario: Any, copy_gaps: _CopyGap
 
 def unikix_ineligibility(record: Mapping[str, Any], scenario: Any, state: "State | None" = None) -> str | None:
     """Why a UniKix record cannot count toward ``scenario``'s items, or
-    ``None`` when it is eligible (``unikix_eligible``)."""
+    ``None`` when it is eligible (``unikix_eligible``): a source identity
+    that is not the zip's UniKix copy as committed or lacks the zip's hash of
+    a unit the scenario executes or of a listed item's UniKix counterpart
+    (``identity_problem``), or an item that passes through copy code that
+    differs from ``app/``."""
     state = state if state is not None else build_state()
     return _ineligibility(record, scenario, state.copy_gaps, state.zip_info)
 
 
 def unikix_eligible(record: Mapping[str, Any], scenario: Any, state: "State | None" = None) -> bool:
     """Whether a UniKix record counts toward ``scenario``'s items: it ran the
-    zip's UniKix copy as committed (tree, zip sha256, unit hashes), and none
-    of the scenario's items passes through copy code that differs from
-    ``app/`` (GAP-DOC-020 to GAP-DOC-032), except the GAP-DOC-030 ``fct.lst``
-    files, which a record that ran the zip's ``fct.lst`` verifies."""
+    zip's UniKix copy as committed (tree, zip sha256, unit hashes), its
+    identity holds the zip's hash of every unit the scenario executes (the
+    programs, copybooks, maps, job sources and resource lists of its steps or
+    jobs) and of each listed item's UniKix counterpart, and none of the
+    scenario's items passes through copy code that differs from ``app/``
+    (GAP-DOC-020 to GAP-DOC-032), except the GAP-DOC-030 ``fct.lst`` files,
+    which a record that ran the zip's ``fct.lst`` verifies."""
     return unikix_ineligibility(record, scenario, state) is None
 
 
@@ -712,9 +1348,11 @@ def unikix_eligible(record: Mapping[str, Any], scenario: Any, state: "State | No
 @dataclass(frozen=True)
 class ScenarioStatus:
     """A scenario's status and what decided it. ``records`` are the counted
-    current records whose status is the scenario's; ``stale`` names records
-    that no longer match the scenario and baseline; ``ineligible`` holds the
-    current UniKix records excluded as UniKix-copy behaviour."""
+    current records whose status is the scenario's; ``stale`` names the
+    records that no longer describe the scenario and baseline (an imported
+    one also by its execution fingerprint); ``ineligible`` holds every
+    imported UniKix record excluded as UniKix-copy behaviour, current or
+    stale, with why. An ineligible record is never also counted or stale."""
 
     scenario_id: str
     status: str
@@ -737,9 +1375,14 @@ def scenario_status(
     ineligible: Sequence[tuple[Mapping[str, Any], str]] = (),
 ) -> ScenarioStatus:
     """The status rules for one scenario over its ``counted`` records (current,
-    and eligible when UniKix): failing when any fails, else passed when any
-    passed, else blocked when every one is blocked or none exists and no
-    capable adapter ran it, else implemented-unexecuted."""
+    and eligible when UniKix) and its ``stale`` ones (no longer current):
+    failing when any counted record fails, else passed when any passed, else
+    blocked when there is no stale record and either every counted record is
+    blocked (every run raised ``AdapterUnavailable``) or none exists (no
+    capable adapter ran it, or only ineligible UniKix records exist: reason
+    ``adapter-unavailable``), else implemented-unexecuted. A stale record
+    counts as implemented-unexecuted, so blocked records never outweigh it;
+    the reason ``stale`` is given only when such a record exists."""
     scenario_id = scenario.id
     counted = sorted(counted, key=_record_order)
     ineligible = sorted(ineligible, key=lambda pair: _record_order(pair[0]))
@@ -751,26 +1394,33 @@ def scenario_status(
         if status in by_status:
             first = by_status[status][0]
             return ScenarioStatus(scenario_id, status, first.get("reason"), None, tuple(by_status[status]), *extra)
-    if counted and set(by_status) == {_results.STATUS_BLOCKED}:
+    if counted and set(by_status) == {_results.STATUS_BLOCKED} and not stale:
         first = by_status[_results.STATUS_BLOCKED][0]
         return ScenarioStatus(scenario_id, _results.STATUS_BLOCKED, first.get("reason"), first.get("gap_id"),
                               tuple(by_status[_results.STATUS_BLOCKED]), *extra)
+    records = tuple(by_status.get(_results.STATUS_UNEXECUTED, ()))
+    if stale and not records:
+        # A stale record counts as implemented-unexecuted, so current blocked
+        # records beside it do not make every run blocked.
+        return ScenarioStatus(scenario_id, _results.STATUS_UNEXECUTED, "stale", None, (), *extra)
     if counted:
-        records = tuple(by_status.get(_results.STATUS_UNEXECUTED, ()))
         first = records[0] if records else counted[0]
         return ScenarioStatus(scenario_id, _results.STATUS_UNEXECUTED, first.get("reason"), first.get("gap_id"),
                               records, *extra)
+    # No counted or stale record, so no capable adapter ran it: in CI every
+    # scenario only unikix can run is deselected, and one gnucobol-batch can
+    # run has none when the session did not run it. The gap names what is
+    # missing: GAP_NOT_RUN when gnucobol-batch is among the capable adapters
+    # (its unwritten record, whether or not unikix can run it too); else
+    # GAP_APP_NOT_ON_UNIKIX when UniKix evidence exists but none of it may
+    # verify the app/ items (an app/ build there); else GAP_NO_INSTALLATION.
     capable = _scenarios.capable_adapters(scenario)
-    if stale:
-        return ScenarioStatus(scenario_id, _results.STATUS_UNEXECUTED, "stale", None, (), *extra)
     if _results.GNUCOBOL in capable:
-        # CI runs every scenario gnucobol-batch can run; a missing record
-        # means a partial run, not a missing capability.
-        return ScenarioStatus(scenario_id, _results.STATUS_UNEXECUTED, "stale", None, (), *extra)
-    # No capable adapter ran it: in CI every scenario only unikix can run is
-    # deselected and has no record. Once UniKix evidence exists but none of
-    # it may verify the app/ items, what is missing is an app/ build there.
-    gap = GAP_APP_NOT_ON_UNIKIX if ineligible else GAP_NO_INSTALLATION
+        gap = GAP_NOT_RUN
+    elif ineligible:
+        gap = GAP_APP_NOT_ON_UNIKIX
+    else:
+        gap = GAP_NO_INSTALLATION
     return ScenarioStatus(scenario_id, _results.STATUS_BLOCKED, "adapter-unavailable", gap, (), *extra)
 
 
@@ -809,6 +1459,67 @@ def _item_status(scenario_statuses: Iterable[str]) -> str:
     if not mapped:
         return NOT_COVERED
     return min(mapped, key=_ITEM_SEVERITY.__getitem__)
+
+
+def item_statuses(
+    statuses: Mapping[str, ScenarioStatus | str],
+    item_scenarios: Mapping[str, Iterable[str]],
+) -> dict[str, str]:
+    """The status of every item in ``item_scenarios`` (item id -> the ids of
+    the scenarios that list it), in its order. ``statuses`` maps a scenario id
+    to its ``ScenarioStatus`` or to its status string. An item takes the worst
+    status of the scenarios that list it, failing > blocked >
+    implemented-unexecuted > verified, a ``passed`` scenario giving
+    ``verified``; an item no scenario lists is ``not-covered``."""
+
+    def status_of(item_id: str, scenario_id: str) -> str:
+        if scenario_id not in statuses:
+            raise ReportError(f"{item_id}: listing scenario {scenario_id} has no status")
+        value = statuses[scenario_id]
+        status = value.status if isinstance(value, ScenarioStatus) else value
+        if status not in _ITEM_STATUS_OF:
+            raise ReportError(f"{scenario_id}: {status!r} is not a scenario status")
+        return status
+
+    return {
+        item_id: _item_status(status_of(item_id, scenario_id) for scenario_id in scenario_ids)
+        for item_id, scenario_ids in item_scenarios.items()
+    }
+
+
+@dataclass
+class _CurrentFingerprint:
+    """A scenario's unikix execution fingerprint as it stands, computed on
+    first use and then reused, so the scenario's fixtures are built at most
+    once however many of its records are judged."""
+
+    scenario: Any
+
+    @functools.cached_property
+    def value(self) -> str | None:
+        """``current_fingerprint``'s digest; ``None`` when it cannot be
+        computed."""
+        return current_fingerprint(self.scenario)[0]
+
+
+def _imported_is_current(record: Mapping[str, Any], scenario: Any, baseline: Any,
+                         fingerprint: _CurrentFingerprint) -> bool:
+    """Whether an imported UniKix record (its ``validation.yaml``) still
+    describes ``scenario``: current by ``baseline_version`` and
+    ``scenario_digest`` (``harness.results.is_current``), and under the
+    fingerprint rule, which alone lets a re-comparison stand for a run. A
+    recorded ``execution_fingerprint`` must equal the scenario's as it stands,
+    so a change to anything that affects execution (fixture bytes, the
+    effective clock, faults, inputs) leaves the record stale until a new run,
+    whatever ``validation.yaml`` still says; a fingerprint that cannot be
+    computed cannot be matched. A record without one is decided by its version
+    and digest alone, whatever its status: a passed record always carries one
+    (the record contract refuses it otherwise, so it is never current), and a
+    failing one written without it keeps its failure."""
+    if not _results.is_current(record, scenario, baseline):
+        return False
+    recorded = record.get("execution_fingerprint")
+    return recorded is None or fingerprint.value == recorded
 
 
 def build_state() -> State:
@@ -854,22 +1565,21 @@ def build_state() -> State:
                     counted.append(gnucobol)
                 else:
                     stale.append(_results.evidence_path_for(_results.GNUCOBOL, scenario_id))
+            fingerprint = _CurrentFingerprint(scenario)
             for entry in imported:
-                if problem is not None or not _results.is_current(entry.record, scenario, baseline):
-                    stale.append(display_path(entry.path))
-                    continue
+                # Eligibility first: UniKix-copy behaviour is reported as such,
+                # current or stale, and never enters either status aggregation.
                 why = _ineligibility(entry.record, scenario, copy_gaps, zip_info)
-                if why is None:
+                if why is not None:
+                    ineligible.append((entry.record, why))
+                elif problem is None and _imported_is_current(entry.record, scenario, baseline, fingerprint):
                     counted.append(entry.record)
                 else:
-                    ineligible.append((entry.record, why))
+                    stale.append(display_path(entry.path))
         statuses[scenario_id] = scenario_status(scenario, counted, stale, ineligible)
 
     item_scenarios = {item["id"]: universe.listed_by.get(item["id"], []) for item in items}
-    item_status = {
-        item_id: _item_status(statuses[scenario_id].status for scenario_id in scenario_ids)
-        for item_id, scenario_ids in item_scenarios.items()
-    }
+    item_status = item_statuses(statuses, item_scenarios)
     gaps_of_item: dict[str, set[str]] = {item["id"]: set() for item in items}
     for gap_id, item_ids in affected.items():
         for item_id in item_ids:
@@ -1178,13 +1888,23 @@ def _projection_causes(state: State) -> list[str]:
                       "the items only they would list are not-covered.")
     unrun = [
         scenario_id for scenario_id, status in state.statuses.items()
-        if status.reason == "stale" and not status.records
+        if status.status == _results.STATUS_BLOCKED and not status.counted and not status.stale
         and _results.GNUCOBOL in _scenarios.capable_adapters(state.scenarios[scenario_id])
     ]
     if unrun:
-        causes.append(f"{len(unrun)} scenarios gnucobol-batch can run have no current result record "
-                      "(not run in this session, or run against another scenario or baseline version); "
-                      "they count as implemented-unexecuted.")
+        causes.append(f"{len(unrun)} scenarios gnucobol-batch can run have no result record (not run in this "
+                      f"session); no capable adapter ran them, so they count as blocked under {GAP_NOT_RUN}.")
+    stale = [
+        status for status in state.statuses.values()
+        if status.status == _results.STATUS_UNEXECUTED and status.reason == "stale" and not status.records
+    ]
+    only_stale = sum(1 for status in stale if not status.counted)
+    if only_stale:
+        causes.append(f"{only_stale} scenarios have only stale result records (run against another scenario, "
+                      "baseline or execution input); they count as implemented-unexecuted.")
+    if len(stale) > only_stale:
+        causes.append(f"{len(stale) - only_stale} scenarios have stale result records beside current blocked "
+                      "ones; a stale record counts as implemented-unexecuted, so they are not blocked.")
     if state.baseline_problems:
         causes.append(f"{len(state.baseline_problems)} scenarios with records have a baseline that cannot be "
                       "read, so their records are not current.")
@@ -1558,7 +2278,7 @@ def check_seams(state: State | None = None) -> list[str]:
         evidence = entry.get("resolving_evidence")
         execution_id = evidence.get("execution_id") if isinstance(evidence, Mapping) else None
         scenario_id = evidence.get("scenario_id") if isinstance(evidence, Mapping) else None
-        if not isinstance(execution_id, str) or not _UNIKIX_ID_RE.match(execution_id):
+        if not isinstance(execution_id, str) or not _UNIKIX_ID_RE.fullmatch(execution_id):
             problems.append(f"{gap_id} is closed without the execution_id of a UniKix run")
             continue
         if not (UNIKIX_EVIDENCE_DIR / execution_id).is_dir():
@@ -1575,7 +2295,8 @@ def check_seams(state: State | None = None) -> list[str]:
             continue
         record = found[0].record
         baseline, problem = _load_baseline(scenario_id)
-        if problem is not None or not _results.is_current(record, scenario, baseline):
+        if problem is not None or not _imported_is_current(record, scenario, baseline,
+                                                           _CurrentFingerprint(scenario)):
             problems.append(f"{gap_id}: the {VALIDATION_FILE} of {scenario_id} in {execution_id} is not current")
         elif record.get("status") != _results.STATUS_PASSED:
             problems.append(f"{gap_id}: the {VALIDATION_FILE} of {scenario_id} in {execution_id} is "
@@ -1703,6 +2424,15 @@ def check(state: State | None = None) -> list[str]:
         )
         if unknown:
             findings.append(f"{gap_id}: affected_inventory_ids names ids outside the inventory: {', '.join(unknown)}")
+        narrowed = entry.get("narrowed_from")
+        earlier = narrowed.get("affected_inventory_ids") if isinstance(narrowed, Mapping) else None
+        unknown = sorted(
+            item_id for item_id in (earlier if isinstance(earlier, list) else [])
+            if isinstance(item_id, str) and item_id not in state.item_status
+        )
+        if unknown:
+            findings.append(f"{gap_id}: narrowed_from.affected_inventory_ids names ids outside the inventory: "
+                            f"{', '.join(unknown)}")
     findings.extend(_matrix_findings(state))
     counts = state.counts()
     if sum(counts.values()) != state.header.get("total"):
@@ -2045,7 +2775,11 @@ def read_evidence(execution_id: str, scenario_dir: Path,
         problems.append(f"scenario_id {record['scenario_id']!r} is not {scenario_id}")
     if problems:
         return None, f"{RESULT_FILE}: " + "; ".join(problems)
-    problem = identity_problem(record["source_identity"], zip_info)
+    try:
+        scenario = _scenarios.get(scenario_id, missing_ok=True)
+    except HarnessError as exc:
+        return None, f"the scenario file cannot be read: {exc}"
+    problem = identity_problem(record["source_identity"], zip_info, scenario)
     if problem is not None:
         return None, f"source identity: {problem}"
     return Evidence(execution_id, scenario_id, scenario_dir, dict(raw), environment,
@@ -2205,10 +2939,81 @@ def _validation(evidence: Evidence, scenario: Any, baseline: Any, status: str, r
     return record
 
 
+_FOLDER_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+
+
+def _replace_file(folder: int, name: str, data: bytes, path: Path) -> None:
+    """Make the file ``name`` of the open folder ``folder`` (shown as
+    ``path``) hold ``data`` without following a symbolic link. A link or a
+    non-regular file of that name is refused; an identical file is left
+    untouched, so its mtime stays stable; otherwise ``data`` goes to a new
+    file beside it that ``os.replace`` swaps in, keeping an existing file's
+    permission bits, and the new file is removed when anything fails."""
+    try:
+        info: os.stat_result | None = os.stat(name, dir_fd=folder, follow_symlinks=False)
+    except FileNotFoundError:
+        info = None
+    if info is not None and stat.S_ISLNK(info.st_mode):
+        raise ReportError(f"{display_path(path)} is a symbolic link; nothing is written through it")
+    if info is not None and not stat.S_ISREG(info.st_mode):
+        raise ReportError(f"{display_path(path)} is not a regular file; nothing is written to it")
+    if info is not None and info.st_size == len(data):
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=folder)
+        with os.fdopen(descriptor, "rb") as handle:
+            if stat.S_ISREG(os.fstat(handle.fileno()).st_mode) and handle.read(len(data) + 1) == data:
+                return
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    while True:
+        temp = f".{name}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
+        try:
+            descriptor = os.open(temp, flags, 0o666, dir_fd=folder)
+            break
+        except FileExistsError:
+            continue
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            if info is not None:
+                os.fchmod(handle.fileno(), stat.S_IMODE(info.st_mode))
+        os.replace(temp, name, src_dir_fd=folder, dst_dir_fd=folder)
+    except BaseException:
+        try:
+            os.unlink(temp, dir_fd=folder)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def _write_validation(evidence: Evidence, record: Mapping[str, Any]) -> None:
+    """Write ``validation.yaml`` into the evidence's own scenario directory,
+    the one file ever written under the evidence tree, without following a
+    symbolic link: ``_evidence_folder`` first names any linked folder, then
+    each folder from the resolved ``tests/`` root down is opened relative to
+    its parent with ``O_NOFOLLOW``, so a link swapped in meanwhile fails
+    instead of being written through, and the file is replaced inside the
+    last one (``_replace_file``)."""
     path = evidence.directory / VALIDATION_FILE
-    _refuse_links(evidence.directory, path)
-    write_text(path, dump_yaml(dict(record)))
+    _evidence_folder(evidence.execution_id, evidence.scenario_id)
+    if evidence.directory != UNIKIX_EVIDENCE_DIR / evidence.execution_id / evidence.scenario_id:
+        raise ReportError(f"{display_path(evidence.directory)} is not the evidence directory of "
+                          f"{evidence.execution_id}/{evidence.scenario_id}; nothing is written there")
+    data = dump_yaml(dict(record)).encode("utf-8")
+    current = TESTS_ROOT
+    try:
+        folder = os.open(TESTS_ROOT, _FOLDER_FLAGS)
+        try:
+            for part in evidence.directory.relative_to(TESTS_ROOT).parts:
+                current = current / part
+                parent, folder = folder, os.open(part, _FOLDER_FLAGS | os.O_NOFOLLOW, dir_fd=folder)
+                os.close(parent)
+            current = path
+            _replace_file(folder, VALIDATION_FILE, data, path)
+        finally:
+            os.close(folder)
+    except OSError as exc:
+        if os.path.islink(current):
+            raise ReportError(f"{display_path(current)} is a symbolic link; nothing is written through it") from None
+        raise ReportError(f"{display_path(current)} cannot be written: {exc.strerror or exc}") from None
 
 
 def _judge(evidence: Evidence, scenario: Any, baseline: Any) -> tuple[str, str | None, str, dict | None]:
@@ -2423,15 +3228,19 @@ def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
     """Write the ``validation.yaml`` of one evidence directory; with a
     ``document`` (import), promote an eligible derived baseline and register
     a divergence first. Returns the status written, or ``None`` when nothing
-    is written because the evidence no longer describes the scenario."""
+    is written because the evidence no longer describes the scenario. Raises
+    ``HarnessError`` when the evidence cannot be judged: the current
+    execution fingerprint cannot be computed or the baseline cannot be read."""
     raw = evidence.raw
     fingerprint = raw.get("execution_fingerprint")
     if fingerprint is not None:
         current, problem = current_fingerprint(scenario)
+        if problem is not None:
+            raise ReportError(f"{scenario.id}: the current execution fingerprint cannot be computed: {problem}")
         if current != fingerprint:
-            why = problem or "the scenario's inputs or preconditions changed since this execution"
             if summary is not None:
-                summary.skipped.append((scenario.id, f"stale: {why}"))
+                summary.skipped.append((scenario.id, "stale: the scenario's inputs or preconditions changed since "
+                                                     "this execution"))
             return None
     elif document is None:
         if summary is not None:
@@ -2499,11 +3308,16 @@ def _versions_recorded(environment: Mapping[str, Any]) -> bool:
     )
 
 
-def _new_message_items(state: State, execution_id: str, imported: Iterable[str], summary: ImportSummary) -> None:
+def _new_message_items(state: State, execution_id: str, imported: Iterable[str], document: dict,
+                       summary: ImportSummary) -> None:
     """Add every observed message of the execution that matches no item to
-    the inventory, raising its total (GAP-UNC-012)."""
+    the inventory, raising its total, and list each added item under
+    GAP-UNC-012 in ``document``, reopening that entry when it is closed.
+    Without a GAP-UNC-012 entry nothing is added and the import rejects the
+    messages."""
     patterns = list(_patterns_of(state.items))
     added: set[str] = set()
+    additions: list[tuple[dict, str]] = []
     for scenario_id in sorted(imported):
         scenario = state.scenarios.get(scenario_id)
         path = UNIKIX_EVIDENCE_DIR / execution_id / scenario_id / RESULT_FILE
@@ -2538,29 +3352,154 @@ def _new_message_items(state: State, execution_id: str, imported: Iterable[str],
                 "activation": "always",
                 "gap_ids": [GAP_COMPLETENESS],
             }
-            assigned = _inventory.append_items(
-                [item], f"unmatched observed message ({execution_id}/{scenario_id})")
-            summary.items_added.extend(assigned)
-            patterns.append((assigned[0], _literal_pattern(text)))
+            additions.append((item, f"unmatched observed message ({execution_id}/{scenario_id})"))
+            patterns.append((text, _literal_pattern(text)))
+    if not additions:
+        return
+    entry = _gap_entries(document).get(GAP_COMPLETENESS)
+    listed = entry.get("affected_inventory_ids", []) if entry is not None else None
+    if not isinstance(listed, list):
+        where = (f"gaps.yaml has no {GAP_COMPLETENESS} entry to register them under" if entry is None
+                 else f"the affected_inventory_ids of {GAP_COMPLETENESS} in gaps.yaml is not a list")
+        summary.rejected.append(("-", f"{len(additions)} observed message(s) match no inventory item, but {where}; "
+                                      "nothing was added"))
+        return
+    assigned = []
+    for item, reason in additions:
+        try:
+            assigned.extend(_inventory.append_items([item], reason))
+        except HarnessError as exc:
+            # The items already added are still registered below, so none is left without its entry.
+            summary.rejected.append(("-", f"inventory addition {item['name']}: {exc}"))
+            break
+    if not assigned:
+        return
+    summary.items_added.extend(assigned)
+    entry["affected_inventory_ids"] = sorted({str(item_id) for item_id in listed} | set(assigned))
+    if entry.get("status") == "closed":
+        _reopen(entry)
+        summary.gaps_changed.append(f"{GAP_COMPLETENESS}: reopened, {len(assigned)} observed message(s) of "
+                                    f"{execution_id} match no inventory item")
+    summary.gaps_changed.append(f"{GAP_COMPLETENESS}: lists the added item(s) {', '.join(assigned)}")
+
+
+def _reopen(entry: dict) -> None:
+    """Reopen a closed entry on contrary evidence; the evidence that closed it
+    moves to ``superseded_evidence``, so the entry keeps its history."""
+    history = entry.get("superseded_evidence")
+    history = list(history) if isinstance(history, list) else ([] if history is None else [history])
+    if entry.get("resolving_evidence") is not None:
+        history.append(entry["resolving_evidence"])
+    entry["status"], entry["resolving_evidence"] = "open", None
+    if history:
+        entry["superseded_evidence"] = history
+
+
+def _membership(entry: Mapping[str, Any]) -> dict:
+    """The ``affected_inventory_ids`` and ``affected`` clauses an entry holds,
+    as ``narrowed_from`` keeps them."""
+    kept = {"affected_inventory_ids": list(entry.get("affected_inventory_ids") or [])}
+    if entry.get("affected"):
+        kept["affected"] = list(entry["affected"])
+    return kept
+
+
+def _restore(entry: dict) -> None:
+    """Give a narrowed entry back the membership it held before it was narrowed."""
+    earlier = entry.pop("narrowed_from")
+    entry["affected_inventory_ids"] = list(earlier.get("affected_inventory_ids") or [])
+    if earlier.get("affected"):
+        entry["affected"] = list(earlier["affected"])
+    else:
+        entry.pop("affected", None)
+
+
+def _closing_evidence(state: State, item_ids: Iterable[str], execution_id: str | None) -> dict | None:
+    """The ``resolving_evidence`` of an inferred-not-observed entry whose items
+    are all verified: the UniKix execution whose counted passed records verify
+    them (the importing one when it is among them, else the latest, as ids
+    embed their UTC start), else the importing execution, else the commit
+    checked out. ``None`` when nothing names the evidence."""
+    executions = {
+        str(record["execution_id"])
+        for item_id in item_ids
+        for scenario_id in state.item_scenarios.get(item_id, ())
+        for record in state.statuses[scenario_id].counted
+        if record.get("adapter") == _results.UNIKIX and record.get("status") == _results.STATUS_PASSED
+        and record.get("execution_id")
+    }
+    if execution_id is not None and (execution_id in executions or not executions):
+        chosen: str | None = execution_id
+    else:
+        chosen = max(executions, default=None)
+    if chosen is not None:
+        return {"execution_id": chosen, "evidence_path": f"{display_path(UNIKIX_EVIDENCE_DIR)}/{chosen}"}
+    commit = git_head()
+    return None if commit == "unknown" else {"commit": commit}
+
+
+def _settle_inferred(document: dict, state: State, execution_id: str | None, changes: list) -> None:
+    """Judge every inferred-not-observed entry, open or closed, over its full
+    membership (``narrowed_from`` once it is narrowed), appending one line
+    per change to ``changes``. An entry closes, its full membership
+    restored, only when every item is verified by current records; a closed
+    entry with an item no longer verified reopens, its
+    ``resolving_evidence`` moved to ``superseded_evidence``; an open entry
+    lists exactly its unverified items, the earlier membership kept under
+    ``narrowed_from``. ``execution_id`` names the importing execution
+    (``None`` on revalidation)."""
+    universe = _Universe.build(state.items, state.scenarios.values())
+    for gap_id, entry in _gap_entries(document).items():
+        if entry.get("category") != CATEGORIES["INF"] or entry.get("status") not in GAP_STATUSES:
+            continue
+        narrowed = entry.get("narrowed_from")
+        if narrowed is not None and not isinstance(narrowed, Mapping):
+            continue  # check() reports the malformed entry; it is left as it is
+        members = _resolve(gap_id, narrowed if narrowed is not None else entry, universe)
+        if not members:
+            continue
+        before = _resolve(gap_id, entry, universe)
+        unverified = [item_id for item_id in members if state.item_status.get(item_id) != VERIFIED]
+        if not unverified:
+            if entry.get("status") == "open":
+                evidence = _closing_evidence(state, members, execution_id)
+                if evidence is None:
+                    changes.append(f"{gap_id}: left open although every affected item is verified: no UniKix "
+                                   "execution or commit names the evidence")
+                else:
+                    entry["status"], entry["resolving_evidence"] = "closed", evidence
+                    changes.append(f"{gap_id}: closed, every affected item verified")
+            elif narrowed is not None:
+                changes.append(f"{gap_id}: its full membership is restored, every affected item verified")
+            if narrowed is not None:
+                _restore(entry)
+            continue
+        if entry.get("status") == "closed":
+            _reopen(entry)
+            changes.append(f"{gap_id}: reopened, {len(unverified)} of its {len(members)} items are no longer "
+                           f"verified: {_clip(', '.join(unverified), 300)}")
+        if len(unverified) < len(members):
+            if narrowed is None:
+                entry["narrowed_from"] = _membership(entry)
+            entry["affected_inventory_ids"] = unverified
+            entry.pop("affected", None)
+        elif narrowed is not None:
+            _restore(entry)
+        after = _resolve(gap_id, entry, universe)
+        returned = sorted(set(after) - set(before))
+        if returned:
+            changes.append(f"{gap_id}: lists {len(returned)} more item(s) that are not verified "
+                           f"({_clip(', '.join(returned), 300)}); {len(after)} items in all are still unverified")
+        elif after != before:
+            changes.append(f"{gap_id}: narrowed to the {len(after)} items still unverified")
 
 
 def _settle_gaps(document: dict, state: State, execution_id: str, environments: Iterable[Mapping[str, Any]],
                  summary: ImportSummary) -> None:
-    """Close or narrow the inferred-not-observed entries the import verified,
-    and close GAP-MIS-009 once the installation's versions are recorded."""
+    """Judge the inferred-not-observed entries (``_settle_inferred``), and
+    close GAP-MIS-009 once the installation's versions are recorded."""
+    _settle_inferred(document, state, execution_id, summary.gaps_changed)
     evidence = {"execution_id": execution_id, "evidence_path": f"{display_path(UNIKIX_EVIDENCE_DIR)}/{execution_id}"}
-    for gap_id, entry in _gap_entries(document).items():
-        if entry.get("category") != "inferred-not-observed" or entry.get("status") != "open":
-            continue
-        resolved = state.affected.get(gap_id, [])
-        unverified = [item_id for item_id in resolved if state.item_status.get(item_id) != VERIFIED]
-        if resolved and not unverified:
-            entry["status"], entry["resolving_evidence"] = "closed", dict(evidence)
-            summary.gaps_changed.append(f"{gap_id}: closed, every affected item verified")
-        elif resolved and len(unverified) < len(resolved):
-            entry["affected_inventory_ids"] = unverified
-            entry.pop("affected", None)
-            summary.gaps_changed.append(f"{gap_id}: narrowed to the {len(unverified)} items still unverified")
     installation = _gap_entries(document).get(GAP_NO_INSTALLATION)
     if (installation is not None and installation.get("status") == "open"
             and any(_versions_recorded(environment) for environment in environments)):
@@ -2573,27 +3512,61 @@ def _write_gaps(document: dict, original: str) -> None:
     write_text(GAPS_FILE, _gaps_text(document, original))
 
 
+@contextlib.contextmanager
+def _exclusive() -> Iterator[None]:
+    """Hold an exclusive lock on ``tests/`` while an import or a revalidation
+    reads and rewrites ``gaps.yaml``, the scenarios, baselines,
+    ``validation.yaml`` files and reports, so imports and revalidations run
+    one at a time and none loses another's update; a second one waits for
+    the first. The lock is taken on the directory itself, because the files
+    are replaced rather than rewritten in place, so no lock file is created;
+    the inventory's own lock still guards each addition."""
+    try:
+        descriptor = os.open(TESTS_ROOT, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as exc:
+        raise ReportError(f"cannot lock {display_path(TESTS_ROOT)}: {exc.strerror or exc}") from None
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as exc:
+            raise ReportError(f"cannot lock {display_path(TESTS_ROOT)}: {exc.strerror or exc}") from None
+        yield
+    finally:
+        os.close(descriptor)  # closing the descriptor releases the lock
+
+
 def import_unikix(execution_id: str) -> ImportSummary:
     """Import the evidence of one UniKix execution: check each record's
     source identity and its ``environment.yaml`` (a record that
     fails is reported, not imported), promote each eligible derived baseline
     its scenario ran (MINOR when the observed outcome equals it, MAJOR with a
     register entry when it differs), register cross-adapter divergences,
-    write ``validation.yaml`` beside each ``result.yaml``, settle the
-    inferred-not-observed entries and GAP-MIS-009, add observed messages no
-    item matches to the inventory, and regenerate the reports."""
-    if not isinstance(execution_id, str) or not _UNIKIX_ID_RE.match(execution_id):
+    write ``validation.yaml`` beside each ``result.yaml``, add observed
+    messages no item matches to the inventory and to GAP-UNC-012, judge the
+    inferred-not-observed entries and settle GAP-MIS-009, and regenerate the
+    reports. A record whose current execution fingerprint cannot be computed
+    is rejected. Imports and revalidations run one at a time (``_exclusive``)."""
+    if not isinstance(execution_id, str) or not _UNIKIX_ID_RE.fullmatch(execution_id):
         raise ReportError(f"{execution_id!r} is not a unikix execution id unikix-<yyyymmddThhmmssZ>-<8 hex>")
-    execution_dir = UNIKIX_EVIDENCE_DIR / execution_id
-    if execution_dir.is_symlink() or not execution_dir.is_dir():
+    execution_dir = _evidence_folder(execution_id)
+    if not execution_dir.is_dir():
         raise ReportError(f"no evidence directory {display_path(execution_dir)}")
+    with _exclusive():
+        return _import_execution(execution_id, execution_dir)
+
+
+def _import_execution(execution_id: str, execution_dir: Path) -> ImportSummary:
+    """The import itself, run while the lock is held."""
     summary = ImportSummary(execution_id)
     original = GAPS_FILE.read_text(encoding="utf-8")
     document = load_yaml(GAPS_FILE)
     state = build_state()
     imported = []
     environments = []
-    for scenario_dir in _scenario_dirs(execution_dir):
+    links: list[Path] = []
+    scenario_dirs = _scenario_dirs(execution_dir, links)
+    summary.rejected.extend((link.name, _ENTRY_LINK) for link in links)
+    for scenario_dir in scenario_dirs:
         evidence, why = read_evidence(execution_id, scenario_dir, state.zip_info)
         if evidence is None:
             summary.rejected.append((scenario_dir.name, why))
@@ -2611,7 +3584,7 @@ def import_unikix(execution_id: str) -> ImportSummary:
         if written is not None:
             summary.validated.append((evidence.scenario_id, *written))
             imported.append(evidence.scenario_id)
-    _new_message_items(build_state(), execution_id, imported, summary)
+    _new_message_items(build_state(), execution_id, imported, document, summary)
     _settle_gaps(document, build_state(), execution_id, environments, summary)
     if document != load_yaml(GAPS_FILE):
         _write_gaps(document, original)
@@ -2619,74 +3592,204 @@ def import_unikix(execution_id: str) -> ImportSummary:
     return summary
 
 
-def revalidate() -> list[str]:
+@dataclass
+class RevalidationSummary:
+    """What one revalidation did, for the operator. ``left`` holds the
+    records that stay stale until a new run because the execution no longer
+    describes the scenario; ``rejected`` holds the records that could not be
+    revalidated at all and those whose observed payload could not be compared
+    with the baseline, whose ``validation.yaml`` records that comparison
+    error as a live run would."""
+
+    revalidated: list = field(default_factory=list)  # (execution/scenario, status, reason)
+    left: list = field(default_factory=list)  # (execution/scenario, why it stays stale)
+    rejected: list = field(default_factory=list)  # (execution/scenario, why it cannot be revalidated or compared)
+    gaps_changed: list = field(default_factory=list)
+
+    def lines(self) -> list[str]:
+        out = [
+            f"revalidated {label}: {status}" + (f" ({reason})" if reason else "")
+            for label, status, reason in self.revalidated
+        ]
+        out += [f"left {label}: {why}" for label, why in self.left]
+        out += [f"rejected {label}: {why}" for label, why in self.rejected]
+        out += [f"gap updated {text}" for text in self.gaps_changed]
+        return out
+
+
+def revalidate() -> RevalidationSummary:
     """Re-compare every ``validation.yaml`` whose execution still describes
     its scenario (the current execution fingerprint equals the one in
     ``result.yaml`` and every observation the current ``expected`` names is
     in the evidence) and rewrite it; leave every other one, stale until a new
-    run. Then regenerate the reports. Returns what was done, one line each."""
-    lines = []
+    run; reject the evidence that fails its checks, whose scenario file is
+    gone or that cannot be judged, and the records whose observed payload
+    cannot be compared with the baseline (rewritten failing with reason
+    error, as a live run records it, and reported with the comparison's
+    diagnostic). Then judge the inferred-not-observed entries of
+    ``gaps.yaml`` again, write it when they change, and regenerate the
+    reports. A symbolic link at ``tests/reports`` or ``tests/reports/unikix``
+    raises ``ReportError`` before anything is read or written; one in place
+    of an execution or scenario directory is rejected, and reported as such."""
+    with _exclusive():
+        return _revalidate()
+
+
+def _comparison_error(evidence: Evidence, scenario: Any) -> str | None:
+    """Why the observed payload of ``evidence`` cannot be compared with the
+    scenario's baseline, on one line; ``None`` when it can, so that an error
+    reason written for it is the execution's own verdict, which revalidation
+    keeps like any other status."""
+    if not evidence.ran:
+        return None
+    fallback = "the comparison reported an error"
+    baseline, problem = _load_baseline(scenario.id)
+    if problem is None:
+        try:
+            _, reason, problem, _ = _judge(evidence, scenario, baseline)
+        except HarnessError:
+            problem = fallback
+        else:
+            if reason != _baselines.REASON_ERROR:
+                return None
+    lines = (line.strip().removeprefix("- ").strip() for line in str(problem).splitlines())
+    return _clip("; ".join(line for line in lines if line) or fallback, 600)
+
+
+def _revalidate() -> RevalidationSummary:
+    """The revalidation itself, run while the lock is held."""
+    result = RevalidationSummary()
+    evidence_dir = _evidence_folder()
     state = build_state()
-    for execution_dir in _evidence_executions():
-        for scenario_dir in _scenario_dirs(execution_dir):
+    original = GAPS_FILE.read_text(encoding="utf-8")
+    document = load_yaml(GAPS_FILE)
+    links: list[Path] = []
+    for execution_dir in _evidence_executions(evidence_dir, links):
+        for scenario_dir in _scenario_dirs(execution_dir, links):
             if not (scenario_dir / VALIDATION_FILE).is_file():
                 continue
             label = f"{execution_dir.name}/{scenario_dir.name}"
             evidence, why = read_evidence(execution_dir.name, scenario_dir, state.zip_info)
-            scenario = _scenarios.get(scenario_dir.name, missing_ok=True) if evidence is not None else None
-            if evidence is None or scenario is None:
-                lines.append(f"left {label}: {why or 'no scenario file'}")
+            if evidence is None:
+                result.rejected.append((label, why))
                 continue
             summary = ImportSummary(execution_dir.name)
             try:
+                scenario = _scenarios.get(scenario_dir.name, missing_ok=True)
+                if scenario is None:
+                    result.rejected.append((label, "no scenario file"))
+                    continue
                 written = _validate_evidence(evidence, scenario, None, summary, state.copy_gaps, state.zip_info)
             except HarnessError as exc:
-                lines.append(f"left {label}: {exc}")
+                result.rejected.append((label, str(exc)))
                 continue
             if written is None:
-                lines.append(f"left {label}: " + "; ".join(why for _, why in summary.skipped))
+                result.left.append((label, "; ".join(why for _, why in summary.skipped)))
+                continue
+            error = _comparison_error(evidence, scenario) if written[1] == _baselines.REASON_ERROR else None
+            if error is None:
+                result.revalidated.append((label, *written))
             else:
-                lines.append(f"revalidated {label}: {written[0]}" + (f" ({written[1]})" if written[1] else ""))
+                result.rejected.append((label, f"the observed payload could not be compared ({written[0]}, reason "
+                                               f"{written[1]} written to {VALIDATION_FILE}): {error}"))
+    result.rejected.extend((link.relative_to(evidence_dir).as_posix(), _ENTRY_LINK) for link in links)
+    _settle_inferred(document, build_state(), None, result.gaps_changed)
+    if document != load_yaml(GAPS_FILE):
+        _write_gaps(document, original)
     regenerate()
-    return lines
+    return result
 
 
-def _execution_records(execution_id: str) -> dict[str, dict]:
-    directory = UNIKIX_EVIDENCE_DIR / execution_id
-    if not _UNIKIX_ID_RE.match(execution_id) or directory.is_symlink() or not directory.is_dir():
+def _execution_records(execution_id: str) -> tuple[dict[str, dict], list[str]]:
+    """The valid record of each scenario directory of one UniKix execution,
+    by scenario id, and the problems of every scenario that has none, each
+    led by ``<execution_id>/<scenario>``. A scenario's record is its
+    ``validation.yaml`` when it has one, else its ``result.yaml``, whose
+    result record fields are taken. Either must keep the result record
+    contract, name the unikix adapter, this execution and its own
+    directory, which must be named by an id of the closed scenario id
+    manifest, and hold a decoded outcome of the projection's shape
+    (``_decoded_problems``). A symbolic link (a scenario directory or the
+    record file), a missing, unreadable or invalid record is a problem of
+    that scenario alone, never followed or compared. An id that is not an execution id, a
+    linked folder on the way and a missing execution directory raise
+    ``ReportError``."""
+    if not isinstance(execution_id, str) or not _UNIKIX_ID_RE.fullmatch(execution_id):
+        raise ReportError(f"{execution_id!r} is not a unikix execution id unikix-<yyyymmddThhmmssZ>-<8 hex>")
+    directory = _evidence_folder(execution_id)
+    if not directory.is_dir():
         raise ReportError(f"no evidence directory {display_path(directory)}")
-    records = {}
-    for scenario_dir in _scenario_dirs(directory):
-        for name in (VALIDATION_FILE, RESULT_FILE):
-            path = scenario_dir / name
-            if path.is_file() and not path.is_symlink():
-                try:
-                    record = load_yaml(path)
-                except YAMLLoadError as exc:
-                    raise ReportError(str(exc)) from None
-                if isinstance(record, Mapping):
-                    records[scenario_dir.name] = dict(record)
-                    break
-    return records
+    records: dict[str, dict] = {}
+    problems: list[str] = []
+    links: list[Path] = []
+    for scenario_dir in _scenario_dirs(directory, links):
+        scenario_id = scenario_dir.name
+        label = f"{execution_id}/{scenario_id}"
+        if scenario_id not in _scenarios.ALL_IDS:
+            problems.append(f"{label}: {scenario_id} is not an id of the closed scenario id manifest")
+            continue
+        path = scenario_dir / VALIDATION_FILE
+        if not path.is_symlink() and not path.exists():
+            path = scenario_dir / RESULT_FILE
+        if path.is_symlink():
+            problems.append(f"{label}: {path.name} {_ENTRY_LINK}")
+            continue
+        if not path.exists():
+            problems.append(f"{label}: holds neither {VALIDATION_FILE} nor {RESULT_FILE}")
+            continue
+        if not path.is_file():
+            problems.append(f"{label}: {path.name} is not a file")
+            continue
+        try:
+            document = load_yaml(path)
+        except YAMLLoadError as exc:
+            problems.append(f"{label}: {exc}")
+            continue
+        except OSError as exc:
+            problems.append(f"{label}: {path.name} cannot be read: {exc.strerror or exc}")
+            continue
+        record = document
+        if path.name == RESULT_FILE and isinstance(document, Mapping):
+            record = {name: document[name] for name in _results.RECORD_FIELDS if name in document}
+        issues = _unikix_record_problems(record, execution_id, scenario_id)
+        if isinstance(record, Mapping):
+            issues.extend(_decoded_problems(record.get("decoded")))
+        if issues:
+            problems.append(f"{label}: {path.name}: " + "; ".join(issues))
+            continue
+        records[scenario_id] = dict(record)
+    problems.extend(f"{execution_id}/{link.name}: {_ENTRY_LINK}" for link in links)
+    return records, problems
 
 
 def compare_executions(first: str, second: str) -> list[str]:
     """The differences between two UniKix executions, compared through their
-    normalized projections: for every scenario both ran, its status and its
-    decoded outcome (``validation.yaml``, else ``result.yaml``)."""
-    left, right = _execution_records(first), _execution_records(second)
-    differences = []
-    for scenario_id in sorted(set(left) & set(right)):
+    normalized projections: each scenario's decoded outcome and status, from
+    its valid ``validation.yaml``, else ``result.yaml``
+    (``_execution_records``). The findings are every scenario whose record
+    cannot be compared, every scenario with a valid record in only one of
+    the two, each status and decoded outcome that differs and, when no
+    scenario has a valid record in both, that nothing was compared; no
+    finding means the two executions agree."""
+    left, left_problems = _execution_records(first)
+    right, right_problems = _execution_records(second)
+    findings = left_problems + (right_problems if second != first else [])
+    for scenario_id in sorted(set(left) ^ set(right)):
+        findings.append(f"{scenario_id}: only in {first if scenario_id in left else second}")
+    common = sorted(set(left) & set(right))
+    for scenario_id in common:
         a, b = left[scenario_id], right[scenario_id]
         if a.get("status") != b.get("status"):
-            differences.append(f"{scenario_id}: status {a.get('status')} in {first}, {b.get('status')} in {second}")
+            findings.append(f"{scenario_id}: status {a.get('status')} in {first}, {b.get('status')} in {second}")
         decoded_a, decoded_b = a.get("decoded") or {}, b.get("decoded") or {}
         keys = sorted(
             key for key in set(decoded_a) | set(decoded_b) if decoded_a.get(key) != decoded_b.get(key)
         )
         if keys:
-            differences.append(f"{scenario_id}: decoded outcome differs in {', '.join(map(str, keys))}")
-    return differences
+            findings.append(f"{scenario_id}: decoded outcome differs in {', '.join(map(str, keys))}")
+    if not common:
+        findings.append(f"no scenario has a valid record in both {first} and {second}; nothing was compared")
+    return findings
 
 
 # --------------------------------------------------------------------------
@@ -2697,8 +3800,10 @@ _EPILOG = """\
 Without an option the matrix, the register, the coverage report and the
 inventory's report fields are regenerated from the recorded results. Exit
 status: 0 when the action succeeds and finds nothing, 1 when a check finds a
-problem, an import rejects a record or two executions differ, 2 when the
-action cannot run.
+problem, an import rejects a record, a revalidation rejects evidence or
+cannot revalidate a record, or two executions differ, 2 when the action
+cannot run. A revalidation that only leaves records stale until a new run
+exits 0.
 """
 
 
@@ -2710,6 +3815,15 @@ def _print_findings(title: str, findings: Sequence[str]) -> int:
     for finding in findings:
         print(f"  - {finding}")
     return 1
+
+
+def _execution_id_argument(value: str) -> str:
+    """The argparse type of an execution id: ``value`` when it is a whole
+    UniKix execution id, else a usage error, so an empty, blank or path-like
+    id never reaches the import or the comparison."""
+    if not _UNIKIX_ID_RE.fullmatch(value):
+        raise argparse.ArgumentTypeError(f"{value!r} is not a unikix execution id unikix-<yyyymmddThhmmssZ>-<8 hex>")
+    return value
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -2724,9 +3838,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     group.add_argument("--check-protected", action="store_true",
                        help="check that nothing under app/, samples/ or diagrams/ changed")
     group.add_argument("--check-proof", action="store_true", help="check the job-chain proof")
-    group.add_argument("--import-unikix", metavar="EXECUTION_ID", help="import the evidence of a UniKix execution")
+    group.add_argument("--import-unikix", metavar="EXECUTION_ID", type=_execution_id_argument,
+                       help="import the evidence of a UniKix execution")
     group.add_argument("--revalidate", action="store_true", help="re-compare imported UniKix evidence")
-    group.add_argument("--compare-executions", nargs=2, metavar=("ID1", "ID2"),
+    group.add_argument("--compare-executions", nargs=2, metavar=("ID1", "ID2"), type=_execution_id_argument,
                        help="compare two UniKix executions through their normalized projections")
     args = parser.parse_args(argv)
     try:
@@ -2738,14 +3853,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             met, reason = check_proof()
             print(f"job-chain proof: {'met' if met else 'unmet'}: {reason}")
             return 0 if met else 1
-        if args.import_unikix:
+        if args.import_unikix is not None:
             summary = import_unikix(args.import_unikix)
             print("\n".join(summary.lines()))
             return 1 if summary.rejected else 0
         if args.revalidate:
-            print("\n".join(revalidate()) or "no validation.yaml to revalidate")
-            return 0
-        if args.compare_executions:
+            revalidation = revalidate()
+            print("\n".join(revalidation.lines()) or "no validation.yaml to revalidate")
+            return 1 if revalidation.rejected else 0
+        if args.compare_executions is not None:
             first, second = args.compare_executions
             return _print_findings(f"{first} against {second}", compare_executions(first, second))
         state = regenerate()
