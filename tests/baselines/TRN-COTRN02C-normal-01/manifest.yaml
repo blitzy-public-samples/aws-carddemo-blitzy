@@ -1,0 +1,46 @@
+# Manifest of the derived baseline of TRN-COTRN02C-normal-01: USER0001 signs
+# on, takes main menu option 8 'Transaction Add' and, on COTRN02 (transaction
+# CT02), adds a confirmed transaction for repository card 0500024453765740,
+# which COTRN02C writes as TRANSACT record 0000000996722788. Only unikix can
+# run the scenario, so expected.yaml was authored from
+# [app/cbl/COTRN02C.cbl:115-130,210-466,516-571,609-779], not captured, and is
+# inferred-not-observed (GAP-INF-007, GAP-INF-012). It names no execution_id
+# or execution_fingerprint and holds no datasets/ until report.py
+# --import-unikix promotes an eligible UniKix run. The UniKix copy changes
+# CSUTLDTC (GAP-DOC-021), which the date checks of step 3 call.
+#
+# source_identity.units are the app/ sources the three steps execute, since
+# harness.results gives an e2e run none: the COPY closure
+# (inventory_tools.copy_closure) of COSGN00C, which signs USER0001 on and
+# XCTLs to COMEN01C; of COMEN01C, whose option 8 XCTLs to COTRN02C
+# [app/cpy/COMEN02Y.cpy:67-72]; of COTRN02C; and of CSUTLDTC, which COTRN02C
+# CALLs for the valid Orig and Proc Dates [app/cbl/COTRN02C.cbl:393,413]; plus
+# the BMS sources of the maps COSGN00, COMEN01 and COTRN02. DFHAID and DFHBMSCA
+# are CICS-supplied, not app/ sources.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: 27277a6ed08fb20acf3296afead0827f1eeb484b
+source_identity:
+  commit: 27277a6ed08fb20acf3296afead0827f1eeb484b
+  tree: app
+  units:
+    app/bms/COMEN01.bms: f87af09e6f60ab198d5c05817e3007361a6d29ed957322ef25b11c5420c84b4c
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
+    app/bms/COTRN02.bms: 8b46b5ae879119b9d8395b712970ebc5b8d5043efd351a47f9a31a451e073042
+    app/cbl/COMEN01C.cbl: ad5e376ac9221b21b8ce47597a5ca17fc1f39dc913793c814c6675e9b046fc09
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cbl/COTRN02C.cbl: dc33b4c797a98d2732070a223f43cc78992c2846681163a032e376630742b1ed
+    app/cbl/CSUTLDTC.cbl: 58c165dcfc3927232c02c152c673e3dee551587b85e7fe56ca67325c980eebb6
+    app/cpy-bms/COMEN01.CPY: 21275363519e57f47c5c7842178344208f3ad773a551e74e5eeff285c775ad5c
+    app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
+    app/cpy-bms/COTRN02.CPY: 1eae5b624b8e7f97c24e94a373065d5c648340e21019bd7736dc663ab0d8642d
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COMEN02Y.cpy: 22b1be06734c9ae91a25c4b544f9a9c4c85ab3f281a3d3bcc0765fb17e585d85
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec

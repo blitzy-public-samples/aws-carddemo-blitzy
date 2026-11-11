@@ -1,0 +1,52 @@
+# Derived baseline of TRN-COTRN02C-negative-18: the add screen submitted with
+# a non-numeric Type CD. Not observed; authored from
+# app/cbl/COTRN02C.cbl:36-38 (CT02, COTRN02C, WS-MESSAGE X(80)), 112-130
+# (first entry: COTRN2AO cleared, blank ERRMSG), 164-167 (ENTER performs
+# PROCESS-ENTER-KEY), 210-223 and 609-637 (card branch: the card comes back
+# through PIC 9(16) unchanged, READ CCXREF NORMAL, XREF-ACCT-ID 00000000050 of
+# record 1 of app/data/ASCII/cardxref.txt into ACTIDINI), 251-320 (every
+# mandatory field supplied: WHEN OTHER), 322-327 (TTYPCDI 'A1' NOT NUMERIC
+# sets 'Type CD must be Numeric...' and sends the screen), 516-534
+# (SEND-TRNADD-SCREEN with ERASE, then RETURN TRANSID CT02: no Category CD,
+# amount, date, merchant or CONFIRM check, no CSUTLDTC call, no TRANSACT
+# access) and 552-571 (header), with app/cbl/COSGN00C.cbl:230-237,
+# app/cbl/COMEN01C.cbl:75-90 and app/cpy/COMEN02Y.cpy:67-72 (OPTN008),
+# app/cpy/COTTL01Y.cpy (titles), app/bms/COTRN02.bms and
+# app/cpy-bms/COTRN02.CPY (COTRN2AO redefines COTRN2AI, so the received values
+# are sent back). Screens are whole fields at their BMS length, trailing spaces
+# kept; ERRMSG is WS-MESSAGE cut to the 78-byte ERRMSGO, and messages holds the
+# ERRMSG of each step in step order. CURDATE and CURTIME come from the region
+# clock and are matchers. TRANSACT keeps its 300 fixture records.
+# Only report.py --import-unikix replaces it with an observed outcome:
+# GAP-INF-007 (derived TRN end-to-end baselines) and GAP-INF-012 (online-only
+# copybooks). Canonical harness.dump_yaml layout.
+file_state:
+  TRANSACT:
+    count: 300
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Type CD must be Numeric...                                                    '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TRNNAME: CT02
+- '@map': COTRN02
+  ACTIDIN: '00000000050'
+  CARDNIN: '0500024453765740'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Type CD must be Numeric...                                                    '
+  PGMNAME: COTRN02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CT02
+  TTYPCD: A1

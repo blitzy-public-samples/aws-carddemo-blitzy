@@ -1,0 +1,16 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: 27277a6ed08fb20acf3296afead0827f1eeb484b
+source_identity:
+  commit: 27277a6ed08fb20acf3296afead0827f1eeb484b
+  tree: app
+  units:
+    app/bms/COTRN01.bms: be0749c98ec7d60a37160ba85d6cbef674f9f7aa0de5760faa64ee951c146996
+    app/cbl/COTRN01C.cbl: fc24ff879ac6ae12bc6817554cb756f14c5e86e0ca2dd0037af49599887f03c0
+    app/cpy-bms/COTRN01.CPY: 23ba94dd138ea687701a74eb629d5c5c484b43834e03ebf44f162e43c15a4420
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec

@@ -1,0 +1,41 @@
+# Manifest of the derived baseline of TRN-COTRN02C-alternate-02: PF3 on the
+# COTRN02 Add Transaction screen, entered from main menu option 8, moves
+# CDEMO-FROM-PROGRAM (COMEN01C) to CDEMO-TO-PROGRAM and XCTLs to COMEN01C, which
+# sends the main menu COMEN01 afresh [app/cbl/COTRN02C.cbl:131-143,500-512].
+# Only unikix can run the scenario, so expected.yaml is authored from the source
+# (inferred-not-observed, GAP-INF-007, GAP-INF-012); the manifest names no
+# execution_id or execution_fingerprint and the baseline holds no datasets/
+# until an eligible UniKix run is imported (report.py --import-unikix).
+#
+# source_identity.units are the app/ sources the expected screens derive from:
+# the COPY closure (inventory_tools.copy_closure) of each program the steps run,
+# COSGN00C, COMEN01C and COTRN02C, and the BMS maps of their three screens.
+# DFHAID and DFHBMSCA are CICS-supplied, not app/ sources, so they are absent;
+# CSUTLDTC is absent because neither the first entry nor the PF3 branch of
+# COTRN02C calls it.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: c2a375a27bfa481f38398763610bdaf73c1fb44c
+source_identity:
+  commit: c2a375a27bfa481f38398763610bdaf73c1fb44c
+  tree: app
+  units:
+    app/bms/COMEN01.bms: f87af09e6f60ab198d5c05817e3007361a6d29ed957322ef25b11c5420c84b4c
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
+    app/bms/COTRN02.bms: 8b46b5ae879119b9d8395b712970ebc5b8d5043efd351a47f9a31a451e073042
+    app/cbl/COMEN01C.cbl: ad5e376ac9221b21b8ce47597a5ca17fc1f39dc913793c814c6675e9b046fc09
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cbl/COTRN02C.cbl: dc33b4c797a98d2732070a223f43cc78992c2846681163a032e376630742b1ed
+    app/cpy-bms/COMEN01.CPY: 21275363519e57f47c5c7842178344208f3ad773a551e74e5eeff285c775ad5c
+    app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
+    app/cpy-bms/COTRN02.CPY: 1eae5b624b8e7f97c24e94a373065d5c648340e21019bd7736dc663ab0d8642d
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COMEN02Y.cpy: 22b1be06734c9ae91a25c4b544f9a9c4c85ab3f281a3d3bcc0765fb17e585d85
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
