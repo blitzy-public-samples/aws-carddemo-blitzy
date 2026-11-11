@@ -36,6 +36,8 @@ inventory_ids:
 - INV-FIN-003  # CBACT04C monthly interest (calculation)
 - INV-FIN-001  # CBACT04C program
 - INV-FIN-008  # CBACT04C interest transaction record (interface)
+- INV-LAY-025  # CVTRA05Y copybook, the SYSTRAN layout
+- INV-LAY-016  # CVACT01Y copybook, the ACCTDATA layout
 - INV-DTA-006  # discgrp.txt, the DISCGRP fixture source
 - INV-DTA-017  # EBCDIC disclosure group file, its cross-check counterpart
 tags:

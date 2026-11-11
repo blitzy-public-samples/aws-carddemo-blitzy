@@ -28,6 +28,9 @@ inventory_ids:
 - INV-TRN-076  # CBTRN02C reject 102 overlimit (rule)
 - INV-TRN-008  # CBTRN02C program
 - INV-TRN-081  # CBTRN02C balance posting (calculation)
+- INV-LAY-025  # CVTRA05Y copybook, the TRANSACT layout
+- INV-LAY-016  # CVACT01Y copybook, the ACCTDATA layout
+- INV-LAY-021  # CVTRA01Y copybook, the TCATBALF layout
 - INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
 - INV-DTA-013  # EBCDIC card cross-reference file, its cross-check counterpart
 - INV-DTA-001  # acctdata.txt, the ACCTDATA fixture source

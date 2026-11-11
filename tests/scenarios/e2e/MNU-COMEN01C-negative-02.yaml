@@ -1,34 +1,65 @@
+# COMEN01C refuses three invalid options: zero, one past the last option, and a
+# non-numeric entry, each answered on the main menu with
+# 'Please enter a valid option number...' [app/cbl/COMEN01C.cbl:127-134].
+#
+# Option entry [app/cbl/COMEN01C.cbl:115-125]: the 2-byte OPTION field is
+# right-justified and zero-filled, by its BMS JUSTIFY=(RIGHT,ZERO) and again by
+# the program's own scan, JUST RIGHT move and INSPECT of spaces into zeros, then
+# moved to WS-OPTION PIC 9(02) and echoed into OPTIONO. The adapter erases the
+# field before typing each value, so the echo is '00', '11' and '0X'.
+#   '0'  -> 00, equal to ZEROS.
+#   '11' -> 11, above CDEMO-MENU-OPT-COUNT, which COMEN02Y sets to 10.
+#   'X'  -> '0X', not NUMERIC. This assumes the alphanumeric-to-numeric MOVE
+#           copies the bytes unchanged. A compiler that repairs the zone of the
+#           last byte would make it a digit (07) and select an option instead.
+#           The expected outcome is the one the test plan derives for 'X', and it
+#           stays inferred until a UniKix run is imported (GAP-INF-003).
+#
+# Suspected defect (GAP-DEF-010), pinned as the source behaves and never fixed:
+# after the message is sent, the paragraph goes on to the admin-only check
+# CDEMO-MENU-OPT-USRTYPE(WS-OPTION) with the invalid value as subscript
+# [app/cbl/COMEN01C.cbl:136-143].
+#   0    reads the byte before the table, the second digit of the option count ('0').
+#   11   reads a byte past the ten options COMEN02Y defines, which holds no VALUE.
+#   '0X' subscripts as 7 (EBCDIC) or 8 (ASCII), both of user type 'U'.
+# None of these is assumed to be 'A', so no second SEND replaces the message
+# with 'No access - Admin Only option...'. The error flag is on, so no XCTL
+# follows, and each step ends with RETURN TRANSID CM00 on the menu that sent the
+# message once [app/cbl/COMEN01C.cbl:107-110,145-165].
+#
+# Field values are whole fields at their BMS length, with trailing spaces kept.
+# CURDATE and CURTIME come from the region clock, so they are matchers.
 id: MNU-COMEN01C-negative-02
 level: e2e
 type: negative
 description: >-
-  USER0001 signs on and reaches the main menu, then presses PF5, which the menu
-  does not handle. COMEN01C receives the map, and its EVALUATE EIBAID falls to
-  WHEN OTHER: it sets the error flag, moves CCDA-MSG-INVALID-KEY ('Invalid key
-  pressed. Please see below...', app/cpy/CSMSG01Y.cpy) to WS-MESSAGE and sends
-  the menu again with ERASE, so the header, the ten options of the COMEN02Y
-  table and the message in ERRMSG are shown, and the task returns with
-  TRANSID CM00 [app/cbl/COMEN01C.cbl:75-110,182-207,212-277]. The expected
-  outcome is derived from the source and has not been observed.
+  USER0001 signs on through CC00 and reaches the COMEN01C main menu (CM00). It
+  then enters option 0, then 11 (one past the ten options of COMEN02Y), then
+  X. Each entry is refused with 'Please enter a valid option number...' on a
+  re-sent menu, which echoes the option as COMEN01C normalizes it (00, 11, 0X),
+  and no transfer to another program follows. The admin-only check that still
+  subscripts the option table with the invalid value (GAP-DEF-010) is pinned as
+  producing no second message.
 inventory_ids:
-- INV-MNU-005
-- INV-MNU-001
-- INV-MNU-003
-- INV-CFG-018
-- INV-LAY-002
-- INV-LAY-003
-- INV-LAY-005
-- INV-LAY-006
-- INV-LAY-008
+- INV-MNU-006  # COMEN01C message 'Please enter a valid option number...'
+- INV-MNU-001  # COMEN01C program
+- INV-MNU-003  # COMEN01 map
+- INV-CFG-018  # CM00 transaction, which runs each option entry
+- INV-LAY-002  # COCOM01Y: the COMMAREA, CDEMO-USRTYP-USER
+- INV-LAY-003  # COMEN02Y: option count 10 and the option table subscripted
+- INV-LAY-005  # COTTL01Y: the screen titles
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COMEN01C
 tags:
 - inferred-not-observed
+- suspected-defect
 gap_ids:
-- GAP-INF-003
-- GAP-INF-012
+- GAP-INF-003  # MNU end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DEF-010  # the option table is subscripted with the invalid option
 preconditions:
   datasets:
-    USRSEC:
-      base: USRSEC
+    USRSEC: {base: USRSEC}
   parameters:
     clock_mode: relative
   faults: []
@@ -36,40 +67,65 @@ inputs:
   steps:
   - transid: CC00
     aid: ENTER
+    '@map': COSGN00
     fields:
       USERID: USER0001
       PASSWD: PASSWORD
-    '@map': COSGN00
-  - aid: PF5
-    fields: {}
+  - aid: ENTER
     '@map': COMEN01
-# Screen values are whole fields at their BMS length, trailing spaces kept,
-# because captured fields and messages are compared exactly: ERRMSG is the
-# 80-character WS-MESSAGE cut to the 78-character ERRMSGO, OPTN001-OPTN010 are
-# the 40-character WS-MENU-OPT-TXT, and CURTIME is the 8-character hh:mm:ss.
-# messages holds the ERRMSG value of each step: blank on the menu COSGN00C
-# transfers to, then the invalid-key message.
+    fields:
+      OPTION: '0'
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '11'
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: 'X'
 expected:
   screens:
-  - '@map': COMEN01
+  # Sign-on lands on the menu, sent from a cleared output map: option field and
+  # message line blank [app/cbl/COMEN01C.cbl:86-90].
   - '@map': COMEN01
     TRNNAME: CM00
-    TITLE01: '      AWS Mainframe Modernization       '
-    CURDATE: {match: run-date, format: '%m/%d/%y'}
     PGMNAME: COMEN01C
-    TITLE02: '              CardDemo                  '
-    CURTIME: {match: run-time, format: '%H:%M:%S'}
-    OPTN001: '01. Account View                        '
-    OPTN002: '02. Account Update                      '
-    OPTN003: '03. Credit Card List                    '
-    OPTN004: '04. Credit Card View                    '
-    OPTN005: '05. Credit Card Update                  '
-    OPTN006: '06. Transaction List                    '
-    OPTN007: '07. Transaction View                    '
-    OPTN008: '08. Transaction Add                     '
-    OPTN009: '09. Transaction Reports                 '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
     OPTN010: '10. Bill Payment                        '
-    ERRMSG: 'Invalid key pressed. Please see below...                                      '
+    OPTN011: '                                        '
+    OPTION: '  '
+    ERRMSG: '                                                                              '
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN010: '10. Bill Payment                        '
+    OPTN011: '                                        '
+    OPTION: '00'
+    ERRMSG: 'Please enter a valid option number...                                         '
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN010: '10. Bill Payment                        '
+    OPTN011: '                                        '
+    OPTION: '11'
+    ERRMSG: 'Please enter a valid option number...                                         '
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN010: '10. Bill Payment                        '
+    OPTN011: '                                        '
+    OPTION: '0X'
+    ERRMSG: 'Please enter a valid option number...                                         '
+  # The ERRMSG values of the three refused entries, in order; the blank message
+  # of the first menu precedes them in the captured messages.
   messages:
-  - '                                                                              '
-  - 'Invalid key pressed. Please see below...                                      '
+  - 'Please enter a valid option number...                                         '
+  - 'Please enter a valid option number...                                         '
+  - 'Please enter a valid option number...                                         '

@@ -36,6 +36,8 @@ inventory_ids:
 - INV-TRN-008  # CBTRN02C program
 - INV-TRN-081  # CBTRN02C balance posting (calculation)
 - INV-TRN-084  # CBTRN02C TRANSACT record with processing timestamp (interface)
+- INV-LAY-025  # CVTRA05Y copybook, the TRANSACT layout
+- INV-LAY-016  # CVACT01Y copybook, the ACCTDATA layout
 - INV-LAY-021  # CVTRA01Y copybook, the TCATBALF layout
 - INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
 - INV-DTA-013  # EBCDIC CARDXREF data file, its cross-check counterpart

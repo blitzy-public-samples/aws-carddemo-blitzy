@@ -1,27 +1,62 @@
-messages:
-- '                                                                              '
-- 'Invalid key pressed. Please see below...                                      '
+# Derived baseline, not observed: authored from app/cbl/COMEN01C.cbl:115-165,
+# with the first menu sent at 82-110 and 182-194, because no UniKix run of this
+# scenario has been imported. The scenario is tagged inferred-not-observed
+# (GAP-INF-003, GAP-INF-012) and suspected-defect (GAP-DEF-010).
+#
+# GAP-DEF-010 is pinned, not compensated for: after sending the message,
+# COMEN01C still subscripts CDEMO-MENU-OPT-USRTYPE with the invalid option
+# [app/cbl/COMEN01C.cbl:136-137]. None of the bytes it reads is taken as 'A',
+# so the message stands and, with the error flag on, no XCTL follows.
+#
+# Uncertain until an imported UniKix run settles them (report.py
+# --import-unikix: MAJOR bump if the outcome differs, MINOR if it agrees):
+# - 'X': how the runtime moves '0X' into WS-OPTION PIC 9(02). A zone fix-up of
+#   the last byte would give 07 and an XCTL to COTRN01C.
+# - the out-of-range subscripts of steps 2-4 could abend under a
+#   bounds-checking runtime.
+# - the emulator's handling of the numeric OPTION field could refuse 'X'.
+#
+# messages is the complete captured list: the ERRMSG of every step, so the
+# blank message of the first menu precedes the three refusals.
 screens:
 - '@map': COMEN01
-- '@map': COMEN01
-  CURDATE:
-    format: '%m/%d/%y'
-    match: run-date
-  CURTIME:
-    format: '%H:%M:%S'
-    match: run-time
-  ERRMSG: 'Invalid key pressed. Please see below...                                      '
-  OPTN001: '01. Account View                        '
-  OPTN002: '02. Account Update                      '
-  OPTN003: '03. Credit Card List                    '
-  OPTN004: '04. Credit Card View                    '
-  OPTN005: '05. Credit Card Update                  '
-  OPTN006: '06. Transaction List                    '
-  OPTN007: '07. Transaction View                    '
-  OPTN008: '08. Transaction Add                     '
-  OPTN009: '09. Transaction Reports                 '
-  OPTN010: '10. Bill Payment                        '
-  PGMNAME: COMEN01C
-  TITLE01: '      AWS Mainframe Modernization       '
-  TITLE02: '              CardDemo                  '
   TRNNAME: CM00
+  PGMNAME: COMEN01C
+  CURDATE: {match: run-date, format: '%m/%d/%y'}
+  CURTIME: {match: run-time}
+  OPTN010: '10. Bill Payment                        '
+  OPTN011: '                                        '
+  OPTION: '  '
+  ERRMSG: '                                                                              '
+- '@map': COMEN01
+  TRNNAME: CM00
+  PGMNAME: COMEN01C
+  CURDATE: {match: run-date, format: '%m/%d/%y'}
+  CURTIME: {match: run-time}
+  OPTN010: '10. Bill Payment                        '
+  OPTN011: '                                        '
+  OPTION: '00'
+  ERRMSG: 'Please enter a valid option number...                                         '
+- '@map': COMEN01
+  TRNNAME: CM00
+  PGMNAME: COMEN01C
+  CURDATE: {match: run-date, format: '%m/%d/%y'}
+  CURTIME: {match: run-time}
+  OPTN010: '10. Bill Payment                        '
+  OPTN011: '                                        '
+  OPTION: '11'
+  ERRMSG: 'Please enter a valid option number...                                         '
+- '@map': COMEN01
+  TRNNAME: CM00
+  PGMNAME: COMEN01C
+  CURDATE: {match: run-date, format: '%m/%d/%y'}
+  CURTIME: {match: run-time}
+  OPTN010: '10. Bill Payment                        '
+  OPTN011: '                                        '
+  OPTION: '0X'
+  ERRMSG: 'Please enter a valid option number...                                         '
+messages:
+- '                                                                              '
+- 'Please enter a valid option number...                                         '
+- 'Please enter a valid option number...                                         '
+- 'Please enter a valid option number...                                         '

@@ -35,10 +35,14 @@
 # is not listed here: listing it would take the scenario away from
 # gnucobol-batch.
 #
-# Only the job item is listed. The CBSTM03A and CBSTM03B items, COSTM01, CUSTREC
-# and the data files are verified at the lowest level that executes them, by
-# the RPT-CBSTM03A unit scenarios; RPT-CBSTM03A-normal-01 transcribes as its
-# TRXFL input exactly the 300 records this job builds.
+# The job item is the primary item. CBSTM03B has no scenario of its own: it is
+# covered through the RPT-CBSTM03A unit scenarios and through this job, whose
+# STEP040 runs it through CBSTM03A's calls, so it is listed here as well. The
+# CBSTM03A item is verified by its own RPT-CBSTM03A unit scenarios. COSTM01,
+# CUSTREC and the data files are copybooks and data, listed only at the lowest
+# level that executes them, the RPT-CBSTM03A unit scenarios;
+# RPT-CBSTM03A-normal-01 transcribes as its TRXFL input exactly the 300 records
+# this job builds.
 #
 # The UniKix copy comments out the control-block walk (GAP-DOC-020), rewrites
 # the STEP010 sort (GAP-DOC-026) and defines TRXFL as a region file
@@ -69,6 +73,7 @@ description: >-
   (6,500 records). Every step ends with return code 0.
 inventory_ids:
 - INV-RPT-007  # CREASTMT job
+- INV-RPT-005  # CBSTM03B program, called by CBSTM03A in STEP040
 tags: []
 gap_ids:
 - GAP-MIS-002  # runs on gnucobol-batch only where the page-zero probe maps address 0

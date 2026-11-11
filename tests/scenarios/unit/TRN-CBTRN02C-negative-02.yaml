@@ -32,6 +32,7 @@ inventory_ids:
 - INV-TRN-008  # CBTRN02C program
 - INV-TRN-085  # CBTRN02C DALYREJS 430-byte reject record (interface)
 - INV-TRN-080  # CBTRN02C return code 4 when any record is rejected (rule)
+- INV-LAY-026  # CVTRA06Y copybook, the transaction data inside the reject record
 - INV-LAY-018  # CVACT03Y copybook, the synthetic cross-reference record
 - INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
 - INV-DTA-013  # EBCDIC card cross-reference file, its cross-check counterpart
