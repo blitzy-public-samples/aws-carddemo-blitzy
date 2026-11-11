@@ -9,17 +9,21 @@
  * shared MUI components. It replaces the legacy 3270 attribute-byte color model
  * with the MUI / Material Design 3 semantic palette.
  *
- * MUI v9 default Material Design 3 theme; single token source of truth; no Figma
- * (AAP §0.9.2). The token values below intentionally MATCH the MUI default light
- * theme (verbatim from AAP §0.3.2) so the application renders as stock Material
- * Design 3. They are written out explicitly to document the token contract and
- * to lock it against future MUI default drift; spacing (8px base), breakpoints,
- * elevation (shadows) and the typography variant scale are deliberately left at
- * their MUI defaults and therefore not overridden here.
+ * Blitzy brand theme on MUI v9; single token source of truth; no Figma. The
+ * primary, secondary, background, text and divider tokens are the Blitzy Brand
+ * Inputs, used verbatim: primary #5B39F3 and secondary #333333 (both with white
+ * contrast text), canvas #F2F0FE, paper surfaces #FFFFFF, text #000000 and
+ * #666666, and dividers/borders #D9D9D9. Every brand text pairing meets WCAG AA
+ * (the lowest, #666666 on the #F2F0FE canvas, is 5.10:1). The semantic roles
+ * (error / warning / info / success), grey, spacing (8px base), breakpoints,
+ * elevation (shadows) and the typography variant scale stay at their MUI
+ * defaults. Page and component files consume these tokens through `sx` /
+ * `theme` and never repeat a brand hex value.
  *
- * TOKEN-DEFINITION EXEMPTION (AAP §0.3.4): the hex / rgba color literals AND the
+ * TOKEN-DEFINITION EXEMPTION (AAP §0.3.4): the hex / rgba color literals, the
  * named `layout` sizing tokens (`drawerWidth`, `fullWidth`, `fullViewportHeight`)
- * in this file are the token DEFINITIONS and are explicitly permitted here. The
+ * AND the 1px border width in the `components` overrides below are the token
+ * DEFINITIONS in this file and are explicitly permitted here. The
  * "zero hardcoded CSS values" rule applies to the component/page files that
  * CONSUME the theme (via `sx` / `theme`) — never to this theme-definition file.
  */
@@ -69,17 +73,17 @@ declare module '@mui/material/styles' {
 const themeOptions: ThemeOptions = {
     palette: {
         mode: 'light',
+        // Brand roles. Only `main` and `contrastText` are set: `createTheme`
+        // derives `light` (main lightened 20%) and `dark` (main darkened 30%)
+        // from the brand main, so hover and emphasis shades stay on-brand and
+        // the darker shade only ever raises the contrast of the white text.
         primary: {
-            main: '#1976d2',
-            light: '#42a5f5',
-            dark: '#1565c0',
-            contrastText: '#ffffff',
+            main: '#5B39F3',
+            contrastText: '#FFFFFF',
         },
         secondary: {
-            main: '#9c27b0',
-            light: '#ba68c8',
-            dark: '#7b1fa2',
-            contrastText: '#ffffff',
+            main: '#333333',
+            contrastText: '#FFFFFF',
         },
         // Semantic roles: drive ErrorAlert severity, status Chips and form
         // validation feedback across the app (AAP §0.3.2).
@@ -95,17 +99,24 @@ const themeOptions: ThemeOptions = {
         success: {
             main: '#2e7d32',
         },
+        // Brand canvas behind every page, and the white surface of the
+        // AppBar, drawer, cards, dialogs and menus.
         background: {
-            default: '#ffffff',
-            paper: '#ffffff',
+            default: '#F2F0FE',
+            paper: '#FFFFFF',
         },
-        // Text roles set explicitly to the identical MUI defaults for contract
-        // documentation; omitting them would inherit the same values.
+        // Brand text roles. `disabled` keeps the MUI default; disabled controls
+        // are exempt from the WCAG contrast minimum.
         text: {
-            primary: 'rgba(0, 0, 0, 0.87)',
-            secondary: 'rgba(0, 0, 0, 0.6)',
+            primary: '#000000',
+            secondary: '#666666',
             disabled: 'rgba(0, 0, 0, 0.38)',
         },
+        // Brand divider/border color for Divider, the drawer edge, outlined
+        // Paper, table cells and the AppBar bottom edge. It is decorative
+        // separation only (1.41:1 on paper), so form-control outlines are not
+        // tied to it and keep the darker MUI default.
+        divider: '#D9D9D9',
     },
     typography: {
         // Only the font family is set; the MUI default variant scale (h1–h6,
@@ -133,6 +144,46 @@ const themeOptions: ThemeOptions = {
         drawerWidth: 240,
         fullWidth: '100%',
         fullViewportHeight: '100vh',
+    },
+    components: {
+        // The header is a white paper surface with black text and a divider
+        // edge rather than a primary-colored bar, so the purple brand logo stays
+        // visible on it. These root overrides are applied after the AppBar's
+        // built-in color variant, replacing its primary background; header
+        // controls with `color="inherit"` pick up the black text color.
+        MuiAppBar: {
+            styleOverrides: {
+                root: ({ theme }) => ({
+                    backgroundColor: theme.palette.background.paper,
+                    color: theme.palette.text.primary,
+                    borderBottom: `1px solid ${theme.palette.divider}`,
+                }),
+            },
+        },
+        // MUI derives table-cell borders by lightening the divider 88%, which
+        // turns the opaque brand divider into a near-invisible #FAFAFA. Pin the
+        // border color to the divider token so table rows keep the brand border.
+        MuiTableCell: {
+            styleOverrides: {
+                root: ({ theme }) => ({
+                    borderBottomColor: theme.palette.divider,
+                }),
+            },
+        },
+        // MUI v9 Typography only maps palette keys and `textSecondary`-style
+        // names in its `color` prop and silently drops the dotted
+        // `color="text.secondary"` the pages use. Resolve it here so secondary
+        // copy renders the brand secondary text color instead of black.
+        MuiTypography: {
+            variants: [
+                {
+                    props: { color: 'text.secondary' },
+                    style: ({ theme }) => ({
+                        color: theme.palette.text.secondary,
+                    }),
+                },
+            ],
+        },
     },
 };
 
