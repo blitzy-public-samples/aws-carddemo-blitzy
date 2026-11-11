@@ -68,15 +68,18 @@ Command line (from the repository root)::
 
 The module writes only under ``tests/``: the report files and the
 inventory's report fields; on import, baselines, scenario tags and
-expectations, ``gaps.yaml``, inventory additions and ``validation.yaml``
-beside the UniKix evidence; on revalidation, ``validation.yaml`` and
-``gaps.yaml``. The UniKix zip is only read, in memory.
+expectations, ``gaps.yaml``, inventory additions and, beside the UniKix
+evidence, ``validation.yaml`` and the transient ``promotion.yaml`` journal of
+an in-progress promotion, which the import removes once the promotion
+completes; on revalidation, ``validation.yaml`` and ``gaps.yaml``. The UniKix
+zip is only read, in memory.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import csv
 import datetime as _dt
 import errno
@@ -93,7 +96,7 @@ import subprocess
 import sys
 import zipfile
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
@@ -169,6 +172,13 @@ VALIDATION_FILE = "validation.yaml"
 RESULT_FILE = "result.yaml"
 ENVIRONMENT_FILE = "environment.yaml"
 EVIDENCE_DATASETS_DIR = "datasets"
+# The most bytes an evidence YAML file (result.yaml, environment.yaml,
+# validation.yaml, the promotion.yaml journal) may hold before it is parsed:
+# far above any evidence file (the largest committed baseline expected.yaml,
+# which a result.yaml's decoded outcome mirrors, is about 237 KB), and far
+# below what exhausts memory, since loading a YAML file costs tens of times
+# its size. The importer never writes a journal larger than this.
+EVIDENCE_YAML_MAX_BYTES = 4 * 1024 * 1024
 
 MATRIX_HEADER = (
     "inventory_id", "implementation_locations", "scenario_ids", "assertions",
@@ -227,6 +237,35 @@ SEAMS = (
     ("Berkeley DB indexed files in place of VSAM", "GAP-STB-010"),
     ("compile and runtime option mapping (tests/adapters/gnucobol_batch/build.py)", "GAP-STB-011"),
 )
+# Where each seam's limitation shows in a decoded outcome, so that a
+# cross-adapter divergence is attributed to a seam only when the difference
+# lies within its scope (AAP 0.3.2, line 544: jobs made only of utility steps
+# are verified only as far as the replacements, GAP-STB-005 to 009; AAP 0.3.3:
+# each seam's scope and limitation). The seam of each utility step kind of
+# the gnucobol-batch jobs.yaml:
+_SEAM_OF_UTILITY_STEP = {
+    "idcams": "GAP-STB-005", "sort": "GAP-STB-006", "iebgener": "GAP-STB-007", "iefbr14": "GAP-STB-007",
+    "sdsf": "GAP-STB-008",
+}
+_SEAM_OF_CATALOG = "GAP-STB-009"  # the emulated catalog every job's datasets go through
+# The seams that produce a reserved observation on gnucobol-batch.
+_SEAMS_OF_OBSERVATION = {
+    "@CATALOG": ("GAP-STB-005", "GAP-STB-007", "GAP-STB-009"),
+    "@REGION-FILES": ("GAP-STB-008",),
+}
+# The CEE3ABD stub: return_code null, and its marker among the messages.
+_SEAM_OF_ABEND = "GAP-STB-001"
+_ABEND_MARKER = "CARDDEMO-ABEND CEE3ABD"
+# An IBM Language Environment (CEEnnnnx) or COBOL runtime (IGZnnnnx) message
+# identifier: the abend and condition-handling output GAP-STB-001's
+# limitation names, which the stub does not write. Any other line a runtime
+# adds is business output.
+_LE_DIAGNOSTIC_RE = re.compile(r"\b(?:CEE|IGZ)\d{4}[A-Z]\b")
+# The same records in another order: SORT's ASCII collating, Berkeley DB key
+# order, the runtime's ASCII collating sequence.
+_SEAMS_OF_RECORD_ORDER = ("GAP-STB-006", "GAP-STB-010", "GAP-STB-011")
+# The same records but for x'00' where the other side holds spaces: defaultbyte 0.
+_SEAMS_OF_NUL_FILL = ("GAP-STB-011",)
 
 # The entries whose affected items pass through a part of the UniKix copy
 # that differs from app/; a UniKix record of such an item never verifies it.
@@ -383,6 +422,14 @@ DPKG_PACKAGES = ("build-essential", "libgmp-dev", "libncurses-dev", "libdb-dev",
 # GAP-MIS-009 closes once all five name a version.
 UNIKIX_VERSION_KEYS = ("version_tpe", "version_bpe", "version_vcobol", "version_licence", "version_java")
 _VERSION_FAILURE_PREFIXES = ("unavailable", "not defined", "exit status")
+# The facts every environment.yaml records as non-empty text, wherever it
+# nests them: the installation paths adapters/unikix/env.py requires, and
+# the deployment root with the paths env.py derives from it.
+_INSTALLATION_FACTS = ("UNIKIX", "INSTEBM", "VCOBOL", "KIXLICDIR", "JAVA_HOME")
+_DEPLOYMENT_FACTS = ("BASE_DIR", "PROJECT_ROOT", "KIXSYS", "KIXDATA", "EBMHOME", "JOBLIB", "MBM_LOCK_DIR")
+# The run-date facts environment.yaml always names, each a date or null when
+# the run showed none; other run-date facts may stand beside them.
+_RUN_DATE_KEYS = ("bpe_job_start_date", "first_step_screen_date")
 
 _SUBPROCESS_TIMEOUT_S = 120
 _TEXT_CLIP = 2000
@@ -399,6 +446,15 @@ class ReportError(HarnessError):
 def _clip(text: str, limit: int = _TEXT_CLIP) -> str:
     text = str(text)
     return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _os_problem(exc: OSError, path: str | Path | None = None) -> str:
+    """``exc`` on one line as ``<path>: <reason>``: the file it names, else
+    ``path``, as ``display_path`` shows it, so no absolute checkout path
+    reaches a message."""
+    name = exc.filename if isinstance(exc.filename, (str, os.PathLike)) else path
+    reason = exc.strerror or str(exc)
+    return f"{display_path(name)}: {reason}" if name is not None else reason
 
 
 def _yaml_text_load(text: str) -> Any:
@@ -759,19 +815,23 @@ def _evidence_executions(evidence_dir: Path = UNIKIX_EVIDENCE_DIR, links: list[P
     Nothing is listed, so nothing is read, when a component from the
     ``tests/`` root down (``tests/reports``, ``tests/reports/unikix``) is a
     symbolic link. An entry named as an execution that is a symbolic link is
-    appended to ``links`` when it is given, so the caller can report it."""
-    if _linked_component(evidence_dir) is not None or not evidence_dir.is_dir():
-        return []
-    executions = []
-    for entry in sorted(evidence_dir.iterdir()):
-        if not _UNIKIX_ID_RE.fullmatch(entry.name):
-            continue
-        if entry.is_symlink():
-            if links is not None:
-                links.append(entry)
-        elif entry.is_dir():
-            executions.append(entry)
-    return executions
+    appended to ``links`` when it is given, so the caller can report it.
+    ``ReportError`` when the folder cannot be listed."""
+    try:
+        if _linked_component(evidence_dir) is not None or not evidence_dir.is_dir():
+            return []
+        executions = []
+        for entry in sorted(evidence_dir.iterdir()):
+            if not _UNIKIX_ID_RE.fullmatch(entry.name):
+                continue
+            if entry.is_symlink():
+                if links is not None:
+                    links.append(entry)
+            elif entry.is_dir():
+                executions.append(entry)
+        return executions
+    except OSError as exc:
+        raise ReportError(f"cannot list {display_path(evidence_dir)}: {exc.strerror or exc}") from None
 
 
 _ENTRY_LINK = "is a symbolic link; evidence is never read through it"
@@ -781,15 +841,19 @@ def _scenario_dirs(execution_dir: Path, links: list[Path] | None = None) -> list
     """The scenario directories of an execution directory, in name order.
     Evidence is never read through a symbolic link, so a linked entry is
     never one of them; each is appended to ``links`` when it is given, so
-    the caller can report it."""
-    found = []
-    for entry in sorted(execution_dir.iterdir()):
-        if entry.is_symlink():
-            if links is not None:
-                links.append(entry)
-        elif entry.is_dir():
-            found.append(entry)
-    return found
+    the caller can report it. ``ReportError`` when the execution directory
+    cannot be listed."""
+    try:
+        found = []
+        for entry in sorted(execution_dir.iterdir()):
+            if entry.is_symlink():
+                if links is not None:
+                    links.append(entry)
+            elif entry.is_dir():
+                found.append(entry)
+        return found
+    except OSError as exc:
+        raise ReportError(f"cannot list {display_path(execution_dir)}: {exc.strerror or exc}") from None
 
 
 def _unikix_record_problems(record: Any, execution_id: str, scenario_id: str) -> list[str]:
@@ -970,13 +1034,16 @@ def load_unikix_records(evidence_dir: Path = UNIKIX_EVIDENCE_DIR) -> tuple[list[
     for execution_dir in _evidence_executions(evidence_dir, links):
         for scenario_dir in _scenario_dirs(execution_dir, links):
             path = scenario_dir / VALIDATION_FILE
-            if path.is_symlink():
-                links.append(path)
-            if path.is_symlink() or not path.is_file():
-                continue
             shown = display_path(path)
             try:
-                record = load_yaml(path)
+                if path.is_symlink():
+                    links.append(path)
+                if path.is_symlink() or not path.is_file():
+                    continue
+                record = load_yaml(path, max_bytes=EVIDENCE_YAML_MAX_BYTES)
+            except OSError as exc:
+                problems.append(f"cannot read {_os_problem(exc, path)}")
+                continue
             except YAMLLoadError as exc:
                 problems.append(f"{shown}: {exc}")
                 continue
@@ -1826,11 +1893,11 @@ def unmatched_messages(state: State, evidence_dir: Path = UNIKIX_EVIDENCE_DIR) -
     for execution_dir in _evidence_executions(evidence_dir):
         for scenario_dir in _scenario_dirs(execution_dir):
             path = scenario_dir / RESULT_FILE
-            if path.is_symlink() or not path.is_file():
-                continue
             try:
-                raw = load_yaml(path)
-            except YAMLLoadError:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                raw = load_yaml(path, max_bytes=EVIDENCE_YAML_MAX_BYTES)
+            except (OSError, YAMLLoadError):
                 continue
             if not isinstance(raw, Mapping):
                 continue
@@ -3218,9 +3285,37 @@ def referenced_gap_ids(tests_root: str | Path = TESTS_ROOT) -> dict[str, list[st
     return {gap_id: sorted(files) for gap_id, files in sorted(found.items())}
 
 
+# How many characters _gap_ids_in decodes at a time, and how many of the
+# characters already scanned it scans again with the next chunk: a gap id is
+# 11 characters, so one that straddles two chunks starts within the last 10.
+# No gap id can overlap another (no category code holds a 'G'), so the ids a
+# chunked scan finds are exactly those a scan of the whole text finds.
+_GAP_SCAN_CHUNK_CHARS = 1 << 20
+_GAP_SCAN_OVERLAP = len("GAP-DOC-001") - 1
+
+
+def _gap_ids_in(path: Path, chunk_chars: int = _GAP_SCAN_CHUNK_CHARS) -> set[str]:
+    """The gap ids ``path`` cites, decoded as ``read_text(encoding="utf-8",
+    errors="replace")`` decodes it but ``chunk_chars`` characters at a time,
+    so a file of any size is scanned whole in fixed memory. ``chunk_chars``
+    must be a positive int, since a zero-character read would end the scan
+    at once and find nothing."""
+    if isinstance(chunk_chars, bool) or not isinstance(chunk_chars, int) or chunk_chars <= 0:
+        raise ValueError(f"chunk_chars must be a positive int, not {chunk_chars!r}")
+    found: set[str] = set()
+    tail = ""
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        while chunk := stream.read(chunk_chars):
+            window = tail + chunk
+            found.update(match.group() for match in GAP_ID_RE.finditer(window))
+            tail = window[-_GAP_SCAN_OVERLAP:]
+    return found
+
+
 def _record_gap_ids() -> dict[str, list[str]]:
     """The gap ids the stored records cite: the gnucobol-batch records and
-    the UniKix ``validation.yaml`` and ``result.yaml`` files."""
+    the UniKix ``validation.yaml`` and ``result.yaml`` files, each scanned
+    whole by ``_gap_ids_in`` whatever its size."""
     found: dict[str, set[str]] = {}
     paths = sorted(_results.RESULTS_DIR.glob("*.yaml")) if _results.RESULTS_DIR.is_dir() else []
     for execution_dir in _evidence_executions():
@@ -3229,8 +3324,8 @@ def _record_gap_ids() -> dict[str, list[str]]:
     for path in paths:
         if path.is_symlink() or not path.is_file():
             continue
-        for match in GAP_ID_RE.finditer(path.read_text(encoding="utf-8", errors="replace")):
-            found.setdefault(match.group(), set()).add(display_path(path))
+        for gap_id in _gap_ids_in(path):
+            found.setdefault(gap_id, set()).add(display_path(path))
     return {gap_id: sorted(files) for gap_id, files in sorted(found.items())}
 
 
@@ -3535,7 +3630,13 @@ def _add_gap(document: dict, category: str, unknown: str, items: Iterable[str], 
 
 # How evidence.py names the .bin file of a reserved observation.
 _OBSERVATION_FILES = {"_CATALOG": "@CATALOG", "_REGION-FILES": "@REGION-FILES", "_TDQ_JOBS": "@TDQ:JOBS"}
-_SCREEN_DEFAULT_FORMATS = {"CURDATE": "%m/%d/%y", "CURTIME": "%H:%M:%S"}
+# The reason of a run whose deadline passed; its verdict prevails over its payload.
+_REASON_TIMEOUT = "timeout"
+# What result.yaml holds beside harness.results.RECORD_FIELDS, as
+# adapters/unikix/evidence.py writes it, and the keys of its observed payload
+# (the adapters.base.Result without its datasets and elapsed time).
+_EVIDENCE_KEYS = ("capture_summary", "observed", "observed_messages", "screens_raw")
+_OBSERVED_KEYS = ("return_code", "messages", "screens")
 
 
 @dataclass
@@ -3562,76 +3663,254 @@ class Evidence:
 
     @property
     def ran(self) -> bool:
+        """Whether the execution left an outcome to compare again: ``passed``
+        or ``failing`` with an observed payload. Once the deadline has passed
+        the run is ``failing`` with reason ``timeout`` whatever it observed,
+        so that verdict stands and its payload is never compared."""
+        if self.raw.get("status") == _results.STATUS_FAILING and self.raw.get("reason") == _REASON_TIMEOUT:
+            return False
         decoded = self.raw.get("decoded")
         return (self.raw.get("status") in (_results.STATUS_PASSED, _results.STATUS_FAILING)
                 and (self.observed is not None or (isinstance(decoded, Mapping) and bool(decoded))))
 
 
+def _recorded(document: Any, keys: Sequence[str]) -> dict[str, list[Any]]:
+    """Every value ``document`` records under each of ``keys``, at any depth
+    of its mappings and lists, in document order: the producer of
+    ``environment.yaml`` does not fix where it nests a fact."""
+    found: dict[str, list[Any]] = {}
+
+    def walk(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if str(key) in keys:
+                    found.setdefault(str(key), []).append(item)
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(document)
+    return found
+
+
+def _environment_problems(document: Mapping[Any, Any]) -> list[str]:
+    """What ``environment.yaml`` lacks of the facts a UniKix record is
+    checked against: ``run_date`` mapping ``bpe_job_start_date`` and
+    ``first_step_screen_date`` each to a date or null, the installation and
+    deployment paths as non-empty text, and the output of every version
+    probe as non-empty text (a failed probe is recorded as its failure text)."""
+    problems = []
+    if not document:
+        problems.append("it records no fact")
+    run_date = document.get("run_date")
+    if not isinstance(run_date, Mapping):
+        got = "nothing" if run_date is None else type(run_date).__name__
+        problems.append(f"run_date must map {' and '.join(_RUN_DATE_KEYS)}, got {got}")
+    else:
+        absent = [key for key in _RUN_DATE_KEYS if key not in run_date]
+        if absent:
+            problems.append(f"run_date lacks {', '.join(absent)}")
+        problems.extend(
+            f"run_date.{key}: {_shown(run_date[key])} is not a date"
+            for key in _RUN_DATE_KEYS
+            if run_date.get(key) is not None and _date_text(run_date[key]) is None
+        )
+    recorded = _recorded(document, _INSTALLATION_FACTS + _DEPLOYMENT_FACTS + UNIKIX_VERSION_KEYS)
+    for label, keys in (("installation facts", _INSTALLATION_FACTS), ("deployment facts", _DEPLOYMENT_FACTS)):
+        unrecorded = [key for key in keys
+                      if not any(isinstance(value, str) and value.strip() for value in recorded.get(key, ()))]
+        if unrecorded:
+            problems.append(f"{label} {', '.join(unrecorded)} not recorded as non-empty text")
+    unprobed = [key for key in UNIKIX_VERSION_KEYS
+                if not any(isinstance(value, str) and value.strip() for value in recorded.get(key, ()))]
+    if unprobed:
+        problems.append(f"version probes {', '.join(unprobed)} not recorded as non-empty text (a failed "
+                        f"probe is recorded as its failure text)")
+    return problems
+
+
 def _read_environment(scenario_dir: Path) -> tuple[dict | None, str | None]:
     """The ``environment.yaml`` of a scenario's evidence: the one in its own
     directory, where ``adapters/unikix/evidence.py`` writes it, else one
-    beside the scenario directories that covers the whole execution."""
+    beside the scenario directories that covers the whole execution. It is
+    refused, every problem named, unless it records the run date and the
+    installation, deployment and version facts (``_environment_problems``)."""
     path = scenario_dir / ENVIRONMENT_FILE
-    if not path.exists() and not path.is_symlink():
-        path = scenario_dir.parent / ENVIRONMENT_FILE
-    if path.is_symlink() or not path.is_file():
-        return None, f"no {ENVIRONMENT_FILE} in {display_path(scenario_dir)} or its execution directory"
     try:
-        document = load_yaml(path)
+        if not path.exists() and not path.is_symlink():
+            path = scenario_dir.parent / ENVIRONMENT_FILE
+        if path.is_symlink() or not path.is_file():
+            return None, f"no {ENVIRONMENT_FILE} in {display_path(scenario_dir)} or its execution directory"
+        document = load_yaml(path, max_bytes=EVIDENCE_YAML_MAX_BYTES)
+    except OSError as exc:
+        return None, f"cannot read {_os_problem(exc, path)}"
     except YAMLLoadError as exc:
         return None, str(exc)
     if not isinstance(document, Mapping):
         return None, f"{display_path(path)} does not hold a mapping"
-    run_date = document.get("run_date")
-    if run_date is not None and not isinstance(run_date, Mapping):
-        return None, f"{display_path(path)}: run_date must map bpe_job_start_date and first_step_screen_date"
+    problems = _environment_problems(document)
+    if problems:
+        return None, f"{display_path(path)}: " + "; ".join(problems)
     return dict(document), None
 
 
 def _evidence_datasets(scenario_dir: Path, raw: Mapping[str, Any]) -> dict[str, bytes]:
+    """The bytes of every ``datasets/*.bin`` file of the evidence, under the
+    name ``capture_summary.datasets`` gives it back; ``ReportError`` naming
+    the folder or file that cannot be read."""
     folder = scenario_dir / EVIDENCE_DATASETS_DIR
-    if folder.is_symlink() or not folder.is_dir():
-        return {}
     summary = raw.get("capture_summary")
     names = summary.get("datasets") if isinstance(summary, Mapping) else None
     names = names if isinstance(names, Mapping) else {}
     datasets = {}
-    for entry in sorted(folder.iterdir()):
-        if entry.is_symlink() or not entry.is_file() or entry.suffix != ".bin":
-            continue
-        name = names.get(entry.name, names.get(entry.stem))
-        if not isinstance(name, str):
-            name = _OBSERVATION_FILES.get(entry.stem, entry.stem)
-            if name.startswith("_"):
-                continue  # an @AIX:<path> file whose name the summary does not give back
-        datasets[name] = entry.read_bytes()
+    try:
+        if folder.is_symlink() or not folder.is_dir():
+            return {}
+        for entry in sorted(folder.iterdir()):
+            if entry.is_symlink() or not entry.is_file() or entry.suffix != ".bin":
+                continue
+            name = names.get(entry.name, names.get(entry.stem))
+            if not isinstance(name, str):
+                name = _OBSERVATION_FILES.get(entry.stem, entry.stem)
+                if name.startswith("_"):
+                    continue  # an @AIX:<path> file whose name the summary does not give back
+            datasets[name] = entry.read_bytes()
+    except OSError as exc:
+        raise ReportError(f"cannot read {_os_problem(exc, folder)}") from None
     return datasets
+
+
+def _shown(value: Any) -> str:
+    """``value`` as a problem quotes it: its ``repr``, clipped."""
+    return _clip(repr(value), 80)
+
+
+def _text_problem(entry: Any) -> str | None:
+    return None if isinstance(entry, str) else f"must be text, got {type(entry).__name__}"
+
+
+def _mapping_problem(entry: Any) -> str | None:
+    return None if isinstance(entry, Mapping) else f"must be a mapping, got {type(entry).__name__}"
+
+
+def _screen_problem(screen: Any) -> str | None:
+    """Why ``screen`` is not one step's screen of a ``Result``: a mapping of
+    field names to text."""
+    if not isinstance(screen, Mapping):
+        return f"must map field names to text, got {type(screen).__name__}"
+    for name, value in screen.items():
+        if not isinstance(name, str):
+            return f"must map field names to text, got the field name {_shown(name)}"
+        if not isinstance(value, str):
+            return f"must map field names to text, got {_clip(name, 80)}: {type(value).__name__}"
+    return None
+
+
+def _entries_problem(what: str, value: Any, kind: str, entry_problem: Callable[[Any], str | None]) -> str | None:
+    """Why ``value`` is not a list of ``kind`` whose every entry
+    ``entry_problem`` accepts, naming the first refused entry and how many
+    more there are; ``None`` when it is. A text is refused as a whole, never
+    read as a list of its characters."""
+    if not isinstance(value, list):
+        return f"{what}: must be a list of {kind}, got {type(value).__name__}"
+    refused = []
+    for index, entry in enumerate(value):
+        problem = entry_problem(entry)
+        if problem is not None:
+            refused.append((index, problem))
+    if not refused:
+        return None
+    index, problem = refused[0]
+    more = f" (and {len(refused) - 1} more entries)" if len(refused) > 1 else ""
+    return f"{what}[{index}]: {problem}{more}"
+
+
+def _evidence_problems(raw: Mapping[Any, Any]) -> list[str]:
+    """What is wrong with what ``result.yaml`` holds beside its record
+    fields: a key ``adapters/unikix/evidence.py`` does not write, an
+    ``observed`` payload that is not the run's ``Result`` (exactly
+    ``return_code``, an integer or null for abended; ``messages``, a list of
+    text; ``screens``, a list of mappings of field names to text), or a
+    ``capture_summary``, ``observed_messages`` or ``screens_raw`` of another
+    shape. An absent or null ``observed`` is a run that produced no
+    ``Result``. Nothing is coerced or dropped: corrupt evidence is refused."""
+    problems = []
+    unknown = sorted(
+        key if isinstance(key, str) else _shown(key) for key in raw
+        if not isinstance(key, str) or (key not in _results.RECORD_FIELDS and key not in _EVIDENCE_KEYS)
+    )
+    if unknown:
+        problems.append(f"holds {_clip(', '.join(unknown), 300)}, outside the record fields and "
+                        f"{', '.join(_EVIDENCE_KEYS)}")
+    observed = raw.get("observed")
+    if isinstance(observed, Mapping):
+        absent = [key for key in _OBSERVED_KEYS if key not in observed]
+        extra = sorted(key if isinstance(key, str) else _shown(key) for key in observed if key not in _OBSERVED_KEYS)
+        if absent:
+            problems.append(f"observed: lacks {', '.join(absent)}")
+        if extra:
+            problems.append(f"observed: holds {_clip(', '.join(extra), 300)}, outside {', '.join(_OBSERVED_KEYS)}")
+        code = observed.get("return_code")
+        if code is not None and (isinstance(code, bool) or not isinstance(code, int)):
+            problems.append(f"observed.return_code: {_shown(code)} is not an integer or null")
+        for name, kind, entry_problem in (("messages", "text", _text_problem),
+                                          ("screens", "field mappings", _screen_problem)):
+            if name in observed:
+                problem = _entries_problem(f"observed.{name}", observed[name], kind, entry_problem)
+                if problem is not None:
+                    problems.append(problem)
+    elif observed is not None:
+        problems.append(f"observed: must map {', '.join(_OBSERVED_KEYS)}, got {type(observed).__name__}")
+    if "capture_summary" in raw:
+        summary = raw["capture_summary"]
+        names = summary.get("datasets", {}) if isinstance(summary, Mapping) else None
+        if not isinstance(summary, Mapping):
+            problems.append(f"capture_summary: must be a mapping, got {type(summary).__name__}")
+        elif not isinstance(names, Mapping) or not all(
+                isinstance(file_name, str) and isinstance(name, str) for file_name, name in names.items()):
+            problems.append(f"capture_summary.datasets: must map {EVIDENCE_DATASETS_DIR}/ file names to "
+                            f"dataset names")
+    for name in ("observed_messages", "screens_raw"):
+        if name in raw:
+            problem = _entries_problem(name, raw[name], "mappings", _mapping_problem)
+            if problem is not None:
+                problems.append(problem)
+    return problems
 
 
 def read_evidence(execution_id: str, scenario_dir: Path,
                   zip_info: tuple[str, dict] | None) -> tuple[Evidence | None, str | None]:
     """The evidence of one scenario directory, or why it is rejected: an id
     outside the manifest, no complete ``result.yaml``, an ``environment.yaml``
-    that is missing or unreadable, a record that breaks the result contract
-    or names another execution, scenario or adapter, or a source identity
-    that is not the zip's UniKix copy as committed."""
+    that is missing, unreadable or lacks a fact it must record, a
+    ``result.yaml`` larger than ``EVIDENCE_YAML_MAX_BYTES``, a record that
+    breaks the result contract or names another execution, scenario or
+    adapter, a key or ``observed`` payload ``adapters/unikix/evidence.py``
+    does not write (``_evidence_problems``), a file the importer cannot read,
+    or a source identity that is not the zip's UniKix copy as committed."""
     scenario_id = scenario_dir.name
     if scenario_id not in _scenarios.ALL_IDS:
         return None, f"{scenario_id} is not an id of the closed scenario id manifest"
     path = scenario_dir / RESULT_FILE
-    if path.is_symlink() or not path.is_file():
-        return None, f"no {RESULT_FILE}: the evidence is incomplete"
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None, f"no {RESULT_FILE}: the evidence is incomplete"
+    except OSError as exc:
+        return None, f"cannot read {_os_problem(exc, path)}"
     environment, problem = _read_environment(scenario_dir)
     if environment is None:
         return None, f"environment: {problem}"
     try:
-        raw = load_yaml(path)
+        raw = load_yaml(path, max_bytes=EVIDENCE_YAML_MAX_BYTES)
+    except OSError as exc:
+        return None, f"cannot read {_os_problem(exc, path)}"
     except YAMLLoadError as exc:
         return None, str(exc)
     if not isinstance(raw, Mapping):
         return None, f"{RESULT_FILE} does not hold a mapping"
     record = {name: raw.get(name) for name in _results.RECORD_FIELDS}
-    problems = _results.record_problems(record)
+    problems = _results.record_problems(record) + _evidence_problems(raw)
     if record["adapter"] != _results.UNIKIX:
         problems.append(f"adapter {record['adapter']!r} is not unikix")
     if record["execution_id"] != execution_id:
@@ -3647,8 +3926,11 @@ def read_evidence(execution_id: str, scenario_dir: Path,
     problem = identity_problem(record["source_identity"], zip_info, scenario)
     if problem is not None:
         return None, f"source identity: {problem}"
-    return Evidence(execution_id, scenario_id, scenario_dir, dict(raw), environment,
-                    _evidence_datasets(scenario_dir, raw)), None
+    try:
+        datasets = _evidence_datasets(scenario_dir, raw)
+    except ReportError as exc:
+        return None, str(exc)
+    return Evidence(execution_id, scenario_id, scenario_dir, dict(raw), environment, datasets), None
 
 
 def _date_text(value: Any) -> str | None:
@@ -3667,21 +3949,52 @@ def _date_text(value: Any) -> str | None:
     return None
 
 
+def _run_date_key(scenario: Any) -> tuple[str, str]:
+    """The ``run_date`` key of ``environment.yaml`` that holds the run date
+    of the scenario's kind of run, and that kind: ``first_step_screen_date``
+    for an online scenario (``inputs.steps``), else ``bpe_job_start_date``."""
+    if isinstance(scenario.inputs.get("steps"), list):
+        return "first_step_screen_date", "an online run"
+    return "bpe_job_start_date", "a batch run"
+
+
 def evidence_run_date(environment: Mapping[str, Any], scenario: Any) -> str | None:
     """The run date ``environment.yaml`` records for the scenario's kind of
-    run: the screen date of the first online step, or the BPE job start date."""
+    run, or ``None``: the screen date of the first online step for an online
+    scenario, the BPE job start date for a batch one. The other kind's date
+    is never used, because relative-clock matchers are judged against the
+    run date of the run that produced the values."""
     run_date = environment.get("run_date")
     if not isinstance(run_date, Mapping):
         return None
-    online = isinstance(scenario.inputs.get("steps"), list)
-    keys = ("first_step_screen_date", "bpe_job_start_date")
-    if not online:
-        keys = keys[::-1]
-    for key in keys:
-        text = _date_text(run_date.get(key))
-        if text is not None:
-            return text
-    return None
+    key, _kind = _run_date_key(scenario)
+    return _date_text(run_date.get(key))
+
+
+def _holds_matcher(value: Any) -> bool:
+    """Whether ``value`` holds a matcher at any depth."""
+    if _baselines.is_matcher(value):
+        return True
+    if isinstance(value, Mapping):
+        return any(_holds_matcher(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_holds_matcher(item) for item in value)
+    return False
+
+
+def _run_date_problem(evidence: Evidence, scenario: Any, baseline: Any) -> str | None:
+    """Why the evidence cannot be judged for want of a run date, or ``None``:
+    a matcher anywhere in the scenario's or the baseline's current expectation
+    (its ``matchers`` map included) relates a value to the run date, which
+    ``environment.yaml`` must then record for the scenario's kind of run."""
+    expectations = [scenario.expected] + ([baseline.expected] if baseline is not None else [])
+    if not any(_holds_matcher(expected) for expected in expectations):
+        return None
+    if evidence_run_date(evidence.environment, scenario) is not None:
+        return None
+    key, kind = _run_date_key(scenario)
+    return (f"{scenario.id}: its expected outcome relates values to the run date, but the "
+            f"{ENVIRONMENT_FILE} of {evidence.path} does not record {key}, the run date of {kind}")
 
 
 def _step_matcher(scenario: Any, baseline: Any, index: int, name: str) -> Mapping[str, Any] | None:
@@ -3697,57 +4010,92 @@ def _step_matcher(scenario: Any, baseline: Any, index: int, name: str) -> Mappin
     return None
 
 
-def evidence_result(evidence: Evidence, scenario: Any, baseline: Any, run_date: str | None) -> Result:
+def evidence_result(evidence: Evidence) -> Result:
     """The ``adapters.base.Result`` an execution produced, rebuilt from its
-    evidence: the return code, messages and screens ``result.yaml`` keeps
-    under ``observed``, and the raw bytes of every dataset file.
-
-    Evidence without ``observed`` is rebuilt from its decoded outcome
-    instead. There a screen field held as a matcher kind took its value from
-    the region clock (the run clock, whose date the evidence records as the
-    run date), so it is rendered from that date: the evidence keeps no other
-    trace of it."""
+    evidence exactly as captured: the return code, messages and screens
+    ``result.yaml`` keeps under ``observed`` (``read_evidence`` has refused
+    any other shape), and the raw bytes of every dataset file. Nothing is
+    coerced, dropped or derived from the expectation or the run date, so a
+    comparison judges only what the run produced. ``ReportError`` when the
+    evidence holds no ``observed`` payload: no outcome can be compared."""
     observed = evidence.observed
-    if observed is not None:
-        code = observed.get("return_code")
+    if observed is None:
+        raise ReportError(f"{evidence.path}: {RESULT_FILE} holds no observed return code, messages and "
+                          f"screens to compare")
+    try:
         return Result(
-            return_code=code if isinstance(code, int) and not isinstance(code, bool) else None,
+            return_code=observed["return_code"],
             datasets=dict(evidence.datasets),
-            screens=[{str(name): value for name, value in screen.items()}
-                     for screen in observed.get("screens") or [] if isinstance(screen, Mapping)],
-            messages=[line for line in observed.get("messages") or [] if isinstance(line, str)],
+            screens=[dict(screen) for screen in observed["screens"]],
+            messages=list(observed["messages"]),
         )
-    decoded = evidence.raw.get("decoded") or {}
-    code = decoded.get("return_code")
-    return_code = code if isinstance(code, int) and not isinstance(code, bool) else None
-    messages = [line for line in decoded.get("messages") or [] if isinstance(line, str)]
-    moment = None
-    if run_date is not None:
-        moment = _dt.datetime.combine(_dt.date.fromisoformat(run_date), _dt.time())
-    screens = []
-    for index, screen in enumerate(decoded.get("screens") or []):
-        if not isinstance(screen, Mapping) or _baselines.MISSING in screen:
-            break
-        rebuilt = {}
-        for name, value in screen.items():
-            if not isinstance(value, str):
-                continue
-            matcher = _step_matcher(scenario, baseline, index, str(name))
-            kind = _baselines.SCREEN_CLOCK_FIELDS.get(str(name))
-            if moment is not None and matcher is not None and value == matcher.get("match"):
-                value = _baselines.Matcher.of(matcher).resolve(moment)
-            elif moment is not None and kind is not None and value == kind:
-                value = moment.strftime(_SCREEN_DEFAULT_FORMATS[str(name)])
-            rebuilt[str(name)] = value
-        screens.append(rebuilt)
-    return Result(return_code=return_code, datasets=dict(evidence.datasets), screens=screens, messages=messages)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ReportError(f"{evidence.path}: {RESULT_FILE}'s observed is not a run's Result: {exc}") from None
 
 
-def missing_observations(evidence: Evidence, scenario: Any) -> list[str]:
+def _asserted_steps(scenario: Any, baseline: Any) -> list[tuple[list[str], list[Any]]]:
+    """The screen steps a comparison asserts, one ``(names, maps)`` per step:
+    the field names the baseline's and the scenario's step name (``@map`` and
+    ``@text`` included) and the ``@map`` values they give. The steps are those
+    of the longer of the two ``screens`` lists, a scenario value ``baseline``
+    deferring to the baseline's; none when the scenario's ``expected`` names
+    no ``screens``."""
+    if "screens" not in scenario.expected:
+        return []
+    specs = []
+    for expected in (baseline.expected if baseline is not None else {}, scenario.expected):
+        screens = expected.get("screens") if isinstance(expected, Mapping) else None
+        if isinstance(screens, list):
+            specs.append(screens)
+    steps = []
+    for index in range(max((len(spec) for spec in specs), default=0)):
+        names: list[str] = []
+        maps: list[Any] = []
+        for spec in specs:
+            step = spec[index] if index < len(spec) and isinstance(spec[index], Mapping) else {}
+            names.extend(str(name) for name in step if str(name) not in names)
+            if _scenarios.SCREEN_MAP in step and step[_scenarios.SCREEN_MAP] not in maps:
+                maps.append(step[_scenarios.SCREEN_MAP])
+        steps.append((names, maps))
+    return steps
+
+
+def _step_shortfall(screen: Any, names: Sequence[str], maps: Sequence[Any]) -> str | None:
+    """What a captured step (``None`` when the evidence has no screen for
+    it) lacks of the ``names`` its asserted step names, as a skip reason
+    shows it (``ERRMSG, PGMNAME``), or ``None`` when it holds them all. A
+    capture of a map other than the ``maps`` the step asserts lacks the
+    asserted names it does not hold like any other capture, and the reason
+    names both maps: ``ERRMSG, PGMNAME (captured @map TEXT, asserted
+    COBIL00)``."""
+    if screen is None or (isinstance(screen, Mapping) and _baselines.MISSING in screen):
+        return "(no screen was captured)"
+    if not isinstance(screen, Mapping):
+        return "(the capture is not a field map)"
+    absent = sorted(name for name in names if name not in screen)
+    if not absent:
+        return None
+    text = ", ".join(absent)
+    captured = screen.get(_scenarios.SCREEN_MAP)
+    if maps and _scenarios.SCREEN_MAP in screen and captured not in maps:
+        text += f" (captured @map {captured}, asserted {', '.join(str(mapset) for mapset in maps)})"
+    return text
+
+
+def missing_observations(evidence: Evidence, scenario: Any, baseline: Any) -> list[str]:
     """What the scenario's current ``expected`` names that the evidence does
-    not hold."""
+    not hold. Only the captured ``observed`` payload and the dataset files
+    count, never the decoded projection: evidence without ``observed`` holds
+    nothing a comparison can judge. Screens are checked field by field:
+    every step the scenario or its baseline asserts (``_asserted_steps``)
+    must be captured and hold every name either of them names, ``@map`` and
+    ``@text`` included, whatever map the capture shows. A shortfall is named
+    by step and field: ``screens step 3 ERRMSG, PGMNAME``, with the captured
+    and the asserted map where they differ."""
     expected = scenario.expected
-    outcome = evidence.observed or evidence.raw.get("decoded") or {}
+    outcome = evidence.observed
+    if outcome is None:
+        return ["observed (the run's return code, messages and screens)"]
     missing = []
     if "return_code" in expected and "return_code" not in outcome:
         missing.append("return_code")
@@ -3760,14 +4108,12 @@ def missing_observations(evidence: Evidence, scenario: Any) -> list[str]:
         for name in names if isinstance(names, Mapping) else ():
             if str(name) not in evidence.datasets:
                 missing.append(f"{section}.{name}")
-    wanted = expected.get("screens")
-    if isinstance(wanted, list) and wanted:
-        captured = outcome.get("screens")
-        captured = captured if isinstance(captured, list) else []
-        complete = [screen for screen in captured[:len(wanted)]
-                    if isinstance(screen, Mapping) and _baselines.MISSING not in screen]
-        if len(complete) < len(wanted):
-            missing.append(f"screens ({len(complete)} of {len(wanted)} steps)")
+    captured = outcome.get("screens")
+    captured = captured if isinstance(captured, list) else []
+    for index, (asserted, maps) in enumerate(_asserted_steps(scenario, baseline)):
+        shortfall = _step_shortfall(captured[index] if index < len(captured) else None, asserted, maps)
+        if shortfall is not None:
+            missing.append(f"screens step {index + 1} {shortfall}")
     return missing
 
 
@@ -3849,20 +4195,44 @@ def _replace_file(folder: int, name: str, data: bytes, path: Path) -> None:
         raise
 
 
-def _write_validation(evidence: Evidence, record: Mapping[str, Any]) -> None:
-    """Write ``validation.yaml`` into the evidence's own scenario directory,
-    the one file ever written under the evidence tree, without following a
-    symbolic link: ``_evidence_folder`` first names any linked folder, then
-    each folder from the resolved ``tests/`` root down is opened relative to
-    its parent with ``O_NOFOLLOW``, so a link swapped in meanwhile fails
-    instead of being written through, and the file is replaced inside the
-    last one (``_replace_file``)."""
-    path = evidence.directory / VALIDATION_FILE
+def _evidence_file(evidence: Evidence, name: str) -> Path:
+    """The file ``name`` of the evidence's own scenario directory, once the
+    checks every write or removal of it must pass have passed:
+    ``_evidence_folder`` names any linked folder from the resolved ``tests/``
+    root down or a folder resolving outside the evidence tree, the directory
+    is the evidence directory of its execution and scenario, and the file is
+    neither a symbolic link nor, when it exists, anything but a regular file.
+    Anything else raises ``ReportError``, before anything is written."""
     _evidence_folder(evidence.execution_id, evidence.scenario_id)
     if evidence.directory != UNIKIX_EVIDENCE_DIR / evidence.execution_id / evidence.scenario_id:
         raise ReportError(f"{display_path(evidence.directory)} is not the evidence directory of "
                           f"{evidence.execution_id}/{evidence.scenario_id}; nothing is written there")
-    data = dump_yaml(dict(record)).encode("utf-8")
+    path = evidence.directory / name
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return path
+    except OSError as exc:
+        raise ReportError(f"{display_path(path)} cannot be examined: {exc.strerror or exc}") from None
+    if stat.S_ISLNK(info.st_mode):
+        raise ReportError(f"{display_path(path)} is a symbolic link; nothing is written through it")
+    if not stat.S_ISREG(info.st_mode):
+        raise ReportError(f"{display_path(path)} is not a regular file; nothing is written to it")
+    return path
+
+
+def _in_evidence_folder(evidence: Evidence, name: str, action: Callable[[int, Path], None], doing: str) -> None:
+    """Run ``action(folder, path)`` on the file ``name`` of the evidence's own
+    scenario directory without following a symbolic link. ``validation.yaml``
+    and, while a promotion is in progress, its journal are the only files
+    ever written under the evidence tree, and only so: ``_evidence_file``
+    first checks the folders and the file, then each folder from the
+    resolved ``tests/`` root down is opened relative to its parent with
+    ``O_NOFOLLOW``, so a link swapped in meanwhile fails instead of being
+    followed, and ``action`` gets the last one open as ``folder``. An
+    ``OSError`` raises ``ReportError`` naming the component, with ``doing``
+    (``written``, ``removed``) saying what could not be done."""
+    path = _evidence_file(evidence, name)
     current = TESTS_ROOT
     try:
         folder = os.open(TESTS_ROOT, _FOLDER_FLAGS)
@@ -3872,20 +4242,46 @@ def _write_validation(evidence: Evidence, record: Mapping[str, Any]) -> None:
                 parent, folder = folder, os.open(part, _FOLDER_FLAGS | os.O_NOFOLLOW, dir_fd=folder)
                 os.close(parent)
             current = path
-            _replace_file(folder, VALIDATION_FILE, data, path)
+            action(folder, path)
         finally:
             os.close(folder)
     except OSError as exc:
         if os.path.islink(current):
-            raise ReportError(f"{display_path(current)} is a symbolic link; nothing is written through it") from None
-        raise ReportError(f"{display_path(current)} cannot be written: {exc.strerror or exc}") from None
+            raise ReportError(f"{display_path(current)} is a symbolic link; nothing is {doing} through it") from None
+        raise ReportError(f"{display_path(current)} cannot be {doing}: {exc.strerror or exc}") from None
+
+
+def _write_evidence_file(evidence: Evidence, name: str, data: bytes) -> None:
+    """Make the file ``name`` of the evidence's own scenario directory hold
+    ``data``, replaced inside that folder (``_replace_file``) without
+    following a symbolic link (``_in_evidence_folder``)."""
+    _in_evidence_folder(evidence, name, lambda folder, path: _replace_file(folder, name, data, path), "written")
+
+
+def _remove_evidence_file(evidence: Evidence, name: str) -> None:
+    """Remove the file ``name`` of the evidence's own scenario directory,
+    unlinked inside that folder without following a symbolic link
+    (``_in_evidence_folder``); a file already gone is left so."""
+    def remove(folder: int, path: Path) -> None:
+        try:
+            os.unlink(name, dir_fd=folder)
+        except FileNotFoundError:
+            pass
+
+    _in_evidence_folder(evidence, name, remove, "removed")
+
+
+def _write_validation(evidence: Evidence, record: Mapping[str, Any]) -> None:
+    """Write ``validation.yaml`` into the evidence's own scenario directory
+    without following a symbolic link (``_write_evidence_file``)."""
+    _write_evidence_file(evidence, VALIDATION_FILE, dump_yaml(dict(record)).encode("utf-8"))
 
 
 def _judge(evidence: Evidence, scenario: Any, baseline: Any) -> tuple[str, str | None, str, dict | None]:
     """Compare the evidence's observed payload with the baseline as it stands:
     ``(status, reason, diff, decoded projection)``."""
     run_date = evidence_run_date(evidence.environment, scenario)
-    result = evidence_result(evidence, scenario, baseline, run_date)
+    result = evidence_result(evidence)
     status, reason, diff = _baselines.compare(scenario, baseline, result, _results.UNIKIX, run_date)
     try:
         projected = _baselines.projection(_baselines.decode_result(scenario, result), scenario, baseline)
@@ -3903,93 +4299,350 @@ _STUB_PREFIX = "GAP-STB-"
 
 
 def _named_fields(values: Iterable[Any]) -> list[str] | None:
+    """The field names expected records name, in first-seen order; ``None``
+    for lines, which are compared whole. A matcher stands for a whole record
+    or line and names no field."""
     names: list[str] = []
+    field_maps = False
     for value in values:
+        if _baselines.is_matcher(value):
+            continue
         if not isinstance(value, Mapping):
             return None  # line records (TEXT layouts, line observations) are compared whole
+        field_maps = True
         names.extend(str(name) for name in value if str(name) not in names)
-    return names
+    return names if field_maps else None
 
 
-def _restricted_records(observed: Any, old: Any) -> Any:
-    """The observed records restricted to the fields the old expectation of
-    the dataset named, with its field matchers carried over."""
+class _RunDateUnknown(ReportError):
+    """A matcher of an expectation being promoted has to be judged, and the
+    evidence records no run date to relate the observed value to."""
+
+
+def _satisfied(matcher: Any, value: Any, run_date: str | None) -> bool:
+    """Whether the observed ``value`` satisfies ``matcher``: its format and
+    its stated relation to the evidence's run date. A malformed matcher is
+    not satisfied. ``_RunDateUnknown`` when the evidence records no run date:
+    the relation cannot be judged, and taking the observed value instead
+    would promote a clock value as a literal."""
+    try:
+        if run_date is not None:
+            return _baselines.check_matcher(matcher, value, None, False, run_date) is None
+        described = _baselines.Matcher.of(matcher).describe()
+    except HarnessError:
+        return False
+    raise _RunDateUnknown(f"the clock matcher {described} cannot be judged against the observed "
+                          f"{_clip(repr(value), 80)}")
+
+
+def _spec_items(spec: Any, exact: bool) -> tuple[list, list]:
+    """The items of a list expectation that align with the observed records
+    by position (``records``, and a plain list compared exactly) and those
+    that align in order (``contains``, and a plain list compared as an
+    ordered subsequence)."""
+    if isinstance(spec, list):
+        return (list(spec), []) if exact else ([], list(spec))
+    if isinstance(spec, Mapping) and not _baselines.is_matcher(spec):
+        records, contains = spec.get("records"), spec.get("contains")
+        return (list(records) if isinstance(records, list) else [],
+                list(contains) if isinstance(contains, list) else [])
+    return [], []
+
+
+def _gives_matchers(item: Any) -> bool:
+    """Whether the expected record or line ``item`` gives a matcher: is one
+    (a whole line), or holds one as a field value."""
+    return _baselines.is_matcher(item) or (
+        isinstance(item, Mapping) and any(_baselines.is_matcher(value) for value in item.values()))
+
+
+def _clock_match(item: Any, actual: Any, run_date: str | None) -> bool:
+    """Whether the expected record or line ``item`` gives at least one
+    matcher and the observed ``actual`` satisfies every one it gives."""
+    if _baselines.is_matcher(item):
+        return isinstance(actual, str) and _satisfied(item, actual, run_date)
+    if not isinstance(item, Mapping) or not isinstance(actual, Mapping):
+        return False
+    matchers = [(str(name), value) for name, value in item.items() if _baselines.is_matcher(value)]
+    return bool(matchers) and all(name in actual and _satisfied(value, actual[name], run_date)
+                                  for name, value in matchers)
+
+
+def _overlay_matchers(records: list, observed: Sequence[Any], spec: Any, exact: bool,
+                      wildcards: Iterable[str], run_date: str | None) -> None:
+    """Carry into ``records`` (the observed records or lines being promoted)
+    each matcher the expectation ``spec`` gives for them, where none stands
+    yet and the observed value satisfies it. Positional items (``records``,
+    a plain list compared exactly) align by position. Ordered items
+    (``contains``, a plain list compared as an ordered subsequence) align
+    greedily in order, as the comparison matches them: each takes, at or
+    after the record past the last one aligned, the first record that
+    matches it loosely (``baselines._loose_match``: its matchers and the
+    field-level ``wildcards`` match anything) and satisfies every matcher it
+    gives; else, when it gives matchers, the first record that satisfies them
+    all, the one the run wrote where its other values changed; else the first
+    loose match, whose unsatisfied matchers are not carried. An item no
+    record matches leaves the position where it is. A whole-line matcher
+    replaces a line, a field matcher its field."""
+    if spec is None or spec == _scenarios.BASELINE:
+        return
+    positional, ordered = _spec_items(spec, exact)
+    aligned = list(enumerate(positional[:len(observed)]))
+    loose = list(wildcards)
+    position = 0
+    for item in ordered:
+        candidates = range(position, len(observed))
+        clocked = _gives_matchers(item)
+        index = next((index for index in candidates if _baselines._loose_match(item, observed[index], loose)
+                      and (not clocked or _clock_match(item, observed[index], run_date))), None)
+        if index is None and clocked:
+            index = next((index for index in candidates if _clock_match(item, observed[index], run_date)), None)
+        if index is None:
+            index = next((index for index in candidates
+                          if _baselines._loose_match(item, observed[index], loose)), None)
+        if index is not None:
+            aligned.append((index, item))
+            position = index + 1
+    for index, item in aligned:
+        actual, record = observed[index], records[index]
+        if _baselines.is_matcher(item):
+            if isinstance(actual, str) and isinstance(record, str) and _satisfied(item, actual, run_date):
+                records[index] = dict(item)
+        elif isinstance(item, Mapping) and isinstance(record, dict) and isinstance(actual, Mapping):
+            for name, value in item.items():
+                name = str(name)
+                if (_baselines.is_matcher(value) and name in record and not _baselines.is_matcher(record[name])
+                        and _satisfied(value, actual.get(name), run_date)):
+                    record[name] = dict(value)
+
+
+def _restricted_records(observed: Any, stored: Any, own: Any, top_matchers: Iterable[str],
+                        run_date: str | None, where: str) -> Any:
+    """The observed records of one dataset as its promoted expectation,
+    restricted to the fields the baseline's and the scenario's expectations
+    (``stored``, ``own``) name, with every record or field matcher they give
+    carried over where the observed value satisfies it, the baseline's first
+    (``_overlay_matchers``). The value keeps the form of the expectation it
+    replaces, and is ``{records: ...}`` whenever the scenario holds its own
+    value, which its schema takes only as a mapping; that form keeps every
+    field-level ``matchers`` entry either expectation held, the baseline's
+    where both name a field. ``ReportError`` when a record lacks a field the
+    expectations name; ``_RunDateUnknown`` when a matcher applies to a
+    promoted record and ``run_date`` is ``None``."""
     if not isinstance(observed, list):
         return observed
-    if isinstance(old, list):
-        specs, matchers, spec_form = old, {}, False
-    elif isinstance(old, Mapping):
-        specs = list(old.get("records") or []) + list(old.get("contains") or [])
-        matchers, spec_form = dict(old.get("matchers") or {}), True
-    else:
-        return observed
-    fields = _named_fields(specs)
-    records = observed
-    if fields:
-        records = [
-            {name: record[name] for name in fields if name in record} if isinstance(record, Mapping) else record
-            for record in observed
-        ]
-    if spec_form:
-        value: dict[str, Any] = {"records": records}
-        if matchers:
-            value["matchers"] = matchers
-        return value
-    for record, spec in zip(records, specs):
-        if isinstance(record, dict) and isinstance(spec, Mapping):
-            record.update({name: spec[name] for name in record if _baselines.is_matcher(spec.get(name))})
-    return records
+    specs = [spec for spec in (stored, own) if spec is not None and spec != _scenarios.BASELINE]
+    items: list[Any] = []
+    for spec in specs:
+        positional, ordered = _spec_items(spec, True)
+        items.extend(positional + ordered)
+    fields = _named_fields(items)
+    records: list[Any] = []
+    for number, record in enumerate(observed, start=1):
+        if not isinstance(record, Mapping):
+            records.append(record)
+            continue
+        if not fields:
+            records.append(dict(record))
+            continue
+        absent = [name for name in fields if name not in record]
+        if absent:
+            raise ReportError(f"{where} record {number} has no decoded field {', '.join(absent)}, which the "
+                              f"expectation names, so its observed value cannot be promoted")
+        records.append({name: record[name] for name in fields})
+    field_level = [
+        {str(name): matcher for name, matcher in spec["matchers"].items() if _baselines.is_matcher(matcher)}
+        if isinstance(spec, Mapping) and isinstance(spec.get("matchers"), Mapping) else {}
+        for spec in specs
+    ]
+    for spec, spec_matchers in zip(specs, field_level):
+        _overlay_matchers(records, observed, spec, True, set(top_matchers) | set(spec_matchers), run_date)
+    previous = specs[0] if specs else None
+    if not isinstance(previous, Mapping) and not isinstance(own, Mapping):
+        return records
+    value: dict[str, Any] = {"records": records}
+    matchers: dict[str, Any] = {}
+    for spec_matchers in field_level:
+        for name, matcher in spec_matchers.items():
+            matchers.setdefault(name, dict(matcher))
+    if matchers:
+        if run_date is None:
+            # The comparison judges a field-level matcher on every record that
+            # holds its field; without a run date the first such judgement
+            # raises _RunDateUnknown (a malformed matcher is left to the check).
+            for name, matcher in matchers.items():
+                held = [record[name] for record in records if isinstance(record, Mapping) and name in record]
+                if held:
+                    _satisfied(matcher, held[0], run_date)
+        value["matchers"] = matchers
+    return value
 
 
-def observed_expectation(scenario: Any, baseline: Any, projected: Mapping[str, Any]) -> dict:
-    """The observed outcome as an ``expected.yaml``: exactly the keys the
-    scenario's ``expected`` names, the records and screen fields the old
-    expectation named, and the matchers it held for clock-derived values."""
+# How the online programs show the screen clock fields: CSDAT01Y's
+# WS-CURDATE-MM-DD-YY and WS-CURTIME-HH-MM-SS.
+_SCREEN_DEFAULT_FORMATS = {"CURDATE": "%m/%d/%y", "CURTIME": "%H:%M:%S"}
+
+
+def _screen_value(scenario: Any, baseline: Any, index: int, name: str, value: Any, run_date: str | None) -> Any:
+    """A captured screen field as its promoted expectation: the matcher the
+    step or a top-level ``matchers`` entry gives it, else for a screen clock
+    field the matcher of its kind (``CURDATE`` ``{match: run-date, format:
+    '%m/%d/%y'}``, ``CURTIME`` ``{match: run-time}``), where the observed
+    value satisfies it; otherwise the observed value."""
+    matcher = _step_matcher(scenario, baseline, index, name)
+    kind = _baselines.SCREEN_CLOCK_FIELDS.get(name)
+    if matcher is None and kind is not None:
+        matcher = {"match": kind}
+        if _SCREEN_DEFAULT_FORMATS[name] != _baselines.MATCHERS[kind]:
+            matcher["format"] = _SCREEN_DEFAULT_FORMATS[name]
+    if matcher is not None and _satisfied(matcher, value, run_date):
+        return dict(matcher)
+    return value
+
+
+def _observed_screens(scenario: Any, baseline: Any, screens: Any, run_date: str | None) -> list[dict]:
+    """The captured screens as the promoted ``screens``: one entry per step
+    the scenario or its baseline asserts (``_asserted_steps``), holding
+    exactly the names either names. ``ReportError`` when a step lacks an
+    asserted name, whatever map it captured (``_step_shortfall``): no
+    asserted field is ever dropped or replaced by another."""
+    captured = screens if isinstance(screens, list) else []
+    steps = []
+    for index, (names, maps) in enumerate(_asserted_steps(scenario, baseline)):
+        screen = captured[index] if index < len(captured) else None
+        shortfall = _step_shortfall(screen, names, maps)
+        if shortfall is not None:
+            raise ReportError(f"{scenario.id}: the evidence lacks screens step {index + 1} {shortfall}, which the "
+                              f"expectation asserts, so no observed expectation replaces it")
+        steps.append({name: _screen_value(scenario, baseline, index, name, screen[name], run_date) for name in names})
+    return steps
+
+
+def _check_observed(scenario: Any, baseline: Any, expected: Mapping[str, Any], result: Result,
+                    run_date: str | None) -> None:
+    """Refuse an observed expectation before anything is written: one that
+    breaks the baseline contract, gives the scenario file a schema problem it
+    does not have, or does not reproduce, through the comparison a live run
+    uses, the observed outcome it was built from."""
+    inline = _inline_expectation(scenario, expected)
+    candidate = replace(scenario, expected=inline, data={**scenario.data, "expected": inline})
+    try:
+        promoted = _baselines.Baseline(scenario.id, dict(expected), baseline.manifest, {})
+    except HarnessError as exc:
+        raise ReportError(f"{scenario.id}: the observed expectation breaks the baseline contract: "
+                          f"{_clip(exc)}") from None
+    known = set(_scenarios.validate(scenario))
+    added = [problem for problem in _scenarios.validate(candidate) if problem not in known]
+    if added:
+        raise ReportError(f"{scenario.id}: the observed expectation would break the scenario schema: "
+                          + _clip("; ".join(added)))
+    status, reason, diff = _baselines.compare(candidate, promoted, result, _results.UNIKIX, run_date)
+    if status != _results.STATUS_PASSED:
+        raise ReportError(f"{scenario.id}: the observed expectation does not reproduce the observed outcome "
+                          f"({reason}), so nothing is promoted: {_clip(diff)}")
+
+
+def observed_expectation(evidence: Evidence, scenario: Any, baseline: Any) -> dict:
+    """The observed outcome of ``evidence`` as an ``expected.yaml``, built
+    from the run's own observations (``evidence_result``, decoded), never from
+    the normalized projection: exactly the keys the scenario's ``expected``
+    names; each dataset's records restricted to the fields the old
+    expectations named; every screen step they assert, with every field they
+    name; the union of their top-level ``matchers``, or the baseline's alone
+    when the scenario names no ``matchers`` key; and each other matcher
+    they held, or a screen clock field's, wherever the observed value
+    satisfies it. The expectation is checked against the observed outcome
+    before it is returned (``_check_observed``).
+    ``ReportError`` when the evidence keeps no observed payload or lacks an
+    asserted observation, when a matcher has to be judged and the evidence
+    records no run date (``evidence_run_date``), or when the check fails.
+    Nothing is written."""
+    if evidence.observed is None:
+        raise ReportError(f"{scenario.id}: {evidence.path}/{RESULT_FILE} keeps no observed payload, only its "
+                          f"normalized projection, so no observed outcome can replace the expectation")
+    run_date = evidence_run_date(evidence.environment, scenario)
+    result = evidence_result(evidence)
+    try:
+        decoded = _baselines.decode_result(scenario, result)
+    except HarnessError as exc:
+        raise ReportError(f"{scenario.id}: the observed outcome cannot be decoded: {_clip(exc, 300)}") from None
     old = baseline.expected if baseline is not None else {}
     inline = scenario.expected
+    top_matchers = {
+        str(name) for expected in (old, inline) if isinstance(expected.get("matchers"), Mapping)
+        for name, matcher in expected["matchers"].items() if _baselines.is_matcher(matcher)
+    }
     out: dict[str, Any] = {}
-    for key in inline:
-        if key == "matchers":
-            out[key] = dict(old.get("matchers") or inline.get("matchers") or {})
-        elif key in ("return_code", "messages", "reject_reason_codes"):
-            out[key] = projected.get(key)
-        elif key in ("datasets", "file_state"):
-            observed = projected.get(key) or {}
-            section = {}
-            for name in inline[key] or {}:
-                previous = (old.get(key) or {}).get(name)
-                if previous is None or previous == _scenarios.BASELINE:
-                    previous = (inline.get(key) or {}).get(name)
-                section[str(name)] = _restricted_records(observed.get(str(name)), previous)
-            out[key] = section
-        elif key == "screens":
-            captured = projected.get("screens") or []
-            steps = []
-            for index, screen in enumerate(captured[:len(inline["screens"])]):
-                names: list[str] = []
-                for spec in (old.get("screens") or [], inline["screens"]):
-                    step = spec[index] if index < len(spec) and isinstance(spec[index], Mapping) else {}
-                    names.extend(str(name) for name in step if str(name) not in names)
-                entry = {}
-                for name in names:
-                    if name not in screen:
-                        continue
-                    matcher = _step_matcher(scenario, baseline, index, name)
-                    entry[name] = dict(matcher) if matcher is not None and screen[name] == matcher.get("match") \
-                        else screen[name]
-                steps.append(entry)
-            out[key] = steps
+    try:
+        for key in inline:
+            if key == "matchers":
+                # The baseline's matcher where both name a field, as the
+                # comparison applies them; an entry that is no matcher, and a
+                # scenario's 'baseline' in place of the map, add nothing.
+                merged: dict[str, Any] = {}
+                for expected in (old, inline):
+                    held = expected.get("matchers")
+                    if isinstance(held, Mapping):
+                        for name, matcher in held.items():
+                            if _baselines.is_matcher(matcher):
+                                merged.setdefault(str(name), dict(matcher))
+                out[key] = merged
+            elif key in ("return_code", "reject_reason_codes"):
+                out[key] = decoded.get(key)
+            elif key == "messages":
+                lines = decoded.get(key)
+                if isinstance(lines, list):
+                    lines = list(lines)
+                    _overlay_matchers(lines, decoded[key], old.get(key), True, (), run_date)
+                    _overlay_matchers(lines, decoded[key], inline.get(key), False, (), run_date)
+                out[key] = lines
+            elif key in ("datasets", "file_state"):
+                observed = decoded.get(key) or {}
+                stored = old.get(key) if isinstance(old.get(key), Mapping) else {}
+                own = inline[key] if isinstance(inline[key], Mapping) else {}
+                out[key] = {
+                    str(name): _restricted_records(observed.get(str(name)), stored.get(name), value, top_matchers,
+                                                   run_date, f"{scenario.id}: {key}.{name}")
+                    for name, value in own.items()
+                }
+            elif key == "screens":
+                out[key] = _observed_screens(scenario, baseline, decoded.get(key), run_date)
+    except _RunDateUnknown as exc:
+        run_date_key, kind = _run_date_key(scenario)
+        raise ReportError(f"{scenario.id}: the evidence records no run date for this scenario (its "
+                          f"{ENVIRONMENT_FILE} run_date does not record {run_date_key}, the run date of {kind}), "
+                          f"so {exc}, and nothing is promoted") from None
+    stored_matchers = old.get("matchers")
+    if "matchers" not in inline and isinstance(stored_matchers, Mapping):
+        # A top-level map the scenario does not name, which the baseline
+        # contract allows: the comparison applies it to every record and
+        # screen field it names, so the promoted baseline keeps its matchers
+        # and those fields keep their clock relation.
+        kept = {str(name): dict(matcher) for name, matcher in stored_matchers.items()
+                if _baselines.is_matcher(matcher)}
+        if kept:
+            out["matchers"] = kept
+    _check_observed(scenario, baseline, out, result, run_date)
     return out
 
 
 def _inline_expectation(scenario: Any, observed: Mapping[str, Any]) -> dict:
     """The scenario's own ``expected`` after promotion: the observed values,
-    except where it defers to the baseline."""
+    except where it defers to the baseline. Its messages are the observed
+    lines no matcher stands for: the scenario schema takes message lines as
+    text only, and the scenario's lines are compared as an ordered
+    subsequence, while the baseline keeps every line, matchers included. A
+    ``matchers`` map the scenario does not name stays the baseline's alone,
+    which the comparison applies to the scenario's values as well."""
     inline = scenario.expected
     out: dict[str, Any] = {}
     for key, value in observed.items():
+        if key == "matchers" and key not in inline:
+            continue
         if inline.get(key) == _scenarios.BASELINE:
             out[key] = _scenarios.BASELINE
+        elif key == "messages" and isinstance(value, list):
+            out[key] = [line for line in value if not _baselines.is_matcher(line)]
         elif key in ("datasets", "file_state") and isinstance(inline.get(key), Mapping):
             out[key] = {
                 name: _scenarios.BASELINE if inline[key].get(name) == _scenarios.BASELINE else records
@@ -4007,12 +4660,36 @@ def _business_datasets(expected: Mapping[str, Any]) -> list[str]:
     })
 
 
+# A git commit as git rev-parse prints it (sha1 or sha256), and the UTC time
+# stamp of a unikix execution id (adapters/unikix/evidence.make_execution_id).
+_COMMIT_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+_EXECUTION_STAMP_RE = re.compile(r"unikix-([0-9]{8}T[0-9]{6}Z)-[0-9a-f]{8}")
+
+
 def _observed_manifest(baseline: Any, evidence: Evidence, level: str) -> dict:
+    """The manifest of a baseline promoted from ``evidence``. Its capture
+    facts are the execution's own: ``source_commit`` is the commit its
+    ``source_identity`` names and ``capture_date`` the UTC date of its
+    execution id, never the importing checkout's HEAD or day. ``ReportError``
+    when either cannot be read."""
+    identity = evidence.raw.get("source_identity")
+    commit = identity.get("commit") if isinstance(identity, Mapping) else None
+    if not (isinstance(commit, str) and _COMMIT_RE.fullmatch(commit)):
+        raise ReportError(f"{evidence.path}: source_identity.commit {_clip(repr(commit), 80)} is not a git "
+                          f"commit, so the promoted baseline cannot name its source commit")
+    stamp = _EXECUTION_STAMP_RE.fullmatch(evidence.execution_id) if isinstance(evidence.execution_id, str) else None
+    try:
+        captured = _dt.datetime.strptime(stamp.group(1), "%Y%m%dT%H%M%SZ").date() if stamp else None
+    except ValueError:
+        captured = None
+    if captured is None:
+        raise ReportError(f"{evidence.path}: execution id {evidence.execution_id!r} names no UTC capture time "
+                          f"unikix-<yyyymmddThhmmssZ>-<8 hex>, so the promoted baseline has no capture date")
     manifest = {
         "baseline_version": _baselines.bump(baseline.version, level),
-        "source_commit": git_head(),
+        "source_commit": commit,
         "capture_platform": _results.UNIKIX,
-        "capture_date": _dt.date.today().isoformat(),
+        "capture_date": captured.isoformat(),
         "source_identity": evidence.raw.get("source_identity"),
         "execution_id": evidence.execution_id,
         "execution_fingerprint": evidence.raw.get("execution_fingerprint"),
@@ -4048,54 +4725,530 @@ class ImportSummary:
         return out
 
 
-def _promote(evidence: Evidence, scenario: Any, baseline: Any, status: str, diff: str,
-             projected: Mapping[str, Any], document: dict, summary: ImportSummary) -> None:
-    """Replace a derived baseline by the eligible observed outcome. Every new
-    text is built and checked before anything is written."""
-    scenario_id = scenario.id
+def _comparison_problem(evidence: Evidence, scenario: Any, baseline: Any, reason: str | None, diff: str,
+                        projected: Mapping[str, Any] | None) -> str | None:
+    """Why the comparison of an eligible record that would promote or diverge
+    from ``baseline`` was not made, so that no outcome may be imported from
+    it. Missing observations, every asserted screen field included, are
+    checked before the comparison (``missing_observations``), and so is the
+    run date its clock matchers need (``_run_date_problem``); this guard
+    covers a comparison that ended in reason ``error`` (no baseline key,
+    bytes that cannot be decoded, a malformed expectation) or gave no
+    projection. ``None`` when the comparison stands: passed, or a decoded
+    difference."""
+    if projected is None or reason not in (None, _baselines.REASON_ASSERTION, _baselines.REASON_DIVERGENCE):
+        detail = diff[len(f"{scenario.id}: "):] if diff.startswith(f"{scenario.id}: ") else diff
+        return (f"{scenario.id}: the observed outcome cannot be compared with the baseline "
+                f"({_clip(' '.join(detail.split()), 500)}); nothing is imported")
+    return None
+
+
+def _validation_path(evidence: Evidence) -> Path:
+    """The ``validation.yaml`` of ``evidence``, once the checks its write
+    makes before writing have passed (``_evidence_file``). A promotion runs
+    it before its first write."""
+    return _evidence_file(evidence, VALIDATION_FILE)
+
+
+# The journal of a promotion in progress, beside the evidence's result.yaml.
+# It is written before the promotion's first write and removed after its
+# last, so an import that stops in between leaves it, and the next import of
+# the execution completes what it records instead of judging again.
+PROMOTION_FILE = "promotion.yaml"
+_JOURNAL_KEYS = (
+    "scenario_id", "execution_id", "from_version", "baseline_version", "level", "how", "expected", "manifest",
+    "datasets", "inline_expected", "remove_tag", "gap",
+)
+_JOURNAL_GAP_KEYS = ("category", "unknown", "needed", "items")
+_PROMOTION_LEVELS = {"minor": "observed outcome equals the derived one",
+                     "major": "observed outcome replaces the derived one"}
+
+
+def _journal_path(evidence: Evidence) -> Path:
+    return evidence.directory / PROMOTION_FILE
+
+
+def _promotion_pending(evidence: Evidence) -> bool:
+    """Whether the evidence directory holds the journal of an interrupted
+    promotion (a symbolic link in its place counts, and is refused)."""
+    path = _journal_path(evidence)
+    return path.is_symlink() or path.exists()
+
+
+def _promotion_journal(evidence: Evidence, scenario: Any, baseline: Any, status: str, diff: str,
+                       projected: Mapping[str, Any]) -> dict:
+    """The journal of replacing the derived ``baseline`` by the eligible
+    observed outcome: MINOR when the comparison passed, MAJOR (the observed
+    expectation, inline as well, and a register entry quoting both outcomes)
+    when it found a decoded difference; the observed manifest and the names
+    of the business datasets whose bytes the evidence supplies."""
     if status == _results.STATUS_PASSED:
-        expected, level, how = dict(baseline.expected), "minor", "observed outcome equals the derived one"
+        expected, level = dict(baseline.expected), "minor"
     else:
-        expected = observed_expectation(scenario, baseline, projected)
-        level, how = "major", "observed outcome replaces the derived one"
-    datasets = {name: evidence.datasets[name] for name in _business_datasets(expected) if name in evidence.datasets}
+        expected, level = observed_expectation(evidence, scenario, baseline), "major"
     manifest = _observed_manifest(baseline, evidence, level)
-    _baselines.Baseline(scenario_id, expected, manifest, datasets)  # raises BaselineError before any write
-    original = scenario.path.read_text(encoding="utf-8")
-    text = original
-    if level == "major":
-        note = (f"Expected outcome replaced by the observed outcome of UniKix execution {evidence.execution_id} "
-                f"(baseline {manifest['baseline_version']}).")
-        text = _with_expected(text, _inline_expectation(scenario, expected), note, scenario.path)
-    text = _without_tag(text, _INFERRED_TAG, scenario.path) or text
-    _refuse_links(scenario.path)
-    _baselines.write(scenario_id, expected, manifest, datasets)
-    if text != original:
-        write_text(scenario.path, text)
-    summary.promoted.append((scenario_id, baseline.version, manifest["baseline_version"], how))
+    gap = None
     if level == "major":
         from_spec = baseline.manifest.get("derived_from") == "tech-spec"
-        category = "doc-conflict" if from_spec else "uncertain-purpose"
-        unknown = (f"Observed outcome of {scenario_id} differs from its derived expectation: UniKix execution "
-                   f"{evidence.execution_id} observed what the baseline now holds, where the derived "
-                   f"expectation{' taken from the tech spec' if from_spec else ''} said otherwise. "
-                   f"{_clip(diff)}")
-        needed = ("The documentation owner's decision on which source is authoritative."
-                  if from_spec else "The owner's statement of which outcome is intended.")
-        gap_id = _add_gap(document, category, unknown, map(str, scenario.inventory_ids), needed)
-        if gap_id:
-            summary.gaps_added.append(gap_id)
+        gap = {
+            "category": "doc-conflict" if from_spec else "uncertain-purpose",
+            "unknown": (f"Observed outcome of {scenario.id} differs from its derived expectation: UniKix execution "
+                        f"{evidence.execution_id} observed what the baseline now holds, where the derived "
+                        f"expectation{' taken from the tech spec' if from_spec else ''} said otherwise. "
+                        f"{_clip(diff)}"),
+            "needed": ("The documentation owner's decision on which source is authoritative."
+                       if from_spec else "The owner's statement of which outcome is intended."),
+            "items": sorted({str(item_id) for item_id in scenario.inventory_ids}),
+        }
+    return {
+        "scenario_id": scenario.id,
+        "execution_id": evidence.execution_id,
+        "from_version": baseline.version,
+        "baseline_version": manifest["baseline_version"],
+        "level": level,
+        "how": _PROMOTION_LEVELS[level],
+        "expected": expected,
+        "manifest": manifest,
+        "datasets": [name for name in _business_datasets(expected) if name in evidence.datasets],
+        "inline_expected": _inline_expectation(scenario, expected) if level == "major" else None,
+        "remove_tag": _INFERRED_TAG in scenario.tags,
+        "gap": gap,
+    }
+
+
+def _journal_problems(journal: Any, evidence: Evidence) -> list[str]:
+    """How ``journal`` is not the promotion journal of ``evidence`` that
+    ``_promotion_journal`` writes."""
+    if not isinstance(journal, Mapping):
+        return ["it does not hold a mapping"]
+    problems = []
+    missing = [key for key in _JOURNAL_KEYS if key not in journal]
+    if missing:
+        problems.append(f"it lacks {', '.join(missing)}")
+    for key, wanted in (("scenario_id", evidence.scenario_id), ("execution_id", evidence.execution_id)):
+        if journal.get(key) != wanted:
+            problems.append(f"{key} {_clip(repr(journal.get(key)), 80)} is not {wanted}")
+    for key in ("from_version", "baseline_version", "how"):
+        if not isinstance(journal.get(key), str):
+            problems.append(f"{key} is not text")
+    if journal.get("level") not in _PROMOTION_LEVELS:
+        problems.append(f"level {_clip(repr(journal.get('level')), 80)} is not minor or major")
+    manifest = journal.get("manifest")
+    if not isinstance(journal.get("expected"), dict) or not isinstance(manifest, dict):
+        problems.append("expected and manifest must be mappings")
+    elif (manifest.get("baseline_version") != journal.get("baseline_version")
+          or manifest.get("execution_id") != evidence.execution_id):
+        problems.append("the manifest names another baseline version or execution")
+    names = journal.get("datasets")
+    if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+        problems.append("datasets must list dataset names")
+    inline = journal.get("inline_expected")
+    if not (inline is None or isinstance(inline, dict)) or (inline is None) != (journal.get("level") == "minor"):
+        problems.append("inline_expected must be the MAJOR promotion's inline expectation, null for MINOR")
+    if not isinstance(journal.get("remove_tag"), bool):
+        problems.append("remove_tag must be true or false")
+    gap = journal.get("gap")
+    if gap is not None and not (
+            isinstance(gap, Mapping) and all(key in gap for key in _JOURNAL_GAP_KEYS)
+            and gap["category"] in CATEGORIES.values()
+            and isinstance(gap["unknown"], str) and isinstance(gap["needed"], str)
+            and isinstance(gap["items"], list) and all(isinstance(item, str) for item in gap["items"])):
+        problems.append(f"gap must be null or map {', '.join(_JOURNAL_GAP_KEYS)}")
+    return problems
+
+
+def _checked_journal(evidence: Evidence, scenario: Any) -> dict:
+    """The journal of the interrupted promotion of ``evidence``, checked
+    against the evidence and against the baseline on disk, which must still
+    be the derived one it promotes or already hold the manifest it writes.
+    A journal larger than ``EVIDENCE_YAML_MAX_BYTES`` is refused before it is
+    parsed. Anything else raises ``ReportError`` naming the journal: nothing
+    is guessed, and nothing is written."""
+    path = _journal_path(evidence)
+    shown = display_path(path)
+    if path.is_symlink():
+        raise ReportError(f"{shown} is a symbolic link; nothing is read or written through it")
+    try:
+        journal = load_yaml(path, max_bytes=EVIDENCE_YAML_MAX_BYTES)
+    except (OSError, YAMLLoadError) as exc:
+        raise ReportError(f"{shown} cannot be read ({_clip(exc, 300)}); complete or undo the promotion by hand") \
+            from None
+    problems = _journal_problems(journal, evidence)
+    if problems:
+        raise ReportError(f"{shown} is not the journal of a promotion of {scenario.id} by {evidence.execution_id}: "
+                          + "; ".join(problems) + "; complete or undo the promotion by hand")
+    manifest_path = _baselines.BASELINES_DIR / scenario.id / _baselines.MANIFEST_FILE
+    if manifest_path.is_symlink():
+        raise ReportError(f"{shown}: {display_path(manifest_path)} is a symbolic link; nothing is written through it")
+    try:
+        manifest = load_yaml(manifest_path, missing_ok=True)
+    except (OSError, YAMLLoadError) as exc:
+        raise ReportError(f"{shown}: {display_path(manifest_path)} cannot be read ({_clip(exc, 300)}); complete or "
+                          "undo the promotion by hand") from None
+    derived = (isinstance(manifest, Mapping) and manifest.get("capture_platform") == _baselines.DERIVED
+               and manifest.get("baseline_version") == journal["from_version"])
+    if not derived and manifest != journal["manifest"]:
+        raise ReportError(f"{shown}: the baseline of {scenario.id} is neither the derived {journal['from_version']} "
+                          f"it promotes nor the {journal['baseline_version']} it writes; complete or undo the "
+                          "promotion by hand")
+    return dict(journal)
+
+
+def _promoted_text(text: str, path: Path, journal: Mapping[str, Any]) -> str:
+    """Scenario file ``text`` as ``journal`` leaves it: its ``expected``
+    replaced by the MAJOR promotion's inline expectation, and its
+    inferred-not-observed tag removed. A file that already reads so is
+    returned unchanged, so completing a promotion never edits it twice."""
+    inline = journal["inline_expected"]
+    data = _yaml_text_load(text)
+    if inline is not None and (not isinstance(data, dict) or data.get("expected") != inline):
+        note = (f"Expected outcome replaced by the observed outcome of UniKix execution {journal['execution_id']} "
+                f"(baseline {journal['baseline_version']}).")
+        text = _with_expected(text, inline, note, path)
+    if journal["remove_tag"]:
+        text = _without_tag(text, _INFERRED_TAG, path) or text
+    return text
+
+
+@dataclass
+class _PromotionWrites:
+    """The writes of one promotion journal, built and checked in memory."""
+
+    scenario_text: str | None  # the new scenario file; None when the file already reads so
+    baseline: Any  # the promoted baseline, validated
+    gap_id: str | None  # the register entry it opens; None when an open entry asks the same
+    gaps_document: dict | None  # the register holding that entry
+    gaps_text: str | None  # and its gaps.yaml text
+
+
+def _promotion_writes(evidence: Evidence, scenario: Any, journal: Mapping[str, Any],
+                      document: dict) -> _PromotionWrites:
+    """Every write of ``journal``, built and checked before the first one:
+    the baseline (validated), the scenario text and the promoted scenario it
+    parses to, the register entry added to a copy of ``document`` with its
+    ``gaps.yaml`` text, and the ``validation.yaml`` record of the promoted
+    state (its record contract). Every target is refused when it is a
+    symbolic link, and the journal and ``validation.yaml`` pass the checks
+    their own writes make (``_evidence_file``)."""
+    scenario_id = scenario.id
+    missing = [name for name in journal["datasets"] if name not in evidence.datasets]
+    if missing:
+        raise ReportError(f"{scenario_id}: the evidence holds no {', '.join(missing)} for the promoted baseline; "
+                          "nothing is imported")
+    datasets = {name: evidence.datasets[name] for name in journal["datasets"]}
+    baseline = _baselines.Baseline(scenario_id, dict(journal["expected"]), dict(journal["manifest"]), datasets)
+    original = scenario.path.read_text(encoding="utf-8")
+    text = _promoted_text(original, scenario.path, journal)
+    data = _yaml_text_load(text)
+    data = data if isinstance(data, dict) else {}
+    expected, tags = data.get("expected"), data.get("tags")
+    promoted = replace(scenario, data=data, expected=expected if isinstance(expected, dict) else {},
+                       tags=tuple(tags) if isinstance(tags, list) else ())
+    gap_id = gaps_document = gaps_text = None
+    gap = journal["gap"]
+    if gap is not None:
+        gaps_document = copy.deepcopy(document)
+        gap_id = _add_gap(gaps_document, gap["category"], gap["unknown"], gap["items"], gap["needed"])
+        if gap_id is not None:
+            gaps_text = _gaps_text(gaps_document, GAPS_FILE.read_text(encoding="utf-8"))
+    status, reason, _, projected = _judge(evidence, promoted, baseline)
+    _validation(evidence, promoted, baseline, status, reason, None, projected)
+    directory = _baselines.BASELINES_DIR / scenario_id
+    raw_folder = directory / _baselines.DATASETS_DIR
+    _refuse_links(
+        scenario.path, *([GAPS_FILE] if gap_id is not None else []),
+        _baselines.BASELINES_DIR, directory, directory / _baselines.EXPECTED_FILE,
+        directory / _baselines.MANIFEST_FILE, raw_folder,
+        *(raw_folder / f"{name}{_baselines.RAW_SUFFIX}" for name in sorted(datasets)),
+    )
+    _evidence_file(evidence, PROMOTION_FILE)
+    _validation_path(evidence)
+    return _PromotionWrites(text if text != original else None, baseline, gap_id, gaps_document, gaps_text)
+
+
+def _commit_promotion(evidence: Evidence, scenario: Any, journal: Mapping[str, Any], writes: _PromotionWrites,
+                      document: dict, summary: ImportSummary, completing: bool) -> tuple[str, str | None]:
+    """Make the writes of ``journal``, whose file is written, in the order a
+    retry completes from any point: the scenario, the register entry (into
+    ``document`` as well, so the import's own register write keeps it), the
+    baseline (derived to observed: the commit point), then the
+    ``validation.yaml`` of the promoted state as it reads back, and last the
+    removal of the journal. The promotion is reported only once committed.
+    Returns the status and reason written."""
+    scenario_id = scenario.id
+    if writes.scenario_text is not None:
+        write_text(scenario.path, writes.scenario_text)
+    if writes.gap_id is not None:
+        write_text(GAPS_FILE, str(writes.gaps_text))
+        document.update(writes.gaps_document or {})
+    _baselines.write(scenario_id, journal["expected"], journal["manifest"], writes.baseline.datasets)
+    promoted = _scenarios.get(scenario_id)
+    baseline, problem = _load_baseline(scenario_id)
+    if problem is not None:
+        raise ReportError(f"{scenario_id}: the promoted baseline cannot be read: {problem}")
+    status, reason, _, projected = _judge(evidence, promoted, baseline)
+    _write_validation(evidence, _validation(evidence, promoted, baseline, status, reason, None, projected))
+    _remove_evidence_file(evidence, PROMOTION_FILE)
+    how = f"{journal['how']}, completing an interrupted promotion" if completing else journal["how"]
+    summary.promoted.append((scenario_id, journal["from_version"], journal["baseline_version"], how))
+    if writes.gap_id is not None:
+        summary.gaps_added.append(writes.gap_id)
+    return status, reason
+
+
+def _promote(evidence: Evidence, scenario: Any, baseline: Any, status: str, diff: str,
+             projected: Mapping[str, Any], document: dict, summary: ImportSummary) -> tuple[str, str | None]:
+    """Replace a derived baseline by the eligible observed outcome as one
+    recoverable transaction: every write is built and checked in memory, the
+    journal ``promotion.yaml`` is written beside the evidence, and then the
+    writes it records are made. A journal larger than
+    ``EVIDENCE_YAML_MAX_BYTES``, which ``_checked_journal`` would refuse to
+    read back, raises ``ReportError`` before anything is written. Returns
+    the status and reason of the ``validation.yaml`` written."""
+    journal = _promotion_journal(evidence, scenario, baseline, status, diff, projected)
+    journal_bytes = dump_yaml(journal).encode("utf-8")
+    if len(journal_bytes) > EVIDENCE_YAML_MAX_BYTES:
+        raise ReportError(f"{scenario.id}: the promotion journal {display_path(_journal_path(evidence))} would hold "
+                          f"{len(journal_bytes)} bytes, more than the {EVIDENCE_YAML_MAX_BYTES} an evidence YAML file "
+                          "may hold, so an interrupted promotion could not be completed from it; nothing is promoted")
+    writes = _promotion_writes(evidence, scenario, journal, document)
+    _write_evidence_file(evidence, PROMOTION_FILE, journal_bytes)
+    return _commit_promotion(evidence, scenario, journal, writes, document, summary, completing=False)
+
+
+def _complete_promotion(evidence: Evidence, scenario: Any, document: dict,
+                        summary: ImportSummary) -> tuple[str, str | None]:
+    """Complete the promotion an interrupted import journalled: its writes
+    are made again from the journal (unchanged files are left alone, and the
+    register entry is not added twice), with no new judgement and so no
+    second version bump; then the promoted state is judged and validated."""
+    journal = _checked_journal(evidence, scenario)
+    writes = _promotion_writes(evidence, scenario, journal, document)
+    return _commit_promotion(evidence, scenario, journal, writes, document, summary, completing=True)
+
+
+def _refuse_ineligible_completion(evidence: Evidence, scenario: Any, copy_gaps: _CopyGaps,
+                                  zip_info: tuple[str, dict] | None) -> None:
+    """Refuse to complete the journalled promotion of ``evidence`` when the
+    record is no longer eligible for ``scenario``'s items (one became
+    UniKix-copy behaviour since the interrupted import), because such
+    evidence never replaces a baseline: ``ReportError`` names the journal,
+    the reason and the way back, and nothing is written."""
+    why = _ineligibility(evidence.raw, scenario, copy_gaps, zip_info)
+    if why is None:
+        return
+    raise ReportError(
+        f"{display_path(_journal_path(evidence))} journals an interrupted promotion of {scenario.id}, but the record "
+        f"is not eligible to replace its baseline: {why}; nothing is written. The interrupted import may already have "
+        f"written part of the promotion: restore {display_path(_baselines.BASELINES_DIR / scenario.id)}/ and "
+        f"{display_path(scenario.path)} from version control (git checkout), then delete the journal")
+
+
+def _utility_seams(scenario: Any) -> set[str]:
+    """The seams a job scenario made only of utility steps is verified
+    through: the replacement of each step kind its jobs run, and the
+    emulated catalog. Empty for a scenario that names no job, or when a
+    step of its jobs runs a program or names no kind."""
+    jobs = _scenarios.job_names(scenario)
+    if not jobs:
+        return set()
+    try:
+        document = load_yaml(_results.GNUCOBOL_JOBS_FILE)
+    except (OSError, YAMLLoadError) as exc:
+        raise ReportError(f"{scenario.id}: the gnucobol-batch job steps cannot be read: {_clip(exc, 300)}") from None
+    table = document.get("jobs") if isinstance(document, Mapping) else None
+    kinds: set[str] = set()
+    for job in jobs:
+        entry = table.get(job) if isinstance(table, Mapping) else None
+        steps = entry.get("steps") if isinstance(entry, Mapping) else None
+        if not isinstance(steps, list) or not steps:
+            return set()
+        for step in steps:
+            kind = step.get("kind") if isinstance(step, Mapping) else None
+            if not isinstance(kind, str) or kind == "program":
+                return set()
+            kinds.add(kind)
+    return {_SEAM_OF_UTILITY_STEP[kind] for kind in kinds if kind in _SEAM_OF_UTILITY_STEP} | {_SEAM_OF_CATALOG}
+
+
+def _key_label(label: tuple[str, str | None]) -> str:
+    return label[0] if label[1] is None else f"{label[0]}.{label[1]}"
+
+
+def _differing_keys(scenario: Any, baseline: Any, result: Result,
+                    run_date: str | None) -> list[tuple[str, str | None]]:
+    """The keys of the scenario's ``expected`` that ``result`` fails, each
+    compared alone (with the top-level ``matchers``): ``(key, None)`` for
+    ``return_code``, ``messages``, ``reject_reason_codes`` and ``screens``,
+    ``(section, name)`` for each dataset or observation."""
+    expected = scenario.expected
+    shared = {"matchers": expected["matchers"]} if "matchers" in expected else {}
+    parts: list[tuple[tuple[str, str | None], dict]] = []
+    for key, value in expected.items():
+        if key == "matchers":
+            continue
+        if key in ("datasets", "file_state") and isinstance(value, Mapping):
+            parts += [((str(key), str(name)), {key: {name: item}}) for name, item in value.items()]
+        else:
+            parts.append(((str(key), None), {key: value}))
+    differing = []
+    for label, alone in parts:
+        status, _, _ = _baselines.compare(replace(scenario, expected={**alone, **shared}), baseline, result,
+                                          _results.UNIKIX, run_date)
+        if status != _results.STATUS_PASSED:
+            differing.append(label)
+    return differing
+
+
+def _abend_messages_only(spec: Any, messages: Sequence[Any]) -> bool:
+    """Whether the CEE3ABD stub explains how the observed ``messages`` differ
+    from the baseline's ``spec``: ``spec`` is a plain list of text lines (a
+    matcher entry, or the ``records``/``contains`` mapping, is never
+    attributed) with at least one line holding the stub's marker, and
+    ``messages`` without the lines that carry an LE or COBOL runtime message
+    identifier equal, in order, ``spec`` without its marker lines. A business
+    line added, dropped, changed or reordered lies outside the stub's
+    scope."""
+    if not isinstance(spec, list) or not all(isinstance(line, str) for line in spec):
+        return False
+    business = [line for line in spec if _ABEND_MARKER not in line]
+    if len(business) == len(spec):
+        return False
+    observed = [line for line in messages if not (isinstance(line, str) and _LE_DIAGNOSTIC_RE.search(line))]
+    return observed == business
+
+
+def _unordered(records: Sequence[Any]) -> list[str]:
+    """``records`` compared without their order."""
+    return sorted(dump_yaml(record) for record in records)
+
+
+def _spaces_for_nul(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.replace("\x00", " ")
+    if isinstance(value, Mapping):
+        return {key: _spaces_for_nul(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_spaces_for_nul(item) for item in value]
+    return value
+
+
+def _record_seams(scenario: Any, baseline: Any, result: Result, section: str, name: str) -> set[str]:
+    """The seams that explain how the decoded records of business dataset
+    ``name`` differ from those the baseline's own bytes decode to: the same
+    records in another order, or the same records but for ``x'00'`` where
+    the other side holds spaces. Empty without the baseline's bytes, or for
+    any other difference."""
+    if name not in baseline.datasets:
+        return set()
+    try:
+        captured = _baselines.decode_result(
+            scenario, Result(return_code=None, datasets=dict(baseline.datasets), screens=[], messages=[]))
+        observed = _baselines.decode_result(scenario, result)
+        ours = (captured.get(section) or {}).get(name)
+        theirs = (observed.get(section) or {}).get(name)
+        if not isinstance(ours, list) or not isinstance(theirs, list) or ours == theirs:
+            return set()
+        if _unordered(ours) == _unordered(theirs):
+            return set(_SEAMS_OF_RECORD_ORDER)
+        ours, theirs = _spaces_for_nul(ours), _spaces_for_nul(theirs)
+        if ours == theirs or _unordered(ours) == _unordered(theirs):
+            return set(_SEAMS_OF_NUL_FILL)
+    except HarnessError:
+        return set()
+    return set()
+
+
+def _key_seams(label: tuple[str, str | None], scenario: Any, baseline: Any, result: Result) -> set[str]:
+    """The seams whose scope a difference in ``label`` lies within; empty
+    when no seam explains it (screens, reject reason codes and any other
+    content difference)."""
+    key, name = label
+    stored = baseline.expected
+    abend = "return_code" in stored and stored["return_code"] is None
+    if key == "return_code":
+        return {_SEAM_OF_ABEND} if abend else set()
+    if key == "messages":
+        return {_SEAM_OF_ABEND} if abend and _abend_messages_only(stored.get("messages"), result.messages) else set()
+    if key in ("datasets", "file_state") and name is not None:
+        if name in _SEAMS_OF_OBSERVATION:
+            return set(_SEAMS_OF_OBSERVATION[name])
+        if not name.startswith("@"):
+            return _record_seams(scenario, baseline, result, key, name)
+    return set()
+
+
+def _divergence_seams(evidence: Evidence, scenario: Any, baseline: Any,
+                      document: dict) -> tuple[list[tuple[str, str | None]], list[str]]:
+    """The keys in which an eligible UniKix outcome differs from
+    ``baseline``, and the stub-limitation entries the scenario cites (and the
+    register holds) whose seams explain every one of them: the replacements
+    of a job made only of utility steps, otherwise a seam per differing key
+    whose scope that difference lies within. No seam when a differing key
+    lies outside every cited seam's scope."""
+    run_date = evidence_run_date(evidence.environment, scenario)
+    result = evidence_result(evidence)
+    keys = _differing_keys(scenario, baseline, result, run_date)
+    entries = _gap_entries(document)
+    cited = {str(gap_id) for gap_id in scenario.gap_ids if str(gap_id).startswith(_STUB_PREFIX)} & set(entries)
+    if not cited or not keys:
+        return keys, []
+    utility = _utility_seams(scenario) & cited
+    if utility:
+        return keys, sorted(utility)
+    explaining: set[str] = set()
+    for label in keys:
+        seams = _key_seams(label, scenario, baseline, result) & cited
+        if not seams:
+            return keys, []
+        explaining |= seams
+    return keys, sorted(explaining)
+
+
+def _listed(words: Sequence[str]) -> str:
+    return words[0] if len(words) == 1 else f"{', '.join(words[:-1])} and {words[-1]}"
+
+
+def _divergence_entry(evidence: Evidence, scenario: Any, baseline: Any, diff: str,
+                      document: dict) -> tuple[str, str, str]:
+    """The register entry of a cross-adapter divergence, ``(category,
+    unknown, needed)``: ``stub-limitation`` naming the seams when the
+    difference lies within the scope of the seams the scenario cites,
+    ``uncertain-purpose`` otherwise. The unknown names the differing keys."""
+    keys, seams = _divergence_seams(evidence, scenario, baseline, document)
+    unknown = (f"Cross-adapter divergence of {scenario.id}: UniKix execution {evidence.execution_id} "
+               f"gives another decoded outcome than the {baseline.capture_platform} baseline, which "
+               f"stays authoritative" + (f", in {_listed([_key_label(label) for label in keys])}" if keys else "")
+               + ".")
+    if not seams:
+        return "uncertain-purpose", f"{unknown} {_clip(diff)}", "The owner's statement of which outcome is intended."
+    entries = _gap_entries(document)
+    described = {gap_id: what for what, gap_id in SEAMS}
+    named = []
+    for gap_id in seams:
+        seam = entries[gap_id].get("seam")
+        replaces = seam.get("replaces") if isinstance(seam, Mapping) else None
+        named.append(f"{gap_id} ({replaces if isinstance(replaces, str) and replaces else described.get(gap_id)})")
+    several = len(named) > 1
+    unknown += f" The difference lies within the scope of {_listed(named)}. {_clip(diff)}"
+    needed = (f"An eligible UniKix run that agrees, or the owner's decision whether the limitation"
+              f"{'s' if several else ''} of {_listed(named)} explain{'' if several else 's'} the difference.")
+    return "stub-limitation", unknown, needed
 
 
 def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
                        summary: ImportSummary | None, copy_gaps: _CopyGaps,
                        zip_info: tuple[str, dict] | None) -> tuple[str, str | None] | None:
     """Write the ``validation.yaml`` of one evidence directory; with a
-    ``document`` (import), promote an eligible derived baseline and register
-    a divergence first. Returns the status written, or ``None`` when nothing
-    is written because the evidence no longer describes the scenario. Raises
-    ``HarnessError`` when the evidence cannot be judged: the current
-    execution fingerprint cannot be computed or the baseline cannot be read."""
+    ``document`` (import), promote an eligible derived baseline (or complete
+    the promotion an interrupted import journalled) and register a
+    divergence first, refusing a record whose comparison could not be made.
+    Returns the status written, or ``None`` when nothing is written because
+    the evidence no longer describes the scenario or a promotion is pending
+    while revalidating. Raises ``HarnessError`` when the evidence cannot be
+    judged: the current execution fingerprint cannot be computed, the
+    baseline cannot be read, the comparison could not be made, or a
+    journalled promotion can no longer complete."""
     raw = evidence.raw
     fingerprint = raw.get("execution_fingerprint")
     if fingerprint is not None:
@@ -4111,6 +5264,14 @@ def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
         if summary is not None:
             summary.skipped.append((scenario.id, "no execution fingerprint to confirm"))
         return None
+    if _promotion_pending(evidence):
+        if document is None or summary is None:
+            if summary is not None:
+                summary.skipped.append((scenario.id, "an interrupted promotion is pending; run --import-unikix "
+                                        f"{evidence.execution_id} to complete it"))
+            return None
+        _refuse_ineligible_completion(evidence, scenario, copy_gaps, zip_info)
+        return _complete_promotion(evidence, scenario, document, summary)
     baseline, problem = _load_baseline(scenario.id)
     if problem is not None:
         raise ReportError(f"{scenario.id}: the baseline cannot be read: {problem}")
@@ -4119,33 +5280,32 @@ def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
                              raw.get("gap_id"), None)
         _write_validation(evidence, record)
         return record["status"], record["reason"]
-    missing = missing_observations(evidence, scenario)
+    missing = missing_observations(evidence, scenario, baseline)
     if missing:
         if summary is not None:
             summary.skipped.append((scenario.id, f"stale: the evidence lacks {', '.join(missing)}"))
         return None
+    problem = _run_date_problem(evidence, scenario, baseline)
+    if problem is not None:
+        raise ReportError(problem)
     eligible = _ineligibility(raw, scenario, copy_gaps, zip_info) is None
     status, reason, diff, projected = _judge(evidence, scenario, baseline)
-    if document is not None and summary is not None and eligible and baseline is not None and projected:
+    importing = document is not None and summary is not None and eligible and baseline is not None
+    if importing and (baseline.derived or reason == _baselines.REASON_DIVERGENCE):
+        problem = _comparison_problem(evidence, scenario, baseline, reason, diff, projected)
+        if problem is not None:
+            raise ReportError(problem)
         if baseline.derived:
-            _promote(evidence, scenario, baseline, status, diff, projected, document, summary)
-            scenario = _scenarios.get(scenario.id)
-            baseline, problem = _load_baseline(scenario.id)
-            if problem is not None:
-                raise ReportError(f"{scenario.id}: the promoted baseline cannot be read: {problem}")
-            status, reason, diff, projected = _judge(evidence, scenario, baseline)
-        elif reason == _baselines.REASON_DIVERGENCE:
-            stub = any(str(gap_id).startswith(_STUB_PREFIX) for gap_id in scenario.gap_ids)
-            category = "stub-limitation" if stub else "uncertain-purpose"
-            unknown = (f"Cross-adapter divergence of {scenario.id}: UniKix execution {evidence.execution_id} "
-                       f"gives another decoded outcome than the {baseline.capture_platform} baseline, which "
-                       f"stays authoritative. {_clip(diff)}")
-            needed = ("An eligible UniKix run that agrees, or the owner's decision whether the stub's "
-                      "limitation explains the difference." if stub
-                      else "The owner's statement of which outcome is intended.")
-            gap_id = _add_gap(document, category, unknown, map(str, scenario.inventory_ids), needed)
-            if gap_id:
-                summary.gaps_added.append(gap_id)
+            return _promote(evidence, scenario, baseline, status, diff, projected, document, summary)
+        # The validation is written before the entry is registered, so a record
+        # refused on the way registers nothing; a retry judges again and the
+        # entry is not added twice.
+        category, unknown, needed = _divergence_entry(evidence, scenario, baseline, diff, document)
+        _write_validation(evidence, _validation(evidence, scenario, baseline, status, reason, None, projected))
+        gap_id = _add_gap(document, category, unknown, map(str, scenario.inventory_ids), needed)
+        if gap_id:
+            summary.gaps_added.append(gap_id)
+        return status, reason
     record = _validation(evidence, scenario, baseline, status, reason, None, projected)
     _write_validation(evidence, record)
     return status, reason
@@ -4153,20 +5313,13 @@ def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
 
 def _versions_recorded(environment: Mapping[str, Any]) -> bool:
     """Whether ``environment.yaml`` names a version for each UniKix
-    prerequisite (TPE, BPE, Visual COBOL, licence, Java)."""
+    prerequisite (TPE, BPE, Visual COBOL, licence, Java): the last text it
+    records under each probe's key names a version, not a failure."""
     found: dict[str, str] = {}
-
-    def walk(value: Any) -> None:
-        if isinstance(value, Mapping):
-            for key, item in value.items():
-                if str(key) in UNIKIX_VERSION_KEYS and isinstance(item, str):
-                    found[str(key)] = item
-                walk(item)
-        elif isinstance(value, list):
-            for item in value:
-                walk(item)
-
-    walk(environment)
+    for key, values in _recorded(environment, UNIKIX_VERSION_KEYS).items():
+        texts = [value for value in values if isinstance(value, str)]
+        if texts:
+            found[key] = texts[-1]
     return all(
         found.get(key, "").strip() and not found[key].strip().lower().startswith(_VERSION_FAILURE_PREFIXES)
         for key in UNIKIX_VERSION_KEYS
@@ -4187,7 +5340,7 @@ def _new_message_items(state: State, execution_id: str, imported: Iterable[str],
         scenario = state.scenarios.get(scenario_id)
         path = UNIKIX_EVIDENCE_DIR / execution_id / scenario_id / RESULT_FILE
         try:
-            raw = load_yaml(path)
+            raw = load_yaml(path, max_bytes=EVIDENCE_YAML_MAX_BYTES)
         except (OSError, YAMLLoadError):
             continue
         if scenario is None or not isinstance(raw, Mapping):
@@ -4414,8 +5567,11 @@ def import_unikix(execution_id: str) -> ImportSummary:
     if not isinstance(execution_id, str) or not _UNIKIX_ID_RE.fullmatch(execution_id):
         raise ReportError(f"{execution_id!r} is not a unikix execution id unikix-<yyyymmddThhmmssZ>-<8 hex>")
     execution_dir = _evidence_folder(execution_id)
-    if not execution_dir.is_dir():
-        raise ReportError(f"no evidence directory {display_path(execution_dir)}")
+    try:
+        if not execution_dir.is_dir():
+            raise ReportError(f"no evidence directory {display_path(execution_dir)}")
+    except OSError as exc:
+        raise ReportError(f"cannot read {_os_problem(exc, execution_dir)}") from None
     with _exclusive():
         return _import_execution(execution_id, execution_dir)
 
@@ -4436,7 +5592,6 @@ def _import_execution(execution_id: str, execution_dir: Path) -> ImportSummary:
         if evidence is None:
             summary.rejected.append((scenario_dir.name, why))
             continue
-        environments.append(evidence.environment)
         scenario = _scenarios.get(evidence.scenario_id, missing_ok=True)
         if scenario is None:
             summary.rejected.append((evidence.scenario_id, "no scenario file"))
@@ -4446,6 +5601,10 @@ def _import_execution(execution_id: str, execution_dir: Path) -> ImportSummary:
         except HarnessError as exc:
             summary.rejected.append((evidence.scenario_id, str(exc)))
             continue
+        except OSError as exc:
+            summary.rejected.append((evidence.scenario_id, _os_problem(exc)))
+            continue
+        environments.append(evidence.environment)
         if written is not None:
             summary.validated.append((evidence.scenario_id, *written))
             imported.append(evidence.scenario_id)
@@ -4531,9 +5690,13 @@ def _revalidate() -> RevalidationSummary:
     links: list[Path] = []
     for execution_dir in _evidence_executions(evidence_dir, links):
         for scenario_dir in _scenario_dirs(execution_dir, links):
-            if not (scenario_dir / VALIDATION_FILE).is_file():
-                continue
             label = f"{execution_dir.name}/{scenario_dir.name}"
+            try:
+                if not (scenario_dir / VALIDATION_FILE).is_file():
+                    continue
+            except OSError as exc:
+                result.rejected.append((label, f"cannot read {_os_problem(exc, scenario_dir / VALIDATION_FILE)}"))
+                continue
             evidence, why = read_evidence(execution_dir.name, scenario_dir, state.zip_info)
             if evidence is None:
                 result.rejected.append((label, why))
@@ -4547,6 +5710,9 @@ def _revalidate() -> RevalidationSummary:
                 written = _validate_evidence(evidence, scenario, None, summary, state.copy_gaps, state.zip_info)
             except HarnessError as exc:
                 result.rejected.append((label, str(exc)))
+                continue
+            except OSError as exc:
+                result.rejected.append((label, _os_problem(exc)))
                 continue
             if written is None:
                 result.left.append((label, "; ".join(why for _, why in summary.skipped)))
@@ -4606,7 +5772,7 @@ def _execution_records(execution_id: str) -> tuple[dict[str, dict], list[str]]:
             problems.append(f"{label}: {path.name} is not a file")
             continue
         try:
-            document = load_yaml(path)
+            document = load_yaml(path, max_bytes=EVIDENCE_YAML_MAX_BYTES)
         except YAMLLoadError as exc:
             problems.append(f"{label}: {exc}")
             continue
@@ -4736,6 +5902,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     except HarnessError as exc:
         print(f"report.py: error: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"report.py: error: {_os_problem(exc)}", file=sys.stderr)
         return 2
 
 

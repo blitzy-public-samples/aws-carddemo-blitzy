@@ -408,11 +408,17 @@ def dump_yaml(obj: Any) -> str:
         ) from None
 
 
-def load_yaml(path: str | PurePath, missing_ok: bool = False) -> Any:
+def load_yaml(path: str | PurePath, missing_ok: bool = False, *, max_bytes: int | None = None) -> Any:
     """Load a UTF-8 YAML file with safe-load semantics.
 
     A missing file returns ``None`` when ``missing_ok`` is true and raises
     ``FileNotFoundError`` otherwise; an empty document returns ``None``.
+
+    ``max_bytes``, when given, is the most bytes the file may hold: at most
+    one byte more is read, and a longer file raises ``YAMLLoadError`` before
+    anything is decoded or parsed, since loading costs many times the file's
+    size in memory. It must be a non-negative ``int`` (``TypeError`` or
+    ``ValueError`` otherwise); ``None`` reads the whole file.
 
     A file that is not UTF-8 text, not valid YAML, or holds a value the safe
     constructors cannot build (an impossible date, a ``!!int`` that is not
@@ -430,14 +436,25 @@ def load_yaml(path: str | PurePath, missing_ok: bool = False) -> Any:
     value is constructed, so no file can make the loader recurse without
     bound or expand a few bytes into gigabytes.
     """
+    if max_bytes is not None:
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int):
+            raise TypeError(f"max_bytes must be an int or None, got {type(max_bytes).__name__}")
+        if max_bytes < 0:
+            raise ValueError(f"max_bytes must not be negative, got {max_bytes}")
     file_path = Path(path)
     try:
-        data = file_path.read_bytes()
+        if max_bytes is None:
+            data = file_path.read_bytes()
+        else:
+            with open(file_path, "rb") as handle:
+                data = handle.read(max_bytes + 1)
     except FileNotFoundError:
         if missing_ok:
             return None
         raise
     shown = display_path(file_path)
+    if max_bytes is not None and len(data) > max_bytes:
+        raise YAMLLoadError(shown, f"holds more than {max_bytes} bytes, the most this file may hold")
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
