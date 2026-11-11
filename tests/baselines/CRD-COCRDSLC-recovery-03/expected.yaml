@@ -1,0 +1,33 @@
+messages:
+- '                                                                              '
+- '                                                                                '
+- '                                                                                '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN004: '04. Credit Card View                    '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDSL
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDSLC
+  TRNNAME: CCDL
+- '@map': COCRDSL
+  ACCTSID: '00000000050'
+  CARDSID: '0500024453765740'
+  CRDNAME: 'Aniya Von                                         '
+  CRDSTCD: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                                '
+  EXPMON: '03'
+  EXPYEAR: '2023'
+  INFOMSG: '   Displaying requested details         '
+  PGMNAME: COCRDSLC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCDL

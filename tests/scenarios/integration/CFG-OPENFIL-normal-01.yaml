@@ -1,0 +1,81 @@
+# OPENFIL (JOB card //OEPNFIL) has one step, OPCIFIL, which runs SDSF with five operator commands,
+# /F CICSAWSA,'CEMT SET FIL(<file>) OPE', for TRANSACT, CCXREF, ACCTDAT, CXACAIX and USRSEC
+# [app/jcl/OPENFIL.jcl:1,22-30]: it makes those region files available to CICS again after the batch run
+# [README.md:167,183]. The README's job table and the tech spec say it runs IEFBR14 [README.md:252]
+# (GAP-DOC-009). The job acts only on a CICS region, so only unikix can run it: the gnucobol-batch job
+# driver has no step table for it, and INV-CFG-033 is a JCL-semantics item.
+#
+# On UniKix the copy's SDSF.cbl only displays 'DUMMY PROGRAM FOR SDSF' and returns
+# [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/cbl/SDSF.cbl:13], so the CEMT commands are
+# never performed (GAP-DOC-031). A completed OPCIFIL step is therefore no evidence about the region files.
+# The outcome is the region file inquiry after the job, @REGION-FILES (adapters.base.format_region_files):
+# one line per fct.lst file, '<name> open|closed enabled|disabled', sorted by name. The adapter also keeps
+# the inquiry made just before the job in the evidence (adapter/region-files-before.txt), so the record
+# shows the state before and after the job. No confirmed UniKix command inquires or controls region files
+# (GAP-MIS-011) and BPE submission is unconfirmed (GAP-MIS-006): the observation rule blocks the scenario
+# until an operator confirms them, and the file state is never inferred from the job's return code.
+#
+# The state before the job is the one the adapter's reset leaves before every scenario: all 14 fct.lst
+# files open and enabled. The expectation is derived from app/: OPENFIL opens five files that are already
+# open, and touches no other, so every file is still open and enabled after it. The copy's no-op SDSF.cbl
+# leaves the same state, so the five files show unchanged either way. A UniKix record of this scenario
+# runs the copy's SDSF.cbl, so it is UniKix-copy behavior under GAP-DOC-031 and never verifies the app/
+# items, even when it agrees.
+id: CFG-OPENFIL-normal-01
+level: integration
+type: normal
+description: >-
+  OPENFIL runs its SDSF step OPCIFIL, whose CEMT SET FIL commands open the region files TRANSACT, CCXREF,
+  ACCTDAT, CXACAIX and USRSEC [app/jcl/OPENFIL.jcl:22-30], against the test-owned region as the reset leaves
+  it, with all 14 fct.lst files open and enabled. The step ends with return code 0, and the region file
+  inquiry after the job lists all 14 files open and enabled: app/ opens five files that are already open,
+  and the UniKix copy's SDSF.cbl only displays 'DUMMY PROGRAM FOR SDSF' (GAP-DOC-031), so the files are
+  left unchanged on both. The expectation is derived, never observed.
+inventory_ids:
+- INV-CFG-031  # OPENFIL job
+- INV-CFG-033  # CICS file close and open through the SDSF CEMT steps (JCL semantics)
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-010  # CFG baselines derived, never observed
+- GAP-MIS-011  # no confirmed region file inquiry or control, so @REGION-FILES is unavailable on unikix
+- GAP-MIS-006  # BPE job submission unconfirmed
+- GAP-DOC-031  # the copy's SDSF.cbl is a no-op, so the CEMT commands never run on UniKix
+- GAP-DOC-009  # README and tech spec say OPENFIL runs IEFBR14; it runs SDSF CEMT commands
+# The outcome holds no date, and unikix cannot fix its clock (GAP-MIS-015), so the clock is relative.
+preconditions:
+  datasets: {}
+  parameters:
+    clock_mode: relative
+  # No fault closes the five files first. On a batch scenario the unikix adapter reads an open/unavailable
+  # fault as a logical dataset left out of the catalog, not as a region file action: ACCTDAT, CCXREF and
+  # CXACAIX are no logical datasets, and TRANSACT and USRSEC would lose their clusters. The before state is
+  # therefore the reset state, every fct.lst file open and enabled.
+  faults: []
+inputs:
+  job: OPENFIL
+expected:
+  return_code: 0
+  # Inline messages are an ordered subsequence of the job's lines, so only the step line is asserted. The
+  # z/OS SDSF writes its command output to ISFOUT and CMDOUT, not to the messages; whether the copy's
+  # 'DUMMY PROGRAM FOR SDSF' DISPLAY reaches a sysout file BPE gives the step, which has no //SYSOUT DD, is
+  # an installation detail, and it is no outcome of the job.
+  messages:
+  - STEP OPCIFIL RC 0000
+  file_state:
+    '@REGION-FILES':
+      records:
+      - 'ACCTDAT open enabled'
+      - 'CARDAIX open enabled'
+      - 'CARDDAT open enabled'
+      - 'CCXREF open enabled'
+      - 'CUSTDAT open enabled'
+      - 'CXACAIX open enabled'
+      - 'DISCGRP open enabled'
+      - 'TCATBALF open enabled'
+      - 'TRANCATG open enabled'
+      - 'TRANSACT open enabled'
+      - 'TRANSAIX open enabled'
+      - 'TRANTYPE open enabled'
+      - 'TRXFL open enabled'
+      - 'USRSEC open enabled'

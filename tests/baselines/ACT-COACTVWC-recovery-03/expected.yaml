@@ -1,0 +1,66 @@
+# Derived from the source, never observed (GAP-INF-005, GAP-INF-012): one
+# screens entry per scenario step and the ERRMSG of each, as tpe.py records
+# them. Steps 1 and 2 are the main menu and COACTVWC's first send of COACTVW
+# with the account-id prompt [app/cbl/COACTVWC.cbl:282-286,353-360,460-536].
+#
+# Step 3 reads CXACAIX for account 00000000001 (card 9680294154603697,
+# customer 000000001), then READ ACCTDAT answers neither NORMAL nor NOTFND.
+# The WHEN OTHER branch builds the 80-byte WS-FILE-ERROR-MESSAGE and moves it
+# into the 75-byte WS-RETURN-MSG, dropping the 5-byte blank filler; ERRMSGO
+# X(78) adds 3 blanks [app/cbl/COACTVWC.cbl:86-104,774-823]. ERROR-RESP and
+# ERROR-RESP2 are X(10) receiving S9(9) COMP codes: 9 digits and one blank.
+# RESP 84 with RESP2 50 is DISABLED, the answer to the unikix adapter's first
+# choice for an online `unavailable` fault, region_file_disable; a closed file
+# would answer NOTOPEN, RESP 19 with RESP2 60, and the import would replace
+# the tail of both ERRMSG values (MAJOR bump). The message is no
+# DID-NOT-FIND-ACCT-IN-ACCTDAT, so 9400 still reads CUSTDAT and the customer
+# fields come from custdata.txt record 1 cut to the map field lengths
+# (GAP-DEF-020) [app/cbl/COACTVWC.cbl:704-716,825-872]. The account fields
+# come from the unread ACCOUNT-RECORD and are not asserted. CURDATE and
+# CURTIME follow the region clock, so they are matchers.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'File Error: READ     on ACCTDAT   returned RESP 000000084 ,RESP2 000000050    '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTVW
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TRNNAME: CAVW
+- '@map': COACTVW
+  ACCTSID: '00000000001'
+  ACSADL1: '618 Deshaun Route                                 '
+  ACSADL2: 'Apt. 802                                          '
+  ACSCITY: 'Altenwerthshire                                   '
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
+  ACSFNAM: 'Immanuel                 '
+  ACSGOVT: 00000000000049368437
+  ACSLNAM: 'Kessler                  '
+  ACSMNAM: 'Madeline                 '
+  ACSPFLG: Y
+  ACSPHN1: (908)119-8310
+  ACSPHN2: (373)693-8684
+  ACSSTTE: NC
+  ACSTDOB: '1961-06-08'
+  ACSTFCO: '274'
+  ACSTNUM: '000000001'
+  ACSTSSN: '020-97-3888 '
+  ACSZIPC: '12546'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'File Error: READ     on ACCTDAT   returned RESP 000000084 ,RESP2 000000050    '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAVW

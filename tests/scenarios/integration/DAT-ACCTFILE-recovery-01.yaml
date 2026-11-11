@@ -1,0 +1,123 @@
+# ACCTFILE rebuilds the account master KSDS in three IDCAMS steps
+# [app/jcl/ACCTFILE.jcl:19-62]. STEP05 DELETEs the cluster and then runs
+# IF MAXCC LE 08 THEN SET MAXCC = 0 [app/jcl/ACCTFILE.jcl:22-27]; STEP10 DEFINEs
+# it with KEYS(11 0) RECORDSIZE(300 300) INDEXED [app/jcl/ACCTFILE.jcl:33-50];
+# STEP15 REPROs the sequential account file into it [app/jcl/ACCTFILE.jcl:54-62].
+# Neither STEP10 nor STEP15 has a COND, so they run whatever STEP05 returns.
+#
+# Here the cluster does not exist before the job: the open/unavailable fault on
+# ACCTDATA is the schema's form of an absent dataset, which the unikix adapter
+# provides by deleting the cluster from the test-owned catalog before the run.
+# The DELETE then finds no entry and ends with condition code 8, the MAXCC reset
+# turns that into STEP05 RC 0, the DEFINE creates the cluster and the REPRO loads
+# the 50 repository accounts, so every step and the job end with RC 0. The
+# cluster's catalog entry and the 50 loaded keys show that the job went on to
+# define and load after the failed DELETE.
+#
+# Only a real job scheduler evaluates MAXCC: the gnucobol-batch job driver
+# emulates the IDCAMS statements without being evidence for them. The scenario
+# therefore lists only the JCL-semantics item INV-DAT-040, which
+# harness.scenarios.capable_adapters treats as unikix-only although ACCTFILE is
+# in the gnucobol-batch step tables; the ACCTFILE job item itself is verified by
+# DAT-ACCTFILE-normal-01.
+#
+# The expectation is derived from the JCL above and from the IDCAMS rule that a
+# DELETE of an entry that is not catalogued ends with condition code 8; it has
+# never been observed. Its baseline is replaced only by imported UniKix evidence,
+# never adjusted to a guess (GAP-INF-011). The UniKix catalog listing covers
+# every entry of the test-owned catalog, so @CATALOG asserts the defined cluster
+# with contains rather than the whole listing. Nothing depends on the run date,
+# so the clock is relative.
+id: DAT-ACCTFILE-recovery-01
+level: integration
+type: recovery
+description: >-
+  With the account master cluster absent before the job, ACCTFILE's STEP05
+  IDCAMS DELETE finds no entry and ends with condition code 8, which
+  IF MAXCC LE 08 THEN SET MAXCC = 0 resets, so STEP05 ends with RC 0
+  [app/jcl/ACCTFILE.jcl:22-27]. STEP10 defines the cluster
+  [app/jcl/ACCTFILE.jcl:33-50] and STEP15 loads the 50 repository accounts into
+  it [app/jcl/ACCTFILE.jcl:54-62], both with RC 0, and the job ends with RC 0.
+  Afterwards the catalog holds the cluster and ACCTDATA holds exactly the 50
+  accounts in ACCT-ID order.
+inventory_ids:
+- INV-DAT-040  # ACCTFILE JCL MAXCC reset after DELETE
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-011  # JCL-semantics baselines derived, never observed
+- GAP-MIS-007  # UniKix dataset load, unload and catalog listing unconfirmed
+- GAP-MIS-006  # UniKix BPE job submission and step return codes unconfirmed
+preconditions:
+  datasets:
+    ACCTDATA-PS: {base: ACCTDATA-PS}
+  parameters:
+    clock_mode: relative
+  # The account master cluster is absent when the job starts.
+  faults:
+  - {target: ACCTDATA, operation: open, condition: unavailable}
+inputs:
+  job: ACCTFILE
+expected:
+  return_code: 0
+  messages:
+  - STEP STEP05 RC 0000
+  - STEP STEP10 RC 0000
+  - STEP STEP15 RC 0000
+  file_state:
+    ACCTDATA:
+      records:
+      - {ACCT-ID: '1'}
+      - {ACCT-ID: '2'}
+      - {ACCT-ID: '3'}
+      - {ACCT-ID: '4'}
+      - {ACCT-ID: '5'}
+      - {ACCT-ID: '6'}
+      - {ACCT-ID: '7'}
+      - {ACCT-ID: '8'}
+      - {ACCT-ID: '9'}
+      - {ACCT-ID: '10'}
+      - {ACCT-ID: '11'}
+      - {ACCT-ID: '12'}
+      - {ACCT-ID: '13'}
+      - {ACCT-ID: '14'}
+      - {ACCT-ID: '15'}
+      - {ACCT-ID: '16'}
+      - {ACCT-ID: '17'}
+      - {ACCT-ID: '18'}
+      - {ACCT-ID: '19'}
+      - {ACCT-ID: '20'}
+      - {ACCT-ID: '21'}
+      - {ACCT-ID: '22'}
+      - {ACCT-ID: '23'}
+      - {ACCT-ID: '24'}
+      - {ACCT-ID: '25'}
+      - {ACCT-ID: '26'}
+      - {ACCT-ID: '27'}
+      - {ACCT-ID: '28'}
+      - {ACCT-ID: '29'}
+      - {ACCT-ID: '30'}
+      - {ACCT-ID: '31'}
+      - {ACCT-ID: '32'}
+      - {ACCT-ID: '33'}
+      - {ACCT-ID: '34'}
+      - {ACCT-ID: '35'}
+      - {ACCT-ID: '36'}
+      - {ACCT-ID: '37'}
+      - {ACCT-ID: '38'}
+      - {ACCT-ID: '39'}
+      - {ACCT-ID: '40'}
+      - {ACCT-ID: '41'}
+      - {ACCT-ID: '42'}
+      - {ACCT-ID: '43'}
+      - {ACCT-ID: '44'}
+      - {ACCT-ID: '45'}
+      - {ACCT-ID: '46'}
+      - {ACCT-ID: '47'}
+      - {ACCT-ID: '48'}
+      - {ACCT-ID: '49'}
+      - {ACCT-ID: '50'}
+    # The cluster STEP10 defined after the failed DELETE.
+    '@CATALOG':
+      contains:
+      - AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS CLUSTER -

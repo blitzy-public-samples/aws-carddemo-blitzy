@@ -1,0 +1,66 @@
+# Derived baseline of CRD-COCRDLIC-recovery-01, authored from the source and
+# never observed (inferred-not-observed: GAP-INF-006, GAP-INF-012). No adapter
+# can return IOERR from a region file operation (GAP-MIS-014), so the scenario
+# stays implemented-unexecuted on unikix; report.py --import-unikix replaces
+# this file once an eligible UniKix run exists.
+#
+# One screen per step: the main menu COMEN01 after sign-on, then the card list
+# COCRDLI after option 3. 9000-READ-FORWARD fills rows 1-7 with the first seven
+# CARDDATA cards in key order; the look-ahead READNEXT after the seventh row
+# fails, and its WHEN OTHER branch composes WS-FILE-ERROR-MESSAGE into the
+# 75-byte WS-ERROR-MSG, which ERRMSG pads to 78 [app/cbl/COCRDLIC.cbl:117,
+# 153-171,1140-1230]. RESP 000000017 and RESP2 000000120 are the inferred CICS
+# IOERR answer to a file control command; each PIC X(10) target holds the 9
+# digits of the S9(9) COMP response code and one blank. INFOMSG carries the
+# record-actions prompt 1400-SETUP-MESSAGE sets [app/cbl/COCRDLIC.cbl:895-930].
+# messages holds each step's ERRMSG. CURDATE and CURTIME come from the region
+# clock and are matchers.
+messages:
+- '                                                                              '
+- 'File Error: READ     on CARDDAT   returned RESP 000000017 ,RESP2 000000120    '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDLI
+  ACCTNO1: '00000000050'
+  ACCTNO2: '00000000027'
+  ACCTNO3: '00000000002'
+  ACCTNO4: '00000000020'
+  ACCTNO5: '00000000012'
+  ACCTNO6: '00000000044'
+  ACCTNO7: '00000000037'
+  CRDNUM1: '0500024453765740'
+  CRDNUM2: 0683586198171516
+  CRDNUM3: 0923877193247330
+  CRDNUM4: 0927987108636232
+  CRDNUM5: 0982496213629795
+  CRDNUM6: '1014086565224350'
+  CRDNUM7: '1142167692878931'
+  CRDSEL1: ' '
+  CRDSEL2: ' '
+  CRDSEL3: ' '
+  CRDSEL4: ' '
+  CRDSEL5: ' '
+  CRDSEL6: ' '
+  CRDSEL7: ' '
+  CRDSTS1: Y
+  CRDSTS2: Y
+  CRDSTS3: Y
+  CRDSTS4: Y
+  CRDSTS5: Y
+  CRDSTS6: Y
+  CRDSTS7: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'File Error: READ     on CARDDAT   returned RESP 000000017 ,RESP2 000000120    '
+  INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+  PAGENO: '1  '
+  PGMNAME: COCRDLIC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCLI

@@ -1,0 +1,89 @@
+# Derived baseline of CRD-COCRDLIC-recovery-03, authored from the source, never
+# observed (GAP-INF-006, GAP-INF-012); it runs only on unikix with a confirmed
+# region file control to take CARDDAT out of service (GAP-MIS-011).
+# PF7 is pressed on page 2. The READPREV at line 1294 has no browse to read and
+# answers INVREQ (RESP 16, RESP2 41, as CICS documents it), so its WHEN OTHER
+# composes 'File Error: READ on CARDDAT returned RESP 000000016 ,RESP2 000000041'
+# [app/cbl/COCRDLIC.cbl:1294-1317]. That message is not asserted: the RESP-less
+# ENDBR at 9100-READ-BACKWARDS-EXIT matches no browse and, with no HANDLE in
+# COCRDLIC, abends the task (AEIP) before 1000-SEND-MAP, so the last step is the
+# region's unformatted abend notice [app/cbl/COCRDLIC.cbl:509-512,1374-1377]
+# (GAP-DEF-022). A sent map would hold page 1 and 'NO PREVIOUS PAGES TO DISPLAY'
+# [app/cbl/COCRDLIC.cbl:901-904]. A differing UniKix outcome replaces this file
+# only through report.py --import-unikix (MAJOR bump), never by changing app/.
+messages:
+- '                                                                              '
+- '                                                                              '
+- '                                                                              '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN003: '03. Credit Card List                    '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDLI
+  ACCTNO1: '00000000050'
+  ACCTNO2: '00000000027'
+  ACCTNO3: '00000000002'
+  ACCTNO4: '00000000020'
+  ACCTNO5: '00000000012'
+  ACCTNO6: '00000000044'
+  ACCTNO7: '00000000037'
+  ACCTSID: '           '
+  CARDSID: '                '
+  CRDNUM1: '0500024453765740'
+  CRDNUM2: 0683586198171516
+  CRDNUM3: 0923877193247330
+  CRDNUM4: 0927987108636232
+  CRDNUM5: 0982496213629795
+  CRDNUM6: '1014086565224350'
+  CRDNUM7: '1142167692878931'
+  CRDSTS1: Y
+  CRDSTS2: Y
+  CRDSTS3: Y
+  CRDSTS4: Y
+  CRDSTS5: Y
+  CRDSTS6: Y
+  CRDSTS7: Y
+  ERRMSG: '                                                                              '
+  INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+  PAGENO: '1  '
+  PGMNAME: COCRDLIC
+  TRNNAME: CCLI
+- '@map': COCRDLI
+  ACCTNO1: '00000000035'
+  ACCTNO2: 00000000039
+  ACCTNO3: '00000000024'
+  ACCTNO4: '00000000006'
+  ACCTNO5: '00000000022'
+  ACCTNO6: '00000000004'
+  ACCTNO7: '00000000010'
+  ACCTSID: '           '
+  CARDSID: '                '
+  CRDNUM1: '1561409106491600'
+  CRDNUM2: '2745303720002090'
+  CRDNUM3: '2760836797107565'
+  CRDNUM4: '2871968252812490'
+  CRDNUM5: '2940139362300449'
+  CRDNUM6: '2988091353094312'
+  CRDNUM7: '3260763612337560'
+  CRDSTS1: Y
+  CRDSTS2: Y
+  CRDSTS3: Y
+  CRDSTS4: Y
+  CRDSTS5: Y
+  CRDSTS6: Y
+  CRDSTS7: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+  PAGENO: '2  '
+  PGMNAME: COCRDLIC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCLI
+- '@map': TEXT
