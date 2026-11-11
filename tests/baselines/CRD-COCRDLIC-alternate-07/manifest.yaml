@@ -1,0 +1,10 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: 17e9ee7d7d7b8fcc1496a6da42d7d8acf2e15d09
+source_identity:
+  commit: 17e9ee7d7d7b8fcc1496a6da42d7d8acf2e15d09
+  tree: app
+  units:
+    app/cbl/COCRDLIC.cbl: d6a9210ad3062bd657881fc3f0d2a7368db3ff4869594e0d6a878d8f410d87b6
+    app/cbl/COCRDSLC.cbl: d5af307fb4b1a155f03df9eea14b402d866a332360e14a1e37dbefe59b73363b
