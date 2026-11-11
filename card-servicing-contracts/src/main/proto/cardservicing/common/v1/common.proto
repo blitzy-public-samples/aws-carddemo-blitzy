@@ -41,8 +41,8 @@ message ErrorObject {
 
 // One invalid request field and why its value was rejected.
 message FieldViolation {
-  // The parameter name in its camelCase REST/JSON form: accountId,
-  // transactionId, typeCode, categoryCode, pageSize or pageToken.
+  // The parameter name in its camelCase REST/JSON form, for example accountId,
+  // transactionId, typeCode, categoryCode, pageSize, pageToken, keys or token.
   string field = 1;
   // Why the value was rejected, for example
   // "Account number must be a non zero 11 digit number", the CardDemo

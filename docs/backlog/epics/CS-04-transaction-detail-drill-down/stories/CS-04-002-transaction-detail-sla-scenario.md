@@ -102,7 +102,7 @@ Completed during implementation.
 - Unit — Not applicable — the story is a scenario definition only, which `performanceTest` runs and `test` never does. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; all tests pass, with ≥80% line coverage per module.
 - Integration — Not applicable — injected stub exceptions, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap are covered by the integration suites CS-09-006, CS-10-007, CS-12-005 and CS-11-007. Command `./gradlew :card-servicing-service:integrationTest`; one suite per external epic covering those three cases.
 - Performance — Applies — this story is the transaction detail scenario. Commands `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`; p50/p95/p99 below 1,000 ms over successful requests, with failure injection off, at 10 users × 100 sequential calls, 100,000 category balances and 1,000,000 transactions; injected failures are proven elsewhere by a logged `cutoffMs` ≤ 900 and a client-measured response below 1,000 ms.
-- End-to-end — Not applicable — the detail step is CS-04-001. Command `./gradlew :card-servicing-service:e2eTest`, which runs the four-step flow for account `00000000001`.
+- End-to-end — Not applicable — the detail step is CS-04-001. Commands `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:e2eTest`, then `docker compose -f tests/docker-compose.yml down`; the four-step flow for account `00000000001` returns the expected fixture values and each stub's request log shows at least one call.
 
 ## 7. Validation Results
 

@@ -17,8 +17,10 @@ info:
     name: Apache 2.0
     identifier: Apache-2.0
 servers:
-  - url: http://localhost:8080
-    description: Local stub-phase address
+  - url: /
+    description: >-
+      Descriptive only. No HTTP address serves these HTTP/JSON operations; the stub is reached
+      over gRPC through the client generated from its proto. / is the OpenAPI default server.
 tags:
   - name: Config
     description: Runtime configuration values that the Card Servicing service reads into its configuration snapshot.
@@ -147,14 +149,16 @@ paths:
                     traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
                     details: []
         '504':
-          description: The request deadline was reached before the Config service answered.
+          description: >-
+            The call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time
+            left in the request budget when that is shorter) passed before the Config service answered.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorObject'
               examples:
                 deadlineExceeded:
-                  summary: The request deadline ran out
+                  summary: The call's deadline passed
                   value:
                     code: DEADLINE_EXCEEDED
                     message: Request deadline exceeded

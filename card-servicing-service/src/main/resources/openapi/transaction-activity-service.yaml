@@ -22,8 +22,10 @@ info:
     name: Apache 2.0
     identifier: Apache-2.0
 servers:
-  - url: http://localhost:8080
-    description: Local stub-phase address
+  - url: /
+    description: >-
+      Descriptive only. No HTTP address serves these HTTP/JSON operations; the stub is reached
+      over gRPC through the client generated from its proto. / is the OpenAPI default server.
 tags:
   - name: TransactionActivity
     description: Posted card transactions, listed per account with keyset paging or looked up by transaction ID.
@@ -334,15 +336,16 @@ paths:
                     details: []
         '504':
           description: >-
-            DEADLINE_EXCEEDED. The request deadline was reached before the
-            service answered.
+            DEADLINE_EXCEEDED. The call's deadline (the caller's per-attempt
+            timeout, 300 ms by default, cut to the time left in the request
+            budget when that is shorter) passed before the service answered.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorObject'
               examples:
                 deadlineExceeded:
-                  summary: Request deadline reached
+                  summary: Call deadline passed
                   value:
                     code: 'DEADLINE_EXCEEDED'
                     message: 'Request deadline exceeded'
@@ -469,15 +472,16 @@ paths:
                     details: []
         '504':
           description: >-
-            DEADLINE_EXCEEDED. The request deadline was reached before the
-            service answered.
+            DEADLINE_EXCEEDED. The call's deadline (the caller's per-attempt
+            timeout, 300 ms by default, cut to the time left in the request
+            budget when that is shorter) passed before the service answered.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorObject'
               examples:
                 deadlineExceeded:
-                  summary: Request deadline reached
+                  summary: Call deadline passed
                   value:
                     code: 'DEADLINE_EXCEEDED'
                     message: 'Request deadline exceeded'

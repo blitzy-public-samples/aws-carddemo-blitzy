@@ -46,7 +46,7 @@ service TransactionActivityService {
   //   UNAUTHENTICATED - forwarded bearer token missing, invalid or expired (the stub does not re-authorize)
   //   NOT_FOUND - the account has no cross-reference record
   //   UNAVAILABLE - service unavailable after retries
-  //   DEADLINE_EXCEEDED - request deadline reached
+  //   DEADLINE_EXCEEDED - the call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time left in the request budget when that is shorter) passed before the service answered
   //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
   rpc ListTransactions(ListTransactionsRequest) returns (ListTransactionsResponse);
 
@@ -63,7 +63,7 @@ service TransactionActivityService {
   //   UNAUTHENTICATED - forwarded bearer token missing, invalid or expired (the stub does not re-authorize)
   //   NOT_FOUND - transaction unknown
   //   UNAVAILABLE - service unavailable after retries
-  //   DEADLINE_EXCEEDED - request deadline reached
+  //   DEADLINE_EXCEEDED - the call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time left in the request budget when that is shorter) passed before the service answered
   //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
   rpc GetTransaction(GetTransactionRequest) returns (GetTransactionResponse);
 }

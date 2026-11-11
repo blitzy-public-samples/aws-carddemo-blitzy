@@ -17,8 +17,10 @@ info:
     name: Apache 2.0
     identifier: Apache-2.0
 servers:
-  - url: http://localhost:8080
-    description: Local stub-phase address
+  - url: /
+    description: >-
+      Descriptive only. No HTTP address serves these HTTP/JSON operations; the stub is reached
+      over gRPC through the client generated from its proto. / is the OpenAPI default server.
 tags:
   - name: CardData
     description: Account records, card cross-references and category balances served by the Card Data stub.
@@ -127,7 +129,10 @@ paths:
                     traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
                     details: []
         '504':
-          description: DEADLINE_EXCEEDED - the request deadline was reached.
+          description: >-
+            DEADLINE_EXCEEDED - the call's deadline (the caller's per-attempt timeout, 300 ms by
+            default, cut to the time left in the request budget when that is shorter) passed before
+            the service answered.
           content:
             application/json:
               schema:
@@ -232,7 +237,10 @@ paths:
                     traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
                     details: []
         '504':
-          description: DEADLINE_EXCEEDED - the request deadline was reached.
+          description: >-
+            DEADLINE_EXCEEDED - the call's deadline (the caller's per-attempt timeout, 300 ms by
+            default, cut to the time left in the request budget when that is shorter) passed before
+            the service answered.
           content:
             application/json:
               schema:
@@ -339,7 +347,10 @@ paths:
                     traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
                     details: []
         '504':
-          description: DEADLINE_EXCEEDED - the request deadline was reached.
+          description: >-
+            DEADLINE_EXCEEDED - the call's deadline (the caller's per-attempt timeout, 300 ms by
+            default, cut to the time left in the request budget when that is shorter) passed before
+            the service answered.
           content:
             application/json:
               schema:

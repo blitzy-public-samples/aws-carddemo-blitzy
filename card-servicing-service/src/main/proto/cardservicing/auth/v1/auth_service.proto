@@ -31,7 +31,7 @@ service AuthService {
   //   INVALID_ARGUMENT - token missing, or longer than 8,192 characters
   //   UNAUTHENTICATED - token invalid, expired or malformed
   //   UNAVAILABLE - service unavailable after retries
-  //   DEADLINE_EXCEEDED - request deadline reached
+  //   DEADLINE_EXCEEDED - the call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time left in the request budget when that is shorter) passed before the service answered
   //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
   rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
 
@@ -47,7 +47,7 @@ service AuthService {
   //   INVALID_ARGUMENT - subject outside 1-64 characters or account_id malformed
   //   UNAUTHENTICATED - forwarded bearer token missing, invalid or expired (the stub does not re-authorize)
   //   UNAVAILABLE - service unavailable after retries
-  //   DEADLINE_EXCEEDED - request deadline reached
+  //   DEADLINE_EXCEEDED - the call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time left in the request budget when that is shorter) passed before the service answered
   //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
   rpc AuthorizeAccountAccess(AuthorizeAccountAccessRequest) returns (AuthorizeAccountAccessResponse);
 }

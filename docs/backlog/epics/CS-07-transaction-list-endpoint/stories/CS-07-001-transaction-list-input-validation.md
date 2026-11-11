@@ -96,7 +96,7 @@ Completed during implementation.
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
   - Pass: p50/p95/p99 below 1,000 ms over successful requests, with failure injection off, at 10 users × 100 sequential calls, 100,000 category balances and 1,000,000 transactions.
   - Injected failures are proven by a logged `cutoffMs` ≤ 900 and a client-measured response below 1,000 ms.
-- End-to-end: Not applicable — the transaction list end-to-end steps CS-03-001 and CS-03-002 exercise this rule set with valid input and replayed page tokens. Threshold when it applies: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:e2eTest`, then `docker compose -f tests/docker-compose.yml down`; the four-step flow for account `00000000001` returns the expected fixture values, and each stub's request log shows at least one call.
+- End-to-end: Applies, through the transaction list end-to-end steps CS-03-001 and CS-03-002, whose calls go over REST for account `00000000001` with `fixture-token-user0001`. CS-03-001 AC4 sends `pageSize` `0` and `101`, the AC3 boundary values. CS-03-002 AC5 sends the page-1 token with a filter its fingerprint was not issued for, and CS-03-002 AC6 sends the malformed `not-a-token`, each an AC6 `pageToken` rejection. Each of these four calls asserts 400 with one `details` entry naming the field and empty request logs on all five stubs, the empty-log part of AC8. Their allowed calls show the REST pass side: no `pageSize`, which takes the AC2 default page size of 20 (CS-03-001 AC1 and AC2); `pageSize` `10`, one of the AC1 values (CS-03-002 AC7); and an omitted `pageToken` and the page-1 and page-2 tokens replayed as received at `pageSize` `2` with no filter (CS-03-002 AC1–AC4), the AC5 pass forms. The cases not exercised there stay with the unit suite: `pageSize` `1`, `100`, `-1`, `abc`, `1.5` and the empty value, the configured captures of AC2 and AC4, the filtered AC5 token at `pageSize` `2` and `5` and the AC5 `pageToken=` form, the other AC6 tokens, every AC7 field, the AC8 stale-snapshot cache-read and refresh counts, the AC9 trace and schema checks, AC10, and every gRPC case. Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:e2eTest`, then `docker compose -f tests/docker-compose.yml down`; the four-step flow for account `00000000001` returns the expected fixture values, and each stub's request log shows at least one call.
 
 ## 7. Validation Results
 
@@ -240,4 +240,3 @@ Open assumptions:
 | Environment | TBD |
 | Persona | TBD |
 | Estimated Effort | TBD |
-

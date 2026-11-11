@@ -51,7 +51,7 @@ service CardServicingService {
   //   PARTIAL variant: "dataStatus":"PARTIAL" with typeDescription unset (absent from JSON).
   //
   // Errors:
-  //   INVALID_ARGUMENT - account_id malformed or all zeros, or another parameter malformed; the details entry names accountId
+  //   INVALID_ARGUMENT - account_id malformed or all zeros; the details entry names accountId
   //   UNAUTHENTICATED - bearer token missing, invalid or expired
   //   PERMISSION_DENIED - account outside the caller's entitlements; authorization runs before any account-data read, cache reads included
   //   NOT_FOUND - account unknown

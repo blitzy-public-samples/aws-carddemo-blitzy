@@ -17,8 +17,10 @@ info:
     name: Apache 2.0
     identifier: Apache-2.0
 servers:
-  - url: http://localhost:8080
-    description: Local stub-phase address
+  - url: /
+    description: >-
+      Descriptive only. No HTTP address serves these HTTP/JSON operations; the stub is reached
+      over gRPC through the client generated from its proto. / is the OpenAPI default server.
 tags:
   - name: ReferenceData
     description: Transaction type and transaction category codes and descriptions that label balances and transactions.
@@ -30,6 +32,7 @@ paths:
     get:
       operationId: ListTransactionTypes
       tags: [ReferenceData]
+      summary: List every transaction type
       description: >-
         HTTP/JSON form of cardservicing.referencedata.v1.ReferenceDataService/ListTransactionTypes.
         Returns every transaction type (Data Layouts · CVTRA03Y), ordered by typeCode ascending.
@@ -86,7 +89,9 @@ paths:
                     traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
                     details: []
         '504':
-          description: The request deadline was reached before the service answered.
+          description: >-
+            The call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time
+            left in the request budget when that is shorter) passed before the service answered.
           content:
             application/json:
               schema:
@@ -102,6 +107,7 @@ paths:
     get:
       operationId: ListTransactionCategories
       tags: [ReferenceData]
+      summary: List every transaction category
       description: >-
         HTTP/JSON form of cardservicing.referencedata.v1.ReferenceDataService/ListTransactionCategories.
         Returns every transaction category (Data Layouts · CVTRA04Y), ordered by (typeCode, categoryCode)
@@ -199,7 +205,9 @@ paths:
                     traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
                     details: []
         '504':
-          description: The request deadline was reached before the service answered.
+          description: >-
+            The call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time
+            left in the request budget when that is shorter) passed before the service answered.
           content:
             application/json:
               schema:
@@ -216,10 +224,12 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
+      description: The caller's bearer token, forwarded unchanged by the Card Servicing service; the stub does not re-authorize.
     apiKey:
       type: apiKey
       in: header
       name: x-api-key
+      description: The Card Servicing service credential; the stub ignores its value.
   schemas:
     ListTransactionTypesResponse:
       type: object

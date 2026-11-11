@@ -20,8 +20,10 @@ info:
     name: Apache 2.0
     identifier: Apache-2.0
 servers:
-  - url: http://localhost:8080
-    description: Local stub-phase address
+  - url: /
+    description: >-
+      Descriptive only. No HTTP address serves these HTTP/JSON operations; the stub is reached
+      over gRPC through the client generated from its proto. / is the OpenAPI default server.
 tags:
   - name: Auth
     description: Bearer-token validation and per-account access decisions that the Card Servicing service makes before any account-data read.
@@ -33,6 +35,7 @@ paths:
     post:
       operationId: ValidateToken
       tags: [Auth]
+      summary: Validate a bearer token
       description: >-
         HTTP/JSON form of the gRPC method cardservicing.auth.v1.AuthService/ValidateToken.
         Returns the subject and roles carried by a valid bearer token.
@@ -113,7 +116,10 @@ paths:
                     traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
                     details: []
         '504':
-          description: The request deadline was reached before the Auth service answered (DEADLINE_EXCEEDED); the Card Servicing service fails closed.
+          description: >-
+            The call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time
+            left in the request budget when that is shorter) passed before the Auth service answered
+            (DEADLINE_EXCEEDED); the Card Servicing service fails closed.
           content:
             application/json:
               schema:
@@ -129,6 +135,7 @@ paths:
     get:
       operationId: AuthorizeAccountAccess
       tags: [Auth]
+      summary: Decide whether a subject may read an account
       description: >-
         HTTP/JSON form of the gRPC method cardservicing.auth.v1.AuthService/AuthorizeAccountAccess.
         Decides whether the subject may read the account.
@@ -217,7 +224,10 @@ paths:
                     traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
                     details: []
         '504':
-          description: The request deadline was reached before the Auth service answered (DEADLINE_EXCEEDED); the Card Servicing service fails closed.
+          description: >-
+            The call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time
+            left in the request budget when that is shorter) passed before the Auth service answered
+            (DEADLINE_EXCEEDED); the Card Servicing service fails closed.
           content:
             application/json:
               schema:
@@ -234,10 +244,12 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
+      description: The caller's bearer token, forwarded unchanged by the Card Servicing service; the stub does not re-authorize.
     apiKey:
       type: apiKey
       in: header
       name: x-api-key
+      description: The Card Servicing service credential; the stub ignores its value.
   schemas:
     ValidateTokenRequest:
       type: object
