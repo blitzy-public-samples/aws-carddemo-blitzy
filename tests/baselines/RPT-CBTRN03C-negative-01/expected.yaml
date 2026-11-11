@@ -1,0 +1,11 @@
+datasets:
+  TRANREPT: []
+messages:
+- START OF EXECUTION OF PROGRAM CBTRN03C
+- Reporting from 2022-07-01 to 2022-07-31
+- '9900000000000571010001POS TERM  Synthetic unknown card                                                                              0000000100{999000571Synthetic Merchant 571                            Synthetic City                                    99999     99990000333399992022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+- 'INVALID CARD NUMBER : 9999000033339999'
+- 'FILE STATUS IS: NNNN0023'
+- ABENDING PROGRAM
+- CARDDEMO-ABEND CEE3ABD
+return_code: null

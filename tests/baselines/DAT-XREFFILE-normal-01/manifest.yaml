@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: 1a45f6b983e474e25c91d9da73aa6c8a4ffc95a3e9879e433727fa3531e9189b
+execution_id: gnucobol-batch-ecaff8bd09846b42
+source_commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+source_identity:
+  commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+  tree: app
+  units:
+    app/jcl/XREFFILE.jcl: ae0edd90056cccacd26412fad2cf3d95656c2a2810b66d8c316cbaac9e81248f

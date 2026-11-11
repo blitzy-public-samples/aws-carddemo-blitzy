@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: ad1ba21f4b51ac8ea8710eedb684f8ac68f9a983f4abf0c5c1ff19b5ef3168d0
+execution_id: gnucobol-batch-b823015246c5e572
+source_commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+source_identity:
+  commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+  tree: app
+  units:
+    app/jcl/DUSRSECJ.jcl: 291daeab88b28cdb1fca7038b560fc40c52e6c2bfae336585c6bd78e6a17cb6a

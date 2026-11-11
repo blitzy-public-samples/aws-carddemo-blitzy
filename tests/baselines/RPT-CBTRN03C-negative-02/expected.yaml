@@ -1,0 +1,11 @@
+datasets:
+  TRANREPT: []
+messages:
+- START OF EXECUTION OF PROGRAM CBTRN03C
+- Reporting from 2022-07-01 to 2022-07-31
+- '9900000000000581080001POS TERM  Synthetic unknown transaction type                                                                  0000000100{999000581Synthetic Merchant 581                            Synthetic City                                    99999     96802941546036972022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+- 'INVALID TRANSACTION TYPE : 08'
+- 'FILE STATUS IS: NNNN0023'
+- ABENDING PROGRAM
+- CARDDEMO-ABEND CEE3ABD
+return_code: null

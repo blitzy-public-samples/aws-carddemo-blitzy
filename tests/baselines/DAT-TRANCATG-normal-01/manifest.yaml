@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: ffc94f86c53deb0621e84c9c0b3ac1a768dde4b1d05787fc9264a9b5135df8e6
+execution_id: gnucobol-batch-c3a93f4f98089acb
+source_commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+source_identity:
+  commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+  tree: app
+  units:
+    app/jcl/TRANCATG.jcl: 3030bce92bf7f086b826b39bd711f6a37eec730a5e8fb0c503da612f3b01cade

@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: d03c5170e25e76a5a37a5222e2bb8fe2c4882666f13e307cdaa67741b979a11d
+execution_id: gnucobol-batch-a46d4ef6cec40652
+source_commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+source_identity:
+  commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+  tree: app
+  units:
+    app/jcl/TRANTYPE.jcl: 7a10aa43bd6737007a19fbfa5592934ef553816ffeef8c208db34d4475518051

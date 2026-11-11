@@ -1,0 +1,20 @@
+datasets:
+  HTMLFILE: []
+  STMTFILE: []
+messages:
+- 'Running JCL : CREASTMT Step STEP040 '
+- 'DD Names from TIOT: '
+- ': STEPLIB  -- valid UCB'
+- ': SYSPRINT -- valid UCB'
+- ': SYSOUT   -- valid UCB'
+- ': TRNXFILE -- valid UCB'
+- ': XREFFILE -- valid UCB'
+- ': ACCTFILE -- valid UCB'
+- ': CUSTFILE -- valid UCB'
+- ': STMTFILE -- valid UCB'
+- ': HTMLFILE -- valid UCB'
+- ERROR OPENING TRNXFILE
+- 'RETURN CODE: 35'
+- ABENDING PROGRAM
+- CARDDEMO-ABEND CEE3ABD
+return_code: null

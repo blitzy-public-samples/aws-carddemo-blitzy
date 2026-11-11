@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: 6be88cb012fc0f57cdd5b6cf6022c07fd9ea3266df5e6a19cece776bc2b7ac02
+execution_id: gnucobol-batch-314696684a6696af
+source_commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+source_identity:
+  commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+  tree: app
+  units:
+    app/jcl/ACCTFILE.jcl: febba716137a3f59302ef1136c60dccce4d07d32e1d118b15d48f99266dea9e7

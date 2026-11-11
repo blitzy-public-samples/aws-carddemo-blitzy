@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: d788f95e9b3e84b802466b30da9812d5ab2fdcfe53adaecf2e0f234f6d31b57f
+execution_id: gnucobol-batch-bd78a8a3d780d4c8
+source_commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+source_identity:
+  commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+  tree: app
+  units:
+    app/jcl/CUSTFILE.jcl: 3f222d940612015b0c3b532253e34e8e60f02a670dd780a10b9db1f90e8deea7
