@@ -33,7 +33,7 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
-import { Roboto } from 'next/font/google';
+import { Inter } from 'next/font/google';
 
 // Subpath is version-matched to Next.js 16 (repo pins next@16.2.11); the installed
 // @mui/material-nextjs@9.1.1 exposes v13–v16 subpaths, all re-exporting the same
@@ -46,37 +46,42 @@ import theme from './theme';
 import { AppShell } from '@/components/AppShell';
 
 /**
- * Self-hosted Roboto typeface, loaded and optimized by `next/font/google`.
+ * Self-hosted Inter typeface (the Blitzy brand font for headings and body),
+ * loaded and optimized by `next/font/google`.
  *
- * FINDING-01 fix: `next/font` downloads Roboto at build time and serves it from
- * the SAME ORIGIN (`/_next/static/media/…`). The font therefore loads with no
- * runtime dependency on the external Google Fonts CDN — it works offline and
- * under any Content-Security-Policy — replacing the previous cross-origin
- * `<link rel="stylesheet" href="https://fonts.googleapis.com/…">` that failed
- * whenever that host was unreachable or blocked.
+ * `next/font` downloads Inter at BUILD time and serves it from the SAME ORIGIN
+ * (`/_next/static/media/…`), so the browser never contacts the Google Fonts
+ * hosts at runtime. That keeps the font compatible with the Content-Security-
+ * Policy in `next.config.js` (`font-src 'self' data:`) and working offline; no
+ * external stylesheet `<link>` is needed or allowed.
  *
- * It exposes the CSS custom property `--font-roboto`, which the MUI theme
- * (`./theme`) references FIRST in `typography.fontFamily`, falling back to the
- * literal `Roboto`, then Helvetica/Arial/sans-serif. Weights 300/400/500/700
- * cover the MUI variant scale (light/regular/medium/bold); `display: 'swap'`
- * avoids a blocking flash of invisible text.
+ * It exposes the CSS custom property `--font-inter`, which the MUI theme
+ * (`./theme`) references FIRST in `typography.fontFamily`. Inter is a variable
+ * font, so omitting `weight` ships the full 100–900 axis and covers every MUI
+ * variant weight (light/regular/medium/bold). `display: 'swap'` avoids a
+ * blocking flash of invisible text, and `fallback` mirrors the theme's system
+ * sans-serif stack. Entries are emitted verbatim into a double-quoted string in
+ * the generated font module, so the multi-word family name carries its own
+ * SINGLE quotes (double quotes would break that generated string).
  */
-const roboto = Roboto({
-    weight: ['300', '400', '500', '700'],
+const inter = Inter({
     subsets: ['latin'],
     display: 'swap',
-    variable: '--font-roboto',
-    fallback: ['Helvetica', 'Arial', 'sans-serif'],
+    variable: '--font-inter',
+    fallback: ['system-ui', '-apple-system', "'Segoe UI'", 'Helvetica', 'Arial', 'sans-serif'],
 });
 
 /**
- * Static page metadata for the App Router. The title text derives from the legacy
- * application-title copybook `app/cpy/COTTL01Y.cpy` ('CardDemo'), the same name
- * used app-wide by the AppShell header (`APP_TITLE`).
+ * Static page metadata for the App Router. The title is the Blitzy brand name,
+ * the same product name shown in the AppShell header (`APP_TITLE`); the
+ * description is the Blitzy brand description. The description literal is split
+ * only to keep source lines short — the joined value is the exact brand string.
  */
 export const metadata: Metadata = {
-    title: 'CardDemo',
-    description: 'AWS CardDemo — modernized credit card management application',
+    title: 'Blitzy',
+    description:
+        'Blitzy: Build enterprise software in days with our autonomous AI platform. ' +
+        'Automate up to 80% of development. Infinite code context. Accelerate your roadmap by 5x.',
 };
 
 /**
@@ -90,22 +95,23 @@ interface RootLayoutProps {
 
 /**
  * The application's root layout. Establishes the HTML document, activates the
- * self-hosted Roboto font that the theme references, and mounts the mandatory
+ * self-hosted Inter font that the theme references, and mounts the mandatory
  * MUI + AppShell provider tree around every page.
  *
- * The `roboto.variable` class name is applied to `<html>` so the CSS custom
- * property `--font-roboto` is defined document-wide; the MUI theme's
+ * The `inter.variable` class name is applied to `<html>` so the CSS custom
+ * property `--font-inter` is defined document-wide; the MUI theme's
  * `typography.fontFamily` (`./theme`) consumes it first, with graceful fallback
- * to Helvetica/Arial. Because `next/font` self-hosts the typeface from the same
- * origin, no external stylesheet `<link>` is required (FINDING-01), and no `<head>`
- * element is declared here — the App Router injects head content from `metadata`.
+ * to the system sans-serif stack. Because `next/font` self-hosts the typeface
+ * from the same origin, no external stylesheet `<link>` is required, and no
+ * `<head>` element is declared here — the App Router injects head content from
+ * `metadata`.
  *
  * @param props - The {@link RootLayoutProps} carrying the active page content.
  * @returns The full HTML document with the global provider tree and app chrome.
  */
 export default function RootLayout({ children }: RootLayoutProps) {
     return (
-        <html lang="en" className={roboto.variable}>
+        <html lang="en" className={inter.variable}>
             <body>
                 <AppRouterCacheProvider>
                     <ThemeProvider theme={theme}>

@@ -112,14 +112,14 @@ const themeOptions: ThemeOptions = {
         // subtitle1/2, body1/2, button, caption, overline) IS the MD3 scale and
         // is intentionally left untouched (AAP §0.3.2).
         //
-        // `var(--font-roboto)` (FINDING-01) resolves to the self-hosted Roboto
-        // family that `src/app/layout.tsx` activates via `next/font/google`
-        // (the class is applied to <html>, defining the custom property document-
-        // wide). Listing it FIRST makes MUI use the same-origin, CSP-safe,
-        // offline-capable font; the literal `Roboto` then covers any locally
-        // installed copy, and Helvetica/Arial/sans-serif remain the final
-        // fallbacks — so the family degrades gracefully if the variable is unset.
-        fontFamily: 'var(--font-roboto), Roboto, Helvetica, Arial, sans-serif',
+        // `var(--font-inter)` resolves to the self-hosted Inter family (the
+        // brand font for headings and body) that `src/app/layout.tsx` activates
+        // via `next/font/google` (the class is applied to <html>, defining the
+        // custom property document-wide). Listing it FIRST makes MUI use the
+        // same-origin, CSP-safe, offline-capable font; the system sans-serif
+        // stack after it is the fallback, so the family degrades gracefully if
+        // the variable is unset.
+        fontFamily: 'var(--font-inter), system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif',
     },
     shape: {
         borderRadius: 4,
