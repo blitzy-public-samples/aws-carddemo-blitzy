@@ -1,0 +1,22 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  file_state:
+    '@CATALOG':
+    - AWS.M2.CARDDEMO.TRANREPT GDG -
+  messages:
+  - STEP STEP05 RC 0000
+  return_code: 0
+evidence_path: tests/reports/results/DAT-REPTFILE-normal-01.yaml
+execution_fingerprint: ccbb5f43e142ffac00b60762764739b0d640df0ab5e5db6a6c440a85f07e19c8
+execution_id: gnucobol-batch-e15946a4978d0d4c
+gap_id: null
+reason: null
+scenario_digest: a910f8f7389a6c48938195e56c14a3808746e76e08d7e1f8aa50b1176e18d73b
+scenario_id: DAT-REPTFILE-normal-01
+source_identity:
+  commit: ce44c9645756395b5a8eac87afa2fa8da93f029b
+  tree: app
+  units:
+    app/jcl/REPTFILE.jcl: 638afb6511732859f8cb273c586208e3602d121d6264ffe53642dc6aa4e2104c
+status: passed

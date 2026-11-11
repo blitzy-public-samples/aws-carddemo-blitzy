@@ -1,0 +1,95 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  datasets:
+    TRANCATG:
+    - TRAN-CAT-CD: '1'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Regular Sales Draft                               '
+      TRAN-TYPE-CD: '01'
+    - TRAN-CAT-CD: '2'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Regular Cash Advance                              '
+      TRAN-TYPE-CD: '01'
+    - TRAN-CAT-CD: '3'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Convenience Check Debit                           '
+      TRAN-TYPE-CD: '01'
+    - TRAN-CAT-CD: '4'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'ATM Cash Advance                                  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-CAT-CD: '5'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Interest Amount                                   '
+      TRAN-TYPE-CD: '01'
+    - TRAN-CAT-CD: '1'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Cash payment                                      '
+      TRAN-TYPE-CD: '02'
+    - TRAN-CAT-CD: '2'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Electronic payment                                '
+      TRAN-TYPE-CD: '02'
+    - TRAN-CAT-CD: '3'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Check payment                                     '
+      TRAN-TYPE-CD: '02'
+    - TRAN-CAT-CD: '1'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Credit to Account                                 '
+      TRAN-TYPE-CD: '03'
+    - TRAN-CAT-CD: '2'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Credit to Purchase balance                        '
+      TRAN-TYPE-CD: '03'
+    - TRAN-CAT-CD: '3'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Credit to Cash balance                            '
+      TRAN-TYPE-CD: '03'
+    - TRAN-CAT-CD: '1'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Zero dollar authorization                         '
+      TRAN-TYPE-CD: '04'
+    - TRAN-CAT-CD: '2'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Online purchase authorization                     '
+      TRAN-TYPE-CD: '04'
+    - TRAN-CAT-CD: '3'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Travel booking authorization                      '
+      TRAN-TYPE-CD: '04'
+    - TRAN-CAT-CD: '1'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Refund credit                                     '
+      TRAN-TYPE-CD: '05'
+    - TRAN-CAT-CD: '1'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Fraud reversal                                    '
+      TRAN-TYPE-CD: '06'
+    - TRAN-CAT-CD: '2'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Non-fraud reversal                                '
+      TRAN-TYPE-CD: '06'
+    - TRAN-CAT-CD: '1'
+      TRAN-CAT-RECORD.FILLER#1: '0000'
+      TRAN-CAT-TYPE-DESC: 'Sales draft credit adjustment                     '
+      TRAN-TYPE-CD: '07'
+  messages:
+  - STEP STEP05 RC 0000
+  - STEP STEP10 RC 0000
+  - STEP STEP15 RC 0000
+  return_code: 0
+evidence_path: tests/reports/results/DAT-TRANCATG-normal-01.yaml
+execution_fingerprint: ffc94f86c53deb0621e84c9c0b3ac1a768dde4b1d05787fc9264a9b5135df8e6
+execution_id: gnucobol-batch-b077ad628f19a036
+gap_id: null
+reason: null
+scenario_digest: c0a09229b646ab4d9053b2a6a522fd4ff06e93a067e8d85f6def6ba367bc8748
+scenario_id: DAT-TRANCATG-normal-01
+source_identity:
+  commit: ce44c9645756395b5a8eac87afa2fa8da93f029b
+  tree: app
+  units:
+    app/jcl/TRANCATG.jcl: 3030bce92bf7f086b826b39bd711f6a37eec730a5e8fb0c503da612f3b01cade
+status: passed

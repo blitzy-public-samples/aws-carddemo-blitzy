@@ -1,0 +1,22 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  file_state:
+    '@CATALOG':
+    - AWS.M2.CARDDEMO.DALYREJS GDG -
+  messages:
+  - STEP STEP05 RC 0000
+  return_code: 0
+evidence_path: tests/reports/results/DAT-DALYREJS-normal-01.yaml
+execution_fingerprint: ba805c97114a622283600f10ec5ee9762c9bc3e431e916482872cee3e67e8f8e
+execution_id: gnucobol-batch-17314f9d6f28771d
+gap_id: null
+reason: null
+scenario_digest: 77a5c09a0df3cc6d53399acca4081a8e9ac762de755cc54d90ce8a0e7c8a1cdc
+scenario_id: DAT-DALYREJS-normal-01
+source_identity:
+  commit: ce44c9645756395b5a8eac87afa2fa8da93f029b
+  tree: app
+  units:
+    app/jcl/DALYREJS.jcl: 2ea635d82002b7b2292b107598032f9e4963f4b9a9135f418f67343c594c29f3
+status: passed

@@ -1,0 +1,44 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  datasets:
+    TRANTYPE:
+    - TRAN-TYPE: '01'
+      TRAN-TYPE-DESC: 'Purchase                                          '
+      TRAN-TYPE-RECORD.FILLER#1: '00000000'
+    - TRAN-TYPE: '02'
+      TRAN-TYPE-DESC: 'Payment                                           '
+      TRAN-TYPE-RECORD.FILLER#1: '00000000'
+    - TRAN-TYPE: '03'
+      TRAN-TYPE-DESC: 'Credit                                            '
+      TRAN-TYPE-RECORD.FILLER#1: '00000000'
+    - TRAN-TYPE: '04'
+      TRAN-TYPE-DESC: 'Authorization                                     '
+      TRAN-TYPE-RECORD.FILLER#1: '00000000'
+    - TRAN-TYPE: '05'
+      TRAN-TYPE-DESC: 'Refund                                            '
+      TRAN-TYPE-RECORD.FILLER#1: '00000000'
+    - TRAN-TYPE: '06'
+      TRAN-TYPE-DESC: 'Reversal                                          '
+      TRAN-TYPE-RECORD.FILLER#1: '00000000'
+    - TRAN-TYPE: '07'
+      TRAN-TYPE-DESC: 'Adjustment                                        '
+      TRAN-TYPE-RECORD.FILLER#1: '00000000'
+  messages:
+  - STEP STEP05 RC 0000
+  - STEP STEP10 RC 0000
+  - STEP STEP15 RC 0000
+  return_code: 0
+evidence_path: tests/reports/results/DAT-TRANTYPE-normal-01.yaml
+execution_fingerprint: d03c5170e25e76a5a37a5222e2bb8fe2c4882666f13e307cdaa67741b979a11d
+execution_id: gnucobol-batch-2c9d75b1eb8f4cd0
+gap_id: null
+reason: null
+scenario_digest: 6bc4d879da124086916a0879fe9233e31b0b3bc151717655f85e2669aae9cdd8
+scenario_id: DAT-TRANTYPE-normal-01
+source_identity:
+  commit: ce44c9645756395b5a8eac87afa2fa8da93f029b
+  tree: app
+  units:
+    app/jcl/TRANTYPE.jcl: 7a10aa43bd6737007a19fbfa5592934ef553816ffeef8c208db34d4475518051
+status: passed

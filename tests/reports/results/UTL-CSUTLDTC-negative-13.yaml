@@ -1,0 +1,19 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  messages:
+  - 'DTCDRV DATE=2022-07-18 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2521 YearInEra is 0  TstDate: ..2022-07- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A20323532312059656172496E45726120697320302020547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D4D4D2D444420202020'
+  return_code: 0
+evidence_path: tests/reports/results/UTL-CSUTLDTC-negative-13.yaml
+execution_fingerprint: 6a3d6e7bd13555ad4d24b3bf0135ce155cb54b663d86d85c12e4d211fbc83623
+execution_id: gnucobol-batch-d8d0de2772d17140
+gap_id: null
+reason: null
+scenario_digest: 318fa9b501e3c9f20bf7dc5f9431e4de2c8ff8724adc28d2ca0e5fc48cc3e15e
+scenario_id: UTL-CSUTLDTC-negative-13
+source_identity:
+  commit: ab3f66e8e82d6a0f204d218435c52b0662a2f5df
+  tree: app
+  units:
+    app/cbl/CSUTLDTC.cbl: 58c165dcfc3927232c02c152c673e3dee551587b85e7fe56ca67325c980eebb6
+status: passed

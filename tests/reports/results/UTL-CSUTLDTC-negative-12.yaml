@@ -1,0 +1,19 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  messages:
+  - 'DTCDRV DATE=2022-07-18 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2520 Nonnumeric data TstDate: ..2022-07- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A2032353230204E6F6E6E756D65726963206461746120547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D4D4D2D444420202020'
+  return_code: 0
+evidence_path: tests/reports/results/UTL-CSUTLDTC-negative-12.yaml
+execution_fingerprint: c90edf0e12620e6fd8b7d092bcf094f0c85dda7506a8c5f6c45ef9c7078c152c
+execution_id: gnucobol-batch-5d42632f23a23575
+gap_id: null
+reason: null
+scenario_digest: 6e73c2ce03cf7063a3a6447cb3d4a599f90b84b38e33d5768444ecc9c7810d73
+scenario_id: UTL-CSUTLDTC-negative-12
+source_identity:
+  commit: ab3f66e8e82d6a0f204d218435c52b0662a2f5df
+  tree: app
+  units:
+    app/cbl/CSUTLDTC.cbl: 58c165dcfc3927232c02c152c673e3dee551587b85e7fe56ca67325c980eebb6
+status: passed
