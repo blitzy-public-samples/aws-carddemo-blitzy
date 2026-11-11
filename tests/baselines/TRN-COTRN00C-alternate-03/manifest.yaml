@@ -1,0 +1,31 @@
+# Manifest of the derived baseline of TRN-COTRN00C-alternate-03: the
+# transaction-list search from 9999999999999999 makes STARTBR return NOTFND, and
+# COTRN00C sends 'You are at the top of the page...'. Only unikix can run the
+# scenario, so expected.yaml was authored from app/cbl/COTRN00C.cbl, not
+# captured, and is inferred-not-observed (GAP-INF-007, GAP-INF-012). It names
+# no execution_id or execution_fingerprint and holds no datasets/ until an
+# eligible UniKix run is imported with report.py --import-unikix.
+#
+# source_identity.units are COTRN00C's COPY closure, as
+# harness.inventory_tools.copy_closure resolves it (the symbolic map COTRN00
+# included), plus the BMS source of its map COTRN00. The sign-on and main-menu
+# steps only reach the list screen, whose content their own scenarios pin, so
+# COSGN00C and COMEN01C are not listed. DFHAID and DFHBMSCA are CICS-supplied
+# and not in the repository. source_commit is HEAD at authoring; app/ is
+# byte-identical to the suite's starting commit.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: c7e1f87e17b3582fae6b23fe9cd6373def4567ad
+source_identity:
+  commit: c7e1f87e17b3582fae6b23fe9cd6373def4567ad
+  tree: app
+  units:
+    app/bms/COTRN00.bms: 6f914caf567937cd91be8f11118324c4d4c7ec0f68c0309f831cad109a3f45b2
+    app/cbl/COTRN00C.cbl: 51479f131b4fb300008403f0c4f9fdbde56f22a7fb341c782492da29f0d23bbe
+    app/cpy-bms/COTRN00.CPY: 18c9ab55bd2ed9345f9fda9e4d16ed710ef615fad34076fad7d63d2fc1ac6b77
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec

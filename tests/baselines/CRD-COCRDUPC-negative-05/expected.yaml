@@ -1,0 +1,46 @@
+# Derived from the source, never observed (capture_platform: derived);
+# inferred-not-observed under GAP-INF-006 and GAP-INF-012. Menu option 5 enters
+# COCRDUPC fresh: search screen, INFOMSG prompt, no error
+# [app/cbl/COCRDUPC.cbl:384-401,502-511,1084-1085,1138-1163]. ENTER with both
+# the account and the card blank: 1210-EDIT-ACCOUNT sets 'Account number not
+# provided', 1220-EDIT-CARD keeps it, then 1200-EDIT-MAP-INPUTS replaces it with
+# NO-SEARCH-CRITERIA-RECEIVED 'No input received'; no CARDDAT read, '*' written
+# to ACCTSID and CARDSID on reentry [app/cbl/COCRDUPC.cbl:185-186,535-543,
+# 589-605,641-661,721-780,954-966,1099-1106,1247-1260]. Screen fields carry
+# their full layouts.yaml length; one ERRMSG per step in messages (COMEN01 78,
+# COCRDUP 80).
+messages:
+- '                                                                              '
+- '                                                                                '
+- 'No input received                                                               '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN005: '05. Credit Card Update                  '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDUP
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': COCRDUP
+  ACCTSID: '*          '
+  CARDSID: '*               '
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'No input received                                                               '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCUP

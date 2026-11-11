@@ -1,0 +1,53 @@
+# Derived from the source (capture_platform: derived), never observed; the
+# scenario is inferred-not-observed under GAP-INF-006 and GAP-INF-012, and only
+# an eligible UniKix run imported by report.py --import-unikix replaces it.
+# Steps 1-2: USER0001 reaches the main menu, and option 5 enters COCRDUPC fresh:
+# the search screen, the PROMPT-FOR-SEARCH-KEYS prompt and a cleared ERRMSG
+# [app/cbl/COCRDUPC.cbl:384-401,502-511,1084-1085,1138-1163]. Step 3: ENTER with
+# account 00000000050 and card 9999999999999999; both edits pass, and
+# 9100-GETCARD-BYACCTCARD reads CARDDAT by the card number alone (the account
+# move is commented out), which answers NOTFND: DID-NOT-FIND-ACCTCARD-COMBO
+# 'Did not find cards for this search condition', both ids echoed, the card
+# details sent as LOW-VALUES and shown blank, the search prompt kept
+# [app/cbl/COCRDUPC.cbl:203-204,721-800,954-966,1082-1106,1376-1401].
+# Fields carry their full layouts.yaml length, trailing spaces kept; ERRMSG is
+# the 75-byte WS-RETURN-MSG in the 80-byte ERRMSGO. EXPDAY is dark and holds
+# LOW-VALUES, so it reads back blank. CURDATE and CURTIME come from the region
+# clock, so they are matchers. messages holds each step's ERRMSG (COMEN01 78,
+# COCRDUP 80). No file is written, so file_state is not asserted.
+messages:
+- '                                                                              '
+- '                                                                                '
+- 'Did not find cards for this search condition                                    '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN005: '05. Credit Card Update                  '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDUP
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': COCRDUP
+  ACCTSID: '00000000050'
+  CARDSID: '9999999999999999'
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Did not find cards for this search condition                                    '
+  EXPDAY: '  '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCUP

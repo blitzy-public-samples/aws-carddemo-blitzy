@@ -1,0 +1,36 @@
+messages:
+- '                                                                              '
+- '                                                                                '
+- 'File Error: READ     on CARDDAT   returned RESP 000000084 ,RESP2 000000050      '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN005: '05. Credit Card Update                  '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDUP
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': COCRDUP
+  ACCTSID: '00000000050'
+  CARDSID: '0500024453765740'
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'File Error: READ     on CARDDAT   returned RESP 000000084 ,RESP2 000000050      '
+  EXPDAY: '  '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCUP
