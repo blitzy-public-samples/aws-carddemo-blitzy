@@ -103,10 +103,13 @@ before its last step to the comparison.
 Evidence ownership: ``EvidenceWriter.write``, on a tests root of the case's
 own, must refuse a scenario folder that already exists, whatever stands
 there, and keep it as found; of concurrent writes of one scenario exactly one
-must succeed, and the folder must hold its files alone. An id outside the
-scenario id manifest is refused by ``write`` and ``evidence_path``, and a
-record that breaks the result record contract by ``write``, before any folder
-is created; a conforming record must read back field-equal.
+must succeed, and the folder must hold its files alone. The concurrent writes
+run as threads of one child process under a deadline, killed and reaped when
+it passes, so a writer that hangs fails the case instead of stalling the run.
+An id outside the scenario id manifest is refused by ``write`` and
+``evidence_path``, and a record that breaks the result record contract by
+``write``, before any folder is created; a conforming record must read back
+field-equal.
 
 Baseline publication: ``baselines.write``, on a baselines folder of the
 case's own, must publish each id whole. A writer process killed between two
@@ -115,11 +118,15 @@ exchange leaves the last complete baseline, the new one once it is in place,
 or none for a first capture, and ``load`` returns exactly that; a retry
 succeeds and leaves no staging or pre-image directory. Concurrent writer
 processes of one id, through the exchange or the fallback swap, never let
-``load`` read one writer's expected outcome with another's manifest or raw
-bytes. An entry that is no baseline artifact is refused, with nothing
-changed; unchanged files keep their inode and mtime (a copy its mtime where
-no hard link can be made), replaced files and folders their permission bits,
-and an identical baseline publishes nothing.
+``load``, in a reader process loading all the while, read one writer's
+expected outcome with another's manifest or raw bytes. The seed write, the
+writers and the reader are child processes under one deadline; any still
+running when it passes is killed and reaped and the case fails, so a lock
+that hangs fails instead of stalling the run. An entry that is no baseline
+artifact is refused, with nothing changed; unchanged files keep their inode
+and mtime (a copy its mtime where no hard link can be made), replaced files
+and folders their permission bits, and an identical baseline publishes
+nothing.
 
 Program launch: ``jobs.run_program``, on a build cache of the case's own whose
 units are shell scripts writing what libcob and ld.so write, must raise
@@ -1101,6 +1108,45 @@ EVIDENCE_WRITERS = 8
 EVIDENCE_WRITER_DATASETS = 40
 EVIDENCE_BARRIER_TIMEOUT_S = 60
 EVIDENCE_ROOT_PREFIX = "unit-evidence-"
+# The writers are threads of one child process (sys.executable -B with tests/
+# on its path, run in the case's tests root, which is also its TMPDIR so
+# nothing it does with tempfile leaves the work root), so a writer that hangs
+# can be killed: it gets the tests root, the execution and scenario ids, the
+# barrier timeout, the result record and each writer's dataset names, and
+# prints one JSON line, each writer's returned evidence path or its exception.
+# It is killed once it runs past EVIDENCE_TIMEOUT_S, longer than the barrier's.
+EVIDENCE_TIMEOUT_S = 120
+EVIDENCE_CHILD = """\
+import json, sys, threading
+sys.path.insert(0, sys.argv[1])
+from harness import HarnessError
+from adapters.unikix import evidence
+
+tests_root, execution_id, scenario_id = sys.argv[2], sys.argv[3], sys.argv[4]
+barrier_timeout, record, names = float(sys.argv[5]), json.loads(sys.argv[6]), json.loads(sys.argv[7])
+barrier = threading.Barrier(len(names))
+outcomes = {}
+
+def write(writer):
+    try:
+        capture = evidence.Capture(datasets={name: bytes([writer]) * 64 for name in names[writer]})
+        own = evidence.EvidenceWriter(tests_root, execution_id)
+        barrier.wait(barrier_timeout)
+        outcomes[writer] = {"written": own.write(scenario_id, record, capture)}
+    except Exception as exc:
+        outcomes[writer] = {
+            "error": type(exc).__name__,
+            "harness_error": isinstance(exc, HarnessError),
+            "message": str(exc),
+        }
+
+threads = [threading.Thread(target=write, args=(writer,)) for writer in range(len(names))]
+for thread in threads:
+    thread.start()
+for thread in threads:
+    thread.join()
+print(json.dumps(outcomes))
+"""
 
 # What already stands where the scenario's evidence folder would be created,
 # and the cause the refusal names.
@@ -1179,41 +1225,64 @@ def test_evidence_writer_refuses_an_existing_scenario_folder_and_keeps_it(
     assert _tree(evidence_tests_root) == before
 
 
+def _reaped(child: subprocess.Popen) -> tuple[int, str, str]:
+    """The return code, stdout and stderr of the child process ``child``,
+    killed first when it still runs, so it never outlives the case."""
+    if child.poll() is None:
+        child.kill()
+    out, err = child.communicate()
+    return child.returncode, out, err
+
+
 def test_concurrent_evidence_writes_of_one_scenario_leave_one_writers_files(
     evidence_tests_root: Path,
 ) -> None:
     record = _evidence_record()
-    barrier = threading.Barrier(EVIDENCE_WRITERS)
-    outcomes: dict[int, str | BaseException] = {}
-
-    def names(writer: int) -> list[str]:
-        return [f"DS{writer:02d}-{number:02d}" for number in range(EVIDENCE_WRITER_DATASETS)]
-
-    def write(writer: int) -> None:
-        try:
-            capture = evidence.Capture(datasets={name: bytes([writer]) * 64 for name in names(writer)})
-            own = evidence.EvidenceWriter(evidence_tests_root, EVIDENCE_EXECUTION_ID)
-            barrier.wait(EVIDENCE_BARRIER_TIMEOUT_S)
-            outcomes[writer] = own.write(EVIDENCE_SCENARIO, record, capture)
-        except Exception as exc:
-            outcomes[writer] = exc
-
-    threads = [threading.Thread(target=write, args=(writer,)) for writer in range(EVIDENCE_WRITERS)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    winners = [writer for writer, outcome in outcomes.items() if isinstance(outcome, str)]
-    refusals = [outcome for outcome in outcomes.values() if not isinstance(outcome, str)]
+    assert json.loads(json.dumps(record)) == record  # the child gets it as JSON
+    names = [
+        [f"DS{writer:02d}-{number:02d}" for number in range(EVIDENCE_WRITER_DATASETS)]
+        for writer in range(EVIDENCE_WRITERS)
+    ]
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            EVIDENCE_CHILD,
+            str(TESTS_ROOT),
+            str(evidence_tests_root),
+            EVIDENCE_EXECUTION_ID,
+            EVIDENCE_SCENARIO,
+            str(EVIDENCE_BARRIER_TIMEOUT_S),
+            json.dumps(record),
+            json.dumps(names),
+        ],
+        cwd=evidence_tests_root,
+        env={**os.environ, "TMPDIR": str(evidence_tests_root)},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    timed_out = False
+    try:
+        child.communicate(timeout=EVIDENCE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    finally:
+        returncode, out, err = _reaped(child)
+    assert not timed_out, f"the writers still ran after {EVIDENCE_TIMEOUT_S} s, so killed:\n{out}{err}"
+    assert returncode == 0, out + err
+    outcomes = {int(writer): outcome for writer, outcome in json.loads(out).items()}
+    winners = [writer for writer, outcome in outcomes.items() if "written" in outcome]
+    refusals = [outcome for outcome in outcomes.values() if "written" not in outcome]
     assert sorted(outcomes) == list(range(EVIDENCE_WRITERS))
     assert len(winners) == 1, outcomes
     assert all(
-        isinstance(refusal, HarnessError) and str(refusal).startswith("evidence is immutable: ")
-        for refusal in refusals
+        refusal["harness_error"] and refusal["message"].startswith("evidence is immutable: ") for refusal in refusals
     ), refusals
     folder = _evidence_folder(evidence_tests_root)
     files = sorted(os.listdir(folder / evidence.DATASETS_DIR))
-    assert files == sorted(evidence.dataset_file_name(name) for name in names(winners[0]))
+    assert files == sorted(evidence.dataset_file_name(name) for name in names[winners[0]])
     written = load_yaml(folder / evidence.RESULT_FILE)
     assert sorted(written["capture_summary"]["datasets"]) == files
 
@@ -1336,9 +1405,10 @@ def test_evidence_writer_writes_a_conforming_record_that_reads_back_equal(
 
 # baselines.write publishing one id whole, on a baselines folder in the
 # case's own work_root_case folder inside the session work root. A writer
-# child process (sys.executable with tests/ on its path) kills itself with
-# SIGKILL at one seam of the publication, so it dies exactly there: after the
-# first staged file (_stage_file), between the two renames of the fallback
+# child process (sys.executable -B with tests/ on its path, the case folder
+# its working directory and its TMPDIR) kills itself with SIGKILL at one seam
+# of the publication, so it dies exactly there: after the first staged file
+# (_stage_file), between the two renames of the fallback
 # swap (the stage's rename, once the pre-image holds the baseline), or after
 # the exchange, before the replaced baseline is removed (_remove_entry).
 # "exchange" and "fallback" children write to the end, the latter with
@@ -1381,6 +1451,50 @@ for expected, manifest, raw in writes:
     baselines.write(baseline_id, expected, manifest, datasets, baselines_dir=root)
 """
 
+# The reader of the concurrent writers, a child process like them, so the
+# test process itself never waits on the baselines lock: it loads the
+# baseline over and over and takes each load's writer tags as
+# _publication_tags does, creates the ready file once its first load is done,
+# and stops after the load that began once the stop file existed. Between two
+# loads it sleeps PUBLICATION_READ_PAUSE_S, so a writer waiting for the
+# exclusive lock gets it on a busy host instead of losing it to the reader's
+# next shared lock. Its only output is one JSON line: the number of loads,
+# the tags of the first PUBLICATION_MIXED_KEPT loads that held more than one,
+# and the last load's. The seed, the writers and the reader share one
+# deadline of PUBLICATION_TIMEOUT_S, polled every PUBLICATION_POLL_S;
+# whatever still runs when it passes is killed.
+PUBLICATION_POLL_S = 0.01
+PUBLICATION_MIXED_KEPT = 5
+PUBLICATION_READ_PAUSE_S = 0.001
+PUBLICATION_READY_FILE = "reader-ready"
+PUBLICATION_STOP_FILE = "reader-stop"
+PUBLICATION_READER = """\
+import json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+from harness import baselines
+
+root, baseline_id, ready, stop, kept = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], int(sys.argv[6])
+pause = float(sys.argv[7])
+loads, mixed = 0, []
+while True:
+    stopping = os.path.exists(stop)
+    loaded = baselines.load(baseline_id, baselines_dir=root)
+    tags = {
+        loaded.expected["messages"][0].removeprefix("writer "),
+        loaded.manifest["execution_id"].removeprefix("gnucobol-batch-"),
+    }
+    tags.update(data.decode().partition(":")[0] for data in loaded.datasets.values())
+    loads += 1
+    if len(tags) != 1 and len(mixed) < kept:
+        mixed.append(sorted(tags))
+    if stopping:
+        break
+    if loads == 1:
+        open(ready, "x").close()
+    time.sleep(pause)
+print(json.dumps({"loads": loads, "mixed": mixed, "final": sorted(tags)}))
+"""
+
 
 def _publication_baseline(
     tag: str, names: tuple[str, ...] = PUBLICATION_DATASETS
@@ -1411,16 +1525,58 @@ def _publication_tags(loaded: baselines.Baseline) -> set[str]:
 def _publication_child(seam: str, root: Path, writes: list) -> subprocess.Popen:
     """A writer process that writes each ``(expected, manifest, datasets)``
     of ``writes`` to ``root`` in turn, with ``seam`` set up as the comment
-    on ``PUBLICATION_ID`` describes."""
+    on ``PUBLICATION_ID`` describes. It runs in the case folder holding
+    ``root``, which is also its ``TMPDIR`` so nothing it does with tempfile
+    leaves the work root, and writes no bytecode (``-B``): conftest's
+    ``sys.dont_write_bytecode`` is not inherited."""
     payload = json.dumps(
         [[expected, manifest, {name: data.hex() for name, data in raw.items()}] for expected, manifest, raw in writes]
     )
     return subprocess.Popen(
-        [sys.executable, "-c", PUBLICATION_CHILD, str(TESTS_ROOT), seam, str(root), payload, PUBLICATION_ID],
+        [sys.executable, "-B", "-c", PUBLICATION_CHILD, str(TESTS_ROOT), seam, str(root), payload, PUBLICATION_ID],
+        cwd=root.parent,
+        env={**os.environ, "TMPDIR": str(root.parent)},
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
+
+
+def _publication_reader(root: Path, ready: Path, stop: Path) -> subprocess.Popen:
+    """The ``PUBLICATION_READER`` process loading ``PUBLICATION_ID`` from
+    ``root``, signalling with ``ready`` and stopped by ``stop``; like the
+    writers it runs in, with ``TMPDIR`` set to, the case folder holding
+    ``root`` and writes no bytecode (``-B``)."""
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            PUBLICATION_READER,
+            str(TESTS_ROOT),
+            str(root),
+            PUBLICATION_ID,
+            str(ready),
+            str(stop),
+            str(PUBLICATION_MIXED_KEPT),
+            str(PUBLICATION_READ_PAUSE_S),
+        ],
+        cwd=root.parent,
+        env={**os.environ, "TMPDIR": str(root.parent)},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _awaited(done: Callable[[], bool], deadline: float) -> bool:
+    """Whether ``done()`` held before ``deadline``, a ``time.monotonic()``
+    value, asking every ``PUBLICATION_POLL_S``."""
+    while not done():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(PUBLICATION_POLL_S)
+    return True
 
 
 def _finished(child: subprocess.Popen) -> tuple[int, str]:
@@ -1478,31 +1634,41 @@ def test_an_interrupted_publication_leaves_a_complete_baseline_and_a_retry_succe
 @pytest.mark.parametrize("swap", ["exchange", "fallback"])
 def test_concurrent_writers_of_one_id_never_publish_mixed_artifacts(work_root_case: Path, swap: str) -> None:
     root = work_root_case / "baselines"
-    baselines.write(PUBLICATION_ID, *_publication_baseline("seed"), baselines_dir=root)
-    children = [
-        _publication_child(
-            swap,
-            root,
-            # Every other round drops TRANSACT, so .bin files come and go.
-            [
-                _publication_baseline(f"w{writer}r{turn}", PUBLICATION_DATASETS[: 1 + turn % 2])
-                for turn in range(PUBLICATION_ROUNDS)
-            ],
-        )
-        for writer in range(PUBLICATION_WRITERS)
-    ]
+    ready = work_root_case / PUBLICATION_READY_FILE
+    stop = work_root_case / PUBLICATION_STOP_FILE
+    writer_names = [f"writer {writer}" for writer in range(PUBLICATION_WRITERS)]
+    deadline = time.monotonic() + PUBLICATION_TIMEOUT_S
+    children: dict[str, subprocess.Popen] = {}
     try:
-        writing = True
-        while writing:  # loads while the writers run, and once more after
-            writing = any(child.poll() is None for child in children)
-            tags = _publication_tags(baselines.load(PUBLICATION_ID, baselines_dir=root))
-            assert len(tags) == 1, tags
+        children["seed"] = _publication_child(swap, root, [_publication_baseline("seed")])
+        seed = children["seed"]
+        if _awaited(lambda: seed.poll() is not None, deadline) and seed.returncode == 0:
+            reader = children["reader"] = _publication_reader(root, ready, stop)
+            # The writers start once the reader loads, so it reads all along.
+            if _awaited(lambda: ready.exists() or reader.poll() is not None, deadline) and ready.exists():
+                for writer, name in enumerate(writer_names):
+                    children[name] = _publication_child(
+                        swap,
+                        root,
+                        # Every other round drops TRANSACT, so .bin files come and go.
+                        [
+                            _publication_baseline(f"w{writer}r{turn}", PUBLICATION_DATASETS[: 1 + turn % 2])
+                            for turn in range(PUBLICATION_ROUNDS)
+                        ],
+                    )
+                _awaited(lambda: all(children[name].poll() is not None for name in writer_names), deadline)
+            stop.touch()  # the reader loads once more, then reports
+            _awaited(lambda: reader.poll() is not None, deadline)
     finally:
-        finished = [_finished(child) for child in children]
-    assert [returncode for returncode, _ in finished] == [0] * PUBLICATION_WRITERS, finished
-    final = _publication_tags(baselines.load(PUBLICATION_ID, baselines_dir=root))
-    assert final <= {f"w{writer}r{PUBLICATION_ROUNDS - 1}" for writer in range(PUBLICATION_WRITERS)}, final
-    assert len(final) == 1
+        outlived = [name for name, child in children.items() if child.poll() is None]
+        outcomes = {name: _reaped(child) for name, child in children.items()}
+    assert not outlived, f"still running after {PUBLICATION_TIMEOUT_S} s, so killed: {outlived}; {outcomes}"
+    returncodes = {name: returncode for name, (returncode, _, _) in outcomes.items()}
+    assert returncodes == dict.fromkeys(["seed", "reader", *writer_names], 0), outcomes
+    read = json.loads(outcomes["reader"][1])
+    assert read["mixed"] == [], read
+    assert set(read["final"]) <= {f"w{writer}r{PUBLICATION_ROUNDS - 1}" for writer in range(PUBLICATION_WRITERS)}, read
+    assert len(read["final"]) == 1, read
     assert os.listdir(root) == [PUBLICATION_ID]
 
 
@@ -2712,6 +2878,8 @@ LAUNCH_SEPARATOR_ROOTS = [
     pytest.param("work:root", id="colon"),
 ]
 LAUNCH_CC_TIMEOUT_S = 120
+# The folder beside the library that cc runs in, with it as cc's TMPDIR.
+LAUNCH_CC_SCRATCH_PREFIX = "cc-tmp-"
 
 # Names no JCL name can be, put in CBSTM03A's programs.yaml tiot as its job,
 # its step or an added ddname: the shim would copy them into the TIOT whose
@@ -2876,18 +3044,28 @@ def test_run_program_ends_a_run_as_the_program_ended(
 
 def _build_empty_library(path: Path) -> None:
     """An empty shared library at ``path``, which preloading leaves without
-    effect, built with ``cc`` as ``build.py`` builds the real shim."""
+    effect, built with ``cc`` as ``build.py`` builds the real shim. cc runs
+    with its working directory and ``TMPDIR`` in a folder of its own beside
+    the library, removed afterwards, so its temporaries stay inside the work
+    root, as ``build.py`` confines its compiles."""
     compiler = shutil.which("cc")
     assert compiler is not None, "cc, which builds the stubs, is not on PATH"
+    path = path.absolute()
     path.parent.mkdir(parents=True, exist_ok=True)
     source = path.with_suffix(".c")
     source.write_text("int carddemo_unit_preloaded;\n")
-    subprocess.run(
-        [compiler, "-shared", "-fPIC", "-o", os.fspath(path), os.fspath(source)],
-        check=True,
-        capture_output=True,
-        timeout=LAUNCH_CC_TIMEOUT_S,
-    )
+    scratch = Path(tempfile.mkdtemp(prefix=LAUNCH_CC_SCRATCH_PREFIX, dir=path.parent))
+    try:
+        subprocess.run(
+            [compiler, "-shared", "-fPIC", "-o", os.fspath(path), os.fspath(source)],
+            check=True,
+            capture_output=True,
+            timeout=LAUNCH_CC_TIMEOUT_S,
+            cwd=scratch,
+            env={**os.environ, "TMPDIR": os.fspath(scratch)},
+        )
+    finally:
+        shutil.rmtree(scratch)
 
 
 @pytest.mark.parametrize("work_root_name", LAUNCH_SEPARATOR_ROOTS)

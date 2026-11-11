@@ -52,7 +52,10 @@ Selection
 
 Nothing here writes into the repository: result records and reports are
 written by ``harness.results`` and ``harness.report``, and everything else a
-run produces stays in the work root.
+run produces stays in the work root, except the assertion-rewrite cache of
+this file, which pytest writes to the git-ignored ``tests/__pycache__/``
+before ``sys.dont_write_bytecode`` is set here (an interpreter started with
+``-B`` or ``PYTHONDONTWRITEBYTECODE`` writes none).
 """
 
 from __future__ import annotations
@@ -72,8 +75,14 @@ import pytest
 if TYPE_CHECKING:
     from adapters.base import Adapter
 
-# Keep bytecode of the harness, the adapters and the test modules out of the
-# checkout: a run writes only to the work root and tests/reports/.
+# Keep the bytecode of every module imported after this line out of the
+# checkout: the harness and the adapters, and the test modules, whose
+# assertion-rewrite cache pytest skips while the flag is set. pytest imports
+# this file before the line runs, so this file's own assertion-rewrite cache
+# is written to the git-ignored tests/__pycache__/ unless the interpreter
+# starts with -B or PYTHONDONTWRITEBYTECODE. The flag is this interpreter's
+# alone: a Python child process the suite starts passes -B or
+# PYTHONDONTWRITEBYTECODE itself.
 sys.dont_write_bytecode = True
 
 from harness import MARKER_FOR_ADAPTER, HarnessError, usable_work_root  # noqa: E402
