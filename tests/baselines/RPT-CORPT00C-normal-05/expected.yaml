@@ -1,0 +1,98 @@
+# Derived baseline (capture_platform: derived in manifest.yaml) for
+# RPT-CORPT00C-normal-05, the Custom report for 2022-01-01 to 2022-07-06.
+# Authored from the source because only unikix can run the scenario; tagged
+# inferred-not-observed (GAP-INF-009, GAP-INF-012, GAP-MIS-017) and replaced
+# only by `report.py --import-unikix` on eligible evidence, never edited to
+# match a run.
+#
+# One screen per step, the screen shown after the step's AID; messages holds
+# each step's ERRMSG. Text is the whole BMS field, trailing spaces kept.
+# - Step 1: USER0001 (type U) signs on and COSGN00C XCTLs to COMEN01C, which
+#   sends COMEN01 under CM00 [app/cbl/COSGN00C.cbl:230-237].
+# - Step 2: option 9 XCTLs to CORPT00C [app/cpy/COMEN02Y.cpy:74-78]. Its first
+#   entry moves LOW-VALUES to CORPT0AO, so the input fields show blank, and
+#   sends CORPT00 under CR00 with a blank ERRMSG
+#   [app/cbl/CORPT00C.cbl:172-181,556-628].
+# - Step 3: CUSTOM with 01/01/2022, 07/06/2022 and CONFIRM Y. NUMVAL-C keeps
+#   the zero-padded parts, CSUTLDTC accepts both YYYY-MM-DD dates, and they go
+#   into PARM-START-DATE-1/-2 and PARM-END-DATE-1/-2
+#   [app/cbl/CORPT00C.cbl:256-436]. The JOB-LINES loop sets END-LOOP on
+#   '/*EOF' but writes that record before the UNTIL is tested again, so JOBS
+#   receives 17 records of 80 bytes, '/*EOF' last
+#   [app/cbl/CORPT00C.cbl:81-127,496-523]. INITIALIZE-ALL-FIELDS blanks the
+#   inputs, and ERRMSG is 'Custom' plus ' report submitted for printing ...',
+#   40 characters padded to 78 [app/cbl/CORPT00C.cbl:445-456,633-646].
+#
+# The dates are typed, not taken from the clock, so every JOBS record is an
+# exact value; only the screen CURDATE and CURTIME come from the region
+# clock, which unikix cannot fix (GAP-MIS-015), so they are matchers.
+file_state:
+  '@TDQ:JOBS':
+    records:
+    - '//TRNRPT00 JOB ''TRAN REPORT'',CLASS=A,MSGCLASS=0,                                '
+    - '// NOTIFY=&SYSUID                                                               '
+    - '//*                                                                             '
+    - '//JOBLIB JCLLIB ORDER=(''AWS.M2.CARDDEMO.PROC'')                                  '
+    - '//*                                                                             '
+    - '//STEP10 EXEC PROC=TRANREPT                                                     '
+    - '//*                                                                             '
+    - '//STEP05R.SYMNAMES DD *                                                         '
+    - 'TRAN-CARD-NUM,263,16,ZD                                                         '
+    - 'TRAN-PROC-DT,305,10,CH                                                          '
+    - 'PARM-START-DATE,C''2022-01-01''                                                   '
+    - 'PARM-END-DATE,C''2022-07-06''                                                     '
+    - '/*                                                                              '
+    - '//STEP10R.DATEPARM DD *                                                         '
+    - '2022-01-01 2022-07-06                                                           '
+    - '/*                                                                              '
+    - '/*EOF                                                                           '
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Custom report submitted for printing ...                                      '
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: ' '
+  EDTDD: '  '
+  EDTMM: '  '
+  EDTYYYY: '    '
+  ERRMSG: '                                                                              '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '  '
+  SDTMM: '  '
+  SDTYYYY: '    '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: ' '
+  EDTDD: '  '
+  EDTMM: '  '
+  EDTYYYY: '    '
+  ERRMSG: 'Custom report submitted for printing ...                                      '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '  '
+  SDTMM: '  '
+  SDTYYYY: '    '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

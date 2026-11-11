@@ -1,0 +1,90 @@
+# CREASTMT with an unreadable sort input: COND=(0,NE) on STEP020, STEP030 and
+# STEP040 bypasses the TRXFL load, the delete of the previous statements and
+# CBSTM03A once any earlier step ended with a non-zero return code
+# [app/jcl/CREASTMT.JCL:56,66,79].
+#
+# The fault leaves TRANSACT out: no cluster is loaded or catalogued under its
+# name, so the STEP010 sort input, TRANSACT by DSN with DISP=SHR, cannot be
+# read [app/jcl/CREASTMT.JCL:44-45]. CARDXREF, ACCTDATA and CUSTDATA are the
+# repository files STEP040 would read; they are loaded so that nothing but the
+# COND test keeps STEP040 from running. The steps, derived from the JCL:
+# - DELDEF01 deletes the previous TRXFL work files, sets MAXCC to 0 and defines
+#   the TRXFL cluster, so it ends RC 0 whatever the deletes found
+#   [app/jcl/CREASTMT.JCL:22-39];
+# - STEP010 has no COND, so it runs, cannot open its input and ends RC 16, the
+#   return code DFSORT gives an unsuccessful sort, as the gnucobol-batch SORT
+#   replacement does for an input it cannot open (ICE185A);
+# - STEP020, STEP030 and STEP040 each test 0 NE 16 against STEP010, which is
+#   true, so all three are bypassed and write no STEP line; the job's return
+#   code is the highest step code, 16.
+# TRXFL therefore stays as DELDEF01 defined it, empty, and no statement dataset
+# is written. The catalog holds the TRXFL cluster; the sort output dataset is
+# not asserted, because whether it is catalogued depends on how the platform
+# ends a step whose input is missing (a step return code leaves the normal
+# disposition CATLG to apply, a JCL error allocates nothing). The observation
+# vocabulary has no absence assertion, so the absent statement datasets are
+# stated here and pinned by the whole catalog once a UniKix run is imported.
+#
+# The bypass is a JCL-semantics item: the gnucobol-batch job driver records
+# COND and never evaluates it, so listing INV-RPT-053 leaves the scenario to
+# unikix alone (harness.scenarios.jcl_semantics_items). The CREASTMT job item
+# is RPT-CREASTMT-normal-01's. The baseline is derived from the JCL, never
+# observed (GAP-INF-011); a unikix run that shows another outcome, such as no
+# STEP010 line because BPE refuses the job step as a JCL error, replaces it on
+# import. The UniKix copy rewrites the STEP010 sort and the TRXFL define
+# (GAP-DOC-026) and drops CBSTM03A's control-block walk (GAP-DOC-020); neither
+# changes the COND test, but both decide what the bypassed steps would have
+# done had the test not held.
+id: RPT-CREASTMT-recovery-01
+level: integration
+type: recovery
+description: >-
+  Job CREASTMT with the posted-transaction file unavailable: DELDEF01 defines
+  the empty TRXFL cluster and ends with return code 0, STEP010 cannot read its
+  sort input and ends with return code 16, and COND=(0,NE) then bypasses the
+  TRXFL load (STEP020), the delete of the previous statements (STEP030) and
+  the statement program CBSTM03A (STEP040). The job ends with return code 16,
+  TRXFL stays empty, the catalog holds the TRXFL cluster and no statement is
+  written. Derived from the JCL; the platform may instead end the job at
+  STEP010 as a JCL error, with no return code for that step, and the import of
+  a UniKix run replaces the derived expectation with what UniKix shows.
+inventory_ids:
+- INV-RPT-053  # CREASTMT JCL COND=(0,NE) on the statement steps
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-011  # the JCL-semantics baselines are derived until BPE runs them
+- GAP-MIS-007  # dataset load, unload and catalog listing on UniKix are unconfirmed
+- GAP-MIS-006  # BPE job submission and step return codes are unconfirmed
+- GAP-DOC-026  # the UniKix copy of CREASTMT rewrites the STEP010 sort and the TRXFL define
+- GAP-DOC-020  # the UniKix copy of CBSTM03A comments out the control-block walk
+preconditions:
+  datasets:
+    CARDXREF: {base: CARDXREF}
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+  # unikix cannot fix its clock (GAP-MIS-015); no asserted value depends on the
+  # run date.
+  parameters:
+    clock_mode: relative
+  # TRANSACT is left out, so the sort step cannot open it.
+  faults:
+  - {target: TRANSACT, operation: open, condition: unavailable}
+inputs:
+  job: CREASTMT
+expected:
+  return_code: 16
+  # One line per step that ran [app/jcl/CREASTMT.JCL:22,44]; the bypassed
+  # STEP020, STEP030 and STEP040 write none, and CBSTM03A's DISPLAY lines are
+  # absent because it never runs.
+  messages:
+  - STEP DELDEF01 RC 0000
+  - STEP STEP010 RC 0016
+  file_state:
+    # Defined by DELDEF01 and never loaded, because the REPRO step was bypassed.
+    TRXFL:
+      records: []
+    # Catalog lines are platform text, the one place this scenario holds a DSN.
+    '@CATALOG':
+      contains:
+      - 'AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS CLUSTER -'

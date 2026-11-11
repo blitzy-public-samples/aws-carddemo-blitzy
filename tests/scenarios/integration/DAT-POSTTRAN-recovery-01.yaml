@@ -1,0 +1,125 @@
+# The abnormal-end disposition of the new DALYREJS generation. POSTTRAN's one
+# step STEP15 runs CBTRN02C and allocates the rejects file as a new generation
+# of the DALYREJS GDG with DISP=(NEW,CATLG,DELETE) [app/jcl/POSTTRAN.jcl:23-42]:
+# catalogued when the step ends normally, deleted when it abends. This scenario
+# makes the step abend after every DD has been allocated and the program has
+# opened all six files, so the third disposition is the one that applies.
+#
+# The abend is data-driven: no fault is injected and no dataset is left out.
+# The two invented daily transactions share one DALYTRAN-ID and are both for
+# repository card 9680294154603697, which cross-references account
+# 00000000001: credit limit 2020.00, zero cycle credit and debit, expiry
+# 2025-05-20, and an existing type 01 category 0001 balance record.
+# - Record 1 (10.00) passes validation (0.00 - 0.00 + 10.00 within the limit,
+#   origination 2022-06-10 before the expiry) and is posted: its category
+#   balance and account are rewritten and its TRANSACT record is written
+#   [app/cbl/CBTRN02C.cbl:370-444,467-579].
+# - Record 2 (20.00) passes the same checks on the rewritten account (10.00 -
+#   0.00 + 20.00) and updates the category balance and the account, but its
+#   TRANSACT WRITE repeats the primary key of record 1. TRANFILE is a randomly
+#   accessed indexed file, so the WRITE ends with file status 22 and CBTRN02C
+#   displays 'ERROR WRITING TO TRANSACTION FILE' and the status, then
+#   'ABENDING PROGRAM', and calls CEE3ABD [app/cbl/CBTRN02C.cbl:34-38,562-579,
+#   707-727]. Whether UniKix supplies CEE3ABD is GAP-MIS-010.
+# TRANSACT starts defined and empty, as TRANBKP leaves it, so the OPEN OUTPUT
+# of TRANFILE [app/cbl/CBTRN02C.cbl:254-256] is valid for a VSAM cluster.
+# Nothing is rejected, so the abend, not the data, decides whether a DALYREJS
+# generation survives.
+#
+# Only the JCL-semantics item is listed. Listing it is what leaves this
+# scenario to unikix: the gnucobol-batch job driver records DISP and never
+# evaluates it (harness.scenarios.jcl_semantics_items). The CBTRN02C
+# write-failure path is the item of the TRN-CBTRN02C recovery scenarios
+# (GAP-MIS-013); here the program only supplies the abend.
+#
+# Expected values are derived from the JCL and the program, never observed
+# (GAP-INF-011), and pinned, never corrected:
+# - return_code null: the step abended.
+# - messages: the STEP15 abend line, then the step's DISPLAY lines in order,
+#   as an ordered subsequence of what the adapter reports.
+# - @CATALOG: the catalog after the run holds the DALYREJS GDG base and no
+#   generation of it, the catalog this scenario starts from. Priority decision:
+#   the value is 'baseline'. That outcome is the absence of a catalog line,
+#   which an inline `contains` cannot state, and the complete listing is the
+#   UniKix deployment's catalog, which lives with its DSNs in the derived
+#   baseline, where an imported UniKix run can replace it
+#   (DAT-DEFGDGB-normal-01 keeps its catalog the same way).
+id: DAT-POSTTRAN-recovery-01
+level: integration
+type: recovery
+description: >-
+  POSTTRAN posts the first of two daily transactions that share one transaction
+  id, then abends in STEP15 when CBTRN02C's TRANSACT WRITE of the second meets
+  the duplicate key: 'ERROR WRITING TO TRANSACTION FILE', 'FILE STATUS IS:
+  NNNN0022' and 'ABENDING PROGRAM'. The abnormal-end disposition of
+  DISP=(NEW,CATLG,DELETE) deletes the new DALYREJS generation, so the catalog
+  afterwards holds the DALYREJS GDG base without a new generation.
+inventory_ids:
+- INV-DAT-041  # POSTTRAN JCL DISP=(NEW,CATLG,DELETE) on step failure (recovery)
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-011  # JCL-semantics baselines derived, never observed; only BPE evaluates DISP
+- GAP-MIS-007  # catalog listing on UniKix unconfirmed: @CATALOG
+- GAP-MIS-010  # whether UniKix supplies CEE3ABD, which the abend calls
+- GAP-MIS-006  # BPE job submission and step return codes unconfirmed
+preconditions:
+  datasets:
+    # Two invented records with the same DALYTRAN-ID; neither matches a
+    # repository transaction.
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9200000000000001'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '1'
+        DALYTRAN-SOURCE: POS TERM
+        DALYTRAN-DESC: Synthetic purchase
+        DALYTRAN-AMT: '10.00'
+        DALYTRAN-MERCHANT-ID: '900000001'
+        DALYTRAN-MERCHANT-NAME: Synthetic Merchant
+        DALYTRAN-MERCHANT-CITY: Testville
+        DALYTRAN-MERCHANT-ZIP: '00000'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-06-10 09:00:00.000000'
+        DALYTRAN-PROC-TS: ''
+      - DALYTRAN-ID: '9200000000000001'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '1'
+        DALYTRAN-SOURCE: POS TERM
+        DALYTRAN-DESC: Synthetic purchase repeated id
+        DALYTRAN-AMT: '20.00'
+        DALYTRAN-MERCHANT-ID: '900000001'
+        DALYTRAN-MERCHANT-NAME: Synthetic Merchant
+        DALYTRAN-MERCHANT-CITY: Testville
+        DALYTRAN-MERCHANT-ZIP: '00000'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-06-10 09:05:00.000000'
+        DALYTRAN-PROC-TS: ''
+    CARDXREF:
+      base: CARDXREF
+    ACCTDATA:
+      base: ACCTDATA
+    TCATBALF:
+      base: TCATBALF
+    # Defined and empty, as after TRANBKP.
+    TRANSACT:
+      records: []
+  parameters:
+    # unikix cannot fix its clock (GAP-MIS-015); nothing asserted here depends
+    # on the run date.
+    clock_mode: relative
+  faults: []
+inputs:
+  job: POSTTRAN
+expected:
+  return_code: null
+  messages:
+  - STEP STEP15 ABEND
+  - START OF EXECUTION OF PROGRAM CBTRN02C
+  - ERROR WRITING TO TRANSACTION FILE
+  - 'FILE STATUS IS: NNNN0022'
+  - ABENDING PROGRAM
+  file_state:
+    # The DALYREJS GDG base without a new generation; the derived baseline
+    # holds the full listing.
+    '@CATALOG': baseline

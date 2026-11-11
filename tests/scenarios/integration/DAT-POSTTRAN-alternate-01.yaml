@@ -1,0 +1,165 @@
+# The GDG generation roll: two POSTTRAN runs against one catalog each catalogue
+# a new DALYREJS generation, and the reject dataset read at the end is the
+# newer one [app/jcl/DEFGDGB.jcl:24-54] [app/jcl/POSTTRAN.jcl:34-38]
+# [app/jcl/DALYREJS.jcl:21-27]. Only a real job scheduler evaluates generation
+# references (the gnucobol-batch job driver emulates them, GAP-STB-009), so the
+# scenario lists the JCL-semantics item alone and runs only on unikix; its
+# baseline is derived from the sources below, never observed (GAP-INF-011).
+#
+# The chain is POSTTRAN, TRANBKP, POSTTRAN. CBTRN02C opens TRANFILE OUTPUT
+# [app/cbl/CBTRN02C.cbl:254-256], which VSAM refuses for a loaded cluster, so
+# TRANBKP backs TRANSACT up to a new TRANSACT-BKUP generation through REPROC,
+# deletes the cluster and defines it again empty between the runs
+# [app/jcl/TRANBKP.jcl:23-68], as the README runs TRANBKP before POSTTRAN
+# [README.md:172,177].
+#
+# DALYTRAN holds one invented purchase of 1200.00 on repository card
+# 9680294154603697, whose cross-reference names account 00000000001
+# [app/data/ASCII/cardxref.txt:49]: credit limit 2020.00, cycle credit and
+# debit 0.00, expiry 2025-05-20 [app/data/ASCII/acctdata.txt:1]. Its type 01
+# category 0001 balance exists with 0.00 [app/data/ASCII/tcatbal.txt:1].
+# - Run 1: 0.00 - 0.00 + 1200.00 is within the limit and 2025-05-20 is not
+#   before 2022-06-10, so the record is posted [app/cbl/CBTRN02C.cbl:393-444]:
+#   written to TRANSACT with the run timestamp, its category balance rewritten
+#   (no 'Creating.' line) and the account's cycle credit raised to 1200.00
+#   [app/cbl/CBTRN02C.cbl:467-579]. Nothing is rejected, so the job ends with
+#   return code 0 and its DALYREJS generation, the first, stays empty
+#   [app/cbl/CBTRN02C.cbl:227-231].
+# - TRANBKP: the backup copies the one posted record and every step ends with
+#   0; each DELETE is followed by 'IF MAXCC LE 08 THEN SET MAXCC = 0', so a
+#   DELETE that finds nothing to delete (8) leaves the step at 0
+#   [app/jcl/TRANBKP.jcl:37-46].
+# - Run 2: the same record meets the cycle credit run 1 left, 1200.00 - 0.00 +
+#   1200.00 = 2400.00 exceeds 2020.00, so it is rejected with 0102 'OVERLIMIT
+#   TRANSACTION' (the accumulation GAP-UNC-011 questions) into the second
+#   DALYREJS generation, and the job ends with return code 4.
+# DALYREJS and TRANSACT-BKUP are read as their current generation, so the one
+# reject shows that the current DALYREJS generation is the second run's, not
+# the first run's empty one, and the backup holds run 1's posted record.
+id: DAT-POSTTRAN-alternate-01
+level: integration
+type: alternate
+description: >-
+  POSTTRAN, TRANBKP and POSTTRAN again run against one catalog on one invented
+  purchase of 1200.00 for account 00000000001 (credit limit 2020.00). The first
+  run posts it and catalogues an empty first DALYREJS generation; TRANBKP backs
+  the posted record up to a first TRANSACT-BKUP generation and empties TRANSACT;
+  the second run rejects the same record with reason 0102, because the cycle
+  credit the first run left takes it over the limit, and catalogues a second
+  DALYREJS generation. The current DALYREJS generation holds that one reject,
+  so it is the newer generation, and the chain ends with return code 4.
+inventory_ids:
+- INV-DAT-043  # DEFGDGB JCL GDG generation roll (config, JCL semantics)
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-011  # JCL-semantics baselines derived, never observed
+- GAP-MIS-007  # unconfirmed UniKix dataset load, unload and catalog listing
+- GAP-MIS-006  # unconfirmed BPE job submission and sysout reading
+- GAP-UNC-011  # over-limit test on cycle totals that accumulate across postings
+preconditions:
+  datasets:
+    # One synthetic transaction; the id, merchant and description are invented.
+    # DALYTRAN-PROC-TS is left blank, as in the repository's daily transactions.
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9300000000000001'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '1'
+        DALYTRAN-SOURCE: POS TERM
+        DALYTRAN-DESC: Synthetic generation roll purchase
+        DALYTRAN-AMT: '1200.00'
+        DALYTRAN-MERCHANT-ID: '930000001'
+        DALYTRAN-MERCHANT-NAME: Synthetic Merchant 930
+        DALYTRAN-MERCHANT-CITY: Testville
+        DALYTRAN-MERCHANT-ZIP: '00930'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-06-10 09:30:00.000000'
+    CARDXREF: {base: CARDXREF}
+    ACCTDATA: {base: ACCTDATA}
+    TCATBALF: {base: TCATBALF}
+    # Defined and empty, so the first run's OPEN OUTPUT meets no loaded cluster.
+    TRANSACT: {records: []}
+  parameters:
+    # unikix cannot fix its clock (GAP-MIS-015); only TRAN-PROC-TS depends on
+    # the run date, and it is a run-timestamp matcher.
+    clock_mode: relative
+  faults: []
+inputs:
+  job: [POSTTRAN, TRANBKP, POSTTRAN]
+expected:
+  # The highest step return code of the chain: the second POSTTRAN's 4.
+  return_code: 4
+  # Each job's step lines with their DISPLAY lines, in run order; no adapter
+  # writes a line per job.
+  messages:
+  - STEP STEP15 RC 0000
+  - START OF EXECUTION OF PROGRAM CBTRN02C
+  - 'TRANSACTIONS PROCESSED :000000001'
+  - 'TRANSACTIONS REJECTED  :000000000'
+  - END OF EXECUTION OF PROGRAM CBTRN02C
+  - STEP STEP05R.PRC001 RC 0000
+  - STEP STEP05 RC 0000
+  - STEP STEP10 RC 0000
+  - STEP STEP15 RC 0004
+  - START OF EXECUTION OF PROGRAM CBTRN02C
+  - 'TRANSACTIONS PROCESSED :000000001'
+  - 'TRANSACTIONS REJECTED  :000000001'
+  - END OF EXECUTION OF PROGRAM CBTRN02C
+  # The reasons of the current DALYREJS generation: the second run's one reject.
+  reject_reason_codes:
+  - '0102'
+  datasets:
+    # The current generation: the transaction exactly as read, then the reason
+    # and its description, space-padded to 76 characters
+    # [app/cbl/CBTRN02C.cbl:176-182,446-451]. The first run's generation is
+    # empty, so this record could only come from the second run.
+    DALYREJS:
+      records:
+      - DALYTRAN-ID: '9300000000000001'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '1'
+        DALYTRAN-SOURCE: 'POS TERM  '
+        DALYTRAN-DESC: 'Synthetic generation roll purchase                                                                  '
+        DALYTRAN-AMT: '1200.00'
+        DALYTRAN-MERCHANT-ID: '930000001'
+        DALYTRAN-MERCHANT-NAME: 'Synthetic Merchant 930                            '
+        DALYTRAN-MERCHANT-CITY: 'Testville                                         '
+        DALYTRAN-MERCHANT-ZIP: '00930     '
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-06-10 09:30:00.000000'
+        DALYTRAN-PROC-TS: '                          '
+        WS-VALIDATION-FAIL-REASON: '102'
+        WS-VALIDATION-FAIL-REASON-DESC: 'OVERLIMIT TRANSACTION                                                       '
+    # The current, and only, backup generation: the record the first run
+    # posted, as 2000-POST-TRANSACTION moved it [app/cbl/CBTRN02C.cbl:424-438].
+    TRANSACT-BKUP:
+      records:
+      - TRAN-ID: '9300000000000001'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Synthetic generation roll purchase                                                                  '
+        TRAN-AMT: '1200.00'
+        TRAN-MERCHANT-ID: '930000001'
+        TRAN-MERCHANT-NAME: 'Synthetic Merchant 930                            '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '00930     '
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-06-10 09:30:00.000000'
+        TRAN-PROC-TS: {match: run-timestamp}
+  file_state:
+    # Two DALYREJS generations, one per POSTTRAN run, the second the newest and
+    # so the current one, and the one TRANSACT-BKUP generation TRANBKP wrote;
+    # the catalog starts with the GDG bases and no generation. Catalog lines
+    # name DSNs by nature, which is why only this observation holds them.
+    '@CATALOG':
+      contains:
+      - AWS.M2.CARDDEMO.DALYREJS GDG -
+      - AWS.M2.CARDDEMO.DALYREJS GENERATION G0001V00
+      - AWS.M2.CARDDEMO.DALYREJS GENERATION G0002V00
+      - AWS.M2.CARDDEMO.TRANSACT.BKUP GDG -
+      - AWS.M2.CARDDEMO.TRANSACT.BKUP GENERATION G0001V00
+  # The clock-derived timestamp, wherever the baseline or an inline record names it.
+  matchers:
+    TRAN-PROC-TS: {match: run-timestamp}
