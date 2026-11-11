@@ -1,0 +1,88 @@
+# Derived baseline of scenario TRN-COTRN02C-negative-25 (capture_platform
+# derived, tag inferred-not-observed): USER0001 signs on, takes main-menu
+# option 8 (Transaction Add) and enters a valid add on COTRN02 by card number,
+# with CONFIRM Y but the non-numeric Merchant ID 'ABC123'. Authored from the
+# source, never captured:
+# - step 1: COSGN00C XCTLs a type-U user to COMEN01C [app/cbl/COSGN00C.cbl:
+#   230-237], whose first entry sends COMEN01 headed CM00/COMEN01C, option 8
+#   listed and a blank ERRMSG [app/cbl/COMEN01C.cbl:75-90,180-192];
+# - step 2: option 8 is COTRN02C [app/cpy/COMEN02Y.cpy:67-72]; its first
+#   entry moves LOW-VALUES to COTRN2AO and sends the empty add screen headed
+#   CT02/COTRN02C with a blank ERRMSG [app/cbl/COTRN02C.cbl:112-130,516-534];
+# - step 3: the card branch keeps 0500024453765740 and moves XREF-ACCT-ID
+#   00000000050 (app/data/ASCII/cardxref.txt record 1) to ACTIDIN
+#   [app/cbl/COTRN02C.cbl:193-230,609-637]; every data field is supplied and
+#   well formed, NUMVAL-C and WS-TRAN-AMT-E edit +00000012.34 back unchanged,
+#   and CSUTLDTC accepts 2022-07-01 with mask YYYY-MM-DD for both dates
+#   [app/cbl/COTRN02C.cbl:235-427]. MIDI 'ABC123   ' IS NOT NUMERIC, so
+#   'Merchant ID must be Numeric...' goes to WS-MESSAGE and SEND-TRNADD-SCREEN
+#   sends COTRN02 with ERASE and RETURNs TRANSID CT02
+#   [app/cbl/COTRN02C.cbl:413-440,516-571]. The task ends there: no CONFIRM
+#   evaluation, no TRANSACT browse or write, so CONFIRM Y adds nothing.
+# Values are whole BMS fields of app/bms/COTRN02.bms with trailing spaces
+# kept: COTRN2AO redefines COTRN2AI [app/cpy-bms/COTRN02.CPY:145], so the
+# entered fields come back as received, MID as 'ABC123' padded to 9; ERRMSG is
+# the X(80) WS-MESSAGE in the 78-byte ERRMSGO. CURDATE (mm/dd/yy) and CURTIME
+# come from the region clock, which cannot be fixed (GAP-MIS-015), so they are
+# matchers. messages holds each step's ERRMSG in step order.
+# file_state: TRANSACT keeps the 300 records materialized from DALYTRAN; its
+# highest TRAN-ID, which an add would have numbered after, is unchanged.
+# Open under GAP-INF-007 (derived TRN end-to-end baselines) and GAP-INF-012
+# (online-only copybooks). Only `report.py --import-unikix` promotes this
+# baseline; it is never edited by hand to match a run.
+file_state:
+  TRANSACT:
+    contains:
+    - TRAN-AMT: '603.22'
+      TRAN-CARD-NUM: '3260763612337560'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+      TRAN-ID: 0000000996722787
+      TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+      TRAN-MERCHANT-ID: '800000000'
+      TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+      TRAN-MERCHANT-ZIP: 53200-7529
+      TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+      TRAN-PROC-TS: '                          '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    count: 300
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Merchant ID must be Numeric...                                                '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN008: '08. Transaction Add                     '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TRNNAME: CT02
+- '@map': COTRN02
+  ACTIDIN: '00000000050'
+  CARDNIN: '0500024453765740'
+  CONFIRM: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Merchant ID must be Numeric...                                                '
+  MCITY: 'Testville                '
+  MID: 'ABC123   '
+  MNAME: 'Test Merchant                 '
+  MZIP: '27601     '
+  PGMNAME: COTRN02C
+  TCATCD: '0001'
+  TDESC: 'Test purchase                                               '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-07-01'
+  TPROCDT: '2022-07-01'
+  TRNAMT: '+00000012.34'
+  TRNNAME: CT02
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'

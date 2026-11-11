@@ -1,0 +1,51 @@
+file_state:
+  CARDDATA:
+    contains:
+    - CARD-ACCT-ID: '50'
+      CARD-ACTIVE-STATUS: Y
+      CARD-CVV-CD: '747'
+      CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+      CARD-EXPIRAION-DATE: '2023-03-09'
+      CARD-NUM: '0500024453765740'
+    count: 50
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN005: '05. Credit Card Update                  '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDUP
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': COCRDUP
+  ACCTSID: '00000000050'
+  CARDSID: '0500024453765740'
+  CRDNAME: 'ANIYA VON                                         '
+  CRDSTCD: Y
+  ERRMSG: '                                                                                '
+  EXPMON: '03'
+  EXPYEAR: '2023'
+  INFOMSG: 'Details of selected card shown above    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': COCRDUP
+  ACCTSID: '00000000050'
+  CARDSID: '0500024453765740'
+  CRDNAME: 'ANIYA VON                                         '
+  CRDSTCD: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Invalid card expiry year                                                        '
+  EXPMON: '03'
+  EXPYEAR: '2100'
+  FKEYSC: '                  '
+  INFOMSG: 'Update card details presented above.    '
+  PGMNAME: COCRDUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCUP
