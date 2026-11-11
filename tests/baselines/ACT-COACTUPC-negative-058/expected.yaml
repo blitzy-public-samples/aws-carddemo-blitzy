@@ -1,0 +1,204 @@
+# Derived baseline of scenario ACT-COACTUPC-negative-058 (capture_platform:
+# derived), authored from the app/ source and never observed: no TPE region
+# runs in CI. Open until a UniKix run of the app/ build is imported:
+# GAP-INF-005 (derived ACT end-to-end baselines) and GAP-INF-012 (online-only
+# copybooks such as CSSETATY).
+# Steps 1-3: USER0001 signs on, option 2 XCTLs to COACTUPC, and ENTER with
+# account 00000000001 shows the fetched account and customer with the change
+# prompt [app/cbl/COACTUPC.cbl:2787-2865,2955-2981].
+# Step 4: ACRCYCR is erased and ABC typed, so ACUP-NEW-CURR-CYC-CREDIT-X holds
+# ABC padded to 15; TEST-NUMVAL-C refuses it, so NUMVAL-C is not applied and
+# the value differs from the fetched 0.00. 1200-EDIT-MAP-INPUTS sets
+# ACUP-CHANGES-NOT-OK and edits the fields in order. Every edit before it
+# passes on these fixtures; then 1250-EDIT-SIGNED-9V2 finds the field supplied
+# but TEST-NUMVAL-C non-zero and, the message being still off, STRINGs
+# TRIM(WS-EDIT-VARIABLE-NAME) and ' is not valid' into WS-RETURN-MSG; no later
+# edit can replace it [app/cbl/COACTUPC.cbl:1114-1126,1460-1520,2180-2213].
+# ERRMSG pins the X(25) truncation of the field name: the 26-character literal
+# 'Current Cycle Credit Limit' moved into WS-EDIT-VARIABLE-NAME keeps
+# 'Current Cycle Credit Limi', so the line reads 'Current Cycle Credit Limi is
+# not valid' (38 characters). The item is worded with the full name; the
+# source text is pinned as produced (GAP-DEF-018) and never corrected
+# [app/cbl/COACTUPC.cbl:53,1515].
+# 2000-DECIDE-ACTION continues, so nothing is rewritten; 3203 moves the refused
+# ACUP-NEW-CURR-CYC-CREDIT-X to ACRCYCRO as typed, 3250 sets
+# PROMPT-FOR-CHANGES and moves the message to ERRMSG, CSSETATY colours the
+# field red without the '*' of a blank one, and 3390 brightens FKEY12 because
+# a change was made; the colour and the cursor on ACRCYCR are attributes, not
+# captured field values [app/cbl/COACTUPC.cbl:2596-2597,2896-2902,2955-2981,
+# 3069-3072,3285-3289,3566-3581] [app/cpy/CSSETATY.cpy:17-26].
+# This pins the app/ behavior: the UniKix COACTUPC comments out the
+# TEST-NUMVAL-C checks of this edit, so ABC is not refused there
+# (GAP-DOC-022); such a record is UniKix-copy behavior and never replaces this
+# file.
+# Screen values are full BMS width with trailing spaces kept (ERRMSG 78,
+# INFOMSG 45, ACRCYCR 15), because screens compare exactly; tpe.py erases a
+# field before typing, so ACRCYCR is ABC followed by 12 spaces. CURDATE and
+# CURTIME come from the region clock, which no confirmed command sets
+# (GAP-MIS-015), so they keep the scenario's matchers. file_state holds the
+# records as the preconditions materialize them, decoded through CVACT01Y and
+# CVCUS01Y: the refusal rewrites neither file.
+file_state:
+  ACCTDATA:
+    contains:
+    - ACCT-ACTIVE-STATUS: Y
+      ACCT-CASH-CREDIT-LIMIT: '1020.00'
+      ACCT-CREDIT-LIMIT: '2020.00'
+      ACCT-CURR-BAL: '194.00'
+      ACCT-CURR-CYC-CREDIT: '0.00'
+      ACCT-CURR-CYC-DEBIT: '0.00'
+      ACCT-EXPIRAION-DATE: '2025-05-20'
+      ACCT-GROUP-ID: '          '
+      ACCT-ID: '1'
+      ACCT-OPEN-DATE: '2014-11-20'
+      ACCT-REISSUE-DATE: '2025-05-20'
+    count: 50
+  CUSTDATA:
+    contains:
+    - CUST-ADDR-COUNTRY-CD: USA
+      CUST-ADDR-LINE-1: '100 Test Street                                   '
+      CUST-ADDR-LINE-2: 'Suite 1                                           '
+      CUST-ADDR-LINE-3: 'Raleigh                                           '
+      CUST-ADDR-STATE-CD: NC
+      CUST-ADDR-ZIP: '27601     '
+      CUST-DOB-YYYY-MM-DD: '1961-06-08'
+      CUST-EFT-ACCOUNT-ID: 0053581756
+      CUST-FICO-CREDIT-SCORE: '700'
+      CUST-FIRST-NAME: 'Testfirst                '
+      CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+      CUST-ID: '1'
+      CUST-LAST-NAME: 'Testlast                 '
+      CUST-MIDDLE-NAME: 'Testmiddle               '
+      CUST-PHONE-NUM-1: '(919)555-0101  '
+      CUST-PHONE-NUM-2: '(919)555-0102  '
+      CUST-PRI-CARD-HOLDER-IND: Y
+      CUST-SSN: '123456789'
+    count: 50
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN002: '02. Account Update                      '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
+  ACSADL1: '100 Test Street                                   '
+  ACSADL2: 'Suite 1                                           '
+  ACSCITY: 'Raleigh                                           '
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
+  ACSFNAM: 'Testfirst                '
+  ACSGOVT: 'TESTGOVT0001        '
+  ACSHLIM: +      1,020.00
+  ACSLNAM: 'Testlast                 '
+  ACSMNAM: 'Testmiddle               '
+  ACSPFLG: Y
+  ACSPH1A: '919'
+  ACSPH1B: '555'
+  ACSPH1C: '0101'
+  ACSPH2A: '919'
+  ACSPH2B: '555'
+  ACSPH2C: '0102'
+  ACSSTTE: NC
+  ACSTFCO: '700'
+  ACSTNUM: '000000001'
+  ACSTTUS: Y
+  ACSZIPC: '27601'
+  ACTSSN1: '123'
+  ACTSSN2: '45'
+  ACTSSN3: '6789'
+  ACURBAL: +        194.00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  DOBDAY: 08
+  DOBMON: '06'
+  DOBYEAR: '1961'
+  ERRMSG: '                                                                              '
+  EXPDAY: '20'
+  EXPMON: '05'
+  EXPYEAR: '2025'
+  FKEY05: '       '
+  FKEY12: '          '
+  FKEYS: ENTER=Process F3=Exit
+  INFOMSG: 'Update account details presented above.      '
+  OPNDAY: '20'
+  OPNMON: '11'
+  OPNYEAR: '2014'
+  PGMNAME: COACTUPC
+  RISDAY: '20'
+  RISMON: '05'
+  RISYEAR: '2025'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP
+- '@map': COACTUP
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: 'ABC            '
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
+  ACSADL1: '100 Test Street                                   '
+  ACSADL2: 'Suite 1                                           '
+  ACSCITY: 'Raleigh                                           '
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
+  ACSFNAM: 'Testfirst                '
+  ACSGOVT: 'TESTGOVT0001        '
+  ACSHLIM: +      1,020.00
+  ACSLNAM: 'Testlast                 '
+  ACSMNAM: 'Testmiddle               '
+  ACSPFLG: Y
+  ACSPH1A: '919'
+  ACSPH1B: '555'
+  ACSPH1C: '0101'
+  ACSPH2A: '919'
+  ACSPH2B: '555'
+  ACSPH2C: '0102'
+  ACSSTTE: NC
+  ACSTFCO: '700'
+  ACSTNUM: '000000001'
+  ACSTTUS: Y
+  ACSZIPC: '27601'
+  ACTSSN1: '123'
+  ACTSSN2: '45'
+  ACTSSN3: '6789'
+  ACURBAL: +        194.00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  DOBDAY: 08
+  DOBMON: '06'
+  DOBYEAR: '1961'
+  ERRMSG: 'Current Cycle Credit Limi is not valid                                        '
+  EXPDAY: '20'
+  EXPMON: '05'
+  EXPYEAR: '2025'
+  FKEY05: '       '
+  FKEY12: F12=Cancel
+  FKEYS: ENTER=Process F3=Exit
+  INFOMSG: 'Update account details presented above.      '
+  OPNDAY: '20'
+  OPNMON: '11'
+  OPNYEAR: '2014'
+  PGMNAME: COACTUPC
+  RISDAY: '20'
+  RISMON: '05'
+  RISYEAR: '2025'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP
