@@ -1,0 +1,278 @@
+# TRNRPT00 is the job CORPT00C writes to the JOBS queue for a report request:
+# '//STEP10 EXEC PROC=TRANREPT' with the report window overriding the SYMNAMES of
+# STEP05R and the DATEPARM of STEP10R in-stream [app/cbl/CORPT00C.cbl:84-127].
+# The window here, 2022-06-01 to 2022-06-30, is what a custom request writes; the
+# monthly and yearly windows CORPT00C derives from the run date are its e2e
+# scenarios, and the TDQ write itself is observed only there, so neither the TDQ
+# JOBS item nor any CORPT00C item is listed.
+#
+# The procedure runs three steps [app/proc/TRANREPT.prc:21-78]:
+# - STEP01R calls REPROC, whose IDCAMS step reads REPROCT as SYSIN, 'REPRO
+#   INFILE(FILEIN) OUTFILE(FILEOUT)' [app/proc/REPROC.prc:21-28]
+#   [app/ctl/REPROCT.ctl:15]: the TRANSACT KSDS is unloaded, in TRAN-ID order,
+#   into a new TRANSACT-BKUP generation;
+# - STEP05R sorts that backup on TRAN-CARD-NUM and keeps the records whose
+#   TRAN-PROC-DT (columns 305-314) lies between the two dates, both included,
+#   into a new TRANSACT-DALY generation;
+# - STEP10R runs CBTRN03C on it with the in-stream DATEPARM and writes a new
+#   TRANREPT generation.
+#
+# TRANSACT holds seven invented transactions on two repository cards:
+# 0500024453765740 (account 00000000050) and 9680294154603697 (account
+# 00000000001) [app/data/ASCII/cardxref.txt:1,49]. Five are processed inside the
+# window, on its first day (one at 00.00.00), on 2022-06-15 and on its last day
+# (one at 23.59.59); one on 2022-05-31 and one on 2022-07-01 fall outside it and
+# are left out by the sort. Each type and category pair is a key of trancatg.txt.
+# The TRAN-IDs interleave the two cards, so the sorted TRANSACT-DALY shows the
+# card order: 0500024453765740 first. Records of one card keep their backup
+# (TRAN-ID) order, which the SORT emulation leaves as it is (GAP-STB-006); that
+# order is pinned as observed.
+#
+# Every TRANSACT-DALY record lies inside the window, so CBTRN03C reports all five
+# and its out-of-window stop is not reached [app/cbl/CBTRN03C.cbl:170-206]. The
+# card change writes the account total of card 0500024453765740, +60.00, and a
+# separator [app/cbl/CBTRN03C.cbl:181-185,306-316]. At end of file the last
+# amount, -10.00, is added to the page total a second time, so the page and grand
+# totals read +58.25 where the five amounts sum to +68.25, and the last card's
+# account total is never written [app/cbl/CBTRN03C.cbl:197-203,293-322]; both are
+# pinned as observed, never fixed (GAP-DEF-012). The procedure itself begins
+# '//REPROC PROC' [app/proc/TRANREPT.prc:1]: the job driver finds the member by
+# name, and how a real scheduler resolves 'EXEC PROC=TRANREPT' is verified only
+# by RPT-TRNRPT00-alternate-01 (GAP-DEF-008); the UniKix copy's procedure header
+# differs (GAP-DOC-028).
+#
+# The step lines are the common form of the job driver and bpe.py, under the
+# step names jobs.yaml and resources.yaml give, and neither adapter writes a
+# line per job. DISPLAY TRAN-RECORD shows each reported 350-byte record whole,
+# TRAN-AMT overpunch-signed and the FILLER as trailing spaces; the two
+# end-of-file DISPLAYs of elementary signed items show a separate trailing sign,
+# as libcob displays them (GAP-STB-011). Report lines are whole 133-byte records
+# with their trailing spaces. The @CATALOG lines are the GDG bases and the first
+# generation each new dataset gets in the scenario's own catalog. All values come
+# from a GnuCOBOL 3.2 run of the app/ sources under the suite's compile options.
+id: RPT-TRNRPT00-normal-01
+level: integration
+type: normal
+description: >-
+  The TRNRPT00 job that CORPT00C submits for the report window 2022-06-01 to
+  2022-06-30 runs procedure TRANREPT: STEP01R (procedure REPROC with the REPROCT
+  control card) backs the seven TRANSACT records up in TRAN-ID order, STEP05R
+  keeps the five processed inside the window, dates on its bounds included,
+  sorted by card number, and STEP10R (CBTRN03C) reports them under 'Date Range:
+  2022-06-01 to 2022-06-30', with an account total of +60.00 at the card change
+  and, at end of file, page and grand totals of +58.25 that count the last
+  amount twice and no account total for the last card. Every step ends with RC 0,
+  and the catalog gains a first generation of the backup, the sorted daily file
+  and the report.
+inventory_ids:
+- INV-RPT-009  # TRANREPT proc (app/proc/TRANREPT.prc), run by TRNRPT00
+- INV-DAT-026  # REPROC proc, called by STEP01R
+- INV-DAT-027  # REPROCT control card, the SYSIN of the REPROC step
+tags:
+- suspected-defect
+gap_ids:
+- GAP-DEF-008  # the TRANREPT proc begins '//REPROC PROC'; its resolution is verified only on unikix
+- GAP-DEF-012  # the doubled last amount and the missing last account total
+- GAP-DOC-028  # the UniKix copy's TRANREPT proc header and REPROC call differ
+- GAP-STB-005  # IDCAMS REPRO with REPROCT emulated on gnucobol-batch
+- GAP-STB-006  # DFSORT INCLUDE and SORT with SYMNAMES emulated, ASCII collating sequence
+- GAP-STB-007  # DISP=(NEW,CATLG,DELETE) of the three new datasets emulated
+- GAP-STB-009  # catalog and GDG generations emulated
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    CARDXREF: {base: CARDXREF}
+    TRANTYPE: {base: TRANTYPE}
+    TRANCATG: {base: TRANCATG}
+    # Seven invented posted transactions; ids, descriptions and merchants match no
+    # repository transaction.
+    TRANSACT:
+      records:
+      - TRAN-ID: '9900000000000701'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '0001'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase before the window
+        TRAN-AMT: '40.00'
+        TRAN-MERCHANT-ID: '900000701'
+        TRAN-MERCHANT-NAME: Synthetic Store One
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-05-31 09:00:00.000000'
+        TRAN-PROC-TS: '2022-05-31-23.59.59.000000'
+      - TRAN-ID: '9900000000000702'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '0001'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase on the start date
+        TRAN-AMT: '25.50'
+        TRAN-MERCHANT-ID: '900000702'
+        TRAN-MERCHANT-NAME: Synthetic Store Two
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-05-31 18:00:00.000000'
+        TRAN-PROC-TS: '2022-06-01-00.00.00.000000'
+      - TRAN-ID: '9900000000000703'
+        TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '0002'
+        TRAN-SOURCE: OPERATOR
+        TRAN-DESC: Synthetic electronic payment
+        TRAN-AMT: '-60.00'
+        TRAN-MERCHANT-ID: '900000703'
+        TRAN-MERCHANT-NAME: Synthetic Payment Desk
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-01 08:00:00.000000'
+        TRAN-PROC-TS: '2022-06-01-12.00.00.000000'
+      - TRAN-ID: '9900000000000704'
+        TRAN-TYPE-CD: '03'
+        TRAN-CAT-CD: '0001'
+        TRAN-SOURCE: OPERATOR
+        TRAN-DESC: Synthetic credit to account
+        TRAN-AMT: '-7.25'
+        TRAN-MERCHANT-ID: '900000704'
+        TRAN-MERCHANT-NAME: Synthetic Credit Office
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-06-15 09:00:00.000000'
+        TRAN-PROC-TS: '2022-06-15-09.30.00.000000'
+      - TRAN-ID: '9900000000000705'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '0002'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic cash advance on the end date
+        TRAN-AMT: '120.00'
+        TRAN-MERCHANT-ID: '900000705'
+        TRAN-MERCHANT-NAME: Synthetic Cash Point
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-30 20:00:00.000000'
+        TRAN-PROC-TS: '2022-06-30-23.59.59.000000'
+      - TRAN-ID: '9900000000000706'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '0001'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase after the window
+        TRAN-AMT: '15.00'
+        TRAN-MERCHANT-ID: '900000706'
+        TRAN-MERCHANT-NAME: Synthetic Store Three
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-30 22:00:00.000000'
+        TRAN-PROC-TS: '2022-07-01-00.00.00.000000'
+      - TRAN-ID: '9900000000000707'
+        TRAN-TYPE-CD: '05'
+        TRAN-CAT-CD: '0001'
+        TRAN-SOURCE: OPERATOR
+        TRAN-DESC: Synthetic refund credit
+        TRAN-AMT: '-10.00'
+        TRAN-MERCHANT-ID: '900000707'
+        TRAN-MERCHANT-NAME: Synthetic Store Two
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-06-29 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-30-08.00.00.000000'
+  parameters:
+    # Nothing asserted depends on the run date, so unikix can run the scenario
+    # without clock control (GAP-MIS-015).
+    clock_mode: relative
+    # The report window CORPT00C writes into both in-stream overrides.
+    DATEPARM: '2022-06-01 2022-06-30'
+  faults: []
+inputs:
+  job: TRNRPT00
+expected:
+  return_code: 0
+  messages:
+  - 'STEP STEP10.STEP01R.PRC001 RC 0000'
+  - 'STEP STEP10.STEP05R RC 0000'
+  - 'STEP STEP10.STEP10R RC 0000'
+  # CBTRN03C's DISPLAY lines follow its step line.
+  - 'START OF EXECUTION OF PROGRAM CBTRN03C'
+  - 'Reporting from 2022-06-01 to 2022-06-30'
+  # DISPLAY TRAN-RECORD for each record of the sorted daily file, before its
+  # detail line is written: card 0500024453765740 first, then 9680294154603697.
+  - '9900000000000703020002OPERATOR  Synthetic electronic payment                                                                        0000000600}900000703Synthetic Payment Desk                            Testville                                         00000     05000244537657402022-06-01 08:00:00.0000002022-06-01-12.00.00.000000                    '
+  - '9900000000000705010002POS TERM  Synthetic cash advance on the end date                                                              0000001200{900000705Synthetic Cash Point                              Testville                                         00000     05000244537657402022-06-30 20:00:00.0000002022-06-30-23.59.59.000000                    '
+  - '9900000000000702010001POS TERM  Synthetic purchase on the start date                                                                0000000255{900000702Synthetic Store Two                               Testville                                         00000     96802941546036972022-05-31 18:00:00.0000002022-06-01-00.00.00.000000                    '
+  - '9900000000000704030001OPERATOR  Synthetic credit to account                                                                         0000000072N900000704Synthetic Credit Office                           Testville                                         00000     96802941546036972022-06-15 09:00:00.0000002022-06-15-09.30.00.000000                    '
+  - '9900000000000707050001OPERATOR  Synthetic refund credit                                                                             0000000100}900000707Synthetic Store Two                               Testville                                         00000     96802941546036972022-06-29 10:00:00.0000002022-06-30-08.00.00.000000                    '
+  # End of file: the last TRAN-AMT, still in TRAN-RECORD, and WS-PAGE-TOTAL
+  # before the second addition.
+  - 'TRAN-AMT 00000001000-'
+  - 'WS-PAGE-TOTAL00000006825+'
+  - 'END OF EXECUTION OF PROGRAM CBTRN03C'
+  datasets:
+    # The REPRO unload of TRANSACT: all seven records in TRAN-ID order.
+    TRANSACT-BKUP:
+      records:
+      - {TRAN-ID: '9900000000000701', TRAN-TYPE-CD: '01', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '40.00',
+         TRAN-PROC-TS: '2022-05-31-23.59.59.000000'}
+      - {TRAN-ID: '9900000000000702', TRAN-TYPE-CD: '01', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '25.50',
+         TRAN-PROC-TS: '2022-06-01-00.00.00.000000'}
+      - {TRAN-ID: '9900000000000703', TRAN-TYPE-CD: '02', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '-60.00',
+         TRAN-PROC-TS: '2022-06-01-12.00.00.000000'}
+      - {TRAN-ID: '9900000000000704', TRAN-TYPE-CD: '03', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '-7.25',
+         TRAN-PROC-TS: '2022-06-15-09.30.00.000000'}
+      - {TRAN-ID: '9900000000000705', TRAN-TYPE-CD: '01', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '120.00',
+         TRAN-PROC-TS: '2022-06-30-23.59.59.000000'}
+      - {TRAN-ID: '9900000000000706', TRAN-TYPE-CD: '01', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '15.00',
+         TRAN-PROC-TS: '2022-07-01-00.00.00.000000'}
+      - {TRAN-ID: '9900000000000707', TRAN-TYPE-CD: '05', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '-10.00',
+         TRAN-PROC-TS: '2022-06-30-08.00.00.000000'}
+    # The sort output: the five records processed from 2022-06-01 to 2022-06-30,
+    # by card; 9900000000000701 (2022-05-31) and 9900000000000706 (2022-07-01)
+    # are left out.
+    TRANSACT-DALY:
+      records:
+      - {TRAN-ID: '9900000000000703', TRAN-TYPE-CD: '02', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '-60.00',
+         TRAN-PROC-TS: '2022-06-01-12.00.00.000000'}
+      - {TRAN-ID: '9900000000000705', TRAN-TYPE-CD: '01', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '120.00',
+         TRAN-PROC-TS: '2022-06-30-23.59.59.000000'}
+      - {TRAN-ID: '9900000000000702', TRAN-TYPE-CD: '01', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '25.50',
+         TRAN-PROC-TS: '2022-06-01-00.00.00.000000'}
+      - {TRAN-ID: '9900000000000704', TRAN-TYPE-CD: '03', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '-7.25',
+         TRAN-PROC-TS: '2022-06-15-09.30.00.000000'}
+      - {TRAN-ID: '9900000000000707', TRAN-TYPE-CD: '05', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '-10.00',
+         TRAN-PROC-TS: '2022-06-30-08.00.00.000000'}
+    TRANREPT:
+      records:
+      # REPORT-NAME-HEADER, the blank line, TRANSACTION-HEADER-1 and the
+      # TRANSACTION-HEADER-2 separator, written before the first detail line.
+      - 'DALYREPT                              Daily Transaction Report                 Date Range: 2022-06-01 to 2022-06-30                  '
+      - '                                                                                                                                     '
+      - 'Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      # Card 0500024453765740, account 00000000050: -60.00 + 120.00.
+      - '9900000000000703 00000000050 02-Payment         0002-Electronic payment            OPERATOR      -         60.00                     '
+      - '9900000000000705 00000000050 01-Purchase        0002-Regular Cash Advance          POS TERM               120.00                     '
+      - 'Account Total....................................................................................+         60.00                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      # Card 9680294154603697, account 00000000001.
+      - '9900000000000702 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                25.50                     '
+      - '9900000000000704 00000000001 03-Credit          0001-Credit to Account             OPERATOR      -          7.25                     '
+      - '9900000000000707 00000000001 05-Refund          0001-Refund credit                 OPERATOR      -         10.00                     '
+      # End of file: +68.25 plus the last amount -10.00 again, then the grand
+      # total; no account total for the last card (GAP-DEF-012).
+      - 'Page Total ......................................................................................+         58.25                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      - 'Grand Total......................................................................................+         58.25                     '
+  file_state:
+    # The GDG bases and the new generation of each dataset the three steps
+    # catalogue at normal end, in the observation's sorted line order.
+    '@CATALOG':
+      contains:
+      - 'AWS.M2.CARDDEMO.TRANREPT GDG -'
+      - 'AWS.M2.CARDDEMO.TRANREPT GENERATION G0001V00'
+      - 'AWS.M2.CARDDEMO.TRANSACT.BKUP GDG -'
+      - 'AWS.M2.CARDDEMO.TRANSACT.BKUP GENERATION G0001V00'
+      - 'AWS.M2.CARDDEMO.TRANSACT.DALY GDG -'
+      - 'AWS.M2.CARDDEMO.TRANSACT.DALY GENERATION G0001V00'
