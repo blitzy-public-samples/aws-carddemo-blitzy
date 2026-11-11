@@ -1,0 +1,11 @@
+# ACT-COACTVWC-alternate-01: baseline derived from app/cbl/COACTVWC.cbl:262-591 and app/bms/COACTVW.bms, never captured; the scenario is tagged inferred-not-observed (GAP-INF-005, GAP-INF-012).
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: dbf025ac78e0dd5d24cb937bd4023ab17d6e8c27
+source_identity:
+  commit: dbf025ac78e0dd5d24cb937bd4023ab17d6e8c27
+  tree: app
+  units:
+    app/bms/COACTVW.bms: e229c1b4c9d3f52a5b8ebbb5266c9e47502ac90577b46f5f146bdb34b05f7f46
+    app/cbl/COACTVWC.cbl: 4f1e55176f69edfb55b7af7a161aceb8c3bc3bd1b2924a704a76256e0e751b54
