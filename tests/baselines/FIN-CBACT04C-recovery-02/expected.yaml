@@ -1,0 +1,33 @@
+# Derived from app/cbl/CBACT04C.cbl:181-217,325-348,372-440,462-515,628-648;
+# inferred-not-observed (GAP-INF-013, GAP-MIS-013); pinned, never corrected.
+# The first TCATBALF record (account 00000000901, 01/0001, 1200.00) is displayed
+# as its 50-byte image, filler spaces included. Its account and cross-reference
+# are found, and group A000000000 01/0001 gives rate 15.00, so no fallback lines
+# precede the WRITE of its interest transaction to TRANSACT (logical SYSTRAN).
+# The second READ fails: the io-error is taken as file status 30 (numeric, not
+# 9x), shown as NNNN0030. CEE3ABD ends the run (GAP-STB-001, GAP-DEF-001): no
+# account rewrite, close or end-of-execution line, and return_code is null.
+datasets:
+  SYSTRAN:
+    records:
+    - TRAN-AMT: '15.00'
+      TRAN-CARD-NUM: '9999000022220901'
+      TRAN-CAT-CD: '5'
+      TRAN-DESC: "Int. for a/c 00000000901\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+      TRAN-ID: '2022071800000001'
+      TRAN-MERCHANT-CITY: '                                                  '
+      TRAN-MERCHANT-ID: '0'
+      TRAN-MERCHANT-NAME: '                                                  '
+      TRAN-MERCHANT-ZIP: '          '
+      TRAN-ORIG-TS: 2022-07-06-10.00.00.000000
+      TRAN-PROC-TS: 2022-07-06-10.00.00.000000
+      TRAN-SOURCE: 'System    '
+      TRAN-TYPE-CD: '01'
+messages:
+- START OF EXECUTION OF PROGRAM CBACT04C
+- '000000009010100010000012000{                      '
+- ERROR READING TRANSACTION CATEGORY FILE
+- 'FILE STATUS IS: NNNN0030'
+- ABENDING PROGRAM
+- CARDDEMO-ABEND CEE3ABD
+return_code: null
