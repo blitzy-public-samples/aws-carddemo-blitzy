@@ -23,9 +23,14 @@ a job is waited for ``DEFAULT_DEADLINE_S`` seconds at most, and a job still
 running then is a missing capability (GAP-MIS-006). A submission whose job
 number cannot be read stays recorded until ``cancel_unfinished`` finds it
 among the node's active jobs and cancels it, and no other job is submitted
-meanwhile. ``cancel_unfinished`` and ``confirm_no_active_jobs`` take a
-scenario deadline as well: with one (the quiescence check before a
-scenario) their commands are capped at the time left and its expiry is
+meanwhile. Without that listing (``bpe_active_jobs``) the adapter restarts
+BPE instead, and ``reconcile_for_restart`` settles the tracked work first:
+it cancels, or proves ended from its sysout, each job not seen completed,
+never resolves such a submission, and raises GAP-MIS-004 for whatever it
+could not settle, which then stays tracked. ``cancel_unfinished``,
+``confirm_no_active_jobs`` and ``reconcile_for_restart`` take a scenario
+deadline as well: with one (the quiescence check before a scenario) their
+commands are capped at the time left and its expiry is
 ``ScenarioTimeout``; without one (cleanup after a timeout or a failure,
 when it may have passed) only their own ``timeout_s`` bounds them.
 
@@ -1293,7 +1298,8 @@ class BatchService:
         BPE may run the job. While one is kept, every submit is refused with
         ``AdapterUnavailable`` (GAP-MIS-006) and runs nothing, until
         ``cancel_unfinished`` reconciles it with the node's active jobs or
-        ``confirm_no_active_jobs`` finds none active."""
+        ``confirm_no_active_jobs`` finds none active; ``reconcile_for_restart``,
+        which has no such listing, keeps it and raises GAP-MIS-004."""
         return self._submit(job_name, jcl_text, entry_id, _Budget(deadline))
 
     def _submit(
@@ -1940,6 +1946,66 @@ class BatchService:
                 f"BPE job identity cannot be established for {'; '.join(unresolved)}; no job is "
                 f"submitted until it is reconciled",
                 _GAP_SUBMISSION,
+            )
+
+    def reconcile_for_restart(self, *, deadline: float | None = None) -> None:
+        """Settle the tracked BPE work before a BPE restart stands in for
+        ``bpe_active_jobs``, which is unavailable, in the quiescence check.
+
+        Each submitted or adopted job not seen completed is cancelled with
+        ``bpe_cancel`` while that entry probes available, and then cleared,
+        as ``cancel_unfinished`` does. Otherwise its sysout is polled once
+        (``_job_files``), every file read kept as evidence whatever the poll
+        found, and the job is cleared only when that sysout shows it
+        completed (``_completed``). An unidentified submission is never
+        resolved: without the node's job listing its job cannot be
+        identified, and a BPE stop and start is no evidence that BPE dropped
+        work it had queued. A job left unproven or a submission left
+        unidentified is ``AdapterUnavailable`` (GAP-MIS-004) naming each of
+        them, so the caller never runs the restart and never claims
+        quiescence: what was proven ended is cleared, everything else stays
+        tracked, so ``pending`` stays true and every submit stays refused. A
+        command, probe or sysout read that fails propagates as it is. Nothing
+        tracked runs nothing. With a scenario ``deadline`` (the quiescence
+        check before a scenario) every command and probe is capped at the
+        time left, and its expiry is ``ScenarioTimeout``; without one
+        (cleanup after a timeout or a failure, when it may have passed) only
+        their own ``timeout_s`` bounds them."""
+        budget = _Budget(deadline)
+        cancel = bool(self._unfinished) and self.commands.available(
+            "bpe_cancel", self.env, deadline_left=budget.command_left("probing bpe_cancel")
+        )
+        unproven: list[str] = []
+        for number, run in list(self._unfinished.items()):
+            if cancel:
+                self._run("bpe_cancel", budget, job_number=number)
+                self._unfinished.pop(number, None)
+                continue
+            files: dict[str, bytes] = {}
+            reading: dict[str, bytes] = {}
+            try:
+                files = self._job_files(run, budget, reading)
+            finally:
+                # The files a poll cut short had read already are kept too.
+                self._keep_evidence(run, {**files, **reading})
+            if files and self._completed(run, files):
+                run.sysout, run.completed = files, True
+                self._unfinished.pop(number, None)
+            else:
+                unproven.append(
+                    f"job {run.label} is not seen completed: bpe_cancel is unavailable and its "
+                    f"sysout does not show it ended"
+                )
+        unproven.extend(
+            f"the submission of {attempt.label} may have been accepted without a job number, and "
+            f"without bpe_active_jobs its job cannot be identified"
+            for attempt in self._unidentified
+        )
+        if unproven:
+            raise AdapterUnavailable(
+                f"a BPE restart cannot confirm BPE quiescence: {'; '.join(unproven)}; a BPE stop "
+                f"and start is no evidence that this work ended",
+                _GAP_QUIESCENCE,
             )
 
     def confirm_no_active_jobs(self, *, deadline: float | None = None) -> None:

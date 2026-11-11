@@ -614,8 +614,9 @@ class Adapter(abc.ABC):
     The runner (``harness/runner.py``) drives every scenario the same way: it
     creates a fresh ``<work root>/<scenario_id>/`` working directory, writes
     the materialized preconditions into ``<workdir>/inputs/``, sets
-    ``deadline``, checks the observation rule with ``can_observe``, then calls
-    ``prepare`` and ``execute``, and always ``cleanup`` in a ``finally``.
+    ``deadline``, calls ``refuse``, checks the observation rule with
+    ``can_observe``, then calls ``prepare`` and ``execute``, and always
+    ``cleanup`` in a ``finally``.
 
     A concrete subclass sets ``name`` (lower-case words joined by ``-``, such
     as ``gnucobol-batch`` or ``unikix``). Any adapter that implements this
@@ -674,6 +675,14 @@ class Adapter(abc.ABC):
         from harness.scenarios import capable_adapters  # harness imports this module
 
         return self.name in capable_adapters(scenario)
+
+    def refuse(self, scenario: Any) -> None:
+        """Raise ``AdapterUnavailable`` for a scenario this adapter refuses
+        whatever it can observe. The runner calls it just before the
+        observation rule, so such a refusal never depends on
+        ``observations()``. It must not create files, start processes or reach
+        the platform. The default refuses nothing."""
+        return None
 
     def can_observe(self, key: str) -> bool:
         """Whether this adapter can produce the observation ``key`` (a name

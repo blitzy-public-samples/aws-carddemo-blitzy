@@ -40,8 +40,15 @@ refused the same way when the run never needs its target. A program run
 needs only the logical and ``also_accepts`` names of the dds that the unit,
 or a unit it calls, opens INPUT, I-O or EXTEND: no SELECT in ``app/cbl`` is
 OPTIONAL, so such an OPEN fails on a missing file, while OPEN OUTPUT
-creates one. A job run needs only the datasets that a dd or IDCAMS command
-of its jobs uses. Every fault is refused before any dataset is laid out.
+creates one. A job run needs only the datasets a use of its jobs reaches
+before the run creates them itself (``datasets.Catalog.seed``): a SHR or OLD
+dd that the step's program does not open OUTPUT, an IDCAMS command other
+than the DEFINE of the name, or, for a GDG logical, a read of the relative
+generation that still names the one the precondition would be. A dataset
+the jobs never use, only create (NEW or MOD dds, dds their programs open
+OUTPUT, IDCAMS DEFINE, new generations) or read only as the run itself
+created it is refused. Every fault is refused before any dataset is laid
+out.
 
 Page zero (GAP-MIS-002): a scenario that runs CBSTM03A (a unit with a
 ``tiot`` in ``programs.yaml``), directly or as a step of its jobs, needs the
@@ -552,7 +559,13 @@ class GnuCOBOLBatchAdapter(Adapter):
         jobs_cfg = _jobs.load_jobs()
         dsn_map = _datasets.DsnMap(jobs_cfg)
         catalog = _datasets.Catalog.seed(
-            scenario, jobs_cfg, inputs_dir, state.store, faults, dsn_map=dsn_map
+            scenario,
+            jobs_cfg,
+            inputs_dir,
+            state.store,
+            faults,
+            programs=_jobs.load_programs()["programs"],
+            dsn_map=dsn_map,
         )
         # AWS.M2.CARDDEMO.DATEPARM comes from the scenario (GAP-MIS-001): from
         # inputs/DATEPARM.dat, which Catalog.seed catalogues, or else from the

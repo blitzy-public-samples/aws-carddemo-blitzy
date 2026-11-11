@@ -70,7 +70,18 @@ CSD utility gate: ``UniKixAdapter.prepare``, on a started session whose
 commands and BPE service are fakes, must block a job with a ``DFHCSDUP``
 step, alone or in a chain, under GAP-MIS-016 before anything reaches the
 region, after the broken-session GAP-MIS-004 and the job-name check, and let
-any other job past the gate.
+any other job past the gate. ``UniKixAdapter.refuse`` must raise the same
+GAP-MIS-016 and job-name ``HarnessError`` from ``resources.yaml`` alone,
+having opened the scenario's capture as ``prepare`` does, and refuse
+nothing, changing no state and issuing no command, for any other job,
+before the session has started and once it is blocked. Through
+``runner.run``, on a started session whose fake commands report
+``region_file_inquire`` unavailable, CFG-CBADMCDJ-normal-01 must end blocked
+under GAP-MIS-016 wherever it runs, before and after CFG-OPENFIL-normal-01,
+which the observation rule still blocks under GAP-MIS-011. Neither reaches
+``prepare``; the real ``write_evidence`` hands the evidence writer a record
+naming GAP-MIS-016 for each CFG-CBADMCDJ-normal-01 run and nothing for
+CFG-OPENFIL-normal-01.
 
 JOBS capture: ``UniKixAdapter``'s ``@TDQ:JOBS`` capture, on fakes, must
 attribute only ``TRNRPT00`` jobs absent from the listing taken just before
@@ -148,6 +159,13 @@ working directory, never another scenario's, the work root's or one outside
 it, while the other programs run on to their own end; ``kill_all()`` and
 ``close`` end every group.
 
+GDG roll-off: ``datasets.Catalog.catalog_new``, given a second generation of
+a base of LIMIT 1, must roll off the first, return its name and drop its
+entry. Under SCRATCH it deletes the file and records nothing uncatalogued;
+under NOSCRATCH it keeps the file and records it, with its working-directory
+path and the generation that rolled it off, in ``uncatalogued`` and
+``evidence/catalog.yaml``.
+
 Stage observations: ``base.after_job_observation`` and ``parse_after_job``
 must round-trip ``@AFTER:<JOB>:<LOGICAL>``, which ``observation_matches``
 covers with ``"@AFTER:*"`` and ``"@AFTER:"``, and refuse a part that is
@@ -162,6 +180,20 @@ observations by job and refuse, before any job runs, one whose job the chain
 does not run once. ``baselines.decode_result`` must decode one through its
 logical dataset's layout in primary-key order, as that dataset decodes, and
 as ``@missing`` when the result lacks it.
+
+Job-run faults: ``datasets.Catalog.seed``, on the committed ``jobs.yaml`` and
+``programs.yaml`` with a DALYTRAN precondition, must refuse under GAP-MIS-013,
+laying nothing out, an ``open``/``unavailable`` fault on a dataset the jobs
+never use, only create (a new generation, TRANSACT that CBTRN02C opens
+OUTPUT) or read only as the run itself created it (COMBTRAN's SYSTRAN(0)
+after INTCALC, TRANREPT's TRANSACT.BKUP(+1)), and accept one, as
+``left_out``, on a dataset a SHR read, a read of the seeded generation or an
+IDCAMS command reaches first; a programs table that lacks a program step's
+unit, or no table, is a ``DatasetError``. ``jobs.run_jobs`` must refuse with
+``HarnessError`` naming IEF212I a POSTTRAN step whose CBTRN02C dd codes,
+DISP=SHR, a DSN the catalog lacks with no fault declared, before CBTRN02C
+runs, before DALYREJS(+1) is allocated and before any step evidence is
+written, whether the dd comes before or after DALYREJS.
 
 Job-chain proof stage checks: ``report._proof_outcome_problems``, on
 synthetic decoded outcomes, must report nothing about a conforming set of
@@ -249,6 +281,25 @@ or malformed requests without writing; a failed withdrawal must report both
 failures and the records left behind. The coverage report must list a
 closure record by its gap id beside the additions.
 
+Frozen denominator: ``report.render_report`` must divide the verified items
+by the inventory header's ``total``, show it as the Summary and projection
+totals, and claim 100% only when that many items are verified, the status
+counts add up to it and no register entry is open, never for a list shrunk
+to its verified items or enlarged past the header; a header total that is
+missing, text, a boolean or negative must stop ``build_state`` and every
+command-line action with exit status 2, and a list that drifts from the
+header must stop the regeneration, writing nothing, naming both numbers.
+
+Unread records: ``results.refused_link`` must name the link ``load`` and
+``load_all`` do not read through (the results folder's parent, the folder,
+a record file) and nothing else. ``build_state``, on copies of the committed
+records in a folder of the case's own, must keep apart a record that is not
+valid YAML, has the status ``verified``, has a ``scenario_digest`` YAML reads
+as the integer 0 or is a symbolic link, each named by its file, and a linked
+results folder, named once; ``regenerate`` must refuse them before writing,
+naming each, and the projection causes must not count them as not run. The
+import and the revalidation must refuse the same before writing.
+
 Capture version planning: ``baselines.bump_needed``, on in-memory copies of
 the baselines HEAD holds for TRN-CBTRN02C-negative-03 (observed) and
 TRN-CBTRN02C-recovery-02 (derived), must judge a change as ``--check-bumps
@@ -265,7 +316,10 @@ for a baseline HEAD lacks; and refuse a missing ``--bump`` or one below the
 level the change needs, naming that level. The bump check behind that
 planning must parse HEAD's YAML only in temporary folders directly in
 capture's work root, and leave none behind, whether ``CARDDEMO_TEST_WORKDIR``
-is unset or names another directory.
+is unset or names another directory. Once a baseline is written, capture's
+closing summary must name the pytest run that refreshes the stale result
+records, ``-k`` over the written ids only or ``pytest tests/`` after
+``--all``, before the bump check.
 
 Work root: a ``CARDDEMO_TEST_WORKDIR`` that is unset, empty, blank, a regular
 file, under one, the repository, inside it or an unwritable directory must
@@ -306,6 +360,11 @@ just before the job is submitted and, at its end, before the unloads of that
 job's dataset stages, keeping each under its stage name and leaving out the
 ones of jobs never reached.
 
+Skip text: ``runner.conclude`` must skip a ``blocked`` or
+``implemented-unexecuted`` outcome with exactly
+``<status>: <reason> [<gap_id>] <scenario_id>``, followed by ``: <detail>``
+when it has one, so pytest's short summary names each skipped scenario.
+
 Session close on unikix: ``UniKixAdapter.close``, on fake commands, must end
 every ``s3270`` session first, then attempt ``region_stop`` (unless the
 adapter has stopped the region itself) and ``bpe_stop`` whatever the other
@@ -316,6 +375,18 @@ and the execution id, and raise ``AdapterUnavailable`` with the
 and where they were appended or why they could not be; return ``None`` when
 nothing failed or no session started; and, closed again, attempt only the
 stops still owed, never raising once nothing is left to stop.
+
+BPE restart reconciliation on unikix: ``BatchService.reconcile_for_restart``,
+on fake commands without ``bpe_active_jobs``, must run nothing when nothing
+is tracked; cancel a job not seen completed with ``bpe_cancel`` when that
+probes available, else poll its sysout once, keep every file read as
+evidence and clear the job only when the sysout shows it ended; and raise
+GAP-MIS-004 naming each job left unproven and each submission whose job
+number was never read, which it never cancels or resolves, leaving both
+tracked, so a later submit is still refused. ``UniKixAdapter.cleanup`` in the
+BPE restart mode must run ``bpe_stop`` and ``bpe_start`` only once that work
+is settled, and otherwise block the session without them, so the next
+``prepare`` raises GAP-MIS-004 before any reset.
 """
 
 from __future__ import annotations
@@ -339,7 +410,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1040,21 +1111,28 @@ class _GateFake:
 
 
 class _GateCommands(_GateFake):
-    """The ``CommandSet`` prepare reads before the gate: its log mark."""
+    """The ``CommandSet`` prepare, and a refusing ``refuse``, read before the
+    gate: its log mark, 0 unless given."""
+
+    def __init__(self, mark: int = 0) -> None:
+        self._mark = mark
 
     def mark(self) -> int:
-        return 0
+        return self._mark
 
 
 class _GateBatch(_GateFake):
     """The ``BatchService`` prepare reads before the gate: the committed
-    resources.yaml and no pending evidence."""
+    resources.yaml and the BPE evidence pending, none unless given, which
+    ``take_evidence`` hands over once."""
 
-    def __init__(self) -> None:
+    def __init__(self, pending: Mapping[str, bytes] | None = None) -> None:
         self.resources = bpe.Resources.load()
+        self._pending = dict(pending or {})
 
     def take_evidence(self) -> dict[str, bytes]:
-        return {}
+        taken, self._pending = self._pending, {}
+        return taken
 
 
 @pytest.fixture
@@ -1094,6 +1172,217 @@ def test_unikix_prepare_blocks_a_csd_utility_job_before_the_region(
     for detail in details:
         assert detail in str(caught.value)
     assert adapter._plan is None and not adapter._touched
+    assert list(csd_gate_work_root.iterdir()) == []
+
+
+# Each refuse case: inputs.job, whether the session has started and whether
+# it is blocked, the exception expected (None when refuse refuses nothing),
+# its gap_id and the texts its message holds. Before the session and in a
+# blocked one, refuse leaves the cause to prepare (the cases above).
+CSD_REFUSE_CASES = [
+    pytest.param(
+        "CBADMCDJ", True, False, base.AdapterUnavailable, "GAP-MIS-016", CSD_GATE_REASON, id="job"
+    ),
+    pytest.param(
+        ["CLOSEFIL", "CBADMCDJ", "OPENFIL"],
+        True,
+        False,
+        base.AdapterUnavailable,
+        "GAP-MIS-016",
+        CSD_GATE_REASON,
+        id="chain-member",
+    ),
+    pytest.param("CLOSEFIL", True, False, None, None, (), id="other-job-passes"),
+    pytest.param(
+        ["CBADMCDJ", "NOSUCHJOB"],
+        True,
+        False,
+        HarnessError,
+        None,
+        ("'NOSUCHJOB' is not a job",),
+        id="unknown-job",
+    ),
+    pytest.param("CBADMCDJ", True, True, None, None, (), id="broken-session"),
+    pytest.param("CBADMCDJ", False, False, None, None, (), id="not-started"),
+]
+# The command log mark and the BPE evidence pending when refuse is called: a
+# refusal opens the capture from that mark and takes that evidence under
+# session/, as prepare does; a scenario refuse lets through leaves both.
+CSD_REFUSE_LOG_MARK = 7
+CSD_REFUSE_PENDING = {"jcl/UNLOAD01": b"//UNLOAD01 JOB\n"}
+
+
+@pytest.mark.parametrize(("job", "started", "broken", "raised", "gap_id", "details"), CSD_REFUSE_CASES)
+def test_unikix_refuse_blocks_a_csd_utility_job_only_in_a_started_session(
+    csd_gate_work_root: Path,
+    job: str | list[str],
+    started: bool,
+    broken: bool,
+    raised: type[Exception] | None,
+    gap_id: str | None,
+    details: tuple[str, ...],
+) -> None:
+    adapter = UniKixAdapter(work_root=csd_gate_work_root, repo_root=Path(_TESTS_ROOT).parent)
+    adapter._session_ready = started
+    adapter._env = object()
+    healthy = started and not broken
+    # Only a refusal reads the log mark, to open the capture; any other use of
+    # the commands raises _BeyondTheGate, and a scenario refuse lets through
+    # uses none. Only a started, healthy session resolves the jobs.
+    adapter._commands = _GateCommands(CSD_REFUSE_LOG_MARK) if raised is not None else _GateFake()
+    adapter._batch = _GateBatch(CSD_REFUSE_PENDING) if healthy else _GateFake()
+    if broken:
+        adapter._broken = CSD_GATE_BROKEN
+    # What an earlier run left, which only a refusal resets, as prepare does.
+    earlier = (object(), object(), True)
+    adapter._plan, adapter._result, adapter._touched = earlier
+    scenario = SimpleNamespace(
+        id=CSD_GATE_SCENARIO, inputs={"job": job}, expected={}, preconditions={}
+    )
+    if raised is None:
+        assert adapter.refuse(scenario) is None
+        assert adapter._capture is None and adapter._capture_id is None and adapter._log_mark == 0
+        assert (adapter._plan, adapter._result, adapter._touched) == earlier
+        if healthy:
+            assert adapter._batch.take_evidence() == CSD_REFUSE_PENDING
+    else:
+        with pytest.raises(raised) as caught:
+            adapter.refuse(scenario)
+        assert getattr(caught.value, "gap_id", None) == gap_id
+        for detail in details:
+            assert detail in str(caught.value)
+        # The capture write_evidence writes, opened as prepare opens it.
+        assert isinstance(adapter._capture, evidence.Capture)
+        assert adapter._capture_id == CSD_GATE_SCENARIO
+        assert adapter._log_mark == CSD_REFUSE_LOG_MARK
+        assert adapter._capture.sysout == {f"session/{name}": data for name, data in CSD_REFUSE_PENDING.items()}
+        assert adapter._plan is None and adapter._result is None and not adapter._touched
+    assert list(csd_gate_work_root.iterdir()) == []
+
+
+class _InquiryLessCommands(_GateFake):
+    """The ``CommandSet`` of a started session whose probes found every entry
+    of the committed ``commands.yaml`` available except
+    ``region_file_inquire``, which that file leaves without a command, and
+    whose log is empty: what the observation rule, a refusing ``refuse`` and
+    ``write_evidence`` read. Any other use raises _BeyondTheGate."""
+
+    def __init__(self) -> None:
+        self._committed = unikix_env.CommandSet.load()
+        self.path = self._committed.path
+        self.ids = self._committed.ids
+
+    def entry(self, entry_id: str) -> unikix_env.CommandEntry:
+        return self._committed.entry(entry_id)
+
+    def available(self, entry_id: str) -> bool:
+        return entry_id != "region_file_inquire"
+
+    def probe_reason(self, entry_id: str) -> str | None:
+        return "" if self.available(entry_id) else self._committed.probe_reason(entry_id)
+
+    def mark(self) -> int:
+        return 0
+
+    def log_since(self, mark: int) -> list[dict[str, object]]:
+        return []
+
+
+class _InquiryLessBatch(_GateBatch):
+    """The ``BatchService`` of that session: _GateBatch, with no job number
+    for ``write_evidence`` to take."""
+
+    def take_job_numbers(self) -> list[str]:
+        return []
+
+
+class _RecordedEnvironment(_GateFake):
+    """The ``UniKixEnvironment`` of that session as ``write_evidence`` reads
+    it: its record alone."""
+
+    def as_record(self) -> dict[str, object]:
+        return {}
+
+
+# runner.run on that session, in this order: each scenario, the gap it must
+# end blocked under and a text of its reason. Both scenarios expect
+# @REGION-FILES; CBADMCDJ STEP1 runs DFHCSDUP, OPENFIL runs SDSF.
+CSD_RUNNER_ORDER = (
+    ("CFG-CBADMCDJ-normal-01", "GAP-MIS-016", "DFHCSDUP has no confirmed UniKix equivalent"),
+    ("CFG-OPENFIL-normal-01", "GAP-MIS-011", "@REGION-FILES not available on unikix"),
+    ("CFG-CBADMCDJ-normal-01", "GAP-MIS-016", "DFHCSDUP has no confirmed UniKix equivalent"),
+)
+
+
+def test_runner_applies_the_csd_utility_refusal_before_the_observation_rule(
+    csd_gate_work_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a started session without region file inquiry, CBADMCDJ ends
+    blocked under GAP-MIS-016 wherever it runs, never under the GAP-MIS-011
+    the observation rule would raise for its @REGION-FILES, while the rule
+    still blocks OPENFIL. Neither reaches prepare, which raises
+    _BeyondTheGate here. The adapter's own write_evidence hands the evidence
+    writer each CBADMCDJ run, with a record naming GAP-MIS-016, and no
+    OPENFIL run. The runtime, environment and evidence writers are replaced,
+    so nothing is written in the repository."""
+    adapter = UniKixAdapter(work_root=csd_gate_work_root, repo_root=Path(_TESTS_ROOT).parent)
+    adapter._session_ready = True
+    adapter._env = _RecordedEnvironment()
+    adapter._commands = _InquiryLessCommands()
+    adapter._batch = _InquiryLessBatch()
+    runtimes: list[dict[str, object]] = []
+    environments: list[dict[str, object]] = []
+    evidence_written: list[tuple[str, object, evidence.Capture]] = []
+
+    def unreachable_prepare(scenario: object, workdir: Path) -> None:
+        raise _BeyondTheGate(f"UniKixAdapter.prepare({getattr(scenario, 'id', scenario)})")
+
+    def keep_runtime(scenario_id: str, data: Mapping[str, object]) -> Path:
+        runtimes.append(dict(data))
+        return csd_gate_work_root / f"{scenario_id}.yaml"
+
+    def keep_environment(env: Mapping[str, object]) -> Path:
+        environments.append(dict(env))
+        return csd_gate_work_root / "environment.yaml"
+
+    def keep_evidence(
+        writer: evidence.EvidenceWriter,
+        scenario: object,
+        record: Mapping[str, object],
+        capture: evidence.Capture,
+    ) -> str:
+        scenario_id = str(getattr(scenario, "id", scenario))
+        evidence_written.append((scenario_id, record.get("gap_id"), capture))
+        return evidence.evidence_path(writer.execution_id, scenario_id)
+
+    monkeypatch.setattr(adapter, "prepare", unreachable_prepare)
+    monkeypatch.setattr(results, "write_runtime", keep_runtime)
+    monkeypatch.setattr(results, "write_environment", keep_environment)
+    monkeypatch.setattr(evidence.EvidenceWriter, "write", keep_evidence)
+    for scenario_id, gap_id, reason in CSD_RUNNER_ORDER:
+        outcome = runner.run(scenario_id, adapter)
+        assert (outcome.status, outcome.reason, outcome.gap_id) == (
+            runner.BLOCKED,
+            runner.REASON_UNAVAILABLE,
+            gap_id,
+        ), outcome.diff or outcome.detail
+        assert reason in outcome.detail
+        assert outcome.record is not None and outcome.record["gap_id"] == gap_id
+        assert outcome.workdir is None
+    assert [runtime["gap_id"] for runtime in runtimes] == [gap for _, gap, _ in CSD_RUNNER_ORDER]
+    # CBADMCDJ gets its evidence before and after OPENFIL, which gets none.
+    refused = [
+        (scenario_id, gap_id) for scenario_id, gap_id, _ in CSD_RUNNER_ORDER if scenario_id == CSD_GATE_SCENARIO
+    ]
+    assert [(scenario_id, gap_id) for scenario_id, gap_id, _ in evidence_written] == refused
+    assert len(refused) == 2
+    for _, _, capture in evidence_written:
+        assert capture.environment["execution_id"] == adapter.execution_id
+        assert capture.environment["commands"]["region_file_inquire"]["available"] is False
+    assert ["evidence" in runtime for runtime in runtimes] == [
+        scenario_id == CSD_GATE_SCENARIO for scenario_id, _, _ in CSD_RUNNER_ORDER
+    ]
+    assert adapter._capture is None and adapter._plan is None and not adapter._touched
     assert list(csd_gate_work_root.iterdir()) == []
 
 
@@ -3283,6 +3572,69 @@ def test_gnucobol_batch_cleanup_ends_only_its_own_scenarios_groups(
     assert datasets._LIVE == {} and datasets._LIVE_CWD == {}
 
 
+# GDG roll-off past LIMIT (GAP-STB-009): a base of LIMIT 1 holding two
+# generations rolls off the older one, whose file SCRATCH deletes and NOSCRATCH
+# keeps, recorded in the catalog evidence as a dataset left without an entry.
+GDG_ROLL_BASE = "AWS.M2.CARDDEMO.TRANSACT.BKUP"
+GDG_ROLL_RECORD_LENGTH = 350
+GDG_ROLL_WORKDIR_PREFIX = "unit-gdg-roll-off-"
+
+
+@pytest.fixture
+def gdg_roll_workdir(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh directory of this case's own inside the session work root
+    (carddemo_work_root), never under pytest's basetemp, removed afterwards."""
+    directory = Path(tempfile.mkdtemp(prefix=GDG_ROLL_WORKDIR_PREFIX, dir=carddemo_work_root))
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+@pytest.mark.parametrize("scratch", [True, False], ids=["scratch", "noscratch"])
+def test_catalog_new_records_a_generation_rolled_off_under_noscratch_as_uncatalogued(
+    gdg_roll_workdir: Path, scratch: bool
+) -> None:
+    store = datasets.DatasetStore(gdg_roll_workdir, None)
+    catalog = datasets.Catalog(store, datasets.DsnMap({"jobs": {}}, specs={}))
+    catalog.define(datasets.Entry.gdg(GDG_ROLL_BASE, limit=1, scratch=scratch))
+    first, second = (datasets.generation_name(GDG_ROLL_BASE, number) for number in (1, 2))
+    data = {first: b"1" * GDG_ROLL_RECORD_LENGTH, second: b"2" * GDG_ROLL_RECORD_LENGTH}
+    paths = {
+        name: store.write_sequential(store.path_for(name), data[name], GDG_ROLL_RECORD_LENGTH)
+        for name in (first, second)
+    }
+    rolled = [
+        catalog.catalog_new(
+            datasets.Entry.generation_entry(
+                GDG_ROLL_BASE, number, paths[name], record_length=GDG_ROLL_RECORD_LENGTH
+            )
+        )
+        for number, name in ((1, first), (2, second))
+    ]
+    assert rolled == [[], [first]]
+    assert catalog.get(first) is None
+    assert [entry.name for entry in catalog.generations(GDG_ROLL_BASE)] == [second]
+    assert store.read_sequential(paths[second]) == data[second]
+    if scratch:
+        expected_uncatalogued: list[dict[str, str]] = []
+        assert not store.exists(paths[first])
+        assert f"rolled off {first}: scratched" in catalog.log
+    else:
+        expected_uncatalogued = [
+            {
+                "name": first,
+                "path": f"data/{first}",
+                "reason": f"rolled off under NOSCRATCH when {second} was catalogued",
+            }
+        ]
+        assert store.read_sequential(paths[first]) == data[first]
+        assert f"rolled off {first}: uncatalogued, file kept" in catalog.log
+    assert catalog.uncatalogued == expected_uncatalogued
+    evidence = yaml.safe_load(catalog.write_evidence().read_text(encoding="utf-8"))
+    assert evidence["uncatalogued"] == expected_uncatalogued
+
+
 # Stage observations: logical dataset <LOGICAL> at the end of job <JOB> of a
 # scenario's job chain, checked on in-memory copies of the full daily chain.
 STAGE_CHAIN = "BAT-CHAIN-normal-01"
@@ -3549,6 +3901,187 @@ def test_decode_result_reads_a_stage_observation_as_its_dataset_in_key_order() -
     lacking = base.Result(return_code=4, datasets={"ACCTDATA": accounts})
     absent = baselines.decode_result(scenario, lacking)
     assert absent["file_state"][STAGE_ACCOUNTS] == {"@missing": True}
+
+
+# Job-run fault rule (GAP-MIS-013): Catalog.seed, on the committed jobs.yaml and
+# programs.yaml, leaves out the target of an open/unavailable fault only when a
+# use of the run reaches the absent dataset before the run creates it itself.
+# Every case has DALYTRAN as its one precondition, which POSTTRAN seeds, so a
+# refusal that came after seeding would leave its file under data/.
+JOB_FAULT_WORKDIR_PREFIX = "unit-job-fault-"
+JOB_FAULT_PRECONDITION = "DALYTRAN"
+JOB_FAULT_FAULT = {"operation": "open", "condition": "unavailable"}
+
+# (inputs.job, target, the cause the refusal gives).
+JOB_FAULT_REFUSED = [
+    pytest.param("POSTTRAN", "DALYREJS", "POSTTRAN only creates it", id="new-generation"),
+    pytest.param("POSTTRAN", "TRANSACT", "POSTTRAN only creates it", id="program-opens-output"),
+    pytest.param("TRANBKP", "TRANSACT-BKUP", "TRANBKP only creates it", id="repro-new-generation"),
+    pytest.param("INTCALC", "SYSTRAN", "INTCALC only creates it", id="program-new-generation"),
+    pytest.param(
+        "POSTTRAN", "CUSTDATA", "no dd or IDCAMS command of POSTTRAN uses it", id="unused"
+    ),
+    pytest.param(
+        ["INTCALC", "COMBTRAN"],
+        "SYSTRAN",
+        "INTCALC, COMBTRAN only create it",
+        id="generation-zero-is-an-earlier-jobs-own",
+    ),
+    pytest.param(
+        "TRANREPT", "TRANSACT-BKUP", "TRANREPT only creates it", id="reads-its-own-plus-one"
+    ),
+]
+
+# (inputs.job, target): the use that reaches the absent dataset first.
+JOB_FAULT_ACCEPTED = [
+    pytest.param("POSTTRAN", "CARDXREF", id="program-reads-shr"),
+    pytest.param("COMBTRAN", "SYSTRAN", id="generation-zero-is-the-seeded-one"),
+    pytest.param(["POSTTRAN", "TRANBKP"], "TRANSACT", id="output-through-shr-stays-uncatalogued"),
+    pytest.param("ACCTFILE", "ACCTDATA", id="idcams-delete-before-define"),
+    pytest.param("TRANIDX", "TRANSACT", id="idcams-relate-and-bldindex"),
+]
+
+
+@pytest.fixture
+def job_fault_workdir(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh scenario working directory of this case's own inside the
+    session work root (carddemo_work_root), never under pytest's basetemp,
+    whose ``inputs/`` holds one DALYTRAN record; removed afterwards."""
+    directory = Path(
+        tempfile.mkdtemp(prefix=JOB_FAULT_WORKDIR_PREFIX, dir=carddemo_work_root)
+    ).resolve()
+    try:
+        inputs = directory / "inputs"
+        inputs.mkdir()
+        length = datasets.dataset_specs()[JOB_FAULT_PRECONDITION].record_length
+        (inputs / f"{JOB_FAULT_PRECONDITION}.dat").write_bytes(b" " * length)
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+def _seed_with_fault(workdir: Path, job: str | list[str], target: str) -> datasets.Catalog:
+    """``Catalog.seed`` of a job scenario running ``job`` with an
+    ``open``/``unavailable`` fault on ``target``."""
+    scenario = {
+        "id": "SCN-JOB-FAULT",
+        "inputs": {"job": job},
+        "preconditions": {"faults": [{"target": target, **JOB_FAULT_FAULT}]},
+    }
+    return datasets.Catalog.seed(
+        scenario,
+        jobs.load_jobs(),
+        workdir / "inputs",
+        datasets.DatasetStore(workdir, None),
+        programs=jobs.load_programs()["programs"],
+    )
+
+
+@pytest.mark.parametrize(("job", "target", "cause"), JOB_FAULT_REFUSED)
+def test_catalog_seed_refuses_a_fault_no_use_of_the_job_run_observes(
+    job_fault_workdir: Path, job: str | list[str], target: str, cause: str
+) -> None:
+    with pytest.raises(base.MissingPrerequisite) as refusal:
+        _seed_with_fault(job_fault_workdir, job, target)
+    assert refusal.value.gap_id == "GAP-MIS-013"
+    message = str(refusal.value)
+    assert message.startswith(f"open fault (unavailable) on {target}: {cause}"), message
+    assert "so leaving it out fails no OPEN of the run" in message
+    assert not (job_fault_workdir / datasets.DATA_DIR).exists()
+
+
+@pytest.mark.parametrize(("job", "target"), JOB_FAULT_ACCEPTED)
+def test_catalog_seed_leaves_out_a_fault_target_a_use_of_the_job_run_reaches(
+    job_fault_workdir: Path, job: str | list[str], target: str
+) -> None:
+    catalog = _seed_with_fault(job_fault_workdir, job, target)
+    assert catalog.left_out == frozenset({target})
+    dsn, is_gdg = catalog.dsn_map.dsn_for(target)
+    assert (catalog.generations(dsn) == []) if is_gdg else (catalog.get(dsn) is None)
+    assert not any(entry.logical == target for entry in catalog.entries())
+
+
+# (programs, what the DatasetError says): a programs table lacking POSTTRAN's
+# CBTRN02C, and no table at all.
+JOB_FAULT_BAD_PROGRAMS = [
+    pytest.param({}, "program 'CBTRN02C' is not a unit of programs.yaml", id="unit-missing"),
+    pytest.param(None, "needs the programs.yaml programs table", id="no-table"),
+]
+
+
+@pytest.mark.parametrize(("programs", "problem"), JOB_FAULT_BAD_PROGRAMS)
+def test_catalog_seed_refuses_programs_that_lack_a_program_steps_unit(
+    job_fault_workdir: Path, programs: object, problem: str
+) -> None:
+    scenario = {"id": "SCN-JOB-FAULT", "inputs": {"job": "POSTTRAN"}}
+    with pytest.raises(datasets.DatasetError, match=re.escape(problem)):
+        datasets.Catalog.seed(
+            scenario,
+            jobs.load_jobs(),
+            job_fault_workdir / "inputs",
+            datasets.DatasetStore(job_fault_workdir, None),
+            programs=programs,
+        )
+    assert not (job_fault_workdir / datasets.DATA_DIR).exists()
+
+
+# A POSTTRAN STEP15 DD that CBTRN02C declares and that codes, DISP=SHR, a DSN
+# the catalog lacks with no fault declared: z/OS fails the allocation
+# (IEF212I). Each case: the indexed dataset the catalog lacks and the DD that
+# codes it; TRANFILE comes before DALYREJS(+1), the step's NEW dataset, in the
+# DD order and ACCTFILE after it.
+JOB_ALLOCATION_CLUSTERS = ("TRANSACT", "CARDXREF", "ACCTDATA", "TCATBALF")
+JOB_ALLOCATION_REFUSALS = [
+    pytest.param("TRANSACT", "TRANFILE", id="tranfile-before-the-new-dataset"),
+    pytest.param("ACCTDATA", "ACCTFILE", id="acctfile-after-the-new-dataset"),
+]
+
+
+@pytest.mark.parametrize(("lacking", "ddname"), JOB_ALLOCATION_REFUSALS)
+def test_run_jobs_refuses_a_program_dd_whose_dataset_the_catalog_lacks(
+    job_fault_workdir: Path, launch_root: Path, lacking: str, ddname: str
+) -> None:
+    """Refused before CBTRN02C runs or any dataset of the step is allocated.
+    The other clusters are catalog entries alone: the refusal is decided by
+    the catalog, and CBTRN02C is a script that would end RC 0 if it ran."""
+    cache = _LaunchCache(launch_root / LAUNCH_WORK_ROOT)
+    cache.script("CBTRN02C", "", "", "exit 0")
+    scenario = {"id": "SCN-JOB-ALLOCATION", "inputs": {"job": "POSTTRAN"}}
+    catalog = datasets.Catalog.seed(
+        scenario,
+        jobs.load_jobs(),
+        job_fault_workdir / "inputs",
+        datasets.DatasetStore(job_fault_workdir, None),
+        programs=jobs.load_programs()["programs"],
+    )
+    for logical in JOB_ALLOCATION_CLUSTERS:
+        if logical != lacking:
+            dsn, _ = catalog.dsn_map.dsn_for(logical)
+            catalog.register(
+                datasets.Entry.cluster(
+                    dsn,
+                    catalog.store.path_for(dsn),
+                    catalog.dsn_map.specs[logical].profile,
+                    logical=logical,
+                )
+            )
+    with pytest.raises(HarnessError) as refusal:
+        jobs.run_jobs(
+            cache,
+            scenario,
+            catalog,
+            workdir=job_fault_workdir,
+            deadline=time.monotonic() + LAUNCH_DEADLINE_S,
+        )
+    message = str(refusal.value)
+    assert message.startswith(f"job POSTTRAN step STEP15: DD {ddname} of CBTRN02C codes "), message
+    assert "with DISP=SHR" in message and "IEF212I DATA SET NOT FOUND" in message
+    assert f"declare {lacking} in preconditions.datasets" in message
+    dalyrejs = catalog.store.path_for(datasets.generation_name("AWS.M2.CARDDEMO.DALYREJS", 1))
+    assert not dalyrejs.exists()
+    evidence = job_fault_workdir / jobs.EVIDENCE_SUBDIR
+    assert not (evidence / "steps").exists()
+    assert load_yaml(evidence / "jobs.yaml") == {"jobs": [], "steps": []}
 
 
 # Stage observations on unikix: a chain of three jobs whose first and last
@@ -5386,6 +5919,290 @@ def test_report_shows_both_projections_and_names_the_page_zero_one_it_equals() -
     assert "100% may be claimed: no" in lines
 
 
+@pytest.fixture(scope="module")
+def committed_state() -> report.State:
+    """``report.build_state()`` over the committed inventory, register,
+    scenarios and records, built once for the module; cases derive their own
+    states from it with ``dataclasses.replace`` and never change it."""
+    return report.build_state()
+
+
+def _forbid_report_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make any write of a report file or of the inventory fail the case."""
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"a refused regeneration wrote {args[:1]!r}")
+
+    monkeypatch.setattr(report, "write_text", refuse)
+    monkeypatch.setattr(report, "_write_inventory", refuse)
+
+
+def _percent_text(numerator: int, denominator: int) -> str:
+    """A fraction as the report prints it: a percentage to one decimal place, halves rounded up."""
+    value = (Decimal(numerator) * 100 / Decimal(denominator)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    return f"{value}%"
+
+
+# (items listed against the frozen total, how many of them are verified, the
+# rest not-covered); the register holds no entry, so only the totals decide
+# the claim.
+FROZEN_TOTAL_CASES = [
+    pytest.param(0, None, True, id="list equal to the header, all verified"),
+    pytest.param(-584, None, False, id="list shrunk, every live item verified"),
+    pytest.param(1, None, False, id="list enlarged, every live item verified"),
+    pytest.param(1, 0, False, id="list enlarged, the frozen total verified"),
+]
+
+
+@pytest.mark.parametrize(("listed_change", "verified_change", "claimed"), FROZEN_TOTAL_CASES)
+def test_report_divides_by_the_frozen_total_and_claims_only_when_the_list_agrees(
+    committed_state: report.State, listed_change: int, verified_change: int | None, claimed: bool
+) -> None:
+    frozen = committed_state.total
+    items = list(committed_state.items)
+    if listed_change < 0:
+        items = items[:len(items) + listed_change]
+    batch = [item for item in committed_state.items if item["id"].startswith("INV-BAT-")]
+    last = max(int(item["id"].rsplit("-", 1)[1]) for item in batch)
+    for number in range(last + 1, last + 1 + max(listed_change, 0)):
+        items.append({**batch[-1], "id": f"INV-BAT-{number:03d}"})
+    verified = len(items) if verified_change is None else frozen + verified_change
+    ids = [item["id"] for item in items]
+    state = dataclasses.replace(
+        committed_state,
+        items=items,
+        item_status={item_id: report.VERIFIED if index < verified else report.NOT_COVERED
+                     for index, item_id in enumerate(ids)},
+        gaps=report.GapRegister({"gaps": []}, {}),
+    )
+    assert state.total == frozen == committed_state.header["total"]
+    lines = report.render_report(state, (False, "not judged here")).split("\n")
+    summary = lines[lines.index("## Summary"):lines.index("### Against the planning projection")]
+    assert f"| total | {frozen} |" in summary
+    assert f"Verified / total: {verified} / {frozen} = {_percent_text(verified, frozen)}" in summary
+    planned = sum(report.PLANNING_PROJECTION.values())
+    assert f"| total | {frozen} | {planned} | {sum(report.PLANNING_PROJECTION_NO_PAGE_ZERO.values())} |" in lines
+    assert f"100% may be claimed: {'yes' if claimed else 'no'}" in lines
+    drift = f"The inventory header gives a total of {frozen}, but the inventory holds {len(items)} items."
+    cause = (f"- The inventory holds {len(items)} items, not its frozen total {frozen}; "
+             "python tests/harness/inventory_tools.py --check reports the drift.")
+    assert (drift in summary) is (cause in lines) is (len(items) != frozen)
+
+
+MISSING_TOTAL = object()
+
+
+@pytest.mark.parametrize("value", [
+    pytest.param(MISSING_TOTAL, id="missing"),
+    pytest.param("684", id="string"),
+    pytest.param(True, id="boolean"),
+    pytest.param(-1, id="negative"),
+])
+def test_report_refuses_a_malformed_frozen_total_before_any_action(
+    committed_state: report.State, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    value: object,
+) -> None:
+    header = {key: item for key, item in committed_state.header.items() if key != "total"}
+    if value is not MISSING_TOTAL:
+        header["total"] = value
+    named = r"tests/inventory/inventory\.yaml header\.total"
+    with pytest.raises(report.ReportError, match=named):
+        dataclasses.replace(committed_state, header=header).total
+    inventory = {"header": header, "items": committed_state.items}
+    monkeypatch.setattr(report._inventory, "load", lambda *args, **kwargs: inventory)
+    _forbid_report_writes(monkeypatch)
+    with pytest.raises(report.ReportError, match=named):
+        report.build_state()
+    capsys.readouterr()
+    for argv in ([], ["--check"], ["--check-proof"]):
+        assert report.main(argv) == 2
+        captured = capsys.readouterr()
+        assert captured.out == "" and re.match(rf"report\.py: error: {named}", captured.err)
+
+
+def test_regenerate_refuses_an_inventory_whose_list_drifts_from_its_frozen_total(
+    committed_state: report.State, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    frozen = committed_state.total
+    inventory = {"header": {**committed_state.header, "total": frozen + 1}, "items": committed_state.items}
+    monkeypatch.setattr(report._inventory, "load", lambda *args, **kwargs: inventory)
+    _forbid_report_writes(monkeypatch)
+    before = {path: path.read_bytes() for path in (report.MATRIX_FILE, report.REGISTER_FILE, report.REPORT_FILE)}
+    assert report.main([]) == 2
+    error = capsys.readouterr().err
+    assert error.startswith("report.py: error: the reports are not regenerated, and nothing is written: ")
+    assert (f"tests/inventory/inventory.yaml header.total is {frozen + 1} but the inventory holds {frozen} "
+            "items; run python tests/harness/inventory_tools.py --check") in error
+    assert {path: path.read_bytes() for path in before} == before
+
+
+RECORD_PROBLEM_ROOT_PREFIX = "unit-record-problems-"
+# The record the reproduction overwrites, and the text it writes over it.
+UNREADABLE_RECORD = "TRN-CBTRN02C-negative-01"
+INVALID_RECORD_YAML = "adapter: gnucobol-batch\nstatus: [passed\n  : : broken {\n"
+REFUSED_RECORD_LINK = "is a symbolic link; result records are neither read nor written through it"
+
+
+@pytest.fixture
+def record_problem_root(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh directory of this case's own inside the session work root
+    (carddemo_work_root), never under pytest's basetemp or in the checkout,
+    given by its real path, removed afterwards."""
+    directory = Path(tempfile.mkdtemp(prefix=RECORD_PROBLEM_ROOT_PREFIX, dir=carddemo_work_root)).resolve()
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+def _copied_results(folder: Path) -> list[Path]:
+    """``folder``, created, holding copies of the committed gnucobol-batch
+    records; their paths in name order."""
+    folder.mkdir(parents=True)
+    for path in sorted(RESULTS_DIR.glob("*.yaml")):
+        shutil.copyfile(path, folder / path.name)
+    return sorted(folder.glob("*.yaml"))
+
+
+@pytest.mark.parametrize("layout", ["plain", "linked record", "linked folder", "linked parent"])
+def test_results_refused_link_names_the_link_load_does_not_read_through(
+    record_problem_root: Path, layout: str
+) -> None:
+    reports = record_problem_root / "reports"
+    real = (record_problem_root / "reports-real") if layout == "linked parent" else reports
+    stored = real / ("results-real" if layout == "linked folder" else "results")
+    record = _copied_results(stored)[0]
+    folder = reports / "results"
+    if layout == "linked parent":
+        reports.symlink_to(real.name)
+    if layout == "linked folder":
+        folder.symlink_to(stored.name)
+    if layout == "linked record":
+        moved = record_problem_root / record.name
+        record.rename(moved)
+        record.symlink_to(moved)
+    linked_folder = {"linked folder": folder, "linked parent": reports}.get(layout)
+    linked = linked_folder or (record if layout == "linked record" else None)
+    assert results.refused_link(results_dir=folder) == linked_folder
+    assert results.refused_link(record.stem, results_dir=folder) == linked
+    assert results.refused_link("NOT-A-SCENARIO", results_dir=folder) == linked_folder
+    loaded = results.load(record.stem, results_dir=folder)
+    assert (loaded is None) is (linked is not None)
+    assert sorted(results.load_all(results_dir=folder)) == sorted(
+        path.stem for path in stored.glob("*.yaml") if linked_folder is None and not path.is_symlink()
+    )
+
+
+def _unreadable_and_linked_records(root: Path) -> tuple[Path, dict[str, str] | None]:
+    """A results folder of copies in which one record is not valid YAML,
+    one has the status ``verified``, one a ``scenario_digest`` of 64 zeros
+    (which YAML reads as the integer 0) and one is a symbolic link to a copy
+    outside it; each of those scenario ids with the path its problem names."""
+    folder = root / "reports" / "results"
+    copies = _copied_results(folder)
+    unreadable = folder / f"{UNREADABLE_RECORD}.yaml"
+    passed = [path for path in copies
+              if path != unreadable and re.search(r"^status: passed$", path.read_text(encoding="utf-8"), re.M)]
+    status_path, digest_path, linked_path = passed[:3]
+    unreadable.write_text(INVALID_RECORD_YAML, encoding="utf-8")
+    text = status_path.read_text(encoding="utf-8")
+    status_path.write_text(re.sub(r"^status: passed$", "status: verified", text, count=1, flags=re.M),
+                           encoding="utf-8")
+    text = digest_path.read_text(encoding="utf-8")
+    digest_path.write_text(re.sub(r"^scenario_digest: [0-9a-f]{64}$", "scenario_digest: " + "0" * 64, text,
+                                  count=1, flags=re.M), encoding="utf-8")
+    moved = root / linked_path.name
+    linked_path.rename(moved)
+    linked_path.symlink_to(moved)
+    return folder, {path.stem: path.as_posix() for path in (unreadable, status_path, digest_path, linked_path)}
+
+
+def _linked_results_folder(root: Path) -> tuple[Path, dict[str, str] | None]:
+    """A results folder that is a symbolic link to a folder of copies; no
+    record is named, since none is read through the link."""
+    _copied_results(root / "reports" / "results-real")
+    folder = root / "reports" / "results"
+    folder.symlink_to("results-real")
+    return folder, None
+
+
+@pytest.mark.parametrize("layout", [
+    pytest.param(_unreadable_and_linked_records, id="unreadable, contract-breaking and linked records"),
+    pytest.param(_linked_results_folder, id="linked results folder"),
+])
+def test_regenerate_refuses_unread_records_and_never_reports_them_as_not_run(
+    record_problem_root: Path, monkeypatch: pytest.MonkeyPatch,
+    layout: Callable[[Path], tuple[Path, dict[str, str] | None]],
+) -> None:
+    folder, named = layout(record_problem_root)
+    monkeypatch.setattr(report._results, "load", functools.partial(results.load, results_dir=folder))
+    monkeypatch.setattr(report._results, "refused_link", functools.partial(results.refused_link, results_dir=folder))
+    built: list[report.State] = []
+    original = report.build_state
+
+    def build() -> report.State:
+        built.append(original())
+        return built[-1]
+
+    monkeypatch.setattr(report, "build_state", build)
+    _forbid_report_writes(monkeypatch)
+    with pytest.raises(report.ReportError) as raised:
+        report.regenerate()
+    [state] = built
+    refusal = str(raised.value)
+    assert refusal.startswith("the reports are not regenerated, and nothing is written: ")
+    if named is None:
+        link = f"{folder.as_posix()} {REFUSED_RECORD_LINK}"
+        capable = [scenario_id for scenario_id, scenario in state.scenarios.items()
+                   if results.GNUCOBOL in scenarios.capable_adapters(scenario)]
+        assert capable and state.unread_records == dict.fromkeys(capable, link)
+        assert [problem for problem in state.problems if REFUSED_RECORD_LINK in problem] == [link]
+        assert refusal.count(link) == 1
+    else:
+        assert sorted(state.unread_records) == sorted(named)
+        for scenario_id, path in named.items():
+            assert state.unread_records[scenario_id].startswith(path) and path in refusal
+            assert f"{scenario_id}: gnucobol-batch record: {state.unread_records[scenario_id]}" in state.problems
+    unread = sorted(state.unread_records)
+    assert {state.statuses[scenario_id].status for scenario_id in unread} == {results.STATUS_BLOCKED}
+    causes = report._projection_causes(state)
+    assert not [cause for cause in causes if "not run in this session" in cause]
+    [cause] = [cause for cause in causes if "have a result record that cannot be read" in cause]
+    assert cause.startswith(f"{len(unread)} scenarios gnucobol-batch can run have a result record")
+    assert ", ".join(unread[:10]) in cause
+
+
+@pytest.mark.parametrize("action", [
+    pytest.param(lambda: report._import_execution(CLOSURE_EXECUTION, UNIKIX_EVIDENCE_DIR / CLOSURE_EXECUTION),
+                 id="import"),
+    pytest.param(lambda: report._revalidate(), id="revalidation"),
+])
+def test_import_and_revalidation_refuse_what_regeneration_refuses_before_writing(
+    committed_state: report.State, monkeypatch: pytest.MonkeyPatch, action: Callable[[], object]
+) -> None:
+    unread = f"tests/reports/results/{UNREADABLE_RECORD}.yaml: not valid YAML: at line 2, column 9"
+    refused = dataclasses.replace(
+        committed_state,
+        header={**committed_state.header, "total": committed_state.total + 1},
+        unread_records={UNREADABLE_RECORD: unread},
+    )
+    monkeypatch.setattr(report, "build_state", lambda: refused)
+
+    def unreached(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the refused action went on past its first state")
+
+    for name in ("_scenario_dirs", "_evidence_executions", "_write_register", "regenerate"):
+        monkeypatch.setattr(report, name, unreached)
+    _forbid_report_writes(monkeypatch)
+    with pytest.raises(report.ReportError) as raised:
+        action()
+    assert str(raised.value) == (
+        "the reports are not regenerated, and nothing is written: tests/inventory/inventory.yaml header.total is "
+        f"{committed_state.total + 1} but the inventory holds {len(committed_state.items)} items; run python "
+        f"tests/harness/inventory_tools.py --check; {unread}"
+    )
+
+
 # ==========================================================================
 # Instruments: layouts, codec, fixtures, inventory, the id manifest, gaps,
 # configuration, baseline bumps and the protected tree
@@ -5786,7 +6603,47 @@ def test_id_manifest() -> None:
     problems += _listed(
         "reports/results: records of scenarios gnucobol-batch cannot run", (recorded & scenarios.ALL_IDS) - runnable
     )
+    problems += _listed("reports/results: runnable ids without a record", runnable - recorded)
     assert problems == [], "\n".join(problems)
+
+
+# A scenario gnucobol-batch can run, so the manifest check requires its record.
+RECORDED_ID = "UTL-CSUTLDTC-normal-01"
+
+
+@pytest.mark.parametrize("change", ["removed", "linked", "no results folder"])
+def test_id_manifest_reports_runnable_ids_without_a_record(work_root_case: Path, change: str) -> None:
+    """``check_manifest`` on a copy of ``tests/scenarios`` and
+    ``tests/reports/results`` in the case's work root folder: the intact copy
+    holds a record for every id gnucobol-batch can run; removing
+    RECORDED_ID's record, or replacing it by a symbolic link, leaves that id
+    without one, and removing the results folder leaves every runnable id
+    without one. The copy has no baselines, so only the reports problems are
+    compared."""
+    shutil.copytree(SCENARIOS_DIR, work_root_case / "scenarios", symlinks=True)
+    folder = work_root_case / "reports" / "results"
+    shutil.copytree(RESULTS_DIR, folder, symlinks=True)
+
+    def report_problems() -> list[str]:
+        return [problem for problem in scenarios.check_manifest(work_root_case) if problem.startswith("reports")]
+
+    assert report_problems() == []
+    record = folder / f"{RECORDED_ID}.yaml"
+    missing = [RECORDED_ID]
+    expected = []
+    if change == "removed":
+        record.unlink()
+    elif change == "linked":
+        record.symlink_to(record.rename(work_root_case / record.name))
+        expected.append(f"reports/results/{record.name}: a symbolic link, not a result record <id>.yaml")
+    else:
+        missing = sorted(_yaml_stems(folder))
+        shutil.rmtree(folder)
+    expected.append(
+        f"reports/results: {len(missing)} result record(s) missing for id(s) gnucobol-batch can run: "
+        + ", ".join(missing)
+    )
+    assert report_problems() == expected
 
 
 def _scenario_files() -> list:
@@ -6757,6 +7614,73 @@ def test_protected_tree_names_the_git_failure_cause(
 
 
 # --------------------------------------------------------------------------
+# runner.conclude on the outcomes it skips: the skip text names the scenario
+# after the gap, so pytest's short summary never merges two scenarios that
+# share a reason.
+# --------------------------------------------------------------------------
+
+# Each skipped status with its reason, gap, scenario and detail (empty for
+# none), and the exact skip text.
+CONCLUDE_SKIPS = [
+    pytest.param(
+        results.STATUS_BLOCKED,
+        "adapter-unavailable",
+        "GAP-MIS-002",
+        "RPT-CBSTM03A-normal-01",
+        "page zero not mappable: 1; vm.mmap_min_addr=65536",
+        "blocked: adapter-unavailable [GAP-MIS-002] RPT-CBSTM03A-normal-01: "
+        "page zero not mappable: 1; vm.mmap_min_addr=65536",
+        id="blocked-with-detail",
+    ),
+    pytest.param(
+        results.STATUS_BLOCKED,
+        "adapter-unavailable",
+        "GAP-MIS-002",
+        "RPT-CBSTM03A-normal-01",
+        "",
+        "blocked: adapter-unavailable [GAP-MIS-002] RPT-CBSTM03A-normal-01",
+        id="blocked-without-detail",
+    ),
+    pytest.param(
+        results.STATUS_UNEXECUTED,
+        "missing-prerequisite",
+        "GAP-MIS-013",
+        "TRN-CBTRN01C-recovery-02",
+        "read fault (io-error) on DALYTRAN: no gnucobol-batch mechanism injects a failure after a successful open",
+        "implemented-unexecuted: missing-prerequisite [GAP-MIS-013] TRN-CBTRN01C-recovery-02: "
+        "read fault (io-error) on DALYTRAN: no gnucobol-batch mechanism injects a failure after a successful open",
+        id="implemented-unexecuted-with-detail",
+    ),
+    pytest.param(
+        results.STATUS_UNEXECUTED,
+        "missing-prerequisite",
+        "GAP-MIS-013",
+        "TRN-CBTRN01C-recovery-02",
+        "",
+        "implemented-unexecuted: missing-prerequisite [GAP-MIS-013] TRN-CBTRN01C-recovery-02",
+        id="implemented-unexecuted-without-detail",
+    ),
+]
+
+
+@pytest.mark.parametrize(("status", "reason", "gap_id", "scenario_id", "detail", "message"), CONCLUDE_SKIPS)
+def test_runner_conclude_skip_text_names_the_scenario_after_the_gap(
+    status: str, reason: str, gap_id: str, scenario_id: str, detail: str, message: str
+) -> None:
+    outcome = runner.Outcome(
+        scenario_id=scenario_id,
+        adapter="gnucobol-batch",
+        status=status,
+        reason=reason,
+        gap_id=gap_id,
+        detail=detail,
+    )
+    with pytest.raises(pytest.skip.Exception) as skipped:
+        runner.conclude(outcome)
+    assert skipped.value.msg == message
+
+
+# --------------------------------------------------------------------------
 # UniKixAdapter.close on fakes: the region and BPE the session started are
 # stopped, and a stop that could not run is kept and raised.
 # --------------------------------------------------------------------------
@@ -7019,6 +7943,47 @@ def test_plan_version_refuses_an_insufficient_bump(need, bump: str | None, refus
         assert message.endswith("; nothing is written")
 
 
+@pytest.mark.parametrize(
+    ("written", "all_mode", "refresh"),
+    [
+        pytest.param([CAPTURE_SCENARIO], False, f"pytest tests/ -k {CAPTURE_SCENARIO}", id="one-id"),
+        pytest.param(
+            [CAPTURE_SCENARIO, CAPTURE_SCENARIO_ID],
+            False,
+            f'pytest tests/ -k "{CAPTURE_SCENARIO} or {CAPTURE_SCENARIO_ID}"',
+            id="several-ids",
+        ),
+        pytest.param([CAPTURE_SCENARIO, CAPTURE_SCENARIO_ID], True, "pytest tests/", id="all"),
+        pytest.param([], False, None, id="none-written"),
+    ],
+)
+def test_capture_summary_names_the_refresh_run(
+    capsys: pytest.CaptureFixture[str], written: list[str], all_mode: bool, refresh: str | None
+) -> None:
+    """Once a baseline is written, the closing summary names the pytest run
+    that rewrites the stale result records, over the written ids only (a
+    refused capture is left out) or the whole suite after ``--all``, before
+    the bump check."""
+    refused = "BAT-POSTINT-normal-01"
+    captures = [capture_cli.Captured(scenario_id, written=True, new_version="1.0.1") for scenario_id in written]
+    captures.append(capture_cli.Captured(refused, detail="the run ended failing"))
+    assert capture_cli._summarize(captures, all_mode) == 1
+    lines = capsys.readouterr().err.splitlines()
+    summary = f"capture.py: {len(written)} baseline(s) written, 0 skipped as implemented-unexecuted, 1 not captured"
+    if refresh is None:
+        assert lines == [summary], lines
+        return
+    assert lines == [
+        summary,
+        f"capture.py: rerun {refresh} so that the result records carry the new baseline versions and the reports "
+        "are regenerated; until then report.py counts them as stale, which fails --check (and --check-proof for a "
+        "job-chain proof scenario)",
+        "capture.py: python tests/harness/baselines.py --check-bumps --base HEAD must pass "
+        "before the baselines are committed",
+    ], lines
+    assert refused not in lines[1], lines
+
+
 @pytest.mark.parametrize("work_root_env", ["unset", "another-directory"])
 def test_head_need_parses_inside_the_work_root(
     carddemo_repo_root: Path, work_root_case: Path, monkeypatch: pytest.MonkeyPatch, work_root_env: str
@@ -7176,3 +8141,265 @@ def test_unikix_close_raises_what_it_could_not_stop(
     calls.clear()
     assert adapter.close() is None
     assert calls == [("close_all", "")]
+
+
+# --------------------------------------------------------------------------
+# The BPE restart fallback of the unikix quiescence check on fakes: without
+# bpe_active_jobs, the BPE work the batch service tracks is settled before
+# bpe_stop and bpe_start run, or the session is blocked under GAP-MIS-004.
+# --------------------------------------------------------------------------
+
+RESTART_WORK_ROOT_PREFIX = "unit-unikix-restart-"
+RESTART_SCENARIO = "TRN-POSTTRAN-normal-01"
+# The copy member job submitted, as BPE job 42 or without a job number.
+RESTART_JOB = "POSTTRAN"
+RESTART_NUMBER = "42"
+RESTART_ACCEPTED = "JOB00042 submitted\n"
+RESTART_UNNUMBERED = "submission queued\n"
+# Job 42's sysout entry and the job log in it, as bpe_sysout's parse reads
+# them: the job still running, or ended.
+RESTART_ENTRY = "POSTTRAN.00042"
+RESTART_LOG = f"{RESTART_ENTRY}/JESMSGLG"
+RESTART_RUNNING = b"POSTTRAN(JOB00042) STARTED 2025-03-04 10:00:00\n"
+RESTART_ENDED = RESTART_RUNNING + b"POSTTRAN(JOB00042) JOB ENDED\n"
+# Every entry the restart fallback and the submission use, bpe_active_jobs
+# and bpe_cancel excepted.
+RESTART_AVAILABLE = frozenset(
+    {
+        "region_quiesce_query",
+        "region_stop",
+        "bpe_stop",
+        "bpe_start",
+        "bpe_system",
+        "bpe_translate",
+        "bpe_submit",
+        "bpe_sysout",
+    }
+)
+
+
+class _RestartCommands:
+    """The ``CommandSet`` of a session whose BPE quiescence falls back to a
+    restart: the committed commands.yaml entries, so every parse and gap is
+    the shipped one. The entries in ``found`` probe available; any other is
+    refused when run, as ``CommandSet.run`` refuses it. ``bpe_submit`` prints
+    ``submitted``, ``bpe_sysout`` lists the entries of ``sysout``, every other
+    command prints nothing. ``probes`` records each probe that names a
+    deployment environment and ``calls`` each command run with its values.
+    Every probe and run must be capped at a scenario deadline exactly when
+    ``bounded``."""
+
+    def __init__(self, found: frozenset[str], sysout: Path, submitted: str, bounded: bool) -> None:
+        self.entries = unikix_env.CommandSet.load()
+        self.found = found
+        self.sysout = sysout
+        self.submitted = submitted
+        self.bounded = bounded
+        self.probes: list[str] = []
+        self.calls: list[tuple[str, dict]] = []
+
+    def _capped(self, deadline_left: float | None) -> None:
+        assert (deadline_left is not None) is self.bounded, deadline_left
+        assert deadline_left is None or deadline_left > 0
+
+    def entry(self, entry_id: str) -> unikix_env.CommandEntry:
+        return self.entries.entry(entry_id)
+
+    def available(self, entry_id: str, env: object = None, *, deadline_left: float | None = None) -> bool:
+        self._capped(deadline_left)
+        if env is not None:
+            self.probes.append(entry_id)
+        return entry_id in self.found
+
+    def probe_reason(self, entry_id: str) -> str:
+        return "" if entry_id in self.found else f"probe found no {entry_id}"
+
+    def mark(self) -> int:
+        return len(self.calls)
+
+    def run(
+        self, entry_id: str, env: object, deadline_left: float | None = None, **values: str | int
+    ) -> SimpleNamespace:
+        self._capped(deadline_left)
+        if entry_id not in self.found:
+            raise base.AdapterUnavailable(
+                f"{entry_id} unavailable: {self.probe_reason(entry_id)}", self.entry(entry_id).gap
+            )
+        self.calls.append((entry_id, dict(values)))
+        if entry_id == "bpe_submit":
+            stdout = self.submitted
+        elif entry_id == "bpe_sysout":
+            stdout = "".join(f"{path.name}\n" for path in sorted(self.sysout.iterdir()))
+        else:
+            stdout = ""
+        return SimpleNamespace(stdout=stdout, stderr="", returncode=0)
+
+
+@pytest.fixture
+def restart_work_root(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh, empty work root of this case's own inside the session work
+    root (carddemo_work_root), never under pytest's basetemp, given by its real
+    path and removed afterwards."""
+    directory = Path(tempfile.mkdtemp(prefix=RESTART_WORK_ROOT_PREFIX, dir=carddemo_work_root)).resolve()
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+def _restart_service(
+    root: Path, found: frozenset[str], tracked: str, log: bytes | None, bounded: bool
+) -> tuple[bpe.BatchService, _RestartCommands]:
+    """A ``BatchService`` on the fake deployment root ``root``, whose sysout
+    directory holds ``log`` as job 42's job log (no entry when ``None``),
+    tracking ``tracked``: ``nothing``, job 42 submitted and not seen completed
+    (``unfinished``), or a submission whose job number could not be read
+    (``unidentified``). The commands of that submission are not recorded."""
+    project = root / "project"
+    sysout = project / "sysoutdir"
+    sysout.mkdir(parents=True)
+    if log is not None:
+        (sysout / RESTART_ENTRY).mkdir()
+        (sysout / RESTART_LOG).write_bytes(log)
+    submitted = RESTART_UNNUMBERED if tracked == "unidentified" else RESTART_ACCEPTED
+    commands = _RestartCommands(found, sysout, submitted, bounded)
+    env = SimpleNamespace(vars={"PROJECT_ROOT": str(project)}, deployment_root=str(root))
+    service = bpe.BatchService(env, commands, bpe.Resources.load())
+    deadline = time.monotonic() + 300 if bounded else None
+    if tracked == "unfinished":
+        assert service.submit(RESTART_JOB, deadline=deadline).job_number == RESTART_NUMBER
+    elif tracked == "unidentified":
+        with pytest.raises(base.AdapterUnavailable, match="job number not found"):
+            service.submit(RESTART_JOB, deadline=deadline)
+    assert service.pending is (tracked != "nothing")
+    commands.probes.clear()
+    commands.calls.clear()
+    return service, commands
+
+
+# Each case: what the batch service tracks, whether bpe_cancel probes
+# available, job 42's job log in the sysout directory (None for none),
+# whether a scenario deadline caps the call, the commands it runs, and whether
+# it raises GAP-MIS-004, leaving the tracked work as it was. The ended log of
+# the last case names the submission's JOB card, which still identifies no
+# job of its own.
+RESTART_RECONCILE_CASES = [
+    pytest.param("nothing", True, None, False, [], False, id="nothing-tracked"),
+    pytest.param(
+        "unfinished", True, RESTART_RUNNING, True, [("bpe_cancel", {"job_number": RESTART_NUMBER})],
+        False, id="job-cancelled",
+    ),
+    pytest.param("unfinished", False, RESTART_ENDED, False, [("bpe_sysout", {})], False, id="job-shown-ended"),
+    pytest.param(
+        "unfinished", False, RESTART_RUNNING, True, [("bpe_sysout", {})], True, id="job-not-shown-ended"
+    ),
+    pytest.param("unidentified", True, RESTART_ENDED, False, [], True, id="submission-unidentified"),
+]
+
+
+@pytest.mark.parametrize(
+    ("tracked", "cancel", "log", "bounded", "runs", "raises"), RESTART_RECONCILE_CASES
+)
+def test_bpe_reconcile_for_restart_clears_only_work_proven_ended(
+    restart_work_root: Path,
+    tracked: str,
+    cancel: bool,
+    log: bytes | None,
+    bounded: bool,
+    runs: list[tuple[str, dict]],
+    raises: bool,
+) -> None:
+    found = RESTART_AVAILABLE | ({"bpe_cancel"} if cancel else set())
+    service, commands = _restart_service(restart_work_root / "deployment", found, tracked, log, bounded)
+    unfinished, unidentified = dict(service._unfinished), list(service._unidentified)
+    deadline = time.monotonic() + 300 if bounded else None
+    if raises:
+        with pytest.raises(base.AdapterUnavailable) as caught:
+            service.reconcile_for_restart(deadline=deadline)
+        assert caught.value.gap_id == "GAP-MIS-004"
+        labels = [run.label for run in unfinished.values()] + [attempt.label for attempt in unidentified]
+        assert labels and all(label in caught.value.reason for label in labels), caught.value.reason
+        assert service.pending
+        assert service._unfinished == unfinished and service._unidentified == unidentified
+    else:
+        assert service.reconcile_for_restart(deadline=deadline) is None
+        assert not service.pending
+    assert commands.calls == runs
+    # bpe_cancel is probed only for a job not seen completed, never for a
+    # submission without a job number.
+    assert commands.probes == (["bpe_cancel"] if tracked == "unfinished" else [])
+    polled = ("bpe_sysout", {}) in runs
+    assert service.take_evidence() == ({f"{RESTART_NUMBER}/{RESTART_LOG}": log} if polled else {})
+    if unidentified:
+        # The submission is still unresolved, so the next submit is refused
+        # before it runs anything.
+        with pytest.raises(base.AdapterUnavailable) as refused:
+            service.submit(RESTART_JOB, deadline=deadline)
+        assert refused.value.gap_id == "GAP-MIS-006"
+        assert unidentified[0].label in refused.value.reason
+        assert commands.calls == runs
+
+
+# Each case: what the batch service tracks when cleanup confirms quiescence
+# after RESTART_SCENARIO, whether bpe_cancel probes available, the commands
+# cleanup runs, and whether the session ends blocked.
+RESTART_CLEANUP_CASES = [
+    pytest.param(
+        "nothing", False, ["region_quiesce_query", "bpe_stop", "bpe_start", "bpe_system"], False,
+        id="nothing-pending",
+    ),
+    pytest.param(
+        "unfinished", True, ["region_quiesce_query", "bpe_cancel", "bpe_stop", "bpe_start", "bpe_system"],
+        False, id="job-cancelled-before-the-restart",
+    ),
+    pytest.param(
+        "unidentified", False, ["region_quiesce_query", "region_stop"], True, id="submission-unidentified"
+    ),
+]
+
+
+@pytest.mark.parametrize(("tracked", "cancel", "runs", "blocked"), RESTART_CLEANUP_CASES)
+def test_unikix_cleanup_restarts_bpe_only_over_settled_work(
+    monkeypatch: pytest.MonkeyPatch,
+    restart_work_root: Path,
+    tracked: str,
+    cancel: bool,
+    runs: list[str],
+    blocked: bool,
+) -> None:
+    found = RESTART_AVAILABLE | ({"bpe_cancel"} if cancel else set())
+    service, commands = _restart_service(restart_work_root / "deployment", found, tracked, None, False)
+    unidentified = list(service._unidentified)
+    adapter = UniKixAdapter(work_root=restart_work_root, repo_root=Path(_TESTS_ROOT).parent)
+    adapter._session_ready = True
+    adapter._env, adapter._commands, adapter._batch = service.env, commands, service
+    adapter._capture = evidence.Capture()
+    adapter._touched = True
+    monkeypatch.setattr(tpe, "close_all", lambda: None)
+    resets: list[object] = []
+    monkeypatch.setattr(adapter, "_attempt_reset", resets.append)
+    scenario = SimpleNamespace(id=RESTART_SCENARIO, inputs={"job": RESTART_JOB}, expected={}, preconditions={})
+    workdir = restart_work_root / RESTART_SCENARIO
+    assert adapter.cleanup(scenario, workdir) is None
+    assert [entry_id for entry_id, _ in commands.calls] == runs
+    assert list(restart_work_root.iterdir()) == [restart_work_root / "deployment"]
+    if not blocked:
+        assert adapter._broken is None and not adapter._region_down
+        assert not service.pending
+        return
+    # The submission is neither resolved nor restarted over: the session is
+    # blocked, its region stopped, and the submission still tracked.
+    broken = adapter._broken
+    assert broken is not None and broken.startswith(f"quiescence after {RESTART_SCENARIO} not confirmed: ")
+    assert unidentified[0].label in broken
+    assert adapter._region_down
+    assert service.pending and service._unidentified == unidentified
+    assert broken in adapter._capture.sysout["adapter/adapter-errors.txt"]
+    # The next scenario is refused under GAP-MIS-004 before any reset.
+    commands.calls.clear()
+    with pytest.raises(base.AdapterUnavailable) as caught:
+        adapter.prepare(scenario, workdir)
+    assert caught.value.gap_id == "GAP-MIS-004"
+    assert unidentified[0].label in caught.value.reason
+    assert resets == [] and commands.calls == []
+    assert adapter._plan is None and not adapter._touched

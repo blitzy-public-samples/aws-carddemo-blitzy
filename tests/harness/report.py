@@ -54,7 +54,10 @@ Outputs (``regenerate``, run at the end of every pytest session and by
     ``status`` and ``gap_ids`` of every inventory item. The three report
     files are deterministic: sorted rows and keys, ``\\n`` line endings, no
     elapsed time, absolute path or wall-clock date, so two consecutive full
-    runs leave them byte-identical.
+    runs leave them byte-identical. Nothing is regenerated, and nothing
+    written, while the inventory lists another number of items than its
+    frozen ``header.total`` or a gnucobol-batch record cannot be read or is
+    a symbolic link: ``ReportError`` names each.
 
 Command line (from the repository root)::
 
@@ -906,6 +909,8 @@ class UnikixRecord:
 
 
 _EVIDENCE_LINK = "is a symbolic link; UniKix evidence is neither read nor written through it"
+# A link harness.results.refused_link names: the results folder, its parent or a record file.
+_RESULTS_LINK = "is a symbolic link; result records are neither read nor written through it"
 
 
 def _linked_component(path: Path) -> Path | None:
@@ -1737,6 +1742,21 @@ def scenario_status(
     return ScenarioStatus(scenario_id, _results.STATUS_BLOCKED, "adapter-unavailable", gap, (), *extra)
 
 
+def _frozen_total(header: Mapping[str, Any]) -> int:
+    """The frozen inventory total, the inventory header's ``total``: the
+    coverage denominator and the 100% claim's target, whatever the number of
+    items listed beside it. A header without one, or with one that is not a
+    non-negative integer (a boolean is not one), raises ``ReportError``
+    naming it, so no report is computed against another denominator."""
+    where = f"{display_path(_inventory.INVENTORY_FILE)} header.total"
+    if "total" not in header:
+        raise ReportError(f"{where} is missing; coverage is reported against the frozen total only")
+    total = header["total"]
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+        raise ReportError(f"{where} {_clip(repr(total), 80)} is not a non-negative integer")
+    return total
+
+
 @dataclass
 class State:
     """Everything the report is computed from, and the statuses it gives."""
@@ -1756,10 +1776,17 @@ class State:
     unikix_records: list
     problems: list = field(default_factory=list)
     baseline_problems: dict = field(default_factory=dict)
+    # scenario id -> why its gnucobol-batch record is not read: the record
+    # cannot be read or breaks the record contract, or it, or the results
+    # folder holding it, is a symbolic link. Each problem is in ``problems``
+    # too (once for a linked folder), and ``regenerate`` refuses while any exists.
+    unread_records: dict = field(default_factory=dict)
 
     @property
     def total(self) -> int:
-        return len(self.items)
+        """The frozen inventory total (``_frozen_total``), never the number
+        of items listed: ``regenerate`` refuses to report while they differ."""
+        return _frozen_total(self.header)
 
     def counts(self, item_ids: Iterable[str] | None = None) -> dict[str, int]:
         ids = self.item_status if item_ids is None else item_ids
@@ -1837,9 +1864,16 @@ def _imported_is_current(record: Mapping[str, Any], scenario: Any, baseline: Any
 
 def build_state() -> State:
     """Read the inventory, the gap register, the scenarios, their baselines
-    and every record, and apply the status rules."""
+    and every record, and apply the status rules. An inventory header whose
+    frozen total is missing or malformed raises ``ReportError``
+    (``_frozen_total``) before anything else is read. A gnucobol-batch
+    record that cannot be read, breaks the record contract or is refused as
+    a symbolic link (``harness.results.refused_link``: the record file, the
+    results folder or its parent) counts as no record, and is recorded in
+    ``unread_records`` and ``problems``."""
     inventory = _inventory.load()
     header = dict(inventory["header"])
+    _frozen_total(header)
     items = sorted((dict(item) for item in inventory["items"]), key=lambda item: item["id"])
     gaps = load_gaps()
     problems = list(gaps.problems)
@@ -1858,13 +1892,26 @@ def build_state() -> State:
 
     statuses: dict[str, ScenarioStatus] = {}
     baseline_problems: dict[str, str] = {}
+    unread_records: dict[str, str] = {}
+    # A record that cannot be read, or one refused as a symbolic link, is not
+    # an absent one: it is kept apart so that it is never taken for a run
+    # that did not happen. A linked results folder is one problem.
+    folder_link = _results.refused_link()
+    if folder_link is not None:
+        problems.append(f"{display_path(folder_link)} {_RESULTS_LINK}")
     for scenario_id, scenario in present.items():
         gnucobol = None
         if _results.GNUCOBOL in _scenarios.capable_adapters(scenario):
-            try:
-                gnucobol = _results.load(scenario_id)
-            except HarnessError as exc:
-                problems.append(f"{scenario_id}: gnucobol-batch record: {exc}")
+            link = folder_link or _results.refused_link(scenario_id)
+            if link is not None:
+                unread_records[scenario_id] = f"{display_path(link)} {_RESULTS_LINK}"
+            else:
+                try:
+                    gnucobol = _results.load(scenario_id)
+                except HarnessError as exc:  # its message names the record file
+                    unread_records[scenario_id] = str(exc)
+            if scenario_id in unread_records and folder_link is None:
+                problems.append(f"{scenario_id}: gnucobol-batch record: {unread_records[scenario_id]}")
         imported = by_scenario.get(scenario_id, [])
         counted: list[dict] = []
         stale: list[str] = []
@@ -1935,6 +1982,7 @@ def build_state() -> State:
         unikix_records=unikix_records,
         problems=problems,
         baseline_problems=baseline_problems,
+        unread_records=unread_records,
     )
 
 
@@ -2249,14 +2297,23 @@ def _projection_causes(state: State) -> list[str]:
         shown = ", ".join(f"{by_level[level]} {level}" for level in _scenarios.LEVELS if by_level[level])
         causes.append(f"{len(missing)} scenario files of the id manifest are absent ({shown}); "
                       "the items only they would list are not-covered.")
-    unrun = [
+    recordless = [
         scenario_id for scenario_id, status in state.statuses.items()
         if status.status == _results.STATUS_BLOCKED and not status.counted and not status.stale
         and _results.GNUCOBOL in _scenarios.capable_adapters(state.scenarios[scenario_id])
     ]
+    # A record that exists but cannot be read, or is refused as a symbolic
+    # link, is not a scenario this session did not run.
+    unread = [scenario_id for scenario_id in recordless if scenario_id in state.unread_records]
+    unrun = [scenario_id for scenario_id in recordless if scenario_id not in state.unread_records]
     if unrun:
         causes.append(f"{len(unrun)} scenarios gnucobol-batch can run have no result record (not run in this "
                       f"session); no capable adapter ran them, so they count as blocked under {GAP_NOT_RUN}.")
+    if unread:
+        causes.append(f"{len(unread)} scenarios gnucobol-batch can run have a result record that cannot be read "
+                      "or is refused as a symbolic link (python tests/harness/report.py --check names each "
+                      f"problem): " + ", ".join(unread[:10]) + (" ..." if len(unread) > 10 else "")
+                      + f"; with no record read they count as blocked under {GAP_NOT_RUN}.")
     stale = [
         status for status in state.statuses.values()
         if status.status == _results.STATUS_UNEXECUTED and status.reason == "stale" and not status.records
@@ -2285,9 +2342,13 @@ def _projection_causes(state: State) -> list[str]:
     )
     if counted:
         causes.append(f"{counted} imported UniKix records count toward the statuses.")
-    if state.total != sum(PLANNING_PROJECTION.values()):
-        causes.append(f"The inventory holds {state.total} items, not the {sum(PLANNING_PROJECTION.values())} "
-                      "of the planning freeze (see Inventory completeness).")
+    planned = sum(PLANNING_PROJECTION.values())
+    if state.total != planned:
+        causes.append(f"The frozen inventory total is {state.total}, not the {planned} of the planning freeze "
+                      "(see Inventory completeness).")
+    if len(state.items) != state.total:
+        causes.append(f"The inventory holds {len(state.items)} items, not its frozen total {state.total}; "
+                      "python tests/harness/inventory_tools.py --check reports the drift.")
     return causes
 
 
@@ -2366,12 +2427,17 @@ def _seed_rows(state: State) -> list[list[Any]]:
 
 
 def render_report(state: State, proof: tuple[bool, str] | None = None) -> str:
-    """``coverage-report.md``: the sections of the coverage report, in order."""
+    """``coverage-report.md``: the sections of the coverage report, in order.
+    Verified items are divided by the frozen total (``State.total``), and the
+    100% claim needs that many verified, status counts adding up to it and no
+    open register entry, so an inventory that lists fewer or more items than
+    its header can neither re-base the figure nor claim 100%."""
     proof = proof if proof is not None else check_proof(state)
     counts = state.counts()
     total = state.total
     verified = counts[VERIFIED]
-    header_total = state.header.get("total")
+    counted = sum(counts.values())
+    listed = len(state.items)
     open_gaps = [gap_id for gap_id in state.gaps.entries if state.gaps.is_open(gap_id)]
     lines = [
         "# CardDemo characterization coverage report",
@@ -2386,8 +2452,8 @@ def render_report(state: State, proof: tuple[bool, str] | None = None) -> str:
         f"Verified / total: {verified} / {total} = {_percent(verified, total)}",
         "",
     ]
-    if header_total != total:
-        lines += [f"The inventory header gives a total of {header_total}, but the inventory holds {total} items.", ""]
+    if listed != total:
+        lines += [f"The inventory header gives a total of {total}, but the inventory holds {listed} items.", ""]
     lines += [
         "### Against the planning projection",
         "",
@@ -2490,7 +2556,7 @@ def render_report(state: State, proof: tuple[bool, str] | None = None) -> str:
     register_rows.append([
         "total", len(open_gaps), sum(row[2] for row in register_rows), len(state.gaps.entries),
     ])
-    claim = verified == total and total > 0 and not open_gaps
+    claim = verified == total and counted == total and total > 0 and not open_gaps
     lines += [
         *_table(("Category", "open", "closed", "total"), register_rows),
         "",
@@ -2503,6 +2569,11 @@ def render_report(state: State, proof: tuple[bool, str] | None = None) -> str:
         f"{verified} of {total} items are verified and {len(open_gaps)} register entries are open; the claim "
         "needs every item verified and no open entry.",
         "",
+    ]
+    if counted != total:
+        lines += [f"The status counts add up to {counted}, not the frozen total {total}, so the claim cannot be "
+                  "made until the inventory and its header agree.", ""]
+    lines += [
         "## Inventory completeness",
         "",
         *_COMPLETENESS_RULES,
@@ -2519,7 +2590,7 @@ def render_report(state: State, proof: tuple[bool, str] | None = None) -> str:
             for change in changes
         ]
     else:
-        lines.append(f"- none; the frozen total {header_total} stands")
+        lines.append(f"- none; the frozen total {total} stands")
     lines += ["", "Observed screen messages that match no inventory item:", ""]
     unmatched = unmatched_messages(state)
     if unmatched:
@@ -2556,15 +2627,39 @@ def _write_inventory(state: State) -> bool:
     return _inventory.write({"header": state.header, "items": state.items})
 
 
+def _refuse_unreportable(state: State) -> None:
+    """Raise ``ReportError`` when the reports cannot be regenerated from
+    ``state`` truthfully: the inventory lists another number of items than
+    its frozen total (drift, which ``inventory_tools.py --check`` explains),
+    or a gnucobol-batch result record cannot be read, breaks the record
+    contract or is refused as a symbolic link (``State.unread_records``),
+    which would otherwise count as a scenario that never ran. Every reason
+    is named, each unread record by its file or the link refused. The
+    regeneration, the import and the revalidation call it before they write
+    anything."""
+    reasons = []
+    listed = len(state.items)
+    if listed != state.total:
+        reasons.append(f"{display_path(_inventory.INVENTORY_FILE)} header.total is {state.total} but the "
+                       f"inventory holds {listed} items; run python tests/harness/inventory_tools.py --check")
+    reasons.extend(dict.fromkeys(state.unread_records.values()))
+    if reasons:
+        raise ReportError("the reports are not regenerated, and nothing is written: " + "; ".join(reasons))
+
+
 def regenerate() -> State:
     """Rewrite the coverage matrix, the gap register and the coverage report,
     and the ``scenario_ids``, ``status`` and ``gap_ids`` of every inventory
     item. Unchanged files are left untouched. The three texts are rendered
     before anything is written, so one that cannot be rendered (an invalid
-    ``CARDDEMO_ADAPTER``) leaves every file as it was. Returns the state
-    reported."""
+    ``CARDDEMO_ADAPTER``) leaves every file as it was, and so do an
+    inventory whose item count differs from its frozen total and a
+    gnucobol-batch result record that cannot be read, breaks the record
+    contract or is a symbolic link, which ``_refuse_unreportable`` refuses
+    with ``ReportError`` naming each. Returns the state reported."""
     _refuse_links(REPORTS_DIR.parent, REPORTS_DIR, MATRIX_FILE, REGISTER_FILE, REPORT_FILE)
     state = build_state()
+    _refuse_unreportable(state)
     texts = render(state)
     _write_inventory(state)
     for path, text in texts.items():
@@ -6444,7 +6539,10 @@ def import_unikix(execution_id: str) -> ImportSummary:
     execution fingerprint cannot be computed is rejected. Imports and
     revalidations run one at a time (``_exclusive``). An invalid
     ``CARDDEMO_ADAPTER``, which the final regeneration refuses, raises
-    ``ReportError`` before anything is written."""
+    ``ReportError`` before anything is written, and so do an inventory whose
+    item count differs from its frozen total and a gnucobol-batch result
+    record that cannot be read or is a symbolic link, which the final
+    regeneration refuses too (``_refuse_unreportable``)."""
     if not isinstance(execution_id, str) or not _UNIKIX_ID_RE.fullmatch(execution_id):
         raise ReportError(f"{execution_id!r} is not a unikix execution id unikix-<yyyymmddThhmmssZ>-<8 hex>")
     _selected_adapter()
@@ -6464,6 +6562,7 @@ def _import_execution(execution_id: str, execution_dir: Path) -> ImportSummary:
     original = GAPS_FILE.read_text(encoding="utf-8")
     document = load_yaml(GAPS_FILE)
     state = build_state()
+    _refuse_unreportable(state)
     imported = []
     environments = []
     links: list[Path] = []
@@ -6547,7 +6646,11 @@ def revalidate() -> RevalidationSummary:
     before anything is read or written; one in place of an execution or
     scenario directory is rejected, and reported as such. An invalid
     ``CARDDEMO_ADAPTER``, which the final regeneration refuses, raises
-    ``ReportError`` before anything is read or written."""
+    ``ReportError`` before anything is read or written. An inventory whose
+    item count differs from its frozen total and a gnucobol-batch result
+    record that cannot be read or is a symbolic link, which the final
+    regeneration refuses too (``_refuse_unreportable``), raise
+    ``ReportError`` before anything is written."""
     _selected_adapter()
     with _exclusive():
         return _revalidate()
@@ -6579,6 +6682,7 @@ def _revalidate() -> RevalidationSummary:
     result = RevalidationSummary()
     evidence_dir = _evidence_folder()
     state = build_state()
+    _refuse_unreportable(state)
     original = GAPS_FILE.read_text(encoding="utf-8")
     document = load_yaml(GAPS_FILE)
     links: list[Path] = []
@@ -6728,7 +6832,10 @@ status: 0 when the action succeeds and finds nothing, 1 when a check finds a
 problem, an import rejects a record, a revalidation rejects evidence or
 cannot revalidate a record, or two executions differ, 2 when the action
 cannot run. A revalidation that only leaves records stale until a new run
-exits 0.
+exits 0. Regeneration, an import and a revalidation exit 2 and write
+nothing while the inventory lists another number of items than its frozen
+header.total, or while a result record under tests/reports/results cannot
+be read or is a symbolic link; --check lists each such problem.
 """
 
 

@@ -121,6 +121,7 @@ __all__ = [
     "load_all",
     "load_environment",
     "record_problems",
+    "refused_link",
     "source_identity",
     "write",
     "write_environment",
@@ -1110,11 +1111,36 @@ def _writable_folder(folder: Path) -> Path:
     return folder
 
 
+def _folder_link(folder: Path) -> Path | None:
+    """``folder``'s parent, else ``folder``, when it is a symbolic link, the
+    folders ``_writable_folder`` refuses; ``None`` when neither is."""
+    for path in (folder.parent, folder):
+        if path.is_symlink():
+            return path
+    return None
+
+
 def _linked_folder(folder: Path) -> bool:
     """Whether ``folder`` or its parent is a symbolic link, the folders
     ``_writable_folder`` refuses: the readers do not read through them either,
     so they see only what the writers can have written."""
-    return folder.parent.is_symlink() or folder.is_symlink()
+    return _folder_link(folder) is not None
+
+
+def refused_link(scenario_id: str | None = None, *, results_dir: str | PurePath = RESULTS_DIR) -> Path | None:
+    """The symbolic link ``load`` and ``load_all`` refuse to read through,
+    so a caller can tell a refused record from an absent one: the results
+    folder's parent or the folder itself, else, for ``scenario_id``, its
+    record file ``<id>.yaml``; ``None`` when there is none, and for an id
+    outside the closed manifest, which ``load`` never looks up."""
+    folder = Path(results_dir)
+    link = _folder_link(folder)
+    if link is not None or scenario_id is None:
+        return link
+    if not isinstance(scenario_id, str) or scenario_id not in _scenarios.ALL_IDS:
+        return None
+    path = folder / f"{scenario_id}.yaml"
+    return path if path.is_symlink() else None
 
 
 def write(outcome: Any, *, results_dir: str | PurePath = RESULTS_DIR) -> Path | None:
@@ -1188,7 +1214,8 @@ def _read_record(path: Path, scenario_id: str) -> dict | None:
 def load(scenario_id: str, *, results_dir: str | PurePath = RESULTS_DIR) -> dict | None:
     """The gnucobol-batch record of ``scenario_id``, or ``None`` when it has
     none. Only ids of the closed manifest are looked up, and nothing is read
-    through a folder that is, or whose parent is, a symbolic link. A record
+    through a folder that is, or whose parent is, a symbolic link, or from a
+    record file that is one; ``refused_link`` names such a link. A record
     file that breaks the contract raises ``ResultError``."""
     if not isinstance(scenario_id, str) or scenario_id not in _scenarios.ALL_IDS:
         return None
@@ -1202,7 +1229,7 @@ def load_all(*, results_dir: str | PurePath = RESULTS_DIR) -> dict[str, dict]:
     """Every gnucobol-batch record, by scenario id in sorted order. Files that
     are not ``<manifest id>.yaml`` are not records (``scenarios.check_manifest``
     reports them); symbolic links are not followed, and a folder that is, or
-    whose parent is, one holds no records."""
+    whose parent is, one holds no records (``refused_link`` names it)."""
     folder = Path(results_dir)
     if _linked_folder(folder) or not folder.is_dir():
         return {}

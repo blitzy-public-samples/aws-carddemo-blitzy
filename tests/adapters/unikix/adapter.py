@@ -20,6 +20,9 @@ Observations
     Before the session, every observation is declared, so that ``prepare``
     raises the real cause (GAP-MIS-009 without UniKix). A blocked session
     declares every observation too, so that its GAP-MIS-004 cause is raised.
+    In both states ``refuse`` refuses nothing, for the same reason; in a
+    started session it raises the GAP-MIS-016 of Outcomes before the
+    runner's observation rule, so a missing observation never hides it.
     Otherwise only those whose ``commands.yaml`` entries probed available
     are: datasets, ``@AIX:<path>``, ``@AFTER:<JOB>:<LOGICAL>`` and
     ``@CATALOG`` through BPE jobs (GAP-MIS-007), ``@REGION-FILES`` and its
@@ -47,7 +50,10 @@ Observations
     GAP-MIS-017.
 Before each scenario
     Quiescence is confirmed (no active region task, no unfinished BPE job),
-    then the region is reset: its files closed, every cluster of
+    by ``bpe_active_jobs`` or, without it, by a BPE restart that runs only
+    once every BPE job the session tracks is cancelled or shown ended by its
+    sysout and no submission is left without a job number; then the region
+    is reset: its files closed, every cluster of
     ``resources.yaml`` reloaded from the scenario's preconditions or emptied,
     the catalog restored to the snapshot, sequential and GDG preconditions
     written, batch ``open``/``unavailable`` faults applied, ``JOBS`` emptied
@@ -58,11 +64,14 @@ Before each scenario
 After each scenario
     Every ``s3270`` session is ended. After each scenario that reached the
     region, whatever it returned, unfinished BPE jobs are cancelled and
-    quiescence is confirmed again; the scenario's own outcome stands.
+    quiescence is confirmed again, the BPE restart fallback included; the
+    scenario's own outcome stands.
 Blocked session
     A reset or quiescence check that was attempted and not confirmed, by a
     failure, a timeout or a missing prerequisite, stops the region and
-    blocks the session: every remaining scenario raises GAP-MIS-004. A reset
+    blocks the session: every remaining scenario raises GAP-MIS-004. Tracked
+    BPE work a BPE restart would leave unsettled is such a failure, so the
+    restart never claims quiescence over it. A reset
     ended by ``AdapterUnavailable``, ``HarnessError`` or ``OSError`` raises
     GAP-MIS-004 for its own scenario too; one ended by a timeout or another
     error keeps that outcome.
@@ -84,11 +93,18 @@ Outcomes
     creation, never from ``CBADMCDJ``: a job with a ``DFHCSDUP`` step, alone
     or in a chain, has no confirmed UniKix equivalent and is
     ``AdapterUnavailable`` under GAP-MIS-016 before anything reaches the
-    region.
+    region. Once the session has started, ``refuse`` raises it ahead of the
+    runner's observation rule; the scenario that starts the session gets it
+    from ``prepare`` just after session start. Either way the gap depends
+    neither on what the session can observe nor on the scenario's place in
+    the run.
 Evidence
-    Every scenario that passed session start gets immutable evidence under
-    ``tests/reports/unikix/<execution_id>/<scenario_id>/`` (``evidence.py``);
-    everything else the adapter writes lies inside the work root. Each raw
+    Every scenario whose ``prepare`` passed session start gets immutable
+    evidence under ``tests/reports/unikix/<execution_id>/<scenario_id>/``
+    (``evidence.py``), and so does one ``refuse`` blocks in a started
+    session, which opens its capture as ``prepare`` would have; one the
+    runner's observation rule blocks gets none. Everything else the adapter
+    writes lies inside the work root. Each raw
     observation joins the evidence as soon as it is acquired, so bytes read
     before a later failure are kept unchanged. A UniKix
     outcome never changes a baseline or this adapter: divergence and
@@ -165,7 +181,8 @@ _GAP_JOBS_CAPTURE = "GAP-MIS-017"  # the jobs the region submits through JOBS
 # The z/OS CICS CSD utility CBADMCDJ runs against OEM.CICSTS.DFHCSD
 # [app/jcl/CBADMCDJ.jcl:27-30]. The region's CSD resources come from the
 # catlg/tpe lists installed at region creation, so a job step running it is
-# never submitted.
+# never submitted: UniKixAdapter.refuse refuses its scenario before the
+# runner's observation rule, and prepare before anything reaches the region.
 _CSD_UTILITY = "DFHCSDUP"
 
 # Everything the adapter can declare before its session has started.
@@ -1099,7 +1116,9 @@ class UniKixAdapter(Adapter):
         """How quiescence is confirmed: the region by ``region_quiesce_query``
         or, while it is unavailable, by stopping it (``down`` when it already
         is); BPE by ``bpe_active_jobs`` or, while it is unavailable, by a BPE
-        restart. Neither way available is a missing capability."""
+        restart, which ``_confirm_quiescence`` runs only once
+        ``bpe.reconcile_for_restart`` has settled every job and submission the
+        batch service tracks. Neither way available is a missing capability."""
         if self._region_down:
             region = "down"
         elif self._have("region_quiesce_query", bounded=bounded):
@@ -1128,7 +1147,13 @@ class UniKixAdapter(Adapter):
 
     def _confirm_quiescence(self, *, bounded: bool = True) -> None:
         """No active region task and no unfinished BPE job. Every BPE job not
-        seen completed is cancelled first (``bpe.cancel_unfinished``).
+        seen completed is cancelled first (``bpe.cancel_unfinished``). In the
+        restart mode, without ``bpe_active_jobs``, ``bpe.reconcile_for_restart``
+        first cancels each such job, or proves from its sysout that it ended;
+        a job it cannot settle, or a submission whose job number was never
+        read, is ``AdapterUnavailable`` (GAP-MIS-004) raised before
+        ``bpe_stop`` and ``bpe_start`` run, because a restart is no evidence
+        that BPE dropped that work.
 
         Only an empty or all-blank ``region_quiesce_query`` output shows the
         region idle. Every other line must be an active task that
@@ -1173,6 +1198,9 @@ class UniKixAdapter(Adapter):
         if batch == "query":
             self._batch.cancel_unfinished(deadline=self.deadline if bounded else None)
         else:
+            # The restart proves nothing about the work the batch service
+            # tracks, so that work is settled first or the check fails here.
+            self._batch.reconcile_for_restart(deadline=self.deadline if bounded else None)
             for entry_id in _BPE_RESTART:
                 self._run(entry_id, bounded=bounded)
             if self._have("bpe_system", bounded=bounded):
@@ -1243,30 +1271,13 @@ class UniKixAdapter(Adapter):
 
     # ------------------------------------------------------------ prepare
 
-    def prepare(self, scenario: Any, workdir: Path) -> None:
-        workdir = Path(workdir)
-        self._plan, self._result, self._touched = None, None, False
-        self._start_session()
-        # This run's evidence starts here; the session-starting scenario also
-        # carries the commands and BPE sysout of the session setup.
-        self._capture, self._capture_id = evidence.Capture(), scenario.id
-        self._log_mark = 0 if self._setup_unreported else self._commands.mark()
-        self._take_batch_evidence("session/")
-        self._setup_unreported = False
-        if self._broken is not None:
-            raise AdapterUnavailable(
-                f"region not quiescent or reset not confirmed earlier in this session: "
-                f"{self._broken}",
-                _GAP_QUIESCENCE,
-            )
-        steps = scenario.inputs.get("steps")
-        online = isinstance(steps, list)
-        jobs = _scenarios.job_names(scenario)
-        if not online and not jobs:
-            raise HarnessError(f"{scenario.id}: unikix runs inputs.steps or inputs.job, nothing else")
-        resolved = [self._batch.resources.job(job) for job in jobs]
-        # Checked before anything reaches the region: a job, alone or in a
-        # chain, with a step running the CSD utility is never submitted.
+    def _refuse_csd_utility(self, scenario: Any) -> None:
+        """Raise ``AdapterUnavailable`` under GAP-MIS-016 when a job of
+        ``scenario``'s ``inputs.job``, alone or in a chain, has a step running
+        the CSD utility, which is never submitted; ``HarnessError`` for a job
+        ``resources.yaml`` does not map. Reads only ``resources.yaml``: no
+        command, BPE job or region access."""
+        resolved = [self._batch.resources.job(job) for job in _scenarios.job_names(scenario)]
         csd_steps = dict.fromkeys(
             f"{resource.name} step {step.name}"
             for resource in resolved
@@ -1280,6 +1291,65 @@ class UniKixAdapter(Adapter):
                 "at region creation",
                 _GAP_CSD,
             )
+
+    def refuse(self, scenario: Any) -> None:
+        """The CSD utility refusal (``_refuse_csd_utility``, GAP-MIS-016),
+        which the runner applies just before its observation rule, so that a
+        missing observation (``@REGION-FILES`` under GAP-MIS-011) never hides
+        it. It refuses nothing before the session has started or once the
+        session is blocked: ``observations()`` then declares everything, and
+        ``prepare`` raises the earlier cause first (the session's own, such as
+        GAP-MIS-009 without UniKix, or the blocked session's GAP-MIS-004), and
+        this refusal only when neither applies.
+
+        A refusal, the job-name ``HarnessError`` included, first opens the
+        scenario's capture as ``prepare`` does (``_open_capture``), so
+        ``write_evidence`` records the blocked outcome whether ``refuse`` or
+        ``prepare`` raised it. That capture is held in memory: no file,
+        process or platform access. A scenario ``refuse`` lets through changes
+        no state and uses no command."""
+        if not self._session_ready or self._broken is not None:
+            return
+        try:
+            self._refuse_csd_utility(scenario)
+        except Exception:
+            self._plan, self._result, self._touched = None, None, False
+            self._open_capture(scenario)
+            raise
+
+    def _open_capture(self, scenario: Any) -> None:
+        """Start ``scenario``'s evidence (``write_evidence``) on a started
+        session: a fresh capture, the command log from this point, and the
+        BPE evidence pending under ``session/``. The first capture after
+        session setup takes the log from its start, so the session-starting
+        scenario also carries the commands and BPE sysout of the setup."""
+        self._capture, self._capture_id = evidence.Capture(), scenario.id
+        self._log_mark = 0 if self._setup_unreported else self._commands.mark()
+        self._take_batch_evidence("session/")
+        self._setup_unreported = False
+
+    def prepare(self, scenario: Any, workdir: Path) -> None:
+        workdir = Path(workdir)
+        self._plan, self._result, self._touched = None, None, False
+        self._start_session()
+        # This run's evidence starts here.
+        self._open_capture(scenario)
+        if self._broken is not None:
+            raise AdapterUnavailable(
+                f"region not quiescent or reset not confirmed earlier in this session: "
+                f"{self._broken}",
+                _GAP_QUIESCENCE,
+            )
+        steps = scenario.inputs.get("steps")
+        online = isinstance(steps, list)
+        jobs = _scenarios.job_names(scenario)
+        if not online and not jobs:
+            raise HarnessError(f"{scenario.id}: unikix runs inputs.steps or inputs.job, nothing else")
+        # Checked before anything reaches the region: a job, alone or in a
+        # chain, with a step running the CSD utility is never submitted. Once
+        # the session has started, the runner's call of refuse has made this
+        # check already; the scenario that starts the session meets it here.
+        self._refuse_csd_utility(scenario)
         if online and steps:
             tpe.check_sign_on(steps, scenario.expected.get("screens"))
             if self._listener_error is not None:
@@ -1992,7 +2062,11 @@ class UniKixAdapter(Adapter):
         prints unreadable output or cannot be queried blocks the session
         (``_break``), and its BPE jobs are then cancelled all the same
         (``_cancel_after_break``), as are those of a run whose reset blocked
-        the session. What fails here acts only through the quiescence rule
+        the session. Without ``bpe_active_jobs``, BPE work the batch service
+        still tracks and cannot settle before the BPE restart (a job neither
+        cancelled nor shown ended by its sysout, a submission whose job
+        number was never read) blocks the session the same way, before the
+        restart runs. What fails here acts only through the quiescence rule
         (GAP-MIS-004 for the remaining scenarios); the run's outcome stands.
         Never raises."""
         tpe.close_all()
@@ -2175,9 +2249,10 @@ class UniKixAdapter(Adapter):
         return logs
 
     def write_evidence(self, scenario: Any, record: dict) -> str | None:
-        """Write the scenario's evidence once, only for a scenario that
-        passed session start; a scenario blocked before it writes nothing
-        outside the work root."""
+        """Write the scenario's evidence once, only for a scenario whose
+        capture ``prepare`` or ``refuse`` opened (``_open_capture``); a
+        scenario blocked before session start or by the runner's observation
+        rule writes nothing outside the work root."""
         if self._capture is None or self._capture_id != getattr(scenario, "id", None):
             return None
         capture = self._capture

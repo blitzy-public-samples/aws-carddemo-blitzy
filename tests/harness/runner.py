@@ -12,8 +12,9 @@ whose ``status`` is ``passed``, ``failing``, ``blocked`` or
 ``implemented-unexecuted``; it raises only for a caller error (an adapter
 whose name is not one of ``harness.ADAPTER_NAMES``, an unknown scenario id).
 ``conclude`` maps the outcome onto pytest: ``passed`` returns, ``blocked`` and
-``implemented-unexecuted`` skip with ``"<status>: <reason> [<gap>] ..."``,
-``failing`` raises ``AssertionError`` carrying the diff.
+``implemented-unexecuted`` skip with
+``"<status>: <reason> [<gap>] <scenario_id>: ..."``, ``failing`` raises
+``AssertionError`` carrying the diff.
 
 Steps of ``run``
     1. ``harness.scenarios.validate``: a schema problem is ``failing`` with
@@ -29,7 +30,10 @@ Steps of ``run``
        written to ``inputs/`` (below). ``FixtureError`` (an unregistered
        cross-check mismatch included) is ``failing``/``error``.
     6. ``results.execution_fingerprint`` over the bytes actually written.
-    7. The observation rule: every observation ``expected`` names
+    7. ``adapter.refuse``, when the adapter has it: a scenario the adapter
+       refuses whatever it can observe is ``blocked`` under the gap it raises,
+       before the observation rule can block it under another. Then the
+       observation rule: every observation ``expected`` names
        (``adapters.base.required_observations``) must be one the adapter can
        produce, or the scenario is ``blocked`` under the adapter's gap for it,
        so no scenario passes on a success message alone.
@@ -233,18 +237,20 @@ class Outcome:
 
 def conclude(outcome: Outcome) -> None:
     """End the calling test as ``outcome`` says: return for ``passed``,
-    ``pytest.skip("<status>: <reason> [<gap_id>] <detail>")`` for ``blocked``
-    and ``implemented-unexecuted``, ``AssertionError`` with the diff for
-    ``failing``."""
+    ``pytest.skip("<status>: <reason> [<gap_id>] <scenario_id>: <detail>")``
+    for ``blocked`` and ``implemented-unexecuted`` (without ``: <detail>``
+    when there is none; the scenario id keeps pytest's short summary from
+    merging scenarios that share a reason), ``AssertionError`` with the diff
+    for ``failing``."""
     import pytest
 
     status = outcome.status
     if status == PASSED:
         return
     if status in (BLOCKED, UNEXECUTED):
-        message = f"{status}: {outcome.reason} [{outcome.gap_id}]"
+        message = f"{status}: {outcome.reason} [{outcome.gap_id}] {outcome.scenario_id}"
         if outcome.detail:
-            message += f" {outcome.detail}"
+            message += f": {outcome.detail}"
         pytest.skip(message)
     if status == FAILING:
         message = outcome.diff or f"{outcome.reason}: {outcome.detail}"
@@ -434,8 +440,10 @@ def _fresh_workdir(adapter: Any, scenario_id: str) -> Path:
 
 
 def _execute(state: _Run) -> None:
-    """Working directory, deadline, inputs, observation rule and the adapter
-    calls, with the timeout precedence applied at the end."""
+    """Working directory, deadline, inputs, the adapter's refusal, the
+    observation rule and the adapter calls, with the timeout precedence
+    applied at the end. What ``refuse`` raises maps like what ``prepare``
+    raises."""
     s, adapter = state.scenario, state.adapter
     try:
         state.workdir = _fresh_workdir(adapter, s.id)
@@ -452,6 +460,9 @@ def _execute(state: _Run) -> None:
             adapter.deadline = deadline
             state.materialized = _materialize(s, workdir)
             state.fingerprint = _results.execution_fingerprint(s, state.materialized, state.name)
+            hook = getattr(adapter, "refuse", None)
+            if callable(hook):
+                hook(s)
             _check_observations(s, adapter, state.name)
             adapter.prepare(s, workdir)
             result = adapter.execute(s, workdir)

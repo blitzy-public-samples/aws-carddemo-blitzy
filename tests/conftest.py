@@ -2,9 +2,10 @@
 
 ``pytest tests/`` runs the scenario modules ``tests/test_<level>_<area>.py``
 on one execution adapter, writes each scenario's result record, and
-regenerates the coverage matrix, the gap register and the coverage report
-when the session ends. ``tests/pytest.ini`` makes ``tests/`` the rootdir, so
-the harness imports as ``harness`` and the adapters as ``adapters``.
+regenerates the coverage matrix, the gap register, the coverage report and
+the inventory's report fields when the session ends. ``tests/pytest.ini``
+makes ``tests/`` the rootdir, so the harness imports as ``harness`` and the
+adapters as ``adapters``.
 
 Environment
     ``CARDDEMO_ADAPTER``
@@ -13,13 +14,13 @@ Environment
     ``CARDDEMO_TEST_WORKDIR``
         The work root: the per-scenario working directories, the build cache,
         the extracted UniKix zip and the UniKix deployment root. It must lie
-        outside the repository, and it is created when missing. Unset, or set
-        to a value that cannot be a work root (blank, inside the repository,
-        not a directory, not creatable or not writable), the session uses a
-        fresh ``tempfile.mkdtemp(prefix="carddemo-")`` root instead, with a
-        warning naming the refused value and why. Only when that temporary
-        root would lie inside the repository, or cannot be made, is it a
-        usage error.
+        outside the repository, and it is created when missing. Unset, the
+        session silently uses a fresh ``tempfile.mkdtemp(prefix="carddemo-")``
+        root. Set to a value that cannot be a work root (blank, inside the
+        repository, not a directory, not creatable or not writable), it gives
+        a warning naming the refused value and why, then uses the same fresh
+        temporary root instead. Only when that temporary root would lie inside
+        the repository, or cannot be made, is it a usage error.
 
 Options
     ``--carddemo-order=forward|reverse``
@@ -27,7 +28,10 @@ Options
         proves that the outcome does not depend on order.
     ``--carddemo-no-report``
         Skip the report regeneration at session end (local partial runs; CI
-        never passes it).
+        never passes it). It does not stop result writing:
+        ``harness.results.write`` still writes each run's record under
+        ``tests/reports/results/``, and a unikix run its evidence under
+        ``tests/reports/unikix/``.
     ``--carddemo-baseline-base=<revision>``
         The revision the baseline version-bump check compares with
         (default ``HEAD``).
@@ -130,8 +134,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--carddemo-no-report",
         action="store_true",
         default=False,
-        help="do not regenerate the coverage matrix, gap register and coverage report "
-        "at session end (local partial runs; never used in CI)",
+        help="do not regenerate the coverage matrix, gap register, coverage report and "
+        "inventory report fields at session end; result records are still written "
+        "(local partial runs; never used in CI)",
     )
     group.addoption(
         "--carddemo-baseline-base",

@@ -43,8 +43,15 @@ Job runs (``run_jobs``)
     (``datasets.JobGenerations``, GAP-STB-009). Program steps resolve their
     DDs through the catalog, run through ``run_program`` and, at normal end,
     get their normal-end dispositions (``utilities.apply_normal_dispositions``,
-    GAP-STB-007); utility steps run through ``utilities.run_utility``, which
-    applies them itself. ``COND`` and the abnormal-termination disposition
+    GAP-STB-007). A DD the step's program declares that codes a DSN without a
+    relative generation, ``SHR`` or ``OLD``, which the catalog does not hold
+    and no ``open``/``unavailable`` fault left out (``Catalog.left_out``), is
+    refused with ``HarnessError`` before the step allocates anything or runs:
+    z/OS fails that allocation (IEF212I) and the job never runs, which is not
+    emulated (GAP-STB-007). The step still runs for a dataset the declared
+    fault left out, so the program's OPEN of it fails with status 35. Utility
+    steps run through ``utilities.run_utility``, which applies the
+    dispositions itself. ``COND`` and the abnormal-termination disposition
     are recorded and never evaluated: they are JCL-semantics items run only
     on ``unikix``. The first abend stops the scenario, later steps and later
     jobs included, and no disposition is applied to the abended step.
@@ -915,11 +922,11 @@ def _program_step(
     declared = program_dds(config, called_configs(unit))
     declared_dds = dict(declared)
     store, catalog = ctx.store, ctx.catalog
-    evidence = _step_evidence_dir(store, ctx.step_index, job, name)
 
     dd_paths: dict[str, str | Path] = {}
     shown_dds: dict[str, str] = {}
     new_datasets: list[ResolvedDD] = []
+    allocations: list[tuple[ResolvedDD, Mapping[str, Any] | None]] = []
     for ddname in ctx.dd_names():
         dd = declared_dds.get(ddname)
         if ddname in _IGNORED_DDS and dd is None:
@@ -956,11 +963,31 @@ def _program_step(
                 f"{where}: DD {ddname} codes {resolved.coded}, which names no generation; the "
                 f"allocation failure z/OS reports for it is not emulated (GAP-STB-009)"
             )
+        logical = resolved.logical or (dd.get("logical") if dd is not None else None)
+        if (
+            dd is not None
+            and resolved.generation is None
+            and not resolved.is_new
+            and (resolved.dsn is None or catalog.get(resolved.dsn) is None)
+            and logical not in catalog.left_out
+        ):
+            # Without this a program opening it OUTPUT would write a file no
+            # catalog entry reaches, and its output would be lost to every
+            # later step and observation; one opening it INPUT would fail with
+            # status 35 as if the scenario had declared that fault.
+            status = resolved.disp[0] if resolved.disp and resolved.disp[0] else "NEW"
+            raise HarnessError(
+                f"{where}: DD {ddname} of {unit} codes {resolved.coded} with DISP={status}, which "
+                f"the catalog does not hold; z/OS fails that allocation (IEF212I DATA SET NOT "
+                f"FOUND), so the job would not run. That failure is not emulated (GAP-STB-007): "
+                f"declare {logical} in preconditions.datasets, or leave it out with an "
+                f"open/unavailable fault"
+            )
         dd_paths[ddname] = resolved.path
         shown_dds[ddname] = f"{resolved.shown}, {store.relative(resolved.path)}"
         if resolved.is_new:
             new_datasets.append(resolved)
-            _allocate(store, resolved, dd)
+            allocations.append((resolved, dd))
     for ddname, dd in declared:
         if ddname not in dd_paths:
             raise HarnessError(
@@ -972,6 +999,11 @@ def _program_step(
                 f"{where}: DD {ddname} holds {coded}, but {display_path(PROGRAMS_FILE)} maps "
                 f"{unit} DD {ddname} to {dd.get('logical')}"
             )
+    # Every DD of the step is checked before its NEW datasets are allocated, so
+    # a step refused above leaves no new dataset and no step evidence behind.
+    for resolved, dd in allocations:
+        _allocate(store, resolved, dd)
+    evidence = _step_evidence_dir(store, ctx.step_index, job, name)
 
     indexed = {
         ddname: _declared_profile(dd, unit, ddname)

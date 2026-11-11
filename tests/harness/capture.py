@@ -54,7 +54,13 @@ the observed result does not compare equal to the would-be baseline through
 Exit status: 0 when every requested baseline was written, 1 when any capture
 was refused or failed (with ``--all`` a scenario whose run ends
 ``implemented-unexecuted`` is reported and skipped, not an error), 2 for a
-usage error. Every written baseline must then pass ``python
+usage error. The committed ``tests/reports/results/<id>.yaml`` of a written
+baseline still carries its old ``baseline_version``, so ``report.py`` counts
+it as stale, which fails ``--check`` (and ``--check-proof`` for a job-chain
+proof scenario), until a pytest run rewrites it and regenerates the reports:
+the closing summary names that run, ``pytest tests/ -k <id>`` (``-k "<id> or
+<id>"`` for several) for the written ids, or ``pytest tests/`` after
+``--all``. Every written baseline must then pass ``python
 tests/harness/baselines.py --check-bumps --base HEAD``.
 
 The work root is ``--work-root``, else ``CARDDEMO_TEST_WORKDIR``, else a new
@@ -522,16 +528,21 @@ def _change_note(
 
 _EPILOG = """\
 examples (from the repository root):
-  python tests/harness/capture.py TRN-CBTRN02C-negative-03
+  # replacing baselines HEAD holds (without --bump these exit 1):
   python tests/harness/capture.py TRN-CBTRN02C-negative-03 --bump patch
-  python tests/harness/capture.py --all
   python tests/harness/capture.py --all --bump minor
+  # a baseline HEAD does not hold yet: written at 1.0.0
+  python tests/harness/capture.py <scenario_id>
 
 exit status: 0 when every requested baseline was written; 1 when any capture
 was refused or failed (with --all, a scenario whose run ends
 implemented-unexecuted is reported and skipped, not an error); 2 for a usage
-error. Afterwards python tests/harness/baselines.py --check-bumps --base HEAD
-must pass.
+error. Afterwards rerun the pytest command the summary names (pytest tests/
+-k <id> for the written ids, pytest tests/ after --all) so that the result
+records carry the new baseline versions and the reports are regenerated;
+until then report.py counts them as stale, which fails --check (and
+--check-proof for a job-chain proof scenario). Then python
+tests/harness/baselines.py --check-bumps --base HEAD must pass.
 """
 
 
@@ -595,6 +606,16 @@ def _report(captured: Captured, all_mode: bool) -> None:
     print(f"capture.py: {captured.scenario_id}: {verb}: {captured.detail}", file=sys.stderr, flush=True)
 
 
+def _refresh_command(captures: Sequence[Captured], all_mode: bool) -> str:
+    """The pytest run that rewrites the result records of the written
+    baselines and regenerates the reports: the full suite after ``--all``,
+    else a ``-k`` selection of the written scenario ids."""
+    if all_mode:
+        return "pytest tests/"
+    ids = [captured.scenario_id for captured in captures if captured.written]
+    return f"pytest tests/ -k {ids[0]}" if len(ids) == 1 else f'pytest tests/ -k "{" or ".join(ids)}"'
+
+
 def _summarize(captures: Sequence[Captured], all_mode: bool) -> int:
     written = sum(1 for captured in captures if captured.written)
     skipped = sum(1 for captured in captures if _skipped(captured, all_mode))
@@ -605,6 +626,12 @@ def _summarize(captures: Sequence[Captured], all_mode: bool) -> int:
         file=sys.stderr,
     )
     if written:
+        print(
+            f"capture.py: rerun {_refresh_command(captures, all_mode)} so that the result records carry the new "
+            "baseline versions and the reports are regenerated; until then report.py counts them as stale, which "
+            "fails --check (and --check-proof for a job-chain proof scenario)",
+            file=sys.stderr,
+        )
         print(
             "capture.py: python tests/harness/baselines.py --check-bumps --base HEAD must pass "
             "before the baselines are committed",

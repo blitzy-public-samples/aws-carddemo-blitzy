@@ -53,7 +53,11 @@ Process helpers
     The catalog of one scenario: CLUSTER, AIX, PATH, GDG, GENERATION and
     NONVSAM entries. ``Catalog.seed`` starts a job scenario from the GDG
     bases of ``jobs.yaml`` ``catalog_seed`` its jobs reference without
-    defining, plus the precondition datasets its jobs use. Relative
+    defining, plus the precondition datasets its jobs use, leaving out the
+    targets of ``open``/``unavailable`` faults (``Catalog.left_out``); it
+    accepts such a fault only when a use of the run reaches the absent
+    dataset before the run creates it itself, and refuses every other one
+    with ``MissingPrerequisite`` (GAP-MIS-013) before seeding anything. Relative
     generations are fixed per job, as z/OS fixes them at job start: ``(0)`` is
     the newest generation when the job started, and every ``(+1)`` of one job
     is one new generation. ``catalog_new`` catalogues a new generation and
@@ -876,9 +880,11 @@ def unavailable_targets(faults: Iterable[Mapping[str, Any]] | None) -> set[str]:
     The adapter refuses every other fault with ``MissingPrerequisite(...,
     "GAP-MIS-013")`` before preparing anything; one that still reaches this
     module is refused the same way, never silently ignored. A target the run
-    never needs (named by no INPUT, I-O or EXTEND dd of a program run, or used
-    by no dd or IDCAMS command of a job run) cannot be left out, and the
-    adapter and ``Catalog.seed`` refuse it the same way."""
+    never needs cannot be left out, and the adapter and ``Catalog.seed``
+    refuse it the same way: in a program run, one named by no INPUT, I-O or
+    EXTEND dd; in a job run, one that no use reaches before the run creates
+    it itself, because the jobs never use it, only create it or read only
+    what they created (``Catalog.seed``)."""
     targets: set[str] = set()
     for fault in faults or ():
         if not isinstance(fault, Mapping):
@@ -1676,6 +1682,13 @@ _KEYS_RE = re.compile(r"\bKEYS\s*\(\s*(\d+)\s*[\s,]\s*(\d+)\s*\)")
 _NONUNIQUE_RE = re.compile(r"\bNONUNIQUEKEY\b")
 # A data set name of two or more qualifiers in an IDCAMS command.
 _DSN_TOKEN_RE = re.compile(r"[A-Z0-9#@$][A-Z0-9#@$-]*(?:\.[A-Z0-9#@$][A-Z0-9#@$-]*)+")
+_DEFINE_RE = re.compile(r"^\s*DEFINE\b")
+# DISP statuses that allocate a left-out (absent) dataset, statuses that open an
+# existing one, and the normal dispositions after which a dataset a NEW or MOD dd
+# allocated no longer depends on whether it existed before (Catalog.seed).
+_CREATING_STATUSES = frozenset({"NEW", "MOD"})
+_READING_STATUSES = frozenset({"SHR", "OLD"})
+_REPLACING_DISPOSITIONS = frozenset({"CATLG", "DELETE", "UNCATLG"})
 
 
 def _jobs_mapping(jobs_cfg: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -2122,6 +2135,146 @@ def _input_datasets(inputs_dir: Path) -> list[str]:
     return sorted(name for name in names if (inputs_dir / f"{name}.dat").is_file())
 
 
+def _program_open_modes(
+    step: Mapping[str, Any], programs: Mapping[str, Any], where: str
+) -> dict[str, Any]:
+    """``{ddname: open mode}`` of the ``programs.yaml`` unit a program step
+    runs and of the units it calls; a unit ``programs`` lacks raises
+    ``DatasetError``."""
+    unit = step.get("program")
+    config = programs.get(unit) if isinstance(unit, str) else None
+    if not isinstance(config, Mapping):
+        raise DatasetError(f"{where}: program {unit!r} is not a unit of programs.yaml")
+    calls = config.get("calls") or []
+    if not isinstance(calls, list):
+        raise DatasetError(f"{where}: programs.yaml {unit} calls must be a list of unit names")
+    called: list[Mapping[str, Any]] = []
+    for name in calls:
+        called_cfg = programs.get(name) if isinstance(name, str) else None
+        if not isinstance(called_cfg, Mapping):
+            raise DatasetError(
+                f"{where}: {unit} calls {name!r}, which is not a unit of programs.yaml"
+            )
+        called.append(called_cfg)
+    return {ddname: dd.get("open") for ddname, dd in program_dds(config, called)}
+
+
+def _coded_disposition(entry: Mapping[str, Any], where: str) -> tuple[str, str]:
+    """``(status, normal disposition)`` of a dd entry: an omitted status is
+    ``NEW``, and an omitted normal disposition is ``DELETE`` after ``NEW`` or
+    ``MOD`` (a left-out dataset is absent, so ``MOD`` allocates it) and
+    ``KEEP`` otherwise, as the utilities apply them."""
+    raw = entry.get("disp")
+    if raw is not None and (
+        not isinstance(raw, list) or not all(isinstance(part, str) for part in raw)
+    ):
+        raise DatasetError(f"{where}: disp must be a list of subparameters, got {raw!r}")
+    disp = [part.strip().upper() for part in raw or []]
+    status = disp[0] if disp and disp[0] else "NEW"
+    if len(disp) > 1 and disp[1]:
+        return status, disp[1]
+    return status, "DELETE" if status in _CREATING_STATUSES else "KEEP"
+
+
+def _observed_absences(
+    names: Sequence[str],
+    jobs: Mapping[str, Any],
+    programs: Mapping[str, Any],
+    mapping: DsnMap,
+    gdg_definitions: Mapping[str, Mapping[str, Any]],
+    left_out: Iterable[str],
+) -> set[str]:
+    """The left-out logical datasets whose absence a use of the run reaches
+    before the run creates them itself (see ``Catalog.seed``).
+
+    The jobs are walked in order, each job's steps in JCL order, and in a
+    step first every dd entry (concatenation members included, as z/OS
+    allocates them at step start), then its IDCAMS commands. A dd that the
+    step's program opens OUTPUT (``programs`` gives the open modes) writes;
+    every other ``SHR`` or ``OLD`` dd reads.
+
+    A dataset that is no generation is replaced by a ``NEW`` or ``MOD`` dd
+    whose normal disposition catalogues, deletes or uncatalogues it, or by
+    the IDCAMS ``DEFINE`` of its name: from then on its state no longer
+    depends on the fault. A program's OUTPUT through ``SHR`` or ``OLD``
+    writes a file the catalog still lacks and replaces nothing. Before it is
+    replaced, every other dd and every other IDCAMS command naming it
+    observes its absence.
+
+    A GDG logical would be seeded as the only generation of its base. A
+    ``(+n)`` names only generations of the run. ``(0)`` or ``(-n)`` names the
+    seeded one when it is ``(-k)`` after k earlier jobs catalogued a new
+    generation of the base and its ``LIMIT`` has not rolled the seeded one
+    off; a dd so naming it observes its absence when it reads. An IDCAMS
+    command naming the base observes it until a ``DEFINE`` redefines the
+    base."""
+    targets: dict[str, tuple[str, bool]] = {}
+    for logical in sorted(set(left_out)):
+        found = mapping.dsn_for(logical)
+        if found is not None:
+            targets[logical] = found
+    observed: set[str] = set()
+    replaced: set[str] = set()  # datasets the run created anew, GDG bases it redefined
+    created_before: dict[str, int] = {}  # GDG logical -> generations earlier jobs catalogued
+    for job_name in names:
+        created_here: dict[str, set[int]] = {}
+        for step in _job_steps(jobs, job_name):
+            where = f"jobs.yaml {job_name} {step.get('step')}"
+            modes = (
+                _program_open_modes(step, programs, where) if step.get("kind") == "program" else {}
+            )
+            for ddname, entry in _dd_entries(step):
+                logical = entry.get("logical")
+                if not isinstance(logical, str) or logical not in targets:
+                    continue
+                dsn, is_gdg = targets[logical]
+                status, normal = _coded_disposition(entry, f"{where} {ddname}")
+                writes = modes.get(ddname) == "output"
+                if is_gdg:
+                    relative = _relative_number(entry.get("gdg"))
+                    if relative > 0:
+                        if status in _CREATING_STATUSES and normal == "CATLG":
+                            created_here.setdefault(logical, set()).add(relative)
+                        continue
+                    before = created_before.get(logical, 0)
+                    limit = (gdg_definitions.get(dsn) or {}).get("limit")
+                    if limit is not None and (
+                        isinstance(limit, bool) or not isinstance(limit, int) or limit < 1
+                    ):
+                        raise DatasetError(
+                            f"GDG {dsn} LIMIT must be a positive integer, got {limit!r}"
+                        )
+                    if (
+                        logical not in replaced
+                        and (limit is None or before < limit)
+                        and relative == -before
+                        and status in _READING_STATUSES
+                        and not writes
+                    ):
+                        observed.add(logical)
+                    continue
+                if logical in replaced or logical in observed:
+                    continue
+                if status in _CREATING_STATUSES or writes:
+                    if status in _CREATING_STATUSES and normal in _REPLACING_DISPOSITIONS:
+                        replaced.add(logical)
+                    continue
+                observed.add(logical)
+            for statement in _step_statements(step):
+                defined = _param(statement, "NAME") if _DEFINE_RE.match(statement) else None
+                for token in _DSN_TOKEN_RE.findall(statement):
+                    logical = mapping.logical_for(token)
+                    if logical not in targets or logical in replaced or logical in observed:
+                        continue
+                    if defined is not None and token == defined == targets[logical][0]:
+                        replaced.add(logical)
+                    else:
+                        observed.add(logical)
+        for logical, relatives in created_here.items():
+            created_before[logical] = created_before.get(logical, 0) + len(relatives)
+    return observed
+
+
 class Catalog:
     """The catalog of one scenario (GAP-STB-009).
 
@@ -2129,7 +2282,9 @@ class Catalog:
     ``gdg_definitions`` gives the attributes of GDG bases by name (``jobs.yaml``
     ``catalog_seed``), used when a program run catalogues a generation of a
     base no job defined. Entries are kept by absolute name; a generation is
-    ``<base>.G<nnnn>V00``. The catalog never touches a file outside the
+    ``<base>.G<nnnn>V00``. ``left_out`` holds the logical datasets ``seed``
+    left out for an ``open``/``unavailable`` fault, whose absence is the
+    scenario's declared fault. The catalog never touches a file outside the
     store."""
 
     def __init__(
@@ -2146,6 +2301,7 @@ class Catalog:
         self._entries: dict[str, Entry] = {}
         self.log: list[str] = []
         self.uncatalogued: list[dict[str, str]] = []
+        self.left_out: frozenset[str] = frozenset()
 
     def __repr__(self) -> str:
         return f"Catalog({len(self._entries)} entries, {self.store.workdir})"
@@ -2183,6 +2339,7 @@ class Catalog:
         store: DatasetStore,
         faults: Iterable[Mapping[str, Any]] | None = None,
         *,
+        programs: Mapping[str, Any],
         dsn_map: DsnMap | None = None,
     ) -> Catalog:
         """The starting catalog of a job scenario.
@@ -2202,10 +2359,25 @@ class Catalog:
         A dataset an ``open``/``unavailable`` fault targets is neither
         materialized nor catalogued, and a precondition neither a dd nor an
         IDCAMS command of the jobs uses is ignored; both are logged in
-        ``evidence/catalog.yaml``. Leaving out a dataset the jobs never use
-        fails no OPEN, so such a fault raises ``MissingPrerequisite(...,
-        "GAP-MIS-013")`` before any GDG base or dataset is seeded. ``faults``
-        defaults to the scenario's ``preconditions.faults``."""
+        ``evidence/catalog.yaml``, and ``left_out`` holds the targets. Such a
+        fault is accepted only when a use of the run reaches the absent
+        dataset before the run creates it itself: a ``SHR`` or ``OLD`` dd its
+        step's program does not open OUTPUT, or an IDCAMS command other than
+        the ``DEFINE`` of its name, before a ``NEW`` or ``MOD`` dd catalogues,
+        deletes or uncatalogues it or a ``DEFINE`` defines it; for a GDG
+        logical, a ``SHR`` or ``OLD`` read of the relative generation that
+        still names the generation it would be seeded as (``(0)`` before any
+        job catalogued a new one, ``(-k)`` after k jobs did, within the
+        base's ``LIMIT``), or an IDCAMS command naming the base before a
+        ``DEFINE`` redefines it. ``programs`` is the ``programs.yaml``
+        ``programs`` table, which gives each program step's open modes; a
+        step whose unit it lacks raises ``DatasetError``. Leaving out a
+        dataset the jobs never use, only create (``NEW`` or ``MOD`` dds, dds
+        their programs open OUTPUT, IDCAMS ``DEFINE``, new generations) or
+        read only as the run itself created it fails no OPEN, so such a fault
+        raises ``MissingPrerequisite(..., "GAP-MIS-013")`` before any GDG base
+        or dataset is seeded. ``faults`` defaults to the scenario's
+        ``preconditions.faults``."""
         jobs = _jobs_mapping(jobs_cfg)
         names = scenario_jobs(scenario)
         if not names:
@@ -2213,6 +2385,11 @@ class Catalog:
         unknown = [name for name in names if name not in jobs]
         if unknown:
             raise DatasetError(f"jobs.yaml has no step table for {', '.join(unknown)}")
+        if not isinstance(programs, Mapping):
+            raise DatasetError(
+                f"Catalog.seed needs the programs.yaml programs table, got "
+                f"{type(programs).__name__}"
+            )
         mapping = dsn_map if dsn_map is not None else DsnMap(jobs_cfg)
         catalog = cls(store, mapping, cls.gdg_seed(jobs_cfg))
         if faults is None:
@@ -2241,14 +2418,36 @@ class Catalog:
                         logical = mapping.logical_for(dsn)
                         if logical is not None:
                             used.add(logical)
-        unused = sorted(left_out - used)
-        if unused:
-            them = "it" if len(unused) == 1 else "them"
+        observed = _observed_absences(
+            names, jobs, programs, mapping, catalog.gdg_definitions, left_out
+        )
+        refused = sorted(left_out - observed)
+        if refused:
+            listed = ", ".join(names)
+            several = len(names) > 1
+            unused = [name for name in refused if name not in used]
+            created = [name for name in refused if name in used]
+            them = "it" if len(refused) == 1 else "them"
+            causes = []
+            if unused:
+                named = ", ".join(unused) if created else them
+                causes.append(f"no dd or IDCAMS command of {listed} uses {named}")
+            if created:
+                named = ", ".join(created) if unused else them
+                create, read, their = (
+                    ("create", "read", "their") if several else ("creates", "reads", "its")
+                )
+                causes.append(
+                    f"{listed} only {create} {named} or {read} only what the run itself created "
+                    f"(NEW or MOD dds, dds {their} programs open OUTPUT, IDCAMS DEFINE, new "
+                    f"generations)"
+                )
             raise MissingPrerequisite(
-                f"open fault (unavailable) on {', '.join(unused)}: no dd or IDCAMS command of "
-                f"{', '.join(names)} uses {them}, so leaving {them} out fails no OPEN of the run",
+                f"open fault (unavailable) on {', '.join(refused)}: {', and '.join(causes)}, "
+                f"so leaving {them} out fails no OPEN of the run",
                 "GAP-MIS-013",
             )
+        catalog.left_out = frozenset(left_out)
         for name in sorted(referenced - defined):
             attributes = catalog.gdg_definitions.get(name)
             if attributes is None:
@@ -2414,7 +2613,8 @@ class Catalog:
         A GENERATION needs its catalogued GDG base. When the base then holds
         more generations than its ``LIMIT``, the oldest roll off (all older
         ones under ``EMPTY``): their files are deleted under ``SCRATCH`` and
-        kept, uncatalogued, under ``NOSCRATCH``. A name already catalogued is
+        kept under ``NOSCRATCH``, where each kept file is recorded as
+        uncatalogued (``note_uncatalogued``). A name already catalogued is
         replaced, and the replacement is logged; the allocation failure z/OS
         gives a duplicate NEW dataset is not emulated (GAP-STB-007)."""
         if entry.name in self._entries:
@@ -2436,10 +2636,16 @@ class Catalog:
         rolled = older if base.empty else older[:excess]
         for generation in rolled:
             del self._entries[generation.name]
-            if base.scratch and generation.path is not None:
-                self.store.remove(generation.path)
+            if base.scratch:
+                if generation.path is not None:
+                    self.store.remove(generation.path)
                 self.log.append(f"rolled off {generation.name}: scratched")
             else:
+                self.note_uncatalogued(
+                    generation.name,
+                    generation.path,
+                    f"rolled off under NOSCRATCH when {entry.name} was catalogued",
+                )
                 self.log.append(f"rolled off {generation.name}: uncatalogued, file kept")
         return [generation.name for generation in rolled]
 

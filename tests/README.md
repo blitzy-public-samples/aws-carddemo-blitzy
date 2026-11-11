@@ -32,8 +32,8 @@ Each scenario run ends in one of four statuses, which pytest shows as follows.
 |---|---|---|
 | `passed` | the run matched its baseline | a pass |
 | `failing` | an assertion failed, the run hit an error or its 300-second deadline, or two adapters diverged | a failure carrying the diff |
-| `blocked` | a runtime, a command or an observation the scenario needs is unavailable (`AdapterUnavailable`) | a skip reading `blocked: <reason> [<gap_id>] <detail>` |
-| `implemented-unexecuted` | the runtime is available, but a dataset, access or fault the preconditions need cannot be provided (`MissingPrerequisite`) | a skip reading `implemented-unexecuted: <reason> [<gap_id>] <detail>` |
+| `blocked` | a runtime, a command or an observation the scenario needs is unavailable (`AdapterUnavailable`) | a skip reading `blocked: <reason> [<gap_id>] <scenario_id>: <detail>` |
+| `implemented-unexecuted` | the runtime is available, but a dataset, access or fault the preconditions need cannot be provided (`MissingPrerequisite`) | a skip reading `implemented-unexecuted: <reason> [<gap_id>] <scenario_id>: <detail>` |
 
 A scenario the selected adapter cannot run is deselected and gets no new result record in that session. Its status still comes from the records already in `reports/`: its `gnucobol-batch` record in `reports/results/` and its imported, eligible UniKix records (`validation.yaml` under `reports/unikix/`). It is `failing` when any current one fails, otherwise `passed` when any passed, otherwise `blocked` when all are `blocked`, otherwise `implemented-unexecuted`. A scenario with no current, eligible record and no stale one, such as a deselected scenario that never ran, is reported `blocked` with reason `adapter-unavailable`: under GAP-MIS-018 when `gnucobol-batch` can run it, GAP-MIS-008 when its only UniKix records are ineligible, else GAP-MIS-009. A result record counts only while its `baseline_version` and `scenario_digest` match the scenario and baseline as they stand; otherwise it is `stale` and counts as `implemented-unexecuted`.
 
@@ -132,7 +132,7 @@ All commands run from the repository root, in the virtual environment, with GnuC
 | Purpose | Command |
 |---|---|
 | Full suite; also regenerates the reports | `pytest tests/` |
-| One level | `pytest tests/ -m unit`, `-m integration`, `-m e2e` |
+| One level | `pytest tests/ -m unit`, `-m integration`, `-m e2e`; every e2e scenario runs only on `unikix`, so on the default `gnucobol-batch` adapter `-m e2e` selects nothing and pytest exits 5: run the level as `CARDDEMO_ADAPTER=unikix pytest tests/ -m e2e`, where each scenario is `blocked` under GAP-MIS-009 while `CARDDEMO_UNIKIX_ENV` is unset |
 | One marker | `pytest tests/ -m chain`, `-m gnucobol_batch`, `-m unikix` |
 | One module | `pytest tests/test_unit_trn.py` |
 | One scenario | `pytest tests/ -k TRN-CBTRN02C-negative-03` |
@@ -144,22 +144,23 @@ All commands run from the repository root, in the virtual environment, with GnuC
 | Protected-tree check; job-chain proof | `python tests/harness/report.py --check-protected`, `--check-proof` |
 | Import, revalidate or compare UniKix evidence | `python tests/harness/report.py --import-unikix <execution_id>`, `--revalidate`, `--compare-executions <id1> <id2>` |
 | Baseline bump check | `python tests/harness/baselines.py --check-bumps --base <revision>` |
-| Capture or refresh observed baselines | `python tests/harness/capture.py <scenario_id>... \| --all [--bump major\|minor\|patch] [--work-root <path>]` |
+| Capture or refresh observed baselines | `python tests/harness/capture.py <scenario_id>\|--all --bump major\|minor\|patch` |
 | Freeze or check the inventory | `python tests/harness/inventory_tools.py --freeze`, `--check` |
 | Regenerate or check the layouts | `python tests/harness/layouts.py --write`, `--check` |
 
-- **Reports are regenerated at session end.** `pytest tests/` rewrites `reports/coverage-matrix.csv`, `reports/gap-register.csv`, `reports/coverage-report.md` and the report fields of `inventory/inventory.yaml` from the result records; a failed regeneration fails the session. Add `--carddemo-no-report` to a local partial run (`-m`, `-k`, one module) so that it leaves the committed reports alone. `-m` and `-k` are pytest's own options and work as usual.
+- **Reports are regenerated at session end.** `pytest tests/` rewrites `reports/coverage-matrix.csv`, `reports/gap-register.csv`, `reports/coverage-report.md` and the report fields of `inventory/inventory.yaml` from the result records; a failed regeneration fails the session. Add `--carddemo-no-report` to a local partial run (`-m`, `-k`, one module) to skip that rewrite and leave those four files as they are. It does not make the run read-only: the run still writes the result records of the scenarios it runs (below) and, on unikix, evidence under `reports/unikix/<execution_id>/`, so a partial or broken run can change committed records; restore those you do not mean to commit, for example with `git checkout -- tests/reports/results`. `-m` and `-k` are pytest's own options and work as usual.
 - **Result records.** Each gnucobol-batch run writes `reports/results/<id>.yaml`. Run details that are not deterministic (elapsed times, diffs, tracebacks, the path of a failing scenario's kept working directory) go to the git-ignored `reports/runtime/`.
 - **Determinism.** CI runs the suite twice, the second time with `--carddemo-order=reverse`, and requires the deterministic projection to be byte-identical: `reports/coverage-matrix.csv`, `reports/gap-register.csv`, `reports/coverage-report.md` and `reports/results/*.yaml`.
 - **Host dependence.** The gnucobol-batch `execution_id` hashes the commit and the build key, which includes `cobc --version`, so a run on another host or GnuCOBOL build writes different execution ids into the records and reports.
-- **After a capture,** `python tests/harness/baselines.py --check-bumps --base HEAD` must pass before the baselines are committed.
+- **Capture.** `capture.py` takes one or more scenario ids, or `--all`. Replacing a baseline HEAD already holds needs `--bump`, at least the level its change needs: `major` when an expected outcome changes, `minor` when assertions or raw bytes are added or the capture platform changes (a derived baseline replaced by an observed one), `patch` when only the manifest changes. A lower level is refused, naming the level needed, and a missing one with `replacing it needs --bump major|minor|patch`; either exits 1, so on the committed tree the bare forms `capture.py <scenario_id>` and `capture.py --all` fail. `--bump` may be left out only for a baseline HEAD does not hold, which is written at `1.0.0` with any `--bump` ignored, also when it was written since HEAD. `--work-root <path>` sets the work root (default `CARDDEMO_TEST_WORKDIR` when usable, else a temporary directory, removed afterwards unless a failing run kept its working directory there); with `--all`, a scenario whose run ends `implemented-unexecuted` is skipped. For example `python tests/harness/capture.py TRN-CBTRN02C-negative-03 --bump patch` or `python tests/harness/capture.py --all --bump minor`.
+- **After a capture,** rerun `pytest tests/`, or `pytest tests/ -k "<id> or <id>"` for just the captured scenarios, without `--carddemo-no-report`, so that their result records carry the new baseline versions and the reports are regenerated; until then `report.py` counts those records as stale, which fails `--check` (and `--check-proof` for a job-chain proof scenario). `python tests/harness/baselines.py --check-bumps --base HEAD` must pass before the baselines are committed.
 
 ## Environment variables
 
 | Variable | Purpose | Unset or invalid |
 |---|---|---|
 | `CARDDEMO_ADAPTER` | the execution adapter: `gnucobol-batch` (default) or `unikix` | unset gives `gnucobol-batch`; any other value, the empty one included, is a usage error |
-| `CARDDEMO_TEST_WORKDIR` | the work root: per-scenario working directories, the build cache `_build/`, the extracted UniKix zip `_unikix_zip/` and the UniKix deployment root `unikix/<execution_id>/`. It must lie outside the repository and is created when missing | unset, or not usable (blank, inside the repository, not a writable directory), the session uses a fresh `tempfile.mkdtemp(prefix="carddemo-")`, with a warning naming the refused value |
+| `CARDDEMO_TEST_WORKDIR` | the work root: per-scenario working directories, the build cache `_build/`, the extracted UniKix zip `_unikix_zip/` and the UniKix deployment root `unikix/<execution_id>/`. It must lie outside the repository and is created when missing | unset, the session silently uses a fresh `tempfile.mkdtemp(prefix="carddemo-")` work root; set but not usable (blank, inside the repository, not a directory, not creatable or not writable), the session warns, naming the refused value and why, then uses the same fresh temporary root |
 | `CARDDEMO_UNIKIX_ENV` | path to a file in the format of the zip's `bin/carddemo.env` describing the UniKix installation | every `unikix` scenario is `blocked` under GAP-MIS-009; CI never sets it |
 | `CARDDEMO_TN3270_ADDR` | `host:port` (or `[v6]:port`) of the test-owned region's TN3270 listener; the host must be `localhost`, an address in `127.0.0.0/8` or `::1` | online `unikix` scenarios are `blocked` under GAP-MIS-005; a non-loopback host is refused the same way |
 
@@ -168,16 +169,17 @@ The adapters set these for each subprocess only; they are not user settings:
 - `DD_<ddname>`: the path of each dataset a program opens.
 - `COB_LIBRARY_PATH`: the directory of the stubs and the called modules.
 - `COB_CURRENT_DATE`: the fixed clock, from the scenario's `clock` parameter. The default clock is `2022-07-06 10:00:00.00`, passed as `2022/07/06 10:00:00.00`; the fractional part is mandatory, and the build's clock probe decides whether libcob reads it as hundredths or nanoseconds.
+- `CARDDEMO_CEEDAYS_FEEDBACK`: the feedback token the `CEEDAYS` stub returns instead of computing one, set only when the scenario's `ceedays_feedback` parameter names it; without it the stub computes the feedback. The value is exactly four hexadecimal digits, and a malformed one is a harness error.
 - `LD_PRELOAD`, `CARDDEMO_JOB`, `CARDDEMO_STEP`, `CARDDEMO_DDS`: the page-zero shim for `CBSTM03A` and the job, step and ddnames it builds into the TIOT.
 
 ## Adapters and the conversion baseline
 
 ### The contract
 
-Every adapter subclasses `Adapter` in `adapters/base.py`. The runner (`harness/runner.py`) gives each scenario a fresh `<work root>/<scenario_id>/` directory and a 300-second deadline, checks that the adapter can produce every observation the scenario expects, then calls `prepare(scenario, workdir)`, then `execute(scenario, workdir)` returning `Result{return_code: int or null, datasets: {logical_name: bytes}, screens: [{field: value}], messages: [str], elapsed_s: float}`, and always `cleanup(scenario, workdir)` in a `finally`.
+Every adapter subclasses `Adapter` in `adapters/base.py`. The runner (`harness/runner.py`) gives each scenario a fresh `<work root>/<scenario_id>/` directory and a 300-second deadline, calls the adapter's `refuse(scenario)`, checks that the adapter can produce every observation the scenario expects, then calls `prepare(scenario, workdir)`, then `execute(scenario, workdir)` returning `Result{return_code: int or null, datasets: {logical_name: bytes}, screens: [{field: value}], messages: [str], elapsed_s: float}`, and always `cleanup(scenario, workdir)` in a `finally`.
 
 - `return_code` is `None` when the run abended. `datasets` holds raw bytes, never decoded. `screens` has one entry per online step. `messages` holds program `DISPLAY` lines, `STEP <name> RC <nnnn>` lines of a job, or each step's `ERRMSG`.
-- An adapter also implements `observations()` and `observation_gap(name)` (what it can observe, and the gap for what it cannot) and `source_identity(scenario)` (the tree, commit and unit hashes it ran). `capable(scenario)` is one rule for every adapter, `harness.scenarios.capable_adapters`.
+- An adapter also implements `observations()` and `observation_gap(name)` (what it can observe, and the gap for what it cannot) and `source_identity(scenario)` (the tree, commit and unit hashes it ran). It may override `refuse(scenario)`, which refuses nothing by default, to raise `AdapterUnavailable` for a scenario it can never run whatever it observes, so that gap precedes the observation check: `unikix` refuses a job with a `DFHCSDUP` step under GAP-MIS-016 once its session has started. `capable(scenario)` is one rule for every adapter, `harness.scenarios.capable_adapters`.
 - `AdapterUnavailable(reason, gap_id)` makes the scenario `blocked`; `MissingPrerequisite(need, gap_id)` makes it `implemented-unexecuted`. The gap id is mandatory and must exist in `inventory/gaps.yaml`.
 - Besides business datasets under their logical names, `Result.datasets` carries the reserved observations `@CATALOG` (catalogued DSNs and GDG generations), `@AIX:<path>` (records read through an alternate-index path), `@AFTER:<JOB>:<LOGICAL>` (a dataset at the end of one job of a chain), `@REGION-FILES` (region files open or closed, enabled or disabled, also taken just before or after a job as `@BEFORE:<JOB>:@REGION-FILES` and `@AFTER:<JOB>:@REGION-FILES`) and `@TDQ:JOBS` (the records the region wrote to the `JOBS` queue). Each screen carries `@map`, the identified map or `TEXT` for an unformatted screen, and, for an unformatted screen, `@text`, its full 24 × 80 text.
 

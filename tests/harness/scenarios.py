@@ -2516,13 +2516,32 @@ def _reports_folder(root: Path, name: str, what: str, problems: list[str]) -> Pa
     return folder if folder.is_dir() else None
 
 
+def _located_scenario(root: Path, scenario_id: str) -> Scenario | None:
+    """The scenario of manifest id ``scenario_id`` under ``root/scenarios``:
+    its file in the manifest level folder or, failing that, in another level
+    folder, or ``None`` when no level folder holds a scenario file for it.
+    Raises ``ScenarioError`` when the file does not load."""
+    level = _LEVEL_OF[scenario_id]
+    # A misplaced scenario file is reported under (a); its capability still counts here.
+    for other in [level] + [other for other in LEVELS if other != level]:
+        path = root / "scenarios" / other / f"{scenario_id}.yaml"
+        if _scenario_file(path):
+            return _cached_file(path, other)
+    return None
+
+
 def _check_result_files(root: Path, problems: list[str]) -> None:
-    """(c): result records only for manifest ids that gnucobol-batch can run.
-    A symbolic link is reported and never followed."""
+    """(c): a result record for every manifest id that gnucobol-batch can
+    run, and only for those. A symbolic link is reported and never followed,
+    so a linked record counts as missing, and every record does when
+    ``reports`` or ``reports/results`` is a link, absent or not a folder. An
+    id whose scenario file is missing (reported under (a)) or does not load
+    (the schema check reports it) cannot be judged, so no record is required
+    for it."""
     folder = _reports_folder(root, "results", "result records", problems)
-    if folder is None:
-        return
-    for path in sorted(folder.iterdir()):
+    recorded: set[str] = set()
+    entries = sorted(folder.iterdir()) if folder is not None else []
+    for path in entries:
         where = f"reports/results/{path.name}"
         if path.is_symlink():
             problems.append(f"{where}: a symbolic link, not a result record <id>.yaml")
@@ -2534,24 +2553,26 @@ def _check_result_files(root: Path, problems: list[str]) -> None:
         if level is None:
             problems.append(f"{where}: {path.stem} is not in the manifest")
             continue
-        # A misplaced scenario file is reported under (a); its capability still counts here.
-        candidates = [level] + [other for other in LEVELS if other != level]
-        located = [
-            (other, root / "scenarios" / other / f"{path.stem}.yaml")
-            for other in candidates
-            if _scenario_file(root / "scenarios" / other / f"{path.stem}.yaml")
-        ]
-        if not located:
-            problems.append(f"{where}: no scenario file scenarios/{level}/{path.stem}.yaml")
-            continue
-        folder_level, scenario_path = located[0]
+        recorded.add(path.stem)
         try:
-            scenario = _cached_file(scenario_path, folder_level)
+            scenario = _located_scenario(root, path.stem)
         except ScenarioError as exc:
             problems.append(f"{where}: {exc}")
             continue
+        if scenario is None:
+            problems.append(f"{where}: no scenario file scenarios/{level}/{path.stem}.yaml")
+            continue
         if "gnucobol-batch" not in capable_adapters(scenario):
             problems.append(f"{where}: gnucobol-batch cannot run {path.stem}, so it has no result record")
+    missing: set[str] = set()
+    for scenario_id in ALL_IDS - recorded:
+        try:
+            scenario = _located_scenario(root, scenario_id)
+        except ScenarioError:
+            continue
+        if scenario is not None and "gnucobol-batch" in capable_adapters(scenario):
+            missing.add(scenario_id)
+    _listed(problems, "reports/results", "result record(s) missing for id(s) gnucobol-batch can run", missing)
 
 
 def _check_evidence_dirs(root: Path, problems: list[str]) -> None:
@@ -2579,18 +2600,19 @@ def check_manifest(tests_root: str | Path = TESTS_ROOT) -> list[str]:
     """Every departure of the tree under ``tests_root`` from the closed id
     manifest: (a) scenario files per level folder (missing, outside the
     manifest, misplaced, or not ``<id>.yaml``); (b) baseline directories, each
-    with ``expected.yaml`` and ``manifest.yaml``; (c) result records, each for
-    a scenario gnucobol-batch can run (missing records are not reported);
-    (d) UniKix evidence directories; (e) the fixed ids. In (a) to (d) a
-    symbolic link, whatever it points to, is a departure and is never
-    followed: the ``scenarios``, ``baselines``, ``reports``,
+    with ``expected.yaml`` and ``manifest.yaml``; (c) result records, one for
+    every scenario gnucobol-batch can run and none for any other (missing,
+    outside the manifest, for a scenario gnucobol-batch cannot run, or not
+    ``<id>.yaml``); (d) UniKix evidence directories; (e) the fixed ids. In
+    (a) to (d) a symbolic link, whatever it points to, is a departure and is
+    never followed: the ``scenarios``, ``baselines``, ``reports``,
     ``reports/results`` or ``reports/unikix`` folder, or an entry of
     ``scenarios``, a level folder, ``baselines``, a baseline directory or its
     ``datasets``, ``reports/results``, ``reports/unikix`` or an execution
-    folder. Nothing under a linked folder is checked, a linked scenario file
-    or baseline directory does not count for its id, and a linked
-    ``expected.yaml`` or ``manifest.yaml`` counts as missing. Empty when the
-    tree conforms."""
+    folder. Nothing under a linked folder is checked, a linked scenario file,
+    baseline directory or result record does not count for its id, and a
+    linked ``expected.yaml`` or ``manifest.yaml`` counts as missing. Empty
+    when the tree conforms."""
     root = Path(tests_root)
     problems: list[str] = []
     _check_scenario_files(root, problems)
