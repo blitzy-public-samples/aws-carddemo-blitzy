@@ -1,0 +1,195 @@
+# CardDemo characterization suite: the repository's single CI workflow.
+#
+# Runs `pytest tests/` twice on the default gnucobol-batch adapter, which no
+# step overrides (tests/conftest.py deselects the scenarios only unikix can run
+# and the reports show them blocked), proves that the deterministic
+# projection of the reports is identical across a forward and a reverse run,
+# then checks the reports, the job-chain proof, the protected tree and the
+# baseline version bumps. CI never commits: the reports are uploaded as the
+# carddemo-reports artifact.
+
+name: carddemo-tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  characterization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      # The job-wide work root lives under RUNNER_TEMP, outside the checkout.
+      # The runner context is unavailable in a job-level `env:`, so it is
+      # exported here, first, so that it exists even when checkout fails and the
+      # upload paths stay valid.
+      - name: Work root
+        run: |
+          echo "CARDDEMO_TEST_WORKDIR=$RUNNER_TEMP/carddemo-work" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/carddemo-work"
+
+      # The full history holds the starting commit 93ebec71ff7b59a68cedd7c501afe496a8eaa68d
+      # (the inventory's protected_base) and the bump-check base. Only local git
+      # commands run afterwards and nothing is pushed, so no token is left in
+      # .git/config: CI holds no credentials.
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Python
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.11.18'
+
+      # build-essential, libgmp-dev and libncurses-dev are installed by name on
+      # purpose: their -updates versions are superseded, so an exact pin would
+      # break. libdb-dev and s3270 keep their exact pins. s3270 drives the TPE
+      # 3270 listener for the unikix adapter only; it is pinned as the suite
+      # requires but unused in CI, where unikix scenarios never run.
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential libgmp-dev libncurses-dev libdb-dev=1:5.3.21ubuntu2 s3270=4.1ga10-1.1build2
+
+      - name: Cache GnuCOBOL
+        id: gnucobol-cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/gnucobol-3.2
+          key: gnucobol-3.2-3bb48af46ced4779facf41fdc2ee60e4ccb86eaa99d010b36685315df39c2ee2-ubuntu-24.04
+
+      # Built in RUNNER_TEMP and installed under HOME, never inside the checkout,
+      # so the protected-tree check sees app/, samples/ and diagrams/ untouched.
+      # --with-db gives Berkeley DB indexed files; cobc reports 3.2.0.
+      - name: Build GnuCOBOL 3.2
+        if: steps.gnucobol-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/gnucobol-src" && cd "$RUNNER_TEMP/gnucobol-src"
+          curl -fsSL -o gnucobol-3.2.tar.xz https://ftp.gnu.org/gnu/gnucobol/gnucobol-3.2.tar.xz
+          echo "3bb48af46ced4779facf41fdc2ee60e4ccb86eaa99d010b36685315df39c2ee2  gnucobol-3.2.tar.xz" | sha256sum -c -
+          tar -xJf gnucobol-3.2.tar.xz && cd gnucobol-3.2
+          ./configure --prefix="$HOME/gnucobol-3.2" --with-db && make -j"$(nproc)" && make install
+
+      # setup-python has already exported its own LD_LIBRARY_PATH, which is kept.
+      - name: Paths
+        run: |
+          echo "$HOME/gnucobol-3.2/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$HOME/gnucobol-3.2/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+      # Logs only. The Environment section of coverage-report.md is written by
+      # tests/harness/report.py itself; writing into tests/reports/ here would
+      # break the deterministic projection.
+      - name: Toolchain versions
+        run: |
+          cobc --version
+          dpkg-query -W -f='${Package}=${Version}\n' build-essential libgmp-dev libncurses-dev libdb-dev s3270
+
+      - name: pip
+        run: python -m pip install -r tests/requirements.txt
+
+      # Best effort, on the ephemeral hosted VM only. Whether page zero can be
+      # mapped is decided by the harness's page-zero probe (GAP-MIS-002), not by
+      # this step's outcome, so its failure never fails the job.
+      - name: Page zero
+        continue-on-error: true
+        run: sudo -n sysctl -w vm.mmap_min_addr=0
+
+      - name: Run 1
+        id: run1
+        timeout-minutes: 15
+        run: pytest tests/
+
+      - name: Keep run 1 projection
+        if: steps.run1.outcome == 'success'
+        run: |
+          mkdir -p "$RUNNER_TEMP/run1"
+          cp -r tests/reports/coverage-matrix.csv tests/reports/gap-register.csv tests/reports/coverage-report.md tests/reports/results "$RUNNER_TEMP/run1/"
+
+      - name: Run 2
+        id: run2
+        if: steps.run1.outcome == 'success'
+        timeout-minutes: 15
+        run: pytest tests/ --carddemo-order=reverse
+
+      # Every path is compared before the step fails, so every difference is
+      # printed.
+      - name: Compare runs
+        if: steps.run2.outcome == 'success'
+        run: |
+          status=0
+          for p in coverage-matrix.csv gap-register.csv coverage-report.md results; do
+            diff -r "$RUNNER_TEMP/run1/$p" "tests/reports/$p" || status=1
+          done
+          exit "$status"
+
+      # The steps below run whatever happened before them; `always()` only makes
+      # them run, and any of them failing still fails the job.
+      - name: Finalize reports
+        if: always()
+        run: python tests/harness/report.py
+
+      - name: Check reports
+        if: always()
+        run: python tests/harness/report.py --check
+
+      - name: Check job-chain proof
+        if: always()
+        run: python tests/harness/report.py --check-proof
+
+      - name: Check protected tree
+        if: always()
+        run: python tests/harness/report.py --check-protected
+
+      # The base is the pull request's base commit, else the push's previous
+      # commit, else (first push of a branch: an all-zero `before`) the starting
+      # commit. Event values reach the script only through env, never through
+      # expression interpolation.
+      - name: Check baseline version bumps
+        if: always()
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          BASE="$PR_BASE"
+          if [[ -z "$BASE" ]]; then BASE="$PUSH_BEFORE"; fi
+          if [[ -z "$BASE" || "$BASE" =~ ^0+$ ]]; then BASE=93ebec71ff7b59a68cedd7c501afe496a8eaa68d; fi
+          echo "Baseline bump-check base: $BASE"
+          python tests/harness/baselines.py --check-bumps --base "$BASE"
+
+      # Shows where the committed reports differ from this run's; never fails.
+      - name: Committed reports (informational)
+        if: always()
+        run: git diff --stat -- tests/reports || true
+
+      - name: Job summary
+        if: always()
+        run: |
+          if [[ -f tests/reports/coverage-report.md ]]; then
+            cat tests/reports/coverage-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "coverage-report.md was not generated." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # The runner removes a passing scenario's working directory, so only the
+      # failing ones remain under the work root; the build cache and the
+      # extracted UniKix zip are left out.
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: carddemo-reports
+          if-no-files-found: warn
+          path: |
+            tests/reports
+            ${{ env.CARDDEMO_TEST_WORKDIR }}
+            !${{ env.CARDDEMO_TEST_WORKDIR }}/_build
+            !${{ env.CARDDEMO_TEST_WORKDIR }}/_unikix_zip
