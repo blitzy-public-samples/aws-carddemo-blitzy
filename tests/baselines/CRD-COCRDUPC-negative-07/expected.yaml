@@ -1,0 +1,89 @@
+# Derived baseline (capture_platform: derived) of CRD-COCRDUPC-negative-07,
+# authored from app/cbl/COCRDUPC.cbl:195-196,502-511,607-619,667-714,845-876,
+# 1095-1165,1270-1283 and app/bms/COCRDUP.bms at commit
+# 93ebec71ff7b59a68cedd7c501afe496a8eaa68d, because no TPE region runs in CI;
+# inferred-not-observed (GAP-INF-006, GAP-INF-012), replaced when report.py
+# --import-unikix promotes an eligible UniKix run. It pins the source as it
+# stands.
+#
+# One screen per step, each the screen the step's AID ends on. Step 1:
+# USER0001 reaches the main menu (CM00), whose option 5 reads 'Credit Card
+# Update' [app/cpy/COMEN02Y.cpy:49-53]; ERRMSG is the 78-byte COMEN01 field.
+# Step 2: option 5 XCTLs to COCRDUPC with CDEMO-PGM-CONTEXT 0, a fresh entry
+# that sends the empty search map (ACCTSID and CARDSID left LOW-VALUES,
+# captured as spaces) with PROMPT-FOR-SEARCH-KEYS
+# [app/cbl/COCRDUPC.cbl:502-511,1141-1142]. Step 3: 9000-READ-DATA reads card
+# 0500024453765740 (account 00000000050) and shows it with the name
+# upper-cased under FOUND-CARDS-FOR-ACCOUNT
+# [app/cbl/COCRDUPC.cbl:1107-1112,1145-1146,1343-1394]. Step 4: the erased
+# status arrives as nulls or spaces, so 1100-RECEIVE-MAP moves LOW-VALUES to
+# CCUP-NEW-CRDSTCD [app/cbl/COCRDUPC.cbl:614-619]; the new data then differs
+# from the old and 1200 sets CCUP-CHANGES-NOT-OK [app/cbl/COCRDUPC.cbl:679-696].
+# 1230-EDIT-NAME accepts 'ANIYA VON'; 1240-EDIT-CARDSTATUS takes the
+# not-supplied branch, sets FLG-CARDSTATUS-BLANK and, WS-RETURN-MSG being off,
+# CARD-STATUS-MUST-BE-YES-NO [app/cbl/COCRDUPC.cbl:195-196,849-859]; month 03
+# and year 2023 pass. 2000 continues without READ UPDATE or REWRITE
+# [app/cbl/COCRDUPC.cbl:982-983]; 3200 shows the received values
+# (CCUP-CHANGES-MADE), 3250 moves PROMPT-FOR-CHANGES to INFOMSG and
+# WS-RETURN-MSG to ERRMSG, and 3300 overwrites CRDSTCD with '*' in red
+# [app/cbl/COCRDUPC.cbl:1113-1123,1147-1148,1161-1163,1279-1283].
+#
+# Text fields are at their full BMS length with trailing spaces: INFOMSG is
+# the 40-byte WS-INFO-MSG, ERRMSG the 75-byte WS-RETURN-MSG padded to 80.
+# CURDATE and CURTIME come from the region clock, so they are matchers in the
+# MM/DD/YY and HH:MM:SS forms of CSDAT01Y [app/cpy/CSDAT01Y.cpy:30-41].
+# CARDDATA keeps its 50 records, card 0500024453765740 as loaded (status Y,
+# name in its original case). The data below is canonical harness.dump_yaml.
+file_state:
+  CARDDATA:
+    contains:
+    - CARD-ACCT-ID: '50'
+      CARD-ACTIVE-STATUS: Y
+      CARD-CVV-CD: '747'
+      CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+      CARD-EXPIRAION-DATE: '2023-03-09'
+      CARD-NUM: '0500024453765740'
+    count: 50
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN005: '05. Credit Card Update                  '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDUP
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': COCRDUP
+  ACCTSID: '00000000050'
+  CARDSID: '0500024453765740'
+  CRDNAME: 'ANIYA VON                                         '
+  CRDSTCD: Y
+  ERRMSG: '                                                                                '
+  EXPMON: '03'
+  EXPYEAR: '2023'
+  INFOMSG: 'Details of selected card shown above    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': COCRDUP
+  ACCTSID: '00000000050'
+  CARDSID: '0500024453765740'
+  CRDNAME: 'ANIYA VON                                         '
+  CRDSTCD: '*'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S'
+    match: run-time
+  ERRMSG: 'Card Active Status must be Y or N                                               '
+  EXPMON: '03'
+  EXPYEAR: '2023'
+  INFOMSG: 'Update card details presented above.    '
+  PGMNAME: COCRDUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCUP

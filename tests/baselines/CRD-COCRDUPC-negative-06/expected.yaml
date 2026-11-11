@@ -1,0 +1,84 @@
+# Derived baseline of scenario CRD-COCRDUPC-negative-06 (capture_platform
+# derived): authored from the source, never observed; inferred-not-observed
+# under GAP-INF-006 and GAP-INF-012. USER0001 signs on, takes main-menu option
+# 5, fetches card 0500024453765740 of account 00000000050 and presses ENTER
+# with no field changed. Source, app/cbl/COCRDUPC.cbl:
+# - message: 88 NO-CHANGES-DETECTED under 05 WS-RETURN-MSG PIC X(75)
+#   [173,187-188]; OLD/NEW card data in WS-THIS-PROGCOMMAREA [274-313];
+# - step 4: 1100-RECEIVE-MAP rebuilds CCUP-NEW-CARDDATA from the returned
+#   fields (EXPDAY too: its BMS ATTRB=(DRK,FSET,PROT) sends it with MDT on)
+#   [578-640]; with the details already fetched, 1200-EDIT-MAP-INPUTS sets
+#   FOUND-CARDS-FOR-ACCOUNT, finds UPPER-CASE(new) = UPPER-CASE(old), sets
+#   NO-CHANGES-DETECTED and skips the field edits, so CCUP-CHANGE-ACTION stays
+#   'S' [641-719, key lines 668,679-693];
+# - 2000-DECIDE-ACTION WHEN CCUP-SHOW-DETAILS only continues: no confirmation,
+#   no 9200-WRITE-PROCESSING, no READ UPDATE, REWRITE or SYNCPOINT [971-977];
+# - 3000-SEND-MAP (3100/3200/3250/3300/3400) resends the OLD values, INFOMSG
+#   'Details of selected card shown above', the message in ERRMSG, FKEYSC dark
+#   [1035-1340]; 9000-READ-DATA upper-cased the name and split the expiry at
+#   step 3 [1343-1370].
+# Screen values are whole BMS fields, trailing spaces kept: CRDNAME 50, INFOMSG
+# 40, ERRMSG 80 on COCRDUP (the X(75) text padded) and 78 on COMEN01; one
+# ERRMSG per step in messages. EXPDAY is dark and not asserted. CURDATE and
+# CURTIME follow the region clock no adapter command fixes (GAP-MIS-015), hence
+# the matchers. file_state: nothing is rewritten, so CARDDATA keeps its 50
+# fixture records and the card its mixed-case name (CVACT02Y/CARD-RECORD).
+# The body equals the scenario's expected as canonical harness.dump_yaml
+# output; only `report.py --import-unikix` promotes this baseline.
+file_state:
+  CARDDATA:
+    contains:
+    - CARD-ACCT-ID: '50'
+      CARD-ACTIVE-STATUS: Y
+      CARD-CVV-CD: '747'
+      CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+      CARD-EXPIRAION-DATE: '2023-03-09'
+      CARD-NUM: '0500024453765740'
+    count: 50
+messages:
+- '                                                                              '
+- '                                                                                '
+- '                                                                                '
+- 'No change detected with respect to values fetched.                              '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN005: '05. Credit Card Update                  '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDUP
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': COCRDUP
+  ACCTSID: '00000000050'
+  CARDSID: '0500024453765740'
+  CRDNAME: 'ANIYA VON                                         '
+  CRDSTCD: Y
+  ERRMSG: '                                                                                '
+  EXPMON: '03'
+  EXPYEAR: '2023'
+  INFOMSG: 'Details of selected card shown above    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': COCRDUP
+  ACCTSID: '00000000050'
+  CARDSID: '0500024453765740'
+  CRDNAME: 'ANIYA VON                                         '
+  CRDSTCD: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'No change detected with respect to values fetched.                              '
+  EXPMON: '03'
+  EXPYEAR: '2023'
+  INFOMSG: 'Details of selected card shown above    '
+  PGMNAME: COCRDUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCUP

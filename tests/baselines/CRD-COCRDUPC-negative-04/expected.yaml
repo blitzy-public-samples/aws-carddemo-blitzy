@@ -1,0 +1,91 @@
+# Derived baseline (capture_platform: derived) of CRD-COCRDUPC-negative-04,
+# authored from app/cbl/COCRDUPC.cbl and app/bms/COCRDUP.bms at commit
+# 93ebec71ff7b59a68cedd7c501afe496a8eaa68d, because no TPE region runs in CI;
+# inferred-not-observed (GAP-INF-006, GAP-INF-012), replaced when
+# report.py --import-unikix promotes an eligible run. It pins app/ as it
+# stands: the UniKix copy rewrites the name test (GAP-DOC-023), so its runs
+# never verify this item.
+#
+# One screen per step, each the screen the step's AID ends on. Step 1:
+# USER0001 reaches the main menu (CM00), option 5 'Credit Card Update'
+# [app/cpy/COMEN02Y.cpy:49-53]. Step 2: a fresh entry sends the empty search
+# map with PROMPT-FOR-SEARCH-KEYS [app/cbl/COCRDUPC.cbl:502-511,1141-1142].
+# Step 3: card 0500024453765740 (account 00000000050) is read and shown with
+# the name upper-cased under FOUND-CARDS-FOR-ACCOUNT
+# [app/cbl/COCRDUPC.cbl:1107-1112,1145-1146,1343-1394]. Step 4: CRDNAMEI
+# 'TEST HOLDER 9' reaches CCUP-NEW-CRDNAME unchanged [app/cbl/COCRDUPC.cbl:
+# 607-612]; the name differs from the old one, so 1200 sets
+# CCUP-CHANGES-NOT-OK [app/cbl/COCRDUPC.cbl:680-698]. 1230-EDIT-NAME converts
+# the 52 letters of LIT-ALL-ALPHA-FROM to spaces, the '9' remains, the trimmed
+# length is 1, and WS-NAME-MUST-BE-ALPHA is set while WS-RETURN-MSG is off
+# [app/cbl/COCRDUPC.cbl:183-184,255-257,806-843]; status Y, month 03 and year
+# 2023, sent back with their MDT on, pass 1240-1260 without touching the
+# message. No READ UPDATE or REWRITE follows [app/cbl/COCRDUPC.cbl:710-714,
+# 982-983]. 3200 shows the entered values (CCUP-CHANGES-MADE) and 3250 moves
+# PROMPT-FOR-CHANGES to INFOMSG and WS-RETURN-MSG to ERRMSG
+# [app/cbl/COCRDUPC.cbl:1112-1121,1147-1148,1161-1163].
+#
+# Text fields are at their full BMS length with trailing spaces: INFOMSG 40,
+# ERRMSG 80 on COCRDUP (the 75-byte WS-RETURN-MSG padded) and 78 on COMEN01,
+# CRDNAME 50; messages holds each step's ERRMSG. CURDATE and CURTIME come
+# from the region clock, so they are matchers in the MM/DD/YY and HH:MM:SS
+# forms of CSDAT01Y [app/cpy/CSDAT01Y.cpy:30-41]. CARDDATA keeps its 50
+# records, card 0500024453765740 as loaded. The data below is canonical
+# harness.dump_yaml.
+file_state:
+  CARDDATA:
+    contains:
+    - CARD-ACCT-ID: '50'
+      CARD-ACTIVE-STATUS: Y
+      CARD-CVV-CD: '747'
+      CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+      CARD-EXPIRAION-DATE: '2023-03-09'
+      CARD-NUM: '0500024453765740'
+    count: 50
+messages:
+- '                                                                              '
+- '                                                                                '
+- '                                                                                '
+- 'Card name can only contain alphabets and spaces                                 '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN005: '05. Credit Card Update                  '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDUP
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': COCRDUP
+  ACCTSID: '00000000050'
+  CARDSID: '0500024453765740'
+  CRDNAME: 'ANIYA VON                                         '
+  CRDSTCD: Y
+  ERRMSG: '                                                                                '
+  EXPMON: '03'
+  EXPYEAR: '2023'
+  INFOMSG: 'Details of selected card shown above    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': COCRDUP
+  ACCTSID: '00000000050'
+  CARDSID: '0500024453765740'
+  CRDNAME: 'TEST HOLDER 9                                     '
+  CRDSTCD: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Card name can only contain alphabets and spaces                                 '
+  EXPMON: '03'
+  EXPYEAR: '2023'
+  INFOMSG: 'Update card details presented above.    '
+  PGMNAME: COCRDUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCUP
