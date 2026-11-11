@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "cp -rT .next/static .next/standalone/.next/static && cp -rT public .next/standalone/public && node .next/standalone/server.js",
+    "start": "cp -rT .next/static .next/standalone/.next/static && if [ -d public ]; then cp -rT public .next/standalone/public; fi && node .next/standalone/server.js",
     "type-check": "tsc --noEmit",
     "lint": "eslint .",
     "lint:ci": "eslint . --max-warnings=0",
