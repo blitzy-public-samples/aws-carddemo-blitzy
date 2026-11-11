@@ -1,0 +1,55 @@
+# DEFCUST runs two IDCAMS steps that are both named STEP05 [app/jcl/DEFCUST.jcl:22,32]:
+# - the first DELETEs a customer cluster under the old CCDA qualifier, a name no
+#   job or data file in app/ ever catalogues, and has no IF MAXCC ... SET MAXCC = 0
+#   after it, so its condition code stands [app/jcl/DEFCUST.jcl:22-27];
+# - the second DEFINEs a customer cluster under another name, with KEYS(10 0)
+#   RECORDSIZE(500 500) SHAREOPTIONS(1 4) INDEXED [app/jcl/DEFCUST.jcl:32-47],
+#   where CUSTFILE defines the cluster the application reads with KEYS(9 0) and
+#   SHAREOPTIONS(2 3) [app/jcl/CUSTFILE.jcl:46-59]. No job reads the name defined here.
+# The scenario starts with no dataset, as the job references none: the DELETE finds
+# no entry and ends RC 8, the DEFINE ends RC 0, and the job's return code is the
+# highest, 8. Both step lines read STEP STEP05: the step tables keep the duplicate
+# name as the JCL writes it and list position tells the lines apart; neither
+# adapter writes a line per job. On gnucobol-batch the scenario's catalog starts
+# empty, so the one catalog line below is the whole catalog after the job: the
+# defined cluster is present and the deleted name is absent. The mismatched names,
+# the duplicate step name and the key length are pinned as observed, never fixed
+# (GAP-DEF-009). Nothing depends on the run date, so the clock is relative and
+# unikix runs the same scenario.
+id: DAT-DEFCUST-normal-01
+level: integration
+type: normal
+description: >-
+  DEFCUST deletes one customer cluster name and defines a different one, in two
+  IDCAMS steps both named STEP05. The DELETE names a cluster that was never
+  catalogued, so the first STEP05 ends with return code 8 and nothing resets
+  MAXCC; the DEFINE creates an indexed cluster with KEYS(10 0) and
+  RECORDSIZE(500 500), where CUSTFILE defines the customer cluster with
+  KEYS(9 0), and the second STEP05 ends with return code 0. The job ends with
+  return code 8, and the catalog afterwards holds the defined cluster and not
+  the deleted name. Pinned as observed, never fixed.
+inventory_ids:
+- INV-DAT-010  # DEFCUST job
+tags:
+- suspected-defect
+gap_ids:
+- GAP-DEF-009  # deletes one name, defines another, in two steps both named STEP05
+- GAP-STB-005  # IDCAMS DELETE and DEFINE CLUSTER emulated on gnucobol-batch, condition codes included
+- GAP-STB-009  # per-scenario catalog in place of the z/OS catalog
+- GAP-STB-010  # Berkeley DB indexed file in place of the VSAM KSDS the DEFINE creates
+preconditions:
+  datasets: {}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: DEFCUST
+expected:
+  return_code: 8
+  messages:
+  - STEP STEP05 RC 0008
+  - STEP STEP05 RC 0000
+  file_state:
+    '@CATALOG':
+      records:
+      - AWS.CUSTDATA.CLUSTER CLUSTER -

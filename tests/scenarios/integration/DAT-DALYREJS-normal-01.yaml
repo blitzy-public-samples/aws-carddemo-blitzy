@@ -1,0 +1,38 @@
+id: DAT-DALYREJS-normal-01
+level: integration
+type: normal
+description: >-
+  The DALYREJS job defines the generation data group of the daily rejects file
+  that POSTTRAN writes as DALYREJS(+1). Its single IDCAMS step STEP05 issues
+  DEFINE GENERATIONDATAGROUP with LIMIT(5) and SCRATCH, with no DELETE before it
+  and no IF MAXCC / SET MAXCC after it [app/jcl/DALYREJS.jcl:21-28]. The job
+  defines the base itself, so the gnucobol-batch driver starts it from a catalog
+  without that base, and the job's own DEFINE is what is observed: STEP05 ends
+  RC 0 and the catalog then holds exactly the GDG base, with no generation. The
+  catalog observation lists each name with its type only; the LIMIT and SCRATCH
+  attributes go to the run evidence and are not asserted here.
+inventory_ids:
+- INV-DAT-009  # DALYREJS job
+tags: []
+gap_ids:
+- GAP-STB-005  # IDCAMS replacement: DEFINE GENERATIONDATAGROUP and its return code are emulated
+- GAP-STB-009  # catalog and GDG emulation in place of the z/OS catalog
+preconditions:
+  datasets: {}
+  parameters:
+    # unikix runs this job too and cannot fix its clock (GAP-MIS-015); nothing
+    # asserted here depends on the run date.
+    clock_mode: relative
+  faults: []
+inputs:
+  job: DALYREJS
+expected:
+  return_code: 0
+  # The driver writes one line per step and none per job, so both adapters
+  # report the same lines; the IDCAMS SYSPRINT stays in the run evidence.
+  messages:
+  - STEP STEP05 RC 0000
+  file_state:
+    '@CATALOG':
+      records:
+      - AWS.M2.CARDDEMO.DALYREJS GDG -

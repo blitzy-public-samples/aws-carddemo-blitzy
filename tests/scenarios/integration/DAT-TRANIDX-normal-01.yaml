@@ -1,0 +1,193 @@
+# The TRANIDX job builds the alternate index on TRAN-PROC-TS over the posted
+# transaction KSDS. STEP20 defines it, KEYS(26 304) NONUNIQUEKEY UPGRADE,
+# related to the TRANSACT cluster [app/jcl/TRANIDX.jcl:22-35]; STEP25 defines
+# the path over it [app/jcl/TRANIDX.jcl:39-45]; STEP30 runs BLDINDEX from the
+# cluster into it [app/jcl/TRANIDX.jcl:49-55]. The job deletes no alternate
+# index first, so it starts from a TRANSACT cluster that has none.
+#
+# TRANSACT holds five invented transactions on repository cards of
+# app/data/ASCII/cardxref.txt (9680294154603697, account 00000000001;
+# 0500024453765740, account 00000000050; 0683586198171516, account 00000000027),
+# with type and category pairs of app/data/ASCII/trancatg.txt (01/0001, 01/0002,
+# 02/0001, 03/0001). Their processing timestamps, in the DB2 form CBTRN02C
+# writes [app/cbl/CBTRN02C.cbl:692-705], run against TRAN-ID order, and
+# 9000000000000002 and 9000000000000004 share one, which the non-unique key
+# allows.
+#
+# @AIX:TRANSAIX is the cluster read through the path in alternate-key order:
+# ascending TRAN-PROC-TS, the two records of the shared timestamp in primary-key
+# (TRAN-ID) order, as BLDINDEX sorts each alternate key's prime keys. Building
+# the index leaves the cluster's records as they were, so TRANSACT is asserted
+# unchanged in primary-key order. Expected text values are full field width:
+# decoded text keeps its trailing spaces and compares exactly.
+id: DAT-TRANIDX-normal-01
+level: integration
+type: normal
+description: >-
+  TRANIDX defines the TRAN-PROC-TS alternate index and its path over a TRANSACT
+  cluster of five transactions and builds it: each of STEP20, STEP25 and STEP30
+  ends with return code 0, the path returns the five records in processing
+  timestamp order with the two of a shared timestamp in transaction id order,
+  and the cluster's records are unchanged.
+inventory_ids:
+- INV-DAT-023  # TRANIDX job
+tags: []
+gap_ids:
+- GAP-STB-005  # IDCAMS DEFINE ALTERNATEINDEX/PATH and BLDINDEX emulated on gnucobol-batch
+- GAP-STB-009  # the catalog the AIX and path are defined in is emulated
+- GAP-STB-010  # Berkeley DB indexed files stand in for the VSAM KSDS, AIX and PATH
+preconditions:
+  datasets:
+    TRANSACT:
+      records:
+      - TRAN-ID: '9000000000000001'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '50.47'
+        TRAN-MERCHANT-ID: '900000001'
+        TRAN-MERCHANT-NAME: Synthetic Merchant
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 14:29:10.000000'
+        TRAN-PROC-TS: '2022-07-05-14.30.00.000000'
+      - TRAN-ID: '9000000000000002'
+        TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: OPERATOR
+        TRAN-DESC: Synthetic cash payment
+        TRAN-AMT: '120.00'
+        TRAN-MERCHANT-ID: '900000002'
+        TRAN-MERCHANT-NAME: Synthetic Bank Branch
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-07-02 16:45:00.000000'
+        TRAN-PROC-TS: '2022-07-03-09.00.00.000000'
+      - TRAN-ID: '9000000000000003'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '2'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic cash advance
+        TRAN-AMT: '200.00'
+        TRAN-MERCHANT-ID: '900000003'
+        TRAN-MERCHANT-NAME: Synthetic ATM
+        TRAN-MERCHANT-CITY: Sampletown
+        TRAN-MERCHANT-ZIP: '00001'
+        TRAN-CARD-NUM: '0683586198171516'
+        TRAN-ORIG-TS: '2022-07-05 08:10:00.000000'
+        TRAN-PROC-TS: '2022-07-05-08.15.00.000000'
+      - TRAN-ID: '9000000000000004'
+        TRAN-TYPE-CD: '03'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: OPERATOR
+        TRAN-DESC: Synthetic credit to account
+        TRAN-AMT: '-35.25'
+        TRAN-MERCHANT-ID: '900000001'
+        TRAN-MERCHANT-NAME: Synthetic Merchant
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-02 18:05:00.000000'
+        TRAN-PROC-TS: '2022-07-03-09.00.00.000000'
+      - TRAN-ID: '9000000000000005'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '9.99'
+        TRAN-MERCHANT-ID: '900000004'
+        TRAN-MERCHANT-NAME: Synthetic Grocer
+        TRAN-MERCHANT-CITY: Sampletown
+        TRAN-MERCHANT-ZIP: '00001'
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-07-01 23:58:00.000000'
+        TRAN-PROC-TS: '2022-07-01-23.59.59.999999'
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: TRANIDX
+expected:
+  return_code: 0
+  messages:
+  - STEP STEP20 RC 0000
+  - STEP STEP25 RC 0000
+  - STEP STEP30 RC 0000
+  file_state:
+    '@AIX:TRANSAIX':
+      records:
+      - {TRAN-PROC-TS: '2022-07-01-23.59.59.999999', TRAN-ID: '9000000000000005', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '9.99'}
+      - {TRAN-PROC-TS: '2022-07-03-09.00.00.000000', TRAN-ID: '9000000000000002', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '120.00'}
+      - {TRAN-PROC-TS: '2022-07-03-09.00.00.000000', TRAN-ID: '9000000000000004', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '-35.25'}
+      - {TRAN-PROC-TS: '2022-07-05-08.15.00.000000', TRAN-ID: '9000000000000003', TRAN-CARD-NUM: '0683586198171516', TRAN-AMT: '200.00'}
+      - {TRAN-PROC-TS: '2022-07-05-14.30.00.000000', TRAN-ID: '9000000000000001', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '50.47'}
+    TRANSACT:
+      records:
+      - TRAN-ID: '9000000000000001'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Synthetic purchase                                                                                  '
+        TRAN-AMT: '50.47'
+        TRAN-MERCHANT-ID: '900000001'
+        TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '00000     '
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 14:29:10.000000'
+        TRAN-PROC-TS: '2022-07-05-14.30.00.000000'
+      - TRAN-ID: '9000000000000002'
+        TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'OPERATOR  '
+        TRAN-DESC: 'Synthetic cash payment                                                                              '
+        TRAN-AMT: '120.00'
+        TRAN-MERCHANT-ID: '900000002'
+        TRAN-MERCHANT-NAME: 'Synthetic Bank Branch                             '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '00000     '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-07-02 16:45:00.000000'
+        TRAN-PROC-TS: '2022-07-03-09.00.00.000000'
+      - TRAN-ID: '9000000000000003'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '2'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Synthetic cash advance                                                                              '
+        TRAN-AMT: '200.00'
+        TRAN-MERCHANT-ID: '900000003'
+        TRAN-MERCHANT-NAME: 'Synthetic ATM                                     '
+        TRAN-MERCHANT-CITY: 'Sampletown                                        '
+        TRAN-MERCHANT-ZIP: '00001     '
+        TRAN-CARD-NUM: '0683586198171516'
+        TRAN-ORIG-TS: '2022-07-05 08:10:00.000000'
+        TRAN-PROC-TS: '2022-07-05-08.15.00.000000'
+      - TRAN-ID: '9000000000000004'
+        TRAN-TYPE-CD: '03'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'OPERATOR  '
+        TRAN-DESC: 'Synthetic credit to account                                                                         '
+        TRAN-AMT: '-35.25'
+        TRAN-MERCHANT-ID: '900000001'
+        TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '00000     '
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-02 18:05:00.000000'
+        TRAN-PROC-TS: '2022-07-03-09.00.00.000000'
+      - TRAN-ID: '9000000000000005'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Synthetic purchase                                                                                  '
+        TRAN-AMT: '9.99'
+        TRAN-MERCHANT-ID: '900000004'
+        TRAN-MERCHANT-NAME: 'Synthetic Grocer                                  '
+        TRAN-MERCHANT-CITY: 'Sampletown                                        '
+        TRAN-MERCHANT-ZIP: '00001     '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-07-01 23:58:00.000000'
+        TRAN-PROC-TS: '2022-07-01-23.59.59.999999'

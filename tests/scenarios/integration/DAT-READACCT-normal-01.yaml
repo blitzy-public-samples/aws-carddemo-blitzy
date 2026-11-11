@@ -1,0 +1,36 @@
+id: DAT-READACCT-normal-01
+level: integration
+type: normal
+description: >-
+  Job READACCT runs its one step, STEP05 EXEC PGM=CBACT01C, against the account
+  master loaded with the 50 repository accounts [app/jcl/READACCT.jcl:22-28].
+  CBACT01C opens the file for input and only lists it; it changes nothing, although
+  the tech spec calls it a loader (GAP-DOC-004). The job ends with return code 0, and
+  the baseline pins its messages as observed: the STEP05 line, then CBACT01C's
+  DISPLAY output, which is the start line; for each account in ACCT-ID order, the
+  eleven labelled field lines and the separator of 1100-DISPLAY-ACCT-RECORD followed
+  by the whole 300-byte ACCOUNT-RECORD that the main loop displays again; and the end
+  line [app/cbl/CBACT01C.cbl:71-87,118-131]. The labelled signed amounts show as the
+  GnuCOBOL runtime displays them (GAP-STB-011). The unit scenario
+  DAT-CBACT01C-normal-01 verifies the program, its listing item, the CVACT01Y layout
+  and the account data files, so this scenario lists only the job.
+inventory_ids:
+- INV-DAT-014  # READACCT job
+tags: []
+gap_ids:
+- GAP-STB-010  # Berkeley DB indexed file in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+- GAP-DOC-004  # the tech spec calls CBACT01C a loader; it only lists the file
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+  # unikix runs this scenario too and cannot fix its clock (GAP-MIS-015); no
+  # asserted value depends on the run date.
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: READACCT
+expected:
+  return_code: 0
+  messages: baseline

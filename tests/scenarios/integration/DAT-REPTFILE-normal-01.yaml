@@ -1,0 +1,50 @@
+# REPTFILE's single IDCAMS step defines the TRANREPT report GDG base with
+# LIMIT(10) and neither SCRATCH nor EMPTY [app/jcl/REPTFILE.jcl:22-29]. DEFGDGB
+# defines the same base with LIMIT(5) SCRATCH [app/jcl/DEFGDGB.jcl:36-41], and
+# LISTCAT records LIMIT 5 SCRATCH NOEMPTY [app/catlg/LISTCAT.txt:1527,1535].
+#
+# The scenario starts from a catalog without the base: the job driver seeds
+# only the GDG bases a job references through a generation DD and does not
+# define itself, and REPTFILE has no such DD. REPTFILE has no
+# 'IF LASTCC=12 THEN SET MAXCC=0', so on a catalog that already held the base
+# the DEFINE would end with condition code 12 and the job with RC 12. A unikix
+# run whose deployed catalog already holds the base therefore gives a
+# different outcome, which is registered as a cross-adapter divergence and
+# never fixed on either side.
+#
+# The LIMIT and SCRATCH attributes are deliberately not asserted: an @CATALOG
+# line carries only name, type and generation (adapters.base.format_catalog),
+# and the scenario schema has no other key that observes GDG attributes.
+# gnucobol-batch records them in its run evidence only, and GAP-STB-009
+# registers that LIMIT, SCRATCH and EMPTY are only partly emulated.
+id: DAT-REPTFILE-normal-01
+level: integration
+type: normal
+description: >-
+  REPTFILE defines the TRANREPT report GDG base on a catalog that does not yet
+  hold it: step STEP05 ends with return code 0 and the catalog then holds the
+  base alone, with no generation. The job defines it with LIMIT(10) and the
+  default NOSCRATCH and NOEMPTY, where DEFGDGB and LISTCAT give LIMIT(5)
+  SCRATCH, so whichever of the two jobs runs first decides the base's
+  attributes.
+inventory_ids:
+- INV-DAT-018
+tags: []
+gap_ids:
+- GAP-STB-005
+- GAP-STB-009
+preconditions:
+  datasets: {}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: REPTFILE
+expected:
+  return_code: 0
+  messages:
+  - STEP STEP05 RC 0000
+  file_state:
+    '@CATALOG':
+      records:
+      - AWS.M2.CARDDEMO.TRANREPT GDG -

@@ -1,0 +1,307 @@
+# COMBTRAN merges the TRANSACT backup with the system-generated interest
+# transactions and reloads the transaction master [app/jcl/COMBTRAN.jcl:19-48]:
+# - STEP05R sorts the concatenation of the current TRANSACT-BKUP generation and
+#   the current SYSTRAN generation on TRAN-ID (SYMNAMES TRAN-ID,1,16,CH; SORT
+#   FIELDS=(TRAN-ID,A)) into a new TRANSACT-COMBINED generation
+#   [app/jcl/COMBTRAN.jcl:22-37];
+# - STEP10 REPROs that generation into the TRANSACT KSDS [app/jcl/COMBTRAN.jcl:41-48].
+# Each input holds three invented transactions whose ids alternate between the
+# two inputs, so the output order can only come from the sort, not from the
+# concatenation. The SYSTRAN records have the shape CBACT04C gives its interest
+# transactions (type 01, category 0005, source System, no merchant)
+# [app/cbl/CBACT04C.cbl:473-498]; every card is a repository card of
+# app/data/ASCII/cardxref.txt. TRANSACT starts defined and empty, as TRANBKP
+# leaves it in the README order [README.md:177-180] (GAP-DOC-015), because a
+# REPRO into the loaded KSDS would meet duplicate keys. A precondition of a GDG
+# dataset is its current generation, which the job reads as (0), and the sort
+# output is the next generation of its base. Neither step changes a byte of a
+# record, so TRANSACT-COMBINED and TRANSACT hold the same six records. Expected
+# text values are full field width: decoded text keeps its trailing spaces and
+# compares exactly. The job uses no clock, so the scenario runs unchanged on
+# unikix, whose copy writes the sort output with DCB=(LRECL=350,RECFM=FB) in
+# place of DCB=(*.SORTIN) (GAP-DOC-029).
+id: DAT-COMBTRAN-normal-01
+level: integration
+type: normal
+description: >-
+  COMBTRAN sorts three backed-up transactions and three interest transactions
+  by TRAN-ID into a new combined generation of six records and loads them, in
+  the same order, into the emptied TRANSACT KSDS; both steps end with RC 0.
+inventory_ids:
+- INV-DAT-007  # COMBTRAN job
+tags: []
+gap_ids:
+- GAP-STB-005  # IDCAMS REPRO emulated on gnucobol-batch
+- GAP-STB-006  # SORT emulated on gnucobol-batch (DFSORT subset, ASCII collating sequence)
+- GAP-STB-009  # GDG generations and cataloguing emulated on gnucobol-batch
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-DOC-029  # the UniKix copy's sort output DCB differs from DCB=(*.SORTIN)
+preconditions:
+  datasets:
+    # The backup is the unload of the TRANSACT KSDS, so its records are in key order.
+    TRANSACT-BKUP:
+      records:
+      - TRAN-ID: '9000000000000001'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '120.50'
+        TRAN-MERCHANT-ID: '900000001'
+        TRAN-MERCHANT-NAME: Synthetic Merchant
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9000000000000004'
+        TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '2'
+        TRAN-SOURCE: OPERATOR
+        TRAN-DESC: Synthetic payment
+        TRAN-AMT: '-75.00'
+        TRAN-MERCHANT-ID: '900000002'
+        TRAN-MERCHANT-NAME: Synthetic Bank
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '0683586198171516'
+        TRAN-ORIG-TS: '2022-07-05 09:30:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9000000000000006'
+        TRAN-TYPE-CD: '05'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: OPERATOR
+        TRAN-DESC: Synthetic refund
+        TRAN-AMT: '-19.99'
+        TRAN-MERCHANT-ID: '900000001'
+        TRAN-MERCHANT-NAME: Synthetic Merchant
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:45:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+    # Interest transactions in the account order CBACT04C writes them:
+    # accounts 00000000002, 00000000027 and 00000000050.
+    SYSTRAN:
+      records:
+      - TRAN-ID: '9000000000000002'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: System
+        TRAN-DESC: Int. for a/c 00000000002
+        TRAN-AMT: '0.87'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: ''
+        TRAN-MERCHANT-CITY: ''
+        TRAN-MERCHANT-ZIP: ''
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05-11.00.00.000000'
+        TRAN-PROC-TS: '2022-07-05-11.00.00.000000'
+      - TRAN-ID: '9000000000000003'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: System
+        TRAN-DESC: Int. for a/c 00000000027
+        TRAN-AMT: '3.40'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: ''
+        TRAN-MERCHANT-CITY: ''
+        TRAN-MERCHANT-ZIP: ''
+        TRAN-CARD-NUM: '0683586198171516'
+        TRAN-ORIG-TS: '2022-07-05-11.00.00.000000'
+        TRAN-PROC-TS: '2022-07-05-11.00.00.000000'
+      - TRAN-ID: '9000000000000005'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: System
+        TRAN-DESC: Int. for a/c 00000000050
+        TRAN-AMT: '1.25'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: ''
+        TRAN-MERCHANT-CITY: ''
+        TRAN-MERCHANT-ZIP: ''
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-07-05-11.00.00.000000'
+        TRAN-PROC-TS: '2022-07-05-11.00.00.000000'
+    TRANSACT:
+      records: []
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: COMBTRAN
+expected:
+  return_code: 0
+  messages:
+  - STEP STEP05R RC 0000
+  - STEP STEP10 RC 0000
+  datasets:
+    # The sort output: the six records in TRAN-ID order, ids 1, 4 and 6 from
+    # the backup interleaved with ids 2, 3 and 5 from the interest file.
+    TRANSACT-COMBINED:
+      records:
+      - TRAN-ID: '9000000000000001'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Synthetic purchase                                                                                  '
+        TRAN-AMT: '120.50'
+        TRAN-MERCHANT-ID: '900000001'
+        TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '00000     '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9000000000000002'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: 'Int. for a/c 00000000002                                                                            '
+        TRAN-AMT: '0.87'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05-11.00.00.000000'
+        TRAN-PROC-TS: '2022-07-05-11.00.00.000000'
+      - TRAN-ID: '9000000000000003'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: 'Int. for a/c 00000000027                                                                            '
+        TRAN-AMT: '3.40'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '0683586198171516'
+        TRAN-ORIG-TS: '2022-07-05-11.00.00.000000'
+        TRAN-PROC-TS: '2022-07-05-11.00.00.000000'
+      - TRAN-ID: '9000000000000004'
+        TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '2'
+        TRAN-SOURCE: 'OPERATOR  '
+        TRAN-DESC: 'Synthetic payment                                                                                   '
+        TRAN-AMT: '-75.00'
+        TRAN-MERCHANT-ID: '900000002'
+        TRAN-MERCHANT-NAME: 'Synthetic Bank                                    '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '00000     '
+        TRAN-CARD-NUM: '0683586198171516'
+        TRAN-ORIG-TS: '2022-07-05 09:30:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9000000000000005'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: 'Int. for a/c 00000000050                                                                            '
+        TRAN-AMT: '1.25'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-07-05-11.00.00.000000'
+        TRAN-PROC-TS: '2022-07-05-11.00.00.000000'
+      - TRAN-ID: '9000000000000006'
+        TRAN-TYPE-CD: '05'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'OPERATOR  '
+        TRAN-DESC: 'Synthetic refund                                                                                    '
+        TRAN-AMT: '-19.99'
+        TRAN-MERCHANT-ID: '900000001'
+        TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '00000     '
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:45:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+  file_state:
+    # The transaction master after the REPRO: the same six records, in key order.
+    TRANSACT:
+      records:
+      - TRAN-ID: '9000000000000001'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Synthetic purchase                                                                                  '
+        TRAN-AMT: '120.50'
+        TRAN-MERCHANT-ID: '900000001'
+        TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '00000     '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9000000000000002'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: 'Int. for a/c 00000000002                                                                            '
+        TRAN-AMT: '0.87'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05-11.00.00.000000'
+        TRAN-PROC-TS: '2022-07-05-11.00.00.000000'
+      - TRAN-ID: '9000000000000003'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: 'Int. for a/c 00000000027                                                                            '
+        TRAN-AMT: '3.40'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '0683586198171516'
+        TRAN-ORIG-TS: '2022-07-05-11.00.00.000000'
+        TRAN-PROC-TS: '2022-07-05-11.00.00.000000'
+      - TRAN-ID: '9000000000000004'
+        TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '2'
+        TRAN-SOURCE: 'OPERATOR  '
+        TRAN-DESC: 'Synthetic payment                                                                                   '
+        TRAN-AMT: '-75.00'
+        TRAN-MERCHANT-ID: '900000002'
+        TRAN-MERCHANT-NAME: 'Synthetic Bank                                    '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '00000     '
+        TRAN-CARD-NUM: '0683586198171516'
+        TRAN-ORIG-TS: '2022-07-05 09:30:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9000000000000005'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: 'Int. for a/c 00000000050                                                                            '
+        TRAN-AMT: '1.25'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-07-05-11.00.00.000000'
+        TRAN-PROC-TS: '2022-07-05-11.00.00.000000'
+      - TRAN-ID: '9000000000000006'
+        TRAN-TYPE-CD: '05'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'OPERATOR  '
+        TRAN-DESC: 'Synthetic refund                                                                                    '
+        TRAN-AMT: '-19.99'
+        TRAN-MERCHANT-ID: '900000001'
+        TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '00000     '
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:45:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+    # The sort output is catalogued as the first generation of its base, which
+    # holds none when the scenario starts.
+    '@CATALOG':
+      contains:
+      - AWS.M2.CARDDEMO.TRANSACT.COMBINED GENERATION G0001V00

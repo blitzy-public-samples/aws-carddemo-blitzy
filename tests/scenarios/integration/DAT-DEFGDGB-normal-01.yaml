@@ -1,0 +1,51 @@
+# DEFGDGB defines the six GDG bases the batch jobs roll generations of, in its
+# one IDCAMS step STEP05: TRANSACT.BKUP, TRANSACT.DALY, TRANREPT,
+# TCATBALF.BKUP, SYSTRAN and TRANSACT.COMBINED, each LIMIT(5) SCRATCH, each
+# DEFINE followed by IF LASTCC=12 THEN SET MAXCC=0 [app/jcl/DEFGDGB.jcl:21-59].
+#
+# The scenario starts from a catalog without those bases: the job driver seeds
+# only the bases a generation DD of the job references and none of its DEFINEs
+# defines, and DEFGDGB references none. So every DEFINE completes with
+# condition code 0, each IF LASTCC=12 is evaluated and not taken, and the step
+# ends with return code 0. Those condition codes and the IF LASTCC/SET MAXCC
+# logic are the IDCAMS replacement's emulation (GAP-STB-005).
+#
+# The outcome is the catalog after the job: the @CATALOG observation lists the
+# six bases as GDG entries with no generation, and nothing else. It records
+# names and types only, so LIMIT(5) and SCRATCH are not observed here, nor that
+# LISTCAT records TRANSACT.BKUP and TRANSACT.DALY as NOSCRATCH where the job
+# codes SCRATCH [app/catlg/LISTCAT.txt:1631-1637,3021-3027]; the emulated
+# catalog keeps LIMIT, SCRATCH and EMPTY only partly (GAP-STB-009). The DSNs
+# live in the baseline's @CATALOG lines, not in this file. The generation roll
+# these bases serve is a JCL-semantics item, verified by
+# DAT-POSTTRAN-alternate-01 on unikix, so only the job item is listed here.
+#
+# The messages are the single STEP05 line and no job summary line: the job
+# driver writes one STEP line per step and none per job, as the unikix BPE run
+# reports it, so both adapters can compare the same lines.
+id: DAT-DEFGDGB-normal-01
+level: integration
+type: normal
+description: >-
+  DEFGDGB runs its IDCAMS step STEP05 against a catalog without the CardDemo
+  GDG bases: the step ends with return code 0, and the catalog then holds
+  exactly the six GDG bases the job defines, each without a generation.
+inventory_ids:
+- INV-DAT-011
+tags: []
+gap_ids:
+- GAP-STB-005
+- GAP-STB-009
+preconditions:
+  datasets: {}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: DEFGDGB
+expected:
+  return_code: 0
+  messages:
+  - STEP STEP05 RC 0000
+  file_state:
+    '@CATALOG': baseline

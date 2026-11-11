@@ -1,0 +1,37 @@
+id: DAT-READCUST-normal-01
+level: integration
+type: normal
+description: >-
+  Job READCUST runs its single step STEP05, CBCUS01C, over the repository customer
+  KSDS of 50 customers [app/jcl/READCUST.jcl:6-12]. The program opens the file for
+  input and only lists it: the start line; then, in CUST-ID order, the whole 500-byte
+  CUSTOMER-RECORD of every customer, displayed once by the read routine after each
+  successful READ and again by the main loop, so each customer is shown twice; then
+  the end line [app/cbl/CBCUS01C.cbl:70-97,120]. The job's messages are the step line
+  followed by those 102 DISPLAY lines, 103 in all, and its return code is 0. The
+  inline messages assert the job's frame; the observed gnucobol-batch baseline pins
+  every line, trailing spaces included, as observed. Nothing is loaded, against the
+  tech spec's "loads customer demographic data" (GAP-DOC-004). CBCUS01C reads no
+  clock, so the listing does not depend on the run date and the scenario runs
+  unchanged on unikix.
+inventory_ids:
+- INV-DAT-016  # READCUST job; the program, layout and data-file items are verified at unit level
+tags: []
+gap_ids:
+- GAP-STB-010  # Berkeley DB indexed file in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+- GAP-DOC-004  # the tech spec says CBCUS01C loads customer data; it only lists the file
+preconditions:
+  datasets:
+    CUSTDATA: {base: CUSTDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: READCUST
+expected:
+  return_code: 0
+  messages:
+  - STEP STEP05 RC 0000
+  - START OF EXECUTION OF PROGRAM CBCUS01C
+  - END OF EXECUTION OF PROGRAM CBCUS01C

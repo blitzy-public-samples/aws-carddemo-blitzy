@@ -1,0 +1,123 @@
+# TRANFILE initialises the transaction master [app/jcl/TRANFILE.jcl:22-121]:
+# CLCIFIL closes the region files TRANSACT and CXACAIX through SDSF, STEP05
+# deletes the KSDS and its alternate index (each DELETE followed by
+# 'IF MAXCC LE 08 THEN SET MAXCC = 0'), STEP10 defines the KSDS with KEYS(16 0)
+# and RECORDSIZE(350 350), STEP15 REPROs the one-record seed data set into it,
+# STEP20-STEP30 define, relate and build the TRAN-PROC-TS alternate index and
+# path, and OPCIFIL reopens the region files.
+#
+# The TRANSACT precondition holds one invented posted transaction. STEP05
+# deletes the cluster that holds it, so after the job the KSDS holds only the
+# seed record: the stale transaction 9999999999999903 is absent.
+#
+# The seed record is not x'00' throughout (GAP-DOC-018): bytes 1-342 are x'00'
+# and bytes 343-350, inside the trailing TRAN-RECORD FILLER [app/cpy/CVTRA05Y.cpy:18],
+# are cp037 '00000100', which the fixture carries as ASCII text. The record
+# is pinned as the repository holds it, not as the "350 x'00' bytes" the test
+# plan describes. Decoded through CVTRA05Y its text fields are strings of
+# x'00', written below as YAML "\0" escapes, and its three numeric fields hold
+# invalid zoned bytes, written as {raw: <hex>}. Its primary key is 16 x'00'
+# bytes, and its alternate key TRAN-PROC-TS is 26 x'00' bytes.
+#
+# The job is in both adapters' mapping files, so both can run it; on
+# gnucobol-batch its IDCAMS steps run through the utility replacements
+# (GAP-STB-005), its SDSF steps are a no-op with RC 0 (GAP-STB-008), the
+# catalog is emulated (GAP-STB-009) and the KSDS is a Berkeley DB file
+# (GAP-STB-010); on UniKix SDSF.cbl is a dummy program, so the region files are
+# never actually closed or opened (GAP-DOC-031). The MAXCC reset, the
+# alternate-index build and the region actions are JCL-semantics items that
+# only unikix runs (DAT-ACCTFILE-recovery-01, DAT-XREFFILE-alternate-01,
+# CFG-OPENFIL-normal-01), so they are not listed here, and no @AIX observation
+# is asserted.
+#
+# The seed data set is listed as its own inventory item because no unit
+# scenario loads TRANSACT-INIT; CVTRA05Y is listed by the unit scenarios that
+# execute it.
+id: DAT-TRANFILE-normal-01
+level: integration
+type: normal
+description: >-
+  TRANFILE closes the region files, deletes and redefines the TRANSACT KSDS,
+  REPROs the one-record seed data set DALYTRAN.PS.INIT into it, builds the
+  TRAN-PROC-TS alternate index and path, and reopens the region files. Every
+  step ends with return code 0. The invented transaction the KSDS held before
+  the job is gone, and the KSDS holds exactly the seed record: 342 bytes of
+  x'00' followed by the text 00000100.
+inventory_ids:
+- INV-DAT-022  # TRANFILE job
+- INV-DTA-016  # AWS.M2.CARDDEMO.DALYTRAN.PS.INIT data file, the TRANSACT-INIT fixture source
+tags: []
+gap_ids:
+- GAP-STB-005  # IDCAMS DELETE, DEFINE, REPRO and BLDINDEX through the utility replacement
+- GAP-STB-008  # SDSF CEMT steps CLCIFIL and OPCIFIL are a no-op with RC 0
+- GAP-STB-009  # the per-scenario catalog in place of the z/OS catalog
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS, AIX and PATH
+- GAP-DOC-031  # on UniKix SDSF.cbl is a dummy, so the region files are never closed or opened
+- GAP-DOC-018  # the seed record is 342 x'00' bytes and cp037 '00000100', undocumented
+preconditions:
+  datasets:
+    TRANSACT-INIT: {base: TRANSACT-INIT}
+    # A posted transaction left from an earlier cycle. Its card is the first
+    # record of the repository CARDXREF [app/data/ASCII/cardxref.txt:1], with
+    # type 01 Purchase and category 0001 Regular Sales Draft
+    # [app/data/ASCII/trantype.txt:1] [app/data/ASCII/trancatg.txt:1]; its id,
+    # merchant and amount are invented.
+    TRANSACT:
+      records:
+      - TRAN-ID: '9999999999999903'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM'
+        TRAN-DESC: 'Purchase at Invented Merchant 903'
+        TRAN-AMT: '25.00'
+        TRAN-MERCHANT-ID: '999999903'
+        TRAN-MERCHANT-NAME: 'Invented Merchant 903'
+        TRAN-MERCHANT-CITY: 'Invented City'
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+        TRAN-PROC-TS: '2022-06-11-10.00.00.000000'
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: TRANFILE
+expected:
+  return_code: 0
+  # One line per step [app/jcl/TRANFILE.jcl:22,32,46,67,79,96,106,116]. In
+  # STEP05 the DELETE of an alternate index that does not exist ends with
+  # condition code 8, which the IF MAXCC after it resets to 0.
+  messages:
+  - STEP CLCIFIL RC 0000
+  - STEP STEP05 RC 0000
+  - STEP STEP10 RC 0000
+  - STEP STEP15 RC 0000
+  - STEP STEP20 RC 0000
+  - STEP STEP25 RC 0000
+  - STEP STEP30 RC 0000
+  - STEP OPCIFIL RC 0000
+  file_state:
+    # The seed record alone, field by field as CVTRA05Y decodes it.
+    TRANSACT:
+      count: 1
+      records:
+      - TRAN-ID: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-TYPE-CD: "\0\0"
+        TRAN-CAT-CD: {raw: '00000000'}
+        TRAN-SOURCE: "\0\0\0\0\0\0\0\0\0\0"
+        TRAN-DESC: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: {raw: '0000000000000000000000'}
+        TRAN-MERCHANT-ID: {raw: '000000000000000000'}
+        TRAN-MERCHANT-NAME: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-MERCHANT-CITY: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\
+          \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-MERCHANT-ZIP: "\0\0\0\0\0\0\0\0\0\0"
+        TRAN-CARD-NUM: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-ORIG-TS: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-PROC-TS: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-RECORD.FILLER#1: "\0\0\0\0\0\0\0\0\0\0\0\0\
+          00000100"
