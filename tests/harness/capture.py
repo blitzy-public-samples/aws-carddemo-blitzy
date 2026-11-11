@@ -22,8 +22,11 @@ without a comparison, and what it observed becomes its baseline
     The raw bytes of each business dataset those two sections name.
 ``manifest.yaml``
     ``baseline_version``, ``source_commit`` (HEAD), ``capture_platform:
-    gnucobol-batch``, ``capture_date`` (today) and the run's
-    ``execution_id``, ``execution_fingerprint`` and ``source_identity``.
+    gnucobol-batch``, ``capture_date`` (today), the run's
+    ``execution_fingerprint`` and ``source_identity``, and the
+    ``execution_id`` of a run of the written baseline version, made with the
+    baseline's new version as every later run of the same commit and build
+    makes it (``manifest_execution_id``, ``record_at_version``).
 
 Versions: a new baseline starts at ``1.0.0`` and ``--bump`` is ignored for
 it; so is a baseline written since HEAD, which the bump check against HEAD
@@ -93,8 +96,10 @@ __all__ = [
     "committed_at_head",
     "main",
     "make_adapter",
+    "manifest_execution_id",
     "plan_version",
     "raw_datasets",
+    "record_at_version",
     "select_all",
 ]
 
@@ -423,9 +428,11 @@ def plan_version(existing: Any, bump: str | None, committed: bool = True) -> tup
     return existing.version, _baselines.bump(existing.version, bump)
 
 
-def build_manifest(version: str, record: Any) -> dict:
+def build_manifest(version: str, record: Any, execution_id: str | None = None) -> dict:
     """The ``manifest.yaml`` of an observed baseline at ``version``, naming the
-    execution of the run's result ``record`` (``results.build_record``)."""
+    execution of the run's result ``record`` (``results.build_record``).
+    ``execution_id``, when given, replaces the record's own
+    (``manifest_execution_id``)."""
     evidence = {
         key: copy.deepcopy(record.get(key)) if isinstance(record, Mapping) else None
         for key in ("execution_id", "execution_fingerprint", "source_identity")
@@ -433,6 +440,8 @@ def build_manifest(version: str, record: Any) -> dict:
     lacking = sorted(key for key, value in evidence.items() if not value)
     if lacking:
         raise CaptureError(f"the run's result record lacks {', '.join(lacking)}, so the capture names no execution")
+    if execution_id is not None:
+        evidence["execution_id"] = execution_id
     return {
         "baseline_version": version,
         "source_commit": git_head(),
@@ -440,6 +449,39 @@ def build_manifest(version: str, record: Any) -> dict:
         "capture_date": _dt.date.today().isoformat(),
         **evidence,
     }
+
+
+def manifest_execution_id(scenario: Any, version: str, adapter: Any) -> str:
+    """The execution id an observed baseline at ``version`` names: the run's
+    commit, scenario id, build key and ``version`` (``results.execution_id``).
+
+    The runner made the capture run's own id with the version the baseline
+    had before it (none for a new one), so it is not the id a run of the
+    written baseline gets. Naming ``version`` instead makes the manifest's id
+    the one every later run of the same commit and build key writes in its
+    result record (AAP 0.4.6)."""
+    hook = getattr(adapter, "build_key", None)
+    build_key = hook(scenario) if callable(hook) else None
+    commit = git_head()
+    return _results.execution_id(ADAPTER, scenario, version, build_key, None if commit == "unknown" else commit)
+
+
+def record_at_version(scenario: Any, adapter: Any, record: Any, version: str) -> Any:
+    """``record`` carrying the execution id of its run as the baseline at
+    ``version`` names it (``manifest_execution_id``).
+
+    The gnucobol-batch execution id hashes the baseline version
+    (``results.execution_id``, AAP 0.4.6), and the capture run is made before
+    that version exists: with no baseline, or with the one it replaces. Its
+    record's id would therefore match no later run of the same commit and
+    build, so the manifest takes the id those runs carry at ``version``. A
+    record without an id is returned unchanged, for ``build_manifest`` to
+    refuse."""
+    if not isinstance(record, Mapping) or not record.get("execution_id"):
+        return record
+    versioned = dict(record)
+    versioned["execution_id"] = manifest_execution_id(scenario, version, adapter)
+    return versioned
 
 
 # --------------------------------------------------------------------------
@@ -505,7 +547,7 @@ def _capture(scenario_id: str, bump: str | None, adapter: Any) -> Captured:
     existing = _baselines.load(scenario.id, missing_ok=True)
     committed = existing is not None and committed_at_head(scenario.id)
     old_version, new_version = plan_version(existing, bump, committed)
-    manifest = build_manifest(new_version, outcome.record)
+    manifest = build_manifest(new_version, record_at_version(scenario, adapter, outcome.record, new_version))
     candidate = _baselines.Baseline(scenario.id, expected, manifest, datasets)
     run_date = _dt.date.fromisoformat(_scenarios.clock(scenario)[:10])
     status, reason, diff = _baselines.compare(scenario, candidate, result, ADAPTER, run_date)

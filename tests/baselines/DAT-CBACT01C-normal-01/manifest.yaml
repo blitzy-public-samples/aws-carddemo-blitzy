@@ -1,0 +1,12 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: 27f92e8b523cc6280fa06f4795d7b71108a575e0f68ea4a64b5262f77ecc98e1
+execution_id: gnucobol-batch-2ad3d626bec60f70
+source_commit: 077f187b8bd50acfee0f03b30aca6256f65dfc54
+source_identity:
+  commit: 077f187b8bd50acfee0f03b30aca6256f65dfc54
+  tree: app
+  units:
+    app/cbl/CBACT01C.cbl: 426cf9bd190b777104bb964e9d5a2929197ed7621f8b334f229ef12e60e63966
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728

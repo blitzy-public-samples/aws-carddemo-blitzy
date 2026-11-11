@@ -1,0 +1,80 @@
+# Derived from app/cbl/CBTRN02C.cbl:193-234,403-451,545-579,692-705,
+# app/jcl/POSTTRAN.jcl:23-38, app/jcl/TRANBKP.jcl:23-68 and
+# app/ctl/REPROCT.ctl:15; inferred-not-observed (GAP-INF-011); pinned, never
+# corrected. POSTTRAN, TRANBKP and POSTTRAN run against one catalog on one
+# invented 1200.00 purchase for account 00000000001 (credit limit 2020.00,
+# cycle credit and debit 0.00, expiry 2025-05-20; its 01/0001 category balance
+# exists, so no 'Creating.' line). Run 1 posts it and ends with 0, leaving
+# its DALYREJS generation G0001V00 empty; TRANBKP copies the posted record to
+# TRANSACT.BKUP G0001V00 and defines TRANSACT again empty, every step ending
+# with 0; run 2 meets the 1200.00 cycle credit run 1 left (GAP-UNC-011),
+# rejects the record with 0102 into G0002V00 and ends with 4. DALYREJS and
+# TRANSACT-BKUP are each read as their newest generation (0).
+# The backup record's FILLER is never moved, so it holds the uninitialized
+# working storage of TRAN-RECORD: LOW-VALUES under the copy's compile option
+# -dv=0. The reject record's FILLER is the DALYTRAN fixture's, spaces.
+# @CATALOG lists, as an ordered subsequence, only the entries these jobs
+# decide (both DALYREJS generations, the one backup generation, their GDG
+# bases and the redefined cluster): the rest of the test-owned catalog
+# (deployment entries, the alternate indexes and paths the adapter's loads
+# define) is the installation's, not app/ behavior.
+datasets:
+  DALYREJS:
+  - DALYTRAN-AMT: '1200.00'
+    DALYTRAN-CARD-NUM: '9680294154603697'
+    DALYTRAN-CAT-CD: '1'
+    DALYTRAN-DESC: 'Synthetic generation roll purchase                                                                  '
+    DALYTRAN-ID: '9300000000000001'
+    DALYTRAN-MERCHANT-CITY: 'Testville                                         '
+    DALYTRAN-MERCHANT-ID: '930000001'
+    DALYTRAN-MERCHANT-NAME: 'Synthetic Merchant 930                            '
+    DALYTRAN-MERCHANT-ZIP: '00930     '
+    DALYTRAN-ORIG-TS: '2022-06-10 09:30:00.000000'
+    DALYTRAN-PROC-TS: '                          '
+    DALYTRAN-SOURCE: 'POS TERM  '
+    DALYTRAN-TYPE-CD: '01'
+    REJECT-RECORD.REJECT-TRAN-DATA.FILLER#1: '                    '
+    WS-VALIDATION-FAIL-REASON: '102'
+    WS-VALIDATION-FAIL-REASON-DESC: 'OVERLIMIT TRANSACTION                                                       '
+  TRANSACT-BKUP:
+  - TRAN-AMT: '1200.00'
+    TRAN-CARD-NUM: '9680294154603697'
+    TRAN-CAT-CD: '1'
+    TRAN-DESC: 'Synthetic generation roll purchase                                                                  '
+    TRAN-ID: '9300000000000001'
+    TRAN-MERCHANT-CITY: 'Testville                                         '
+    TRAN-MERCHANT-ID: '930000001'
+    TRAN-MERCHANT-NAME: 'Synthetic Merchant 930                            '
+    TRAN-MERCHANT-ZIP: '00930     '
+    TRAN-ORIG-TS: '2022-06-10 09:30:00.000000'
+    TRAN-PROC-TS:
+      match: run-timestamp
+    TRAN-RECORD.FILLER#1: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+    TRAN-SOURCE: 'POS TERM  '
+    TRAN-TYPE-CD: '01'
+file_state:
+  '@CATALOG':
+    contains:
+    - AWS.M2.CARDDEMO.DALYREJS GDG -
+    - AWS.M2.CARDDEMO.DALYREJS GENERATION G0001V00
+    - AWS.M2.CARDDEMO.DALYREJS GENERATION G0002V00
+    - AWS.M2.CARDDEMO.TRANSACT.BKUP GDG -
+    - AWS.M2.CARDDEMO.TRANSACT.BKUP GENERATION G0001V00
+    - AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS CLUSTER -
+messages:
+- STEP STEP15 RC 0000
+- START OF EXECUTION OF PROGRAM CBTRN02C
+- TRANSACTIONS PROCESSED :000000001
+- TRANSACTIONS REJECTED  :000000000
+- END OF EXECUTION OF PROGRAM CBTRN02C
+- STEP STEP05R.PRC001 RC 0000
+- STEP STEP05 RC 0000
+- STEP STEP10 RC 0000
+- STEP STEP15 RC 0004
+- START OF EXECUTION OF PROGRAM CBTRN02C
+- TRANSACTIONS PROCESSED :000000001
+- TRANSACTIONS REJECTED  :000000001
+- END OF EXECUTION OF PROGRAM CBTRN02C
+reject_reason_codes:
+- '0102'
+return_code: 4

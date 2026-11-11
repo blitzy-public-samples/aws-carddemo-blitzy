@@ -4,6 +4,36 @@ These check the harness itself. They are not inventory scenarios and never
 verify an inventory item on their own. They read the committed layouts and
 scenarios and write nothing in the repository.
 
+Instruments every business assertion depends on:
+
+- Layouts: the committed ``tests/inventory/layouts.yaml`` is what the
+  sources generate, holds the 17 maps with field positions and static texts,
+  and gives each record layout the length its copybook's ``RECLN`` comment
+  and the LISTCAT ``MAXLRECL`` of its cluster's DATA component state, both
+  read here independently of the harness.
+- Codec: overpunch-signed zoned decimals decode as ``Decimal`` with their
+  scale (``0000005047G`` = +504.77, ``}`` negative), every field type round
+  trips value to bytes and bytes to value, and cp037 carries the overpunch in
+  zones ``C`` and ``D``.
+- Fixtures: the EBCDIC cross-check finds exactly the two registered
+  mismatches (GAP-DOC-012, GAP-DOC-013), and ASCII lines are padded with
+  spaces to the record length while a longer line is refused.
+- Inventory: ``inventory_tools.py --check`` finds no drift, and the frozen
+  header holds the protected base, the 155 source items and the total.
+- Scenarios, baselines and results match the closed id manifest; every
+  scenario passes the schema, the fixed ids exist, and only the two chain
+  scenarios carry the ``chain`` marker.
+- Gaps: every gap id the scenarios, the inventory, the fixtures, the
+  adapters and the harness cite exists in ``gaps.yaml``, whose entries are
+  unique and well formed, and each seam keeps its ``stub-limitation`` entry
+  (the seam rule).
+- Configuration: the six markers are registered, every ``commands.yaml``
+  entry has a probe, a timeout, a status and a gap (open while unconfirmed),
+  and both adapters implement ``adapters.base.Adapter``.
+- Baselines and the protected tree: the version-bump check against
+  ``--carddemo-baseline-base`` and ``report.py --check-protected`` pass; both
+  need the git history and fail, never skip, without it.
+
 Codec reconstruction over REDEFINES: a record ``decode_record`` decodes must
 encode back to the same bytes in ASCII and cp037, a positive overpunch
 included, and views that describe different bytes must be refused.
@@ -104,11 +134,14 @@ to the post-run unloads.
 
 from __future__ import annotations
 
+import configparser
 import copy
 import dataclasses
 import datetime
 import functools
+import inspect
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -116,6 +149,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import Counter
 from collections.abc import Iterator, Mapping
 from decimal import Decimal
 from pathlib import Path
@@ -135,10 +169,21 @@ from adapters.unikix import bpe, evidence, tpe  # noqa: E402
 from adapters.unikix import env as unikix_env  # noqa: E402
 from adapters.unikix.adapter import UniKixAdapter  # noqa: E402
 from harness import (  # noqa: E402
+    ADAPTERS_DIR,
+    BASELINES_DIR,
+    FIXTURES_FILE,
+    INVENTORY_DIR,
+    PROTECTED_BASE,
+    RESULTS_DIR,
+    SCENARIOS_DIR,
+    TESTS_ROOT,
+    UNIKIX_EVIDENCE_DIR,
     HarnessError,
     baselines,
     codec,
     dump_yaml,
+    fixtures,
+    inventory_tools,
     layouts,
     load_yaml,
     report,
@@ -2820,3 +2865,640 @@ def test_proof_expectation_pins_each_stage_observation(scenario_id: str, mutate,
         assert found == []
     else:
         assert len(found) == 1 and problem in found[0], found
+
+
+# ==========================================================================
+# Instruments: layouts, codec, fixtures, inventory, the id manifest, gaps,
+# configuration, baseline bumps and the protected tree
+# ==========================================================================
+
+# The suite's starting commit, which the inventory header carries as
+# protected_base.
+STARTING_COMMIT = "93ebec71ff7b59a68cedd7c501afe496a8eaa68d"
+
+# A command-line check gets the scenario deadline; each takes seconds.
+CLI_TIMEOUT_S = 300
+
+LISTCAT_FILE = "app/catlg/LISTCAT.txt"
+COPYBOOK_DIR = "app/cpy"
+_RECLN_RE = re.compile(r"RECLN\s*=?\s*(\d+)")
+_MAXLRECL_RE = re.compile(r"MAXLRECL-+(\d+)")
+
+# Copybook -> its record length, the RECLN its second line states, and the
+# VSAM cluster whose DATA component stores it. None where the copybook states
+# no RECLN (CSUSR01Y) or the dataset is sequential (DALYTRAN, CVTRA06Y).
+RECORD_LENGTHS = [
+    pytest.param("CVACT01Y", 300, 300, "ACCTDATA", id="CVACT01Y"),
+    pytest.param("CVACT02Y", 150, 150, "CARDDATA", id="CVACT02Y"),
+    pytest.param("CVCUS01Y", 500, 500, "CUSTDATA", id="CVCUS01Y"),
+    pytest.param("CVTRA06Y", 350, 350, None, id="CVTRA06Y"),
+    pytest.param("CVTRA05Y", 350, 350, "TRANSACT", id="CVTRA05Y"),
+    pytest.param("CVACT03Y", 50, 50, "CARDXREF", id="CVACT03Y"),
+    pytest.param("CVTRA01Y", 50, 50, "TCATBALF", id="CVTRA01Y"),
+    pytest.param("CVTRA02Y", 50, 50, "DISCGRP", id="CVTRA02Y"),
+    pytest.param("CVTRA03Y", 60, 60, "TRANTYPE", id="CVTRA03Y"),
+    pytest.param("CVTRA04Y", 60, 60, "TRANCATG", id="CVTRA04Y"),
+    pytest.param("CSUSR01Y", 80, None, "USRSEC", id="CSUSR01Y"),
+    pytest.param("CUSTREC", 500, 500, "CUSTDATA", id="CUSTREC"),
+]
+
+# The 17 mapsets of app/bms, which are the @map values of formatted screens.
+MAPSETS = (
+    "COSGN00", "COMEN01", "COADM01", "COUSR00", "COUSR01", "COUSR02", "COUSR03",
+    "COACTVW", "COACTUP", "COCRDLI", "COCRDSL", "COCRDUP", "COTRN00", "COTRN01",
+    "COTRN02", "COBIL00", "CORPT00",
+)
+
+
+def _recln_comment(repo_root: Path, stem: str) -> int | None:
+    """The RECLN the copybook's second line states, read from the copybook
+    itself rather than through ``harness.layouts``."""
+    lines = (repo_root / COPYBOOK_DIR / f"{stem}.cpy").read_text(encoding="latin-1").splitlines()
+    match = _RECLN_RE.search(lines[1]) if len(lines) > 1 else None
+    return int(match.group(1)) if match else None
+
+
+def _listcat_maxlrecl(repo_root: Path, cluster: str) -> int:
+    """MAXLRECL of the cluster's DATA component: the first MAXLRECL after the
+    cluster's header, read from LISTCAT itself. A page-break header can stand
+    between the two (the CARDXREF AIX's MAXLRECL follows one)."""
+    text = (repo_root / LISTCAT_FILE).read_text(encoding="latin-1")
+    header = f"CLUSTER ------- AWS.M2.CARDDEMO.{cluster}.VSAM.KSDS"
+    start = text.find(header)
+    assert start >= 0, f"{LISTCAT_FILE} has no {header!r}"
+    assert text.find(header, start + 1) < 0, f"{LISTCAT_FILE} holds {header!r} twice"
+    match = _MAXLRECL_RE.search(text, start + len(header))
+    assert match is not None, f"{LISTCAT_FILE} has no MAXLRECL after {header!r}"
+    return int(match.group(1))
+
+
+@pytest.mark.parametrize(("stem", "length", "recln", "cluster"), RECORD_LENGTHS)
+def test_record_lengths(
+    carddemo_repo_root: Path, stem: str, length: int, recln: int | None, cluster: str | None
+) -> None:
+    layout = layouts.record(stem)
+    assert layout["length"] == length
+    assert _recln_comment(carddemo_repo_root, stem) == recln
+    if recln is not None:
+        assert layout["length"] == recln
+    if cluster is not None:
+        maxlrecl = _listcat_maxlrecl(carddemo_repo_root, cluster)
+        assert layout["length"] == maxlrecl
+        assert layout["listcat"]["cluster"] == f"AWS.M2.CARDDEMO.{cluster}.VSAM.KSDS"
+        assert layout["listcat"]["maxlrecl"] == maxlrecl
+
+
+def test_layouts_file_is_current(carddemo_repo_root: Path) -> None:
+    committed = layouts.load()
+    assert layouts.generate(carddemo_repo_root) == committed, (
+        "tests/inventory/layouts.yaml is not what the sources produce: "
+        "run python tests/harness/layouts.py --write"
+    )
+    screens = committed["screens"]
+    assert sorted(screens) == sorted(MAPSETS)
+    for mapset in MAPSETS:
+        entry = screens[mapset]
+        rows, cols = entry["size"]
+        assert entry["fields"], f"{mapset} has no named field"
+        assert entry["statics"], f"{mapset} has no static text to identify it by"
+        for placed in entry["fields"]:
+            assert placed["name"], f"{mapset}: a field without a name"
+            assert 1 <= placed["row"] <= rows and 1 <= placed["col"] <= cols, (mapset, placed)
+            assert isinstance(placed["length"], int) and placed["length"] >= 1, (mapset, placed)
+        for static in entry["statics"]:
+            assert 1 <= static["row"] <= rows and 1 <= static["col"] <= cols, (mapset, static)
+            assert isinstance(static["text"], str) and static["text"], (mapset, static)
+
+
+# PIC S9(9)V99 with the sign overpunched on its last (units) digit.
+SIGNED_9_V99 = {"type": "zoned-signed", "digits": 11, "scale": 2}
+
+# The overpunch replaces the units digit ({, A-I are +0..9 and }, J-R are
+# -0..9), so -504.70 is 0000005047} and +504.70 is 0000005047{; the texts
+# 0000005040} and 0000005040{ are -504.00 and +504.00, not -504.70 and +504.70.
+OVERPUNCH_EXAMPLES = [
+    pytest.param("0000005047G", Decimal("504.77"), id="G-plus-7"),
+    pytest.param("0000005047P", Decimal("-504.77"), id="P-minus-7"),
+    pytest.param("0000005047}", Decimal("-504.70"), id="close-brace-minus-0"),
+    pytest.param("0000005047{", Decimal("504.70"), id="open-brace-plus-0"),
+]
+
+
+@pytest.mark.parametrize(("text", "value"), OVERPUNCH_EXAMPLES)
+@pytest.mark.parametrize("encoding", ENCODINGS)
+def test_overpunch_examples(encoding: str, text: str, value: Decimal) -> None:
+    raw = text.encode(codec.ENCODINGS[encoding])
+    decoded = codec.decode(raw, SIGNED_9_V99, encoding)
+    assert type(decoded) is Decimal
+    # str keeps the scale, which Decimal equality ignores (504.7 == 504.70).
+    assert str(decoded) == str(value)
+    assert codec.encode(value, SIGNED_9_V99, encoding) == raw
+
+
+def _zoned(digits: int, scale: int, signed: bool) -> dict:
+    return {"type": "zoned-signed" if signed else "zoned", "digits": digits, "scale": scale}
+
+
+def _packed(digits: int, scale: int, signed: bool) -> dict:
+    return {"type": "comp-3", "digits": digits, "scale": scale, "signed": signed}
+
+
+def _binary(digits: int, scale: int, signed: bool) -> dict:
+    return {"type": "binary", "digits": digits, "scale": scale, "signed": signed}
+
+
+POSITIVE_OVERPUNCH = "{ABCDEFGHI"
+NEGATIVE_OVERPUNCH = "}JKLMNOPQR"
+
+# (field, encoding, decoded value, field bytes). Each pair is canonical, as
+# the codec writes it: a non-zero value behind every overpunch character
+# (a negative zero decodes as zero and is written back with '{'), packed
+# signs C and D (F when unsigned), big-endian two's complement binary.
+ROUND_TRIPS = [
+    pytest.param({"type": "alphanumeric", "length": 10}, "ascii", "CARD 01   ", b"CARD 01   ",
+                 id="alphanumeric-trailing-spaces"),
+    pytest.param({"type": "alphanumeric", "length": 4}, "ascii", "    ", b"    ", id="alphanumeric-blank"),
+    pytest.param({"type": "alphanumeric", "length": 4}, "ascii", "A\x00\x00\x00", b"A\x00\x00\x00",
+                 id="alphanumeric-nul-fill"),
+    pytest.param({"type": "alphanumeric", "length": 6}, "cp037", "Ab 1{ ", bytes.fromhex("c18240f1c040"),
+                 id="cp037-text"),
+    pytest.param(_zoned(5, 0, False), "ascii", Decimal("12345"), b"12345", id="zoned"),
+    pytest.param(_zoned(5, 2, False), "ascii", Decimal("123.45"), b"12345", id="zoned-scale-2"),
+    pytest.param(_zoned(5, 2, False), "cp037", Decimal("0.07"), bytes.fromhex("f0f0f0f0f7"), id="zoned-cp037"),
+    *(
+        pytest.param(_zoned(5, 2, True), "ascii", Decimal(f"{sign}1.2{digit}"), f"0012{char}".encode(),
+                     id=f"overpunch-{'plus' if sign == '' else 'minus'}-{digit}")
+        for sign, alphabet in (("", POSITIVE_OVERPUNCH), ("-", NEGATIVE_OVERPUNCH))
+        for digit, char in enumerate(alphabet)
+    ),
+    pytest.param(_zoned(5, 2, True), "cp037", Decimal("-1.25"), bytes.fromhex("f0f0f1f2d5"),
+                 id="overpunch-cp037-minus"),
+    pytest.param(_zoned(5, 2, True), "cp037", Decimal("1.25"), bytes.fromhex("f0f0f1f2c5"),
+                 id="overpunch-cp037-plus"),
+    pytest.param(_packed(5, 0, True), "ascii", Decimal("12345"), bytes.fromhex("12345c"), id="comp-3-plus"),
+    pytest.param(_packed(5, 0, True), "ascii", Decimal("-12345"), bytes.fromhex("12345d"), id="comp-3-minus"),
+    pytest.param(_packed(4, 0, True), "ascii", Decimal("1234"), bytes.fromhex("01234c"),
+                 id="comp-3-even-digits"),
+    pytest.param(_packed(5, 2, True), "ascii", Decimal("0.00"), bytes.fromhex("00000c"), id="comp-3-zero"),
+    pytest.param(_packed(3, 0, False), "ascii", Decimal("123"), bytes.fromhex("123f"), id="comp-3-unsigned"),
+    pytest.param(_packed(9, 2, True), "ascii", Decimal("-1234567.89"), bytes.fromhex("123456789d"),
+                 id="comp-3-scale-2"),
+    pytest.param(_packed(11, 2, True), "cp037", Decimal("12345.67"), bytes.fromhex("00001234567c"),
+                 id="comp-3-cp037"),
+    pytest.param(_binary(4, 0, True), "ascii", Decimal("-2"), bytes.fromhex("fffe"), id="halfword-minus"),
+    pytest.param(_binary(4, 0, True), "ascii", Decimal("1234"), bytes.fromhex("04d2"), id="halfword-plus"),
+    pytest.param(_binary(4, 0, False), "ascii", Decimal("9999"), bytes.fromhex("270f"), id="halfword-unsigned"),
+    pytest.param(_binary(9, 0, True), "ascii", Decimal("-123456789"), bytes.fromhex("f8a432eb"),
+                 id="fullword-minus"),
+    pytest.param(_binary(9, 0, False), "ascii", Decimal("123456789"), bytes.fromhex("075bcd15"),
+                 id="fullword-unsigned"),
+    pytest.param(_binary(7, 2, True), "ascii", Decimal("-1.23"), bytes.fromhex("ffffff85"),
+                 id="fullword-scale-2"),
+    pytest.param(_binary(18, 0, True), "ascii", Decimal("-1"), bytes.fromhex("ff" * 8), id="doubleword-minus"),
+]
+
+
+def _shown(value: object) -> tuple[type, str]:
+    """A decoded value with its type and, for a Decimal, its scale."""
+    return type(value), str(value)
+
+
+@pytest.mark.parametrize(("field", "encoding", "value", "raw"), ROUND_TRIPS)
+def test_round_trips(field: dict, encoding: str, value: str | Decimal, raw: bytes) -> None:
+    decoded = codec.decode(raw, field, encoding)
+    assert _shown(decoded) == _shown(value)
+    assert codec.encode(value, field, encoding) == raw
+    assert codec.encode(decoded, field, encoding) == raw
+    assert _shown(codec.decode(codec.encode(value, field, encoding), field, encoding)) == _shown(value)
+
+
+@pytest.mark.parametrize("digit", range(10))
+def test_cp037_sign_bytes(digit: int) -> None:
+    assert POSITIVE_OVERPUNCH[digit].encode("cp037") == bytes([0xC0 + digit])
+    assert NEGATIVE_OVERPUNCH[digit].encode("cp037") == bytes([0xD0 + digit])
+    # PIC S9(3): +10d and -10d carry zone F on the leading digits and zone C
+    # or D on the units digit.
+    field = _zoned(3, 0, True)
+    plus, minus = bytes([0xF1, 0xF0, 0xC0 + digit]), bytes([0xF1, 0xF0, 0xD0 + digit])
+    assert codec.encode(Decimal(100 + digit), field, "cp037") == plus
+    assert codec.encode(Decimal(-100 - digit), field, "cp037") == minus
+    assert _shown(codec.decode(plus, field, "cp037")) == _shown(Decimal(100 + digit))
+    assert _shown(codec.decode(minus, field, "cp037")) == _shown(Decimal(-100 - digit))
+
+
+# The registered differences between app/data/ASCII and app/data/EBCDIC:
+# (dataset, 1-based record) -> (registered columns, gap).
+REGISTERED_MISMATCHES = {
+    ("ACCTDATA", 49): ((103, 112), "GAP-DOC-012"),
+    ("DISCGRP", 34): ((17, 22), "GAP-DOC-013"),
+}
+
+
+def test_cross_check_registered_mismatches(carddemo_repo_root: Path) -> None:
+    found = fixtures.cross_check(carddemo_repo_root)
+    shown = [f"{m.dataset} record {m.record} columns {m.columns}: {m.describe()} ({m.gap_id})" for m in found]
+    assert sorted((m.dataset, m.record) for m in found) == sorted(REGISTERED_MISMATCHES), shown
+    for mismatch in found:
+        (first, last), gap_id = REGISTERED_MISMATCHES[(mismatch.dataset, mismatch.record)]
+        assert mismatch.gap_id == gap_id, shown
+        # A mismatch spans the columns that differ, inside the registered
+        # field: DISCGRP record 34 differs in columns 19-20 of DIS-INT-RATE.
+        assert first <= mismatch.columns[0] <= mismatch.columns[1] <= last, shown
+    for (dataset, record), (columns, gap_id) in REGISTERED_MISMATCHES.items():
+        registered = fixtures.spec(dataset).registered_mismatches
+        assert [(entry.record, entry.columns, entry.gap_id) for entry in registered] == [
+            (record, columns, gap_id)
+        ]
+
+
+CARDXREF_SOURCE = "app/data/ASCII/cardxref.txt"
+
+
+def test_fixture_padding(carddemo_repo_root: Path, tmp_path: Path) -> None:
+    lines = (carddemo_repo_root / CARDXREF_SOURCE).read_bytes().splitlines()
+    assert lines and {len(line) for line in lines} == {36}
+    assert fixtures.spec("CARDXREF").record_length == 50
+    assert fixtures.repository_dataset("CARDXREF", carddemo_repo_root) == b"".join(
+        line.ljust(50, b" ") for line in lines
+    )
+
+    # A line longer than the record is refused, never truncated: a copy of
+    # the source whose first line is one byte too long, in a repository root
+    # of the test's own.
+    root = tmp_path / "repository"
+    source = root / CARDXREF_SOURCE
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"\n".join([lines[0].ljust(51, b"9"), *lines[1:]]) + b"\n")
+    with pytest.raises(fixtures.FixtureError, match="line 1 is 51 bytes, longer than the 50-byte record"):
+        fixtures.repository_dataset("CARDXREF", root)
+
+
+def _cli(repo_root: Path, script: str, *args: str) -> subprocess.CompletedProcess:
+    """Run ``python tests/harness/<script> <args>`` from the repository root,
+    writing no bytecode into the checkout."""
+    return subprocess.run(
+        [sys.executable, str(repo_root / "tests" / "harness" / script), *args],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=CLI_TIMEOUT_S,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        check=False,
+    )
+
+
+def _assert_passes(completed: subprocess.CompletedProcess) -> None:
+    assert completed.returncode == 0, (
+        f"{' '.join(map(str, completed.args[1:]))} exited {completed.returncode}\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+
+
+def test_inventory_check(carddemo_repo_root: Path) -> None:
+    _assert_passes(_cli(carddemo_repo_root, "inventory_tools.py", "--check"))
+
+
+INVENTORY_ID_RE = re.compile(r"^INV-(SEC|MNU|USR|ACT|CRD|TRN|BIL|RPT|FIN|DAT|UTL|CFG|LAY|DTA|BAT)-\d{3}$")
+SOURCE_ITEMS = {"program": 28, "job": 31, "config": 12, "transaction": 18, "map": 17, "layout": 28, "interface": 21}
+
+
+def test_inventory_header() -> None:
+    inventory = inventory_tools.load()
+    header, items = inventory["header"], inventory["items"]
+    assert header["total"] == len(items)
+    assert header["protected_base"] == STARTING_COMMIT == PROTECTED_BASE
+    assert header["source_items"] == SOURCE_ITEMS
+    assert sum(header["source_items"].values()) == 155
+    ids = [item.get("id") for item in items]
+    assert [item for item in ids if not isinstance(item, str) or not INVENTORY_ID_RE.fullmatch(item)] == []
+    assert sorted(item for item, count in Counter(ids).items() if count > 1) == []
+
+
+
+MANIFEST_SIZES = {"unit": 94, "integration": 40, "e2e": 467}
+# Observed baselines of the starting state: the 71 unit scenarios without a
+# post-open fault and the 29 integration scenarios both adapters run. An
+# imported UniKix run only adds to them.
+OBSERVED_AT_START = 100
+# The scenarios gnucobol-batch can run: each gets a result record once the
+# suite has run in full.
+GNUCOBOL_RUNNABLE = 123
+
+
+def _yaml_stems(folder: Path) -> set[str]:
+    return {path.stem for path in folder.glob("*.yaml")} if folder.is_dir() else set()
+
+
+def _listed(label: str, ids: set[str]) -> list[str]:
+    return [f"{label} ({len(ids)}): {', '.join(sorted(ids)[:20])}"] if ids else []
+
+
+def test_id_manifest() -> None:
+    assert {level: len(scenarios.MANIFEST[level]) for level in scenarios.LEVELS} == MANIFEST_SIZES
+    assert len(scenarios.ALL_IDS) == sum(MANIFEST_SIZES.values()) == 601
+    problems = list(scenarios.check_manifest(TESTS_ROOT))
+
+    for level in scenarios.LEVELS:
+        stems = _yaml_stems(SCENARIOS_DIR / level)
+        problems += _listed(f"scenarios/{level}: ids outside its manifest level", stems - scenarios.MANIFEST[level])
+        problems += _listed(f"scenarios/{level}: manifest ids without a file", scenarios.MANIFEST[level] - stems)
+
+    folders = {path.name for path in BASELINES_DIR.iterdir() if path.is_dir()} if BASELINES_DIR.is_dir() else set()
+    problems += _listed("baselines: directories outside the manifest", folders - scenarios.ALL_IDS)
+    problems += _listed("baselines: manifest ids without a directory", scenarios.ALL_IDS - folders)
+    observed = 0
+    for scenario_id in sorted(folders & scenarios.ALL_IDS):
+        folder = BASELINES_DIR / scenario_id
+        lacking = [name for name in (baselines.EXPECTED_FILE, baselines.MANIFEST_FILE) if not (folder / name).is_file()]
+        if lacking:
+            problems.append(f"baselines/{scenario_id}: lacks {', '.join(lacking)}")
+            continue
+        manifest = load_yaml(folder / baselines.MANIFEST_FILE)
+        platform = manifest.get("capture_platform") if isinstance(manifest, dict) else None
+        raw = sorted((folder / baselines.DATASETS_DIR).glob(f"*{baselines.RAW_SUFFIX}"))
+        if platform == baselines.DERIVED:
+            if raw:
+                problems.append(f"baselines/{scenario_id}: a derived baseline holds {raw[0].name}")
+        else:
+            observed += 1
+    if observed < OBSERVED_AT_START:
+        problems.append(f"baselines: {observed} observed baselines, fewer than the {OBSERVED_AT_START} of the start")
+
+    runnable = {s.id for s in scenarios.load_all() if "gnucobol-batch" in scenarios.capable_adapters(s)}
+    if len(runnable) != GNUCOBOL_RUNNABLE:
+        problems.append(f"gnucobol-batch can run {len(runnable)} scenarios, not {GNUCOBOL_RUNNABLE}")
+    recorded = _yaml_stems(RESULTS_DIR)
+    problems += _listed("reports/results: records outside the manifest", recorded - scenarios.ALL_IDS)
+    problems += _listed(
+        "reports/results: records of scenarios gnucobol-batch cannot run", (recorded & scenarios.ALL_IDS) - runnable
+    )
+    assert problems == [], "\n".join(problems)
+
+
+def _scenario_files() -> list:
+    """One parameter per scenario file on disk, so a file outside the manifest
+    is checked too; ``validate`` refuses it."""
+    return [
+        pytest.param(level, path.name, id=path.stem)
+        for level in scenarios.LEVELS
+        for path in sorted((SCENARIOS_DIR / level).glob("*.yaml"))
+    ]
+
+
+# The parameter is not named `scenario`: conftest deselects a test
+# parametrized over `scenario` that lacks the selected adapter's marker.
+@pytest.mark.parametrize(("level", "file_name"), _scenario_files())
+def test_scenario_schema(level: str, file_name: str) -> None:
+    problems = scenarios.validate(scenarios.load_file(SCENARIOS_DIR / level / file_name, level))
+    assert problems == [], "\n".join(problems)
+
+
+FIXED_SCENARIO_IDS = (
+    "SEC-COSGN00C-normal-01", "SEC-COSGN00C-normal-02",
+    "SEC-COSGN00C-negative-01", "SEC-COSGN00C-negative-02", "SEC-COSGN00C-negative-03",
+    "SEC-COSGN00C-negative-04", "SEC-COSGN00C-negative-05",
+    "SEC-COSGN00C-alternate-01", "SEC-COSGN00C-recovery-01",
+    "MNU-COADM01C-alternate-02",
+    "USR-COUSR01C-normal-01", "USR-COUSR00C-boundary-01", "USR-COUSR00C-boundary-02",
+    "ACT-COACTVWC-recovery-01", "ACT-COACTUPC-alternate-02",
+    "CRD-COCRDUPC-alternate-02", "CRD-COCRDLIC-boundary-01", "CRD-COCRDLIC-boundary-02",
+    "TRN-COTRN02C-normal-01", "TRN-COTRN02C-negative-03",
+    "TRN-COTRN00C-boundary-01", "TRN-COTRN00C-boundary-02",
+    "BIL-COBIL00C-normal-01",
+    "RPT-CORPT00C-normal-01", "RPT-CORPT00C-normal-02", "RPT-CORPT00C-normal-03",
+    "CFG-FCT-normal-01",
+    "BAT-POSTINT-normal-01", "BAT-CHAIN-normal-01",
+)
+
+
+def test_fixed_ids_exist() -> None:
+    level_of = {item: level for level, ids in scenarios.MANIFEST.items() for item in ids}
+    outside = [item for item in FIXED_SCENARIO_IDS if item not in level_of]
+    assert outside == [], f"fixed ids outside the manifest: {outside}"
+    missing = [
+        f"scenarios/{level_of[item]}/{item}.yaml"
+        for item in FIXED_SCENARIO_IDS
+        if not (SCENARIOS_DIR / level_of[item] / f"{item}.yaml").is_file()
+    ]
+    assert missing == [], f"fixed ids without their file: {missing}"
+    assert set(FIXED_SCENARIO_IDS) <= scenarios.FIXED_IDS
+
+
+def test_chain_marker() -> None:
+    chained = sorted(s.id for s in scenarios.load_all() if "chain" in scenarios.marker_names(s))
+    assert chained == ["BAT-CHAIN-normal-01", "BAT-POSTINT-normal-01"]
+
+
+GAPS_FILE = INVENTORY_DIR / "gaps.yaml"
+GAP_ID_RE = re.compile(r"GAP-(DOC|DEF|STB|MIS|INF|UNC)-\d{3}")
+GAP_CATEGORY = {
+    "UNC": "uncertain-purpose",
+    "MIS": "missing-input",
+    "INF": "inferred-not-observed",
+    "STB": "stub-limitation",
+    "DOC": "doc-conflict",
+    "DEF": "suspected-defect",
+}
+GAP_STATUSES = ("open", "closed")
+SEAM_GAPS = tuple(f"GAP-STB-{number:03d}" for number in range(1, 12))
+
+
+def _gap_entries() -> list[dict]:
+    document = load_yaml(GAPS_FILE)
+    assert isinstance(document, dict) and isinstance(document.get("gaps"), list), (
+        f"{GAPS_FILE} must hold a 'gaps' list"
+    )
+    entries = document["gaps"]
+    assert all(isinstance(entry, dict) for entry in entries), f"{GAPS_FILE}: every entry must be a mapping"
+    return entries
+
+
+def _cited_gap_ids() -> dict[str, set[str]]:
+    """Gap id -> where it is cited: each scenario's and inventory item's
+    ``gap_ids``, the fixture definitions, and every adapter and harness
+    source, which raise ``AdapterUnavailable`` and ``MissingPrerequisite``
+    with them."""
+    cited: dict[str, set[str]] = {}
+    for scenario in scenarios.load_all():
+        for gap_id in scenario.gap_ids:
+            cited.setdefault(str(gap_id), set()).add(f"scenario {scenario.id}")
+    for item in inventory_tools.load()["items"]:
+        for gap_id in item.get("gap_ids") or ():
+            cited.setdefault(str(gap_id), set()).add(f"inventory item {item.get('id')}")
+    sources = [
+        *sorted(ADAPTERS_DIR.rglob("*.py")),
+        *sorted(ADAPTERS_DIR.rglob("*.yaml")),
+        *sorted((TESTS_ROOT / "harness").glob("*.py")),
+        FIXTURES_FILE,
+    ]
+    for path in sources:
+        if "__pycache__" in path.parts:
+            continue
+        for match in GAP_ID_RE.finditer(path.read_text(encoding="utf-8")):
+            cited.setdefault(match.group(), set()).add(path.relative_to(TESTS_ROOT).as_posix())
+    return cited
+
+
+def test_gap_ids_exist() -> None:
+    entries = _gap_entries()
+    ids = [entry.get("gap_id") for entry in entries]
+    problems = [f"{gap_id} is defined {count} times" for gap_id, count in Counter(ids).items() if count > 1]
+    for position, entry in enumerate(entries):
+        gap_id = entry.get("gap_id")
+        match = GAP_ID_RE.fullmatch(gap_id) if isinstance(gap_id, str) else None
+        if match is None:
+            problems.append(f"entry {position}: {gap_id!r} is not a gap id GAP-<CAT>-<nnn>")
+            continue
+        category = entry.get("category")
+        if category != GAP_CATEGORY[match.group(1)]:
+            problems.append(f"{gap_id}: category {category!r}, but its prefix names {GAP_CATEGORY[match.group(1)]}")
+        if entry.get("status") not in GAP_STATUSES:
+            problems.append(f"{gap_id}: status {entry.get('status')!r} is not open or closed")
+    known = set(ids)
+    for gap_id, where in sorted(_cited_gap_ids().items()):
+        if gap_id not in known:
+            problems.append(f"{gap_id} is cited by {', '.join(sorted(where)[:5])} but is not in gaps.yaml")
+    assert problems == [], "\n".join(problems)
+
+
+def test_seam_rule() -> None:
+    entries = {entry.get("gap_id"): entry for entry in _gap_entries()}
+    assert sorted(gap_id for _, gap_id in report.SEAMS) == list(SEAM_GAPS)
+    for gap_id in SEAM_GAPS:
+        assert gap_id in entries, f"the seam entry {gap_id} is missing from gaps.yaml"
+        entry = entries[gap_id]
+        assert entry.get("category") == "stub-limitation", (gap_id, entry.get("category"))
+        if entry.get("status") == "closed":
+            evidence = entry.get("resolving_evidence")
+            assert isinstance(evidence, dict), f"{gap_id} is closed without resolving evidence"
+            folder = UNIKIX_EVIDENCE_DIR / str(evidence.get("execution_id"))
+            assert (folder / str(evidence.get("scenario_id")) / report.VALIDATION_FILE).is_file(), (
+                f"{gap_id} is closed on {evidence}, whose validation record is not under tests/reports/unikix/"
+            )
+    # Whether a closing record is current, passed and eligible, and agrees
+    # with the gnucobol-batch outcome, is the seam rule of harness/report.py.
+    assert report.check_seams() == []
+
+
+MARKERS = {"unit", "integration", "e2e", "chain", "gnucobol_batch", "unikix"}
+
+
+def test_markers_registered(pytestconfig: pytest.Config) -> None:
+    # getini("markers") also lists pytest's own markers (skip, xfail,
+    # parametrize, ...), so "exactly these six" holds for the markers the
+    # suite's ini file registers, all of which pytest must have read.
+    ini = configparser.ConfigParser(interpolation=None)
+    ini.read(pytestconfig.inipath, encoding="utf-8")
+    registered = {line.split(":", 1)[0].strip() for line in ini["pytest"]["markers"].splitlines() if line.strip()}
+    assert registered == MARKERS
+    assert MARKERS <= {line.split(":", 1)[0].split("(", 1)[0].strip() for line in pytestconfig.getini("markers")}
+    assert "--strict-markers" in pytestconfig.getini("addopts")
+
+
+COMMANDS_FILE = ADAPTERS_DIR / "unikix" / "commands.yaml"
+COMMAND_STATUSES = ("confirmed", "unconfirmed")
+# The UniKix actions the adapter needs -> the commands.yaml entries that
+# carry them and the missing-input gap they settle once confirmed.
+REQUIRED_COMMANDS = {
+    "build": (("build_kixclt", "build_vcc_online", "build_vcc_batch", "build_kixbms"), "GAP-MIS-008"),
+    "region creation": (("region_create", "region_create_script", "region_install"), "GAP-MIS-003"),
+    "start, stop and quiesce": (("region_start", "region_stop", "region_quiesce_query"), "GAP-MIS-004"),
+    "3270 listener": (("listener_start", "listener_port"), "GAP-MIS-005"),
+    "BPE submission and cancellation": (
+        ("bpe_env", "bpe_system", "bpe_translate", "bpe_submit", "bpe_sysout", "bpe_cancel"),
+        "GAP-MIS-006",
+    ),
+    "dataset load, unload and catalog listing": (("dataset_load", "dataset_unload", "catalog_list"), "GAP-MIS-007"),
+    "region file control and inquiry": (
+        ("region_file_close", "region_file_open", "region_file_disable", "region_file_enable", "region_file_inquire"),
+        "GAP-MIS-011",
+    ),
+    "JOBS capture": (("jobs_capture",), "GAP-MIS-017"),
+    "clock": (("clock_set",), "GAP-MIS-015"),
+}
+
+
+def test_commands_yaml() -> None:
+    document = load_yaml(COMMANDS_FILE)
+    assert isinstance(document, dict) and isinstance(document.get("entries"), dict), (
+        f"{COMMANDS_FILE} must hold an 'entries' mapping"
+    )
+    entries = document["entries"]
+    gaps = {entry.get("gap_id"): entry for entry in _gap_entries()}
+    problems = []
+    for entry_id, entry in entries.items():
+        if not isinstance(entry, dict):
+            problems.append(f"{entry_id}: not a mapping")
+            continue
+        probe, timeout_s, status, gap = (entry.get(key) for key in ("probe", "timeout_s", "status", "gap"))
+        if not isinstance(probe, str) or not probe.strip():
+            problems.append(f"{entry_id}: no probe")
+        if isinstance(timeout_s, bool) or not isinstance(timeout_s, int) or timeout_s <= 0:
+            problems.append(f"{entry_id}: timeout_s {timeout_s!r} is not a positive number of seconds")
+        if status not in COMMAND_STATUSES:
+            problems.append(f"{entry_id}: status {status!r} is not confirmed or unconfirmed")
+        if not isinstance(gap, str) or not GAP_ID_RE.fullmatch(gap) or gap not in gaps:
+            problems.append(f"{entry_id}: gap {gap!r} is not an entry of gaps.yaml")
+        elif status == "unconfirmed" and gaps[gap].get("status") != "open":
+            problems.append(f"{entry_id} is unconfirmed, but its gap {gap} is {gaps[gap].get('status')}")
+    for action, (entry_ids, gap) in REQUIRED_COMMANDS.items():
+        for entry_id in entry_ids:
+            entry = entries.get(entry_id)
+            if not isinstance(entry, dict):
+                problems.append(f"{action}: no entry {entry_id}")
+            elif entry.get("gap") != gap:
+                problems.append(f"{action}: {entry_id} settles {entry.get('gap')!r}, not {gap}")
+    assert problems == [], "\n".join(problems)
+
+
+ADAPTER_METHODS = ("capable", "observations", "prepare", "execute", "cleanup")
+RESULT_FIELDS = ["return_code", "datasets", "screens", "messages", "elapsed_s"]
+ADAPTER_EXCEPTIONS = {base.AdapterUnavailable: ["reason", "gap_id"], base.MissingPrerequisite: ["need", "gap_id"]}
+
+
+def test_adapters_implement_base() -> None:
+    for adapter_class, name in ((GnuCOBOLBatchAdapter, "gnucobol-batch"), (UniKixAdapter, "unikix")):
+        assert issubclass(adapter_class, base.Adapter)
+        assert not inspect.isabstract(adapter_class), sorted(adapter_class.__abstractmethods__)
+        assert adapter_class.name == name
+        for method in ADAPTER_METHODS:
+            assert callable(getattr(adapter_class, method, None)), f"{adapter_class.__name__}.{method}"
+    assert [field.name for field in dataclasses.fields(base.Result)] == RESULT_FIELDS
+    for exception, parameters in ADAPTER_EXCEPTIONS.items():
+        signature = inspect.signature(exception)
+        assert list(signature.parameters) == parameters
+        assert all(parameter.default is inspect.Parameter.empty for parameter in signature.parameters.values())
+        raised = exception("the runtime is absent", "GAP-MIS-009")
+        assert raised.gap_id == "GAP-MIS-009"
+        with pytest.raises(TypeError):
+            exception("the runtime is absent")
+
+
+def _require_commit(repo_root: Path, revision: str) -> None:
+    """Fail, never skip, when ``revision`` is no commit of this clone: the
+    checks compare with history a shallow clone lacks."""
+    completed = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=CLI_TIMEOUT_S,
+        check=False,
+    )
+    if completed.returncode != 0:
+        pytest.fail(
+            f"{revision} is not a commit of this clone's history: fetch the full history "
+            "(git fetch --unshallow, or actions/checkout with fetch-depth: 0) and run again",
+            pytrace=False,
+        )
+
+
+def test_baseline_bumps(carddemo_repo_root: Path, carddemo_baseline_base: str) -> None:
+    _require_commit(carddemo_repo_root, carddemo_baseline_base)
+    _assert_passes(_cli(carddemo_repo_root, "baselines.py", "--check-bumps", "--base", carddemo_baseline_base))
+
+
+def test_protected_tree(carddemo_repo_root: Path) -> None:
+    _require_commit(carddemo_repo_root, inventory_tools.load()["header"]["protected_base"])
+    _assert_passes(_cli(carddemo_repo_root, "report.py", "--check-protected"))
+

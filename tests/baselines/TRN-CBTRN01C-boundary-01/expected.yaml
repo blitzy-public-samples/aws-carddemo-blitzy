@@ -1,0 +1,15 @@
+messages:
+- START OF EXECUTION OF PROGRAM CBTRN01C
+- '9900000000000101010001POS TERM  Synthetic purchase                                                                                  0000000100{900000001Synthetic Test Merchant                           Testville                                         00000     96802941546036972022-07-05 09:15:00.000000                                              '
+- SUCCESSFUL READ OF XREF
+- 'CARD NUMBER: 9680294154603697'
+- 'ACCOUNT ID : 00000000001'
+- 'CUSTOMER ID: 000000001'
+- SUCCESSFUL READ OF ACCOUNT FILE
+- SUCCESSFUL READ OF XREF
+- 'CARD NUMBER: 9680294154603697'
+- 'ACCOUNT ID : 00000000001'
+- 'CUSTOMER ID: 000000001'
+- SUCCESSFUL READ OF ACCOUNT FILE
+- END OF EXECUTION OF PROGRAM CBTRN01C
+return_code: 0
