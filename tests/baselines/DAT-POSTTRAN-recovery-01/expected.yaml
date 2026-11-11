@@ -1,0 +1,66 @@
+# Derived from app/jcl/POSTTRAN.jcl:23,34-38 and
+# app/cbl/CBTRN02C.cbl:194,466-478,562-579,707-733; inferred-not-observed
+# (GAP-INF-011); pinned, never corrected.
+# messages: the STEP15 abend line, then the step's DISPLAY lines. Both records
+# post through the existing TCATBAL key 00000000001/01/0001, so neither shows
+# 'TCATBAL record not found'. The second TRANSACT WRITE repeats the first
+# record's key: file status 22 (numeric, not 9x) shows as NNNN0022, then
+# CEE3ABD ends the step (GAP-MIS-010, GAP-DEF-001). The exact list pins as
+# absent the counts, the end-of-execution line and the close lines; what the
+# UniKix runtime adds at the abend is unknown and left to an imported run.
+# return_code null: the only step abended.
+# @CATALOG: DISP=(NEW,CATLG,DELETE) deletes DALYREJS(+1) at the abend, so the
+# catalog is the post-deployment snapshot the adapter restores before the run.
+# Priority decision: the snapshot is derived as the entries of the zip's
+# migrated_app/catlg/bpe BPECAT.cluster.csv, BPECAT.gdg_base.csv and
+# BPECAT.nonvsam.csv within LISTCAT LEVEL(AWS) (SYS1.LINKLIB is outside it),
+# plus AWS.M2.CARDDEMO.DATEPARM, which define_staging catalogues; the CDTEST
+# test datasets are never listed. Only the whole listing states that the
+# DALYREJS GDG base holds no generation; an imported UniKix listing replaces it.
+file_state:
+  '@CATALOG':
+  - AWS.M2.CARDDEMO.ACCTDATA.PS NONVSAM -
+  - AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS CLUSTER -
+  - AWS.M2.CARDDEMO.BMS NONVSAM -
+  - AWS.M2.CARDDEMO.CARDDATA.PS NONVSAM -
+  - AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS CLUSTER -
+  - AWS.M2.CARDDEMO.CARDXREF.PS NONVSAM -
+  - AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS CLUSTER -
+  - AWS.M2.CARDDEMO.CBL NONVSAM -
+  - AWS.M2.CARDDEMO.CNTL NONVSAM -
+  - AWS.M2.CARDDEMO.CPY NONVSAM -
+  - AWS.M2.CARDDEMO.CUSTDATA.PS NONVSAM -
+  - AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS CLUSTER -
+  - AWS.M2.CARDDEMO.DALYREJS GDG -
+  - AWS.M2.CARDDEMO.DALYTRAN.PS NONVSAM -
+  - AWS.M2.CARDDEMO.DALYTRAN.PS.INIT NONVSAM -
+  - AWS.M2.CARDDEMO.DATEPARM NONVSAM -
+  - AWS.M2.CARDDEMO.DISCGRP.PS NONVSAM -
+  - AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS CLUSTER -
+  - AWS.M2.CARDDEMO.JCL NONVSAM -
+  - AWS.M2.CARDDEMO.LOADLIB NONVSAM -
+  - AWS.M2.CARDDEMO.PROC NONVSAM -
+  - AWS.M2.CARDDEMO.SYSTRAN GDG -
+  - AWS.M2.CARDDEMO.TCATBALF.BKUP GDG -
+  - AWS.M2.CARDDEMO.TCATBALF.PS NONVSAM -
+  - AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS CLUSTER -
+  - AWS.M2.CARDDEMO.TRANCATG.PS NONVSAM -
+  - AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS CLUSTER -
+  - AWS.M2.CARDDEMO.TRANREPT GDG -
+  - AWS.M2.CARDDEMO.TRANSACT.BKUP GDG -
+  - AWS.M2.CARDDEMO.TRANSACT.COMBINED GDG -
+  - AWS.M2.CARDDEMO.TRANSACT.DALY GDG -
+  - AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS CLUSTER -
+  - AWS.M2.CARDDEMO.TRANTYPE.PS NONVSAM -
+  - AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS CLUSTER -
+  - AWS.M2.CARDDEMO.TRXFL.SEQ NONVSAM -
+  - AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS CLUSTER -
+  - AWS.M2.CARDDEMO.USRSEC.PS NONVSAM -
+  - AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS CLUSTER -
+messages:
+- STEP STEP15 ABEND
+- START OF EXECUTION OF PROGRAM CBTRN02C
+- ERROR WRITING TO TRANSACTION FILE
+- 'FILE STATUS IS: NNNN0022'
+- ABENDING PROGRAM
+return_code: null
