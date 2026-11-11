@@ -27,6 +27,7 @@ import {
   exists,
   fencedBlocks,
   formatError,
+  intAboveSafe,
   intStrict,
   isTotalsRow,
   listFiles,
@@ -444,11 +445,15 @@ function checkEpicPairTable(depMap, derived, storyTable, add) {
 }
 
 // Phase 4: wave placement and ordering.
-/** Level-2 wave sections (## W0 …), each ending before the next heading of level 1 or 2. */
+/**
+ * Level-2 wave sections (## W0 …), each ending before the next heading of level 1 or 2.
+ * `wave` is the wave number, or null when it is above Number.MAX_SAFE_INTEGER and so has no
+ * exact value to order by.
+ */
 function waveSections(plan) {
   return sections(plan, 2).flatMap((s) => {
     const m = /^W(\d+)\b/.exec(plainText(s.heading));
-    return m ? [{ wave: Number(m[1]), label: `W${m[1]}`, startLine: s.startLine, text: s.text }] : [];
+    return m ? [{ wave: intStrict(m[1]), label: `W${m[1]}`, startLine: s.startLine, text: s.text }] : [];
   });
 }
 
@@ -459,6 +464,10 @@ function placeStories(plan, add) {
   if (waves.length === 0) add(PLAN, 1, 'no wave sections ("## W0 …") found');
   const firstSection = new Map();
   for (const wave of waves) {
+    if (wave.wave === null) {
+      add(PLAN, wave.startLine, `wave section ${wave.label} has a wave number above ${Number.MAX_SAFE_INTEGER}, the largest integer this check compares; its stories are not placed`);
+      continue;
+    }
     if (firstSection.has(wave.wave)) {
       add(PLAN, wave.startLine, `second section for wave ${wave.label} (first at line ${firstSection.get(wave.wave)})`);
     } else {
@@ -482,9 +491,13 @@ function placeStories(plan, add) {
           add(PLAN, line, `wave ${wave.label} row: Story cell ${story.error}`);
           return;
         }
-        const position = intStrict(plainText(row[iPosition]));
+        const positionText = plainText(row[iPosition]);
+        const position = intStrict(positionText);
         if (position === null) {
-          add(PLAN, line, `wave ${wave.label} row ${story.id}: position "${plainText(row[iPosition])}" is not an integer`);
+          const problem = intAboveSafe(positionText)
+            ? `is above ${Number.MAX_SAFE_INTEGER}, the largest integer this check compares`
+            : 'is not an integer';
+          add(PLAN, line, `wave ${wave.label} row ${story.id}: position "${positionText}" ${problem}`);
           return;
         }
         const prior = placed.get(story.id);

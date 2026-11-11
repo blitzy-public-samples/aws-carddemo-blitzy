@@ -2803,16 +2803,33 @@ export function parseMetadata(sectionText) {
 }
 
 /**
- * Text of ASCII digits only, after trimming, converted with Number, else null: '12' → 12;
- * '1-2', 'TBD', '' and '5 files' → null. There is no finite or safe-integer validation,
- * so a long digit run gives Infinity or a rounded unsafe integer; callers needing exact
- * values check the digit length or Number.isSafeInteger themselves.
+ * Text of ASCII digits only, after trimming, as a safe integer, else null: '12' → 12 and
+ * '007' → 7; '1-2', 'TBD', '' and '5 files' → null. A digit run whose value is above
+ * Number.MAX_SAFE_INTEGER also gives null, because Number would round it or turn it into
+ * Infinity and two different digit runs would then read as one value; every value this
+ * returns is exact. intAboveSafe tells that case apart from text that is not a digit run.
  * @param {unknown} s
  * @returns {number | null}
  */
 export function intStrict(s) {
   const t = String(s ?? '').trim();
-  return /^\d+$/.test(t) ? Number(t) : null;
+  if (!/^\d+$/.test(t) || intAboveSafe(t)) return null;
+  return Number(t);
+}
+
+/**
+ * Whether text, after trimming, is a run of ASCII digits whose value is above
+ * Number.MAX_SAFE_INTEGER: the digit runs intStrict reads as null for their size rather
+ * than their form. Leading zeros do not count; the significant digits are judged by their
+ * length before Number() reads them, so a run of any length is decided exactly.
+ * @param {unknown} s
+ * @returns {boolean}
+ */
+export function intAboveSafe(s) {
+  const t = String(s ?? '').trim();
+  if (!/^\d+$/.test(t)) return false;
+  const digits = t.replace(/^0+(?=\d)/, '');
+  return digits.length > 16 || !Number.isSafeInteger(Number(digits));
 }
 
 /**

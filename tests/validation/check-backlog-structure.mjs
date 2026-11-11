@@ -99,6 +99,7 @@ import {
   linkInCell,
   metadataEntries,
   intStrict,
+  intAboveSafe,
   plainText,
   unescapeInline,
   report,
@@ -1757,6 +1758,16 @@ function checkSourceBody(story, text, lines, v) {
   const bodyHidden = hiddenLines(quotedBody);
   const shownLines = renderedBodyLines(quotedBody, bodyLines);
   const quoted = quotedSourceLines(lines, source, bodyHidden);
+  // A blank line without ">" between the first and the last quoted line ends the blockquote,
+  // fenced or not; the blank lines before and after the body stand outside it, and a
+  // non-blank line without ">" is reported above.
+  const firstMarked = quoted.findIndex((q) => q.marked);
+  const lastMarked = quoted.findLastIndex((q) => q.marked);
+  for (let k = firstMarked + 1; k < lastMarked; k++) {
+    if (!quoted[k].marked && quoted[k].text === '') {
+      v.push({ path: rel, line: offset + k + 1, message: 'reproduced source body line is blank and not quoted, which ends the blockquote and splits the body in two; a blank line inside the body carries ">"' });
+    }
+  }
   checkSourceRecord(story, quoted, source.startLine, v);
   const bodyHeadings = parseHeadings(quotedBody);
   let maxIndex = -1;
@@ -2026,9 +2037,11 @@ function unexpectedBodyHeading(heading) {
 
 /**
  * The reproduced source body line by line with one blockquote level removed:
- * { raw, text, fenced, note }, element k - 1 being stripped body line k. `raw` is the line
- * without its quotation markup (the indentation before one ">", the ">" and the space or
+ * { raw, text, marked, fenced, note }, element k - 1 being stripped body line k. `raw` is the
+ * line without its quotation markup (the indentation before one ">", the ">" and the space or
  * tab after it), trailing whitespace kept; `text` is `raw` with trailing whitespace trimmed.
+ * `marked` is whether the line carried that markup, so an unquoted blank line, which ends the
+ * blockquote, stays distinct from a quoted ">" blank line although both have `text` "".
  * `note` marks a line of a "> SCOPE-QUESTION" note, Open or Resolved. A note at the body's
  * left margin, or indented by spaces or tabs as a paragraph of a list item
  * (">     SCOPE-QUESTION …"), is its paragraph, up to the next blank quoted line or the next
@@ -2042,6 +2055,7 @@ function quotedSourceLines(lines, source, fences) {
   const out = [];
   let note = null;
   for (let l = source.startLine + 1; l <= source.endLine; l++) {
+    const marked = ONE_QUOTE_RE.test(lines[l - 1]);
     const raw = lines[l - 1].replace(ONE_QUOTE_RE, '');
     const text = raw.trimEnd();
     const fenced = fences.has(l - source.startLine);
@@ -2058,7 +2072,7 @@ function quotedSourceLines(lines, source, fences) {
       if (TOP_NOTE_RE.test(text) || INDENTED_NOTE_RE.test(text)) note = { prefix: null };
       else if (nested) note = { prefix: nested[1] };
     }
-    out.push({ raw, text, fenced, note: note !== null });
+    out.push({ raw, text, marked, fenced, note: note !== null });
   }
   return out;
 }
@@ -3402,7 +3416,10 @@ function checkMetadata(story, text, ctx, v) {
   }
   const files = value('Estimated Files Touched');
   if (files !== null && intStrict(files) === null) {
-    v.push({ ...at('Estimated Files Touched'), message: `Estimated Files Touched "${files}" is not a single integer` });
+    const problem = intAboveSafe(files)
+      ? `is above ${Number.MAX_SAFE_INTEGER}, the largest integer this check compares`
+      : 'is not a single integer';
+    v.push({ ...at('Estimated Files Touched'), message: `Estimated Files Touched "${files}" ${problem}` });
   }
   const wave = value('Build wave');
   if (wave !== null && !WAVES.has(wave)) v.push({ ...at('Build wave'), message: `Build wave "${wave}" is not one of W0, W1, W2, W3` });
@@ -3465,7 +3482,8 @@ function metadataValueForm(field, value, epicName) {
       return /^W\d+$/.test(value);
     case 'Story Points':
     case 'Estimated Files Touched':
-      return intStrict(value) !== null;
+      // A digit run above the safe-integer range is still written as a count.
+      return intStrict(value) !== null || intAboveSafe(value);
     case 'Depends on':
       return value === 'None' || value === 'N/A' || value.split(',').every((m) => DEPENDS_ON_ID_RE.test(m.trim()));
     case 'Epic Link':

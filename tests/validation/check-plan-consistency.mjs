@@ -77,6 +77,7 @@ import {
   parseLinks,
   parseMetadata,
   intStrict,
+  intAboveSafe,
   fencedBlocks,
   plainText,
   report,
@@ -191,21 +192,38 @@ function norm(cell) {
     .trim();
 }
 
-/** Integer value of a cell; a cell that is not a plain integer is reported and gives null. */
+// Past Number.MAX_SAFE_INTEGER a number no longer holds every integer exactly, so a stated
+// value or a sum past it is reported with that bound, never compared or printed as a number.
+const ABOVE_SAFE = `above ${Number.MAX_SAFE_INTEGER}, the largest integer this check compares`;
+const SUM_ABOVE_SAFE = `more than ${Number.MAX_SAFE_INTEGER}`;
+
+/**
+ * Integer value of a cell; a cell that is not a plain integer, or whose integer is above
+ * Number.MAX_SAFE_INTEGER, is reported and gives null.
+ */
 function cellInt(path, line, cell, what) {
-  const value = intStrict(norm(cell));
-  if (value === null) fail(path, line, `${what} is not an integer: "${norm(cell)}"`);
+  const text = norm(cell);
+  const value = intStrict(text);
+  if (value === null) fail(path, line, `${what} is ${intAboveSafe(text) ? ABOVE_SAFE : 'not an integer'}: "${text}"`);
   return value;
 }
 
-/** Sum of values, or null when any value is missing (that value is reported where it is read). */
+/**
+ * Sum of values, or null when any value is missing (that value is reported where it is read).
+ * A sum above Number.MAX_SAFE_INTEGER is returned as SUM_ABOVE_SAFE, text no stated integer
+ * equals: every comparison with it reports a difference and prints the bound, never a rounded sum.
+ */
 function sumOrNull(values) {
   let sum = 0;
+  let above = false;
   for (const v of values) {
     if (v == null) return null;
-    sum += v;
+    if (!above) {
+      sum += v;
+      above = !Number.isSafeInteger(sum);
+    }
   }
-  return sum;
+  return above ? SUM_ABOVE_SAFE : sum;
 }
 
 const waveSet = (text) => [...new Set(String(text ?? '').match(WAVE_ID_G) ?? [])].sort();
@@ -685,7 +703,11 @@ function checkCountCell(path, totalsRow, expected, what, noun) {
     fail(path, totalsRow.line, `${what} totals row count cell "${text}" does not read ${form}; the count is ${expected}`);
     return;
   }
-  if (Number(m[1]) !== expected) {
+  // COUNT_CELL_RE admits only digit runs, so a null count is one above the safe-integer range.
+  const count = intStrict(m[1]);
+  if (count === null) {
+    fail(path, totalsRow.line, `${what} totals row count cell "${text}" states a count ${ABOVE_SAFE}; the count is ${expected}`);
+  } else if (count !== expected) {
     fail(path, totalsRow.line, `${what} totals row states "${text}", but the count is ${expected}`);
   }
 }
@@ -1095,9 +1117,13 @@ function checkTotalsLine(plan, id, sec, table, stated) {
     return;
   }
   if (`W${m[1]}` !== id) fail(PLAN, n, `totals line names W${m[1]}, but it closes the ${id} section`);
-  const line = { stories: Number(m[2]), points: Number(m[3]), files: Number(m[4]) };
+  const raw = { stories: m[2], points: m[3], files: m[4] };
+  const line = { stories: intStrict(raw.stories), points: intStrict(raw.points), files: intStrict(raw.files) };
   for (const key of ['stories', 'points', 'files']) {
-    if (stated[key] !== null && line[key] !== stated[key]) {
+    // TOTALS_LINE_RE admits only digit runs, so a null value is one above the safe-integer range.
+    if (line[key] === null) {
+      fail(PLAN, n, `${id} totals line states ${LABEL[key]} "${raw[key]}", ${ABOVE_SAFE}`);
+    } else if (stated[key] !== null && line[key] !== stated[key]) {
       fail(PLAN, n, `${id} totals line states ${LABEL[key]} ${line[key]}, but its story table has ${stated[key]}`);
     }
   }
@@ -1557,7 +1583,8 @@ function checkRepresentedTables(plan, backlog, summaryTable, epicsTable) {
     const m = /\b(\d+) files touched\b/i.exec(s);
     const sum = has(files) ? sumOrNull(body.map((r) => intStrict(norm(r.cells[files])))) : null;
     if (m === null) fail(PLAN, n, `${what} totals line "${s}" does not state its estimated files touched sum`);
-    else if (sum !== null && Number(m[1]) !== sum) {
+    else if (intStrict(m[1]) === null) fail(PLAN, n, `${what} totals line states estimated files touched "${m[1]}", ${ABOVE_SAFE}`);
+    else if (sum !== null && intStrict(m[1]) !== sum) {
       fail(PLAN, n, `${what} totals line states estimated files touched ${m[1]}, but its rows sum to ${sum}`);
     }
   }
