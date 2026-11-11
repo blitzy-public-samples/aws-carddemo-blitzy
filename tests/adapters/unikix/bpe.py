@@ -21,7 +21,11 @@ a job is waited for ``DEFAULT_DEADLINE_S`` seconds at most, and a job still
 running then is a missing capability (GAP-MIS-006). A submission whose job
 number cannot be read stays recorded until ``cancel_unfinished`` finds it
 among the node's active jobs and cancels it, and no other job is submitted
-meanwhile.
+meanwhile. ``cancel_unfinished`` and ``confirm_no_active_jobs`` take a
+scenario deadline as well: with one (the quiescence check before a
+scenario) their commands are capped at the time left and its expiry is
+``ScenarioTimeout``; without one (cleanup after a timeout or a failure,
+when it may have passed) only their own ``timeout_s`` bounds them.
 
 The outcome of a job is read from its sysout files only: step return codes,
 abends and the program ``DISPLAY`` lines. An application outcome is never
@@ -1116,6 +1120,11 @@ class BatchService:
         self._models: dict[str, list[tuple[str, list[str]]]] = {}
         self._staging_defined = False
 
+    @property
+    def pending(self) -> bool:
+        """Whether a submitted or adopted job is not seen completed, or a submission unidentified."""
+        return bool(self._unfinished or self._unidentified)
+
     # ------------------------------------------------------------- paths
 
     def _var(self, name: str) -> str:
@@ -1354,6 +1363,34 @@ class BatchService:
             if record.get("kind") == "run" and record.get("id") == entry_id
         ]
         return bool(outcomes) and all(outcome in ("refused", "not-started") for outcome in outcomes)
+
+    def adopt(self, card_name: str, job_number: str, entry_id: str) -> JobRun:
+        """Register a job this service did not submit, such as one the TPE
+        region submitted through the TDQ ``JOBS``, as unfinished, and return
+        its ``JobRun``: ``wait`` then follows it like a submitted job, and
+        ``cancel_unfinished`` cancels it while it is not seen completed.
+
+        ``card_name`` is the name on its JOB card, which BPE reports, and
+        serves as its ``name`` and ``member`` too; ``job_number`` is its BPE
+        job number in ASCII decimal digits, kept without leading zeros as
+        ``submit`` keeps it; ``entry_id`` is the entry that found the job. A
+        number already registered returns its registered run. The number does
+        not join ``take_job_numbers``, because the caller found it and records
+        it, and it does not move the window ``_reconcile`` searches. A blank
+        name or a number that is not one is a ``HarnessError``."""
+        if not isinstance(card_name, str) or not card_name.strip():
+            raise HarnessError(f"an adopted job needs its JOB card name, got {card_name!r}")
+        if not (isinstance(job_number, str) and job_number.isascii() and job_number.isdecimal()):
+            raise HarnessError(
+                f"an adopted job needs a BPE job number of decimal digits, got {job_number!r}"
+            )
+        number = str(int(job_number))
+        registered = self._unfinished.get(number)
+        if registered is not None:
+            return registered
+        run = JobRun(card_name, card_name, card_name, entry_id, number)
+        self._unfinished[number] = run
+        return run
 
     def wait(self, run: JobRun, deadline: float | None = None) -> JobRun:
         """Poll ``bpe_sysout`` once per ``poll_interval`` until the sysout of
@@ -1795,20 +1832,24 @@ class BatchService:
                 break
         return BatchOutcome.of(runs)
 
-    def cancel_unfinished(self) -> None:
-        """Cancel every submitted job not seen completed (``bpe_cancel``),
-        reconcile every unidentified submission with the node's active jobs
-        (``_reconcile``), then confirm that BPE lists no unfinished job. It
-        runs after a scenario's deadline may have passed, so its commands are
-        bounded by their own ``timeout_s`` only."""
+    def cancel_unfinished(self, *, deadline: float | None = None) -> None:
+        """Cancel every submitted or adopted job not seen completed
+        (``bpe_cancel``), reconcile every unidentified submission with the
+        node's active jobs (``_reconcile``), then confirm that BPE lists no
+        unfinished job. With a scenario ``deadline`` (the quiescence check
+        before a scenario) every command is capped at the time left, and its
+        expiry is ``ScenarioTimeout``; without one (cleanup after a timeout or
+        a failure, when it may have passed) only their own ``timeout_s``
+        bounds them."""
+        budget = _Budget(deadline)
         for number in list(self._unfinished):
-            self.commands.run("bpe_cancel", self.env, job_number=number)
+            self._run("bpe_cancel", budget, job_number=number)
             self._unfinished.pop(number, None)
         if self._unidentified:
-            self._reconcile()
-        self.confirm_no_active_jobs()
+            self._reconcile(budget)
+        self._confirm_no_active_jobs(budget)
 
-    def _reconcile(self) -> None:
+    def _reconcile(self, budget: _Budget) -> None:
         """Find each unidentified submission among the jobs ``bpe_active_jobs``
         lists, and cancel it.
 
@@ -1826,10 +1867,11 @@ class BatchService:
         listing that fails or that ``_active_jobs`` cannot read line by line
         is ``AdapterUnavailable`` (GAP-MIS-006) as well, raised before any
         attempt is resolved, so every attempt is kept and submit keeps
-        refusing."""
+        refusing. Its commands run within ``budget``, as ``cancel_unfinished``
+        bounds them."""
         attempts = "; ".join(f"the submission of {attempt.label}" for attempt in self._unidentified)
         try:
-            active = self._active_jobs()
+            active = self._active_jobs(budget)
         except AdapterUnavailable as exc:
             raise AdapterUnavailable(
                 f"the BPE job of {attempts} cannot be identified: {exc.reason}", _GAP_SUBMISSION
@@ -1858,7 +1900,7 @@ class BatchService:
                 )
             else:
                 if candidates:
-                    self.commands.run("bpe_cancel", self.env, job_number=candidates[0])
+                    self._run("bpe_cancel", budget, job_number=candidates[0])
                     self._job_numbers.append(candidates[0])
                     self._last_number = int(candidates[0])
                 self._unidentified.remove(attempt)
@@ -1869,26 +1911,36 @@ class BatchService:
                 _GAP_SUBMISSION,
             )
 
-    def confirm_no_active_jobs(self) -> None:
+    def confirm_no_active_jobs(self, *, deadline: float | None = None) -> None:
         """Half of the quiescence check: ``bpe_active_jobs`` must list no
         unfinished job, else ``AdapterUnavailable`` (GAP-MIS-004). When it
         lists none, no job of the test-owned node can still change a dataset,
         so every unidentified submission is resolved as well. Only an empty or
         all-blank listing lists none: one that fails, or that ``_active_jobs``
         cannot read line by line, is ``AdapterUnavailable`` (GAP-MIS-004) and
-        leaves every unidentified submission unresolved."""
-        listed = [f"{name or '?'} ({number})" for number, name in self._active_jobs()]
+        leaves every unidentified submission unresolved. With a scenario
+        ``deadline`` the listing is capped at the time left, and its expiry is
+        ``ScenarioTimeout``; without one (cleanup after a timeout or a
+        failure, when it may have passed) only its own ``timeout_s`` bounds
+        it."""
+        self._confirm_no_active_jobs(_Budget(deadline))
+
+    def _confirm_no_active_jobs(self, budget: _Budget) -> None:
+        """``confirm_no_active_jobs`` with its listing run within ``budget``."""
+        listed = [f"{name or '?'} ({number})" for number, name in self._active_jobs(budget)]
         if listed:
             raise AdapterUnavailable(
                 f"BPE still lists unfinished jobs: {', '.join(listed)}", _GAP_QUIESCENCE
             )
         self._unidentified.clear()
 
-    def _active_jobs(self) -> list[tuple[str, str | None]]:
+    def _active_jobs(self, budget: _Budget) -> list[tuple[str, str | None]]:
         """The unfinished jobs ``bpe_active_jobs`` lists, in its order, as
         ``(job number, name)``: the number without leading zeros, as
         ``JobRun.job_number`` holds it, and the name ``None`` when the line
-        gives none.
+        gives none. The listing runs within ``budget``: capped at the time
+        left before its scenario deadline, whose expiry is ``ScenarioTimeout``,
+        or bounded by its own ``timeout_s`` only without one.
 
         The listing is one job per line. Blank lines are ignored, and every
         other line must be one that ``parse.job`` reads, searched within that
@@ -1898,7 +1950,7 @@ class BatchService:
         listing unreadable rather than a job left out. That, a listed number
         that is not one, and a command failure are ``AdapterUnavailable``
         under the entry's gap (GAP-MIS-004)."""
-        output = self.commands.run("bpe_active_jobs", self.env).stdout
+        output = self._run("bpe_active_jobs", budget).stdout
         pattern = self._regex("bpe_active_jobs", "job")
         jobs: list[tuple[str, str | None]] = []
         for line in output.splitlines():
@@ -2001,10 +2053,12 @@ class BatchService:
             raise HarnessError(f"{dsn} has no file at {path}: define_staging has not run")
         return path
 
-    def write_sequential(self, logical: str, data: bytes) -> None:
-        """Write a non-VSAM precondition as exact fixed-length records, without
-        terminators, to the dataset's ``$SEQFILES`` file, the physical form
-        of the zip's own ``data/seqfiles``."""
+    def _nonvsam(self, logical: str, data: bytes) -> DatasetResource:
+        """The non-VSAM dataset ``logical``, once ``data`` is whole records of
+        it and a precondition can provide it: ``HarnessError`` for another
+        kind or a partial record, ``MissingPrerequisite`` (GAP-MIS-007) for a
+        dataset that nothing in ``_PRECATALOGUED`` catalogues, such as one
+        only an application job's step catalogues."""
         dataset = self.resources.dataset(logical)
         if dataset.kind != "nonvsam":
             raise HarnessError(f"{logical} is a {dataset.kind}, not a non-VSAM dataset")
@@ -2015,6 +2069,20 @@ class BatchService:
                 f"precondition can provide it before that job runs",
                 _GAP_DATASETS,
             )
+        return dataset
+
+    def check_sequential(self, logical: str, data: bytes) -> None:
+        """Make every check ``write_sequential`` makes of a non-VSAM
+        precondition, and write nothing, so that a caller can refuse a
+        dataset no precondition can provide before any reset work."""
+        self._nonvsam(logical, data)
+
+    def write_sequential(self, logical: str, data: bytes) -> None:
+        """Write a non-VSAM precondition as exact fixed-length records, without
+        terminators, to the dataset's ``$SEQFILES`` file, the physical form
+        of the zip's own ``data/seqfiles``, after the checks of
+        ``check_sequential``."""
+        dataset = self._nonvsam(logical, data)
         path = self._checked(Path(self._expand(dataset.path or "")), f"the file of {dataset.dsn}")
         self._write_file(path, bytes(data))
 

@@ -18,12 +18,14 @@ Session
     raised again for every later scenario.
 Observations
     Before the session, every observation is declared, so that ``prepare``
-    raises the real cause (GAP-MIS-009 without UniKix). Afterwards only those
-    whose ``commands.yaml`` entries probed available are: datasets,
-    ``@AIX:<path>`` and ``@CATALOG`` through BPE jobs (GAP-MIS-007),
-    ``@REGION-FILES`` through ``region_file_inquire`` (GAP-MIS-011),
-    ``@TDQ:JOBS`` through ``jobs_capture`` (GAP-MIS-017) and screens through
-    the checked loopback listener and ``s3270`` (GAP-MIS-005).
+    raises the real cause (GAP-MIS-009 without UniKix). A blocked session
+    declares every observation too, so that its GAP-MIS-004 cause is raised.
+    Otherwise only those whose ``commands.yaml`` entries probed available
+    are: datasets, ``@AIX:<path>`` and ``@CATALOG`` through BPE jobs
+    (GAP-MIS-007), ``@REGION-FILES`` through ``region_file_inquire``
+    (GAP-MIS-011), ``@TDQ:JOBS`` through ``jobs_capture`` (GAP-MIS-017) and
+    screens through the checked loopback listener and ``s3270``
+    (GAP-MIS-005).
 Before each scenario
     Quiescence is confirmed (no active region task, no unfinished BPE job),
     then the region is reset: its files closed, every cluster of
@@ -31,9 +33,20 @@ Before each scenario
     the catalog restored to the snapshot, sequential and GDG preconditions
     written, batch ``open``/``unavailable`` faults applied, ``JOBS`` emptied
     and enabled, every file reopened and enabled. A missing command raises
-    ``AdapterUnavailable`` with its own gap. A step that was attempted and
-    could not be confirmed stops the region and raises GAP-MIS-004 for this
-    and every remaining scenario of the session.
+    ``AdapterUnavailable`` with its own gap, and a sequential dataset no
+    precondition can provide raises ``MissingPrerequisite``, both before
+    any of this is attempted.
+After each scenario
+    Every ``s3270`` session is ended. After each scenario that reached the
+    region, whatever it returned, unfinished BPE jobs are cancelled and
+    quiescence is confirmed again; the scenario's own outcome stands.
+Blocked session
+    A reset or quiescence check that was attempted and not confirmed, by a
+    failure, a timeout or a missing prerequisite, stops the region and
+    blocks the session: every remaining scenario raises GAP-MIS-004. A reset
+    ended by ``AdapterUnavailable``, ``HarnessError`` or ``OSError`` raises
+    GAP-MIS-004 for its own scenario too; one ended by a timeout or another
+    error keeps that outcome.
 Outcomes
     A command whose probe failed, that exits non-zero or exceeds its own
     ``timeout_s`` is ``AdapterUnavailable`` with its entry's gap; expiry of
@@ -88,7 +101,6 @@ from adapters.base import (  # noqa: E402
     AdapterUnavailable,
     MissingPrerequisite,
     Result,
-    ScenarioTimeout,
     format_fixed_records,
     format_region_files,
     required_observations,
@@ -129,6 +141,8 @@ _TDQ_CONTROL = ("tdq_empty", "tdq_enable")
 _REGION_RESTART = ("region_stop", "region_start")
 _BPE_RESTART = ("bpe_stop", "bpe_start")
 _SESSION_STARTS = ("region_start", "bpe_start", "bpe_system")
+# The adapter attribute that flags what each session start may have started.
+_START_FLAGS = {"region_start": "_region_started", "bpe_start": "_bpe_started"}
 
 # An online fault without `after` is applied before this step index, i.e.
 # after the sign-on step (AAP 0.4.3 "Online fault mechanisms").
@@ -465,6 +479,20 @@ def _again(error: BaseException) -> BaseException:
     return copy
 
 
+def _never_started(commands: unikix_env.CommandSet, entry_id: str, mark: int) -> bool:
+    """Whether the run of ``entry_id`` logged after ``mark`` certainly started
+    nothing: it was logged, and only as ``refused`` or ``not-started``. A run
+    that started may have launched a daemon, and so may one the log does not
+    show, since a run interrupted before its outcome was logged leaves no
+    record either."""
+    outcomes = [
+        record.get("outcome")
+        for record in commands.log_since(mark)
+        if record.get("kind") == "run" and record.get("id") == entry_id
+    ]
+    return bool(outcomes) and all(outcome in ("refused", "not-started") for outcome in outcomes)
+
+
 # --------------------------------------------------------------------------
 # The adapter
 # --------------------------------------------------------------------------
@@ -526,8 +554,11 @@ class UniKixAdapter(Adapter):
         try:
             self._setup_session()
         except Exception as exc:
-            self._session_error = exc
-            raise
+            error = self._release_failed_setup(exc)
+            self._session_error = error
+            if error is exc:
+                raise
+            raise error from exc
         finally:
             # Session setup is not scenario time: the scenario that asked for
             # it keeps its full deadline, which harness/runner.py reads back.
@@ -549,20 +580,62 @@ class UniKixAdapter(Adapter):
         # probe generation: probes of the deployed tree run again against it.
         commands.probe_all(environment)
         for entry_id in _SESSION_STARTS:
-            commands.run(entry_id, environment)
-            if entry_id == "region_start":
-                self._region_started = True
-            elif entry_id == "bpe_start":
-                self._bpe_started = True
+            # Flagged before the command runs: a start can launch a detached
+            # daemon and then fail or time out, and close() and
+            # _release_failed_setup stop only what is flagged. bpe_system runs
+            # inside BPE, which bpe_start's flag covers.
+            flag = _START_FLAGS.get(entry_id)
+            if flag is not None:
+                setattr(self, flag, True)
+            mark = commands.mark()
+            try:
+                commands.run(entry_id, environment)
+            except BaseException:
+                if flag is not None and _never_started(commands, entry_id, mark):
+                    setattr(self, flag, False)
+                raise
         # A listener that cannot be used blocks the online scenarios only
         # (GAP-MIS-005, or GAP-MIS-009 without s3270); batch scenarios still run.
         self._listener_error = self._start_listener()
         batch = bpe.BatchService(environment, commands)
+        # Kept before its first job, so that a setup job left unfinished or
+        # unidentified by a failure is still cancelled (_release_failed_setup).
+        self._batch = batch
         batch.define_staging()
         self._snapshot = batch.snapshot_catalog()
         self._deployment.snapshot = self._snapshot
-        self._batch = batch
         self._versions = environment.versions(commands)
+
+    def _release_failed_setup(self, exc: Exception) -> Exception:
+        """Release, best effort, what the session setup that failed with
+        ``exc`` may have left running: every setup job not seen completed or
+        not identified is cancelled (``bpe.cancel_unfinished``), then BPE and
+        the region are stopped where the setup may have started them
+        (``_stop_started``). Each command is bounded by its own ``timeout_s``
+        only, never by a scenario deadline.
+
+        Returns the failure the session keeps: ``exc`` itself, unchanged, when
+        no part of the release failed. Otherwise what could not be released is
+        added to it. An ``AdapterUnavailable`` is replaced by one with the same
+        gap whose reason ends with it, ``exc`` as its ``__cause__``, so this
+        and every later scenario stay ``blocked`` under that gap and report
+        it; any other exception gets it as a note, which its traceback shows."""
+        problems: list[str] = []
+        if self._batch is not None and self._batch.pending:
+            try:
+                self._batch.cancel_unfinished()
+            except Exception as cancel_error:  # the setup failure stands whatever this did
+                problems.append(f"cancelling the unfinished BPE jobs failed: {cancel_error}")
+        problems.extend(self._stop_started())
+        if not problems:
+            return exc
+        text = "releasing the partially started session: " + "; ".join(problems)
+        if isinstance(exc, AdapterUnavailable):
+            error = AdapterUnavailable(f"{exc.reason}; {text}", exc.gap_id)
+            error.__cause__ = exc
+            return error
+        exc.add_note(text)
+        return exc
 
     def _start_listener(self) -> AdapterUnavailable | None:
         """Start the TN3270 listener and check it against
@@ -614,9 +687,10 @@ class UniKixAdapter(Adapter):
         return _UNLOAD_ENTRIES
 
     def observations(self) -> set[str]:
-        if not self._session_ready:
-            # Declared in full, so that prepare raises the real cause, such as
-            # GAP-MIS-009 without a UniKix installation.
+        if not self._session_ready or self._broken is not None:
+            # Declared in full, so that prepare raises the real cause first:
+            # GAP-MIS-009 without a UniKix installation, or the GAP-MIS-004 of
+            # a session that a reset or quiescence not confirmed has blocked.
             return set(_STATIC_OBSERVATIONS)
         found: set[str] = set()
         if self._can_close_region_cached():
@@ -804,13 +878,42 @@ class UniKixAdapter(Adapter):
         return region, batch
 
     def _confirm_quiescence(self, *, bounded: bool = True) -> None:
-        """No active region task and no unfinished BPE job. Every submitted job
-        not seen completed is cancelled first (``bpe.cancel_unfinished``)."""
+        """No active region task and no unfinished BPE job. Every BPE job not
+        seen completed is cancelled first (``bpe.cancel_unfinished``).
+
+        Only an empty or all-blank ``region_quiesce_query`` output shows the
+        region idle. Every other line must be an active task that
+        ``parse.active`` reads, searched within that line: a line it cannot
+        read makes the whole output unreadable rather than counting as idle.
+        Listed tasks and unreadable output are ``AdapterUnavailable``
+        (GAP-MIS-004), which the callers turn into a blocked session
+        (``_break``). ``bounded`` (before a scenario) caps every command, BPE's
+        included, at the time left before the scenario deadline, whose expiry
+        is ``ScenarioTimeout``; unbounded (cleanup after a timeout or a
+        failure) only their own ``timeout_s`` bounds them."""
         region, batch = self._quiescence_modes(bounded=bounded)
         if region == "query":
             output = self._run("region_quiesce_query", bounded=bounded).stdout
             pattern = self._pattern("region_quiesce_query", "active", ("task",))
-            tasks = sorted({match.group("task") for match in pattern.finditer(output)})
+            found: set[str] = set()
+            unreadable: list[str] = []
+            for line in output.splitlines():
+                if not line.strip():
+                    continue
+                match = pattern.search(line)
+                task = match.group("task") if match is not None else None
+                if task:
+                    found.add(task)
+                else:
+                    unreadable.append(line)
+            tasks = sorted(found)
+            if unreadable:
+                listed = f"; it also lists active tasks: {', '.join(tasks)}" if tasks else ""
+                raise AdapterUnavailable(
+                    f"region_quiesce_query printed {unreadable[0]!r}, which parse.active cannot "
+                    f"read: only empty output shows the region idle{listed}",
+                    _GAP_QUIESCENCE,
+                )
             if tasks:
                 raise AdapterUnavailable(
                     f"the region still lists active tasks: {', '.join(tasks)}", _GAP_QUIESCENCE
@@ -819,7 +922,7 @@ class UniKixAdapter(Adapter):
             # Stopping the region ends every task; the reset starts it again.
             self._stop_region(bounded=bounded)
         if batch == "query":
-            self._batch.cancel_unfinished()
+            self._batch.cancel_unfinished(deadline=self.deadline if bounded else None)
         else:
             for entry_id in _BPE_RESTART:
                 self._run(entry_id, bounded=bounded)
@@ -847,10 +950,10 @@ class UniKixAdapter(Adapter):
         """Confirm quiescence, then reset the region to the scenario's
         preconditions (AAP 0.4.6)."""
         self._confirm_quiescence()
-        # Non-VSAM preconditions are $SEQFILES files the region never opens.
-        # They are written before the region files are closed, so that a
-        # dataset no precondition can provide (bpe.write_sequential's
-        # MissingPrerequisite) is raised before the region is touched.
+        # Non-VSAM preconditions are $SEQFILES files the region never opens,
+        # so they are written before the region files are closed. A dataset
+        # no precondition can provide was refused by _plan_for
+        # (bpe.check_sequential), before this reset was attempted.
         for logical, data in plan.sequential:
             self._batch.write_sequential(logical, data)
         self._close_region_files()
@@ -868,17 +971,26 @@ class UniKixAdapter(Adapter):
 
     def _attempt_reset(self, plan: _Plan) -> None:
         """``_reset``, whose failure once attempted blocks the session: a
-        command that failed, or a catalog reset that was not confirmed, leaves
-        the region in a state no later scenario may run on."""
+        quiescence check or reset that did not finish leaves the region in a
+        state no later scenario may run on, so ``_break`` stops the region and
+        every later scenario raises GAP-MIS-004. ``AdapterUnavailable``,
+        ``HarnessError`` and ``OSError`` end this scenario under GAP-MIS-004
+        as well. Any other error keeps its own outcome for this scenario:
+        ``ScenarioTimeout`` stays ``failing`` with reason ``timeout``, and
+        ``MissingPrerequisite`` stays ``implemented-unexecuted``."""
         self._touched = True
         try:
             self._reset(plan)
-        except (ScenarioTimeout, MissingPrerequisite):
-            raise
         except (AdapterUnavailable, HarnessError, OSError) as exc:
             raise self._break(
                 f"the reset before {plan.scenario_id} was not confirmed: {exc}"
             ) from exc
+        except Exception as exc:
+            self._break(
+                f"the reset before {plan.scenario_id} was not confirmed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            raise
 
     # ------------------------------------------------------------ prepare
 
@@ -1004,6 +1116,10 @@ class UniKixAdapter(Adapter):
         # (above); only on one that can is a fault it cannot provide reported.
         if unprovidable is not None:
             raise unprovidable
+        # A dataset no precondition can provide is refused before any reset
+        # work, because a reset that fails once attempted blocks the session.
+        for logical, data in plan.sequential:
+            self._batch.check_sequential(logical, data)
         return plan
 
     def _plan_faults(self, scenario: Any, plan: _Plan) -> MissingPrerequisite | None:
@@ -1205,8 +1321,13 @@ class UniKixAdapter(Adapter):
     def _jobs_queue(self, window_start: _dt.datetime) -> bytes:
         """``@TDQ:JOBS``: the 80-byte records of each job named ``TRNRPT00``
         that BPE received from the region with a submission time from the
-        first step on, in job-number order. Each job's number and JCL go into
-        the evidence, and the job is waited for (``_await_region_job``)."""
+        first step on, in job-number order. Every such job is registered with
+        the batch service (``BatchService.adopt``) before any JCL is read or
+        any job waited for, so cleanup cancels each one not seen completed.
+        Each job's number and JCL go into the evidence, and its completion and
+        sysout (``_await_region_job``) are required: a sysout the batch
+        service cannot poll or read is ``AdapterUnavailable`` under its own
+        gap, never a ``@TDQ:JOBS`` without it."""
         gap = self._commands.entry("jobs_capture").gap
         pattern = self._pattern("jobs_capture", "job", ("job_number", "name", "submitted"))
         card = self._batch.resources.job(_REGION_JOB).card_name.upper()
@@ -1233,6 +1354,11 @@ class UniKixAdapter(Adapter):
             if numbers or time.monotonic() >= settle_until:
                 break
             time.sleep(min(_JOBS_POLL_S, self.check_deadline("waiting for the JOBS capture")))
+        # Registered before any JCL is read or any job waited for, so that a
+        # failure or timeout on one job leaves the others for cleanup to cancel.
+        runs = {
+            number: self._batch.adopt(card, str(number), "jobs_capture") for number in sorted(numbers)
+        }
         records: list[bytes] = []
         for number in sorted(numbers):
             text = self._run("jobs_capture", job_number=str(number)).stdout
@@ -1245,40 +1371,73 @@ class UniKixAdapter(Adapter):
             records.extend(line.encode("ascii") for line in cards.splitlines())
             self._capture.job_numbers.append(str(number))
             self._capture.sysout[f"adapter/tdq-jobs/{number}.jcl"] = text
-            self._await_region_job(card, str(number))
+            self._await_region_job(runs[number])
         return format_fixed_records(records, TDQ_RECORD_LENGTH)
 
-    def _await_region_job(self, card: str, number: str) -> None:
+    def _await_region_job(self, run: bpe.JobRun) -> None:
         """Wait, within the scenario deadline, for a job the region submitted,
-        so that its sysout joins this scenario's evidence and it has ended
-        before the next scenario's reset. Its outcome is not this scenario's
-        observation: a sysout the batch service cannot read is noted, and the
-        next quiescence check decides whether the job still runs."""
-        run = bpe.JobRun(card, card, card, "jobs_capture", number)
+        which ``_jobs_queue`` registered with the batch service
+        (``BatchService.adopt``) before any wait. Its completion and sysout
+        are required for ``@TDQ:JOBS``, whose records its job number links to
+        that sysout in the evidence. A sysout the batch service cannot poll or
+        read is noted, then raised as the same ``AdapterUnavailable`` under
+        its own gap; the deadline's passing is ``ScenarioTimeout``. A job not
+        seen completed stays registered, so cleanup cancels it."""
         try:
             self._batch.wait(run, deadline=self.deadline)
         except AdapterUnavailable as exc:
             state = "completed" if run.completed else "not seen completed"
-            self._note("adapter-errors", f"BPE job {number} ({card}) {state}: {exc}")
+            self._note(
+                "adapter-errors", f"BPE job {run.job_number} ({run.card_name}) {state}: {exc}"
+            )
+            raise
 
     # ------------------------------------------------------------ cleanup
 
+    def _cancel_after_break(self, what: str) -> None:
+        """Cancel, best effort, every BPE job of ``what`` not seen completed
+        or not identified (``bpe.cancel_unfinished``), once the session is
+        blocked: ``_break`` has stopped the region, best effort, and a job that
+        no longer runs cannot change a dataset of a later scenario, but the
+        scenario's unfinished BPE work is still cancelled (AAP 0.4.6). Bounded
+        by the commands' own ``timeout_s`` only, since the scenario deadline
+        may have passed. A failure is noted in the evidence; the session stays
+        blocked whatever it did. Never raises."""
+        if self._batch is None or not self._batch.pending:
+            return
+        try:
+            self._batch.cancel_unfinished()
+        except Exception as exc:  # the block stands whatever the cancellation did
+            self._note(
+                "adapter-errors",
+                f"cancelling the BPE jobs of {what} after the session was blocked failed: {exc}",
+            )
+
     def cleanup(self, scenario: Any, workdir: Path) -> None:
-        """End every ``s3270`` session. After a timeout or a failure of a run
-        that reached the region, cancel every unfinished BPE job and confirm
-        quiescence again, bounded by the commands' own ``timeout_s``. What
-        fails here acts only through the quiescence rule (GAP-MIS-004 for the
-        remaining scenarios); the run's outcome stands. Never raises."""
+        """End every ``s3270`` session. For every run that reached the region,
+        whatever it returned, cancel every unfinished BPE job and confirm
+        quiescence again, bounded by the commands' own ``timeout_s``: a
+        returned ``Result`` is no verdict, since an abended job or a later
+        failed assertion is still a failure. The cancellation is attempted
+        whether or not the region is confirmed: a region that lists tasks,
+        prints unreadable output or cannot be queried blocks the session
+        (``_break``), and its BPE jobs are then cancelled all the same
+        (``_cancel_after_break``), as are those of a run whose reset blocked
+        the session. What fails here acts only through the quiescence rule
+        (GAP-MIS-004 for the remaining scenarios); the run's outcome stands.
+        Never raises."""
         tpe.close_all()
         if not self._touched:
             return
         self._touched = False
-        if self._broken is not None or (self._result is not None and self.time_left() > 0):
-            return
-        try:
-            self._confirm_quiescence(bounded=False)
-        except Exception as exc:  # cleanup never raises; the session is blocked instead
-            self._break(f"quiescence after {getattr(scenario, 'id', scenario)} not confirmed: {exc}")
+        what = str(getattr(scenario, "id", scenario))
+        if self._broken is None:
+            try:
+                self._confirm_quiescence(bounded=False)
+                return
+            except Exception as exc:  # cleanup never raises; the session is blocked instead
+                self._break(f"quiescence after {what} not confirmed: {exc}")
+        self._cancel_after_break(what)
 
     # ----------------------------------------------------------- identity
 
@@ -1466,22 +1625,40 @@ class UniKixAdapter(Adapter):
 
     # -------------------------------------------------------------- close
 
+    def _stop_started(self) -> list[str]:
+        """Stop the region, unless the adapter has stopped it since, and BPE
+        where the session may have started them, through ``region_stop`` and
+        ``bpe_stop`` bounded by their own ``timeout_s``. Best effort: a stop
+        that is unavailable or fails does not keep the other from running.
+        Returns what could not be stopped, one line each."""
+        stops = []
+        if self._region_started and not self._region_down:
+            stops.append("region_stop")
+        if self._bpe_started:
+            stops.append("bpe_stop")
+        problems: list[str] = []
+        for entry_id in stops:
+            try:
+                if not self._commands.available(entry_id):
+                    reason = self._commands.probe_reason(entry_id) or "its probe failed"
+                    problems.append(f"{entry_id} unavailable: {reason}; it may still run")
+                    continue
+                self._run(entry_id, bounded=False)
+            except Exception as exc:  # the other stop runs whatever this one did
+                problems.append(f"{entry_id} failed: {exc}")
+                continue
+            if entry_id == "region_stop":
+                self._region_down = True
+            else:
+                self._bpe_started = False
+        return problems
+
     def close(self) -> None:
         """Stop the region and BPE and end every ``s3270`` session, best
         effort; the deployment root stays in the work root (AAP 0.4.6)."""
         tpe.close_all()
         if self._commands is None or self._env is None:
             return
-        stops = []
-        if self._region_started and not self._region_down:
-            stops.append("region_stop")
-        if self._bpe_started:
-            stops.append("bpe_stop")
-        for entry_id in stops:
-            try:
-                if self._commands.available(entry_id):
-                    self._run(entry_id, bounded=False)
-                    if entry_id == "region_stop":
-                        self._region_down = True
-            except Exception:  # close is best effort and never raises
-                continue
+        # close is best effort and never raises: what could not be stopped
+        # has no scenario left to report it.
+        self._stop_started()

@@ -211,8 +211,9 @@ entries:
       active: '(?im)^[ \t]*(?P<task>[A-Z0-9@#$]+)[ \t].*\bACTIVE\b'
     notes: >-
       Must print nothing and exit 0 when the region has no active task; every stdout line that parse.active
-      matches is an active task. While it is unavailable the adapter stops and restarts the region before a
-      scenario instead.
+      matches is an active task. Every non-blank line must be one active task as parse.active reads
+      it: any other line makes the output unreadable, so quiescence is not confirmed (GAP-MIS-004).
+      While it is unavailable the adapter stops and restarts the region before a scenario instead.
 
   listener_start:
     action: start the TN3270 listener
