@@ -64,7 +64,10 @@ Schema (``validate`` is the authority; every key not listed here is refused)
     the number ``102``; or ``baseline``), ``datasets`` (logical name -> value),
     ``file_state`` (logical name or reserved observation -> value; a record
     of ``@CATALOG``, ``@REGION-FILES`` or ``@TDQ:JOBS`` is a line of text or
-    a whole-line matcher),
+    a whole-line matcher; ``@AFTER:<JOB>:<LOGICAL>`` is logical dataset
+    ``<LOGICAL>`` of ``tests/fixtures/datasets.yaml`` at the end of job
+    ``<JOB>``, which ``inputs.job`` runs exactly once, and its records are
+    those of ``<LOGICAL>``),
     ``screens`` (one field map per step, each naming ``@map``; ``@text``, the
     full screen as one string, 24 rows of 80 characters joined by line breaks
     with every space kept (``adapters.base.screen_text``), only with
@@ -225,7 +228,11 @@ OBS_CATALOG = "@CATALOG"
 OBS_REGION_FILES = "@REGION-FILES"
 OBS_TDQ_JOBS = "@TDQ:JOBS"
 OBS_AIX_PREFIX = "@AIX:"
-RESERVED_OBSERVATIONS = (OBS_CATALOG, OBS_REGION_FILES, OBS_TDQ_JOBS, OBS_AIX_PREFIX + "<path>")
+# @AFTER:<JOB>:<LOGICAL>: logical dataset <LOGICAL> at the end of job <JOB> of the chain.
+OBS_AFTER_PREFIX = "@AFTER:"
+RESERVED_OBSERVATIONS = (
+    OBS_CATALOG, OBS_REGION_FILES, OBS_TDQ_JOBS, OBS_AIX_PREFIX + "<path>", OBS_AFTER_PREFIX + "<JOB>:<LOGICAL>"
+)
 # Observations whose lines are platform text (catalog entries, the JCL of the
 # job the region wrote to JOBS): they hold DSNs by nature, so the platform
 # neutrality check reads past them.
@@ -2001,7 +2008,49 @@ def _dataset_asserts(value: Any) -> bool:
     )
 
 
-def _check_expected_dataset(problems: _Problems, where: str, name: Any, value: Any, reserved_ok: bool) -> None:
+def _stage_logical(problems: _Problems, where: str, name: str, jobs: tuple[str, ...]) -> str | None:
+    """The ``<LOGICAL>`` of a stage observation ``@AFTER:<JOB>:<LOGICAL>``
+    that ``expected.file_state`` names, or ``None`` with its problems: the
+    name is malformed, ``inputs.job`` (``jobs``) does not run ``<JOB>`` or
+    runs it more than once, so its end is not one point of the run, or
+    ``<LOGICAL>`` is not a logical dataset of tests/fixtures/datasets.yaml.
+    Well-formedness is ``adapters.base.parse_after_job``'s, the rule the
+    adapters read the name by."""
+    from adapters.base import parse_after_job  # adapters.base imports this module
+
+    parsed = parse_after_job(name)
+    if parsed is None:
+        problems.add(
+            where,
+            f"is not a stage observation {OBS_AFTER_PREFIX}<JOB>:<LOGICAL>: <JOB> and <LOGICAL> are "
+            "non-empty names without ':' or whitespace, and <LOGICAL> does not start with '@'",
+        )
+        return None
+    job, logical = parsed
+    runs = jobs.count(job)
+    if runs == 0:
+        ran = f"inputs.job runs {', '.join(jobs)}" if jobs else "the scenario runs no job"
+        problems.add(where, f"names job {job}, which the scenario does not run ({ran})")
+    elif runs > 1:
+        problems.add(
+            where,
+            f"names job {job}, which inputs.job lists {runs} times, so the end of {job} is not one point "
+            "of the run; a stage observation needs a job the chain runs exactly once",
+        )
+    known = _member(logical, _datasets())
+    if not known:
+        problems.add(where, f"names {logical!r}, which is not a logical dataset of tests/fixtures/datasets.yaml")
+    return logical if runs == 1 and known else None
+
+
+def _check_expected_dataset(
+    problems: _Problems, where: str, name: Any, value: Any, reserved_ok: bool, jobs: tuple[str, ...] = ()
+) -> None:
+    """One ``expected.datasets`` or ``expected.file_state`` entry.
+    ``reserved_ok`` admits the reserved observations (``file_state`` only);
+    ``jobs`` is the scenario's ``inputs.job`` in order (``job_names``), which
+    a stage observation ``@AFTER:<JOB>:<LOGICAL>`` must run ``<JOB>`` of
+    exactly once."""
     datasets = _datasets()
     spec: dict | None = None
     text_ok = lines_only = False
@@ -2018,6 +2067,15 @@ def _check_expected_dataset(problems: _Problems, where: str, name: Any, value: A
             return
         # Records read through an alternate-index path are the base dataset's records.
         spec = datasets[base]
+    elif reserved_ok and isinstance(name, str) and name.startswith(OBS_AFTER_PREFIX):
+        logical = _stage_logical(problems, where, name, jobs)
+        if logical is None:
+            return
+        # A stage observation holds its logical dataset's records at the end of
+        # the job, so they are checked as that dataset's own are.
+        spec = datasets[logical]
+        layout = spec.get("layout")
+        text_ok = isinstance(layout, str) and layout.startswith("TEXT/")
     else:
         observations = f"; reserved observations: {', '.join(RESERVED_OBSERVATIONS)}" if reserved_ok else (
             "; reserved observations belong under file_state"
@@ -2171,7 +2229,9 @@ def _check_expected(s: Scenario, problems: _Problems, steps: Any) -> None:
             problems.add(f"expected.{section}", "must be a mapping of dataset -> expected content")
             continue
         for name, item in value.items():
-            _check_expected_dataset(problems, f"expected.{section}.{name}", name, item, section == "file_state")
+            _check_expected_dataset(
+                problems, f"expected.{section}.{name}", name, item, section == "file_state", job_names(s)
+            )
         outcome = outcome or any(_dataset_asserts(item) for item in value.values())
     if "screens" in expected:
         outcome = _check_screens(problems, expected["screens"], steps) or outcome

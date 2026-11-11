@@ -26,8 +26,9 @@ Modules:
     the test-owned deployment root ``<work root>/unikix/<execution_id>/``, and
     builds the application there.
 ``bpe``
-    Submits BPE jobs, loads fixtures, unloads datasets, and produces the
-    ``@CATALOG`` and ``@AIX:<path>`` observations.
+    Submits BPE jobs, loads fixtures, unloads datasets (after a run, and at
+    the end of a chain's job for ``@AFTER:<JOB>:<LOGICAL>``), and produces
+    the ``@CATALOG`` and ``@AIX:<path>`` observations.
 ``tpe``
     Drives ``s3270`` over a loopback TN3270 address.
 ``evidence``

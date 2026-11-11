@@ -2550,10 +2550,12 @@ class Catalog:
         )
 
     def read_logical(self, logical: str) -> bytes | None:
-        """The end-of-scenario bytes of a logical dataset: a CLUSTER unloaded
-        in primary-key order, a sequential dataset as written, a GDG logical
-        as its newest catalogued generation. ``None`` when it is not
-        catalogued or its file is absent."""
+        """The bytes of a logical dataset as the catalog holds it when called
+        (the end of the scenario, or the end of one job for an
+        ``@AFTER:<JOB>:<LOGICAL>`` observation): a CLUSTER unloaded in
+        primary-key order, a sequential dataset as written, a GDG logical as
+        its newest catalogued generation. ``None`` when it is not catalogued
+        or its file is absent."""
         target = self.dsn_map.dsn_for(logical)
         dsn, is_gdg = target if target is not None else (logical, False)
         entry = self.newest_generation(dsn) if is_gdg else self._entries.get(dsn)

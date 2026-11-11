@@ -22,7 +22,10 @@
 # opened OUTPUT, which on GnuCOBOL recreates the file, so the TRANSACT-INIT seed
 # record does not survive (GAP-STB-010) [app/cbl/CBTRN02C.cbl:254-256]. The run
 # ends with RETURN-CODE 4 because records were rejected
-# [app/cbl/CBTRN02C.cbl:227-231]; no path sets 8 (GAP-DOC-006).
+# [app/cbl/CBTRN02C.cbl:227-231]; no path sets 8 (GAP-DOC-006). ACCTDATA is
+# also observed at the end of POSTTRAN (@AFTER:POSTTRAN:ACCTDATA): every
+# account's balance and cycle credit and debit as posted, the cycle totals that
+# INTCALC's rewrite of accounts 1 to 49 then zeroes.
 #
 # INTCALC STEP15 runs CBACT04C with PARM 2022071800, passed by PARMDRV
 # (GAP-STB-004) [app/jcl/INTCALC.jcl:22-41], over the 100 TCATBALF records
@@ -57,9 +60,10 @@ description: >-
   POSTTRAN then INTCALC against one catalog, on the repository fixtures with
   dailytran.txt as DALYTRAN and TRANSACT-INIT as TRANSACT. POSTTRAN processes
   300 transactions, rejects 38 as 0102 'OVERLIMIT TRANSACTION' to the new
-  DALYREJS generation, posts the other 262 to TRANSACT, creates 50 TCATBALF
-  records and ends with return code 4. INTCALC falls back to the DEFAULT
-  disclosure group for all 100 category balances, writes 50 interest
+  DALYREJS generation, posts the other 262 to TRANSACT and to the balance and
+  cycle totals of all 50 accounts, asserted as POSTTRAN leaves them, creates
+  50 TCATBALF records and ends with return code 4. INTCALC falls back to the
+  DEFAULT disclosure group for all 100 category balances, writes 50 interest
   transactions 2022071800000001 to 2022071800000050 to the new SYSTRAN
   generation, rewrites accounts 1 to 49 with their interest and leaves account
   50 as POSTTRAN posted it, ending with return code 0.
@@ -79,6 +83,7 @@ gap_ids:
 - GAP-UNC-008  # interest is truncated, not rounded
 - GAP-UNC-009  # the x'00' after 'Int. for a/c <account>'
 - GAP-STB-004  # PARMDRV in place of the z/OS EXEC PARM linkage
+- GAP-STB-007  # DISP=(NEW,CATLG,DELETE) of DALYREJS(+1) and SYSTRAN(+1) recorded, not evaluated
 - GAP-STB-009  # the catalog and GDG emulation behind DALYREJS(+1) and SYSTRAN(+1)
 - GAP-STB-010  # Berkeley DB indexed files; OPEN OUTPUT recreates TRANSACT
 - GAP-STB-011  # GnuCOBOL compile and runtime options; the x'00' description fill
@@ -1466,6 +1471,64 @@ expected:
         TRAN-ORIG-TS: {match: run-timestamp}
         TRAN-PROC-TS: {match: run-timestamp}
   file_state:
+    # Every account in key order at the end of POSTTRAN, before INTCALC runs:
+    # the repository balance and cycle totals with each posted transaction
+    # added to ACCT-CURR-BAL and to ACCT-CURR-CYC-CREDIT (amount >= 0) or
+    # ACCT-CURR-CYC-DEBIT [app/cbl/CBTRN02C.cbl:545-554]. INTCALC rewrites
+    # accounts 1 to 49 and zeroes these cycle totals, so only this observation
+    # holds them; account 50 ends as it stands here (GAP-DEF-003).
+    '@AFTER:POSTTRAN:ACCTDATA':
+      records:
+      - {ACCT-ID: '1', ACCT-CURR-BAL: '1288.10', ACCT-CURR-CYC-CREDIT: '1164.87', ACCT-CURR-CYC-DEBIT: '-70.77'}
+      - {ACCT-ID: '2', ACCT-CURR-BAL: '1734.97', ACCT-CURR-CYC-CREDIT: '2339.97', ACCT-CURR-CYC-DEBIT: '-763.00'}
+      - {ACCT-ID: '3', ACCT-CURR-BAL: '1857.65', ACCT-CURR-CYC-CREDIT: '2590.87', ACCT-CURR-CYC-DEBIT: '-880.22'}
+      - {ACCT-ID: '4', ACCT-CURR-BAL: '1662.66', ACCT-CURR-CYC-CREDIT: '1945.65', ACCT-CURR-CYC-DEBIT: '-322.99'}
+      - {ACCT-ID: '5', ACCT-CURR-BAL: '1182.86', ACCT-CURR-CYC-CREDIT: '1266.85', ACCT-CURR-CYC-DEBIT: '-428.99'}
+      - {ACCT-ID: '6', ACCT-CURR-BAL: '2572.19', ACCT-CURR-CYC-CREDIT: '2750.41', ACCT-CURR-CYC-DEBIT: '-396.22'}
+      - {ACCT-ID: '7', ACCT-CURR-BAL: '900.21', ACCT-CURR-CYC-CREDIT: '1287.09', ACCT-CURR-CYC-DEBIT: '-579.88'}
+      - {ACCT-ID: '8', ACCT-CURR-BAL: '2138.08', ACCT-CURR-CYC-CREDIT: '2368.19', ACCT-CURR-CYC-DEBIT: '-835.11'}
+      - {ACCT-ID: '9', ACCT-CURR-BAL: '3207.55', ACCT-CURR-CYC-CREDIT: '2907.66', ACCT-CURR-CYC-DEBIT: '-260.11'}
+      - {ACCT-ID: '10', ACCT-CURR-BAL: '1150.76', ACCT-CURR-CYC-CREDIT: '1529.20', ACCT-CURR-CYC-DEBIT: '-537.44'}
+      - {ACCT-ID: '11', ACCT-CURR-BAL: '1539.99', ACCT-CURR-CYC-CREDIT: '2072.76', ACCT-CURR-CYC-DEBIT: '-744.77'}
+      - {ACCT-ID: '12', ACCT-CURR-BAL: '1770.65', ACCT-CURR-CYC-CREDIT: '2357.09', ACCT-CURR-CYC-DEBIT: '-762.44'}
+      - {ACCT-ID: '13', ACCT-CURR-BAL: '2860.10', ACCT-CURR-CYC-CREDIT: '2875.87', ACCT-CURR-CYC-DEBIT: '-56.77'}
+      - {ACCT-ID: '14', ACCT-CURR-BAL: '1475.99', ACCT-CURR-CYC-CREDIT: '2171.65', ACCT-CURR-CYC-DEBIT: '-710.66'}
+      - {ACCT-ID: '15', ACCT-CURR-BAL: '4212.54', ACCT-CURR-CYC-CREDIT: '4081.98', ACCT-CURR-CYC-DEBIT: '-358.44'}
+      - {ACCT-ID: '16', ACCT-CURR-BAL: '1808.88', ACCT-CURR-CYC-CREDIT: '1346.87', ACCT-CURR-CYC-DEBIT: '-270.99'}
+      - {ACCT-ID: '17', ACCT-CURR-BAL: '-621.56', ACCT-CURR-CYC-CREDIT: '343.77', ACCT-CURR-CYC-DEBIT: '-998.33'}
+      - {ACCT-ID: '18', ACCT-CURR-BAL: '2692.65', ACCT-CURR-CYC-CREDIT: '2661.76', ACCT-CURR-CYC-DEBIT: '-113.11'}
+      - {ACCT-ID: '19', ACCT-CURR-BAL: '3047.53', ACCT-CURR-CYC-CREDIT: '2639.19', ACCT-CURR-CYC-DEBIT: '-71.66'}
+      - {ACCT-ID: '20', ACCT-CURR-BAL: '1903.10', ACCT-CURR-CYC-CREDIT: '2453.10', ACCT-CURR-CYC-DEBIT: '-919.00'}
+      - {ACCT-ID: '21', ACCT-CURR-BAL: '958.88', ACCT-CURR-CYC-CREDIT: '888.65', ACCT-CURR-CYC-DEBIT: '-41.77'}
+      - {ACCT-ID: '22', ACCT-CURR-BAL: '2438.20', ACCT-CURR-CYC-CREDIT: '3328.86', ACCT-CURR-CYC-DEBIT: '-945.66'}
+      - {ACCT-ID: '23', ACCT-CURR-BAL: '1149.98', ACCT-CURR-CYC-CREDIT: '1881.42', ACCT-CURR-CYC-DEBIT: '-835.44'}
+      - {ACCT-ID: '24', ACCT-CURR-BAL: '1922.10', ACCT-CURR-CYC-CREDIT: '2163.87', ACCT-CURR-CYC-DEBIT: '-641.77'}
+      - {ACCT-ID: '25', ACCT-CURR-BAL: '743.76', ACCT-CURR-CYC-CREDIT: '1589.76', ACCT-CURR-CYC-DEBIT: '-907.00'}
+      - {ACCT-ID: '26', ACCT-CURR-BAL: '1193.87', ACCT-CURR-CYC-CREDIT: '1519.87', ACCT-CURR-CYC-DEBIT: '-372.00'}
+      - {ACCT-ID: '27', ACCT-CURR-BAL: '3495.65', ACCT-CURR-CYC-CREDIT: '3584.64', ACCT-CURR-CYC-DEBIT: '-372.99'}
+      - {ACCT-ID: '28', ACCT-CURR-BAL: '801.78', ACCT-CURR-CYC-CREDIT: '809.00', ACCT-CURR-CYC-DEBIT: '-75.22'}
+      - {ACCT-ID: '29', ACCT-CURR-BAL: '2657.64', ACCT-CURR-CYC-CREDIT: '3170.97', ACCT-CURR-CYC-DEBIT: '-852.33'}
+      - {ACCT-ID: '30', ACCT-CURR-BAL: '-898.89', ACCT-CURR-CYC-CREDIT: '29.44', ACCT-CURR-CYC-DEBIT: '-930.33'}
+      - {ACCT-ID: '31', ACCT-CURR-BAL: '333.10', ACCT-CURR-CYC-CREDIT: '664.32', ACCT-CURR-CYC-DEBIT: '-362.22'}
+      - {ACCT-ID: '32', ACCT-CURR-BAL: '460.56', ACCT-CURR-CYC-CREDIT: '1173.55', ACCT-CURR-CYC-DEBIT: '-742.99'}
+      - {ACCT-ID: '33', ACCT-CURR-BAL: '3354.43', ACCT-CURR-CYC-CREDIT: '3389.98', ACCT-CURR-CYC-DEBIT: '-445.55'}
+      - {ACCT-ID: '34', ACCT-CURR-BAL: '2369.32', ACCT-CURR-CYC-CREDIT: '2573.87', ACCT-CURR-CYC-DEBIT: '-457.55'}
+      - {ACCT-ID: '35', ACCT-CURR-BAL: '1005.21', ACCT-CURR-CYC-CREDIT: '1339.20', ACCT-CURR-CYC-DEBIT: '-499.99'}
+      - {ACCT-ID: '36', ACCT-CURR-BAL: '1980.43', ACCT-CURR-CYC-CREDIT: '2309.76', ACCT-CURR-CYC-DEBIT: '-439.33'}
+      - {ACCT-ID: '37', ACCT-CURR-BAL: '-125.88', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '-132.88'}
+      - {ACCT-ID: '38', ACCT-CURR-BAL: '3061.53', ACCT-CURR-CYC-CREDIT: '2987.75', ACCT-CURR-CYC-DEBIT: '-538.22'}
+      - {ACCT-ID: '39', ACCT-CURR-BAL: '2822.88', ACCT-CURR-CYC-CREDIT: '2050.87', ACCT-CURR-CYC-DEBIT: '-70.99'}
+      - {ACCT-ID: '40', ACCT-CURR-BAL: '1652.10', ACCT-CURR-CYC-CREDIT: '1635.09', ACCT-CURR-CYC-DEBIT: '-25.99'}
+      - {ACCT-ID: '41', ACCT-CURR-BAL: '2017.87', ACCT-CURR-CYC-CREDIT: '2399.53', ACCT-CURR-CYC-DEBIT: '-756.66'}
+      - {ACCT-ID: '42', ACCT-CURR-BAL: '1965.31', ACCT-CURR-CYC-CREDIT: '2164.75', ACCT-CURR-CYC-DEBIT: '-501.44'}
+      - {ACCT-ID: '43', ACCT-CURR-BAL: '3305.19', ACCT-CURR-CYC-CREDIT: '2938.19', ACCT-CURR-CYC-DEBIT: '-243.00'}
+      - {ACCT-ID: '44', ACCT-CURR-BAL: '2059.87', ACCT-CURR-CYC-CREDIT: '2012.20', ACCT-CURR-CYC-DEBIT: '-215.33'}
+      - {ACCT-ID: '45', ACCT-CURR-BAL: '2248.77', ACCT-CURR-CYC-CREDIT: '2407.54', ACCT-CURR-CYC-DEBIT: '-344.77'}
+      - {ACCT-ID: '46', ACCT-CURR-BAL: '3538.41', ACCT-CURR-CYC-CREDIT: '3577.41', ACCT-CURR-CYC-DEBIT: '-435.00'}
+      - {ACCT-ID: '47', ACCT-CURR-BAL: '1044.66', ACCT-CURR-CYC-CREDIT: '1598.10', ACCT-CURR-CYC-DEBIT: '-585.44'}
+      - {ACCT-ID: '48', ACCT-CURR-BAL: '1202.89', ACCT-CURR-CYC-CREDIT: '1512.77', ACCT-CURR-CYC-DEBIT: '-535.88'}
+      - {ACCT-ID: '49', ACCT-CURR-BAL: '1133.31', ACCT-CURR-CYC-CREDIT: '1996.08', ACCT-CURR-CYC-DEBIT: '-962.77'}
+      - {ACCT-ID: '50', ACCT-CURR-BAL: '1945.87', ACCT-CURR-CYC-CREDIT: '1501.75', ACCT-CURR-CYC-DEBIT: '-47.88'}
     # Every account in key order: 1 to 49 with their interest added and both
     # cycle fields zeroed by INTCALC, 50 as POSTTRAN posted it (GAP-DEF-003).
     ACCTDATA:

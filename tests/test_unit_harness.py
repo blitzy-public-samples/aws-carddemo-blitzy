@@ -60,11 +60,52 @@ paths, and ``GnuCOBOLBatchAdapter.cleanup`` only those of the scenario's own
 working directory, never another scenario's, the work root's or one outside
 it, while the other programs run on to their own end; ``kill_all()`` and
 ``close`` end every group.
+
+Stage observations: ``base.after_job_observation`` and ``parse_after_job``
+must round-trip ``@AFTER:<JOB>:<LOGICAL>``, which ``observation_matches``
+covers with ``"@AFTER:*"`` and ``"@AFTER:"``, and refuse a part that is
+empty, not text or holds ``:`` or whitespace, a ``<LOGICAL>`` starting with
+``@``, and any other name. ``scenarios.validate``, on in-memory copies of
+BAT-CHAIN-normal-01, must accept one under ``expected.file_state`` for a job
+the chain runs once, its records checked as its logical dataset's, and
+refuse a malformed name, a job ``inputs.job`` does not run or lists twice, an
+unknown dataset, records of another layout and one under
+``expected.datasets``. ``GnuCOBOLBatchAdapter`` must group the stage
+observations by job and refuse, before any job runs, one whose job the chain
+does not run once. ``baselines.decode_result`` must decode one through its
+logical dataset's layout in primary-key order, as that dataset decodes, and
+as ``@missing`` when the result lacks it.
+
+Job-chain proof stage checks: ``report._proof_outcome_problems``, on
+synthetic decoded outcomes, must report nothing about a conforming set of
+stage observations and exactly one problem for each stage rule broken: the
+accounts after POSTTRAN absent, not produced, not 50, lacking an account,
+with an account whose cycle totals are both zero or not number text, or with
+an account 50 the final ACCTDATA does not repeat; TRANBKP's backup not 262,
+out of TRAN-ID order, holding an interest record or another TRAN-PROC-TS;
+and its TRANSACT not empty or not produced. ``_proof_expectation_problems``
+must likewise require each stage observation's full record list, the 50
+accounts after POSTTRAN each naming the proof's account fields.
+
+Stage observations on unikix: ``BatchService.run_jobs``, on fake
+submissions, must call ``after_job`` with each job's 0-based position once
+its wait returned and before the next submission, an abended job included,
+and submit nothing after an abend. ``UniKixAdapter``, on fakes, must declare
+``@AFTER:*`` before its session and, once it has started, exactly when it
+declares the business datasets, under GAP-MIS-007 otherwise; refuse with
+``HarnessError``, before any command or BPE use, a stage observation whose job
+the chain does not run once, an online run's included; unload each one's
+dataset at the end of its job with the region files closed and then reopened,
+keeping it in the evidence under its stage name as soon as it is acquired;
+leave out one whose dataset is not catalogued then or whose job never ran;
+keep what was acquired when a later unload fails; and never pass a stage name
+to the post-run unloads.
 """
 
 from __future__ import annotations
 
 import copy
+import dataclasses
 import datetime
 import functools
 import os
@@ -100,6 +141,7 @@ from harness import (  # noqa: E402
     dump_yaml,
     layouts,
     load_yaml,
+    report,
     results,
     scenarios,
 )
@@ -2023,3 +2065,758 @@ def test_gnucobol_batch_cleanup_ends_only_its_own_scenarios_groups(
     for group in others:
         _assert_killed(group)
     assert datasets._LIVE == {} and datasets._LIVE_CWD == {}
+
+
+# Stage observations: logical dataset <LOGICAL> at the end of job <JOB> of a
+# scenario's job chain, checked on in-memory copies of the full daily chain.
+STAGE_CHAIN = "BAT-CHAIN-normal-01"
+STAGE_CHAIN_JOBS = ("POSTTRAN", "INTCALC", "TRANBKP", "COMBTRAN", "CREASTMT", "TRANREPT")
+STAGE_ACCOUNTS = "@AFTER:POSTTRAN:ACCTDATA"
+ACCOUNT_LAYOUT = "CVACT01Y/ACCOUNT-RECORD"
+# Account ids in delivered order, which is not key order, and the cycle credit
+# and debit CBTRN02C posts [app/cbl/CBTRN02C.cbl:545-554], as account 1 holds
+# them after POSTTRAN on the repository data.
+STAGE_ACCOUNT_IDS = (3, 1, 2)
+STAGE_CYCLE_CREDIT = Decimal("1164.87")
+STAGE_CYCLE_DEBIT = Decimal("-70.77")
+
+STAGE_NAMES = [
+    pytest.param("POSTTRAN", "ACCTDATA", id="posted-accounts"),
+    pytest.param("TRANBKP", "TRANSACT-BKUP", id="backup-generation"),
+    pytest.param("TRNRPT00", "TRANREPT", id="generated-job-report"),
+]
+
+STAGE_REFUSED_PARTS = [
+    pytest.param("", "ACCTDATA", id="empty-job"),
+    pytest.param("POSTTRAN", "", id="empty-dataset"),
+    pytest.param("POST:TRAN", "ACCTDATA", id="colon-in-job"),
+    pytest.param("POSTTRAN", "ACCT:DATA", id="colon-in-dataset"),
+    pytest.param("POST TRAN", "ACCTDATA", id="space-in-job"),
+    pytest.param("POSTTRAN", "ACCTDATA\n", id="line-break-in-dataset"),
+    pytest.param("POSTTRAN", "@CATALOG", id="reserved-observation"),
+    pytest.param(None, "ACCTDATA", id="job-not-text"),
+    pytest.param("POSTTRAN", 7, id="dataset-not-text"),
+]
+
+STAGE_NOT_NAMES = [
+    pytest.param("@AFTER:", id="prefix-only"),
+    pytest.param("@AFTER:POSTTRAN", id="no-dataset"),
+    pytest.param("@AFTER::ACCTDATA", id="empty-job"),
+    pytest.param("@AFTER:POSTTRAN:", id="empty-dataset"),
+    pytest.param("@AFTER:POSTTRAN:ACCTDATA:INTCALC", id="third-part"),
+    pytest.param("@AFTER:POSTTRAN:@CATALOG", id="reserved-observation"),
+    pytest.param("@AFTER:POST TRAN:ACCTDATA", id="space-in-job"),
+    pytest.param("@AIX:CXACAIX", id="another-family"),
+    pytest.param("ACCTDATA", id="business-dataset"),
+    pytest.param(None, id="not-text"),
+]
+
+# (name, value): stage observations of jobs the chain runs once, each value
+# checked as its logical dataset's own: record field maps, an empty cluster,
+# and the text lines of a TEXT/<n> layout.
+STAGE_ACCEPTED = [
+    pytest.param(
+        STAGE_ACCOUNTS,
+        {"count": 50, "contains": [
+            {"ACCT-ID": "1", "ACCT-CURR-CYC-CREDIT": str(STAGE_CYCLE_CREDIT),
+             "ACCT-CURR-CYC-DEBIT": str(STAGE_CYCLE_DEBIT)},
+        ]},
+        id="posted-accounts",
+    ),
+    pytest.param("@AFTER:TRANBKP:TRANSACT-BKUP", {"count": 262}, id="first-backup-generation"),
+    pytest.param("@AFTER:TRANBKP:TRANSACT", {"records": []}, id="emptied-cluster"),
+    pytest.param(
+        "@AFTER:TRANREPT:TRANREPT", {"contains": ["a report line"]}, id="text-layout-lines"
+    ),
+]
+
+# (section, name, value, jobs, problem): jobs replaces inputs.job when given.
+STAGE_REFUSALS = [
+    pytest.param(
+        "file_state", "@AFTER:POSTTRAN", {"records": []}, None,
+        "is not a stage observation @AFTER:<JOB>:<LOGICAL>", id="malformed-name",
+    ),
+    pytest.param(
+        "file_state", "@AFTER:READACCT:ACCTDATA", {"records": []}, None,
+        "names job READACCT, which the scenario does not run", id="job-not-run",
+    ),
+    pytest.param(
+        "file_state", STAGE_ACCOUNTS, {"records": []}, ["POSTTRAN", "INTCALC", "POSTTRAN"],
+        "names job POSTTRAN, which inputs.job lists 2 times", id="job-listed-twice",
+    ),
+    pytest.param(
+        "file_state", "@AFTER:POSTTRAN:NOSUCHDATA", {"records": []}, None,
+        "names 'NOSUCHDATA', which is not a logical dataset of tests/fixtures/datasets.yaml",
+        id="unknown-dataset",
+    ),
+    pytest.param(
+        "file_state", "@AFTER:TRANBKP:TRANSACT", {"contains": [{"ACCT-CURR-BAL": "1.00"}]}, None,
+        "is not a field of layout CVTRA05Y/TRAN-RECORD", id="field-of-another-layout",
+    ),
+    pytest.param(
+        "file_state", "@AFTER:TRANBKP:TRANSACT-BKUP", {"contains": ["a report line"]}, None,
+        "must be a field map of the dataset's layout", id="text-line-of-a-record-layout",
+    ),
+    pytest.param(
+        "datasets", STAGE_ACCOUNTS, {"records": []}, None,
+        "reserved observations belong under file_state", id="under-expected-datasets",
+    ),
+]
+
+STAGE_GUARD_REFUSALS = [
+    pytest.param(
+        "@AFTER:READACCT:ACCTDATA", STAGE_CHAIN_JOBS, "does not run READACCT", id="job-not-run"
+    ),
+    pytest.param(
+        STAGE_ACCOUNTS, ("POSTTRAN", "INTCALC", "POSTTRAN"), "runs POSTTRAN 2 times",
+        id="job-run-twice",
+    ),
+]
+
+
+def _chain_with(
+    section: str, name: str, value: object, jobs: list[str] | None = None
+) -> scenarios.Scenario:
+    """An in-memory copy of ``STAGE_CHAIN`` whose ``expected.<section>`` also
+    names ``name`` with ``value``, and whose ``inputs.job`` is ``jobs`` when
+    given; the committed scenario is left as it is. With ``jobs`` the copy
+    keeps no stage observation of its own besides ``name``: the committed
+    ones name the chain's jobs, which another job list may not run once, so
+    every problem the swap adds is one of ``name``."""
+    scenario = scenarios.get(STAGE_CHAIN)
+    data = copy.deepcopy(scenario.data)
+    data["expected"].setdefault(section, {})[name] = value
+    if jobs is not None:
+        data["inputs"]["job"] = jobs
+        file_state = data["expected"].get("file_state", {})
+        for other in [key for key in file_state if key != name and base.parse_after_job(key) is not None]:
+            del file_state[other]
+    return dataclasses.replace(
+        scenario, data=data, inputs=data["inputs"], expected=data["expected"]
+    )
+
+
+@pytest.mark.parametrize(("job", "logical"), STAGE_NAMES)
+def test_stage_observation_names_round_trip_and_match_their_family(job: str, logical: str) -> None:
+    name = base.after_job_observation(job, logical)
+    assert name == f"{base.AFTER_PREFIX}{job}:{logical}"
+    assert base.parse_after_job(name) == (job, logical)
+    assert base.observation_matches(name, {base.AFTER_PREFIX + "*"})
+    assert base.observation_matches(name, {base.AFTER_PREFIX})
+    assert not base.observation_matches(
+        name, {base.BUSINESS_DATASETS, base.CATALOG, base.AIX_PREFIX + "*"}
+    )
+    assert GnuCOBOLBatchAdapter().can_observe(name)  # construction creates nothing
+
+
+@pytest.mark.parametrize(("job", "logical"), STAGE_REFUSED_PARTS)
+def test_stage_observation_name_refuses_a_malformed_part(job: object, logical: object) -> None:
+    with pytest.raises(ValueError):
+        base.after_job_observation(job, logical)
+
+
+@pytest.mark.parametrize("key", STAGE_NOT_NAMES)
+def test_parse_after_job_reads_no_stage_from_any_other_name(key: object) -> None:
+    assert base.parse_after_job(key) is None
+
+
+@pytest.mark.parametrize(("name", "value"), STAGE_ACCEPTED)
+def test_schema_accepts_a_stage_observation_of_a_job_the_chain_runs_once(
+    name: str, value: dict
+) -> None:
+    committed = scenarios.validate(scenarios.get(STAGE_CHAIN))
+    assert scenarios.validate(_chain_with("file_state", name, value)) == committed
+
+
+@pytest.mark.parametrize(("section", "name", "value", "jobs", "problem"), STAGE_REFUSALS)
+def test_schema_refuses_a_stage_observation_no_single_job_end_can_hold(
+    section: str, name: str, value: dict, jobs: list[str] | None, problem: str
+) -> None:
+    committed = set(scenarios.validate(scenarios.get(STAGE_CHAIN)))
+    added = set(scenarios.validate(_chain_with(section, name, value, jobs))) - committed
+    where = f": expected.{section}.{name}"
+    assert added and all(where in line for line in added), added
+    assert any(problem in line for line in added), added
+
+
+def test_gnucobol_batch_groups_stage_observations_by_job() -> None:
+    wanted = {
+        "ACCTDATA",
+        base.CATALOG,
+        "@AIX:CXACAIX",
+        "@AFTER:POSTTRAN",  # malformed: never produced, as the schema refuses it
+        "@AFTER:TRANBKP:TRANSACT-BKUP",
+        "@AFTER:TRANBKP:TRANSACT",
+        STAGE_ACCOUNTS,
+    }
+    stages = GnuCOBOLBatchAdapter._stage_observations(STAGE_CHAIN, STAGE_CHAIN_JOBS, wanted)
+    assert stages == {
+        "POSTTRAN": [(STAGE_ACCOUNTS, "ACCTDATA")],
+        "TRANBKP": [
+            ("@AFTER:TRANBKP:TRANSACT", "TRANSACT"),
+            ("@AFTER:TRANBKP:TRANSACT-BKUP", "TRANSACT-BKUP"),
+        ],
+    }
+    plain = GnuCOBOLBatchAdapter._stage_observations(STAGE_CHAIN, STAGE_CHAIN_JOBS, {"ACCTDATA"})
+    assert plain == {}
+
+
+@pytest.mark.parametrize(("name", "jobs", "problem"), STAGE_GUARD_REFUSALS)
+def test_gnucobol_batch_refuses_a_stage_observation_without_one_job_end(
+    name: str, jobs: tuple[str, ...], problem: str
+) -> None:
+    with pytest.raises(HarnessError) as caught:
+        GnuCOBOLBatchAdapter._stage_observations(STAGE_CHAIN, jobs, {name})
+    assert problem in str(caught.value) and name in str(caught.value)
+
+
+def test_decode_result_reads_a_stage_observation_as_its_dataset_in_key_order() -> None:
+    accounts = b"".join(
+        codec.encode_record(
+            {"ACCT-ID": number, "ACCT-CURR-CYC-CREDIT": STAGE_CYCLE_CREDIT,
+             "ACCT-CURR-CYC-DEBIT": STAGE_CYCLE_DEBIT},
+            ACCOUNT_LAYOUT,
+            "ascii",
+        )
+        for number in STAGE_ACCOUNT_IDS
+    )
+    scenario = _chain_with("file_state", STAGE_ACCOUNTS, {"count": len(STAGE_ACCOUNT_IDS)})
+    scenario.expected["file_state"]["ACCTDATA"] = {"count": len(STAGE_ACCOUNT_IDS)}  # the copy's
+    delivered = base.Result(
+        return_code=4, datasets={STAGE_ACCOUNTS: accounts, "ACCTDATA": accounts}
+    )
+    decoded = baselines.decode_result(scenario, delivered)["file_state"]
+    stage = decoded[STAGE_ACCOUNTS]
+    assert stage == decoded["ACCTDATA"]
+    assert [record["ACCT-ID"] for record in stage] == [
+        str(number) for number in sorted(STAGE_ACCOUNT_IDS)
+    ]
+    assert {
+        (record["ACCT-CURR-CYC-CREDIT"], record["ACCT-CURR-CYC-DEBIT"]) for record in stage
+    } == {(str(STAGE_CYCLE_CREDIT), str(STAGE_CYCLE_DEBIT))}
+    assert delivered.datasets[STAGE_ACCOUNTS] == accounts  # raw bytes are never changed
+    lacking = base.Result(return_code=4, datasets={"ACCTDATA": accounts})
+    absent = baselines.decode_result(scenario, lacking)
+    assert absent["file_state"][STAGE_ACCOUNTS] == {"@missing": True}
+
+
+# Stage observations on unikix: a chain of three jobs whose first and last
+# have stage observations and whose middle one has none. UNIKIX_STAGE_LEFT is
+# what each job leaves in the catalog: logical -> bytes, a logical it does not
+# name keeping what it held; one never listed is not catalogued. TRANBKP's
+# TRANSACT is the emptied cluster, whose unload holds no record.
+UNIKIX_STAGE_SCENARIO = "BAT-CHAIN-normal-01"
+UNIKIX_STAGE_JOBS = ("POSTTRAN", "INTCALC", "TRANBKP")
+UNIKIX_STAGE_BACKUP_EARLY = "@AFTER:POSTTRAN:TRANSACT-BKUP"  # not catalogued yet then
+UNIKIX_STAGE_EMPTIED = "@AFTER:TRANBKP:TRANSACT"
+UNIKIX_STAGE_BACKUP = "@AFTER:TRANBKP:TRANSACT-BKUP"
+UNIKIX_STAGE_MALFORMED = "@AFTER:POSTTRAN"  # never produced, as the schema refuses it
+UNIKIX_STAGE_EXPECTED = (
+    "ACCTDATA",
+    STAGE_ACCOUNTS,
+    UNIKIX_STAGE_BACKUP_EARLY,
+    UNIKIX_STAGE_EMPTIED,
+    UNIKIX_STAGE_BACKUP,
+    UNIKIX_STAGE_MALFORMED,
+)
+UNIKIX_STAGE_LEFT = {
+    "POSTTRAN": {"ACCTDATA": b"P" * 300, "TRANSACT": b"T" * 350},
+    "INTCALC": {"ACCTDATA": b"I" * 300},
+    "TRANBKP": {"TRANSACT": b"", "TRANSACT-BKUP": b"T" * 350},
+}
+
+# The adapter's region control and BPE calls, in order, for each part of the
+# run: a job's submission and wait, a stage's unloads at the end of POSTTRAN
+# and of TRANBKP (each kept under its stage name as it is acquired), and the
+# post-run unload of the one business dataset expected.
+UNIKIX_STAGE_RUN = {job: [("submit", job), ("wait", job)] for job in UNIKIX_STAGE_JOBS}
+UNIKIX_STAGE_AFTER_POSTTRAN = [
+    ("close",),
+    ("observe", ("ACCTDATA", "TRANSACT-BKUP")),
+    ("kept", STAGE_ACCOUNTS),
+    ("open",),
+]
+UNIKIX_STAGE_AFTER_TRANBKP_UNTIL_THE_BACKUP = [
+    ("close",),
+    ("observe", ("TRANSACT", "TRANSACT-BKUP")),
+    ("kept", UNIKIX_STAGE_EMPTIED),
+]
+UNIKIX_STAGE_AFTER_TRANBKP = UNIKIX_STAGE_AFTER_TRANBKP_UNTIL_THE_BACKUP + [
+    ("kept", UNIKIX_STAGE_BACKUP),
+    ("open",),
+]
+UNIKIX_STAGE_POST_RUN = [("close",), ("observe", ("ACCTDATA",)), ("kept", "ACCTDATA"), ("open",)]
+
+# Each case: the job that abends (None: none), the dataset whose unload fails
+# (None: none does), the calls in order, the observations the evidence holds
+# afterwards (the Result's datasets too when the run returns), and the gap of
+# the failure the run ends in (None: it returns).
+UNIKIX_STAGE_EXECUTIONS = [
+    pytest.param(
+        None,
+        None,
+        UNIKIX_STAGE_RUN["POSTTRAN"]
+        + UNIKIX_STAGE_AFTER_POSTTRAN
+        + UNIKIX_STAGE_RUN["INTCALC"]
+        + UNIKIX_STAGE_RUN["TRANBKP"]
+        + UNIKIX_STAGE_AFTER_TRANBKP
+        + UNIKIX_STAGE_POST_RUN,
+        {
+            "ACCTDATA": UNIKIX_STAGE_LEFT["INTCALC"]["ACCTDATA"],
+            STAGE_ACCOUNTS: UNIKIX_STAGE_LEFT["POSTTRAN"]["ACCTDATA"],
+            UNIKIX_STAGE_EMPTIED: b"",
+            UNIKIX_STAGE_BACKUP: UNIKIX_STAGE_LEFT["TRANBKP"]["TRANSACT-BKUP"],
+        },
+        None,
+        id="every-job-completes",
+    ),
+    pytest.param(
+        "INTCALC",
+        None,
+        UNIKIX_STAGE_RUN["POSTTRAN"]
+        + UNIKIX_STAGE_AFTER_POSTTRAN
+        + UNIKIX_STAGE_RUN["INTCALC"]
+        + UNIKIX_STAGE_POST_RUN,
+        {
+            "ACCTDATA": UNIKIX_STAGE_LEFT["INTCALC"]["ACCTDATA"],
+            STAGE_ACCOUNTS: UNIKIX_STAGE_LEFT["POSTTRAN"]["ACCTDATA"],
+        },
+        None,
+        id="an-abend-leaves-the-later-stages-absent",
+    ),
+    pytest.param(
+        None,
+        "TRANSACT-BKUP",
+        UNIKIX_STAGE_RUN["POSTTRAN"]
+        + UNIKIX_STAGE_AFTER_POSTTRAN
+        + UNIKIX_STAGE_RUN["INTCALC"]
+        + UNIKIX_STAGE_RUN["TRANBKP"]
+        + UNIKIX_STAGE_AFTER_TRANBKP_UNTIL_THE_BACKUP,
+        {STAGE_ACCOUNTS: UNIKIX_STAGE_LEFT["POSTTRAN"]["ACCTDATA"], UNIKIX_STAGE_EMPTIED: b""},
+        "GAP-MIS-007",
+        id="a-failed-stage-unload-keeps-what-was-acquired",
+    ),
+]
+
+# Each case: the job that abends (None: none), and the jobs that then run.
+UNIKIX_RUN_JOBS_CASES = [
+    pytest.param(None, list(UNIKIX_STAGE_JOBS), id="every-job-completes"),
+    pytest.param("INTCALC", ["POSTTRAN", "INTCALC"], id="an-abend-ends-the-chain"),
+]
+
+# Each case: whether the session has started, the commands.yaml entries its
+# probes found available, whether the stage observations (and with them the
+# business datasets) are declared, and what the reason they are not names.
+UNIKIX_STAGE_UNLOADS = frozenset(unikix_adapter._UNLOAD_ENTRIES)
+UNIKIX_STAGE_SESSIONS = [
+    pytest.param(False, frozenset(), True, None, id="before-the-session"),
+    pytest.param(
+        True,
+        UNIKIX_STAGE_UNLOADS | set(unikix_adapter._FILE_CONTROL),
+        True,
+        None,
+        id="unloads-with-region-file-control",
+    ),
+    pytest.param(
+        True,
+        UNIKIX_STAGE_UNLOADS | set(unikix_adapter._REGION_RESTART),
+        True,
+        None,
+        id="unloads-with-a-region-restart",
+    ),
+    pytest.param(
+        True,
+        (UNIKIX_STAGE_UNLOADS - {"dataset_unload"}) | set(unikix_adapter._FILE_CONTROL),
+        False,
+        "dataset_unload: probe found no dataset_unload",
+        id="no-unload-entry",
+    ),
+    pytest.param(
+        True,
+        UNIKIX_STAGE_UNLOADS,
+        False,
+        "the region files cannot be closed for BPE",
+        id="region-files-not-closable",
+    ),
+]
+
+# Each case: the stage observation, the scenario's inputs.job (empty for an
+# online run), the exception _plan_for raises and a text its message holds.
+UNIKIX_STAGE_GUARD_CASES = [
+    pytest.param(
+        "@AFTER:READACCT:ACCTDATA",
+        UNIKIX_STAGE_JOBS,
+        HarnessError,
+        "does not run READACCT",
+        id="job-not-run",
+    ),
+    pytest.param(
+        STAGE_ACCOUNTS,
+        ("POSTTRAN", "INTCALC", "POSTTRAN"),
+        HarnessError,
+        "runs POSTTRAN 2 times",
+        id="job-run-twice",
+    ),
+    pytest.param(STAGE_ACCOUNTS, (), HarnessError, "the scenario runs no job", id="online-run"),
+    pytest.param(
+        STAGE_ACCOUNTS, UNIKIX_STAGE_JOBS, _BeyondTheGate, "_GateCommands", id="job-run-once-passes"
+    ),
+]
+
+
+class _ProbedCommands:
+    """The ``CommandSet`` a started session's observations read: the
+    entries its probes found available, and why each other one is not."""
+
+    def __init__(self, available: frozenset[str]) -> None:
+        self.found = frozenset(available)
+
+    def available(self, entry_id: str) -> bool:
+        return entry_id in self.found
+
+    def probe_reason(self, entry_id: str) -> str | None:
+        return None if entry_id in self.found else f"probe found no {entry_id}"
+
+
+def _unikix_stage_scenario(names: tuple[str, ...], jobs: tuple[str, ...]) -> SimpleNamespace:
+    """A ``UNIKIX_STAGE_SCENARIO`` stand-in running ``jobs`` (``inputs.steps``
+    when there are none) whose ``expected.file_state`` names ``names``."""
+    inputs = {"job": list(jobs)} if jobs else {"steps": []}
+    return SimpleNamespace(
+        id=UNIKIX_STAGE_SCENARIO,
+        inputs=inputs,
+        expected={"file_state": {name: {"count": 1} for name in names}},
+        preconditions={},
+    )
+
+
+@pytest.mark.parametrize(("abends", "ran"), UNIKIX_RUN_JOBS_CASES)
+def test_unikix_run_jobs_calls_after_job_between_the_jobs(abends: str | None, ran: list[str]) -> None:
+    service = bpe.BatchService(SimpleNamespace(vars={}), SimpleNamespace(), bpe.Resources.load())
+    events: list[tuple] = []
+
+    def submit(name: str, jcl_text: str | None, entry_id: str, budget: object) -> bpe.JobRun:
+        assert jcl_text is None and entry_id == "bpe_submit"
+        events.append(("submit", name))
+        return bpe.JobRun(name, name, name, entry_id, str(len(events)))
+
+    def wait(run: bpe.JobRun, budget: object) -> bpe.JobRun:
+        events.append(("wait", run.name))
+        run.completed = True
+        run.steps = [bpe.StepOutcome("STEP15", None if run.name == abends else 0)]
+        return run
+
+    service._submit = submit
+    service._wait = wait
+    outcome = service.run_jobs(
+        list(UNIKIX_STAGE_JOBS),
+        time.monotonic() + 300,
+        after_job=lambda position, job: events.append(("after", position, job)),
+    )
+    assert events == [
+        event
+        for position, job in enumerate(ran)
+        for event in (("submit", job), ("wait", job), ("after", position, job))
+    ]
+    assert [run.name for run in outcome.runs] == ran
+    assert outcome.return_code == (None if abends else 0)
+
+
+@pytest.mark.parametrize(
+    ("abends", "failing", "calls", "kept", "gap_id"), UNIKIX_STAGE_EXECUTIONS
+)
+def test_unikix_acquires_each_stage_observation_between_the_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+    abends: str | None,
+    failing: str | None,
+    calls: list[tuple],
+    kept: dict[str, bytes],
+    gap_id: str | None,
+) -> None:
+    work_root = Path(os.environ.get(WORK_ROOT_ENV, "").strip() or tempfile.gettempdir())
+    adapter = UniKixAdapter(work_root=work_root, repo_root=Path(_TESTS_ROOT).parent)
+    adapter._capture = evidence.Capture()
+    adapter.deadline = time.monotonic() + 300
+    scenario = _unikix_stage_scenario(UNIKIX_STAGE_EXPECTED, UNIKIX_STAGE_JOBS)
+    stages = UniKixAdapter._stage_observations(
+        scenario.id, UNIKIX_STAGE_JOBS, base.required_observations(scenario.expected)
+    )
+    assert stages == {
+        "POSTTRAN": [(STAGE_ACCOUNTS, "ACCTDATA"), (UNIKIX_STAGE_BACKUP_EARLY, "TRANSACT-BKUP")],
+        "TRANBKP": [(UNIKIX_STAGE_EMPTIED, "TRANSACT"), (UNIKIX_STAGE_BACKUP, "TRANSACT-BKUP")],
+    }
+    adapter._plan = unikix_adapter._Plan(
+        scenario_id=scenario.id,
+        online=False,
+        steps=[],
+        sessions=1,
+        jobs=UNIKIX_STAGE_JOBS,
+        dateparm=None,
+        stages=stages,
+    )
+    service = bpe.BatchService(SimpleNamespace(vars={}), SimpleNamespace(), bpe.Resources.load())
+    catalog: dict[str, bytes] = {}
+    events: list[tuple] = []
+    region = {"closed": False}
+
+    def submit(name: str, jcl_text: str | None, entry_id: str, budget: object) -> bpe.JobRun:
+        assert not region["closed"], "a job was submitted while the region files were closed"
+        events.append(("submit", name))
+        return bpe.JobRun(name, name, name, entry_id, str(len(events)))
+
+    def wait(run: bpe.JobRun, budget: object) -> bpe.JobRun:
+        events.append(("wait", run.name))
+        catalog.update(UNIKIX_STAGE_LEFT[run.name])
+        run.completed = True
+        run.steps = [bpe.StepOutcome("STEP15", None if run.name == abends else 0)]
+        return run
+
+    def observe(names: list[str], *, deadline: float | None, keep: object) -> dict[str, bytes]:
+        assert region["closed"] and deadline == adapter.deadline
+        events.append(("observe", tuple(names)))
+        found: dict[str, bytes] = {}
+        for logical in names:
+            if logical not in catalog:
+                continue
+            if logical == failing:
+                raise base.AdapterUnavailable(f"dataset_unload of {logical} exited 12", "GAP-MIS-007")
+            before = dict(adapter._capture.datasets)
+            keep(logical, catalog[logical])
+            added = {
+                name: data
+                for name, data in adapter._capture.datasets.items()
+                if name not in before or before[name] != data
+            }
+            assert list(added.values()) == [catalog[logical]], added
+            events.append(("kept", *added))
+            found[logical] = catalog[logical]
+        return found
+
+    def set_closed(closed: bool, label: str) -> None:
+        assert region["closed"] is not closed, f"region files {label} twice"
+        region["closed"] = closed
+        events.append((label,))
+
+    service._submit, service._wait, service.observe = submit, wait, observe
+    adapter._batch = service
+    monkeypatch.setattr(adapter, "_close_region_files", lambda: set_closed(True, "close"))
+    monkeypatch.setattr(adapter, "_open_region_files", lambda: set_closed(False, "open"))
+    workdir = work_root / UNIKIX_STAGE_SCENARIO
+    if gap_id is None:
+        result = adapter.execute(scenario, workdir)
+        assert result.datasets == kept
+        assert result.return_code == (None if abends else 0)
+        assert adapter._capture.result is result
+    else:
+        with pytest.raises(base.AdapterUnavailable) as caught:
+            adapter.execute(scenario, workdir)
+        assert caught.value.gap_id == gap_id
+    assert events == calls
+    assert adapter._capture.datasets == kept
+
+
+@pytest.mark.parametrize(("started", "available", "declared", "missing"), UNIKIX_STAGE_SESSIONS)
+def test_unikix_declares_stage_observations_with_the_business_datasets(
+    started: bool, available: frozenset[str], declared: bool, missing: str | None
+) -> None:
+    assert base.AFTER_PREFIX + "*" in unikix_adapter._STATIC_OBSERVATIONS
+    work_root = Path(os.environ.get(WORK_ROOT_ENV, "").strip() or tempfile.gettempdir())
+    adapter = UniKixAdapter(work_root=work_root, repo_root=Path(_TESTS_ROOT).parent)
+    if started:
+        adapter._session_ready = True
+        adapter._commands = _ProbedCommands(available)
+    else:
+        assert adapter.observations() == set(unikix_adapter._STATIC_OBSERVATIONS)
+    assert adapter.can_observe("ACCTDATA") is declared
+    for name in (STAGE_ACCOUNTS, UNIKIX_STAGE_BACKUP):
+        assert adapter.can_observe(name) is declared
+        assert adapter.observation_gap(name) == (None if declared else "GAP-MIS-007")
+        if missing is not None:
+            assert missing in adapter._unobservable(name)
+
+
+@pytest.mark.parametrize(("name", "jobs", "raised", "detail"), UNIKIX_STAGE_GUARD_CASES)
+def test_unikix_refuses_a_stage_observation_without_one_job_end_before_the_region(
+    csd_gate_work_root: Path,
+    name: str,
+    jobs: tuple[str, ...],
+    raised: type[Exception],
+    detail: str,
+) -> None:
+    adapter = UniKixAdapter(work_root=csd_gate_work_root, repo_root=Path(_TESTS_ROOT).parent)
+    adapter._session_ready = True
+    adapter._env = object()
+    adapter._commands = _GateCommands()
+    adapter._batch = _GateBatch()
+    scenario = _unikix_stage_scenario((name,), jobs)
+    with pytest.raises(raised) as caught:
+        adapter._plan_for(
+            scenario, csd_gate_work_root / UNIKIX_STAGE_SCENARIO, not jobs, [], jobs
+        )
+    assert detail in str(caught.value)
+    if raised is HarnessError:
+        assert name in str(caught.value)
+    assert adapter._plan is None and not adapter._touched
+    assert list(csd_gate_work_root.iterdir()) == []
+
+
+
+# The job-chain proof's stage checks (harness.report) on synthetic decoded
+# outcomes and baseline expectations: the accounts as POSTTRAN leaves them,
+# and the chain's TRANSACT-BKUP generation and TRANSACT as TRANBKP leaves
+# them. Only the problems naming a stage observation are judged: the rest of
+# each synthetic outcome, which other proof checks read, is left out.
+PROOF_POSTINT = "BAT-POSTINT-normal-01"
+PROOF_ACCOUNT_IDS = range(1, 51)
+PROOF_BACKUP_COUNT = 262
+PROOF_POSTED = report.PROOF_POSTED_ACCOUNTS
+PROOF_BACKUP = report.PROOF_FIRST_BACKUP
+PROOF_EMPTIED = report.PROOF_EMPTIED_TRANSACT
+PROOF_LATER_TS = "2022-07-07-10.00.00.000000"
+
+# (scenario id, mutation of the conforming file_state, the one stage problem
+# it yields, or None for the conforming outcome itself).
+PROOF_STAGE_OUTCOMES = [
+    pytest.param(STAGE_CHAIN, None, None, id="chain-conforming"),
+    pytest.param(PROOF_POSTINT, None, None, id="postint-conforming"),
+    pytest.param(
+        PROOF_POSTINT, lambda state: state.pop(PROOF_POSTED),
+        f"{PROOF_POSTED} is not in the decoded outcome", id="postint-posted-accounts-absent",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state.update({PROOF_POSTED: {baselines.MISSING: True}}),
+        f"{PROOF_POSTED} was not produced", id="posted-accounts-not-produced",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state[PROOF_POSTED].append(dict(state[PROOF_POSTED][0])),
+        f"{PROOF_POSTED} holds 51 record(s), not 50", id="posted-accounts-count",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state[PROOF_POSTED][6].update({"ACCT-ID": "51"}),
+        f"{PROOF_POSTED} lacks the account(s) 7", id="posted-account-missing",
+    ),
+    pytest.param(
+        STAGE_CHAIN,
+        lambda state: state[PROOF_POSTED][6].update({"ACCT-CURR-CYC-CREDIT": "0.00", "ACCT-CURR-CYC-DEBIT": "0.00"}),
+        f"{PROOF_POSTED} account(s) 7 have zero ACCT-CURR-CYC-CREDIT and ACCT-CURR-CYC-DEBIT",
+        id="posted-account-without-postings",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state[PROOF_POSTED][6].update({"ACCT-CURR-CYC-CREDIT": "1,164.87"}),
+        f"1 {PROOF_POSTED} record(s) have an ACCT-ID, ACCT-CURR-CYC-CREDIT or ACCT-CURR-CYC-DEBIT that is not "
+        "decoded number text",
+        id="posted-cycle-not-number-text",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state["ACCTDATA"][-1].update({"ACCT-CURR-BAL": "1964.64"}),
+        f"account 50's ACCT-CURR-BAL differ between {PROOF_POSTED} and the final ACCTDATA",
+        id="last-account-rewritten",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state[PROOF_BACKUP].pop(),
+        f"{PROOF_BACKUP} holds 261 record(s), not 262", id="backup-count",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state[PROOF_BACKUP].insert(0, state[PROOF_BACKUP].pop(1)),
+        f"{PROOF_BACKUP} is not in ascending TRAN-ID order", id="backup-order",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state[PROOF_BACKUP][-1].update({"TRAN-ID": report.PROOF_INTEREST_IDS[0]}),
+        f"{PROOF_BACKUP} holds 1 interest record(s) ({report.PROOF_INTEREST_IDS[0]})", id="backup-interest-record",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state[PROOF_BACKUP][0].update({"TRAN-PROC-TS": PROOF_LATER_TS}),
+        f"1 {PROOF_BACKUP} record(s) have a TRAN-PROC-TS other than {report.PROOF_PROC_TS[0]}",
+        id="backup-timestamp",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state[PROOF_EMPTIED].append(dict(state[PROOF_BACKUP][0])),
+        f"{PROOF_EMPTIED} holds 1 record(s), not 0", id="transact-not-emptied",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state.update({PROOF_EMPTIED: {baselines.MISSING: True}}),
+        f"{PROOF_EMPTIED} was not produced", id="emptied-transact-not-produced",
+    ),
+]
+
+# (scenario id, mutation of the conforming file_state expectation, the one
+# stage problem it yields, or None for the conforming expectation itself).
+PROOF_STAGE_EXPECTATIONS = [
+    pytest.param(STAGE_CHAIN, None, None, id="chain-conforming"),
+    pytest.param(PROOF_POSTINT, None, None, id="postint-conforming"),
+    pytest.param(
+        PROOF_POSTINT, lambda state: state.pop(PROOF_POSTED),
+        f"its baseline does not expect {PROOF_POSTED}", id="postint-posted-accounts-unexpected",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state.update({PROOF_POSTED: {"count": 50}}),
+        f"its baseline expects {PROOF_POSTED} as a mapping of count, not its full record list",
+        id="posted-accounts-count-only",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state[PROOF_POSTED]["records"].pop(),
+        f"its baseline expects 49 {PROOF_POSTED} record(s), not the 50 accounts", id="posted-accounts-49",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state[PROOF_POSTED]["records"][6].pop("ACCT-CURR-CYC-DEBIT"),
+        f"1 {PROOF_POSTED} record(s) of its baseline do not name ACCT-CURR-CYC-DEBIT",
+        id="posted-account-without-debit",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state.update({PROOF_BACKUP: {"contains": state[PROOF_BACKUP]["records"][:2]}}),
+        f"its baseline expects {PROOF_BACKUP} as a mapping of contains, not its full record list",
+        id="backup-subsequence-only",
+    ),
+    pytest.param(
+        STAGE_CHAIN, lambda state: state.pop(PROOF_EMPTIED),
+        f"its baseline does not expect {PROOF_EMPTIED}", id="emptied-transact-unexpected",
+    ),
+]
+
+
+def _proof_stage_state() -> dict:
+    """The decoded ``file_state`` of a conforming run: every account with
+    posted cycle totals after POSTTRAN and, but for account 50, interest
+    added and zero cycle totals at the end; TRANBKP's 262 posted records in
+    TRAN-ID order at the default clock; and an empty TRANSACT."""
+    posted = [
+        {"ACCT-ID": str(number), "ACCT-CURR-BAL": "1288.10", "ACCT-CURR-CYC-CREDIT": "1164.87",
+         "ACCT-CURR-CYC-DEBIT": "-70.77"}
+        for number in PROOF_ACCOUNT_IDS
+    ]
+    rewritten = {"ACCT-CURR-BAL": "1302.66", "ACCT-CURR-CYC-CREDIT": "0.00", "ACCT-CURR-CYC-DEBIT": "0.00"}
+    final = [dict(record, **rewritten) for record in posted[:-1]] + [dict(posted[-1])]
+    backup = [
+        {"TRAN-ID": f"{number:016d}", "TRAN-CARD-NUM": "0500024453765740", "TRAN-AMT": "504.77",
+         "TRAN-PROC-TS": report.PROOF_PROC_TS[0]}
+        for number in range(1, PROOF_BACKUP_COUNT + 1)
+    ]
+    return {PROOF_POSTED: posted, "ACCTDATA": final, PROOF_BACKUP: backup, PROOF_EMPTIED: []}
+
+
+def _stage_problems(problems: list[str]) -> list[str]:
+    return [problem for problem in problems if base.AFTER_PREFIX in problem]
+
+
+@pytest.mark.parametrize(("scenario_id", "mutate", "problem"), PROOF_STAGE_OUTCOMES)
+def test_proof_outcome_checks_each_stage_observation(scenario_id: str, mutate, problem: str | None) -> None:
+    state = _proof_stage_state()
+    if mutate is not None:
+        mutate(state)
+    found = _stage_problems(report._proof_outcome_problems(scenario_id, {"file_state": state}, {}))
+    if problem is None:
+        assert found == []
+    else:
+        assert len(found) == 1 and problem in found[0], found
+
+
+@pytest.mark.parametrize(("scenario_id", "mutate", "problem"), PROOF_STAGE_EXPECTATIONS)
+def test_proof_expectation_pins_each_stage_observation(scenario_id: str, mutate, problem: str | None) -> None:
+    state = {name: {"records": records} for name, records in _proof_stage_state().items()}
+    if mutate is not None:
+        mutate(state)
+    found = _stage_problems(report._proof_expectation_problems(scenario_id, {"file_state": state}))
+    if problem is None:
+        assert found == []
+    else:
+        assert len(found) == 1 and problem in found[0], found

@@ -20,8 +20,8 @@ Every scenario has one baseline directory ``tests/baselines/<id>/``:
     Observed baselines only: the raw bytes of each business dataset named in
     ``expected.datasets`` or ``expected.file_state``, as the adapter returned
     them, exactly one file per such dataset; a missing or an extra ``.bin``
-    is refused. Reserved observations (``@CATALOG``, ``@AIX:<path>``, ...)
-    have none.
+    is refused. Reserved observations (``@CATALOG``, ``@AIX:<path>``,
+    ``@AFTER:<JOB>:<LOGICAL>``, ...) have none.
 
 Values in ``expected.yaml``
     ``return_code`` is an integer, or null for an abend. ``messages`` is the
@@ -31,7 +31,8 @@ Values in ``expected.yaml``
     number such as ``102`` stands for its four-digit text). A
     ``datasets``/``file_state`` entry is the list of records, compared
     exactly in length and order (indexed datasets in primary-key order,
-    sequential ones as written, ``@AIX:<path>`` in alternate-key order), or a
+    sequential ones as written, ``@AIX:<path>`` in alternate-key order,
+    ``@AFTER:<JOB>:<LOGICAL>`` in the order of its ``<LOGICAL>``), or a
     mapping of ``records`` (that exact list), ``contains`` (an ordered
     subsequence), ``count`` (the record count) and ``matchers`` (field ->
     matcher, qualifying that field in the records given). A record is a field
@@ -1270,7 +1271,10 @@ def _dataset_view(name: str, data: bytes | None) -> _View:
             if name.startswith(_base.AIX_PREFIX):
                 definition = _aix_spec(name[len(_base.AIX_PREFIX) :])
             else:
-                definition = _fixtures.spec(name)
+                # A stage observation holds its logical dataset at the end of a
+                # job, so it decodes, and sorts, exactly as that dataset does.
+                stage = _base.parse_after_job(name)
+                definition = _fixtures.spec(stage[1] if stage is not None else name)
                 sort = definition.keyed
             view.record_length = definition.record_length
             view.layout = definition.layout
@@ -1357,10 +1361,11 @@ def decode_result(scenario: Any, result: _base.Result) -> dict:
     decoded through ``tests/inventory/layouts.yaml``: field maps of plain
     values (``harness.codec.to_plain``) or lines for ``TEXT/<n>`` layouts,
     indexed datasets in primary-key order, sequential ones and ``@AIX:<path>``
-    as delivered, ``@CATALOG`` and ``@REGION-FILES`` as their lines. A dataset
-    the result lacks is ``{"@missing": true}``; one that cannot be decoded is
-    ``{"@error": <reason>}``. The result is plain YAML-safe data; raw bytes
-    are never changed."""
+    as delivered, ``@AFTER:<JOB>:<LOGICAL>`` through the layout and in the
+    order of its ``<LOGICAL>``, ``@CATALOG`` and ``@REGION-FILES`` as their
+    lines. A dataset the result lacks is ``{"@missing": true}``; one that
+    cannot be decoded is ``{"@error": <reason>}``. The result is plain
+    YAML-safe data; raw bytes are never changed."""
     return _decode(scenario, result).decoded
 
 
@@ -2059,7 +2064,9 @@ def compare(
     ``adapter_name`` every business dataset the scenario's ``expected`` names
     is also compared byte for byte with its ``.bin`` (on an adapter whose
     clock is not fixed, without the bytes of matcher fields), and one without
-    a ``.bin`` fails with reason ``error``. Matchers resolve exactly on
+    a ``.bin`` fails with reason ``error``; reserved observations
+    (``@CATALOG``, ``@AIX:<path>``, ``@AFTER:<JOB>:<LOGICAL>``, ...) hold no
+    ``.bin`` and are compared decoded only. Matchers resolve exactly on
     ``FIXED_CLOCK_ADAPTERS`` and are judged against ``run_date`` elsewhere.
 
     ``("passed", None, "")`` when every check holds. Otherwise ``failing``

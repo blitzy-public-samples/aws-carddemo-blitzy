@@ -74,7 +74,7 @@ import functools
 import os
 import re
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1102,6 +1102,7 @@ def run_jobs(
     clock: str = DEFAULT_CLOCK,
     inputs_dir: str | os.PathLike[str] | None = None,
     repo_root: str | os.PathLike[str] = REPO_ROOT,
+    after_job: Callable[[int, str], None] | None = None,
 ) -> JobOutcome:
     """Run the jobs of the scenario's ``inputs.job`` (a name or an ordered
     list) in order against ``catalog``, the scenario's catalog
@@ -1114,6 +1115,15 @@ def run_jobs(
     clock of ``run_program``; ``repo_root`` holds the SYSIN members the
     utilities read. The deadline is checked before every step and bounds
     every subprocess (``ScenarioTimeout``).
+
+    ``after_job``, when given, is called once for each job that ran, as
+    ``after_job(position, job)`` with the job's 0-based position in
+    ``inputs.job``: after the job's last step ran, whether it ended normally
+    or abended, and before the next job starts, so it sees the catalog as
+    that job left it (the adapter's ``@AFTER:<JOB>:<LOGICAL>`` observations).
+    A job that never ran, because an earlier one abended, gets no call. The
+    deadline is checked before each call, and what the call raises ends the
+    run as a failing step would.
 
     Raises ``HarnessError`` (``UtilityError`` and ``DatasetError``
     included) for a step the emulation cannot run as transcribed; the step
@@ -1136,7 +1146,7 @@ def run_jobs(
     index = 0
     failure: BaseException | None = None
     try:
-        for job, steps in plans:
+        for position, (job, steps) in enumerate(plans):
             generations = JobGenerations(catalog)  # relative generations fixed at job start
             run_here: list[StepResult] = []
             for step in steps:
@@ -1168,6 +1178,11 @@ def run_jobs(
                     len(run_here),
                 )
             )
+            if after_job is not None:
+                # The job is over, normally or by its abend, and the next one
+                # has not begun: the catalog holds what this job left.
+                _check_deadline(deadline, f"after job {job}")
+                after_job(position, job)
             if job_abended:
                 break
     except BaseException as exc:

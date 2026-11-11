@@ -1,11 +1,13 @@
 """BPE jobs and dataset services of the ``unikix`` adapter.
 
 ``BatchService`` runs CardDemo jobs on the test-owned BPE node and provides
-every dataset service the adapter needs: fixture loads, post-run unloads,
-``@CATALOG``, ``@AIX:<path>`` and the catalog reset. All of it is JCL, either
-a member of the UniKix copy or a job this module renders from a
-``commands.yaml`` template, and every command goes through
-``env.CommandSet.run``, so nothing is issued outside ``commands.yaml``.
+every dataset service the adapter needs: fixture loads, unloads after a run
+and after a job of a chain (the adapter's ``@AFTER:<JOB>:<LOGICAL>``,
+through ``run_jobs``'s ``after_job``), ``@CATALOG``, ``@AIX:<path>`` and the
+catalog reset. All of it is JCL, either a member of the UniKix copy or a job
+this module renders from a ``commands.yaml`` template, and every command
+goes through ``env.CommandSet.run``, so nothing is issued outside
+``commands.yaml``.
 
 A job runs in three commands: ``bpe_translate`` (``mvstrans``), the
 submitting entry (``bpe_submit``, or the dataset or catalog entry that reuses
@@ -1799,12 +1801,23 @@ class BatchService:
         deadline: float | None = None,
         *,
         dateparm: str | None = None,
+        after_job: Callable[[int, str], None] | None = None,
     ) -> BatchOutcome:
         """Run a scenario's ``inputs.job``: one job, or an ordered list (a
         chain) submitted each after the previous completed, stopping after
         the first job in which a step abended. ``TRNRPT00`` is rendered with
         ``trnrpt00_jcl`` from ``dateparm`` (``preconditions.parameters.DATEPARM``,
-        ``"YYYY-MM-DD YYYY-MM-DD"``)."""
+        ``"YYYY-MM-DD YYYY-MM-DD"``).
+
+        ``after_job``, when given, is called once for each job whose wait
+        returned, as ``after_job(position, job)`` with the job's 0-based
+        position in ``jobs``: after the job completed, whether it ended
+        normally or abended, and before the next job is submitted, so it sees
+        the datasets as that job left them (the adapter's
+        ``@AFTER:<JOB>:<LOGICAL>`` observations). A job that never ran,
+        because an earlier one abended, gets no call, and neither does one
+        whose wait raised. What the call raises ends the run, as a failed
+        wait would."""
         if isinstance(jobs, str):
             names = [jobs]
         elif isinstance(jobs, Sequence):
@@ -1815,7 +1828,7 @@ class BatchService:
             raise HarnessError(f"inputs.job must name one job or a list of jobs, got {jobs!r}")
         budget = _Budget(deadline)
         runs: list[JobRun] = []
-        for name in names:
+        for position, name in enumerate(names):
             job = self.resources.job(name)
             jcl_text = None
             if job.generated:
@@ -1828,6 +1841,10 @@ class BatchService:
                 jcl_text = trnrpt00_jcl(parts[0], parts[1], self.resources)
             run = self._submit(name, jcl_text, "bpe_submit", budget)
             runs.append(self._wait(run, budget))
+            if after_job is not None:
+                # The job has completed, normally or by its abend, and the
+                # next one is not submitted yet: the datasets hold what it left.
+                after_job(position, name)
             if run.abended:
                 break
         return BatchOutcome.of(runs)
@@ -2475,12 +2492,14 @@ class BatchService:
         deadline: float | None = None,
         keep: Callable[[str, bytes], None] | None = None,
     ) -> dict[str, bytes]:
-        """The observations ``names`` after a run, as raw bytes: logical
-        datasets through ``unload``, ``@AIX:<path>`` through ``unload_aix`` and
-        ``@CATALOG`` through ``catalog``. The catalog is listed once; a dataset
-        or path it does not hold is left out, because ``Result.datasets``
-        carries only what exists after the run. Any other reserved name is
-        another module's (``@REGION-FILES``, ``@TDQ:JOBS``) and raises
+        """The observations ``names`` after a run, or after a job of a chain,
+        as raw bytes: logical datasets through ``unload``, ``@AIX:<path>``
+        through ``unload_aix`` and ``@CATALOG`` through ``catalog``. The
+        catalog is listed once; a dataset or path it does not hold is left
+        out, because ``Result.datasets`` carries only what exists then. Any
+        other reserved name is another module's (``@REGION-FILES``,
+        ``@TDQ:JOBS``, and ``@AFTER:<JOB>:<LOGICAL>``, for which the adapter
+        passes ``<LOGICAL>`` here at the end of ``<JOB>``) and raises
         ``HarnessError``. ``keep``, when given, is called with each name and
         its bytes as soon as they are acquired, so the caller's evidence holds
         them even when a later acquisition fails; the bytes returned are the

@@ -17,14 +17,19 @@ Job scenarios (``inputs.job``, one job or a chain)
     ``expected`` names that exists at the end, a GDG logical as its newest
     generation.
 
-Observations: business datasets, ``@CATALOG`` and ``@AIX:<path>``. Business
-datasets are read back on every run, whether or not ``expected`` names them,
-as the program and job paragraphs above describe, with every other dataset
-of the run that ``expected`` names and that exists. ``@CATALOG`` and
-``@AIX:<path>`` are produced only when ``expected`` names them, and an
-``@AIX:<path>`` whose path, alternate index or base cluster is not catalogued
-is omitted. Screens, ``@REGION-FILES`` and ``@TDQ:JOBS`` need a UniKix
-region and are never produced here.
+Observations: business datasets, ``@CATALOG``, ``@AIX:<path>`` and
+``@AFTER:<JOB>:<LOGICAL>``. Business datasets are read back on every run,
+whether or not ``expected`` names them, as the program and job paragraphs
+above describe, with every other dataset of the run that ``expected`` names
+and that exists. ``@CATALOG`` and ``@AIX:<path>`` are produced only when
+``expected`` names them, and an ``@AIX:<path>`` whose path, alternate index
+or base cluster is not catalogued is omitted. ``@AFTER:<JOB>:<LOGICAL>`` is
+produced only for a job scenario whose ``expected`` names it: ``<LOGICAL>``
+read as ``Catalog.read_logical`` reads it, at the end of ``<JOB>``, before
+the next job starts (``jobs.run_jobs``'s ``after_job``); it is omitted when
+``<JOB>`` never ran or ``<LOGICAL>`` had no file then. Screens,
+``@REGION-FILES`` and ``@TDQ:JOBS`` need a UniKix region and are never
+produced here.
 
 Faults: an ``open`` fault with condition ``unavailable`` leaves its dataset
 out, so the program's OPEN fails with status 35; every other fault raises
@@ -73,6 +78,7 @@ from pathlib import Path
 from typing import Any
 
 from adapters.base import (
+    AFTER_PREFIX,
     AIX_PREFIX,
     BUSINESS_DATASETS,
     CATALOG,
@@ -85,6 +91,7 @@ from adapters.base import (
     AdapterUnavailable,
     MissingPrerequisite,
     Result,
+    parse_after_job,
     required_observations,
 )
 from adapters.gnucobol_batch import build as _build
@@ -107,7 +114,7 @@ _GAP_REGION_FILES = "GAP-MIS-011"
 _GAP_JOBS_CAPTURE = "GAP-MIS-017"
 _GAP_TOOLCHAIN = "GAP-MIS-019"
 
-_OBSERVATIONS = frozenset({BUSINESS_DATASETS, CATALOG, AIX_PREFIX + "*"})
+_OBSERVATIONS = frozenset({BUSINESS_DATASETS, CATALOG, AIX_PREFIX + "*", AFTER_PREFIX + "*"})
 _SCREEN_NAMES = frozenset({SCREENS, SCREEN_MAP, SCREEN_TEXT})
 
 _MMAP_MIN_ADDR = Path("/proc/sys/vm/mmap_min_addr")
@@ -633,6 +640,17 @@ class GnuCOBOLBatchAdapter(Adapter):
         catalog = state.catalog
         if catalog is None or not state.jobs:
             raise HarnessError("a job scenario reached execute without its catalog")
+        stages = self._stage_observations(_scenario_id(scenario), state.jobs, wanted)
+        staged: dict[str, bytes] = {}
+
+        def after_job(position: int, job: str) -> None:
+            # The logical datasets as the job just finished left them, before
+            # a later job of the chain rewrites, deletes or rolls them.
+            for name, logical in stages.get(job, ()):
+                value = catalog.read_logical(logical)
+                if value is not None:
+                    staged[name] = value
+
         outcome = _jobs.run_jobs(
             state.cache,
             scenario,
@@ -642,6 +660,7 @@ class GnuCOBOLBatchAdapter(Adapter):
             clock=state.clock,
             inputs_dir=state.workdir / _INPUTS_DIR,
             repo_root=self.repo_root,
+            after_job=after_job if stages else None,
         )
         names = _job_logicals(state.jobs)
         preconditions, inputs = _section(scenario, "preconditions"), _section(scenario, "inputs")
@@ -655,8 +674,40 @@ class GnuCOBOLBatchAdapter(Adapter):
             value = catalog.read_logical(logical)
             if value is not None:
                 data[logical] = value
+        data.update(staged)
         data.update(self._catalog_observations(catalog, wanted))
         return outcome.return_code, list(outcome.messages), data
+
+    @staticmethod
+    def _stage_observations(
+        scenario_id: str, jobs: tuple[str, ...], wanted: set[str]
+    ) -> dict[str, list[tuple[str, str]]]:
+        """The ``@AFTER:<JOB>:<LOGICAL>`` observations ``expected`` names, by
+        job: ``(name, logical)`` pairs in name order. A name that is not a
+        well-formed stage observation (``adapters.base.parse_after_job``) is
+        not produced. One that names a job the chain does not run, or runs
+        more than once, has no single end to read the dataset at: the schema
+        check (``harness.scenarios.validate``) refuses both, and so does this
+        guard, with ``HarnessError``, before any job runs."""
+        stages: dict[str, list[tuple[str, str]]] = {}
+        for name in sorted(wanted):
+            parsed = parse_after_job(name)
+            if parsed is None:
+                continue
+            job, logical = parsed
+            runs = jobs.count(job)
+            if runs != 1:
+                shown = (
+                    f"does not run {job}, so no end of it exists"
+                    if runs == 0
+                    else f"runs {job} {runs} times, so its end is not one point of the run"
+                )
+                raise HarnessError(
+                    f"{scenario_id}: expected names {name}, but inputs.job ({', '.join(jobs)}) "
+                    f"{shown} to read {logical} at"
+                )
+            stages.setdefault(job, []).append((name, logical))
+        return stages
 
     @staticmethod
     def _catalog_observations(catalog: _datasets.Catalog, wanted: set[str]) -> dict[str, bytes]:

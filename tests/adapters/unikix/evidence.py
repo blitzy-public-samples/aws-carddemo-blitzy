@@ -14,7 +14,8 @@ Each scenario directory holds:
     The bytes of each dataset and observation, unchanged. A name becomes a
     file name by replacing every character outside ``[A-Za-z0-9._-]`` with
     ``_`` (``@CATALOG`` -> ``_CATALOG.bin``, ``@AIX:<path>`` ->
-    ``_AIX_<path>.bin``, ``@REGION-FILES`` -> ``_REGION-FILES.bin``,
+    ``_AIX_<path>.bin``, ``@AFTER:<JOB>:<LOGICAL>`` ->
+    ``_AFTER_<JOB>_<LOGICAL>.bin``, ``@REGION-FILES`` -> ``_REGION-FILES.bin``,
     ``@TDQ:JOBS`` -> ``_TDQ_JOBS.bin``); ``result.yaml`` maps each file name
     back to its name under ``capture_summary.datasets``.
 ``sysout/<path>``
@@ -247,8 +248,8 @@ class Capture:
         the 24 rows of 80 characters as read (``adapters.unikix.tpe``).
     ``datasets``
         Logical dataset or observation name (``ACCTDATA``, ``@CATALOG``,
-        ``@AIX:<path>``, ``@REGION-FILES``, ``@TDQ:JOBS``) -> the exact bytes
-        put in ``Result.datasets``.
+        ``@AIX:<path>``, ``@AFTER:<JOB>:<LOGICAL>``, ``@REGION-FILES``,
+        ``@TDQ:JOBS``) -> the exact bytes put in ``Result.datasets``.
     ``sysout``
         Relative file name -> bytes (text is written as UTF-8): BPE sysout,
         generated JCL, the scenario's command log, build-log excerpts.

@@ -21,11 +21,17 @@ Observations
     raises the real cause (GAP-MIS-009 without UniKix). A blocked session
     declares every observation too, so that its GAP-MIS-004 cause is raised.
     Otherwise only those whose ``commands.yaml`` entries probed available
-    are: datasets, ``@AIX:<path>`` and ``@CATALOG`` through BPE jobs
-    (GAP-MIS-007), ``@REGION-FILES`` through ``region_file_inquire``
-    (GAP-MIS-011), ``@TDQ:JOBS`` through ``jobs_capture`` (GAP-MIS-017) and
-    screens through the checked loopback listener and ``s3270``
-    (GAP-MIS-005). ``@TDQ:JOBS`` is correlated within a window opened just
+    are: datasets, ``@AIX:<path>``, ``@AFTER:<JOB>:<LOGICAL>`` and
+    ``@CATALOG`` through BPE jobs (GAP-MIS-007), ``@REGION-FILES`` through
+    ``region_file_inquire`` (GAP-MIS-011), ``@TDQ:JOBS`` through
+    ``jobs_capture`` (GAP-MIS-017) and screens through the checked loopback
+    listener and ``s3270`` (GAP-MIS-005). ``@AFTER:<JOB>:<LOGICAL>`` is
+    ``<LOGICAL>`` unloaded when ``<JOB>`` of the chain has completed, normally
+    or abended, and before the next job is submitted, with the region files
+    closed and then reopened; it is omitted when ``<JOB>`` never ran or the
+    catalog does not hold ``<LOGICAL>`` then, and a job the chain does not
+    run exactly once is a ``HarnessError`` before anything reaches the
+    region. ``@TDQ:JOBS`` is correlated within a window opened just
     before the first step or job: no job ``jobs_capture`` lists then is ever
     attributed to the run, and a new ``TRNRPT00`` job counts only when its
     listed submission time, to the listing's precision, lies wholly within
@@ -98,6 +104,7 @@ if _TESTS_ROOT not in sys.path:
 
 import harness  # noqa: E402
 from adapters.base import (  # noqa: E402
+    AFTER_PREFIX,
     AIX_PREFIX,
     BUSINESS_DATASETS,
     CATALOG,
@@ -113,6 +120,7 @@ from adapters.base import (  # noqa: E402
     Result,
     format_fixed_records,
     format_region_files,
+    parse_after_job,
     required_observations,
 )
 from adapters.unikix import bpe, deploy, evidence, tpe  # noqa: E402
@@ -145,7 +153,15 @@ _CSD_UTILITY = "DFHCSDUP"
 
 # Everything the adapter can declare before its session has started.
 _STATIC_OBSERVATIONS = frozenset(
-    {BUSINESS_DATASETS, SCREENS, CATALOG, AIX_PREFIX + "*", REGION_FILES, TDQ_JOBS}
+    {
+        BUSINESS_DATASETS,
+        SCREENS,
+        CATALOG,
+        AIX_PREFIX + "*",
+        AFTER_PREFIX + "*",
+        REGION_FILES,
+        TDQ_JOBS,
+    }
 )
 _SCREEN_NAMES = frozenset({SCREENS, SCREEN_MAP, SCREEN_TEXT})
 
@@ -494,6 +510,9 @@ class _Plan:
     generations: list[tuple[str, bytes]] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
     online_faults: list[_OnlineFault] = field(default_factory=list)
+    # The @AFTER:<JOB>:<LOGICAL> observations expected, by job: (name,
+    # logical) pairs in name order (UniKixAdapter._stage_observations).
+    stages: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -743,7 +762,7 @@ class UniKixAdapter(Adapter):
             if all(map(self._cached, _CATALOG_ENTRIES)):
                 found.add(CATALOG)
             if all(map(self._cached, _UNLOAD_ENTRIES)):
-                found.update({BUSINESS_DATASETS, AIX_PREFIX + "*"})
+                found.update({BUSINESS_DATASETS, AIX_PREFIX + "*", AFTER_PREFIX + "*"})
         if self._cached("region_file_inquire"):
             found.add(REGION_FILES)
         if self._cached("jobs_capture"):
@@ -761,7 +780,8 @@ class UniKixAdapter(Adapter):
             return _GAP_REGION_CONTROL
         if name == TDQ_JOBS:
             return _GAP_JOBS_CAPTURE
-        # @CATALOG, every @AIX:<path> and the business datasets.
+        # @CATALOG, every @AIX:<path>, every @AFTER:<JOB>:<LOGICAL> and the
+        # business datasets.
         return _GAP_DATASETS
 
     def _unobservable(self, name: str) -> str:
@@ -1141,6 +1161,9 @@ class UniKixAdapter(Adapter):
             jobs=jobs,
             dateparm=dateparm if isinstance(dateparm, str) else None,
         )
+        plan.stages = self._stage_observations(
+            scenario.id, jobs, required_observations(scenario.expected)
+        )
         unprovidable = self._plan_faults(scenario, plan)
         resources = self._batch.resources
         for logical, data in sorted(self._inputs(workdir).items()):
@@ -1187,6 +1210,43 @@ class UniKixAdapter(Adapter):
         for logical, data in plan.sequential:
             self._batch.check_sequential(logical, data)
         return plan
+
+    @staticmethod
+    def _stage_observations(
+        scenario_id: str, jobs: tuple[str, ...], wanted: Iterable[str]
+    ) -> dict[str, list[tuple[str, str]]]:
+        """The ``@AFTER:<JOB>:<LOGICAL>`` observations ``expected`` names, by
+        job: ``(name, logical)`` pairs in name order. A name that is not a
+        well-formed stage observation (``adapters.base.parse_after_job``) is
+        not produced. One that names a job ``jobs`` (the scenario's
+        ``inputs.job``; empty for ``inputs.steps``) does not run, or runs more
+        than once, has no single end to unload the dataset at: the schema
+        check (``harness.scenarios.validate``) refuses both, and so does this
+        guard, with ``HarnessError``, before anything reaches the region."""
+        stages: dict[str, list[tuple[str, str]]] = {}
+        for name in sorted(wanted):
+            parsed = parse_after_job(name)
+            if parsed is None:
+                continue
+            job, logical = parsed
+            runs = jobs.count(job)
+            if runs != 1:
+                if not jobs:
+                    shown = f"the scenario runs no job, so no end of {job} exists"
+                elif runs == 0:
+                    shown = (
+                        f"inputs.job ({', '.join(jobs)}) does not run {job}, so no end of it exists"
+                    )
+                else:
+                    shown = (
+                        f"inputs.job ({', '.join(jobs)}) runs {job} {runs} times, so its end is "
+                        "not one point of the run"
+                    )
+                raise HarnessError(
+                    f"{scenario_id}: expected names {name}, but {shown} to unload {logical} at"
+                )
+            stages.setdefault(job, []).append((name, logical))
+        return stages
 
     def _plan_faults(self, scenario: Any, plan: _Plan) -> MissingPrerequisite | None:
         """Put ``preconditions.faults`` into ``plan`` as the adapter can
@@ -1285,6 +1345,9 @@ class UniKixAdapter(Adapter):
         screens: list[dict[str, str]] = []
         messages: list[str] = []
         jobs_window: _JobsWindow | None = None
+        # The @AFTER:<JOB>:<LOGICAL> bytes acquired between the jobs; an
+        # online run has none (_stage_observations refused any).
+        staged: dict[str, bytes] = {}
         if plan.online:
             if TDQ_JOBS in expected:
                 jobs_window = self._jobs_window()
@@ -1319,7 +1382,18 @@ class UniKixAdapter(Adapter):
                 capture.sysout["adapter/region-files-before.txt"] = self._region_files()
             if TDQ_JOBS in expected:
                 jobs_window = self._jobs_window()
-            batch = self._batch.run_jobs(list(plan.jobs), self.deadline, dateparm=plan.dateparm)
+
+            def after_job(position: int, job: str) -> None:
+                # The datasets as the job just completed left them, before a
+                # later job of the chain rewrites, deletes or rolls them.
+                staged.update(self._observe_stage(plan.stages.get(job, ())))
+
+            batch = self._batch.run_jobs(
+                list(plan.jobs),
+                self.deadline,
+                dateparm=plan.dateparm,
+                after_job=after_job if plan.stages else None,
+            )
             return_code, messages = batch.return_code, list(batch.messages)
             if batch.run_date is not None:
                 capture.run_date["bpe_job_start_date"] = batch.run_date
@@ -1328,6 +1402,7 @@ class UniKixAdapter(Adapter):
             jobs_window.last = _dt.datetime.now()
         capture.job_numbers.extend(self._batch.take_job_numbers())
         datasets = self._observe(expected, jobs_window)
+        datasets.update(staged)
         result = Result(
             return_code=return_code,
             datasets=datasets,
@@ -1335,7 +1410,8 @@ class UniKixAdapter(Adapter):
             messages=messages,
             elapsed_s=time.monotonic() - started,
         )
-        # capture.datasets already holds each of these bytes (_observe).
+        # capture.datasets already holds each of these bytes (_observe,
+        # _observe_stage).
         capture.result = result
         capture.job_numbers.extend(self._batch.take_job_numbers())
         self._result = result
@@ -1363,8 +1439,12 @@ class UniKixAdapter(Adapter):
         within ``window``; BPE unloads then run with the region files closed,
         which are reopened after. Each observation goes into the evidence as
         soon as it is acquired (``_keep``), so a later failure leaves the bytes
-        read before it there; the ones returned are those same bytes."""
-        wanted = sorted(set(names) - _SCREEN_NAMES)
+        read before it there; the ones returned are those same bytes. The
+        ``@AFTER:<JOB>:<LOGICAL>`` names are acquired at the end of their job
+        (``_observe_stage``), never here; a malformed one is not produced."""
+        wanted = sorted(
+            name for name in set(names) - _SCREEN_NAMES if not name.startswith(AFTER_PREFIX)
+        )
         found: dict[str, bytes] = {}
         if REGION_FILES in wanted:
             found[REGION_FILES] = self._region_files()
@@ -1380,6 +1460,27 @@ class UniKixAdapter(Adapter):
             found.update(self._batch.observe(batch_names, deadline=self.deadline, keep=self._keep))
             self._open_region_files()
         return found
+
+    def _observe_stage(self, stage: Iterable[tuple[str, str]]) -> dict[str, bytes]:
+        """The stage observations ``stage``, the ``(name, logical)`` pairs of
+        one job (``_Plan.stages``), at the end of that job and before the next
+        is submitted, as raw bytes under their stage names. Each ``<LOGICAL>``
+        is unloaded through BPE as ``_observe`` unloads, with the region files
+        closed, which are reopened after; one the catalog does not hold then
+        is left out. Each goes into the evidence under its stage name as soon
+        as it is acquired (``_keep``), so a later failure leaves it there. A
+        job without stage observations leaves the region files as they are."""
+        names = {logical: name for name, logical in stage}
+        if not names:
+            return {}
+        self._close_region_files()
+        found = self._batch.observe(
+            sorted(names),
+            deadline=self.deadline,
+            keep=lambda logical, data: self._keep(names[logical], data),
+        )
+        self._open_region_files()
+        return {names[logical]: data for logical, data in found.items()}
 
     def _region_files(self) -> bytes:
         """``@REGION-FILES`` for the 14 ``fct.lst`` files, from

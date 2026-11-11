@@ -41,6 +41,16 @@ are keyed by their logical names:
 ``@AIX:<path>``
     The fixed-length records read through an alternate-index path,
     concatenated in alternate-key order (``format_fixed_records``).
+``@AFTER:<JOB>:<LOGICAL>``
+    The raw bytes of logical dataset ``<LOGICAL>`` as the adapter reads it at
+    the end of job ``<JOB>`` of the scenario's ``inputs.job`` chain: after the
+    job's last step ran, whether it ended normally or abended, and before the
+    next job starts. A cluster comes unloaded in primary-key order, a
+    sequential dataset as written, a GDG logical as its newest catalogued
+    generation at that moment. It is absent when ``<JOB>`` never ran (an
+    earlier job abended) or ``<LOGICAL>`` is not catalogued or has no file
+    then, and acquiring it never changes what the jobs do
+    (``after_job_observation``, ``parse_after_job``).
 ``@REGION-FILES``
     One line per region file, ``<name> open|closed enabled|disabled``, sorted
     by name (``format_region_files``).
@@ -68,6 +78,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 __all__ = [
+    "AFTER_PREFIX",
     "AIX_PREFIX",
     "BUSINESS_DATASETS",
     "CATALOG",
@@ -90,11 +101,13 @@ __all__ = [
     "MissingPrerequisite",
     "Result",
     "ScenarioTimeout",
+    "after_job_observation",
     "format_catalog",
     "format_fixed_records",
     "format_region_files",
     "marker_name",
     "observation_matches",
+    "parse_after_job",
     "required_observations",
     "screen_text",
 ]
@@ -111,6 +124,7 @@ DEFAULT_DEADLINE_S = 300
 # expected.datasets / expected.file_state.
 CATALOG = "@CATALOG"
 AIX_PREFIX = "@AIX:"
+AFTER_PREFIX = "@AFTER:"  # @AFTER:<JOB>:<LOGICAL>, a dataset at the end of one job of the chain
 REGION_FILES = "@REGION-FILES"
 TDQ_JOBS = "@TDQ:JOBS"
 
@@ -230,8 +244,8 @@ class Result:
         ``gnucobol-batch``, an ABEND on ``unikix``).
     ``datasets``
         Logical dataset name or reserved observation name (``@CATALOG``,
-        ``@AIX:<path>``, ``@REGION-FILES``, ``@TDQ:JOBS``) -> raw bytes, never
-        decoded.
+        ``@AIX:<path>``, ``@AFTER:<JOB>:<LOGICAL>``, ``@REGION-FILES``,
+        ``@TDQ:JOBS``) -> raw bytes, never decoded.
     ``screens``
         One mapping per step: BMS field name -> value, plus ``@map`` and, for
         an unformatted screen, ``@text``.
@@ -402,6 +416,56 @@ def marker_name(adapter_name: str) -> str:
     return adapter_name.replace("-", "_")
 
 
+def _stage_part(value: Any, what: str) -> str:
+    """One part of a stage observation name: a non-empty string without
+    ``:``, which separates the parts, or whitespace."""
+    if (
+        not isinstance(value, str)
+        or not value
+        or ":" in value
+        or any(char.isspace() for char in value)
+    ):
+        raise ValueError(
+            f"{what} must be a non-empty string without ':' or whitespace, got {value!r}"
+        )
+    return value
+
+
+def after_job_observation(job: str, logical: str) -> str:
+    """The stage observation name ``@AFTER:<job>:<logical>``: logical dataset
+    ``logical`` at the end of job ``job`` of the scenario's job chain.
+
+    ``job`` and ``logical`` are non-empty names without ``:`` or whitespace,
+    and ``logical`` does not start with ``@``: a stage observation holds a
+    business dataset, never another observation. Anything else is a
+    ``ValueError``."""
+    _stage_part(job, "the job of a stage observation")
+    _stage_part(logical, "the logical dataset of a stage observation")
+    if logical.startswith("@"):
+        raise ValueError(
+            f"the logical dataset of a stage observation must not start with '@', got {logical!r}"
+        )
+    return f"{AFTER_PREFIX}{job}:{logical}"
+
+
+def parse_after_job(key: Any) -> tuple[str, str] | None:
+    """``(job, logical)`` of a stage observation name, the inverse of
+    ``after_job_observation``; ``None`` for anything that is not a
+    well-formed ``@AFTER:<JOB>:<LOGICAL>`` (another name, a value that is not
+    a string, a missing or empty part, a third part, or a ``<LOGICAL>`` that
+    starts with ``@``)."""
+    if not isinstance(key, str) or not key.startswith(AFTER_PREFIX):
+        return None
+    job, separator, logical = key[len(AFTER_PREFIX) :].partition(":")
+    if not separator:
+        return None
+    try:
+        after_job_observation(job, logical)
+    except ValueError:
+        return None
+    return job, logical
+
+
 def observation_matches(key: str, patterns: Iterable[str]) -> bool:
     """Whether ``key`` (a logical dataset, a reserved observation, a reserved
     screen field or ``SCREENS``) is covered by the ``patterns`` an adapter's
@@ -411,8 +475,9 @@ def observation_matches(key: str, patterns: Iterable[str]) -> bool:
       its own name.
     * ``@map`` and ``@text`` match ``SCREENS``.
     * A reserved key matches an exact pattern, a pattern ending in ``*`` by
-      prefix (``"@AIX:*"``), or a pattern ending in ``:``, which names a whole
-      family (``AIX_PREFIX`` covers every ``@AIX:<path>``)."""
+      prefix (``"@AIX:*"``, ``"@AFTER:*"``), or a pattern ending in ``:``,
+      which names a whole family (``AIX_PREFIX`` covers every
+      ``@AIX:<path>``, ``AFTER_PREFIX`` every ``@AFTER:<JOB>:<LOGICAL>``)."""
     available = frozenset(patterns)
     if key in _SCREEN_FIELDS:
         return SCREENS in available
@@ -553,7 +618,7 @@ class Adapter(abc.ABC):
     def observations(self) -> set[str]:
         """The observation patterns this adapter can produce: any of
         ``BUSINESS_DATASETS``, ``CATALOG``, ``AIX_PREFIX + "*"``,
-        ``REGION_FILES``, ``TDQ_JOBS`` and ``SCREENS``
+        ``AFTER_PREFIX + "*"``, ``REGION_FILES``, ``TDQ_JOBS`` and ``SCREENS``
         (``observation_matches`` defines how they match)."""
 
     @abc.abstractmethod

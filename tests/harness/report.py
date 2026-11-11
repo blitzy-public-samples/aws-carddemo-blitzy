@@ -107,7 +107,7 @@ _TESTS_ROOT = str(Path(__file__).resolve().parents[1])
 if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
 
-from adapters.base import AdapterError, Result  # noqa: E402
+from adapters.base import AdapterError, Result, after_job_observation  # noqa: E402
 from harness import (  # noqa: E402
     DEFAULT_CLOCK,
     INVENTORY_DIR,
@@ -346,39 +346,61 @@ PROOF_REJECT_TEXT = "OVERLIMIT TRANSACTION"
 PROOF_REJECT_COUNT = 38
 # The interest records' TRAN-IDs: INTCALC's PARM 2022071800 plus a counter.
 PROOF_INTEREST_IDS = tuple(f"2022071800{number:06d}" for number in range(1, 51))
+# The stage observations (adapters.base.after_job_observation), each a
+# dataset as one job of the chain left it, for the states a later job
+# overwrites before the end of the run. ACCTDATA at the end of POSTTRAN holds
+# every account's posted balance and cycle totals [app/cbl/CBTRN02C.cbl:545-554],
+# which INTCALC zeroes for accounts 1 to 49. At the end of TRANBKP,
+# TRANSACT-BKUP is its backup generation of the 262 posted records, which
+# TRANREPT's generation supersedes as the current one, and TRANSACT the
+# cluster it redefines empty [app/jcl/TRANBKP.jcl:23-67], which COMBTRAN
+# reloads.
+PROOF_POSTED_ACCOUNTS = after_job_observation("POSTTRAN", "ACCTDATA")
+PROOF_FIRST_BACKUP = after_job_observation("TRANBKP", "TRANSACT-BKUP")
+PROOF_EMPTIED_TRANSACT = after_job_observation("TRANBKP", "TRANSACT")
 # Decoded record counts. TRANSACT holds the 262 posted records, and 312 once
 # the chain's COMBTRAN merges the 50 interest records in; TRANSACT-BKUP, the
-# current generation, is TRANREPT's backup of those 312. TCATBALF is checked
-# as its fixture's record count plus PROOF_TCATBAL_ADDED.
+# current generation, is TRANREPT's backup of those 312. Both scenarios hold
+# the 50 accounts after POSTTRAN, and the chain TRANBKP's backup of the 262
+# posted records and its emptied TRANSACT. TCATBALF is checked as its
+# fixture's record count plus PROOF_TCATBAL_ADDED.
 PROOF_RECORD_COUNTS = {
     "BAT-POSTINT-normal-01": {
         "DALYREJS": PROOF_REJECT_COUNT, "TRANSACT": 262, "ACCTDATA": 50, "SYSTRAN": len(PROOF_INTEREST_IDS),
+        PROOF_POSTED_ACCOUNTS: 50,
     },
     "BAT-CHAIN-normal-01": {
         "DALYREJS": PROOF_REJECT_COUNT, "TRANSACT": 312, "ACCTDATA": 50, "SYSTRAN": len(PROOF_INTEREST_IDS),
         "TRXFL": 312, "TRANSACT-BKUP": 312,
+        PROOF_POSTED_ACCOUNTS: 50, PROOF_FIRST_BACKUP: 262, PROOF_EMPTIED_TRANSACT: 0,
     },
 }
-# TRAN-PROC-TS of every TRANSACT record: DEFAULT_CLOCK in the DB2 timestamp
-# format the programs stamp, or the run-timestamp matcher's name, which the
-# projection holds where the baseline asserts the field through that matcher.
+# TRAN-PROC-TS of every TRANSACT record and of every record of TRANBKP's
+# backup (PROOF_FIRST_BACKUP): DEFAULT_CLOCK in the DB2 timestamp format the
+# programs stamp, or the run-timestamp matcher's name, which the projection
+# holds where the baseline asserts the field through that matcher.
 PROOF_PROC_TS = ("2022-07-06-10.00.00.000000", "run-timestamp")
-# The ACCTDATA fields the baseline must expect for every account: the balance
-# and both cycle fields POSTTRAN posts and INTCALC rewrites.
+# The ACCTDATA fields the baseline must expect for every account, at the end
+# of the run and after POSTTRAN (PROOF_POSTED_ACCOUNTS): the balance and both
+# cycle fields POSTTRAN posts and INTCALC rewrites.
 PROOF_ACCOUNT_FIELDS = ("ACCT-CURR-BAL", "ACCT-CURR-CYC-CREDIT", "ACCT-CURR-CYC-DEBIT")
 # The accounts INTCALC rewrites, 1 to 49, and the last one, 50, it never
-# rewrites (GAP-DEF-003); _proof_account_problems derives both.
+# rewrites (GAP-DEF-003); _proof_account_problems and
+# _proof_posted_account_problems derive both.
 PROOF_UPDATED_ACCOUNTS = tuple(range(1, 50))
 PROOF_UNUPDATED_ACCOUNT = 50
 # Decoded number text as the projection holds it, '0.00' or '-47.88'.
 PROOF_NUMBER_RE = re.compile(r"[+-]?[0-9]+(?:\.[0-9]+)?")
 # The chain's catalog observation lines, '<name> <type> <generation or ->'
 # (adapters.base.format_catalog): TRANBKP's and TRANREPT's FILEOUT each
-# catalog one TRANSACT.BKUP(+1) generation. A reserved observation is
-# asserted under file_state only, so the chain's is listed apart from the
-# datasets of PROOF_REQUIREMENTS.
+# catalog one TRANSACT.BKUP(+1) generation. A reserved observation, the
+# catalog or a stage observation, is asserted under file_state only, so each
+# scenario's are listed apart from the datasets of PROOF_REQUIREMENTS.
 PROOF_CATALOG = "@CATALOG"
-PROOF_OBSERVATIONS = {"BAT-POSTINT-normal-01": (), "BAT-CHAIN-normal-01": (PROOF_CATALOG,)}
+PROOF_OBSERVATIONS = {
+    "BAT-POSTINT-normal-01": (PROOF_POSTED_ACCOUNTS,),
+    "BAT-CHAIN-normal-01": (PROOF_CATALOG, PROOF_POSTED_ACCOUNTS, PROOF_FIRST_BACKUP, PROOF_EMPTIED_TRANSACT),
+}
 PROOF_BKUP_GENERATION_RE = re.compile(r"AWS\.M2\.CARDDEMO\.TRANSACT\.BKUP GENERATION G[0-9]{4}V00")
 PROOF_BKUP_GENERATIONS = 2
 # TRXFL, the COSTM01 TRNX-RECORD keyed by card and transaction id: the 328
@@ -2529,10 +2551,12 @@ def _proof_expectation_problems(scenario_id: str, expected: Any) -> list[str]:
     (``102`` is ``'0102'``), exactly ``PROOF_REJECT_COUNT`` of
     ``PROOF_REJECT_CODE``; ``messages`` the complete list of lines an
     observed baseline holds; every dataset the scenario must assert
-    (``PROOF_REQUIREMENTS``, under ``datasets`` or ``file_state``) and the
-    chain's ``@CATALOG`` (``PROOF_OBSERVATIONS``, under ``file_state``) its
-    full record list, a plain list or a mapping with ``records``; and
-    ACCTDATA's list all 50 accounts, each naming
+    (``PROOF_REQUIREMENTS``, under ``datasets`` or ``file_state``) and every
+    reserved observation it must assert under ``file_state``
+    (``PROOF_OBSERVATIONS``: the stage observations, and the chain's
+    ``@CATALOG``) its full record list, a plain list or a mapping with
+    ``records``; and ACCTDATA's list and the accounts' after POSTTRAN
+    (``PROOF_POSTED_ACCOUNTS``) all 50 accounts each, every one naming
     ``PROOF_ACCOUNT_FIELDS``. Each key the expectation lacks or leaves
     unpinned is one reason naming it."""
     if not isinstance(expected, Mapping):
@@ -2581,16 +2605,16 @@ def _proof_expectation_problems(scenario_id: str, expected: Any) -> list[str]:
             problems.append(f"{scenario_id}: its baseline expects {name} as {_proof_expected_shown(value)}, "
                             "not its full record list")
             continue
-        if name != "ACCTDATA":
+        if name not in ("ACCTDATA", PROOF_POSTED_ACCOUNTS):
             continue
-        wanted = PROOF_RECORD_COUNTS[scenario_id]["ACCTDATA"]
+        wanted = PROOF_RECORD_COUNTS[scenario_id][name]
         if len(records) != wanted:
-            problems.append(f"{scenario_id}: its baseline expects {len(records)} ACCTDATA record(s), "
+            problems.append(f"{scenario_id}: its baseline expects {len(records)} {name} record(s), "
                             f"not the {wanted} accounts")
         for field_name in PROOF_ACCOUNT_FIELDS:
             lacking = sum(1 for record in records if not isinstance(record, Mapping) or field_name not in record)
             if lacking:
-                problems.append(f"{scenario_id}: {lacking} ACCTDATA record(s) of its baseline do not name "
+                problems.append(f"{scenario_id}: {lacking} {name} record(s) of its baseline do not name "
                                 f"{field_name}, which the proof asserts for every account")
     return problems
 
@@ -2675,12 +2699,16 @@ def _proof_outcome_problems(
     """Why the decoded outcome of a proof scenario's passed gnucobol-batch
     record departs from the proof's business values: the return code; the
     message counts, the TCATBAL creation lines and the step lines of each
-    job; the reject reasons; the record counts and fields of DALYREJS,
-    TRANSACT, TCATBALF, SYSTRAN and, for the chain, TRXFL and TRANSACT-BKUP;
-    ACCTDATA's cycle fields (``_proof_account_problems``); and, for the
-    chain, the catalog's backup generations, TRXFL's keys and padding, the
-    statements and the report (``_proof_chain_problems``). Every dataset the
-    scenario must assert has to be in the outcome."""
+    job; the reject reasons; the record counts (``PROOF_RECORD_COUNTS``) and
+    fields of DALYREJS, TRANSACT, TCATBALF, SYSTRAN, the accounts after
+    POSTTRAN (50) and, for the chain, TRXFL, TRANSACT-BKUP, TRANBKP's backup
+    (262) and the TRANSACT it emptied (0); ACCTDATA's cycle fields
+    (``_proof_account_problems``); the accounts after POSTTRAN against the
+    final ACCTDATA (``_proof_posted_account_problems``); and, for the chain,
+    the catalog's backup generations, TRANBKP's backup, TRXFL's keys and
+    padding, the statements and the report (``_proof_chain_problems``).
+    Every dataset and observation the scenario must assert has to be in the
+    outcome."""
     problems: list[str] = []
     return_code = decoded.get("return_code")
     if isinstance(return_code, bool) or return_code != PROOF_RETURN_CODE:
@@ -2759,6 +2787,9 @@ def _proof_outcome_problems(
     accounts = found.get("ACCTDATA")
     if accounts is not None:
         problems.extend(_proof_account_problems(scenario_id, accounts))
+    posted = found.get(PROOF_POSTED_ACCOUNTS)
+    if posted is not None:
+        problems.extend(_proof_posted_account_problems(scenario_id, posted, accounts))
     problems.extend(_proof_chain_problems(scenario_id, found))
     return problems
 
@@ -2813,11 +2844,75 @@ def _proof_account_problems(scenario_id: str, accounts: Sequence[Any]) -> list[s
     return problems
 
 
+def _proof_posted_account_problems(
+    scenario_id: str, posted: Sequence[Any], final: Sequence[Any] | None
+) -> list[str]:
+    """Why the decoded accounts at the end of POSTTRAN
+    (``PROOF_POSTED_ACCOUNTS``) do not show its postings: every account 1 to
+    50 (by ``int(ACCT-ID)``) present with ``ACCT-CURR-CYC-CREDIT`` or
+    ``ACCT-CURR-CYC-DEBIT`` non-zero, and account 50
+    (``PROOF_UNUPDATED_ACCOUNT``) holding the ``PROOF_ACCOUNT_FIELDS`` values
+    of its record in the final ACCTDATA (``final``; ``None`` when the outcome
+    lacks it, which the caller reports). A value that is not decoded number
+    text fails."""
+    # The repository accounts start with zero cycle totals, and CBTRN02C adds
+    # every posted amount to ACCT-CURR-CYC-CREDIT (amount >= 0) or
+    # ACCT-CURR-CYC-DEBIT [app/cbl/CBTRN02C.cbl:545-554]; each account has
+    # postings in dailytran.txt, so after POSTTRAN none has both zero, which
+    # INTCALC then zeroes for accounts 1 to 49. INTCALC never rewrites account
+    # 50 (GAP-DEF-003), so its final record keeps these values.
+    cycles: dict[int, tuple[Decimal, Decimal]] = {}
+    records: dict[int, Mapping[str, Any]] = {}
+    unreadable = 0
+    for record in posted:
+        fields = record if isinstance(record, Mapping) else {}
+        account_id = fields.get("ACCT-ID")
+        readable_id = isinstance(account_id, str) and account_id.isascii() and account_id.isdigit()
+        number = int(account_id) if readable_id else None
+        if number is not None:
+            records[number] = fields
+        cycle = [fields.get(name) for name in ("ACCT-CURR-CYC-CREDIT", "ACCT-CURR-CYC-DEBIT")]
+        if number is None or not all(isinstance(value, str) and PROOF_NUMBER_RE.fullmatch(value) for value in cycle):
+            unreadable += 1
+            continue
+        cycles[number] = (Decimal(cycle[0]), Decimal(cycle[1]))
+    problems: list[str] = []
+    if unreadable:
+        problems.append(f"{scenario_id}: {unreadable} {PROOF_POSTED_ACCOUNTS} record(s) have an ACCT-ID, "
+                        "ACCT-CURR-CYC-CREDIT or ACCT-CURR-CYC-DEBIT that is not decoded number text")
+    wanted = PROOF_UPDATED_ACCOUNTS + (PROOF_UNUPDATED_ACCOUNT,)
+    missing = [str(number) for number in wanted if number not in records]
+    if missing:
+        problems.append(f"{scenario_id}: {PROOF_POSTED_ACCOUNTS} lacks the account(s) {_clip(', '.join(missing), 200)}")
+    unposted = [str(number) for number in wanted if number in cycles and not any(cycles[number])]
+    if unposted:
+        problems.append(f"{scenario_id}: {PROOF_POSTED_ACCOUNTS} account(s) {_clip(', '.join(unposted), 200)} have "
+                        "zero ACCT-CURR-CYC-CREDIT and ACCT-CURR-CYC-DEBIT, but POSTTRAN posts to every account's "
+                        "cycle totals")
+    last = records.get(PROOF_UNUPDATED_ACCOUNT)
+    if last is not None and final is not None:
+        ending = next((
+            record for record in final
+            if isinstance(record, Mapping) and record.get("ACCT-ID") == last.get("ACCT-ID")
+        ), None)
+        if ending is not None:
+            changed = [name for name in PROOF_ACCOUNT_FIELDS if last.get(name) != ending.get(name)]
+            if changed:
+                problems.append(f"{scenario_id}: account {PROOF_UNUPDATED_ACCOUNT}'s {', '.join(changed)} differ "
+                                f"between {PROOF_POSTED_ACCOUNTS} and the final ACCTDATA, but INTCALC never "
+                                "rewrites it (GAP-DEF-003)")
+    return problems
+
+
 def _proof_chain_problems(scenario_id: str, found: Mapping[str, list]) -> list[str]:
     """Why the chain's later jobs are not shown in its decoded datasets
     (``found``, those present; a scenario without them adds nothing):
     ``@CATALOG`` lists exactly ``PROOF_BKUP_GENERATIONS`` TRANSACT.BKUP
-    generations, TRANBKP's and TRANREPT's. TRXFL is in ascending
+    generations, TRANBKP's and TRANREPT's. TRANBKP's backup
+    (``PROOF_FIRST_BACKUP``) is in ascending TRAN-ID order, holds none of
+    the interest records ``PROOF_INTEREST_IDS``, which COMBTRAN merges in only
+    after it, and every record's TRAN-PROC-TS is one of ``PROOF_PROC_TS``.
+    TRXFL is in ascending
     (TRNX-CARD-NUM, TRNX-ID) order, its keys are TRANSACT's (TRAN-CARD-NUM,
     TRAN-ID) pairs and every record's FILLER is 20 spaces. STMTFILE holds
     ``PROOF_STATEMENTS`` lines with 'START OF STATEMENT' and HTMLFILE as many
@@ -2832,6 +2927,20 @@ def _proof_chain_problems(scenario_id: str, found: Mapping[str, list]) -> list[s
         if seen != PROOF_BKUP_GENERATIONS:
             problems.append(f"{scenario_id}: {PROOF_CATALOG} lists {seen} AWS.M2.CARDDEMO.TRANSACT.BKUP "
                             f"generation(s), not {PROOF_BKUP_GENERATIONS}, TRANBKP's and TRANREPT's")
+    backup = found.get(PROOF_FIRST_BACKUP)
+    if backup is not None:
+        ids = _proof_field(backup, "TRAN-ID")
+        if not all(isinstance(key, str) for key in ids) or any(left >= right for left, right in zip(ids, ids[1:])):
+            problems.append(f"{scenario_id}: {PROOF_FIRST_BACKUP} is not in ascending TRAN-ID order")
+        interest = [key for key in ids if key in PROOF_INTEREST_IDS]
+        if interest:
+            problems.append(f"{scenario_id}: {PROOF_FIRST_BACKUP} holds {len(interest)} interest record(s) "
+                            f"({_clip(', '.join(interest), 120)}), but TRANBKP backs up only the posted records, "
+                            "before COMBTRAN merges INTCALC's in")
+        wrong = sum(1 for stamp in _proof_field(backup, "TRAN-PROC-TS") if stamp not in PROOF_PROC_TS)
+        if wrong:
+            problems.append(f"{scenario_id}: {wrong} {PROOF_FIRST_BACKUP} record(s) have a TRAN-PROC-TS other than "
+                            f"{PROOF_PROC_TS[0]}")
     transact = found.get("TRANSACT")
     trxfl = found.get("TRXFL")
     if trxfl is not None:
@@ -2890,8 +2999,11 @@ def check_proof(state: State | None = None) -> tuple[bool, str]:
 
     - It is ``passed`` on current records and asserts its business outcomes:
       return code, messages, reject reasons and the datasets of its jobs
-      (``PROOF_REQUIREMENTS``), and the chain its catalog, ``@CATALOG``
-      under ``file_state`` (``PROOF_OBSERVATIONS``).
+      (``PROOF_REQUIREMENTS``), and under ``file_state``
+      (``PROOF_OBSERVATIONS``) the accounts as POSTTRAN leaves them,
+      ``@AFTER:POSTTRAN:ACCTDATA``, and for the chain its catalog,
+      ``@CATALOG``, and TRANBKP's backup and emptied TRANSACT,
+      ``@AFTER:TRANBKP:TRANSACT-BKUP`` and ``@AFTER:TRANBKP:TRANSACT``.
     - Its file is the proof's: ``inputs.job`` is exactly its job list
       (``PROOF_JOB_SEQUENCES``: POSTTRAN then INTCALC; the chain goes on with
       TRANBKP, COMBTRAN, CREASTMT and TRANREPT) with no program or steps. Its
@@ -2904,11 +3016,11 @@ def check_proof(state: State | None = None) -> tuple[bool, str]:
     - Its baseline was observed on gnucobol-batch, and its expectation, which
       every passed run matches on each asserted key, pins the proof's values:
       return code 4, the 38 reject reasons 0102, the complete list of
-      message lines, and the full record list of every dataset the scenario
-      must assert and of the chain's catalog, ACCTDATA's naming
-      ``ACCT-CURR-BAL``, ``ACCT-CURR-CYC-CREDIT`` and ``ACCT-CURR-CYC-DEBIT``
-      for all 50 accounts. A count, a ``contains`` subsequence or matchers
-      alone pin none of them.
+      message lines, and the full record list of every dataset and
+      observation the scenario must assert, ACCTDATA's and the accounts'
+      after POSTTRAN each naming ``ACCT-CURR-BAL``, ``ACCT-CURR-CYC-CREDIT``
+      and ``ACCT-CURR-CYC-DEBIT`` for all 50 accounts. A count, a
+      ``contains`` subsequence or matchers alone pin none of them.
     - It has a current passed gnucobol-batch record; a UniKix pass alone never
       proves it. That record's decoded outcome shows return code 4. Its
       messages hold, job after job, a step line for each step of the job's
@@ -2924,14 +3036,22 @@ def check_proof(state: State | None = None) -> tuple[bool, str]:
       its fixture plus 50 created records. ACCTDATA holds the 50 accounts,
       1 to 49 with ``ACCT-CURR-CYC-CREDIT`` and ``ACCT-CURR-CYC-DEBIT`` both
       zero, as INTCALC rewrites them, and account 50 without both zero, as
-      INTCALC never rewrites it (GAP-DEF-003). SYSTRAN holds the 50 interest
-      records ``2022071800000001`` to ``2022071800000050`` in order.
-    - For the chain, that record also shows the later jobs. ``@CATALOG``
-      lists exactly two ``AWS.M2.CARDDEMO.TRANSACT.BKUP`` generations,
-      TRANBKP's and TRANREPT's, and TRANSACT-BKUP, the current one, holds
-      312 records. TRXFL holds 312 records in ascending (TRNX-CARD-NUM,
-      TRNX-ID) order, whose keys are TRANSACT's (TRAN-CARD-NUM, TRAN-ID)
-      pairs, each padded with spaces in its 20-byte FILLER. STMTFILE holds 50
+      INTCALC never rewrites it (GAP-DEF-003). The accounts as POSTTRAN
+      leaves them are the 50, each with ``ACCT-CURR-CYC-CREDIT`` or
+      ``ACCT-CURR-CYC-DEBIT`` non-zero, as POSTTRAN posts to every one, and
+      account 50 with the balance and cycle fields of its final ACCTDATA
+      record. SYSTRAN holds the 50 interest records ``2022071800000001`` to
+      ``2022071800000050`` in order.
+    - For the chain, that record also shows the later jobs. At the end of
+      TRANBKP, its TRANSACT-BKUP generation holds the 262 posted records in
+      ascending TRAN-ID order, none of them an interest record, each with
+      ``TRAN-PROC-TS`` at the default clock, and TRANSACT holds no record.
+      ``@CATALOG`` lists exactly two ``AWS.M2.CARDDEMO.TRANSACT.BKUP``
+      generations, TRANBKP's and TRANREPT's, and TRANSACT-BKUP, the current
+      one at the end, holds 312 records. TRXFL holds 312 records in
+      ascending (TRNX-CARD-NUM, TRNX-ID) order, whose keys are TRANSACT's
+      (TRAN-CARD-NUM, TRAN-ID) pairs, each padded with spaces in its 20-byte
+      FILLER. STMTFILE holds 50
       'START OF STATEMENT' lines and HTMLFILE 50 '<!DOCTYPE html>' lines, one
       statement for each card. Each TRANSACT TRAN-ID begins exactly one
       TRANREPT line, and the report holds at least one 'Page Total' and one
