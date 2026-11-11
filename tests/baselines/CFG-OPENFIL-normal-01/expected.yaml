@@ -1,0 +1,47 @@
+# Derived baseline of scenario CFG-OPENFIL-normal-01: derived — inferred-not-observed
+# (GAP-INF-010); pinned, never corrected. Only unikix can run it: OPENFIL acts on a CICS
+# region, so the gnucobol-batch job driver has no step table for it.
+# Sources: app/jcl/OPENFIL.jcl:1,22-30 (JOB card OEPNFIL, one step OPCIFIL EXEC PGM=SDSF
+# whose ISFIN issues CEMT SET FIL(...) OPE for TRANSACT, CCXREF, ACCTDAT, CXACAIX and
+# USRSEC; the copy's migrated_app/jcl/OPENFIL is byte-identical) and
+# samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/cbl/SDSF.cbl:13-14, which
+# only DISPLAYs 'DUMMY PROGRAM FOR SDSF' and GOBACKs without setting RETURN-CODE, so the
+# CEMT commands are never performed (GAP-DOC-031). README.md:97,183 says OPENFIL "Makes
+# files available to CICS" and README.md:252 names IEFBR14 (GAP-DOC-009); that intent is
+# the documentation conflict, not the expectation.
+# return_code: the highest step code; OPCIFIL ends RC 0.
+# messages: only the step line is asserted, as an ordered subsequence. Whether the
+# DISPLAY of SDSF.cbl reaches a sysout file BPE gives the step, which declares no
+# //SYSOUT DD, is an installation detail, not an outcome of the job, so a complete
+# exact list is not pinned.
+# file_state @REGION-FILES: the region file inquiry after the job, as
+# adapters.base.format_region_files writes it (GAP-MIS-011). The scenario closes no file
+# first, so the state before the job is the reset state, every fct.lst file open and
+# enabled; the adapter keeps that inquiry in the evidence
+# (adapter/region-files-before.txt), and no expected key carries it. The no-op step
+# touches no file, so the state after equals the state before: that equality is the
+# evidence of no change. Job submission is unconfirmed (GAP-MIS-006).
+# A UniKix record of this scenario runs the copy's SDSF.cbl: it is reported as
+# UniKix-copy behaviour and never verifies the app/ OPENFIL items. Only
+# `report.py --import-unikix` replaces this file: MINOR on an equal decoded outcome,
+# MAJOR on a different one.
+file_state:
+  '@REGION-FILES':
+  - ACCTDAT open enabled
+  - CARDAIX open enabled
+  - CARDDAT open enabled
+  - CCXREF open enabled
+  - CUSTDAT open enabled
+  - CXACAIX open enabled
+  - DISCGRP open enabled
+  - TCATBALF open enabled
+  - TRANCATG open enabled
+  - TRANSACT open enabled
+  - TRANSAIX open enabled
+  - TRANTYPE open enabled
+  - TRXFL open enabled
+  - USRSEC open enabled
+messages:
+  contains:
+  - STEP OPCIFIL RC 0000
+return_code: 0

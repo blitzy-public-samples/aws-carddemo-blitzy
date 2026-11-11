@@ -1,0 +1,36 @@
+# Derived baseline (capture_platform: derived in manifest.yaml) of
+# DAT-TRANBKP-recovery-01, the COND=(4,LT) item of TRANBKP. Authored from
+# [app/jcl/TRANBKP.jcl:23-68] [app/proc/REPROC.prc:21-28]
+# [app/ctl/REPROCT.ctl:15] because only unikix can run the scenario;
+# inferred-not-observed (GAP-INF-011, GAP-MIS-006, GAP-MIS-007) and replaced
+# only by `report.py --import-unikix` on eligible evidence, never edited to
+# match a run. Pinned, never corrected.
+#
+# - STEP05R.PRC001: IDCAMS REPRO from the TRANSACT cluster, defined but never
+#   loaded, into TRANSACT.BKUP(+1). VSAM refuses to open an empty cluster for
+#   input, so the REPRO ends with condition code 12 (the z/OS outcome, not yet
+#   observed on BPE). A return code is a normal end, so FILEOUT takes its
+#   normal disposition CATLG and the first generation of the backup base,
+#   which the reset leaves without generations, is catalogued.
+# - STEP05: no COND, so it runs. DELETE of the cluster removes its alternate
+#   index and path with it; the AIX DELETE then finds no entry (code 8), and
+#   each 'IF MAXCC LE 08 THEN SET MAXCC = 0' leaves the step at 0.
+# - STEP10: COND=(4,LT) holds because 4 is less than 12, so it is bypassed,
+#   writes no STEP line and does not define the cluster again.
+#
+# messages is the complete list each adapter writes: one STEP line per
+# executed step, no DISPLAY lines (IDCAMS steps only) and no line per job, so
+# its exact comparison is what shows that STEP10 did not run. return_code is
+# the highest executed step code. @CATALOG is the scenario's own assertion,
+# the backup base and its new generation as an ordered subsequence: the
+# deployment's full listing, which alone could show the cluster absent, is
+# fixed by no source and is pinned once an observed listing is imported.
+file_state:
+  '@CATALOG':
+    contains:
+    - AWS.M2.CARDDEMO.TRANSACT.BKUP GDG -
+    - AWS.M2.CARDDEMO.TRANSACT.BKUP GENERATION G0001V00
+messages:
+- STEP STEP05R.PRC001 RC 0012
+- STEP STEP05 RC 0000
+return_code: 12

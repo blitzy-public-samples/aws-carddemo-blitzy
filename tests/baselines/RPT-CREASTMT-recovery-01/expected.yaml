@@ -1,0 +1,23 @@
+# Derived from app/jcl/CREASTMT.JCL:22-96; inferred-not-observed (GAP-INF-011,
+# GAP-MIS-006, GAP-MIS-007); pinned, never corrected. Only an imported UniKix
+# run replaces it.
+# DELDEF01 sets MAXCC to 0 before its DEFINE, so it ends RC 0 whatever the two
+# DELETEs found, and leaves the TRXFL cluster defined and empty. STEP010 has no
+# COND; with TRANSACT absent its sort input cannot be read, and it ends RC 16,
+# the DFSORT code of an unsuccessful sort. STEP020 (REPRO into TRXFL), STEP030
+# (delete of the previous STATEMNT.PS and STATEMNT.HTML) and STEP040 (CBSTM03A)
+# each carry COND=(0,NE); 0 NE 16 holds, so all three are bypassed and write
+# no STEP line and no CBSTM03A DISPLAY. The job code is the highest step code.
+# @CATALOG asserts only the TRXFL cluster line, as the scenario does: whether
+# STEP010's SORTOUT TRXFL.SEQ is catalogued depends on how the platform ends a
+# step whose input is missing, so it is left to the imported observation.
+file_state:
+  '@CATALOG':
+    contains:
+    - AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS CLUSTER -
+  TRXFL:
+    records: []
+messages:
+- STEP DELDEF01 RC 0000
+- STEP STEP010 RC 0016
+return_code: 16

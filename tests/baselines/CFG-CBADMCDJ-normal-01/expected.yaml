@@ -1,0 +1,19 @@
+file_state:
+  '@REGION-FILES':
+    records:
+    - ACCTDAT open enabled
+    - CARDAIX open enabled
+    - CARDDAT open enabled
+    - CCXREF open enabled
+    - CUSTDAT open enabled
+    - CXACAIX open enabled
+    - DISCGRP open enabled
+    - TCATBALF open enabled
+    - TRANCATG open enabled
+    - TRANSACT open enabled
+    - TRANSAIX open enabled
+    - TRANTYPE open enabled
+    - TRXFL open enabled
+    - USRSEC open enabled
+messages: []
+return_code: 0
