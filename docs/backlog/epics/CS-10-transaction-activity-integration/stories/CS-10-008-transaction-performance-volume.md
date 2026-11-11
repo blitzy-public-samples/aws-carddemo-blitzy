@@ -133,7 +133,7 @@ How it behaves:
 | 1 | Fixed seed (vs random source) | identical rows every run | seed changes must be deliberate |
 | 2 | Set-based batches (vs row-by-row) | load fits the time limit | batches hold memory |
 | 3 | Sparse pair on one account (vs spread) | exact worst case | other accounts never exercise it |
-| 4 | Plan check at stack start (vs manual) | regressions fail before latency runs | one planner choice can block both suites |
+| 4 | Plan check at stack start (vs manual) | regressions fail ahead of the latency runs | one planner choice can block both suites |
 
 Effort and risk: small effort, low risk limited to the load time added to every stack start.
 

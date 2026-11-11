@@ -192,7 +192,7 @@ Open assumptions:
 | AC4 | Holds | the pair list keeps ascending key order |
 | AC5 | Holds | no random, clock or environment value enters |
 | AC6 | Holds | synthetic ranges share no sample value |
-| AC7 | Holds | parents commit before child steps start |
+| AC7 | Holds | parent rows commit ahead of child steps |
 | AC8 | Holds | every pair is checked against the seed |
 | AC9 | Holds | synthetic orders exceed every sample order |
 | AC10 | Holds | a failed batch rolls back the entity |
@@ -218,7 +218,7 @@ Open assumptions:
 | AC4 | Holds | the files keep the same pair order |
 | AC5 | At risk | a regenerated file can change rows unnoticed |
 | AC6 | Holds | the files carry the same disjoint ranges |
-| AC7 | Holds | parent files commit before child files load |
+| AC7 | Holds | parent files commit ahead of child files |
 | AC8 | Holds | every pair is checked against the seed |
 | AC9 | Holds | file steps keep Option A's orders |
 | AC10 | At risk | batch rollback needs a batched file loader |
