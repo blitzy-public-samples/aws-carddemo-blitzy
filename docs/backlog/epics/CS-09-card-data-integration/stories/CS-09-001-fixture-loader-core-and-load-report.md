@@ -29,9 +29,20 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 >   > - Timestamp: either timestamp form, with a real calendar date, hours `00`–`23`, minutes and seconds `00`–`59` and six fraction digits, or exactly 26 spaces, which parses to no value, the entity loader deciding what that blank means.
 >   > - Text: a field marked not blank is malformed when every position holds a space. Other text carries no content check.
 >   > - Key: a line repeating the key of an earlier line of the same file is malformed.
+>   >
+>   > SCOPE-QUESTION (Resolved): The length rule above counts bytes while the layout gives 1-based positions, and nothing fixes the character set or rejects a byte the store cannot hold, such as NUL. Resolution: the parser reads every fixture file as US-ASCII, one byte per character, so a 1-based position is a byte position. Before the length check, it checks that every byte of the line before its line feed, FILLER included, lies in 0x20–0x7E, printable US-ASCII. Any other byte, among them NUL, tab, carriage return, DEL (0x7F) and every byte above 0x7F, makes the line malformed under the malformed-line rule below: the entity load fails with an error naming the fixture file and the 1-based line number, before any value of that line is written. FILLER content has no other check. AC17 also covers it: for its cross-reference-shaped test layout, a 36-byte line holding a NUL byte, a tab or the byte 0xE9 at position 5, inside the 16-position text field where no field check would reject it, each fail; a 50-byte line holding a NUL byte at position 40, inside the FILLER, fails; and a 49-byte line followed by a carriage return before its line feed fails, although its 50 bytes before the line feed meet the full record length. Every line of the four sample fixture files passes, since they hold only printable US-ASCII ended by a line feed. This note mirrors the character-set rule of `docs/data-model.md` § Fixture rules.
 > - `card-servicing-service/src/main/java/com/example/cardservicing/integration/fixture/FixtureLoader.java`: the one-shot job, with one load transaction per entity, the FK skip-and-count rule, and the entity-loader extension point that later loaders register through. Each registration declares its entity and its load order.
 >   - The job runs only when the service starts with the Spring profile `fixture-load`. It runs the registered entity loaders in ascending load order, then exits: status 0 after the last loader commits, and a non-zero status at the first failed entity load, with no later-ordered loader started.
 >   - It declares the store connection from the `card-servicing.db` group of `CardServicingProperties` (CS-11-001), and the stub stories' store readers share that connection. The connection opens on first use, so the application context starts with no store reachable.
+>     > SCOPE-QUESTION (Resolved): The bullet above declares the store connection in every process. Spring Boot builds the JPA entity manager factory at context start whenever a store connection bean exists, and there Hibernate reads store metadata over JDBC to choose its dialect, while with no store connection bean Spring Boot's own store auto-configuration fails startup. The Card Servicing service, Config stub and Auth stub contexts, which receive no `DB_*` values (CS-01-001), would therefore try to connect or fail to start, against the rule that the service never opens a database connection. Resolution:
+>     >
+>     > - `FixtureLoader.java` holds a nested store configuration class, active only when the Spring profile `fixture-load` or `integration` is active, or when `card-servicing.stub.serve` is `card-data`, `transaction-activity` or `reference-data`. It declares:
+>     >   - The store connection: a HikariCP pool built from the `card-servicing.db` group through its no-argument constructor and setters, so the pool starts, and opens its first connection, only on first use.
+>     >   - The JPA entity manager factory over that pool, for the entities under `com.example.cardservicing.integration`. Its Hibernate settings are the PostgreSQL dialect at major version 16 (`hibernate.dialect` `org.hibernate.dialect.PostgreSQLDialect`, `jakarta.persistence.database-major-version` `16`), `hibernate.boot.allow_jdbc_metadata_access` `false` and `hibernate.hbm2ddl.auto` `none`, so building it reads no store metadata. It also applies every `HibernatePropertiesCustomizer` bean the context holds, so the schema-generation pin of CS-09-002 still takes effect.
+>     >   - Its JPA transaction manager, and the Spring Data JPA repositories under `com.example.cardservicing.integration`.
+>     > - A second nested configuration class, with no condition, excludes Spring Boot's `DataSourceAutoConfiguration` and `HibernateJpaAutoConfiguration` through `@EnableAutoConfiguration(exclude = …)`, whose exclusions Spring Boot merges across the application, so no mode builds a store connection or entity manager factory from Spring Boot's own `spring.datasource` and `spring.jpa` settings. Over the declared store connection, Spring Boot's JDBC template auto-configuration still builds the JDBC template that CS-13-001 writes through, while its repository and JDBC transaction-manager auto-configurations stand down beside the declared repositories and transaction manager. Without a store connection bean, all three stand down.
+>     > - Every other context, the Card Servicing service under `stack-service` or no profile, the Config and Auth stubs, and the unit-suite contexts outside those modes, holds no store connection, entity manager factory or repository, and opens no database connection. The loader, the three data stubs and the integration suites start with no store reachable and connect on first use.
+>     > - No file, dependency or environment variable is added, so the 6 files touched stand. The `integration` profile is the integration suites' profile (CS-11-007).
 > - `card-servicing-service/src/main/java/com/example/cardservicing/integration/fixture/LoadReport.java`: per-entity loaded, skipped and derived-timestamp counts, with an entry added only after that entity's load transaction commits. The job logs one line per entry when it exits.
 > - `card-servicing-service/build.gradle`: add Spring Data JPA and the PostgreSQL JDBC driver, versions from the Spring Boot BOM.
 > - Unit tests under `card-servicing-service/src/test/java/com/example/cardservicing/integration/fixture/`: `CardDemoRecordParserTest.java` and `FixtureLoaderTest.java`. `FixtureLoaderTest` drives test entity loaders through a recording transaction manager, so the unit suite needs no store.
@@ -47,6 +58,8 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 >   > SCOPE-QUESTION (Resolved): The list above omits most of the failures `docs/data-model.md` § Fixture rules makes malformed, and it does not say what a failure leaves behind. Resolution: a malformed line is any line that fails a parser check of the record-layout note above (a length other than the two accepted lengths, a non-digit in an unsigned field, a bad sign or amount digit, a date that is not a real calendar date, a bad timestamp, an all-space text field marked not blank, or a repeated key), and any row that its registration's row check rejects. The first malformed line in file order fails its entity's load with an error naming the fixture file and the 1-based line number. The entity's transaction rolls back, so its table holds no row from that load, and the load report holds no entry for it. No later-ordered loader starts, entities committed earlier keep their rows and report entries, and the job exits with a non-zero status. A malformed line is never skipped.
 > - An FK-violating row, one whose foreign key names no row of its parent entity, is skipped and counted, not failed.
 >   > SCOPE-QUESTION (Resolved): A row's parent keys are tested only after the row passes every parser check and its registration's row check. A malformed row is never skipped, so the skipped count holds only parent-key skips.
+>   >
+>   > SCOPE-QUESTION (Resolved): The note above does not say which rows it covers, while for the two seed entities the skipped count also holds rejected seed rows. Resolution: the note above covers the rows the parser reads from the four fixed-width fixture files (accounts, card cross-references, category balances and transactions), whose skipped counts hold only parent-key skips. For transaction types and transaction categories, whose rows come from seed files, the skipped count is the seed rows the CS-13-001 row checks reject, as the registration note below states, plus the parent-key skips of transaction categories. The generated rows of CS-09-007 and CS-10-008 are valid by construction, so their skipped counts hold only parent-key skips.
 > - The loader connects using `DB_URL`, `DB_USERNAME` and `DB_PASSWORD` only, writes nothing to the cache and is never invoked from a request path.
 > - The extension point is used by CS-09-003, CS-13-001, CS-10-002, CS-09-007 and CS-10-008. A registration supplies its entity name, its load order, its rows (read through the parser, from a seed file or from a generator), the parent-key check for its foreign keys and its row writer, and it may count a derived timestamp for any row.
 >   > SCOPE-QUESTION (Resolved): The registration above has no place for an entity's own rule on a parsed row, and nothing says which rows the parser checks bind. Resolution: a registration may also supply a row check, an entity's own rule on the parsed row, which runs after the parser checks and before the parent-key check; a row it rejects is a malformed line. The parser checks and the malformed-line disposition apply to the rows the parser reads from the fixed-width fixture files. Rows a registration supplies from a seed file or a generator follow their own story's checks: the seed-row checks of CS-13-001 reject a seed row and count it as skipped, and CS-09-007 and CS-10-008 generate valid rows.
@@ -91,6 +104,8 @@ Parent epic: [CS-09 Card Data Integration](../README.md)
 > - AC14: When the entity load with order 1 fails, no loader with a later order starts and the job exits with a non-zero status. When every registered loader commits, the job exits with status 0.
 > - AC15: A timestamp field holding 26 spaces parses to no value and does not fail the load.
 > - AC16: With no store reachable and the `fixture-load` profile inactive, the context-start smoke test from CS-05-001 and the configuration tests from CS-11-001 pass with the two new dependencies on the classpath, and no entity loader runs.
+> > SCOPE-QUESTION (Resolved): AC16 does not say which contexts hold a store connection, or that the service opens none. Resolution: AC16 also holds the following in `FixtureLoaderTest`, with no store reachable and `DB_URL` naming a loopback port on which the test listens and counts every connection it accepts. A context started as the Card Servicing service, with no profile active and `card-servicing.stub.serve` empty, holds no `DataSource`, `EntityManagerFactory` or Spring Data repository bean, and the listener accepts zero connections. Test contexts started from only `CardServicingProperties` and the two nested store configurations, the second of which brings in Spring Boot's auto-configurations less the two it excludes, show the same with `card-servicing.stub.serve` set to `config` or `auth`. The same test contexts with `card-servicing.stub.serve` set to `card-data`, `transaction-activity` or `reference-data`, or with the `fixture-load` or `integration` profile active and no entity loader registered, each hold one `DataSource` and one `EntityManagerFactory`, and once each has started the listener has still accepted zero connections.
+>
 > > SCOPE-QUESTION (Resolved): Which criterion covers the accepted lengths, the unsigned-digit, date, not-blank and repeated-key checks, the clock ranges of a timestamp, the row check, and a malformed row that also breaks a parent key? None of AC1–AC16 does. Resolution: AC17–AC22 below, run in `CardDemoRecordParserTest` and `FixtureLoaderTest` with test layouts and test entity loaders through the recording transaction manager. Every failure below fails the entity load with an error naming the fixture file and the 1-based line number.
 > >
 > > - AC17: For a test layout of the cross-reference shape, whose full record is 50 bytes and whose last non-filler field ends at column 36, a 36-byte line and a 50-byte line parse, and so does a 50-byte line whose FILLER holds non-space characters. Lines of 35, 37, 49 and 51 bytes each fail.
@@ -120,7 +135,7 @@ Completed during implementation.
 
 ## 6. Test Plan
 
-- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; pass when all tests pass with ≥80% line coverage per module. Cases: parser decoding with the sample's real encoded values, the two timestamp forms and the blank timestamp field, the accepted-length rule with 36- and 50-byte cross-reference-shaped lines parsing and 35-, 37-, 49- and 51-byte lines failing, the unsigned-digit, date, timestamp clock-range and not-blank text checks, the repeated key, a malformed row that also names no parent and a row-check rejection each failing rather than being skipped, FK skip, report-after-commit, rollback, the cross-entity disposition after a malformed row, load order, exit status, and context start with no store.
+- Unit: Applies. Command `./gradlew :card-servicing-service:test jacocoTestCoverageVerification`; pass when all tests pass with ≥80% line coverage per module. Cases: parser decoding with the sample's real encoded values, the two timestamp forms and the blank timestamp field, the accepted-length rule with 36- and 50-byte cross-reference-shaped lines parsing and 35-, 37-, 49- and 51-byte lines failing, the character-set check with a NUL, tab or 0xE9 byte in a text field, a NUL in the FILLER and a carriage return before the line feed each failing, the unsigned-digit, date, timestamp clock-range and not-blank text checks, the repeated key, a malformed row that also names no parent and a row-check rejection each failing rather than being skipped, FK skip, report-after-commit, rollback, the cross-entity disposition after a malformed row, load order, exit status, and context start with no store, with no store connection built outside the loader, data-stub and integration modes and zero store connections opened at context start in any mode.
 - Integration: Not applicable — the loader core has no upstream call. The container-backed load is proven by CS-09-006. Threshold when it applies: `./gradlew :card-servicing-service:integrationTest` passes, with one suite per external epic covering a stub exception, latency above `UPSTREAM_TIMEOUT_MS` and the `UPSTREAM_MAX_RETRIES` cap.
 - Performance: Not applicable — not a request path. Threshold when it applies:
   - Commands: `docker compose -f tests/docker-compose.yml up -d --wait`, then `./gradlew :card-servicing-service:performanceTest`, then `docker compose -f tests/docker-compose.yml down`.
@@ -145,7 +160,7 @@ Shared by both options:
 - Topology: a one-shot job runs beside and before the stubs, off request paths.
 - Naming: fields and report entries use the data-model names.
 - Addressing: the store is reached by address, user name and password only.
-- Isolation: one transaction per entity, no cache writes.
+- Isolation: one transaction per entity, no cache writes, and no store connection outside the loader, the data stubs and the integration suites.
 - Fallback: none, since a malformed line stops later entities too.
 - Provisioning: fixture files ship inside the service package.
 - Cut-over: the loader retires with the stubs, with no request-path change.
@@ -160,7 +175,7 @@ How it behaves:
 - A line parses only at full record length or the last real field's end.
 - Field and key checks run first, then the row check, then the parent-key check.
 - An amount's scale comes from the layout, its sign from its last character.
-- The store connection opens only on first use.
+- Only the loader, the three data stubs and the integration suites build a store connection, which opens on first use.
 
 | No. | Decision (vs rejected) | Pro | Con |
 |---|---|---|---|
@@ -208,11 +223,12 @@ Settled assumptions:
 - Sample lines are fixed-width, with 36-byte cross-references.
 - Sign letters sit only in an amount's last position.
 - Every sample row passes every check, with none skipped.
+- No in-scope data layout redefines an area, so every layout, the daily transaction one included, is a flat field list.
+- Seed rows come from seed files that the reference data tables story reads, never through the parser.
 
 Open assumptions:
 
-- Open → redefined areas in later layouts → settled by the transaction fixture load story.
-- Open → whether seed rows skip the parser → settled by the reference data tables story.
+- Open → whether the persistence layer starts with no store reachable and opens no connection at start on the pinned framework versions, settled by this story's context-start test.
 
 | AC | Verdict | Why |
 |---|---|---|
@@ -231,7 +247,7 @@ Open assumptions:
 | AC13 | Holds | loaders wait for prior commits |
 | AC14 | Holds | the core stops at a failure |
 | AC15 | Holds | the timestamp kind maps spaces to no value |
-| AC16 | Holds | the connection opens on first use |
+| AC16 | Holds | only loader, data-stub and integration modes build an unopened store connection |
 | AC17 | Holds | the layout declares the only two lengths |
 | AC18 | Holds | digit and not-blank checks reject bad fields |
 | AC19 | Holds | calendar and clock ranges are checked |
