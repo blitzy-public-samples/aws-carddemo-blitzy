@@ -86,7 +86,9 @@ four-digit text), and promoting a derived baseline to an observed one that
 keeps every asserted value (a ``count`` and ``contains`` replaced by all the
 records) is MINOR. Exit 0 when clean, 1 with one ``<id>: <rule>`` line per
 violation, 2 when the check cannot run: an unknown revision, a repository
-root that is not the top level of a git work tree, or git failing.
+root that is not the top level of a git work tree, or git failing. A
+directory whose ``manifest.yaml`` is missing at ``<revision>`` had no version
+there, so it is judged as new.
 
 The module writes only under ``tests/baselines/<id>/`` (``write``).
 """
@@ -2697,6 +2699,11 @@ def check_bumps(base: str, repo_root: str | Path = REPO_ROOT) -> list[str]:
         lost = [name for name in (EXPECTED_FILE, MANIFEST_FILE) if name in base_files and name not in work_files]
         if lost:
             violations.append(f"{baseline_id}: {', '.join(lost)} present at {shown_base} is missing")
+            continue
+        if MANIFEST_FILE not in base_files:
+            # Without its manifest the directory had no baseline version at the
+            # base, so there is no version to bump from: it is judged as new.
+            pending[baseline_id] = ({}, {})
             continue
         missing = [name for name in (EXPECTED_FILE, MANIFEST_FILE) if name not in base_files]
         if missing:

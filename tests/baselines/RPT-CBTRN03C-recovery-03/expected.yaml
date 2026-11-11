@@ -1,0 +1,11 @@
+datasets:
+  TRANREPT: []
+messages:
+- START OF EXECUTION OF PROGRAM CBTRN03C
+- Reporting from 2022-07-01 to 2022-07-31
+- '9900000000000621010001POS TERM  Synthetic report write fault                                                                        0000000100{999000621Synthetic Merchant 621                            Synthetic City                                    99999     96802941546036972022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+- ERROR WRITING REPTFILE
+- 'FILE STATUS IS: NNNN0030'
+- ABENDING PROGRAM
+- CARDDEMO-ABEND CEE3ABD
+return_code: null

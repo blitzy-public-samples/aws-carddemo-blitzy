@@ -1,0 +1,21 @@
+# Derived baseline of DAT-ACCTFILE-recovery-01, the MAXCC reset after the
+# DELETE of ACCTFILE. Only unikix evaluates IF MAXCC, so expected.yaml was
+# authored from app/jcl/ACCTFILE.jcl, not captured, and is
+# inferred-not-observed (GAP-INF-011). It names no execution_id or
+# execution_fingerprint and holds no datasets/ until `report.py
+# --import-unikix` promotes an eligible UniKix run (MINOR if the decoded
+# outcome is equal, MAJOR if it differs).
+# source_identity is that of the app/ tree the expectation was authored from:
+# the job JCL and CVACT01Y, the layout its ACCTDATA records are decoded by.
+# source_commit is HEAD at authoring; app/ there is byte-identical to the
+# suite's starting commit 93ebec71ff7b59a68cedd7c501afe496a8eaa68d.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: ae9cb473e65a42d2da3b5c323ecb29cae395d7b6
+source_identity:
+  commit: ae9cb473e65a42d2da3b5c323ecb29cae395d7b6
+  tree: app
+  units:
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/jcl/ACCTFILE.jcl: febba716137a3f59302ef1136c60dccce4d07d32e1d118b15d48f99266dea9e7

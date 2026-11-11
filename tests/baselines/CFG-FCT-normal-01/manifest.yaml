@@ -1,0 +1,119 @@
+# Manifest of the derived baseline of CFG-FCT-normal-01: the region file
+# inquiry after the test-owned UniKix region is started and reset lists the 14
+# files of the copy's fct.lst open and enabled, among them the 6 UniKix-only
+# files DISCGRP, TCATBALF, TRANCATG, TRANSAIX, TRANTYPE and TRXFL
+# [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/catlg/tpe/fct.lst:1-14]
+# (GAP-DOC-030). Only unikix can run the scenario, so expected.yaml was
+# authored from fct.lst and the CSD FILE definitions (derived_from: source),
+# not captured, and is inferred-not-observed (GAP-INF-010; @REGION-FILES needs
+# GAP-MIS-011). It names no execution_id or execution_fingerprint and holds no
+# datasets/ until report.py --import-unikix promotes an eligible run: MINOR on
+# an equal decoded outcome, MAJOR on a different one.
+#
+# source_identity is the UniKix copy a run executes, exactly as
+# adapters/unikix/adapter.py source_identity writes it: tree unikix-copy, the
+# zip's sha256 and the zip members read in memory (never extracted) with their
+# sha256. inputs.steps is a list, empty here, so a run counts as online: it
+# executes the whole online copy (programs, CSUTLDTC, maps, copybooks) and
+# every catlg/tpe resource list the region is created from, fct.lst among
+# them. The 6 items verify once a record holds this fct.lst hash. source_commit
+# is HEAD at authoring; app/, samples/ and diagrams/ there are unchanged from
+# the suite's starting commit 93ebec71ff7b59a68cedd7c501afe496a8eaa68d.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+derived_from: source
+source_commit: ae9cb473e65a42d2da3b5c323ecb29cae395d7b6
+source_identity:
+  commit: ae9cb473e65a42d2da3b5c323ecb29cae395d7b6
+  tree: unikix-copy
+  units:
+    migrated_app/bms/COACTUP.bms: ae948584dd1e84841e74f24c120ed84a366c8e746d19742120d39770799648bc
+    migrated_app/bms/COACTVW.bms: bd7515112fa96a8f848fabdb35f10c8274411fb1b108b54e3774cb66f0eb1233
+    migrated_app/bms/COADM01.bms: 44a3f209e7fa8445355ab7ba687b3ac6e32ef4dfec225e04f4eb2bd57e39386a
+    migrated_app/bms/COBIL00.bms: f2101ff2143cd4746a5ffe0c4eeec977dfdad8410dee19236e0bdfb5ad58657f
+    migrated_app/bms/COCRDLI.bms: b73a1ebb2ec327db220a4df272a6766ddd809ebf0db378dcc9a3c83ec2506343
+    migrated_app/bms/COCRDSL.bms: 93feec4d134e991a81320d8c2f19e1aba19937753a1972d7d07f8a24973c9af6
+    migrated_app/bms/COCRDUP.bms: e82235cab015fc38b4f3bf73546b095105462373280362780480d2f48a39017d
+    migrated_app/bms/COMEN01.bms: f87af09e6f60ab198d5c05817e3007361a6d29ed957322ef25b11c5420c84b4c
+    migrated_app/bms/CORPT00.bms: 3ae6f0a2db62f64ca45ac6d975efefcc0bf635295ce4f6bea202c09d93deefc7
+    migrated_app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
+    migrated_app/bms/COTRN00.bms: 6f914caf567937cd91be8f11118324c4d4c7ec0f68c0309f831cad109a3f45b2
+    migrated_app/bms/COTRN01.bms: be0749c98ec7d60a37160ba85d6cbef674f9f7aa0de5760faa64ee951c146996
+    migrated_app/bms/COTRN02.bms: 8b46b5ae879119b9d8395b712970ebc5b8d5043efd351a47f9a31a451e073042
+    migrated_app/bms/COUSR00.bms: 82a453530e4457e45f8af028b68307f7049e24fa13fedb8644007f68a9738f88
+    migrated_app/bms/COUSR01.bms: f79efda027a728fad77ca163b1a85851e099df5d3ce6876309274dbb2b67dff9
+    migrated_app/bms/COUSR02.bms: 324ff2e74f580d061a15963d394c9883eedf93dd7de95a04926f78bb78aecff1
+    migrated_app/bms/COUSR03.bms: 95f557d76cb482753039cc60f62cbac4fe09c4c02f9057658ee1ee70429c6fc9
+    migrated_app/catlg/tpe/CATALOG.lst: fdbd1b23c1e6aeb68275e943078657bc8124437e26c7c90c4fd28dee51b80e64
+    migrated_app/catlg/tpe/dct.lst: 6eee4204a25f5bb8936dd1487c0ef65b28d846879352a268e69a7b000480dd6e
+    migrated_app/catlg/tpe/fct.lst: b8cefbe77bcb7554372f6bf5845f4ebc557739f3fc7c9d44e209c4d39589cc4a
+    migrated_app/catlg/tpe/mct.lst: c89ec24928209a37d3dc10d9afdcc3fd35c5a82d5b73f796b30cca9ec956b52e
+    migrated_app/catlg/tpe/pct.lst: 7cbba8ef31f441c3592af3015af49a066170b0033fad1260f1710d5eda7839ba
+    migrated_app/catlg/tpe/ppt.lst: 8b419bfed505679c7fbe8038ae55153c2d160df239639e555b475831d53aa68e
+    migrated_app/catlg/tpe/sit.lst: f35c5f4f725006151e93806bd5e4ed51cff9a5b08cbac961124ff13744a75e6c
+    migrated_app/catlg/tpe/vct.lst: e39b5887ee4cf59d2100804e84cf016f45d789afacc3e4d3b0d0a4467a391c49
+    migrated_app/cbl/COACTUPC.cl2: e944b2b469cf737296489e87158801cfe1a174e2965b5bb9ad5006fc65a2b176
+    migrated_app/cbl/COACTVWC.cl2: 4f1e55176f69edfb55b7af7a161aceb8c3bc3bd1b2924a704a76256e0e751b54
+    migrated_app/cbl/COADM01C.cl2: 69842c4dd419ed70365682d65423d2744173f3eec695b25b5ed27bd29289608d
+    migrated_app/cbl/COBIL00C.cl2: b5c46039eb8fd2f7ed7d3ca379172e56fa87385a369023bef706b04986fe1cfb
+    migrated_app/cbl/COCRDLIC.cl2: d6a9210ad3062bd657881fc3f0d2a7368db3ff4869594e0d6a878d8f410d87b6
+    migrated_app/cbl/COCRDSLC.cl2: d5af307fb4b1a155f03df9eea14b402d866a332360e14a1e37dbefe59b73363b
+    migrated_app/cbl/COCRDUPC.cl2: 3ffeeb3d3c53e64e632bde36771dbbcf080e92ed4168d30d90c21e4dc198e6ef
+    migrated_app/cbl/COMEN01C.cl2: ad5e376ac9221b21b8ce47597a5ca17fc1f39dc913793c814c6675e9b046fc09
+    migrated_app/cbl/CORPT00C.cl2: 0b06bd5d4f38f17871de8985c439dfce7ed30d28e02b6ffeb8459e0cd8db4fc2
+    migrated_app/cbl/COSGN00C.cl2: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    migrated_app/cbl/COTRN00C.cl2: 51479f131b4fb300008403f0c4f9fdbde56f22a7fb341c782492da29f0d23bbe
+    migrated_app/cbl/COTRN01C.cl2: fc24ff879ac6ae12bc6817554cb756f14c5e86e0ca2dd0037af49599887f03c0
+    migrated_app/cbl/COTRN02C.cl2: dc33b4c797a98d2732070a223f43cc78992c2846681163a032e376630742b1ed
+    migrated_app/cbl/COUSR00C.cl2: 831433c6ec8306038c85cb86a8307f91dca48c26ef33a997f402187cbd9f4e04
+    migrated_app/cbl/COUSR01C.cl2: aa131b1e3382dc6d101b42f1c97d4fb0c2fdd706819ed9f9a0187c82b30f3019
+    migrated_app/cbl/COUSR02C.cl2: 85d36699cbd3079320e689576ea8406d07ad78901f4f3a68a129b869359b46ca
+    migrated_app/cbl/COUSR03C.cl2: bcd68f08c145b3b9b9c809a7082834e9519d78b6f363a0d1c5ff9d9576dcf888
+    migrated_app/cbl/CSUTLDTC.cbl: 05565b6ca61098097391bd6ae14268eb122d41c76570d2336253b0cdb5a961fa
+    migrated_app/cpy-bms/COACTUP: 2ae13a55cb35c63988c17e96744ce77dfda9663896e65061b818f47d9be983dc
+    migrated_app/cpy-bms/COACTVW: f3bf70a636aecb5874518ccc53f9826bcc69070b8307bdc551b2c57b9dd61dce
+    migrated_app/cpy-bms/COADM01: ced4c34fdb3fa4284561d83ff8e273cef2a1b45cefc36e56c34da6fec5528006
+    migrated_app/cpy-bms/COBIL00: a8d1a371182c73b41b4effd2d2a9c3b005f503cb0c8e88f5b2f5b5062e739e85
+    migrated_app/cpy-bms/COCRDLI: f5029dc12e672443e8fa33b764f60bf7db2e7ecfbc57d733289d70b382d995af
+    migrated_app/cpy-bms/COCRDSL: 3e099c4a1857986dd7fa5253d4419aeee0a2f27c76f34d9081ac5a724f45bfd1
+    migrated_app/cpy-bms/COCRDUP: 6b874a8dd290a4a6c3baa7e89768a91e0feabb4923ec5dd3db721687bdfa897e
+    migrated_app/cpy-bms/COMEN01: 21275363519e57f47c5c7842178344208f3ad773a551e74e5eeff285c775ad5c
+    migrated_app/cpy-bms/CORPT00: 7da2980799bcc3df642d02d09fd00fafb890cdb487e034f2f9b5b0e0767ce03b
+    migrated_app/cpy-bms/COSGN00: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
+    migrated_app/cpy-bms/COTRN00: 18c9ab55bd2ed9345f9fda9e4d16ed710ef615fad34076fad7d63d2fc1ac6b77
+    migrated_app/cpy-bms/COTRN01: 23ba94dd138ea687701a74eb629d5c5c484b43834e03ebf44f162e43c15a4420
+    migrated_app/cpy-bms/COTRN02: 1eae5b624b8e7f97c24e94a373065d5c648340e21019bd7736dc663ab0d8642d
+    migrated_app/cpy-bms/COUSR00: 88c9031484d3bd2da62488c6941c431ee3b910b3feaf7918762968ba0bb9c318
+    migrated_app/cpy-bms/COUSR01: a263a33ce46ea0b50ade18e4e18dd27dc848a516a9851a16d015c7240de82926
+    migrated_app/cpy-bms/COUSR02: f4bb7686c024300fc72bebf01577c4fd03699625cf80101e4951e5c977503214
+    migrated_app/cpy-bms/COUSR03: e0bb6cff954a736c69ead4d7b649116e8a240e771b206fca0a4fd11531d4b585
+    migrated_app/cpy/COADM02Y: 71015b5a8770e9e3733023cd6a6fa66dd4d8b528739b7a31e07433f71a044bc5
+    migrated_app/cpy/COCOM01Y: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    migrated_app/cpy/COMEN02Y: 22b1be06734c9ae91a25c4b544f9a9c4c85ab3f281a3d3bcc0765fb17e585d85
+    migrated_app/cpy/COSTM01: 660aa12a59dc411cf9e9b5ab2deb7b097802f73e4269518b7cea74d8f8e9df5c
+    migrated_app/cpy/COTTL01Y: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    migrated_app/cpy/CSDAT01Y: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    migrated_app/cpy/CSLKPCDY: 098d384b9580abd5b4b77ae9c33b8cb65b28be45390130b22c48c3714200cca2
+    migrated_app/cpy/CSMSG01Y: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    migrated_app/cpy/CSMSG02Y: 0238a3a75e723272e0c287b46a52d365de8549dada1a73d15df75660ad7bd2ea
+    migrated_app/cpy/CSSETATY: 45000f93a9be6e8132262e53faa1db03ab1f20fbee4063272b890837216d1fcb
+    migrated_app/cpy/CSSTRPFY: 751bc1a625114a8660ee2172b70cdea135c259652d2305a2bfda25ff4cf34853
+    migrated_app/cpy/CSUSR01Y: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb
+    migrated_app/cpy/CSUTLDPY: 3b9455d036130e21faa0869787446e90b1c8da8a5d20d03ef9290ce5d8fcfc43
+    migrated_app/cpy/CSUTLDWY: ecba6f07ea9db7c6f58f7fc1c5227179e8b80299f79a04743c6adb9f08190a1a
+    migrated_app/cpy/CUSTREC: 208747e3eb2f4099c0a4bf4b56a4395aad54bfd3c39fd80085b073afdfcfa11a
+    migrated_app/cpy/CVACT01Y: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    migrated_app/cpy/CVACT02Y: 9f1c62ef31b9d541712f1ed28f79e011ea7338611f5e0f30f2e1cbf624181223
+    migrated_app/cpy/CVACT03Y: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    migrated_app/cpy/CVCRD01Y: 52b6dbe09f7648f3fdbd7c00f4683d434fe6b631f6c8854466a24f42c1c92445
+    migrated_app/cpy/CVCUS01Y: 944fd9a8eb10a683d0db97b9a87f2151982f649970287eb74358826056af25f8
+    migrated_app/cpy/CVTRA01Y: 50637f13692c89b17a2fc60d249dc54e9eb3569d933afca3cdcf65b491a9d5ba
+    migrated_app/cpy/CVTRA02Y: 7828fae489c59944b4310e223028a8d3a525ccf4ead113c062bcaff04b52bf9c
+    migrated_app/cpy/CVTRA03Y: fb15dbc4a6924cbddce0704932f9e61c067ac10004cd00839dff0ed7c7bb0667
+    migrated_app/cpy/CVTRA04Y: 89803bc13a06347e1f3d8a599a5383b87235b203dce9f18a486bc233186479f8
+    migrated_app/cpy/CVTRA05Y: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
+    migrated_app/cpy/CVTRA06Y: c5c69f1b86c5a10156d3c5881d7cf387e6b925aae32825360f85bf4056a554a1
+    migrated_app/cpy/CVTRA07Y: 72ba597b1a40e1e6cf908e15da9e6a818a0ab899ef1d27d15edeb074963102fa
+    migrated_app/cpy/UNUSED1Y: 91ad4ceffd87a40f5071dd4f0d3a08dc1253d76d2f0b3ecfc03490f7526b78e3
+  zip_sha256: 431f67920a1e9b980cc21a6de1a375aac0c21b62d256c584d109ff7735c436ca
