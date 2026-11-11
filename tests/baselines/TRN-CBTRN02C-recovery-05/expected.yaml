@@ -1,0 +1,47 @@
+# Derived from app/cbl/CBTRN02C.cbl:194-232,380-444,526-560,582-653,707-727;
+# inferred-not-observed (GAP-INF-013, GAP-MIS-013); pinned, never corrected.
+# The one DALYTRAN record posts to account 00000000001 through the existing
+# TCATBAL key 00000000001/01/0001, so it displays nothing. DALYTRAN, TRANFILE
+# and XREFFILE close successfully; the DALYREJS close fails, and 9300 moves
+# XREFFILE-STATUS ('00'), not DALYREJS-STATUS, to IO-STATUS, so the status
+# shown is NNNN0000 whatever the failing close returned (GAP-DEF-002).
+# CEE3ABD ends the run (GAP-STB-001, GAP-DEF-001), so the exact message list
+# pins as absent the ACCTFILE and TCATBALF closes, the processed and rejected
+# counts and the end-of-execution line; return_code is null. Fields are
+# decoded: ACCT-ID 00000000001 is '1', TRAN-CAT-CD 0001 is '1'.
+datasets:
+  TRANSACT:
+    records:
+    - TRAN-AMT: '10.00'
+      TRAN-CARD-NUM: '9680294154603697'
+      TRAN-CAT-CD: '1'
+      TRAN-ID: '9900000000000431'
+      TRAN-MERCHANT-ID: '800000431'
+      TRAN-MERCHANT-ZIP: '99431     '
+      TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+      TRAN-PROC-TS: 2022-07-06-10.00.00.000000
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+file_state:
+  ACCTDATA:
+    contains:
+    - ACCT-CREDIT-LIMIT: '2020.00'
+      ACCT-CURR-BAL: '204.00'
+      ACCT-CURR-CYC-CREDIT: '10.00'
+      ACCT-CURR-CYC-DEBIT: '0.00'
+      ACCT-ID: '1'
+    count: 50
+  TCATBALF:
+    contains:
+    - TRAN-CAT-BAL: '10.00'
+      TRANCAT-ACCT-ID: '1'
+      TRANCAT-CD: '1'
+      TRANCAT-TYPE-CD: '01'
+    count: 50
+messages:
+- START OF EXECUTION OF PROGRAM CBTRN02C
+- ERROR CLOSING DAILY REJECTS FILE
+- 'FILE STATUS IS: NNNN0000'
+- ABENDING PROGRAM
+- CARDDEMO-ABEND CEE3ABD
+return_code: null

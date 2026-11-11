@@ -1,0 +1,50 @@
+datasets:
+  SYSTRAN:
+  - TRAN-AMT: '15.00'
+    TRAN-CARD-NUM: '9999000022220906'
+    TRAN-CAT-CD: '5'
+    TRAN-DESC: "Int. for a/c 00000000906\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+    TRAN-ID: '2022071800000001'
+    TRAN-MERCHANT-CITY: '                                                  '
+    TRAN-MERCHANT-ID: '0'
+    TRAN-MERCHANT-NAME: '                                                  '
+    TRAN-MERCHANT-ZIP: '          '
+    TRAN-ORIG-TS: 2022-07-06-10.00.00.000000
+    TRAN-PROC-TS: 2022-07-06-10.00.00.000000
+    TRAN-RECORD.FILLER#1: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+    TRAN-SOURCE: 'System    '
+    TRAN-TYPE-CD: '01'
+file_state:
+  ACCTDATA:
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: ' '
+    ACCT-ADDR-ZIP: '          '
+    ACCT-CASH-CREDIT-LIMIT: '0.00'
+    ACCT-CREDIT-LIMIT: '0.00'
+    ACCT-CURR-BAL: '200.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '          '
+    ACCT-GROUP-ID: A000000000
+    ACCT-ID: '905'
+    ACCT-OPEN-DATE: '          '
+    ACCT-REISSUE-DATE: '          '
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: ' '
+    ACCT-ADDR-ZIP: '          '
+    ACCT-CASH-CREDIT-LIMIT: '0.00'
+    ACCT-CREDIT-LIMIT: '0.00'
+    ACCT-CURR-BAL: '50.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '          '
+    ACCT-GROUP-ID: A000000000
+    ACCT-ID: '906'
+    ACCT-OPEN-DATE: '          '
+    ACCT-REISSUE-DATE: '          '
+messages:
+- START OF EXECUTION OF PROGRAM CBACT04C
+- '000000009050200010000005000{                      '
+- '000000009060100010000012000{                      '
+- END OF EXECUTION OF PROGRAM CBACT04C
+return_code: 0
