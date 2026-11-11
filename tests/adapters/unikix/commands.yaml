@@ -357,17 +357,34 @@ entries:
     source: https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
     parse:
       job_dir: '(?m)^(?P<entry>(?:[^\n]*[^0-9\n])?0*{job_number}(?:[^0-9\n][^\n]*)?)$'
-      completed: '(?im)\b(?:job\s+(?:ended|completed|terminated)|end\s+of\s+job)\b'
+      job_log: '(?i)(?:^|/)[^/]*(?:JESMSGLG|JESYSMSG|\.hst\b)[^/]*$'
+      completed: '(?im)(?<![A-Z0-9@#$])(?P<job_name>[A-Z@#$][A-Z0-9@#$]*)[ \t]*[(.:#-]?[ \t]*(?:JOB)?0*(?P<job_number>[0-9]+)[)]?[ \t]+(?:job[ \t]+(?:ended|completed|terminated)|end[ \t]+of[ \t]+job)\b'
       step_rc: '(?im)\bstep\s*(?:name)?\s*[:=]?\s*(?<![A-Z0-9@#$])(?P<step>[A-Z@#$][A-Z0-9@#$]*(?:\.[A-Z@#$][A-Z0-9@#$]*)*)(?![A-Z0-9@#$]|\.[A-Z@#$]).*?\b(?:rc|cond(?:ition)?\s*code|return\s*code)\s*[:=]?\s*(?P<rc>[0-9]+)\b'
       step_abend: '(?im)\bstep\s*(?:name)?\s*[:=]?\s*(?<![A-Z0-9@#$])(?P<step>[A-Z@#$][A-Z0-9@#$]*(?:\.[A-Z@#$][A-Z0-9@#$]*)*)(?![A-Z0-9@#$]|\.[A-Z@#$]).*?\babend(?:ed)?\b\s*(?:code)?\s*[:=]?\s*(?P<code>[SU]?[0-9A-F]+)\b'
+      step_skipped: '(?im)\bstep\s*(?:name)?\s*[:=]?\s*(?<![A-Z0-9@#$])(?P<step>[A-Z@#$][A-Z0-9@#$]*(?:\.[A-Z@#$][A-Z0-9@#$]*)*)(?![A-Z0-9@#$]|\.[A-Z@#$]).*?\b(?:not\s+(?:executed|run)|flushed|bypassed|skipped)\b'
       display_files: '*SYSOUT*'
       start_date: '(?i)\bstart(?:ed)?\b.*?(?P<date>[0-9][0-9][0-9][0-9][-/.][0-9][0-9][-/.][0-9][0-9])'
     notes: >-
       Completion, job number and step return codes are read from $PROJECT_ROOT/sysoutdir. job_dir matches the
-      stdout line naming the directory or file of job {job_number}; completed, step_rc, step_abend and
-      start_date are searched in that job's sysout files, display_files is the glob of the program SYSOUT DD
-      files whose lines are the DISPLAY output, and start_date gives the BPE job start date recorded as the
-      run date. The `step` group of step_rc and step_abend is the complete step identity with every dotted
+      stdout line naming the directory or file of job {job_number}. bpe.py keeps a matched entry only when a
+      digit run of its name, outside the names of the suite's jobs (resources.yaml JOB card and member names,
+      generated members such as CDTL0042), equals {job_number} as a number: CDTL0042.00007 is job 7's, never
+      job 42's. Digits of any other name count, so X42Y.00007 goes to jobs 42 and 7, and a format whose entry
+      names hold other numbers needs a narrower job_dir. completed, step_rc, step_abend,
+      step_skipped and start_date are searched in that job's sysout files other than the display_files, the
+      glob of the program SYSOUT DD files whose lines are the DISPLAY output: program output is application
+      data, never scheduler status. job_log, searched in each sysout file's path relative to sysoutdir,
+      selects the scheduler's job log, the job-control stream: JES-style JESMSGLG and JESYSMSG, and the job
+      history file <jobname>-<jobnumber>.hst.<ddmonthyyyy>.<hh:mm> of Sun Mainframe Batch Manager 10.1, which
+      BPE descends from (MBMSUB, MBM_LOCK_DIR); completed and start_date are searched only in the job_log
+      files that are not display_files. completed is BPE's terminal event of the job and captures its
+      identity in the named groups job_name (the JOB card name, compared without regard to case) and
+      job_number (digits, compared as a number); a match completes the job only when at least one of them
+      took part and each that did equals the job's, so neither another job's event nor text a program writes
+      completes a job that is still running. step_skipped is BPE's record of a step it did not run (COND,
+      flush); a listed step needs an outcome or this record unless an earlier step abended. start_date
+      gives the BPE job start date recorded as the run date. The `step`
+      group of step_rc, step_abend and step_skipped is the complete step identity with every dotted
       qualifier, as in STEP10.STEP01R.PRC001 (job step STEP10, procedure step STEP01R of TRANREPT, procedure
       step PRC001 of REPROC), never part of a longer name; bpe.py writes it unchanged into the
       `STEP <step> RC <nnnn>` and `STEP <step> ABEND` lines of messages, which use the step names of
@@ -384,7 +401,8 @@ entries:
     source: none; no public source names a cancel command
     notes: >-
       Must cancel BPE job {job_number} of this node. Used after a timeout or failure, before quiescence is
-      confirmed again.
+      confirmed again, for every job not seen completed, including a submitted job whose number bpe.py
+      found only through bpe_active_jobs.
 
   bpe_active_jobs:
     action: list unfinished jobs
@@ -397,8 +415,13 @@ entries:
     parse:
       job: '(?im)^[ \t]*(?P<job_number>[0-9]+)[ \t]+(?P<name>[A-Z@#$][A-Z0-9@#$]*)'
     notes: >-
-      Must list the unfinished BPE jobs of this node, one per line as parse.job reads them; empty output
-      means none, which is half of the quiescence check.
+      Must list the unfinished BPE jobs of this node, one per line as parse.job reads them; empty or
+      all-blank output means none, which is half of the quiescence check. Every non-blank line must be one
+      job as parse.job reads it: any other line makes the whole listing unreadable, so quiescence is not
+      confirmed and a submission whose job number could not be read stays unresolved. bpe.py also finds
+      such a submission by the `name` group (its JOB card name or member) among the jobs listed with a
+      higher number than the last one it identified, and cancels it with bpe_cancel; a job listed without
+      a name leaves that identity unknown.
 
   # ---------------------------------------------------------------------------------------------------------
   # Datasets and catalog. Each entry submits a job that bpe.py generates from its template, through

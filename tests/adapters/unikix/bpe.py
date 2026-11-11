@@ -10,17 +10,26 @@ a member of the UniKix copy or a job this module renders from a
 A job runs in three commands: ``bpe_translate`` (``mvstrans``), the
 submitting entry (``bpe_submit``, or the dataset or catalog entry that reuses
 its command) and ``bpe_sysout`` polled once per second until the job's
-sysout shows it completed. Waiting for a job is application time: it has no
-limit of its own and is bounded only by the scenario deadline, whose expiry
-raises ``ScenarioTimeout``. Without a scenario deadline (session setup and
-cleanup) a job is waited for ``DEFAULT_DEADLINE_S`` seconds at most, and a
-job still running then is a missing capability (GAP-MIS-006).
+sysout shows it completed: a ``parse.completed`` event whose ``job_name``
+and ``job_number`` groups give the job's own identity, in the scheduler's
+job log (``parse.job_log``, the job-control stream) and never in the JCL
+listing, utility output or program ``DISPLAY`` files, whose text is not
+scheduler status. Waiting for a job is application time: it has no limit of
+its own and is bounded only by the scenario deadline, whose expiry raises
+``ScenarioTimeout``. Without a scenario deadline (session setup and cleanup)
+a job is waited for ``DEFAULT_DEADLINE_S`` seconds at most, and a job still
+running then is a missing capability (GAP-MIS-006). A submission whose job
+number cannot be read stays recorded until ``cancel_unfinished`` finds it
+among the node's active jobs and cancels it, and no other job is submitted
+meanwhile.
 
 The outcome of a job is read from its sysout files only: step return codes,
 abends and the program ``DISPLAY`` lines. An application outcome is never
 inferred from a command failure, and a sysout this module cannot read
-completely (no step outcome, step names that are not those of
-``resources.yaml``, a ``DISPLAY`` file that names no step) is
+completely (a file or directory it cannot read, no step outcome, step names
+that are not those of ``resources.yaml``, a listed step with neither an
+outcome nor BPE's record that it did not run, a ``//SYSOUT DD`` step that
+ran without its SYSOUT file, a ``DISPLAY`` file that names no step) is
 ``AdapterUnavailable`` under GAP-MIS-006, never a guess.
 
 Generated members are written only to ``$PR/jcl/jmvs``, staged and unloaded
@@ -44,6 +53,7 @@ import functools
 import math
 import os
 import re
+import stat
 import sys
 import time
 from collections.abc import Iterable, Mapping, Sequence
@@ -134,6 +144,14 @@ _EXEC_RE = re.compile(r"^//(?P<name>[A-Z@#$][A-Z0-9@#$]{0,7})\s+EXEC\s", re.IGNO
 _SYSIN_RE = re.compile(r"^//SYSIN\s+DD\s+(?:\*|DATA)(?:\s|,|$)", re.IGNORECASE)
 _JOB_CARD_RE = re.compile(r"^//(?P<name>[A-Z@#$][A-Z0-9@#$]{0,7})\s+JOB\b", re.IGNORECASE)
 _TOKEN_RE = re.compile(r"[A-Z0-9@#$]+")
+# A generated member name, as next_member makes it.
+_GENERATED_MEMBER_RE = re.compile(
+    "(?:" + "|".join(re.escape(prefix) for prefix in JOB_PREFIXES.values()) + ")[0-9]{4}"
+)
+_DIGITS_RE = re.compile(r"[0-9]+")
+# A COND that names EVEN or ONLY runs its step after an earlier step abended,
+# where BPE otherwise flushes the rest of the job.
+_COND_AFTER_ABEND_RE = re.compile(r"\b(?:EVEN|ONLY)\b", re.IGNORECASE)
 
 # IDCAMS statements reused from the copy's load members.
 _DEFINE_CLUSTER_RE = re.compile(r"^\s*DEFINE\s+CLUSTER\b", re.IGNORECASE)
@@ -234,13 +252,16 @@ class AixPathResource:
 
 @dataclass(frozen=True)
 class JobStep:
-    """One executed step of a job, named as ``messages`` names it."""
+    """One executed step of a job, named as ``messages`` names it.
+    ``sysout`` is true when the step's JCL declares ``//SYSOUT DD SYSOUT=*``,
+    the DD an executed program step's ``DISPLAY`` output goes to."""
 
     name: str
     exec: str
     proc: str | None = None
     cond: str | None = None
     parm: str | None = None
+    sysout: bool = False
 
     @property
     def program(self) -> str | None:
@@ -517,6 +538,12 @@ def _parse_jobs(raw: Any, problems: list[str]) -> dict[str, JobResource]:
             if not isinstance(step, Mapping):
                 problems.append(f"{where}.steps[{index}] must be a mapping")
                 continue
+            sysout = step.get("sysout", False)
+            if not isinstance(sysout, bool):
+                problems.append(
+                    f"{where}.steps[{index}].sysout must be true or false, got {sysout!r}"
+                )
+                sysout = False
             steps.append(
                 JobStep(
                     name=_text(step.get("name"), f"{where}.steps[{index}].name", problems),
@@ -524,6 +551,7 @@ def _parse_jobs(raw: Any, problems: list[str]) -> dict[str, JobResource]:
                     proc=step.get("proc"),
                     cond=step.get("cond"),
                     parm=step.get("parm"),
+                    sysout=sysout,
                 )
             )
         if not steps:
@@ -869,6 +897,33 @@ class JobRun:
         return lines
 
 
+@dataclass(frozen=True, eq=False)
+class _Submission:
+    """A submission that may have been accepted without an identified job
+    number. ``member`` and ``card_name`` are the names BPE may list it under,
+    ``entry_id`` the entry that submitted it, ``after`` the job number this
+    session identified last before the attempt (``None`` before the first)
+    and ``submitted`` the UTC time of the attempt in ISO 8601, for messages.
+    Each instance is one attempt, so instances compare by identity."""
+
+    member: str
+    card_name: str
+    entry_id: str
+    after: int | None
+    submitted: str
+
+    @property
+    def label(self) -> str:
+        if self.after is None:
+            since = "before any identified BPE job"
+        else:
+            since = f"after BPE job {self.after}"
+        return (
+            f"member {self.member} (JOB card {self.card_name}, submitted by {self.entry_id} at "
+            f"{self.submitted}, {since})"
+        )
+
+
 @dataclass(frozen=True)
 class BatchOutcome:
     """What ``run_jobs`` produced: ``return_code`` is the highest step code
@@ -912,7 +967,10 @@ class _Budget:
     ``ScenarioTimeout``. Without one, commands are bounded by their own
     ``timeout_s`` only, and a job is waited for ``DEFAULT_DEADLINE_S`` seconds
     from the start of the call; one still running then is a missing
-    capability, because no scenario deadline expired."""
+    capability, because no scenario deadline expired. A command or
+    observation that fails is ``AdapterUnavailable`` with its gap before the
+    scenario deadline and ``ScenarioTimeout`` once it has passed
+    (``failed``)."""
 
     def __init__(self, deadline: float | None) -> None:
         if deadline is not None and (
@@ -944,6 +1002,16 @@ class _Budget:
             return ScenarioTimeout(f"scenario deadline passed: {what}")
         return AdapterUnavailable(f"{what} within {DEFAULT_DEADLINE_S}s", _GAP_SUBMISSION)
 
+    def failed(self, reason: str, gap: str) -> Exception:
+        """The exception for a failure described by ``reason``:
+        ``AdapterUnavailable(reason, gap)``, or ``ScenarioTimeout`` naming the
+        superseded ``reason`` once the scenario deadline has passed, because
+        a deadline that has passed takes precedence over any failure after
+        it."""
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            return ScenarioTimeout(f"scenario deadline passed; superseded: {reason}")
+        return AdapterUnavailable(reason, gap)
+
 
 def _text_lines(data: bytes) -> list[str]:
     """The lines of a sysout file: split at ``\\n``, a trailing ``\\r``
@@ -957,8 +1025,10 @@ def _text_lines(data: bytes) -> list[str]:
 
 def _align(reported: Sequence[str], listed: Sequence[JobStep]) -> list[int] | None:
     """For each reported step name, in order, the index of the listed step
-    it is; ``None`` when the names are not the listed names in their order
-    (a step BPE did not run is simply absent)."""
+    it is; ``None`` when the names are not the listed names in their order.
+    This checks the order only: a listed step no name reports is not an
+    error here, and whether the trace accounts for it is decided by
+    ``BatchService._attach_display``."""
     indexes: list[int] = []
     position = 0
     for name in reported:
@@ -985,6 +1055,23 @@ def _owner(relative: str, steps: Sequence[StepOutcome]) -> int | None:
     if best is not None:
         return best[0]
     return 0 if len(steps) == 1 else None
+
+
+def _numbers_job(entry: str, number: str, job_names: frozenset[str]) -> bool:
+    """Whether the sysout entry name ``entry`` carries the job number
+    ``number`` (canonical decimal) as its own. The name is split into tokens
+    as ``_owner`` splits a path, without regard to case, and the tokens that
+    are one of ``job_names`` (upper case) or a generated member name are left
+    out: the digits of a job name, such as those of ``CDTL0042`` or
+    ``TRNRPT00``, are never a job number. The entry is the job's when a run
+    of ASCII digits in another token equals ``number`` as a number, leading
+    zeros ignored, compared as text so that no digit count limits it."""
+    for token in _TOKEN_RE.findall(entry.upper()):
+        if token in job_names or _GENERATED_MEMBER_RE.fullmatch(token):
+            continue
+        if any((digits.lstrip("0") or "0") == number for digits in _DIGITS_RE.findall(token)):
+            return True
+    return False
 
 
 # --------------------------------------------------------------------------
@@ -1022,6 +1109,8 @@ class BatchService:
         self.poll_interval = float(poll_interval)
         self._counters = dict.fromkeys(JOB_PREFIXES.values(), 0)
         self._unfinished: dict[str, JobRun] = {}
+        self._unidentified: list[_Submission] = []
+        self._last_number: int | None = None
         self._evidence: dict[str, bytes] = {}
         self._job_numbers: list[str] = []
         self._models: dict[str, list[tuple[str, list[str]]]] = {}
@@ -1183,12 +1272,29 @@ class BatchService:
         with ``bpe_translate`` and submitted with ``entry_id``, the
         ``bpe_submit`` command or a dataset or catalog entry that reuses it.
         The job number is read with that entry's ``parse.job_number``; none
-        found is ``AdapterUnavailable`` (GAP-MIS-006)."""
+        found is ``AdapterUnavailable`` (GAP-MIS-006).
+
+        The attempt is recorded before the submitting command runs, so that a
+        job BPE accepted is never lost. It is dropped once its number is read,
+        or when that command was refused or could not start and so never
+        reached BPE. Any other failure (no job number in the output, a
+        non-zero exit, a timeout, an interruption) keeps it as unidentified:
+        BPE may run the job. While one is kept, every submit is refused with
+        ``AdapterUnavailable`` (GAP-MIS-006) and runs nothing, until
+        ``cancel_unfinished`` reconciles it with the node's active jobs or
+        ``confirm_no_active_jobs`` finds none active."""
         return self._submit(job_name, jcl_text, entry_id, _Budget(deadline))
 
     def _submit(
         self, job_name: str, jcl_text: str | None, entry_id: str, budget: _Budget
     ) -> JobRun:
+        if self._unidentified:
+            raise AdapterUnavailable(
+                f"{job_name} is not submitted: an earlier submission of "
+                f"{self._unidentified[0].label} may have been accepted without a job number, "
+                f"and cancel_unfinished or confirm_no_active_jobs must reconcile it first",
+                _GAP_SUBMISSION,
+            )
         job = self.resources.jobs.get(job_name)
         if jcl_text is None:
             if job is None or job.generated:
@@ -1202,46 +1308,96 @@ class BatchService:
             member = job_name
             card_name = job.card_name if job is not None else (_job_card_name(jcl_text) or member)
             self._write_member(member, jcl_text)
+        # Compiled first: a parse that cannot be used submits nothing.
+        pattern = self._regex(entry_id, "job_number")
         self._run("bpe_translate", budget, job=member)
-        result = self._run(entry_id, budget, job=member)
-        match = self._regex(entry_id, "job_number").search(result.stdout)
+        attempt = _Submission(
+            member,
+            card_name,
+            entry_id,
+            self._last_number,
+            _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds"),
+        )
+        self._unidentified.append(attempt)
+        mark = self.commands.mark()
+        try:
+            result = self._run(entry_id, budget, job=member)
+        except BaseException:
+            if self._never_reached_bpe(entry_id, mark):
+                self._unidentified.remove(attempt)
+            raise
+        match = pattern.search(result.stdout)
         number = match.groupdict().get("job_number") if match else None
-        if not number:
+        if not number or not number.isdecimal():
             raise AdapterUnavailable(
-                f"job number not found in the output of {entry_id} for member {member}",
+                f"job number not found in the output of {entry_id} for member {member}: BPE may "
+                f"have accepted it, and cancel_unfinished reconciles it against the node's "
+                f"active jobs",
                 _GAP_SUBMISSION,
             )
+        self._unidentified.remove(attempt)
         run = JobRun(job_name, member, card_name, entry_id, str(int(number)), job=job)
         self._unfinished[run.job_number] = run
         self._job_numbers.append(run.job_number)
+        self._last_number = int(number)
         return run
+
+    def _never_reached_bpe(self, entry_id: str, mark: int) -> bool:
+        """Whether the run of ``entry_id`` logged after ``mark`` certainly
+        never reached BPE: it was logged, and only as ``refused`` or
+        ``not-started``. A run that started may have been accepted, and so
+        may one the log does not show, since a run interrupted before its
+        outcome was logged leaves no record either."""
+        outcomes = [
+            record.get("outcome")
+            for record in self.commands.log_since(mark)
+            if record.get("kind") == "run" and record.get("id") == entry_id
+        ]
+        return bool(outcomes) and all(outcome in ("refused", "not-started") for outcome in outcomes)
 
     def wait(self, run: JobRun, deadline: float | None = None) -> JobRun:
         """Poll ``bpe_sysout`` once per ``poll_interval`` until the sysout of
         ``run`` shows it completed, then read its outcome into ``run``.
 
-        The steps come from ``step_rc`` and ``step_abend`` matches in the
-        sysout files other than the program ``DISPLAY`` files, in file and
-        line order; an abend reported on the line of a return code wins. A
-        job of resources.yaml must report its listed step names in their
-        order (a step BPE did not run is absent), and its program steps get
-        the lines of the ``display_files`` that name them. Every sysout file
-        goes to the evidence unchanged, also when the wait ends unfinished."""
+        Completion is a ``parse.completed`` match whose identity groups give
+        the job's JOB card name and number, in a job-log file
+        (``parse.job_log``) that is not a program ``DISPLAY`` file
+        (``_completed``); until then the job stays unfinished, so
+        ``cancel_unfinished`` cancels it. A sysout entry that cannot be
+        examined, read or walked, one that vanished after it was listed
+        included, is ``AdapterUnavailable`` (GAP-MIS-006), or
+        ``ScenarioTimeout`` once the scenario deadline has passed.
+
+        The steps come from ``step_rc``, ``step_abend`` and ``step_skipped``
+        matches in the sysout files other than the program ``DISPLAY`` files,
+        in file and line order (``_trace``); on one line an abend wins over a
+        skip and a skip over a return code. A job of resources.yaml must
+        report its listed step names in their order, and every listed step
+        needs an outcome or BPE's record that it did not run, unless it
+        follows an abended step; its program steps get the lines of the
+        ``display_files`` that name them, and a ``JobStep.sysout`` step that
+        ran must own one (``_attach_display``). Every sysout file goes to the
+        evidence unchanged, also when the wait ends unfinished or a poll is
+        cut short."""
         return self._wait(run, _Budget(deadline))
 
     def _wait(self, run: JobRun, budget: _Budget) -> JobRun:
         files: dict[str, bytes] = {}
+        reading: dict[str, bytes] = {}
         try:
             while True:
-                files = self._job_files(run, budget)
-                if files and self._completed(files):
+                reading = {}
+                files = self._job_files(run, budget, reading)
+                if files and self._completed(run, files):
                     break
                 left = budget.wait_left()
                 if left <= 0:
                     raise budget.expired(f"job {run.label} did not complete")
                 time.sleep(min(self.poll_interval, left))
         finally:
-            self._keep_evidence(run, files)
+            # The files a poll cut short had read already are kept too, their
+            # bytes newer than the previous poll's.
+            self._keep_evidence(run, {**files, **reading})
         run.sysout, run.completed = files, True
         self._unfinished.pop(run.job_number, None)
         run.steps = self._parse_steps(files)
@@ -1257,73 +1413,203 @@ class BatchService:
     def _sysout_dir(self) -> Path:
         return self._checked(Path(self._var("PROJECT_ROOT")) / "sysoutdir", "the sysout directory")
 
-    def _job_files(self, run: JobRun, budget: _Budget) -> dict[str, bytes]:
+    def _job_files(
+        self, run: JobRun, budget: _Budget, reading: dict[str, bytes]
+    ) -> dict[str, bytes]:
         """The sysout files of ``run`` by path below the sysout directory:
-        every regular file of each listed entry ``parse.job_dir`` matches, a
-        directory walked without following links."""
+        every regular file of each listed entry that ``parse.job_dir`` matches
+        and whose name carries the job's number as its own, a directory
+        walked without following links. Each file enters the caller's
+        ``reading`` as soon as it is read, so the files of a poll cut short
+        stay evidence.
+
+        An entry is the job's own only when a digit run of its name, outside
+        the names of the jobs this module submits (the JOB card and member
+        names of resources.yaml and the generated members, a ``JOB_PREFIXES``
+        value and four digits), equals the job number as a number
+        (``_numbers_job``). ``CDTL0042.00007`` is therefore job 7's and never
+        job 42's, while ``READCUST.00042``, ``JOB00042``, ``00042``,
+        ``00042.TRNRPT00`` and ``CDTL0042.00042`` are job 42's; another job's
+        files never enter this job's evidence, step trace, ``DISPLAY`` lines
+        or start date. The digits of any other name count, so
+        ``X42Y.00007`` is taken for job 42 and for job 7 alike: the
+        test-owned node runs only this suite's jobs, so such a name comes
+        only from a sysout format whose entry names hold other numbers, and
+        ``job_dir`` must then be narrowed to the format.
+
+        Every listed entry and every name the walk yields is examined with
+        ``lstat``, never ``is_file``/``is_dir``, which answer ``False`` for an
+        entry that has vanished: a regular file is read, a directory walked.
+        Symbolic links, entries outside the deployment root and listed names
+        that are empty, ``.``, ``..`` or hold a ``/`` or a NUL (no directory
+        entry has such a name) are left out by design, and so are FIFOs,
+        sockets and devices, which are not sysout files (reading a FIFO would
+        block the poll). Any other entry that cannot be examined, read or
+        walked (one deleted or rotated after it was listed, an unreadable
+        subdirectory) ends the poll: no sysout file is ever silently missing.
+        That is ``AdapterUnavailable`` (GAP-MIS-006), or ``ScenarioTimeout``
+        once the scenario deadline has passed (``_Budget.failed``)."""
         listing = self._run("bpe_sysout", budget).stdout.replace("\r", "")
         pattern = self._regex("bpe_sysout", "job_dir", job_number=run.job_number)
+        number = str(int(run.job_number))
+        job_names = frozenset(
+            name.upper()
+            for job in self.resources.jobs.values()
+            for name in (job.card_name, job.member_name)
+        )
         root = self._sysout_dir()
-        files: dict[str, bytes] = {}
-        for match in pattern.finditer(listing):
-            entry = (match.groupdict().get("entry") or "").strip()
-            if not entry or entry in (".", "..") or "/" in entry:
-                continue
-            top = root / entry
-            if top.is_symlink() or not self._inside(top):
-                continue
-            if top.is_file():
-                files[entry] = top.read_bytes()
-            elif top.is_dir():
-                for directory, subdirectories, names in os.walk(top):
+        current = root
+
+        def walk_error(error: OSError) -> None:
+            raise error
+
+        def take(path: Path) -> None:
+            nonlocal current
+            current = path
+            mode = path.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                return
+            if stat.S_ISREG(mode):
+                reading[path.relative_to(root).as_posix()] = path.read_bytes()
+            elif stat.S_ISDIR(mode):
+                for directory, subdirectories, names in os.walk(path, onerror=walk_error):
                     subdirectories.sort()
                     for name in sorted(names):
-                        path = Path(directory) / name
-                        if path.is_file() and not path.is_symlink():
-                            files[path.relative_to(root).as_posix()] = path.read_bytes()
-        return dict(sorted(files.items()))
+                        take(Path(directory) / name)
+            # Any other type (a FIFO, a socket, a device) is not a sysout file.
 
-    def _completed(self, files: Mapping[str, bytes]) -> bool:
+        try:
+            for match in pattern.finditer(listing):
+                entry = (match.groupdict().get("entry") or "").strip()
+                if not entry or entry in (".", "..") or "/" in entry or "\0" in entry:
+                    continue
+                if not _numbers_job(entry, number, job_names):
+                    continue
+                top = root / entry
+                if self._inside(top):
+                    take(top)
+        except OSError as exc:
+            where = exc.filename if exc.filename is not None else current
+            raise budget.failed(
+                f"the sysout of job {run.label} cannot be read: {where}: {exc.strerror or exc}",
+                _GAP_SUBMISSION,
+            ) from exc
+        return dict(sorted(reading.items()))
+
+    def _completed(self, run: JobRun, files: Mapping[str, bytes]) -> bool:
+        """Whether the scheduler reports ``run`` ended: a ``parse.completed``
+        match, any of them in line order, in a job-log file (``parse.job_log``,
+        the job-control stream) that is not a program ``DISPLAY`` file, whose
+        identity is ``run``'s.
+
+        The regex captures the identity the event names in the groups
+        ``job_name`` and ``job_number``; it must declare at least one, else
+        ``HarnessError``. A match is ``run``'s when at least one of them took
+        part and each that did equals ``run``'s: ``job_name`` its JOB card
+        name without regard to case, ``job_number`` its job number as a
+        number (ASCII digits, leading zeros ignored). Another job's event,
+        digits that merely occur on the line, and every other sysout file
+        (the JCL listing, utility output, program output) are never
+        scheduler status, so they can neither end the wait nor drop the
+        job's cancellation handle; they stay evidence only."""
         pattern = self._regex("bpe_sysout", "completed")
-        return any(pattern.search(data.decode("latin-1")) for data in files.values())
+        groups = pattern.groupindex
+        if "job_name" not in groups and "job_number" not in groups:
+            raise HarnessError(
+                "commands.yaml bpe_sysout.parse.completed needs the group job_name or job_number, "
+                "the identity of the job whose end it reports"
+            )
+        # Compared as canonical decimal strings: the same equality as int(),
+        # without int()'s digit limit on text read from a file.
+        number = str(int(run.job_number))
+        for relative, data in files.items():
+            if not self._is_job_log(relative) or self._is_display(relative):
+                continue
+            for match in pattern.finditer(data.decode("latin-1")):
+                name = match.group("job_name") if "job_name" in groups else None
+                digits = match.group("job_number") if "job_number" in groups else None
+                if name is None and digits is None:
+                    continue
+                if name is not None and name.upper() != run.card_name.upper():
+                    continue
+                if digits is not None and not (
+                    digits.isascii()
+                    and digits.isdecimal()
+                    and (digits.lstrip("0") or "0") == number
+                ):
+                    continue
+                return True
+        return False
+
+    def _is_job_log(self, relative: str) -> bool:
+        """Whether the sysout file at ``relative`` (below the sysout
+        directory) is the scheduler's job log, the job-control stream
+        (``parse.job_log``, searched in the path)."""
+        return self._regex("bpe_sysout", "job_log").search(relative) is not None
 
     def _is_display(self, relative: str) -> bool:
         return self._glob("bpe_sysout", "display_files", relative)
 
-    def _parse_steps(self, files: Mapping[str, bytes]) -> list[StepOutcome]:
-        rc_re = self._regex("bpe_sysout", "step_rc")
-        abend_re = self._regex("bpe_sysout", "step_abend")
+    def _trace(self, files: Mapping[str, bytes]) -> list[tuple[str, str, str]]:
+        """The step events of the sysout files other than the program
+        ``DISPLAY`` files, in file, line and position order, as ``(step,
+        kind, value)``: kind ``rc`` with the return code, ``abend`` with the
+        abend code, or ``skipped`` with an empty value, BPE's record of a
+        step it did not run (``parse.step_skipped``). A line gives a step one
+        kind of event: an abend wins over a skip, and a skip over a return
+        code, since a skip line may quote the condition code that caused it."""
+        patterns = (
+            ("rc", self._regex("bpe_sysout", "step_rc"), "rc"),
+            ("abend", self._regex("bpe_sysout", "step_abend"), "code"),
+            ("skipped", self._regex("bpe_sysout", "step_skipped"), None),
+        )
         found: list[tuple[int, int, int, str, str, str]] = []
         for index, (relative, data) in enumerate(files.items()):
             if self._is_display(relative):
                 continue
             text = data.decode("latin-1")
-            for kind, pattern, group in (("rc", rc_re, "rc"), ("abend", abend_re, "code")):
+            for kind, pattern, group in patterns:
                 for match in pattern.finditer(text):
                     groups = match.groupdict()
-                    step, value = groups.get("step"), groups.get(group)
+                    step = groups.get("step")
+                    value = groups.get(group) if group else ""
                     if not step or value is None:
+                        needs = f"the groups step and {group}" if group else "the group step"
                         raise HarnessError(
-                            f"commands.yaml bpe_sysout.parse.step_{kind} needs the groups step "
-                            f"and {group}"
+                            f"commands.yaml bpe_sysout.parse.step_{kind} needs {needs}"
                         )
                     line = text.count("\n", 0, match.start())
                     found.append((index, line, match.start(), kind, step.upper(), value.upper()))
-        abended = {
-            (index, line, step) for index, line, _, kind, step, _ in found if kind == "abend"
-        }
-        steps: list[StepOutcome] = []
-        for index, line, _, kind, step, value in sorted(found):
-            if kind == "abend":
-                steps.append(StepOutcome(step, None, value))
-            elif (index, line, step) not in abended:
-                steps.append(StepOutcome(step, int(value)))
-        return steps
+        rank = {"abend": 0, "skipped": 1, "rc": 2}
+        winner: dict[tuple[int, int, str], int] = {}
+        for index, line, _, kind, step, _ in found:
+            key = (index, line, step)
+            winner[key] = min(winner.get(key, rank[kind]), rank[kind])
+        return [
+            (step, kind, value)
+            for index, line, _, kind, step, value in sorted(found)
+            if rank[kind] == winner[(index, line, step)]
+        ]
+
+    def _parse_steps(self, files: Mapping[str, bytes]) -> list[StepOutcome]:
+        """The outcome of each step the sysout reports, in ``_trace`` order:
+        its return code, or ``None`` with the code of an abend. BPE's record
+        of a step it did not run is no outcome."""
+        return [
+            StepOutcome(step, None, value) if kind == "abend" else StepOutcome(step, int(value))
+            for step, kind, value in self._trace(files)
+            if kind != "skipped"
+        ]
 
     def _start_date(self, files: Mapping[str, bytes]) -> str | None:
-        """The BPE job start date as ``YYYY-MM-DD``, or ``None``."""
+        """The BPE job start date as ``YYYY-MM-DD``, or ``None``. It is
+        scheduler data, so only the job-log files (``parse.job_log``) that are
+        not program ``DISPLAY`` files are searched for it, never the JCL
+        listing, utility output or application output."""
         pattern = self._regex("bpe_sysout", "start_date")
-        for data in files.values():
+        for relative, data in files.items():
+            if not self._is_job_log(relative) or self._is_display(relative):
+                continue
             match = pattern.search(data.decode("latin-1"))
             if match and match.groupdict().get("date"):
                 text = re.sub(r"[/.]", "-", match.group("date"))
@@ -1353,11 +1639,23 @@ class BatchService:
         return numbers
 
     def _attach_display(self, run: JobRun, job: JobResource) -> None:
-        """Check the reported steps of a resources.yaml job and give each of
-        its program steps the ``DISPLAY`` lines of the files that name it.
+        """Check that the sysout of a resources.yaml job accounts for every
+        listed step, then give each of its program steps the ``DISPLAY``
+        lines of the files that name it.
+
+        The step events of ``_trace`` (outcomes and skips) must name the
+        listed steps in their order. Every listed step needs its own outcome
+        or BPE's record that it did not run, unless it comes after a listed
+        step that abended, since BPE flushes the rest of the job; a step
+        whose ``cond`` names ``EVEN`` or ``ONLY`` runs after an abend and
+        needs one all the same. A step that ran and whose JCL declares
+        ``//SYSOUT DD`` (``JobStep.sysout``) must own a ``display_files``
+        file. A trace short of any of this is incomplete, and is
+        ``AdapterUnavailable`` under GAP-MIS-006 rather than an outcome.
         Lines of a file that belongs to a utility step (a SORT's SYSOUT) are
         not ``DISPLAY`` output and are left out."""
-        reported = [step.name for step in run.steps]
+        trace = self._trace(run.sysout)
+        reported = [step for step, _, _ in trace]
         indexes = _align(reported, job.steps)
         if indexes is None:
             raise AdapterUnavailable(
@@ -1365,13 +1663,36 @@ class BatchService:
                 f"steps {', '.join(step.name for step in job.steps)} of resources.yaml in order",
                 _GAP_SUBMISSION,
             )
+        outcomes = [step for step, kind, _ in trace if kind != "skipped"]
+        if outcomes != [step.name for step in run.steps]:
+            raise HarnessError(f"job {run.label}: its steps are not the outcomes of its sysout")
+        events = list(zip(trace, indexes, strict=True))
+        ran = [listed for (_, kind, _), listed in events if kind != "skipped"]
+        flushed_after = min(
+            (listed for (_, kind, _), listed in events if kind == "abend"), default=len(job.steps)
+        )
+        evidenced = set(indexes)
+        missing = [
+            step.name
+            for index, step in enumerate(job.steps)
+            if index not in evidenced
+            and (index < flushed_after or _COND_AFTER_ABEND_RE.search(str(step.cond or "")))
+        ]
+        if missing:
+            raise AdapterUnavailable(
+                f"job {run.label} completed, but its sysout shows neither an outcome nor a skip "
+                f"for {', '.join(missing)}",
+                _GAP_SUBMISSION,
+            )
         programs = {
             position
-            for position, listed in enumerate(indexes)
+            for position, listed in enumerate(ran)
             if job.steps[listed].program in job.programs
         }
-        if not programs:
+        required = {position for position, listed in enumerate(ran) if job.steps[listed].sysout}
+        if not programs and not required:
             return
+        owned: list[tuple[int, bytes]] = []
         for relative, data in run.sysout.items():
             if not self._is_display(relative):
                 continue
@@ -1382,6 +1703,19 @@ class BatchService:
                     f"DISPLAY lines cannot be given to a step",
                     _GAP_SUBMISSION,
                 )
+            owned.append((owner, data))
+        silent = sorted(required - {owner for owner, _ in owned})
+        if silent:
+            names = ", ".join(
+                f"{run.steps[position].name} ({job.steps[ran[position]].exec})"
+                for position in silent
+            )
+            raise AdapterUnavailable(
+                f"job {run.label} completed, but its sysout holds no SYSOUT file, the DD a "
+                f"program's DISPLAY output goes to, for {names}",
+                _GAP_SUBMISSION,
+            )
+        for owner, data in owned:
             if owner in programs:
                 run.steps[owner].display.extend(_text_lines(data))
 
@@ -1463,26 +1797,129 @@ class BatchService:
 
     def cancel_unfinished(self) -> None:
         """Cancel every submitted job not seen completed (``bpe_cancel``),
-        then confirm that BPE lists no unfinished job. It runs after a
-        scenario's deadline may have passed, so its commands are bounded by
-        their own ``timeout_s`` only."""
+        reconcile every unidentified submission with the node's active jobs
+        (``_reconcile``), then confirm that BPE lists no unfinished job. It
+        runs after a scenario's deadline may have passed, so its commands are
+        bounded by their own ``timeout_s`` only."""
         for number in list(self._unfinished):
             self.commands.run("bpe_cancel", self.env, job_number=number)
             self._unfinished.pop(number, None)
+        if self._unidentified:
+            self._reconcile()
         self.confirm_no_active_jobs()
+
+    def _reconcile(self) -> None:
+        """Find each unidentified submission among the jobs ``bpe_active_jobs``
+        lists, and cancel it.
+
+        The BPE node is test-owned and its jobs run one at a time, so the
+        window of an attempt is the jobs listed with a number above its
+        ``after`` (every listed job when ``after`` is ``None``), and its
+        candidates are the jobs of the window named as its JOB card or its
+        member. A single candidate is the attempt's job: it is cancelled with
+        ``bpe_cancel`` and its number kept for the evidence. No candidate
+        means BPE never accepted the job or it has ended, so it can no longer
+        change a dataset. Either way the attempt is resolved. Several
+        candidates, or a job of the window listed without a name, leave the
+        identity unknown: the attempt stays unidentified, so no job is
+        submitted, and ``AdapterUnavailable`` (GAP-MIS-006) names it. A
+        listing that fails or that ``_active_jobs`` cannot read line by line
+        is ``AdapterUnavailable`` (GAP-MIS-006) as well, raised before any
+        attempt is resolved, so every attempt is kept and submit keeps
+        refusing."""
+        attempts = "; ".join(f"the submission of {attempt.label}" for attempt in self._unidentified)
+        try:
+            active = self._active_jobs()
+        except AdapterUnavailable as exc:
+            raise AdapterUnavailable(
+                f"the BPE job of {attempts} cannot be identified: {exc.reason}", _GAP_SUBMISSION
+            ) from exc
+        unresolved: list[str] = []
+        for attempt in list(self._unidentified):
+            names = {attempt.card_name.upper(), attempt.member.upper()}
+            window = [
+                (number, name)
+                for number, name in active
+                if attempt.after is None or int(number) > attempt.after
+            ]
+            unnamed = [number for number, name in window if name is None]
+            candidates = [
+                number for number, name in window if name is not None and name.upper() in names
+            ]
+            if unnamed:
+                unresolved.append(
+                    f"the submission of {attempt.label}: BPE lists job {', '.join(unnamed)} "
+                    f"without a name since then"
+                )
+            elif len(candidates) > 1:
+                unresolved.append(
+                    f"the submission of {attempt.label}: BPE lists jobs "
+                    f"{', '.join(candidates)} under its names since then"
+                )
+            else:
+                if candidates:
+                    self.commands.run("bpe_cancel", self.env, job_number=candidates[0])
+                    self._job_numbers.append(candidates[0])
+                    self._last_number = int(candidates[0])
+                self._unidentified.remove(attempt)
+        if unresolved:
+            raise AdapterUnavailable(
+                f"BPE job identity cannot be established for {'; '.join(unresolved)}; no job is "
+                f"submitted until it is reconciled",
+                _GAP_SUBMISSION,
+            )
 
     def confirm_no_active_jobs(self) -> None:
         """Half of the quiescence check: ``bpe_active_jobs`` must list no
-        unfinished job, else ``AdapterUnavailable`` (GAP-MIS-004)."""
-        output = self.commands.run("bpe_active_jobs", self.env).stdout
-        listed = [
-            f"{match.groupdict().get('name') or '?'} ({match.group('job_number')})"
-            for match in self._regex("bpe_active_jobs", "job").finditer(output)
-        ]
+        unfinished job, else ``AdapterUnavailable`` (GAP-MIS-004). When it
+        lists none, no job of the test-owned node can still change a dataset,
+        so every unidentified submission is resolved as well. Only an empty or
+        all-blank listing lists none: one that fails, or that ``_active_jobs``
+        cannot read line by line, is ``AdapterUnavailable`` (GAP-MIS-004) and
+        leaves every unidentified submission unresolved."""
+        listed = [f"{name or '?'} ({number})" for number, name in self._active_jobs()]
         if listed:
             raise AdapterUnavailable(
                 f"BPE still lists unfinished jobs: {', '.join(listed)}", _GAP_QUIESCENCE
             )
+        self._unidentified.clear()
+
+    def _active_jobs(self) -> list[tuple[str, str | None]]:
+        """The unfinished jobs ``bpe_active_jobs`` lists, in its order, as
+        ``(job number, name)``: the number without leading zeros, as
+        ``JobRun.job_number`` holds it, and the name ``None`` when the line
+        gives none.
+
+        The listing is one job per line. Blank lines are ignored, and every
+        other line must be one that ``parse.job`` reads, searched within that
+        line, so only an empty or all-blank output means that no job is
+        active. A line it cannot read (with the shipped ``parse.job``, a job
+        number without a name, or a line in another format) makes the whole
+        listing unreadable rather than a job left out. That, a listed number
+        that is not one, and a command failure are ``AdapterUnavailable``
+        under the entry's gap (GAP-MIS-004)."""
+        output = self.commands.run("bpe_active_jobs", self.env).stdout
+        pattern = self._regex("bpe_active_jobs", "job")
+        jobs: list[tuple[str, str | None]] = []
+        for line in output.splitlines():
+            if not line.strip():
+                continue
+            match = pattern.search(line)
+            if match is None:
+                raise AdapterUnavailable(
+                    f"bpe_active_jobs listed {line!r}, which parse.job cannot read: the listing "
+                    f"is not one job per line",
+                    _GAP_QUIESCENCE,
+                )
+            number = match.group("job_number")
+            if not number or not number.isdecimal():
+                raise AdapterUnavailable(
+                    f"bpe_active_jobs listed {match.group(0).strip()!r}, whose job number "
+                    f"cannot be read",
+                    _GAP_QUIESCENCE,
+                )
+            jobs.append((str(int(number)), match.groupdict().get("name") or None))
+        return jobs
 
     # ---------------------------------------------------------- datasets
 
@@ -1796,15 +2233,34 @@ class BatchService:
         Before the job the file holds one sentinel record naming the job; a
         file that still holds it afterwards was not written by the unload
         (its records lie elsewhere, or were appended), which is
-        ``AdapterUnavailable`` (GAP-MIS-007) rather than a wrong outcome."""
+        ``AdapterUnavailable`` (GAP-MIS-007) rather than a wrong outcome. No
+        file at the path means ``define_staging`` has not run
+        (``HarnessError``). A file that cannot be examined, prepared with the
+        sentinel or read back after the job is ``AdapterUnavailable``
+        (GAP-MIS-007), or ``ScenarioTimeout`` once the scenario deadline has
+        passed (``_Budget.failed``)."""
         dsn = UNLOAD_PREFIX + qualifier
         path = self._dataset_file("dataset_unload", dsn)
-        if not path.is_file():
+
+        def unusable(action: str, exc: OSError) -> Exception:
+            return budget.failed(
+                f"the unload of {what} cannot {action} {path}: {exc.strerror or exc}",
+                _GAP_DATASETS,
+            )
+
+        try:
+            present = path.is_file()
+        except OSError as exc:
+            raise unusable("examine its unload file", exc) from exc
+        if not present:
             raise HarnessError(f"{dsn} has no file at {path}: define_staging has not run")
         member = self.next_member("unload")
         sentinel = (_SENTINEL_TEXT + member.encode("ascii")).ljust(record_length, _SENTINEL_FILL)
         sentinel = sentinel[:record_length]
-        self._write_file(path, sentinel)
+        try:
+            self._write_file(path, sentinel)
+        except OSError as exc:
+            raise unusable("write the sentinel record to", exc) from exc
         self._run_generated(
             "unload",
             "dataset_unload",
@@ -1813,7 +2269,10 @@ class BatchService:
             budget,
             member=member,
         )
-        data = path.read_bytes()
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise unusable("read back", exc) from exc
         records = self._records(what, data, record_length)
         if sentinel in records:
             raise AdapterUnavailable(

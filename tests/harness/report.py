@@ -79,6 +79,7 @@ import argparse
 import contextlib
 import csv
 import datetime as _dt
+import errno
 import fcntl
 import fnmatch
 import functools
@@ -105,6 +106,7 @@ if _TESTS_ROOT not in sys.path:
 
 from adapters.base import AdapterError, Result  # noqa: E402
 from harness import (  # noqa: E402
+    DEFAULT_CLOCK,
     INVENTORY_DIR,
     PROTECTED_BASE,
     REPO_ROOT,
@@ -252,6 +254,111 @@ PROOF_REQUIREMENTS = {
     ),
 }
 PROOF_JOBS = ("POSTTRAN", "INTCALC")
+# The proof contract: the job-chain proof runs on gnucobol-batch, so each
+# proof scenario's file, its baseline and its current passed gnucobol-batch
+# record must hold the values below.
+# The jobs each scenario runs against one catalog, as its inputs.job lists them.
+PROOF_JOB_SEQUENCES = {
+    "BAT-POSTINT-normal-01": ("POSTTRAN", "INTCALC"),
+    "BAT-CHAIN-normal-01": ("POSTTRAN", "INTCALC", "TRANBKP", "COMBTRAN", "CREASTMT", "TRANREPT"),
+}
+# Each job's return code, the highest of its steps: POSTTRAN rejects records
+# and ends RC 4, every later job RC 0; the scenario's is the highest of all.
+PROOF_JOB_RETURN_CODES = {"POSTTRAN": 4, "INTCALC": 0, "TRANBKP": 0, "COMBTRAN": 0, "CREASTMT": 0, "TRANREPT": 0}
+PROOF_RETURN_CODE = 4
+# The precondition datasets, each exactly {base: <fixture>} with no inline
+# records: the repository files, dailytran.txt as DALYTRAN and TRANSACT-INIT
+# as TRANSACT. No fault is declared.
+PROOF_FIXTURES = {
+    "DALYTRAN": "DALYTRAN",
+    "CARDXREF": "CARDXREF",
+    "ACCTDATA": "ACCTDATA",
+    "TCATBALF": "TCATBALF",
+    "DISCGRP": "DISCGRP",
+    "CUSTDATA": "CUSTDATA",
+    "TRANTYPE": "TRANTYPE",
+    "TRANCATG": "TRANCATG",
+    "TRANSACT": "TRANSACT-INIT",
+}
+PROOF_FIXTURE_SOURCES = {"DALYTRAN": "app/data/ASCII/dailytran.txt"}
+# Both run at DEFAULT_CLOCK on gnucobol-batch. The chain depends on the
+# absolute date (the TRANREPT INCLUDE window filters what POSTTRAN stamped),
+# so it is fixed; POSTINT may state its dates relative to the run date.
+PROOF_CLOCK_MODES = {"BAT-POSTINT-normal-01": ("fixed", "relative"), "BAT-CHAIN-normal-01": ("fixed",)}
+PROOF_PARAMETERS = {"BAT-POSTINT-normal-01": {}, "BAT-CHAIN-normal-01": {"DATEPARM": "2022-01-01 2022-07-06"}}
+# Message lines (trailing spaces aside) and how often each appears: CBTRN02C's
+# counts once, CBACT04C's missing-group line once for each of the 100 TCATBAL
+# records, because no account's group id is set (GAP-DEF-005).
+PROOF_MESSAGE_COUNTS = (
+    ("TRANSACTIONS PROCESSED :000000300", 1),
+    ("TRANSACTIONS REJECTED  :000000038", 1),
+    ("DISCLOSURE GROUP RECORD MISSING", 100),
+)
+# CBTRN02C's line for each TCATBAL record it creates, around the 17-byte key
+# [app/cbl/CBTRN02C.cbl:476-477]; POSTTRAN creates 50.
+PROOF_TCATBAL_CREATED = ("TCATBAL record not found for key : ", ".. Creating.")
+PROOF_TCATBAL_ADDED = 50
+# The step lines both adapters' job runs write, STEP <name> RC <nnnn> or
+# STEP <name> ABEND; each job's steps follow its gnucobol-batch step table.
+PROOF_STEP_LINE_RE = re.compile(r"STEP (\S+) (?:RC ([0-9]{4})|ABEND)")
+# Every reject is over limit: reason 0102 and its text.
+PROOF_REJECT_CODE = "0102"
+PROOF_REJECT_TEXT = "OVERLIMIT TRANSACTION"
+PROOF_REJECT_COUNT = 38
+# The interest records' TRAN-IDs: INTCALC's PARM 2022071800 plus a counter.
+PROOF_INTEREST_IDS = tuple(f"2022071800{number:06d}" for number in range(1, 51))
+# Decoded record counts. TRANSACT holds the 262 posted records, and 312 once
+# the chain's COMBTRAN merges the 50 interest records in; TRANSACT-BKUP, the
+# current generation, is TRANREPT's backup of those 312. TCATBALF is checked
+# as its fixture's record count plus PROOF_TCATBAL_ADDED.
+PROOF_RECORD_COUNTS = {
+    "BAT-POSTINT-normal-01": {
+        "DALYREJS": PROOF_REJECT_COUNT, "TRANSACT": 262, "ACCTDATA": 50, "SYSTRAN": len(PROOF_INTEREST_IDS),
+    },
+    "BAT-CHAIN-normal-01": {
+        "DALYREJS": PROOF_REJECT_COUNT, "TRANSACT": 312, "ACCTDATA": 50, "SYSTRAN": len(PROOF_INTEREST_IDS),
+        "TRXFL": 312, "TRANSACT-BKUP": 312,
+    },
+}
+# TRAN-PROC-TS of every TRANSACT record: DEFAULT_CLOCK in the DB2 timestamp
+# format the programs stamp, or the run-timestamp matcher's name, which the
+# projection holds where the baseline asserts the field through that matcher.
+PROOF_PROC_TS = ("2022-07-06-10.00.00.000000", "run-timestamp")
+# The ACCTDATA fields the baseline must expect for every account: the balance
+# and both cycle fields POSTTRAN posts and INTCALC rewrites.
+PROOF_ACCOUNT_FIELDS = ("ACCT-CURR-BAL", "ACCT-CURR-CYC-CREDIT", "ACCT-CURR-CYC-DEBIT")
+# The accounts INTCALC rewrites, 1 to 49, and the last one, 50, it never
+# rewrites (GAP-DEF-003); _proof_account_problems derives both.
+PROOF_UPDATED_ACCOUNTS = tuple(range(1, 50))
+PROOF_UNUPDATED_ACCOUNT = 50
+# Decoded number text as the projection holds it, '0.00' or '-47.88'.
+PROOF_NUMBER_RE = re.compile(r"[+-]?[0-9]+(?:\.[0-9]+)?")
+# The chain's catalog observation lines, '<name> <type> <generation or ->'
+# (adapters.base.format_catalog): TRANBKP's and TRANREPT's FILEOUT each
+# catalog one TRANSACT.BKUP(+1) generation. A reserved observation is
+# asserted under file_state only, so the chain's is listed apart from the
+# datasets of PROOF_REQUIREMENTS.
+PROOF_CATALOG = "@CATALOG"
+PROOF_OBSERVATIONS = {"BAT-POSTINT-normal-01": (), "BAT-CHAIN-normal-01": (PROOF_CATALOG,)}
+PROOF_BKUP_GENERATION_RE = re.compile(r"AWS\.M2\.CARDDEMO\.TRANSACT\.BKUP GENERATION G[0-9]{4}V00")
+PROOF_BKUP_GENERATIONS = 2
+# TRXFL, the COSTM01 TRNX-RECORD keyed by card and transaction id: the 328
+# bytes CREASTMT's OUTREC builds [app/jcl/CREASTMT.JCL:54] padded with spaces
+# to 350 (GAP-STB-006), so the record's last 20 bytes, its FILLER under the
+# decode key harness.codec.field_key gives it, are spaces.
+PROOF_TRXFL_KEY = ("TRNX-CARD-NUM", "TRNX-ID")
+PROOF_TRXFL_PADDING = ("TRNX-RECORD.TRNX-REST.FILLER#1", " " * 20)
+# One statement for each of the 50 cards: CBSTM03A writes ST-LINE0 to
+# STMTFILE and HTML-L01 to HTMLFILE once in each 5000-CREATE-STATEMENT
+# [app/cbl/CBSTM03A.CBL:84-88,150,458-461,506-509].
+PROOF_STATEMENTS = 50
+PROOF_STATEMENT_MARK = "START OF STATEMENT"
+PROOF_HTML_HEADER = "<!DOCTYPE html>"
+# TRANREPT's report: each detail line begins with TRAN-REPORT-TRANS-ID X(16)
+# [app/cpy/CVTRA07Y.cpy:15-16], and the totals lines begin with their labels
+# [app/cpy/CVTRA07Y.cpy:50-66]: (label, fewest, most or None).
+PROOF_REPORT_ID_WIDTH = 16
+PROOF_REPORT_TOTALS = (("Page Total", 1, None), ("Account Total", 1, None), ("Grand Total", 1, 1))
 
 # Tech spec Section 6.6.7.1 execution-effort table: seed label, scenarios,
 # the suite areas it seeds and whether only their batch (non-e2e) scenarios.
@@ -1824,9 +1931,60 @@ def _run(argv: Sequence[str]) -> subprocess.CompletedProcess | None:
         return None
 
 
+def _page_zero_facts() -> tuple[str, str | None, int | None, str | None]:
+    """The page-zero probe of the runtime environment file as stable facts,
+    ``(outcome, errno, minimum, note)``.
+
+    - ``outcome``: succeeded, failed or not run from the probe's ``ok``, a
+      probe that is not a mapping counting as a bare detail; not recorded
+      when the file holds no probe or cannot be read, and
+      ``not recorded (no <file>)`` when there is no file.
+    - ``errno``: ``errno <n> <NAME>`` from the probe's integer ``errno``,
+      else from the ``errno=<n>`` of its detail; ``None`` when neither has it.
+    - ``minimum``: the integer ``vm_mmap_min_addr``, else the
+      ``vm.mmap_min_addr=<n>`` of the detail; ``None`` when neither has it.
+    - ``note``: where the diagnostic lies, or that the file cannot be read;
+      ``None`` when there is neither.
+
+    The raw detail and a read error can hold work paths, dates and
+    durations, so neither is copied: the file is named by its path relative
+    to the repository."""
+    path = display_path(_results.RUNTIME_DIR / _results.ENVIRONMENT_FILE)
+    try:
+        environment = _results.load_environment()
+    except HarnessError:
+        return "not recorded", None, None, f"{path} cannot be read"
+    if environment is None:
+        return f"not recorded (no {path})", None, None, None
+    probe = environment.get("page0_probe")
+    number = None
+    if isinstance(probe, Mapping):
+        ok = probe.get("ok")
+        outcome = "succeeded" if ok is True else "failed" if ok is False else "not run"
+        number = probe.get("errno")
+        detail = str(probe.get("detail") or "").strip()
+    else:
+        outcome = "not recorded" if probe is None else "not run"
+        detail = "" if probe is None else str(probe).strip()
+    if isinstance(number, bool) or not isinstance(number, int):
+        match = re.search(r"errno=(\d+)", detail)
+        number = int(match.group(1)) if match else None
+    code = None
+    if number is not None:
+        name = errno.errorcode.get(number)
+        code = f"errno {number} {name}" if name else f"errno {number}"
+    minimum = environment.get("vm_mmap_min_addr")
+    if isinstance(minimum, bool) or not isinstance(minimum, int):
+        match = re.search(r"vm\.mmap_min_addr=(\d+)", detail)
+        minimum = int(match.group(1)) if match else None
+    return outcome, code, minimum, f"diagnostic in {path}" if detail else None
+
+
 def _environment_lines() -> list[str]:
     """The Environment section: tool and package versions and the page-zero
-    probe, never a date, a duration or a path."""
+    probe, never a date, a duration or a path. The probe shows its outcome,
+    errno and vm.mmap_min_addr as ``_page_zero_facts`` derives them, never
+    the runtime file's raw text, which it names by its relative path."""
     lines = [f"- Adapter: {os.environ.get('CARDDEMO_ADAPTER') or 'gnucobol-batch'}"]
     cobc = _run(["cobc", "--version"])
     first = (cobc.stdout.splitlines() or [""])[0].strip() if cobc is not None and cobc.returncode == 0 else ""
@@ -1850,27 +2008,10 @@ def _environment_lines() -> list[str]:
                 found[name.split(":")[0]] = version.strip()
         shown = [f"{name} {found[name]}" if name in found else f"{name} not installed" for name in DPKG_PACKAGES]
         lines.append(f"- Toolchain packages (dpkg-query): {', '.join(shown)}")
-    problem = None
-    try:
-        environment = _results.load_environment()
-    except HarnessError as exc:
-        environment, problem = None, _clip(exc, 200)
-    if problem is not None:
-        lines.append(f"- Page-zero probe: the runtime environment file cannot be read ({problem})")
-        lines.append("- vm.mmap_min_addr: not recorded")
-    elif environment is None:
-        lines.append("- Page-zero probe: not recorded (no tests/reports/runtime/environment.yaml)")
-        lines.append("- vm.mmap_min_addr: not recorded")
-    else:
-        probe = environment.get("page0_probe")
-        if isinstance(probe, Mapping):
-            outcome = {True: "succeeded", False: "failed"}.get(probe.get("ok"), "not run")
-            detail = str(probe.get("detail") or "").strip()
-            lines.append(f"- Page-zero probe: {outcome}" + (f" ({_clip(detail, 300)})" if detail else ""))
-        else:
-            lines.append(f"- Page-zero probe: {_clip(probe, 300) if probe is not None else 'not recorded'}")
-        minimum = environment.get("vm_mmap_min_addr")
-        lines.append(f"- vm.mmap_min_addr: {minimum if minimum is not None else 'not recorded'}")
+    outcome, code, minimum, note = _page_zero_facts()
+    facts = [fact for fact in (code, note) if fact]
+    lines.append(f"- Page-zero probe: {outcome}" + (f" ({'; '.join(facts)})" if facts else ""))
+    lines.append(f"- vm.mmap_min_addr: {minimum if minimum is not None else 'not recorded'}")
     lines.append(f"- Commit: {git_head()}")
     return lines
 
@@ -2191,14 +2332,15 @@ def regenerate() -> State:
 
 
 def _page_zero_detail() -> str:
-    try:
-        environment = _results.load_environment()
-    except HarnessError:
-        return ""
-    probe = environment.get("page0_probe") if environment else None
-    if isinstance(probe, Mapping) and probe.get("detail"):
-        return f" ({_clip(str(probe['detail']).strip(), 300)})"
-    return ""
+    """What the job-chain proof's page-zero reason adds: `` (<facts>)``,
+    the errno, the vm.mmap_min_addr value and the note on the runtime file
+    as ``_page_zero_facts`` derives them, joined by ``, ``, or ``""`` when
+    none is recorded. Never the runtime file's raw text. The proof joins
+    its reasons by ``; ``, so the facts never use that separator."""
+    _, code, minimum, note = _page_zero_facts()
+    shown = f"vm.mmap_min_addr {minimum}" if minimum is not None else None
+    facts = [fact for fact in (code, shown, note) if fact]
+    return f" ({', '.join(facts)})" if facts else ""
 
 
 def _job_item(state: State, job: str) -> str | None:
@@ -2208,15 +2350,534 @@ def _job_item(state: State, job: str) -> str | None:
     return None
 
 
+def _proof_scenario_problems(scenario: Any) -> list[str]:
+    """Why a proof scenario's file is not the proof's: ``inputs.job`` is not
+    exactly its ``PROOF_JOB_SEQUENCES`` list or a program or steps come with
+    it; its precondition datasets are not exactly ``PROOF_FIXTURES``, each a
+    bare ``{base: <fixture>}`` whose fixture has a repository source
+    (``PROOF_FIXTURE_SOURCES`` where one is named); it declares faults; or
+    its clock, clock mode or parameters depart from ``DEFAULT_CLOCK``,
+    ``PROOF_CLOCK_MODES`` and ``PROOF_PARAMETERS``."""
+    scenario_id = scenario.id
+    problems: list[str] = []
+    jobs = PROOF_JOB_SEQUENCES[scenario_id]
+    if scenario.inputs.get("job") != list(jobs):
+        shown = " -> ".join(_scenarios.job_names(scenario)) or "no job list"
+        problems.append(f"{scenario_id} runs {shown}, not the jobs {' -> '.join(jobs)}")
+    others = [key for key in ("program", "steps") if key in scenario.inputs]
+    if others:
+        problems.append(f"{scenario_id} also has inputs.{' and inputs.'.join(others)}, but the proof runs its "
+                        "jobs alone")
+    datasets = scenario.preconditions.get("datasets")
+    datasets = datasets if isinstance(datasets, Mapping) else {}
+    missing = [name for name in PROOF_FIXTURES if name not in datasets]
+    if missing:
+        problems.append(f"{scenario_id} lacks the precondition dataset(s) {', '.join(missing)}")
+    extra = sorted(str(name) for name in datasets if name not in PROOF_FIXTURES)
+    if extra:
+        problems.append(f"{scenario_id} has the precondition dataset(s) {', '.join(extra)}, which the proof "
+                        "does not use")
+    for name, base in PROOF_FIXTURES.items():
+        if name not in datasets:
+            continue
+        entry = datasets[name]
+        if entry != {"base": base}:
+            if isinstance(entry, Mapping):
+                held = f"base {entry.get('base')!r} with the key(s) {', '.join(sorted(map(str, entry)))}"
+            else:
+                held = f"a {type(entry).__name__}"
+            problems.append(f"{scenario_id} precondition dataset {name} is {held}, not {{base: {base}}} alone")
+            continue
+        try:
+            source = _fixtures.spec(base).source
+        except HarnessError:
+            problems.append(f"{scenario_id} precondition dataset {name}: {base} is not a fixture dataset")
+            continue
+        wanted = PROOF_FIXTURE_SOURCES.get(name)
+        if source is None:
+            problems.append(f"{scenario_id} precondition dataset {name}: {base} has no repository source")
+        elif wanted is not None and source != wanted:
+            problems.append(f"{scenario_id} precondition dataset {name} comes from {source}, not {wanted}")
+    if scenario.preconditions.get("faults"):
+        problems.append(f"{scenario_id} declares precondition faults, but the proof runs without any")
+    clock = _scenarios.clock(scenario)
+    if clock != DEFAULT_CLOCK:
+        problems.append(f"{scenario_id} runs at the clock {clock!r}, not the default clock {DEFAULT_CLOCK!r}")
+    mode = _scenarios.clock_mode(scenario)
+    modes = PROOF_CLOCK_MODES[scenario_id]
+    if mode not in modes:
+        problems.append(f"{scenario_id} declares clock_mode {mode!r}, not {' or '.join(modes)}")
+    parameters = scenario.preconditions.get("parameters")
+    parameters = parameters if isinstance(parameters, Mapping) else {}
+    for key, value in PROOF_PARAMETERS[scenario_id].items():
+        if parameters.get(key) != value:
+            problems.append(f"{scenario_id} has {key} {_clip(repr(parameters.get(key)), 80)}, not {value!r}")
+    return problems
+
+
+def _proof_baseline_problems(scenario_id: str) -> list[str]:
+    """Why the proof scenario's baseline is not the proof's: it cannot be
+    read, is absent or was not observed on gnucobol-batch, the authoritative
+    baseline of a job chain both adapters run; or its expectation does not
+    pin the proof's values (``_proof_expectation_problems``). Empty when it
+    is the proof's."""
+    baseline, problem = _load_baseline(scenario_id)
+    if problem is not None:
+        return [f"{scenario_id} has a baseline that cannot be read, and the proof needs one observed on gnucobol-batch"]
+    if baseline is None:
+        return [f"{scenario_id} has no baseline, and the proof needs one observed on gnucobol-batch"]
+    problems: list[str] = []
+    captured = baseline.capture_platform
+    if captured != _results.GNUCOBOL:
+        problems.append(f"{scenario_id} has a {captured} baseline, not one observed on gnucobol-batch")
+    problems.extend(_proof_expectation_problems(scenario_id, getattr(baseline, "expected", None)))
+    return problems
+
+
+def _proof_expected_list(value: Any) -> list | None:
+    """The full list an expected value pins: the value itself when it is a
+    plain list, the ``records`` of a mapping, else ``None`` (a ``count``, a
+    ``contains`` subsequence or ``matchers`` alone pin no full list)."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, Mapping) and isinstance(value.get("records"), list):
+        return value["records"]
+    return None
+
+
+def _proof_expected_shown(value: Any) -> str:
+    """What an expected value that pins no full list holds, as a reason
+    names it: ``a mapping of contains and count`` or ``a str``."""
+    if isinstance(value, Mapping):
+        keys = sorted(str(key) for key in value)
+        return f"a mapping of {' and '.join(keys)}" if keys else "an empty mapping"
+    return f"a {type(value).__name__}"
+
+
+def _proof_expectation_problems(scenario_id: str, expected: Any) -> list[str]:
+    """Why a proof baseline's expectation (``baseline.expected``, against
+    which ``compare`` checks every key the scenario asserts, so a passed run
+    observed it) does not pin the proof's values: ``return_code``
+    ``PROOF_RETURN_CODE``; ``reject_reason_codes``, as four-digit texts
+    (``102`` is ``'0102'``), exactly ``PROOF_REJECT_COUNT`` of
+    ``PROOF_REJECT_CODE``; ``messages`` the complete list of lines an
+    observed baseline holds; every dataset the scenario must assert
+    (``PROOF_REQUIREMENTS``, under ``datasets`` or ``file_state``) and the
+    chain's ``@CATALOG`` (``PROOF_OBSERVATIONS``, under ``file_state``) its
+    full record list, a plain list or a mapping with ``records``; and
+    ACCTDATA's list all 50 accounts, each naming
+    ``PROOF_ACCOUNT_FIELDS``. Each key the expectation lacks or leaves
+    unpinned is one reason naming it."""
+    if not isinstance(expected, Mapping):
+        return [f"{scenario_id}: its baseline holds no expectation, and the proof needs one that pins its "
+                "return code, reject reasons, messages and datasets"]
+    problems: list[str] = []
+    if "return_code" not in expected:
+        problems.append(f"{scenario_id}: its baseline does not expect return_code")
+    else:
+        code = expected["return_code"]
+        if isinstance(code, bool) or code != PROOF_RETURN_CODE:
+            problems.append(f"{scenario_id}: its baseline expects return_code {_clip(repr(code), 40)}, "
+                            f"not {PROOF_RETURN_CODE}")
+    if "reject_reason_codes" not in expected:
+        problems.append(f"{scenario_id}: its baseline does not expect reject_reason_codes")
+    else:
+        value = expected["reject_reason_codes"]
+        codes = _proof_expected_list(value)
+        if codes is None:
+            problems.append(f"{scenario_id}: its baseline expects reject_reason_codes as "
+                            f"{_proof_expected_shown(value)}, not the full list of {PROOF_REJECT_COUNT} of "
+                            f"{PROOF_REJECT_CODE}")
+        else:
+            texts = [f"{code:04d}" if isinstance(code, int) and not isinstance(code, bool) and 0 <= code <= 9999
+                     else code for code in codes]
+            if texts != [PROOF_REJECT_CODE] * PROOF_REJECT_COUNT:
+                problems.append(f"{scenario_id}: its baseline expects the reject_reason_codes "
+                                f"{_proof_code_counts(texts)}, not {PROOF_REJECT_COUNT} of {PROOF_REJECT_CODE}")
+    if "messages" not in expected:
+        problems.append(f"{scenario_id}: its baseline does not expect messages")
+    elif not isinstance(expected["messages"], list):
+        problems.append(f"{scenario_id}: its baseline expects messages as "
+                        f"{_proof_expected_shown(expected['messages'])}, not the complete list of lines")
+    _, datasets = PROOF_REQUIREMENTS[scenario_id]
+    wanted_in = [(name, ("datasets", "file_state")) for name in datasets]
+    wanted_in += [(name, ("file_state",)) for name in PROOF_OBSERVATIONS[scenario_id]]
+    for name, keys in wanted_in:
+        sections = [expected.get(section) for section in keys]
+        held = [section for section in sections if isinstance(section, Mapping) and name in section]
+        if not held:
+            problems.append(f"{scenario_id}: its baseline does not expect {name}")
+            continue
+        value = held[0][name]
+        records = _proof_expected_list(value)
+        if records is None:
+            problems.append(f"{scenario_id}: its baseline expects {name} as {_proof_expected_shown(value)}, "
+                            "not its full record list")
+            continue
+        if name != "ACCTDATA":
+            continue
+        wanted = PROOF_RECORD_COUNTS[scenario_id]["ACCTDATA"]
+        if len(records) != wanted:
+            problems.append(f"{scenario_id}: its baseline expects {len(records)} ACCTDATA record(s), "
+                            f"not the {wanted} accounts")
+        for field_name in PROOF_ACCOUNT_FIELDS:
+            lacking = sum(1 for record in records if not isinstance(record, Mapping) or field_name not in record)
+            if lacking:
+                problems.append(f"{scenario_id}: {lacking} ACCTDATA record(s) of its baseline do not name "
+                                f"{field_name}, which the proof asserts for every account")
+    return problems
+
+
+def _proof_step_tables() -> dict[str, tuple[str, ...]]:
+    """The step names, in JCL order, of each proof job's gnucobol-batch step
+    table; a job whose table cannot be read is left out."""
+    try:
+        document = load_yaml(_scenarios.GNUCOBOL_JOBS_FILE, missing_ok=True)
+    except (HarnessError, OSError):
+        return {}
+    jobs = document.get("jobs") if isinstance(document, Mapping) else None
+    tables: dict[str, tuple[str, ...]] = {}
+    for job in PROOF_JOB_RETURN_CODES:
+        entry = jobs.get(job) if isinstance(jobs, Mapping) else None
+        steps = entry.get("steps") if isinstance(entry, Mapping) else None
+        if not isinstance(steps, list) or not steps:
+            continue
+        names = tuple(step.get("step") if isinstance(step, Mapping) else None for step in steps)
+        if all(isinstance(name, str) and name for name in names):
+            tables[job] = names
+    return tables
+
+
+def _proof_step_problem(scenario_id: str, lines: Sequence[str], tables: Mapping[str, tuple[str, ...]]) -> str | None:
+    """Why the step lines among ``lines`` are not, job after job of the
+    scenario's sequence, each job's steps in table order without an abend
+    and with the job's return code as the highest; ``None`` when they are."""
+    steps = [match for match in map(PROOF_STEP_LINE_RE.fullmatch, lines) if match is not None]
+    jobs = PROOF_JOB_SEQUENCES[scenario_id]
+    position = 0
+    for job in jobs:
+        names = tables.get(job)
+        if names is None:
+            return f"{scenario_id}: the gnucobol-batch step table of {job} cannot be read"
+        found = steps[position:position + len(names)]
+        position += len(names)
+        wanted = PROOF_JOB_RETURN_CODES[job]
+        codes = [match.group(2) for match in found]
+        if [match.group(1) for match in found] != list(names) or None in codes or max(map(int, codes)) != wanted:
+            shown = ", ".join(match.group(0) for match in found) or "no step line"
+            return (f"{scenario_id}: job {job} must report its steps {', '.join(names)} without an abend and "
+                    f"with RC {wanted:04d} as the highest, but its messages show {shown}")
+    if position < len(steps):
+        return f"{scenario_id}: its messages hold {len(steps) - position} step line(s) after the job {jobs[-1]}"
+    return None
+
+
+def _proof_records(decoded: Mapping[str, Any], name: str) -> tuple[list | None, str]:
+    """Dataset ``name`` of a decoded outcome, looked up under ``datasets``
+    and then ``file_state``: its records, or ``None`` and why there are none."""
+    for section in ("datasets", "file_state"):
+        values = decoded.get(section)
+        if isinstance(values, Mapping) and name in values:
+            value = values[name]
+            if isinstance(value, list):
+                return value, ""
+            if isinstance(value, Mapping) and _baselines.MISSING in value:
+                return None, "was not produced"
+            if isinstance(value, Mapping) and _baselines.ERROR in value:
+                return None, "cannot be decoded"
+            return None, "holds no records"
+    return None, "is not in the decoded outcome"
+
+
+def _proof_field(records: Sequence[Any], name: str) -> list:
+    return [record.get(name) if isinstance(record, Mapping) else None for record in records]
+
+
+def _proof_code_counts(codes: Any) -> str:
+    if isinstance(codes, list):
+        counts = Counter(str(code) for code in codes)
+        return ", ".join(f"{count} of {code}" for code, count in sorted(counts.items())) or "none"
+    if codes is None:
+        return "absent"
+    return "unreadable"
+
+
+def _proof_outcome_problems(
+    scenario_id: str, decoded: Mapping[str, Any], tables: Mapping[str, tuple[str, ...]],
+) -> list[str]:
+    """Why the decoded outcome of a proof scenario's passed gnucobol-batch
+    record departs from the proof's business values: the return code; the
+    message counts, the TCATBAL creation lines and the step lines of each
+    job; the reject reasons; the record counts and fields of DALYREJS,
+    TRANSACT, TCATBALF, SYSTRAN and, for the chain, TRXFL and TRANSACT-BKUP;
+    ACCTDATA's cycle fields (``_proof_account_problems``); and, for the
+    chain, the catalog's backup generations, TRXFL's keys and padding, the
+    statements and the report (``_proof_chain_problems``). Every dataset the
+    scenario must assert has to be in the outcome."""
+    problems: list[str] = []
+    return_code = decoded.get("return_code")
+    if isinstance(return_code, bool) or return_code != PROOF_RETURN_CODE:
+        problems.append(f"{scenario_id} has return code {_clip(repr(return_code), 40)}, not {PROOF_RETURN_CODE}")
+    messages = decoded.get("messages")
+    if not isinstance(messages, list):
+        problems.append(f"{scenario_id}: its gnucobol-batch record holds no messages")
+    else:
+        lines = [line.rstrip() for line in messages if isinstance(line, str)]
+        for text, wanted in PROOF_MESSAGE_COUNTS:
+            seen = lines.count(text)
+            if seen != wanted:
+                problems.append(f"{scenario_id}: '{text}' appears {seen} time(s) in its messages, not {wanted}")
+        prefix, suffix = PROOF_TCATBAL_CREATED
+        seen = sum(1 for line in lines if line.startswith(prefix) and line.endswith(suffix))
+        if seen != PROOF_TCATBAL_ADDED:
+            problems.append(f"{scenario_id}: its messages hold {seen} TCATBAL creation line(s), "
+                            f"not {PROOF_TCATBAL_ADDED}")
+        step_problem = _proof_step_problem(scenario_id, lines, tables)
+        if step_problem is not None:
+            problems.append(step_problem)
+    codes = decoded.get("reject_reason_codes")
+    if codes != [PROOF_REJECT_CODE] * PROOF_REJECT_COUNT:
+        problems.append(f"{scenario_id}: its reject reason codes are {_proof_code_counts(codes)}, "
+                        f"not {PROOF_REJECT_COUNT} of {PROOF_REJECT_CODE}")
+    counts = dict(PROOF_RECORD_COUNTS[scenario_id])
+    try:
+        fixture_count = _fixtures.spec(PROOF_FIXTURES["TCATBALF"]).record_count
+    except HarnessError:
+        fixture_count = None
+    if fixture_count is None:
+        problems.append(f"{scenario_id}: the TCATBALF fixture has no record count to add the "
+                        f"{PROOF_TCATBAL_ADDED} created records to")
+    else:
+        counts["TCATBALF"] = fixture_count + PROOF_TCATBAL_ADDED
+    found: dict[str, list] = {}
+    for name, wanted in counts.items():
+        records, why = _proof_records(decoded, name)
+        if records is None:
+            problems.append(f"{scenario_id}: {name} {why}")
+            continue
+        found[name] = records
+        if len(records) != wanted:
+            problems.append(f"{scenario_id}: {name} holds {len(records)} record(s), not {wanted}")
+    rejects = found.get("DALYREJS")
+    if rejects is not None:
+        texts = _proof_field(rejects, "WS-VALIDATION-FAIL-REASON-DESC")
+        wrong = sum(1 for text in texts if not isinstance(text, str) or text.rstrip() != PROOF_REJECT_TEXT)
+        if wrong:
+            problems.append(f"{scenario_id}: {wrong} DALYREJS record(s) lack the reason text '{PROOF_REJECT_TEXT}'")
+    transact = found.get("TRANSACT")
+    if transact is not None:
+        ids = _proof_field(transact, "TRAN-ID")
+        if not all(isinstance(key, str) for key in ids) or any(left >= right for left, right in zip(ids, ids[1:])):
+            problems.append(f"{scenario_id}: TRANSACT is not in ascending TRAN-ID order")
+        wrong = sum(1 for stamp in _proof_field(transact, "TRAN-PROC-TS") if stamp not in PROOF_PROC_TS)
+        if wrong:
+            problems.append(f"{scenario_id}: {wrong} TRANSACT record(s) have a TRAN-PROC-TS other than "
+                            f"{PROOF_PROC_TS[0]}")
+    interest = found.get("SYSTRAN")
+    if interest is not None and len(interest) == len(PROOF_INTEREST_IDS):
+        for number, (seen_id, wanted_id) in enumerate(zip(_proof_field(interest, "TRAN-ID"), PROOF_INTEREST_IDS), 1):
+            if seen_id != wanted_id:
+                problems.append(f"{scenario_id}: SYSTRAN record {number} has TRAN-ID {_clip(repr(seen_id), 40)}, "
+                                f"not {wanted_id} ({PROOF_INTEREST_IDS[0]} to {PROOF_INTEREST_IDS[-1]} in order)")
+                break
+    _, required = PROOF_REQUIREMENTS[scenario_id]
+    for name in required + PROOF_OBSERVATIONS[scenario_id]:
+        if name in counts:
+            continue
+        records, why = _proof_records(decoded, name)
+        if records is None:
+            problems.append(f"{scenario_id}: {name} {why}")
+        else:
+            found[name] = records
+    accounts = found.get("ACCTDATA")
+    if accounts is not None:
+        problems.extend(_proof_account_problems(scenario_id, accounts))
+    problems.extend(_proof_chain_problems(scenario_id, found))
+    return problems
+
+
+def _proof_account_problems(scenario_id: str, accounts: Sequence[Any]) -> list[str]:
+    """Why ACCTDATA's decoded accounts do not show INTCALC's update: every
+    account 1 to 49 (``PROOF_UPDATED_ACCOUNTS``, by ``int(ACCT-ID)``) present
+    with ``ACCT-CURR-CYC-CREDIT`` and ``ACCT-CURR-CYC-DEBIT`` both zero, and
+    account 50 (``PROOF_UNUPDATED_ACCOUNT``) present without both zero. A
+    value that is not decoded number text fails."""
+    # CBACT04C 1050-UPDATE-ACCOUNT moves 0 to both cycle fields of each
+    # account it rewrites [app/cbl/CBACT04C.cbl:350-356]. It rewrites an
+    # account when the next account's TCATBAL record arrives, and the rewrite
+    # meant for the last account is unreachable [app/cbl/CBACT04C.cbl:219-220]
+    # (GAP-DEF-003), so accounts 1 to 49 end with zero cycle fields and
+    # account 50 keeps what POSTTRAN posted: its six dailytran.txt
+    # transactions, all under its 6169.00 limit, add 1501.75 to the cycle
+    # credit and -47.88 to the cycle debit.
+    cycles: dict[int, tuple[Decimal, Decimal]] = {}
+    seen: set[int] = set()
+    unreadable = 0
+    for record in accounts:
+        fields = record if isinstance(record, Mapping) else {}
+        account_id = fields.get("ACCT-ID")
+        readable_id = isinstance(account_id, str) and account_id.isascii() and account_id.isdigit()
+        number = int(account_id) if readable_id else None
+        if number is not None:
+            seen.add(number)
+        cycle = [fields.get(name) for name in ("ACCT-CURR-CYC-CREDIT", "ACCT-CURR-CYC-DEBIT")]
+        if number is None or not all(isinstance(value, str) and PROOF_NUMBER_RE.fullmatch(value) for value in cycle):
+            unreadable += 1
+            continue
+        cycles[number] = (Decimal(cycle[0]), Decimal(cycle[1]))
+    problems: list[str] = []
+    if unreadable:
+        problems.append(f"{scenario_id}: {unreadable} ACCTDATA record(s) have an ACCT-ID, ACCT-CURR-CYC-CREDIT or "
+                        "ACCT-CURR-CYC-DEBIT that is not decoded number text")
+    wanted = PROOF_UPDATED_ACCOUNTS + (PROOF_UNUPDATED_ACCOUNT,)
+    missing = [str(number) for number in wanted if number not in seen]
+    if missing:
+        problems.append(f"{scenario_id}: ACCTDATA lacks the account(s) {_clip(', '.join(missing), 200)}")
+    kept = [str(number) for number in PROOF_UPDATED_ACCOUNTS if number in cycles and any(cycles[number])]
+    if kept:
+        problems.append(f"{scenario_id}: ACCTDATA account(s) {_clip(', '.join(kept), 200)} keep a non-zero "
+                        f"ACCT-CURR-CYC-CREDIT or ACCT-CURR-CYC-DEBIT, but INTCALC zeroes both for accounts "
+                        f"{PROOF_UPDATED_ACCOUNTS[0]} to {PROOF_UPDATED_ACCOUNTS[-1]}")
+    last = cycles.get(PROOF_UNUPDATED_ACCOUNT)
+    if last is not None and not any(last):
+        problems.append(f"{scenario_id}: ACCTDATA account {PROOF_UNUPDATED_ACCOUNT} has zero ACCT-CURR-CYC-CREDIT "
+                        "and ACCT-CURR-CYC-DEBIT, but INTCALC never rewrites it, so it keeps POSTTRAN's postings "
+                        "(GAP-DEF-003)")
+    return problems
+
+
+def _proof_chain_problems(scenario_id: str, found: Mapping[str, list]) -> list[str]:
+    """Why the chain's later jobs are not shown in its decoded datasets
+    (``found``, those present; a scenario without them adds nothing):
+    ``@CATALOG`` lists exactly ``PROOF_BKUP_GENERATIONS`` TRANSACT.BKUP
+    generations, TRANBKP's and TRANREPT's. TRXFL is in ascending
+    (TRNX-CARD-NUM, TRNX-ID) order, its keys are TRANSACT's (TRAN-CARD-NUM,
+    TRAN-ID) pairs and every record's FILLER is 20 spaces. STMTFILE holds
+    ``PROOF_STATEMENTS`` lines with 'START OF STATEMENT' and HTMLFILE as many
+    '<!DOCTYPE html>' lines. Each TRANSACT TRAN-ID begins exactly one
+    TRANREPT line, and the report holds a 'Page Total' and an 'Account Total'
+    line and exactly one 'Grand Total' line."""
+    problems: list[str] = []
+    catalog = found.get(PROOF_CATALOG)
+    if catalog is not None:
+        seen = sum(1 for line in catalog
+                   if isinstance(line, str) and PROOF_BKUP_GENERATION_RE.fullmatch(line.rstrip()))
+        if seen != PROOF_BKUP_GENERATIONS:
+            problems.append(f"{scenario_id}: {PROOF_CATALOG} lists {seen} AWS.M2.CARDDEMO.TRANSACT.BKUP "
+                            f"generation(s), not {PROOF_BKUP_GENERATIONS}, TRANBKP's and TRANREPT's")
+    transact = found.get("TRANSACT")
+    trxfl = found.get("TRXFL")
+    if trxfl is not None:
+        keys = list(zip(*(_proof_field(trxfl, name) for name in PROOF_TRXFL_KEY)))
+        if not all(isinstance(part, str) for key in keys for part in key) or any(
+            left >= right for left, right in zip(keys, keys[1:])
+        ):
+            problems.append(f"{scenario_id}: TRXFL is not in ascending {', '.join(PROOF_TRXFL_KEY)} order")
+        if transact is not None:
+            pairs = Counter(zip(_proof_field(transact, "TRAN-CARD-NUM"), _proof_field(transact, "TRAN-ID")))
+            held = Counter(keys)
+            extra, absent = sum((held - pairs).values()), sum((pairs - held).values())
+            if extra or absent:
+                problems.append(f"{scenario_id}: TRXFL's {', '.join(PROOF_TRXFL_KEY)} keys are not TRANSACT's "
+                                f"TRAN-CARD-NUM, TRAN-ID pairs ({extra} TRXFL key(s) not in TRANSACT, "
+                                f"{absent} TRANSACT pair(s) not in TRXFL)")
+        field_name, padding = PROOF_TRXFL_PADDING
+        wrong = sum(1 for value in _proof_field(trxfl, field_name) if value != padding)
+        if wrong:
+            problems.append(f"{scenario_id}: {wrong} TRXFL record(s) have a {field_name} other than "
+                            f"{len(padding)} spaces")
+    statements = found.get("STMTFILE")
+    if statements is not None:
+        seen = sum(1 for line in statements if isinstance(line, str) and PROOF_STATEMENT_MARK in line)
+        if seen != PROOF_STATEMENTS:
+            problems.append(f"{scenario_id}: STMTFILE holds {seen} line(s) with '{PROOF_STATEMENT_MARK}', not "
+                            f"{PROOF_STATEMENTS}, one statement for each card")
+    pages = found.get("HTMLFILE")
+    if pages is not None:
+        seen = sum(1 for line in pages if isinstance(line, str) and line.rstrip() == PROOF_HTML_HEADER)
+        if seen != PROOF_STATEMENTS:
+            problems.append(f"{scenario_id}: HTMLFILE holds {seen} '{PROOF_HTML_HEADER}' line(s), not "
+                            f"{PROOF_STATEMENTS}, one statement for each card")
+    listing = found.get("TRANREPT")
+    if listing is not None:
+        lines = [line for line in listing if isinstance(line, str)]
+        if transact is not None:
+            ids = {tran_id for tran_id in _proof_field(transact, "TRAN-ID") if isinstance(tran_id, str)}
+            starts = Counter(line[:PROOF_REPORT_ID_WIDTH] for line in lines)
+            absent = sum(1 for tran_id in ids if starts[tran_id] == 0)
+            repeated = sum(1 for tran_id in ids if starts[tran_id] > 1)
+            if absent or repeated:
+                problems.append(f"{scenario_id}: TRANREPT lists {absent} of TRANSACT's {len(ids)} TRAN-ID(s) on no "
+                                f"line and {repeated} on more than one, not each on exactly one line")
+        for label, fewest, most in PROOF_REPORT_TOTALS:
+            seen = sum(1 for line in lines if line.startswith(label))
+            if seen < fewest or (most is not None and seen > most):
+                wanted = f"exactly {most}" if most == fewest else f"at least {fewest}"
+                problems.append(f"{scenario_id}: TRANREPT holds {seen} '{label}' line(s), not {wanted}")
+    return problems
+
+
 def check_proof(state: State | None = None) -> tuple[bool, str]:
-    """The job-chain proof: ``BAT-POSTINT-normal-01`` and
-    ``BAT-CHAIN-normal-01`` both passed on current records, each asserts its
-    business outcomes (return code, messages, reject reasons and the datasets
-    of the chain), and the BAT items they list and the POSTTRAN and INTCALC
-    job items are verified. Returns whether it is met and why."""
+    """The job-chain proof, which runs on gnucobol-batch. For each of
+    ``BAT-POSTINT-normal-01`` and ``BAT-CHAIN-normal-01`` (``PROOF_SCENARIOS``):
+
+    - It is ``passed`` on current records and asserts its business outcomes:
+      return code, messages, reject reasons and the datasets of its jobs
+      (``PROOF_REQUIREMENTS``), and the chain its catalog, ``@CATALOG``
+      under ``file_state`` (``PROOF_OBSERVATIONS``).
+    - Its file is the proof's: ``inputs.job`` is exactly its job list
+      (``PROOF_JOB_SEQUENCES``: POSTTRAN then INTCALC; the chain goes on with
+      TRANBKP, COMBTRAN, CREASTMT and TRANREPT) with no program or steps. Its
+      precondition datasets are exactly ``PROOF_FIXTURES``, each a bare
+      repository ``base`` with no inline records: ``dailytran.txt`` as
+      DALYTRAN, the repository CARDXREF, ACCTDATA, TCATBALF, DISCGRP,
+      CUSTDATA, TRANTYPE and TRANCATG, and TRANSACT-INIT as TRANSACT. It
+      declares no fault. It runs at ``DEFAULT_CLOCK``, and the chain has
+      ``clock_mode: fixed`` and ``DATEPARM`` ``2022-01-01 2022-07-06``.
+    - Its baseline was observed on gnucobol-batch, and its expectation, which
+      every passed run matches on each asserted key, pins the proof's values:
+      return code 4, the 38 reject reasons 0102, the complete list of
+      message lines, and the full record list of every dataset the scenario
+      must assert and of the chain's catalog, ACCTDATA's naming
+      ``ACCT-CURR-BAL``, ``ACCT-CURR-CYC-CREDIT`` and ``ACCT-CURR-CYC-DEBIT``
+      for all 50 accounts. A count, a ``contains`` subsequence or matchers
+      alone pin none of them.
+    - It has a current passed gnucobol-batch record; a UniKix pass alone never
+      proves it. That record's decoded outcome shows return code 4. Its
+      messages hold, job after job, a step line for each step of the job's
+      gnucobol-batch step table in order, ``STEP <name> RC <nnnn>`` as both
+      adapters' job runs write them, with no abend and the job's RC as the
+      highest (POSTTRAN 0004, every later job 0000). They show the
+      ``PROOF_MESSAGE_COUNTS`` lines ``TRANSACTIONS PROCESSED :000000300`` and
+      ``TRANSACTIONS REJECTED  :000000038`` once each and 'DISCLOSURE GROUP
+      RECORD MISSING' 100 times, and 50 TCATBAL creation lines. DALYREJS
+      holds 38 rejects, each with reason 0102 'OVERLIMIT TRANSACTION'.
+      TRANSACT holds 262 records (312 after the chain's COMBTRAN) in TRAN-ID
+      order, each with ``TRAN-PROC-TS`` at the default clock. TCATBALF holds
+      its fixture plus 50 created records. ACCTDATA holds the 50 accounts,
+      1 to 49 with ``ACCT-CURR-CYC-CREDIT`` and ``ACCT-CURR-CYC-DEBIT`` both
+      zero, as INTCALC rewrites them, and account 50 without both zero, as
+      INTCALC never rewrites it (GAP-DEF-003). SYSTRAN holds the 50 interest
+      records ``2022071800000001`` to ``2022071800000050`` in order.
+    - For the chain, that record also shows the later jobs. ``@CATALOG``
+      lists exactly two ``AWS.M2.CARDDEMO.TRANSACT.BKUP`` generations,
+      TRANBKP's and TRANREPT's, and TRANSACT-BKUP, the current one, holds
+      312 records. TRXFL holds 312 records in ascending (TRNX-CARD-NUM,
+      TRNX-ID) order, whose keys are TRANSACT's (TRAN-CARD-NUM, TRAN-ID)
+      pairs, each padded with spaces in its 20-byte FILLER. STMTFILE holds 50
+      'START OF STATEMENT' lines and HTMLFILE 50 '<!DOCTYPE html>' lines, one
+      statement for each card. Each TRANSACT TRAN-ID begins exactly one
+      TRANREPT line, and the report holds at least one 'Page Total' and one
+      'Account Total' line and exactly one 'Grand Total' line.
+
+    Finally, the BAT items they list and the POSTTRAN and INTCALC job items
+    must be verified. Returns whether the proof is met and why: each unmet
+    condition, joined by ``; ``, naming the scenario and what was observed
+    against what is required, or the scenarios and items it verified."""
     state = state if state is not None else build_state()
     reasons: list[str] = []
     required: set[str] = set()
+    tables: dict[str, tuple[str, ...]] | None = None
     for scenario_id in PROOF_SCENARIOS:
         scenario = state.scenarios.get(scenario_id)
         if scenario is None:
@@ -2239,8 +2900,24 @@ def check_proof(state: State | None = None) -> tuple[bool, str]:
             name for name in datasets
             if f"datasets.{name}" not in asserted and f"file_state.{name}" not in asserted
         ]
+        missing += [name for name in PROOF_OBSERVATIONS[scenario_id] if f"file_state.{name}" not in asserted]
         if missing:
             reasons.append(f"{scenario_id} does not assert {', '.join(missing)}")
+        reasons.extend(_proof_scenario_problems(scenario))
+        reasons.extend(_proof_baseline_problems(scenario_id))
+        record = next((
+            entry for entry in status.counted
+            if entry.get("adapter") == _results.GNUCOBOL and entry.get("status") == _results.STATUS_PASSED
+        ), None)
+        if record is None:
+            if status.status == _results.STATUS_PASSED:
+                reasons.append(f"{scenario_id} passed only on UniKix records, and the proof needs a current passed "
+                               "gnucobol-batch record")
+        elif not isinstance(record.get("decoded"), Mapping):
+            reasons.append(f"{scenario_id}: its passed gnucobol-batch record holds no decoded outcome")
+        else:
+            tables = tables if tables is not None else _proof_step_tables()
+            reasons.extend(_proof_outcome_problems(scenario_id, record["decoded"], tables))
         required.update(str(item_id) for item_id in scenario.inventory_ids if str(item_id).startswith("INV-BAT-"))
     for job in PROOF_JOBS:
         item_id = _job_item(state, job)
@@ -2255,15 +2932,42 @@ def check_proof(state: State | None = None) -> tuple[bool, str]:
         ))
     if reasons:
         return False, "; ".join(reasons)
-    return True, (f"{' and '.join(PROOF_SCENARIOS)} passed on current records with their business outcomes "
-                  f"asserted, and {', '.join(sorted(required))} are verified")
+    return True, (f"{' and '.join(PROOF_SCENARIOS)} passed on current gnucobol-batch records with the proof's "
+                  "jobs, fixtures and clock and their business outcomes asserted and observed, and "
+                  f"{', '.join(sorted(required))} are verified")
 
 
 def check_seams(state: State | None = None) -> list[str]:
     """The seam rule: every seam of the gnucobol-batch adapter has its
-    ``stub-limitation`` entry, and a closed one names an ``execution_id``
-    whose evidence directory exists under ``tests/reports/unikix/`` with a
-    current, passed, eligible ``validation.yaml`` for the cited scenario."""
+    ``stub-limitation`` entry, and a closed one holds valid resolving
+    evidence, the mapping ``{execution_id, scenario_id, counterpart_of?,
+    evidence_path}``:
+
+    - ``execution_id`` names a UniKix execution whose evidence directory
+      exists under ``tests/reports/unikix/`` with a current, passed and
+      eligible ``validation.yaml`` for the cited ``scenario_id``.
+    - The seam is characterized on gnucobol-batch by the scenario
+      ``counterpart_of`` names when present (``scenario_id`` is then its
+      UniKix counterpart, a different scenario), else by ``scenario_id``
+      itself. That scenario uses the seam (its ``gap_ids`` cite the entry),
+      gnucobol-batch runs it, its baseline was captured on gnucobol-batch and
+      it has a current passed gnucobol-batch record.
+    - A counterpart exercises the seam: its UniKix record ran at least one
+      program that gnucobol-batch record ran, by the upper-case stems of the
+      ``source_identity.units`` whose folder is ``cbl`` (the zip member
+      ``migrated_app/cbl/CBTRN02C.cbl`` is the program of
+      ``app/cbl/CBTRN02C.cbl``).
+    - The UniKix outcome agrees with that record's decoded outcome. For the
+      same scenario, every observation the gnucobol-batch decoded outcome
+      holds, each ``datasets`` and ``file_state`` name on its own, is also
+      in the UniKix decoded outcome and equal to it. For a counterpart, the
+      characterizing scenario asserts an observation outside screens besides
+      ``return_code``, which alone cannot show agreement, and the
+      counterpart asserts each observation the characterizing scenario
+      asserts outside screens: ``return_code``, ``reject_reason_codes`` and
+      each dataset and file state are equal, and the gnucobol-batch messages
+      without the CEE3ABD stub's marker line (``_CEE3ABD_MARKER``) are not
+      empty and appear in order among the UniKix messages."""
     state = state if state is not None else build_state()
     problems = []
     for seam, gap_id in SEAMS:
@@ -2287,6 +2991,11 @@ def check_seams(state: State | None = None) -> list[str]:
         if not isinstance(scenario_id, str):
             problems.append(f"{gap_id}: resolving_evidence names no scenario_id")
             continue
+        counterpart = evidence.get("counterpart_of")
+        if counterpart is not None and (not isinstance(counterpart, str) or counterpart == scenario_id):
+            problems.append(f"{gap_id}: resolving_evidence counterpart_of must name the gnucobol-batch scenario "
+                            f"that {scenario_id} stands in for, not {_clip(repr(counterpart), 80)}")
+            continue
         found = [entry for entry in state.unikix_records
                  if entry.execution_id == execution_id and entry.scenario_id == scenario_id]
         scenario = state.scenarios.get(scenario_id)
@@ -2305,7 +3014,153 @@ def check_seams(state: State | None = None) -> list[str]:
             why = _ineligibility(record, scenario, state.copy_gaps, state.zip_info)
             if why is not None:
                 problems.append(f"{gap_id}: the record of {scenario_id} in {execution_id} is not eligible: {why}")
+            else:
+                disagreement = _seam_disagreement(state, gap_id, execution_id, scenario, record, counterpart)
+                if disagreement is not None:
+                    problems.append(disagreement)
     return problems
+
+
+# The line the gnucobol-batch adapter adds to ``messages`` when the CEE3ABD
+# stub (tests/stubs/CEE3ABD.cbl) ends a run, as the stub's stand-in for a
+# Language Environment abend. The marker belongs to the test tree: whatever
+# CEE3ABD a UniKix region supplies writes no such line, so a counterpart's
+# messages are held to the gnucobol-batch lines without it.
+_CEE3ABD_MARKER = "CARDDEMO-ABEND CEE3ABD"
+
+
+def _seam_disagreement(state: State, gap_id: str, execution_id: str, scenario: Any,
+                       record: Mapping[str, Any], counterpart: str | None) -> str | None:
+    """Why the current, passed, eligible UniKix ``record`` of ``scenario`` in
+    ``execution_id`` does not resolve the seam of ``gap_id``, or ``None``
+    when it does: the gnucobol-batch scenario that characterizes the seam
+    (``counterpart`` when given, else ``scenario``) uses the seam, runs on
+    gnucobol-batch with a baseline captured there and a current passed
+    record, and the UniKix outcome agrees with that record (``check_seams``).
+
+    The same scenario agrees when every top-level observation of that
+    record's decoded outcome, and every name of a non-empty ``datasets`` or
+    ``file_state`` section on its own, is in the UniKix decoded outcome and
+    equal. A counterpart must run a program of that record
+    (``_unit_programs``) and assert every observation the characterizing
+    scenario asserts outside screens, which must be more than
+    ``return_code``. Each such observation is equal on both sides, except
+    ``messages``: the gnucobol-batch lines without ``_CEE3ABD_MARKER`` must
+    be non-empty, since an empty list is in order within any, and appear in
+    order among the UniKix lines."""
+    characterizing_id = counterpart if counterpart is not None else scenario.id
+    characterizing = state.scenarios.get(characterizing_id)
+    if characterizing is None:
+        return f"{gap_id}: counterpart_of names {characterizing_id}, which has no scenario file"
+    if gap_id not in {str(cited) for cited in characterizing.gap_ids}:
+        return f"{gap_id}: {characterizing_id} does not use this seam (its gap_ids do not cite {gap_id})"
+    if _results.GNUCOBOL not in _scenarios.capable_adapters(characterizing):
+        return f"{gap_id}: {characterizing_id} is not run by gnucobol-batch, so nothing characterizes the seam"
+    status = state.statuses.get(characterizing_id)
+    reference = next((
+        entry for entry in (status.counted if status is not None else ())
+        if entry.get("adapter") == _results.GNUCOBOL and entry.get("status") == _results.STATUS_PASSED
+    ), None)
+    if reference is None:
+        return (f"{gap_id}: {characterizing_id} has no current passed gnucobol-batch record, so nothing "
+                "characterizes the seam")
+    baseline, problem = _load_baseline(characterizing_id)
+    platform = baseline.capture_platform if problem is None and baseline is not None else None
+    if platform != _results.GNUCOBOL:
+        shown = ("its baseline cannot be read" if problem is not None else "it has none" if baseline is None
+                 else "its baseline is derived" if platform == _baselines.DERIVED
+                 else f"its baseline was captured on {platform}")
+        return f"{gap_id}: {characterizing_id} has no baseline captured on gnucobol-batch ({shown})"
+    unikix_outcome = f"the UniKix outcome of {scenario.id} in {execution_id}"
+    gnucobol_outcome = f"the gnucobol-batch record of {characterizing_id}"
+    observed, characterized = record.get("decoded"), reference.get("decoded")
+    if not isinstance(observed, Mapping):
+        return f"{gap_id}: {unikix_outcome} carries no decoded outcome to compare"
+    if not isinstance(characterized, Mapping):
+        return f"{gap_id}: {gnucobol_outcome} carries no decoded outcome to compare"
+    if counterpart is None:
+        keys: list[str] = []
+        for key in sorted(characterized, key=str):
+            section = characterized[key]
+            if key in ("datasets", "file_state") and isinstance(section, Mapping) and section:
+                keys.extend(f"{key}.{name}" for name in sorted(section, key=str))
+            else:
+                keys.append(str(key))
+        if not keys:
+            return (f"{gap_id}: {gnucobol_outcome} holds no decoded observation, so agreement with the "
+                    "gnucobol-batch characterization cannot be shown")
+    else:
+        programs = _unit_programs(reference)
+        if not programs & _unit_programs(record):
+            return (f"{gap_id}: {scenario.id} runs none of the programs of {characterizing_id} "
+                    f"({', '.join(sorted(programs)) or 'none'}), so it does not exercise the seam")
+        keys = [key for key in _scenarios.asserted_keys(characterizing) if not key.startswith("screens[")]
+        if not keys:
+            return (f"{gap_id}: {characterizing_id} asserts no observation outside screens, so agreement with the "
+                    "gnucobol-batch characterization cannot be shown")
+        if keys == ["return_code"]:
+            return (f"{gap_id}: {characterizing_id} asserts no observation outside screens but return_code, which "
+                    "alone cannot show agreement with the gnucobol-batch characterization")
+        asserted = set(_scenarios.asserted_keys(scenario))
+        unasserted = [key for key in keys if key not in asserted]
+        if unasserted:
+            return (f"{gap_id}: {scenario.id} does not assert {', '.join(unasserted)}, which the gnucobol-batch "
+                    f"characterization of {characterizing_id} asserts")
+    for key in keys:
+        held, unikix_value = _decoded_observation(observed, key)
+        reference_held, gnucobol_value = _decoded_observation(characterized, key)
+        if not held or not reference_held:
+            return f"{gap_id}: {unikix_outcome if not held else gnucobol_outcome} holds no {key} to compare"
+        undecodable = any(
+            isinstance(value, Mapping) and _baselines.ERROR in value for value in (unikix_value, gnucobol_value)
+        )
+        if key == "messages" and counterpart is not None:
+            lines = ([line for line in gnucobol_value if line != _CEE3ABD_MARKER]
+                     if isinstance(gnucobol_value, list) else gnucobol_value)
+            if isinstance(lines, list) and not lines:
+                besides = f" besides the CEE3ABD stub's marker {_CEE3ABD_MARKER!r}" if gnucobol_value else ""
+                return (f"{gap_id}: {gnucobol_outcome} holds no messages{besides}, so the messages of "
+                        f"{unikix_outcome} cannot show agreement with it")
+            agrees = isinstance(unikix_value, list) and isinstance(lines, list) and _in_order(lines, unikix_value)
+        else:
+            agrees = unikix_value == gnucobol_value
+        if undecodable or not agrees:
+            return (f"{gap_id}: {unikix_outcome} differs from the gnucobol-batch characterization of "
+                    f"{characterizing_id} in {key}")
+    return None
+
+
+def _decoded_observation(decoded: Mapping[str, Any], key: str) -> tuple[bool, Any]:
+    """Whether ``decoded`` holds the observation an ``asserted_keys`` name
+    gives (``datasets.<name>`` and ``file_state.<name>`` within their
+    section), and its value."""
+    section, dot, name = key.partition(".")
+    if dot and section in ("datasets", "file_state"):
+        values = decoded.get(section)
+        if isinstance(values, Mapping) and name in values:
+            return True, values[name]
+        return False, None
+    return key in decoded, decoded.get(key)
+
+
+def _in_order(lines: Sequence[Any], within: Sequence[Any]) -> bool:
+    """Whether every one of ``lines`` appears in ``within``, in the same
+    order (an ordered subsequence; other lines may come between them)."""
+    remaining = iter(within)
+    return all(any(line == other for other in remaining) for line in lines)
+
+
+def _unit_programs(record: Mapping[str, Any]) -> set[str]:
+    """The programs ``record`` ran by its ``source_identity``: the upper-case
+    file stems of its units whose parent folder is ``cbl``, so the zip member
+    ``migrated_app/cbl/CBTRN02C.cbl`` and ``app/cbl/CBTRN02C.cbl`` are both
+    ``CBTRN02C``. A record whose identity or units is not a mapping ran
+    none."""
+    identity = record.get("source_identity")
+    units = identity.get("units") if isinstance(identity, Mapping) else None
+    if not isinstance(units, Mapping):
+        return set()
+    return {Path(unit).stem.upper() for unit in units if isinstance(unit, str) and Path(unit).parent.name == "cbl"}
 
 
 def _git(args: Sequence[str]) -> subprocess.CompletedProcess | None:
@@ -2438,10 +3293,20 @@ def check(state: State | None = None) -> list[str]:
     if sum(counts.values()) != state.header.get("total"):
         findings.append(f"the status counts add up to {sum(counts.values())}, not the header total "
                         f"{state.header.get('total')}")
-    lacking = [
-        item["id"] for item in state.items
-        if item["status"] != VERIFIED and not any(state.gaps.is_open(gap_id) for gap_id in item["gap_ids"])
-    ]
+    lacking: list[str] = []
+    for item in state.items:
+        if item["status"] == VERIFIED or any(state.gaps.is_open(gap_id) for gap_id in item["gap_ids"]):
+            continue
+        # Name the gap ids that left the item uncovered, so the closure to revisit is plain.
+        kinds: dict[str, list[str]] = {"closed": [], "not open": [], "not in gaps.yaml": []}
+        for gap_id in sorted(set(item["gap_ids"])):
+            entry = state.gaps.get(gap_id)
+            if entry is None:
+                kinds["not in gaps.yaml"].append(gap_id)
+            else:
+                kinds["closed" if entry.get("status") == "closed" else "not open"].append(gap_id)
+        named = "; ".join(f"{kind}: {', '.join(gap_ids)}" for kind, gap_ids in kinds.items() if gap_ids)
+        lacking.append(f"{item['id']} ({named or 'no register entry'})")
     if lacking:
         findings.append(f"{len(lacking)} items that are not verified have no open register entry: "
                         + ", ".join(lacking[:40]) + (" ..." if len(lacking) > 40 else ""))

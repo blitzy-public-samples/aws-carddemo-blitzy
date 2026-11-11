@@ -649,10 +649,16 @@ transactions:
 #   member          the copy member (no extension), deployed to $PR/jcl/jmvs/<NAME>; null for TRNRPT00, which
 #                   bpe.py generates from `template`
 #   card_name       the job name on the member's JOB card, which BPE reports
-#   steps           every executed step in JCL order: {name, exec, proc?, cond?, parm?}. exec is the EXEC
-#                   operand of the executed step (PGM=<x>); proc the procedure the step comes from; cond and
-#                   parm verbatim. COND is evaluated by BPE, never by the adapter: a step BPE does not run
-#                   produces no STEP line.
+#   steps           every executed step in JCL order: {name, exec, proc?, cond?, parm?, sysout?}. exec is the
+#                   EXEC operand of the executed step (PGM=<x>); proc the procedure the step comes from; cond
+#                   and parm verbatim; sysout true on a program step whose JCL declares //SYSOUT DD SYSOUT=*,
+#                   the DD its DISPLAY output goes to (absent: false). COND is evaluated by BPE, never by the
+#                   adapter: a step BPE does not run produces no STEP line. bpe.py requires each listed step
+#                   to have an outcome or BPE's record that it did not run (commands.yaml bpe_sysout
+#                   parse.step_skipped), unless the step follows an abended step, after which BPE flushes the
+#                   job, and its cond names neither EVEN nor ONLY; it also requires the SYSOUT file of every
+#                   executed sysout step. A trace short of either is incomplete (GAP-MIS-006), never an
+#                   outcome.
 #   programs        the application programs the steps run (migrated_app/cbl/<P>.cbl), for the source
 #                   identity; utilities (IDCAMS, SORT, IEBGENER, IEFBR14) are the installation's
 #   procs, ctl      the copy's proc/<P> and ctl/<C> members the job uses
@@ -755,7 +761,7 @@ jobs:
     - {name: STEP010, exec: PGM=SORT}
     - {name: STEP020, exec: PGM=IDCAMS, cond: '(0,NE)'}
     - {name: STEP030, exec: PGM=IEFBR14, cond: '(0,NE)'}
-    - {name: STEP040, exec: PGM=CBSTM03A, cond: '(0,NE)'}
+    - {name: STEP040, exec: PGM=CBSTM03A, cond: '(0,NE)', sysout: true}
     programs: [CBSTM03A, CBSTM03B]
     procs: []
     ctl: []
@@ -849,7 +855,7 @@ jobs:
     member: jcl/INTCALC
     card_name: INTCALC
     steps:
-    - {name: STEP15, exec: PGM=CBACT04C, parm: '2022071800'}
+    - {name: STEP15, exec: PGM=CBACT04C, parm: '2022071800', sysout: true}
     programs: [CBACT04C]
     procs: []
     ctl: []
@@ -875,7 +881,7 @@ jobs:
     member: jcl/POSTTRAN
     card_name: POSTTRAN
     steps:
-    - {name: STEP15, exec: PGM=CBTRN02C}
+    - {name: STEP15, exec: PGM=CBTRN02C, sysout: true}
     programs: [CBTRN02C]
     procs: []
     ctl: []
@@ -897,7 +903,7 @@ jobs:
     member: jcl/READACCT
     card_name: READACCT
     steps:
-    - {name: STEP05, exec: PGM=CBACT01C}
+    - {name: STEP05, exec: PGM=CBACT01C, sysout: true}
     programs: [CBACT01C]
     procs: []
     ctl: []
@@ -907,7 +913,7 @@ jobs:
     member: jcl/READCARD
     card_name: READCARD
     steps:
-    - {name: STEP05, exec: PGM=CBACT02C}
+    - {name: STEP05, exec: PGM=CBACT02C, sysout: true}
     programs: [CBACT02C]
     procs: []
     ctl: []
@@ -917,7 +923,7 @@ jobs:
     member: jcl/READCUST
     card_name: READCUST
     steps:
-    - {name: STEP05, exec: PGM=CBCUS01C}
+    - {name: STEP05, exec: PGM=CBCUS01C, sysout: true}
     programs: [CBCUS01C]
     procs: []
     ctl: []
@@ -927,7 +933,7 @@ jobs:
     member: jcl/READXREF
     card_name: READXREF
     steps:
-    - {name: STEP05, exec: PGM=CBACT03C}
+    - {name: STEP05, exec: PGM=CBACT03C, sysout: true}
     programs: [CBACT03C]
     procs: []
     ctl: []
@@ -1020,7 +1026,7 @@ jobs:
     steps:
     - {name: STEP05R.PRC001, exec: PGM=IDCAMS, proc: REPROC}
     - {name: STEP05R, exec: PGM=SORT}
-    - {name: STEP10R, exec: PGM=CBTRN03C}
+    - {name: STEP10R, exec: PGM=CBTRN03C, sysout: true}
     programs: [CBTRN03C]
     procs: [REPROC]
     ctl: [REPROCT]
@@ -1070,7 +1076,7 @@ jobs:
     steps:
     - {name: STEP10.STEP01R.PRC001, exec: PGM=IDCAMS, proc: REPROC}
     - {name: STEP10.STEP05R, exec: PGM=SORT, proc: TRANREPT}
-    - {name: STEP10.STEP10R, exec: PGM=CBTRN03C, proc: TRANREPT}
+    - {name: STEP10.STEP10R, exec: PGM=CBTRN03C, proc: TRANREPT, sysout: true}
     programs: [CBTRN03C]
     procs: [TRANREPT, REPROC]
     ctl: [REPROCT]
