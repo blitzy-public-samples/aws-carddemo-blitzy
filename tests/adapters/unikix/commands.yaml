@@ -830,9 +830,16 @@ entries:
     parse:
       job: '(?im)^[ \t]*(?P<job_number>[0-9]+)[ \t]+(?P<name>[A-Z@#$][A-Z0-9@#$]*)[ \t]+(?P<submitted>[0-9]+[-/.][0-9]+[-/.][0-9]+[ T][0-9:.]+)'
     notes: >-
-      Must list the jobs BPE received from the region, one per line as parse.job reads them (job number, job
-      name, submission time), and, given {job_number}, print that job's JCL as submitted. The adapter selects
-      job TRNRPT00 submitted between the first and last step and stores its 80-byte records as @TDQ:JOBS.
+      Given an empty {job_number}, must list the jobs BPE received, among them those the region submitted
+      through JOBS; given a job number, must print that job's JCL as submitted. Every nonblank line of the
+      listing is one job, read by parse.job from the line's start (job number, job name, submission time;
+      further columns may follow). Any other nonblank line, or a job number listed twice, blocks GAP-MIS-017;
+      blank output lists no job. The submission time is when the region submitted the job, in this host's
+      local time, cut (not rounded) to the precision shown: seconds at least, preferably a fraction, so that a
+      job can be placed within the steps. A job whose listed time unit reaches across the instant the first
+      step began or the last step ended blocks GAP-MIS-017. The adapter lists the jobs just before the first
+      step and attributes only TRNRPT00 jobs absent from that listing whose listed time unit lies wholly
+      within the steps; their 80-byte records are @TDQ:JOBS.
 
   clock_set:
     action: set the UniKix clock

@@ -60,7 +60,7 @@ import re
 import stat
 import sys
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -2468,14 +2468,23 @@ class BatchService:
         kind = {"cluster": "CLUSTER", "nonvsam": "NONVSAM", "gdg": "GENERATION"}[dataset.kind]
         return (dataset.dsn, kind) in listed
 
-    def observe(self, names: Iterable[str], *, deadline: float | None = None) -> dict[str, bytes]:
+    def observe(
+        self,
+        names: Iterable[str],
+        *,
+        deadline: float | None = None,
+        keep: Callable[[str, bytes], None] | None = None,
+    ) -> dict[str, bytes]:
         """The observations ``names`` after a run, as raw bytes: logical
         datasets through ``unload``, ``@AIX:<path>`` through ``unload_aix`` and
         ``@CATALOG`` through ``catalog``. The catalog is listed once; a dataset
         or path it does not hold is left out, because ``Result.datasets``
         carries only what exists after the run. Any other reserved name is
         another module's (``@REGION-FILES``, ``@TDQ:JOBS``) and raises
-        ``HarnessError``."""
+        ``HarnessError``. ``keep``, when given, is called with each name and
+        its bytes as soon as they are acquired, so the caller's evidence holds
+        them even when a later acquisition fails; the bytes returned are the
+        same ones."""
         wanted = sorted(set(names))
         for name in wanted:
             if name.startswith("@") and name != CATALOG and not name.startswith(AIX_PREFIX):
@@ -2494,4 +2503,6 @@ class BatchService:
                 found[name] = self.unload_aix(name[len(AIX_PREFIX) :], deadline=budget.deadline)
             else:
                 found[name] = self.unload(name, deadline=budget.deadline)
+            if keep is not None:
+                keep(name, found[name])
         return found

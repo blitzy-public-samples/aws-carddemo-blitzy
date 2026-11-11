@@ -25,7 +25,12 @@ Observations
     (GAP-MIS-007), ``@REGION-FILES`` through ``region_file_inquire``
     (GAP-MIS-011), ``@TDQ:JOBS`` through ``jobs_capture`` (GAP-MIS-017) and
     screens through the checked loopback listener and ``s3270``
-    (GAP-MIS-005).
+    (GAP-MIS-005). ``@TDQ:JOBS`` is correlated within a window opened just
+    before the first step or job: no job ``jobs_capture`` lists then is ever
+    attributed to the run, and a new ``TRNRPT00`` job counts only when its
+    listed submission time, to the listing's precision, lies wholly within
+    the steps. A job the precision cannot place inside or outside the steps,
+    or a listing line that is not a job line, is GAP-MIS-017.
 Before each scenario
     Quiescence is confirmed (no active region task, no unfinished BPE job),
     then the region is reset: its files closed, every cluster of
@@ -55,11 +60,16 @@ Outcomes
     opened through ``CLOSEFIL``, ``OPENFIL`` or SDSF steps, because the copy's
     ``SDSF.cbl`` only displays ``DUMMY PROGRAM FOR SDSF`` (GAP-DOC-031), and
     CSD resources come from the ``catlg/tpe`` lists installed at region
-    creation, never from ``CBADMCDJ`` (``DFHCSDUP``, GAP-MIS-016).
+    creation, never from ``CBADMCDJ``: a job with a ``DFHCSDUP`` step, alone
+    or in a chain, has no confirmed UniKix equivalent and is
+    ``AdapterUnavailable`` under GAP-MIS-016 before anything reaches the
+    region.
 Evidence
     Every scenario that passed session start gets immutable evidence under
     ``tests/reports/unikix/<execution_id>/<scenario_id>/`` (``evidence.py``);
-    everything else the adapter writes lies inside the work root. A UniKix
+    everything else the adapter writes lies inside the work root. Each raw
+    observation joins the evidence as soon as it is acquired, so bytes read
+    before a later failure are kept unchanged. A UniKix
     outcome never changes a baseline or this adapter: divergence and
     eligibility are decided by ``harness/report.py``.
 
@@ -124,7 +134,14 @@ _GAP_REGION_CONTROL = "GAP-MIS-011"  # region file and TDQ control and inquiry
 _GAP_BATCH_FAULT = "GAP-MIS-013"  # no batch fault after a successful open
 _GAP_ONLINE_FAULT = "GAP-MIS-014"  # no record lock, IOERR or forced abend in the region
 _GAP_CLOCK = "GAP-MIS-015"  # no confirmed way to set the UniKix clock
+_GAP_CSD = "GAP-MIS-016"  # no confirmed UniKix equivalent of the CSD utility
 _GAP_JOBS_CAPTURE = "GAP-MIS-017"  # the jobs the region submits through JOBS
+
+# The z/OS CICS CSD utility CBADMCDJ runs against OEM.CICSTS.DFHCSD
+# [app/jcl/CBADMCDJ.jcl:27-30]. The region's CSD resources come from the
+# catlg/tpe lists installed at region creation, so a job step running it is
+# never submitted.
+_CSD_UTILITY = "DFHCSDUP"
 
 # Everything the adapter can declare before its session has started.
 _STATIC_OBSERVATIONS = frozenset(
@@ -153,8 +170,9 @@ _ONLINE_FAULT_GAPS = {"locked": _GAP_ONLINE_FAULT, "io-error": _GAP_ONLINE_FAULT
 # The job CORPT00C writes to the TDQ JOBS [app/cbl/CORPT00C.cbl:84].
 _REGION_JOB = "TRNRPT00"
 # How long the JOBS capture keeps listing for a job the region wrote during
-# the steps: the internal-reader hand-over to BPE may complete after the last
-# AID returned. Bounded by the scenario deadline as well.
+# the steps: the listing may show it only after the last AID returned. This
+# bounds the listing alone; a submission time after the last step never
+# counts. Bounded by the scenario deadline as well.
 _JOBS_SETTLE_S = 10.0
 _JOBS_POLL_S = 1.0
 
@@ -199,8 +217,12 @@ _CSD_LISTS = {
 # A BPE submission time as jobs_capture lists it: a date of three numbers and
 # a time of hours and minutes, seconds and a fraction optional.
 _SUBMITTED_RE = re.compile(
-    r"\s*(\d{1,4})([-/.])(\d{1,2})\2(\d{1,4})[ T](\d{1,2}):(\d{2})(?::(\d{2})(?:[.,:]\d+)?)?\s*"
+    r"\s*(\d{1,4})([-/.])(\d{1,2})\2(\d{1,4})[ T](\d{1,2}):(\d{2})(?::(\d{2})(?:[.,:](\d+))?)?\s*"
 )
+# The finest precision a listed submission time is read to: datetime's.
+_MICROSECOND_DIGITS = 6
+# How much of a listing line a refusal quotes.
+_SHOWN_LINE_CHARS = 120
 # CURDATE as CSDAT01Y shows it.
 _SCREEN_DATE_RE = re.compile(r"(\d{2})/(\d{2})/(\d{2})")
 
@@ -368,14 +390,17 @@ def _counterpart(source: str, index: _ZipIndex, repo_root: Path) -> str | None:
 
 def _submitted_at(text: str) -> tuple[_dt.datetime, _dt.timedelta] | None:
     """A ``jobs_capture`` submission time as a naive local datetime and the
-    precision it is given in (a second, or a minute without seconds); ``None``
-    when it is not one. A four-digit first number is a year (Y-M-D); a
-    four-digit last number is a year after M/D with ``/`` and after D.M or
-    D-M otherwise."""
+    precision it is given in; ``None`` when it is not one. A listing cuts the
+    time it shows, so the instant lies from the datetime up to, not including,
+    the datetime plus the precision: a minute without seconds, a second with
+    seconds and no fraction, and 10**-d seconds with a fraction of d digits,
+    read to the microsecond at most (further digits are cut). A four-digit
+    first number is a year (Y-M-D); a four-digit last number is a year after
+    M/D with ``/`` and after D.M or D-M otherwise."""
     match = _SUBMITTED_RE.fullmatch(text)
     if match is None:
         return None
-    first, separator, middle, last, hour, minute, second = match.groups()
+    first, separator, middle, last, hour, minute, second, fraction = match.groups()
     if len(first) == 4:
         year, month, day = first, middle, last
     elif len(last) == 4:
@@ -383,20 +408,26 @@ def _submitted_at(text: str) -> tuple[_dt.datetime, _dt.timedelta] | None:
         year = last
     else:
         return None
+    digits = (fraction or "")[:_MICROSECOND_DIGITS]
     try:
         at = _dt.datetime(
-            int(year), int(month), int(day), int(hour), int(minute), int(second or 0)
+            int(year),
+            int(month),
+            int(day),
+            int(hour),
+            int(minute),
+            int(second or 0),
+            int(digits.ljust(_MICROSECOND_DIGITS, "0")),
         )
     except ValueError:
         return None
-    return at, _dt.timedelta(seconds=1 if second is not None else 60)
-
-
-def _floor(moment: _dt.datetime, precision: _dt.timedelta) -> _dt.datetime:
-    """``moment`` cut to ``precision``, as a listing that gives it shows it."""
-    if precision >= _dt.timedelta(minutes=1):
-        return moment.replace(second=0, microsecond=0)
-    return moment.replace(microsecond=0)
+    if second is None:
+        precision = _dt.timedelta(minutes=1)
+    elif digits:
+        precision = _dt.timedelta(microseconds=10 ** (_MICROSECOND_DIGITS - len(digits)))
+    else:
+        precision = _dt.timedelta(seconds=1)
+    return at, precision
 
 
 def _iso_date(value: Any) -> _dt.date | None:
@@ -463,6 +494,20 @@ class _Plan:
     generations: list[tuple[str, bytes]] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
     online_faults: list[_OnlineFault] = field(default_factory=list)
+
+
+@dataclass
+class _JobsWindow:
+    """The submission window of a run whose ``@TDQ:JOBS`` is expected.
+
+    ``known`` holds the job numbers ``jobs_capture`` listed just before the
+    first step, and ``first`` the instant the first step began, taken after
+    that listing. ``last`` is the instant the last step ended, set once when
+    the run returns and never advanced while the capture keeps listing."""
+
+    known: frozenset[int]
+    first: _dt.datetime
+    last: _dt.datetime | None = None
 
 
 def _again(error: BaseException) -> BaseException:
@@ -794,6 +839,13 @@ class UniKixAdapter(Adapter):
             previous = previous.decode("utf-8", "replace")
         self._capture.sysout[key] = f"{previous}{text.rstrip()}\n"
 
+    def _keep(self, name: str, data: bytes) -> None:
+        """Put the raw observation ``data`` of ``name`` in the scenario's
+        evidence as soon as it is acquired, so the bytes stay there unchanged
+        when a later acquisition, reopen or wait fails."""
+        if self._capture is not None:
+            self._capture.datasets[name] = data
+
     # ----------------------------------------------------- region control
 
     def _file_control(self, *, bounded: bool = True) -> bool:
@@ -1015,8 +1067,22 @@ class UniKixAdapter(Adapter):
         jobs = _scenarios.job_names(scenario)
         if not online and not jobs:
             raise HarnessError(f"{scenario.id}: unikix runs inputs.steps or inputs.job, nothing else")
-        for job in jobs:
-            self._batch.resources.job(job)
+        resolved = [self._batch.resources.job(job) for job in jobs]
+        # Checked before anything reaches the region: a job, alone or in a
+        # chain, with a step running the CSD utility is never submitted.
+        csd_steps = dict.fromkeys(
+            f"{resource.name} step {step.name}"
+            for resource in resolved
+            for step in resource.steps
+            if (step.program or "").upper() == _CSD_UTILITY
+        )
+        if csd_steps:
+            raise AdapterUnavailable(
+                f"{_CSD_UTILITY} has no confirmed UniKix equivalent, so {', '.join(csd_steps)} "
+                "cannot run; the region's CSD resources come from the catlg/tpe lists installed "
+                "at region creation",
+                _GAP_CSD,
+            )
         if online and steps:
             tpe.check_sign_on(steps, scenario.expected.get("screens"))
             if self._listener_error is not None:
@@ -1214,13 +1280,25 @@ class UniKixAdapter(Adapter):
             raise HarnessError(f"{scenario.id}: execute without a prepare of the same scenario")
         self.check_deadline("before the run")
         started = time.monotonic()
-        window_start = _dt.datetime.now()
         expected = required_observations(scenario.expected)
         return_code: int | None = None  # an online run has no return code
         screens: list[dict[str, str]] = []
         messages: list[str] = []
+        jobs_window: _JobsWindow | None = None
         if plan.online:
+            if TDQ_JOBS in expected:
+                jobs_window = self._jobs_window()
             if plan.steps:
+
+                def restart() -> None:
+                    # Every step is driven again from the first and only that
+                    # attempt's results are returned, so the window opens
+                    # again: a job of the abandoned attempt is then a known one.
+                    nonlocal jobs_window
+                    self._attempt_reset(plan)
+                    if jobs_window is not None:
+                        jobs_window = self._jobs_window()
+
                 outcome = tpe.drive(
                     plan.steps,
                     plan.sessions,
@@ -1230,7 +1308,7 @@ class UniKixAdapter(Adapter):
                     workdir=workdir,
                     address=self._address,
                     expected_screens=scenario.expected.get("screens"),
-                    restart=lambda: self._attempt_reset(plan),
+                    restart=restart,
                 )
                 screens, messages = list(outcome.screens), list(outcome.messages)
             # An empty steps list observes the region state the reset left.
@@ -1239,12 +1317,17 @@ class UniKixAdapter(Adapter):
                 # The state before the jobs, beside the @REGION-FILES after them
                 # (CFG-OPENFIL-normal-01, CFG-CLOSEFIL-normal-01).
                 capture.sysout["adapter/region-files-before.txt"] = self._region_files()
+            if TDQ_JOBS in expected:
+                jobs_window = self._jobs_window()
             batch = self._batch.run_jobs(list(plan.jobs), self.deadline, dateparm=plan.dateparm)
             return_code, messages = batch.return_code, list(batch.messages)
             if batch.run_date is not None:
                 capture.run_date["bpe_job_start_date"] = batch.run_date
+        if jobs_window is not None:
+            # The last step or job has ended; the window is never widened after.
+            jobs_window.last = _dt.datetime.now()
         capture.job_numbers.extend(self._batch.take_job_numbers())
-        datasets = self._observe(expected, window_start)
+        datasets = self._observe(expected, jobs_window)
         result = Result(
             return_code=return_code,
             datasets=datasets,
@@ -1252,8 +1335,8 @@ class UniKixAdapter(Adapter):
             messages=messages,
             elapsed_s=time.monotonic() - started,
         )
+        # capture.datasets already holds each of these bytes (_observe).
         capture.result = result
-        capture.datasets = dict(result.datasets)
         capture.job_numbers.extend(self._batch.take_job_numbers())
         self._result = result
         return result
@@ -1274,20 +1357,27 @@ class UniKixAdapter(Adapter):
 
         return before_step
 
-    def _observe(self, names: Iterable[str], window_start: _dt.datetime) -> dict[str, bytes]:
+    def _observe(self, names: Iterable[str], window: _JobsWindow | None) -> dict[str, bytes]:
         """Every observation ``expected`` names after the last step or job
-        (AAP 0.4.2), as raw bytes. Region state is read first; BPE unloads
-        then run with the region files closed, which are reopened after."""
+        (AAP 0.4.2), as raw bytes. Region state is read first, ``@TDQ:JOBS``
+        within ``window``; BPE unloads then run with the region files closed,
+        which are reopened after. Each observation goes into the evidence as
+        soon as it is acquired (``_keep``), so a later failure leaves the bytes
+        read before it there; the ones returned are those same bytes."""
         wanted = sorted(set(names) - _SCREEN_NAMES)
         found: dict[str, bytes] = {}
         if REGION_FILES in wanted:
             found[REGION_FILES] = self._region_files()
+            self._keep(REGION_FILES, found[REGION_FILES])
         if TDQ_JOBS in wanted:
-            found[TDQ_JOBS] = self._jobs_queue(window_start)
+            if window is None:
+                raise HarnessError("@TDQ:JOBS is observed only within a window opened before the run")
+            # Kept by _jobs_queue before it waits for the jobs it captured.
+            found[TDQ_JOBS] = self._jobs_queue(window)
         batch_names = [name for name in wanted if name not in (REGION_FILES, TDQ_JOBS)]
         if batch_names:
             self._close_region_files()
-            found.update(self._batch.observe(batch_names, deadline=self.deadline))
+            found.update(self._batch.observe(batch_names, deadline=self.deadline, keep=self._keep))
             self._open_region_files()
         return found
 
@@ -1318,50 +1408,132 @@ class UniKixAdapter(Adapter):
             )
         return format_region_files((name, *states[name]) for name in wanted)
 
-    def _jobs_queue(self, window_start: _dt.datetime) -> bytes:
-        """``@TDQ:JOBS``: the 80-byte records of each job named ``TRNRPT00``
-        that BPE received from the region with a submission time from the
-        first step on, in job-number order. Every such job is registered with
-        the batch service (``BatchService.adopt``) before any JCL is read or
-        any job waited for, so cleanup cancels each one not seen completed.
-        Each job's number and JCL go into the evidence, and its completion and
-        sysout (``_await_region_job``) are required: a sysout the batch
-        service cannot poll or read is ``AdapterUnavailable`` under its own
-        gap, never a ``@TDQ:JOBS`` without it."""
+    def _jobs_listing(self, name: str) -> list[tuple[int, str, str]]:
+        """Every job ``jobs_capture`` lists, as (job number, upper-cased job
+        name, submission time as listed), its output kept unchanged in the
+        evidence as ``adapter/tdq-jobs/<name>``. Every nonblank line must be
+        one job line as ``parse.job`` reads it from the line's start, and no
+        job number may appear twice: anything else is no listing
+        (GAP-MIS-017), never one without jobs. Blank output lists no job."""
         gap = self._commands.entry("jobs_capture").gap
         pattern = self._pattern("jobs_capture", "job", ("job_number", "name", "submitted"))
+        # Listing is the run without a job number; printing one job's JCL is
+        # the run with it (commands.yaml jobs_capture notes).
+        output = self._run("jobs_capture", job_number="").stdout
+        if self._capture is not None:
+            self._capture.sysout[f"adapter/tdq-jobs/{name}"] = output
+        jobs: list[tuple[int, str, str]] = []
+        seen: set[int] = set()
+        for line in output.splitlines():
+            if not line.strip():
+                continue
+            match = pattern.match(line)
+            fields = match.group("job_number", "name", "submitted") if match else None
+            if fields is None or None in fields or not fields[0].isdecimal():
+                shown = line[:_SHOWN_LINE_CHARS] + ("..." if len(line) > _SHOWN_LINE_CHARS else "")
+                raise AdapterUnavailable(
+                    f"jobs_capture listed a line that is not a job line as parse.job reads it: "
+                    f"{shown!r}",
+                    gap,
+                )
+            number_text, job_name, submitted = fields
+            number = int(number_text)
+            if number in seen:
+                raise AdapterUnavailable(f"jobs_capture listed job {number} more than once", gap)
+            seen.add(number)
+            jobs.append((number, job_name.upper(), submitted))
+        return jobs
+
+    def _jobs_window(self) -> _JobsWindow:
+        """Open the ``@TDQ:JOBS`` window as the first step or job begins:
+        every job ``jobs_capture`` already lists, none of which is ever
+        attributed to this run, then the instant the first step begins."""
+        known = frozenset(number for number, _, _ in self._jobs_listing("listing-before-steps.txt"))
+        first = _dt.datetime.now()
+        return _JobsWindow(known, first)
+
+    def _jobs_queue(self, window: _JobsWindow) -> bytes:
+        """``@TDQ:JOBS``: the 80-byte records of each job named ``TRNRPT00``
+        that BPE received from the region during the steps, in job-number
+        order.
+
+        A candidate is a ``TRNRPT00`` job absent from the listing taken before
+        the first step (``window.known``); a job in that listing never is.
+        Absence does not place a candidate after that listing, since a job may
+        be listed only after it was submitted, so its listed time ``at``
+        decides alone. Cut to the listing's precision ``p``, it says the job
+        was submitted from ``at`` up to ``at + p``. The candidate is captured
+        only when that span lies wholly within the steps: ``at`` no earlier
+        than the instant the first step began (``window.first``) and ``at + p``
+        no later than the instant the last step ended (``window.last``). It is
+        left out, with a note, when ``at + p`` is no later than
+        ``window.first`` or ``at`` is after ``window.last``. Any other
+        candidate's span reaches across one of those instants, so that the
+        precision cannot place it inside or outside the steps: it is no
+        observation (GAP-MIS-017), never a captured job.
+
+        The listing is taken again, for at most ``_JOBS_SETTLE_S``, until it
+        shows a candidate captured or one that cannot be placed, because a job
+        submitted during the steps may be listed only after the last AID
+        returned; this decides only when listing stops, never which submission
+        times belong to the run. Every captured job is registered with the
+        batch service (``BatchService.adopt``) before any JCL is read or any
+        job waited for, so cleanup cancels each one not seen completed. Each
+        captured job's JCL and number then go into the evidence, and so do the
+        ``@TDQ:JOBS`` bytes (``_keep``) before each job is waited for. Its
+        completion and sysout (``_await_region_job``) are required: a sysout
+        the batch service cannot poll or read is ``AdapterUnavailable`` under
+        its own gap, never a ``@TDQ:JOBS`` without it."""
+        if window.last is None:
+            raise HarnessError("the JOBS window was not closed when the last step ended")
+        gap = self._commands.entry("jobs_capture").gap
         card = self._batch.resources.job(_REGION_JOB).card_name.upper()
+        first, last = window.first, window.last
         settle_until = time.monotonic() + _JOBS_SETTLE_S
+        noted: set[int] = set()
         while True:
-            # Listing is the run without a job number; printing one job's JCL
-            # is the run with it (commands.yaml jobs_capture notes).
-            listing = self._run("jobs_capture", job_number="").stdout
-            window_end = _dt.datetime.now()
-            numbers: set[int] = set()
-            for match in pattern.finditer(listing):
-                if match.group("name").upper() != card:
+            selected: list[int] = []
+            for number, name, submitted in self._jobs_listing("listing.txt"):
+                if name != card or number in window.known:
                     continue
-                submitted = _submitted_at(match.group("submitted"))
-                if submitted is None:
+                parsed = _submitted_at(submitted)
+                if parsed is None:
                     raise AdapterUnavailable(
-                        f"jobs_capture listed {card} job {match.group('job_number')} with the "
-                        f"submission time {match.group('submitted')!r}, which cannot be read",
+                        f"jobs_capture listed {card} job {number} with the submission time "
+                        f"{submitted!r}, which cannot be read",
                         gap,
                     )
-                at, precision = submitted
-                if _floor(window_start, precision) <= at <= window_end:
-                    numbers.add(int(match.group("job_number")))
-            if numbers or time.monotonic() >= settle_until:
+                at, precision = parsed
+                listed = f"{card} job {number} listed as submitted {submitted.strip()!r}"
+                to = f"to {precision.total_seconds():g} s"
+                if at + precision <= first:
+                    outside = f"before the window opened at {first.isoformat(' ')}"
+                elif at > last:
+                    outside = f"after the last step ended at {last.isoformat(' ')}"
+                elif first <= at and at + precision <= last:
+                    selected.append(number)
+                    continue
+                else:
+                    raise AdapterUnavailable(
+                        f"{listed} ({to}) cannot be placed within the steps from "
+                        f"{first.isoformat(' ')} to {last.isoformat(' ')}: the listing's precision "
+                        "cannot show whether it was submitted during the steps",
+                        gap,
+                    )
+                if number not in noted:
+                    noted.add(number)
+                    self._note("tdq-jobs/correlation", f"{listed} ({to}) is not captured: {outside}")
+            if selected or time.monotonic() >= settle_until:
                 break
             time.sleep(min(_JOBS_POLL_S, self.check_deadline("waiting for the JOBS capture")))
+        numbers = sorted(selected)
         # Registered before any JCL is read or any job waited for, so that a
         # failure or timeout on one job leaves the others for cleanup to cancel.
-        runs = {
-            number: self._batch.adopt(card, str(number), "jobs_capture") for number in sorted(numbers)
-        }
+        runs = {number: self._batch.adopt(card, str(number), "jobs_capture") for number in numbers}
         records: list[bytes] = []
-        for number in sorted(numbers):
+        for number in numbers:
             text = self._run("jobs_capture", job_number=str(number)).stdout
+            self._capture.sysout[f"adapter/tdq-jobs/{number}.jcl"] = text
             try:
                 cards = bpe.card_image(text.splitlines(), f"the JCL of BPE job {number}")
             except HarnessError as exc:
@@ -1370,9 +1542,11 @@ class UniKixAdapter(Adapter):
                 ) from exc
             records.extend(line.encode("ascii") for line in cards.splitlines())
             self._capture.job_numbers.append(str(number))
-            self._capture.sysout[f"adapter/tdq-jobs/{number}.jcl"] = text
+        data = format_fixed_records(records, TDQ_RECORD_LENGTH)
+        self._keep(TDQ_JOBS, data)
+        for number in numbers:
             self._await_region_job(runs[number])
-        return format_fixed_records(records, TDQ_RECORD_LENGTH)
+        return data
 
     def _await_region_job(self, run: bpe.JobRun) -> None:
         """Wait, within the scenario deadline, for a job the region submitted,

@@ -17,6 +17,24 @@ midnight during the ACT-COACTUPC-boundary-24 steps, must drive the steps
 again after its ``restart``, or end under GAP-MIS-015 without one, so the run
 date typed and the date the birth date is judged against are one day.
 
+CSD utility gate: ``UniKixAdapter.prepare``, on a started session whose
+commands and BPE service are fakes, must block a job with a ``DFHCSDUP``
+step, alone or in a chain, under GAP-MIS-016 before anything reaches the
+region, after the broken-session GAP-MIS-004 and the job-name check, and let
+any other job past the gate.
+
+JOBS capture: ``UniKixAdapter``'s ``@TDQ:JOBS`` capture, on fakes, must
+attribute only ``TRNRPT00`` jobs absent from the listing taken just before
+the first step (again after a day-change restart) whose listed time, to its
+precision, lies wholly within the steps; leave out, with a note, jobs listed
+before the window or after the last step; block under GAP-MIS-017 a job its
+precision cannot place inside or outside the steps at either end, one listed
+only once polling began included, a listing line that is not a job line and a
+job number listed twice; read a blank listing as no job, a listed time (year,
+month or day first) at the precision it shows and a malformed one as no time;
+and keep every observation in the evidence as soon as it is acquired, through
+``BatchService.observe``'s ``keep`` as well, so a later failure loses none.
+
 Evidence ownership: ``EvidenceWriter.write``, on a tests root of the case's
 own, must refuse a scenario folder that already exists, whatever stands
 there, and keep it as found; of concurrent writes of one scenario exactly one
@@ -71,7 +89,10 @@ if _TESTS_ROOT not in sys.path:
 from adapters import base  # noqa: E402
 from adapters.gnucobol_batch import datasets, jobs  # noqa: E402
 from adapters.gnucobol_batch.adapter import GnuCOBOLBatchAdapter  # noqa: E402
-from adapters.unikix import evidence, tpe  # noqa: E402
+from adapters.unikix import adapter as unikix_adapter  # noqa: E402
+from adapters.unikix import bpe, evidence, tpe  # noqa: E402
+from adapters.unikix import env as unikix_env  # noqa: E402
+from adapters.unikix.adapter import UniKixAdapter  # noqa: E402
 from harness import (  # noqa: E402
     HarnessError,
     baselines,
@@ -595,6 +616,136 @@ def test_tpe_drives_the_steps_again_when_the_region_day_changes(
         assert "day_changes" not in capture.run_date
 
 
+# UniKixAdapter.prepare's CSD utility gate, on a session marked started whose
+# commands and BPE service are fakes: any use of them past the scenario checks
+# (a probe, a submission, a reset) raises _BeyondTheGate, so a case that ends
+# on another exception reached nothing of the region. CBADMCDJ STEP1 runs
+# DFHCSDUP [app/jcl/CBADMCDJ.jcl:27-30]; CLOSEFIL and OPENFIL run SDSF.
+CSD_GATE_SCENARIO = "CFG-CBADMCDJ-normal-01"
+CSD_GATE_WORK_ROOT_PREFIX = "unit-unikix-csd-gate-"
+CSD_GATE_BROKEN = "the reset before CFG-OPENFIL-normal-01 was not confirmed"
+CSD_GATE_REASON = (
+    "DFHCSDUP has no confirmed UniKix equivalent",
+    "CBADMCDJ step STEP1",
+    "catlg/tpe lists installed at region creation",
+)
+
+
+class _BeyondTheGate(Exception):
+    """A fake was used past prepare's scenario checks."""
+
+
+# Each case: inputs.job, whether the session is broken, the exception
+# expected, its gap_id (None for an exception without one) and the texts its
+# message holds.
+CSD_GATE_CASES = [
+    pytest.param(
+        "CBADMCDJ", False, base.AdapterUnavailable, "GAP-MIS-016", CSD_GATE_REASON, id="job"
+    ),
+    pytest.param(
+        ["CLOSEFIL", "CBADMCDJ", "OPENFIL"],
+        False,
+        base.AdapterUnavailable,
+        "GAP-MIS-016",
+        CSD_GATE_REASON,
+        id="chain-member",
+    ),
+    pytest.param("CLOSEFIL", False, _BeyondTheGate, None, (), id="other-job-passes"),
+    pytest.param(
+        "CBADMCDJ",
+        True,
+        base.AdapterUnavailable,
+        "GAP-MIS-004",
+        (CSD_GATE_BROKEN,),
+        id="broken-session-first",
+    ),
+    pytest.param(
+        ["CBADMCDJ", "NOSUCHJOB"],
+        False,
+        HarnessError,
+        None,
+        ("'NOSUCHJOB' is not a job",),
+        id="unknown-job-first",
+    ),
+]
+
+
+class _GateFake:
+    """Any attribute a subclass does not define raises _BeyondTheGate."""
+
+    def __getattr__(self, name: str) -> object:
+        if name.startswith("__"):
+            raise AttributeError(name)
+        raise _BeyondTheGate(f"{type(self).__name__}.{name}")
+
+
+class _GateCommands(_GateFake):
+    """The ``CommandSet`` prepare reads before the gate: its log mark."""
+
+    def mark(self) -> int:
+        return 0
+
+
+class _GateBatch(_GateFake):
+    """The ``BatchService`` prepare reads before the gate: the committed
+    resources.yaml and no pending evidence."""
+
+    def __init__(self) -> None:
+        self.resources = bpe.Resources.load()
+
+    def take_evidence(self) -> dict[str, bytes]:
+        return {}
+
+
+@pytest.fixture
+def csd_gate_work_root() -> Iterator[Path]:
+    """A fresh, empty directory of this case's own inside the work root,
+    never under pytest's basetemp. A configured work root is created when
+    missing and kept; the directory is removed afterwards, with the default
+    root when this fixture made it."""
+    configured = os.environ.get(WORK_ROOT_ENV, "")
+    made = None if configured.strip() else Path(tempfile.mkdtemp(prefix=DEFAULT_WORK_ROOT_PREFIX))
+    try:
+        root = Path(configured) if made is None else made
+        root.mkdir(parents=True, exist_ok=True)
+        directory = Path(tempfile.mkdtemp(prefix=CSD_GATE_WORK_ROOT_PREFIX, dir=root))
+        try:
+            yield directory
+        finally:
+            shutil.rmtree(directory)
+    finally:
+        if made is not None:
+            shutil.rmtree(made)
+
+
+@pytest.mark.parametrize(("job", "broken", "raised", "gap_id", "details"), CSD_GATE_CASES)
+def test_unikix_prepare_blocks_a_csd_utility_job_before_the_region(
+    csd_gate_work_root: Path,
+    job: str | list[str],
+    broken: bool,
+    raised: type[Exception],
+    gap_id: str | None,
+    details: tuple[str, ...],
+) -> None:
+    adapter = UniKixAdapter(work_root=csd_gate_work_root, repo_root=Path(_TESTS_ROOT).parent)
+    adapter._session_ready = True
+    adapter._env = object()
+    adapter._commands = _GateCommands()
+    adapter._batch = _GateBatch()
+    if broken:
+        adapter._broken = CSD_GATE_BROKEN
+    scenario = SimpleNamespace(
+        id=CSD_GATE_SCENARIO, inputs={"job": job}, expected={}, preconditions={}
+    )
+    with pytest.raises(raised) as caught:
+        adapter.prepare(scenario, csd_gate_work_root / CSD_GATE_SCENARIO)
+    assert getattr(caught.value, "gap_id", None) == gap_id
+    for detail in details:
+        assert detail in str(caught.value)
+    assert adapter._plan is None and not adapter._touched
+    assert list(csd_gate_work_root.iterdir()) == []
+
+
 # The evidence of one blocked unikix run of EVIDENCE_SCENARIO, written to a
 # tests root of each case's own inside the work root (evidence_tests_root),
 # never to the checkout's reports.
@@ -849,6 +1000,563 @@ def test_evidence_writer_writes_a_conforming_record_that_reads_back_equal(
     fields = {name: written.get(name) for name in results.RECORD_FIELDS}
     assert fields == record
     assert results.record_problems(fields) == []
+
+
+# UniKixAdapter's @TDQ:JOBS capture on fakes: jobs_capture answers with
+# scripted listings and JCL while parse.job and the gap come from the
+# committed commands.yaml; adapter.py's monotonic clock moves only when it
+# sleeps, its datetime.now() gives each case's scripted instants, and a
+# captured job is recorded instead of waited for. Nothing is written to disk.
+JOBS_SCENARIO = "RPT-CORPT00C-normal-01"
+JOBS_GAP = "GAP-MIS-017"
+# The window opens, opens again after a restart, and the last step ends.
+JOBS_FIRST = datetime.datetime(2025, 3, 4, 10, 0, 40, 500000)
+JOBS_RESTARTED = datetime.datetime(2025, 3, 4, 10, 1, 20)
+JOBS_LAST = datetime.datetime(2025, 3, 4, 10, 2, 30, 250000)
+JOBS_JCL = bpe.trnrpt00_jcl("2025-03-01", "2025-03-31")
+# What jobs_capture lists before the first step: another job, and a TRNRPT00
+# of an earlier scenario listed in the minute the window opens in.
+JOBS_BEFORE_STEPS = "  16 POSTTRAN 2025-03-04 10:00:12\n  17 TRNRPT00 2025-03-04 10:00\n"
+# New TRNRPT00 jobs listed after the window opened: one submitted before it,
+# one during the steps, one after the last step ended, and one during the
+# steps of a restarted attempt.
+JOBS_LISTED_BEFORE = "  15 TRNRPT00 2025-03-04 10:00:39\n"
+JOBS_LISTED_INSIDE = "  18 TRNRPT00 2025-03-04 10:01:15\n"
+JOBS_LISTED_AFTER = "  19 TRNRPT00 2025-03-04 10:02:31\n"
+JOBS_LISTED_RESTARTED = "  20 TRNRPT00 2025-03-04 10:01:50\n"
+JOBS_LEFT_BEFORE = "before the window opened"
+JOBS_LEFT_AFTER = "after the last step ended"
+# The listings a capture without any job inside the window takes: the first,
+# then one each poll until the settle period ends.
+JOBS_SETTLE_LISTINGS = 1 + round(unikix_adapter._JOBS_SETTLE_S / unikix_adapter._JOBS_POLL_S)
+
+
+class _JobsCommands:
+    """The ``CommandSet`` the JOBS capture uses: entries of the committed
+    commands.yaml; ``jobs_capture`` without a job number gives the next
+    scripted listing (the last one again once the script is used up) and
+    with one that job's JCL. ``job_numbers`` records every run's number."""
+
+    def __init__(self, listings: list[str], jcl: Mapping[int, str]) -> None:
+        self.entries = unikix_env.CommandSet.load()
+        self.listings = list(listings)
+        self.jcl = dict(jcl)
+        self.job_numbers: list[str] = []
+
+    def entry(self, entry_id: str) -> unikix_env.CommandEntry:
+        return self.entries.entry(entry_id)
+
+    def run(
+        self, entry_id: str, env: object, deadline_left: float | None = None, **values: str | int
+    ) -> SimpleNamespace:
+        assert entry_id == "jobs_capture" and deadline_left is not None and deadline_left > 0
+        number = str(values["job_number"])
+        self.job_numbers.append(number)
+        if number:
+            return SimpleNamespace(stdout=self.jcl[int(number)])
+        listing = self.listings.pop(0) if len(self.listings) > 1 else self.listings[0]
+        return SimpleNamespace(stdout=listing)
+
+
+class _SettleClock:
+    """adapter.py's ``time``: a monotonic clock that only ``sleep`` moves."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        assert 0 < seconds <= unikix_adapter._JOBS_POLL_S
+        self.now += seconds
+
+
+class _Instants(datetime.datetime):
+    """adapter.py's ``datetime``: ``now`` gives the case's scripted instants
+    in turn and fails once they are used up."""
+
+    script: list[datetime.datetime] = []
+
+    @classmethod
+    def now(cls, tz: datetime.tzinfo | None = None) -> datetime.datetime:
+        assert cls.script, "datetime.now() read more often than the JOBS window needs"
+        return cls.script.pop(0)
+
+
+def _jobs_adapter(
+    monkeypatch: pytest.MonkeyPatch, listings: list[str], jcl: Mapping[int, str] | None = None
+) -> tuple[UniKixAdapter, _JobsCommands, list[tuple[str, str]]]:
+    """A ``UniKixAdapter`` with a fresh capture, fake commands answering
+    ``listings`` and ``jcl``, the committed resources.yaml, a scenario
+    deadline 300 s away, and the jobs it would wait for recorded instead,
+    each of which must have been registered (``adopt``) first."""
+    work_root = Path(os.environ.get(WORK_ROOT_ENV, "").strip() or tempfile.gettempdir())
+    adapter = UniKixAdapter(work_root=work_root, repo_root=Path(_TESTS_ROOT).parent)
+    adapter._capture = evidence.Capture()
+    commands = _JobsCommands(listings, jcl or {})
+    adapter._commands = commands
+    adapter._env = object()
+    adopted: dict[str, bpe.JobRun] = {}
+
+    def adopt(card_name: str, job_number: str, entry_id: str) -> bpe.JobRun:
+        return adopted.setdefault(
+            job_number, bpe.JobRun(card_name, card_name, card_name, entry_id, job_number)
+        )
+
+    adapter._batch = SimpleNamespace(
+        resources=bpe.Resources.load(), take_job_numbers=lambda: [], adopt=adopt
+    )
+    adapter.deadline = time.monotonic() + 300
+    awaited: list[tuple[str, str]] = []
+
+    def await_region_job(run: bpe.JobRun) -> None:
+        assert adopted.get(run.job_number) is run, "waited for a job never registered"
+        awaited.append((run.card_name, run.job_number))
+
+    monkeypatch.setattr(adapter, "_await_region_job", await_region_job)
+    monkeypatch.setattr(unikix_adapter, "time", _SettleClock())
+    return adapter, commands, awaited
+
+
+def _jobs_records() -> bytes:
+    """The @TDQ:JOBS bytes of one captured JOBS_JCL: each line an 80-byte
+    record."""
+    return b"".join(line.ljust(base.TDQ_RECORD_LENGTH).encode("ascii") for line in JOBS_JCL.splitlines())
+
+
+# Each case: the instants adapter.py reads (the window opening, once more per
+# restart, then the end of the last step), the listings jobs_capture gives in
+# turn (one per window opening, then the polls), the restarts tpe.drive asks
+# for, the job captured, and the jobs left out with the reason noted.
+JOBS_RUN_CASES = [
+    pytest.param(
+        [JOBS_FIRST, JOBS_LAST],
+        [
+            JOBS_BEFORE_STEPS,
+            JOBS_BEFORE_STEPS + JOBS_LISTED_BEFORE + JOBS_LISTED_INSIDE + JOBS_LISTED_AFTER,
+        ],
+        0,
+        18,
+        {15: JOBS_LEFT_BEFORE, 19: JOBS_LEFT_AFTER},
+        id="one-attempt",
+    ),
+    pytest.param(
+        [JOBS_FIRST, JOBS_RESTARTED, JOBS_LAST],
+        [
+            JOBS_BEFORE_STEPS,
+            JOBS_BEFORE_STEPS + JOBS_LISTED_INSIDE,
+            JOBS_BEFORE_STEPS
+            + JOBS_LISTED_INSIDE
+            + JOBS_LISTED_BEFORE
+            + JOBS_LISTED_RESTARTED
+            + JOBS_LISTED_AFTER,
+        ],
+        1,
+        20,
+        {15: JOBS_LEFT_BEFORE, 19: JOBS_LEFT_AFTER},
+        id="restarted-attempt",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("instants", "listings", "restarts", "captured", "left_out"), JOBS_RUN_CASES
+)
+def test_unikix_jobs_capture_attributes_only_new_jobs_submitted_during_the_steps(
+    monkeypatch: pytest.MonkeyPatch,
+    instants: list[datetime.datetime],
+    listings: list[str],
+    restarts: int,
+    captured: int,
+    left_out: dict[int, str],
+) -> None:
+    adapter, commands, awaited = _jobs_adapter(monkeypatch, listings, {captured: JOBS_JCL})
+    fake_datetime = SimpleNamespace(
+        datetime=_Instants, timedelta=datetime.timedelta, date=datetime.date
+    )
+    monkeypatch.setattr(unikix_adapter, "_dt", fake_datetime)
+    monkeypatch.setattr(_Instants, "script", list(instants))
+    resets: list[object] = []
+    monkeypatch.setattr(adapter, "_attempt_reset", resets.append)
+
+    def drive(
+        steps: object, sessions: object, deadline: object, capture: object, before_step: object,
+        *, restart: object, **options: object,
+    ) -> SimpleNamespace:
+        for _ in range(restarts):
+            restart()
+        return SimpleNamespace(screens=[], messages=[])
+
+    monkeypatch.setattr(unikix_adapter.tpe, "drive", drive)
+    plan = unikix_adapter._Plan(JOBS_SCENARIO, True, [{"aid": "ENTER"}], 1, (), None)
+    adapter._plan = plan
+    scenario = SimpleNamespace(id=JOBS_SCENARIO, expected={"file_state": {base.TDQ_JOBS: []}})
+    result = adapter.execute(scenario, Path(_TESTS_ROOT) / JOBS_SCENARIO)
+    capture = adapter._capture
+    assert result.datasets == {base.TDQ_JOBS: _jobs_records()}
+    assert capture.datasets == result.datasets
+    assert capture.job_numbers == [str(captured)]
+    assert awaited == [("TRNRPT00", str(captured))]
+    assert resets == [plan] * restarts
+    # The window took its instants once each: never again while listing.
+    assert _Instants.script == []
+    # One listing per window opening, one poll that lists the job, its JCL.
+    assert commands.job_numbers == [""] * (1 + restarts) + ["", str(captured)]
+    assert capture.sysout["adapter/tdq-jobs/listing-before-steps.txt"] == listings[restarts]
+    assert capture.sysout["adapter/tdq-jobs/listing.txt"] == listings[-1]
+    assert capture.sysout[f"adapter/tdq-jobs/{captured}.jcl"] == JOBS_JCL
+    notes = capture.sysout["adapter/tdq-jobs/correlation.txt"].splitlines()
+    assert len(notes) == len(left_out)
+    for number, reason in left_out.items():
+        assert any(f"job {number} " in note and reason in note for note in notes), notes
+
+
+# Each case: the submission time jobs_capture lists for job 18, which is not
+# in the window's snapshot, and the reason it is left out given the window
+# from JOBS_FIRST to JOBS_LAST (None: it is captured). Job 17, in the
+# snapshot, is listed in the minute the window opened in and never captured.
+# Job 18 stands for a region submission the listing shows only after the
+# snapshot, whenever it was made: listed wholly before the first step, it is
+# left out.
+JOBS_PLACEMENT_CASES = [
+    pytest.param("2025-03-04 10:00:41", None, id="second-after-the-first-step-began"),
+    pytest.param("2025-03-04 10:00:40.6", None, id="tenth-after-the-first-step-began"),
+    pytest.param("2025-03-04 10:02:30.24", None, id="hundredth-before-the-end"),
+    pytest.param("2025-03-04 10:00:39", JOBS_LEFT_BEFORE, id="second-before-the-window"),
+    pytest.param("2025-03-04 10:00:40.4", JOBS_LEFT_BEFORE, id="tenth-ending-as-the-first-step-began"),
+    pytest.param("2025-03-04 10:02:31", JOBS_LEFT_AFTER, id="second-after-the-end"),
+    pytest.param("2025-03-04 10:02:30.3", JOBS_LEFT_AFTER, id="tenth-after-the-end"),
+]
+
+
+@pytest.mark.parametrize(("listed", "left_out"), JOBS_PLACEMENT_CASES)
+def test_unikix_jobs_capture_places_a_new_job_by_its_listed_time(
+    monkeypatch: pytest.MonkeyPatch, listed: str, left_out: str | None
+) -> None:
+    listing = JOBS_BEFORE_STEPS + f"  18 TRNRPT00 {listed}\n"
+    adapter, commands, awaited = _jobs_adapter(monkeypatch, [listing], {18: JOBS_JCL})
+    window = unikix_adapter._JobsWindow(frozenset({16, 17}), JOBS_FIRST, JOBS_LAST)
+    data = adapter._jobs_queue(window)
+    capture = adapter._capture
+    assert capture.datasets == {base.TDQ_JOBS: data}
+    assert capture.sysout["adapter/tdq-jobs/listing.txt"] == listing
+    if left_out is None:
+        assert data == _jobs_records()
+        assert commands.job_numbers == ["", "18"]
+        assert capture.job_numbers == ["18"] and awaited == [("TRNRPT00", "18")]
+        assert "adapter/tdq-jobs/correlation.txt" not in capture.sysout
+    else:
+        assert data == b""
+        assert commands.job_numbers == [""] * JOBS_SETTLE_LISTINGS
+        assert capture.job_numbers == [] and awaited == []
+        # Noted once, however often the settle period listed it.
+        notes = capture.sysout["adapter/tdq-jobs/correlation.txt"].splitlines()
+        assert len(notes) == 1 and "job 18 " in notes[0] and left_out in notes[0], notes
+
+
+# Each case: a submission time listed for new job 18 in the time unit in
+# which the first step began (JOBS_FIRST) or the last step ended (JOBS_LAST),
+# and the precision the refusal names.
+JOBS_UNPLACEABLE_CASES = [
+    pytest.param("2025-03-04 10:00", "to 60 s", id="minute-the-first-step-began-in"),
+    pytest.param("2025-03-04 10:00:40", "to 1 s", id="second-the-first-step-began-in"),
+    pytest.param("2025-03-04 10:02", "to 60 s", id="minute-the-last-step-ended-in"),
+    pytest.param("2025-03-04 10:02:30", "to 1 s", id="second-the-last-step-ended-in"),
+    pytest.param("2025-03-04 10:02:30.2", "to 0.1 s", id="tenth-the-last-step-ended-in"),
+]
+
+
+@pytest.mark.parametrize(("listed", "precision"), JOBS_UNPLACEABLE_CASES)
+def test_unikix_jobs_capture_blocks_a_job_its_precision_cannot_place(
+    monkeypatch: pytest.MonkeyPatch, listed: str, precision: str
+) -> None:
+    # Job 21, listed first, was submitted during the steps; it is not
+    # captured either once job 18 makes the listing no observation.
+    listing = JOBS_BEFORE_STEPS + "  21 TRNRPT00 2025-03-04 10:01:15\n" + f"  18 TRNRPT00 {listed}\n"
+    adapter, commands, awaited = _jobs_adapter(monkeypatch, [listing])
+    window = unikix_adapter._JobsWindow(frozenset({16, 17}), JOBS_FIRST, JOBS_LAST)
+    with pytest.raises(base.AdapterUnavailable) as caught:
+        adapter._jobs_queue(window)
+    assert caught.value.gap_id == JOBS_GAP
+    steps = (JOBS_FIRST.isoformat(" "), JOBS_LAST.isoformat(" "))
+    for detail in ("TRNRPT00 job 18 ", repr(listed), precision, *steps):
+        assert detail in caught.value.reason, caught.value.reason
+    # Blocked on that listing: no JCL printed, nothing captured or waited for.
+    assert commands.job_numbers == [""]
+    assert adapter._capture.job_numbers == [] and awaited == []
+
+
+# Each case: what jobs_capture lists just before the first step, then the
+# submission time of job 18, a region submission made before that step that
+# the listing shows only once polling began, in the second or minute the
+# first step began in. One listed wholly before the first step is left out
+# (JOBS_PLACEMENT_CASES, second-before-the-window).
+JOBS_LATE_LISTED_CASES = [
+    pytest.param("", "2025-03-04 10:00:40", id="empty-snapshot-second"),
+    pytest.param("", "2025-03-04 10:00", id="empty-snapshot-minute"),
+    pytest.param(JOBS_BEFORE_STEPS, "2025-03-04 10:00:40", id="other-jobs-snapshot-second"),
+    pytest.param(JOBS_BEFORE_STEPS, "2025-03-04 10:00", id="other-jobs-snapshot-minute"),
+]
+
+
+@pytest.mark.parametrize(("snapshot", "listed"), JOBS_LATE_LISTED_CASES)
+def test_unikix_jobs_capture_blocks_a_job_listed_late_in_the_unit_the_first_step_began_in(
+    monkeypatch: pytest.MonkeyPatch, snapshot: str, listed: str
+) -> None:
+    listings = [snapshot, snapshot, snapshot + f"  18 TRNRPT00 {listed}\n"]
+    adapter, commands, awaited = _jobs_adapter(monkeypatch, listings, {18: JOBS_JCL})
+    fake_datetime = SimpleNamespace(
+        datetime=_Instants, timedelta=datetime.timedelta, date=datetime.date
+    )
+    monkeypatch.setattr(unikix_adapter, "_dt", fake_datetime)
+    monkeypatch.setattr(_Instants, "script", [JOBS_FIRST])
+    window = adapter._jobs_window()
+    assert 18 not in window.known and window.first == JOBS_FIRST and _Instants.script == []
+    window.last = JOBS_LAST
+    with pytest.raises(base.AdapterUnavailable) as caught:
+        adapter._jobs_queue(window)
+    assert caught.value.gap_id == JOBS_GAP
+    steps = (JOBS_FIRST.isoformat(" "), JOBS_LAST.isoformat(" "))
+    for detail in ("TRNRPT00 job 18 ", repr(listed), *steps):
+        assert detail in caught.value.reason, caught.value.reason
+    # The snapshot, a poll without job 18, the poll that blocks: no JCL
+    # printed, nothing captured or waited for.
+    assert commands.job_numbers == ["", "", ""]
+    capture = adapter._capture
+    assert capture.job_numbers == [] and awaited == []
+    assert base.TDQ_JOBS not in capture.datasets
+
+
+JOBS_LISTING_JOB = "  18 TRNRPT00 2025-03-04 10:01:15\n"
+# Each case: a jobs_capture listing that is no listing, and what the refusal
+# names.
+JOBS_LISTING_REFUSALS = [
+    pytest.param(
+        "JOB#  NAME      SUBMITTED\n" + JOBS_LISTING_JOB,
+        "'JOB#  NAME      SUBMITTED'",
+        id="header-line",
+    ),
+    pytest.param(
+        JOBS_LISTING_JOB + "spool unreadable: permission denied\n",
+        "'spool unreadable: permission denied'",
+        id="diagnostic-after-the-jobs",
+    ),
+    pytest.param(
+        "x" * 200 + "\n",
+        repr("x" * unikix_adapter._SHOWN_LINE_CHARS + "..."),
+        id="long-line-cut",
+    ),
+    pytest.param(JOBS_LISTING_JOB * 2, "job 18 more than once", id="job-number-twice"),
+    pytest.param(
+        JOBS_LISTING_JOB + "  18 POSTTRAN 2025-03-04 10:01:15\n",
+        "job 18 more than once",
+        id="job-number-twice-other-name",
+    ),
+]
+
+
+@pytest.mark.parametrize("listing_name", ["listing-before-steps.txt", "listing.txt"])
+@pytest.mark.parametrize(("listing", "named"), JOBS_LISTING_REFUSALS)
+def test_unikix_jobs_capture_blocks_a_listing_that_is_not_job_lines(
+    monkeypatch: pytest.MonkeyPatch, listing: str, named: str, listing_name: str
+) -> None:
+    adapter, commands, awaited = _jobs_adapter(monkeypatch, [listing], {18: JOBS_JCL})
+    window = unikix_adapter._JobsWindow(frozenset(), JOBS_FIRST, JOBS_LAST)
+    with pytest.raises(base.AdapterUnavailable) as caught:
+        if listing_name == "listing.txt":
+            adapter._jobs_queue(window)
+        else:
+            adapter._jobs_window()
+    assert caught.value.gap_id == JOBS_GAP
+    assert named in caught.value.reason, caught.value.reason
+    # The output refused is kept as listed; no JCL printed, nothing captured.
+    assert adapter._capture.sysout[f"adapter/tdq-jobs/{listing_name}"] == listing
+    assert commands.job_numbers == [""]
+    assert adapter._capture.job_numbers == [] and awaited == []
+
+
+def test_unikix_jobs_capture_reads_a_blank_listing_as_no_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, commands, awaited = _jobs_adapter(monkeypatch, ["\n   \n\t\n"])
+    window = adapter._jobs_window()
+    assert window.known == frozenset() and window.last is None
+    window.last = datetime.datetime.now()
+    assert adapter._jobs_queue(window) == b""
+    assert adapter._capture.datasets == {base.TDQ_JOBS: b""}
+    assert commands.job_numbers == [""] * (1 + JOBS_SETTLE_LISTINGS)
+    assert adapter._capture.job_numbers == [] and awaited == []
+
+
+# Each case: a submission time as jobs_capture may list it, and the instant
+# and precision it is read as (None: it is not a submission time).
+SUBMITTED_TIMES = [
+    pytest.param(
+        "2025-03-04 10:02",
+        datetime.datetime(2025, 3, 4, 10, 2),
+        datetime.timedelta(minutes=1),
+        id="minutes",
+    ),
+    pytest.param(
+        " 2025-03-04T10:02:30 ",
+        datetime.datetime(2025, 3, 4, 10, 2, 30),
+        datetime.timedelta(seconds=1),
+        id="seconds",
+    ),
+    pytest.param(
+        "2025-03-04 10:02:30.2",
+        datetime.datetime(2025, 3, 4, 10, 2, 30, 200000),
+        datetime.timedelta(milliseconds=100),
+        id="tenths",
+    ),
+    pytest.param(
+        "03/04/2025 10:02:30:25",
+        datetime.datetime(2025, 3, 4, 10, 2, 30, 250000),
+        datetime.timedelta(milliseconds=10),
+        id="hundredths-month-first",
+    ),
+    pytest.param(
+        "04.03.2025 10:02:30,250",
+        datetime.datetime(2025, 3, 4, 10, 2, 30, 250000),
+        datetime.timedelta(milliseconds=1),
+        id="milliseconds-day-first",
+    ),
+    pytest.param(
+        "2025-03-04 10:02:30.123456789",
+        datetime.datetime(2025, 3, 4, 10, 2, 30, 123456),
+        datetime.timedelta(microseconds=1),
+        id="nanoseconds-cut-to-microseconds",
+    ),
+    pytest.param("25-03-04 10:02:30", None, None, id="no-four-digit-year"),
+    pytest.param("2025-03-04 10:02:61", None, None, id="no-such-second"),
+    pytest.param("2025-03-04 10:02:30.", None, None, id="fraction-without-digits"),
+]
+
+
+@pytest.mark.parametrize(("text", "at", "precision"), SUBMITTED_TIMES)
+def test_unikix_submission_time_is_read_with_its_listed_precision(
+    text: str, at: datetime.datetime | None, precision: datetime.timedelta | None
+) -> None:
+    expected = None if at is None else (at, precision)
+    assert unikix_adapter._submitted_at(text) == expected
+
+
+# The raw observations of one run, in the order _observe acquires them.
+OBSERVED = {
+    base.REGION_FILES: b"region files as region_file_inquire listed them\n",
+    base.TDQ_JOBS: b"",
+    "ACCTDATA": b"A" * 300,
+    "TRANSACT": b"T" * 350,
+}
+# Each case: where acquisition fails after the region files and the JOBS
+# capture were read (None: nowhere), the gap of that failure, and the
+# observations the evidence then holds.
+OBSERVE_FAILURES = [
+    pytest.param(
+        "wait", "GAP-MIS-006", (base.REGION_FILES, base.TDQ_JOBS), id="waiting-for-the-captured-job"
+    ),
+    pytest.param(
+        "unload",
+        "GAP-MIS-007",
+        (base.REGION_FILES, base.TDQ_JOBS, "ACCTDATA"),
+        id="second-unload",
+    ),
+    pytest.param("reopen", "GAP-MIS-011", tuple(OBSERVED), id="reopening-the-region-files"),
+    pytest.param(None, None, tuple(OBSERVED), id="no-failure"),
+]
+
+
+@pytest.mark.parametrize(("fails_at", "gap_id", "kept"), OBSERVE_FAILURES)
+def test_unikix_observations_stay_in_the_evidence_when_a_later_step_fails(
+    monkeypatch: pytest.MonkeyPatch, fails_at: str | None, gap_id: str | None, kept: tuple[str, ...]
+) -> None:
+    listing = JOBS_BEFORE_STEPS + JOBS_LISTED_INSIDE
+    adapter, _, _ = _jobs_adapter(monkeypatch, [listing], {18: JOBS_JCL})
+    acquired = {**OBSERVED, base.TDQ_JOBS: _jobs_records()}
+
+    def fail(where: str) -> None:
+        if where == fails_at:
+            raise base.AdapterUnavailable(f"{where} failed", gap_id)
+
+    def observe(
+        names: list[str], *, deadline: float | None, keep: object
+    ) -> dict[str, bytes]:
+        assert names == ["ACCTDATA", "TRANSACT"] and deadline == adapter.deadline
+        keep("ACCTDATA", acquired["ACCTDATA"])
+        fail("unload")
+        keep("TRANSACT", acquired["TRANSACT"])
+        return {name: acquired[name] for name in names}
+
+    adapter._batch.observe = observe
+    monkeypatch.setattr(adapter, "_region_files", lambda: acquired[base.REGION_FILES])
+    monkeypatch.setattr(adapter, "_await_region_job", lambda run: fail("wait"))
+    monkeypatch.setattr(adapter, "_close_region_files", lambda: None)
+    monkeypatch.setattr(adapter, "_open_region_files", lambda: fail("reopen"))
+    window = unikix_adapter._JobsWindow(frozenset({16, 17}), JOBS_FIRST, JOBS_LAST)
+    names = {*OBSERVED, base.SCREENS}
+    if fails_at is None:
+        assert adapter._observe(names, window) == acquired
+    else:
+        with pytest.raises(base.AdapterUnavailable) as caught:
+            adapter._observe(names, window)
+        assert caught.value.gap_id == gap_id
+    assert adapter._capture.datasets == {name: acquired[name] for name in kept}
+
+
+# Each case: the dataset whose unload fails (None: none does), and the
+# observations BatchService.observe has passed to keep, in order, when it
+# raises or returns. TRANSACT is not in the catalog, so it is left out.
+BATCH_OBSERVE_CASES = [
+    pytest.param("CUSTDATA", ("@AIX:CARDAIX", base.CATALOG, "ACCTDATA"), id="third-unload-fails"),
+    pytest.param(
+        None, ("@AIX:CARDAIX", base.CATALOG, "ACCTDATA", "CUSTDATA"), id="every-unload-succeeds"
+    ),
+]
+
+
+@pytest.mark.parametrize(("failing", "kept"), BATCH_OBSERVE_CASES)
+def test_unikix_batch_observe_keeps_each_observation_as_it_is_acquired(
+    failing: str | None, kept: tuple[str, ...]
+) -> None:
+    resources = bpe.Resources.load()
+    service = bpe.BatchService(SimpleNamespace(vars={}), SimpleNamespace(), resources)
+    entries = tuple(
+        sorted(
+            [
+                bpe.CatalogEntry(resources.dataset(name).dsn, "CLUSTER")
+                for name in ("ACCTDATA", "CARDDATA", "CUSTDATA")
+            ]
+            + [bpe.CatalogEntry(resources.aix_path("CARDAIX").dsn, "PATH")]
+        )
+    )
+
+    def unload(logical: str, *, deadline: float | None = None) -> bytes:
+        assert deadline is not None
+        if logical == failing:
+            raise base.AdapterUnavailable(f"dataset_unload of {logical} exited 12", "GAP-MIS-007")
+        return f"records of {logical}".encode("ascii")
+
+    service._list_catalog = lambda budget: entries
+    service.unload = unload
+    service.unload_aix = lambda path, *, deadline=None: f"records through {path}".encode("ascii")
+    acquired = {
+        "@AIX:CARDAIX": b"records through CARDAIX",
+        base.CATALOG: base.format_catalog(entry.observation for entry in entries),
+        "ACCTDATA": b"records of ACCTDATA",
+        "CUSTDATA": b"records of CUSTDATA",
+    }
+    calls: list[tuple[str, bytes]] = []
+    names = ["TRANSACT", "CUSTDATA", "ACCTDATA", base.CATALOG, "@AIX:CARDAIX"]
+    deadline = time.monotonic() + 300
+    if failing is None:
+        found = service.observe(names, deadline=deadline, keep=lambda *kept: calls.append(kept))
+        assert found == dict(calls)
+    else:
+        with pytest.raises(base.AdapterUnavailable) as caught:
+            service.observe(names, deadline=deadline, keep=lambda *kept: calls.append(kept))
+        assert caught.value.gap_id == "GAP-MIS-007"
+    assert calls == [(name, acquired[name]) for name in kept]
 
 
 # jobs.run_program cases: a scenario working directory and a build cache under
