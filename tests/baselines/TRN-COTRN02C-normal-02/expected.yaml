@@ -28,9 +28,12 @@
 # submits every field in one step with CONFIRM Y, so no screen shows the card
 # the CXACAIX read filled in, and the success screen has CARDNIN blank.
 # TRAN-ORIG-TS and TRAN-PROC-TS carry the dates typed on the screen, padded to
-# 26, so they are exact values and take no clock matcher; CURDATE and CURTIME
-# are the only clock-derived values. TRAN-RECORD's FILLER is not asserted, as
-# in the scenario: INITIALIZE skips it, so it holds whatever the READPREV left.
+# 26. The scenario types both as the run date, so the written record's two
+# timestamps are run-timestamp matchers: the run date followed by 16 spaces.
+# They, CURDATE and CURTIME are the only run-date-derived values; the fixture
+# record 0000000996722787 keeps its exact timestamps. TRAN-RECORD's FILLER is
+# not asserted, as in the scenario: INITIALIZE skips it, so it holds whatever
+# the READPREV left.
 file_state:
   TRANSACT:
     contains:
@@ -56,8 +59,12 @@ file_state:
       TRAN-MERCHANT-ID: '800000001'
       TRAN-MERCHANT-NAME: 'Test Merchant                                     '
       TRAN-MERCHANT-ZIP: '10001     '
-      TRAN-ORIG-TS: '2022-07-01                '
-      TRAN-PROC-TS: '2022-07-01                '
+      TRAN-ORIG-TS:
+        format: '%Y-%m-%d                '
+        match: run-timestamp
+      TRAN-PROC-TS:
+        format: '%Y-%m-%d                '
+        match: run-timestamp
       TRAN-SOURCE: 'OPERATOR  '
       TRAN-TYPE-CD: '02'
     count: 301

@@ -67,14 +67,12 @@ inventory_ids:
 - INV-RPT-049  # CBSTM03B file service operations (interface): O, R, K and C here
 - INV-LAY-004  # COSTM01 copybook, the TRXFL records
 - INV-LAY-015  # CUSTREC copybook, the customer records
-- INV-LAY-016  # CVACT01Y copybook, the account records
-- INV-LAY-018  # CVACT03Y copybook, the cross-reference records
-- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
-- INV-DTA-013  # EBCDIC cross-reference file, its cross-check counterpart
-- INV-DTA-004  # custdata.txt, the CUSTDATA fixture source
-- INV-DTA-014  # EBCDIC customer file, its cross-check counterpart
-- INV-DTA-001  # acctdata.txt, the ACCTDATA fixture source
-- INV-DTA-011  # EBCDIC account data file, its cross-check counterpart
+# The CVACT01Y and CVACT03Y layouts and the account, cross-reference and
+# customer data files (ASCII and EBCDIC) are not listed: the DAT-CBACT01C,
+# DAT-CBACT03C, DAT-CBCUS01C, TRN-CBTRN01C, TRN-CBTRN02C, FIN-CBACT04C and
+# RPT-CBTRN03C unit scenarios verify them and never depend on page zero, so
+# when the page-zero probe fails these scenarios block only the CBSTM03A and
+# CBSTM03B items, COSTM01 and CUSTREC.
 # dailytran.txt and its EBCDIC counterpart are not listed: the TRXFL records
 # below transcribe them, so no fixture of this scenario is built from either
 # file and neither one's verification depends on this scenario.

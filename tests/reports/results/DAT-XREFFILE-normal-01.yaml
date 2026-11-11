@@ -8,6 +8,14 @@ decoded:
       XREF-CARD-NUM: '9680294154603697'
       XREF-CUST-ID: '1'
     - CARD-XREF-RECORD.FILLER#1: '              '
+      XREF-ACCT-ID: '1'
+      XREF-CARD-NUM: '9900000000000001'
+      XREF-CUST-ID: '1'
+    - CARD-XREF-RECORD.FILLER#1: '              '
+      XREF-ACCT-ID: '1'
+      XREF-CARD-NUM: '9900000000000002'
+      XREF-CUST-ID: '1'
+    - CARD-XREF-RECORD.FILLER#1: '              '
       XREF-ACCT-ID: '2'
       XREF-CARD-NUM: 0923877193247330
       XREF-CUST-ID: '2'
@@ -404,6 +412,14 @@ decoded:
       XREF-ACCT-ID: '40'
       XREF-CARD-NUM: '9805583408996588'
       XREF-CUST-ID: '40'
+    - CARD-XREF-RECORD.FILLER#1: '              '
+      XREF-ACCT-ID: '1'
+      XREF-CARD-NUM: '9900000000000001'
+      XREF-CUST-ID: '1'
+    - CARD-XREF-RECORD.FILLER#1: '              '
+      XREF-ACCT-ID: '1'
+      XREF-CARD-NUM: '9900000000000002'
+      XREF-CUST-ID: '1'
   messages:
   - STEP STEP05 RC 0000
   - STEP STEP10 RC 0000
@@ -413,14 +429,14 @@ decoded:
   - STEP STEP30 RC 0000
   return_code: 0
 evidence_path: tests/reports/results/DAT-XREFFILE-normal-01.yaml
-execution_fingerprint: 1a45f6b983e474e25c91d9da73aa6c8a4ffc95a3e9879e433727fa3531e9189b
-execution_id: gnucobol-batch-9201db77c3c5d0c6
+execution_fingerprint: 0b449f736b28a5e07c860441fbdaf17ec5dff1a3db872b1ba503fd23c72bda4d
+execution_id: gnucobol-batch-928fbed535a9909d
 gap_id: null
 reason: null
-scenario_digest: 04f27007cdae7223d5137c1b3525af0fcf46f879eb21a062b0010d938845f6e2
+scenario_digest: c4091c5d156fdd19458348784164d1a92f5f6a2d2c8291d248a2a1d54ba013bd
 scenario_id: DAT-XREFFILE-normal-01
 source_identity:
-  commit: ce44c9645756395b5a8eac87afa2fa8da93f029b
+  commit: ce9f6aff53f0ac819039927a2edff31f10f77b06
   tree: app
   units:
     app/jcl/XREFFILE.jcl: ae0edd90056cccacd26412fad2cf3d95656c2a2810b66d8c316cbaac9e81248f

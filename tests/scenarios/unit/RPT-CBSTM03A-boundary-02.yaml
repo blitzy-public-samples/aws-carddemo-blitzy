@@ -29,10 +29,12 @@ inventory_ids:
 - INV-RPT-004  # CBSTM03A program
 - INV-RPT-005  # CBSTM03B program, the file service that reads TRXFL, CARDXREF, ACCTDATA, CUSTDATA
 - INV-LAY-004  # COSTM01 copybook: the TRXFL records are TRNX-RECORD
-- INV-DTA-001  # acctdata.txt, the ACCTDATA fixture source
-- INV-DTA-011  # EBCDIC account file, its cross-check counterpart
-- INV-DTA-004  # custdata.txt, the CUSTDATA fixture source
-- INV-DTA-014  # EBCDIC customer file, its cross-check counterpart
+# The CVACT01Y and CVACT03Y layouts and the account, cross-reference and
+# customer data files (ASCII and EBCDIC) are not listed: the DAT-CBACT01C,
+# DAT-CBACT03C, DAT-CBCUS01C, TRN-CBTRN01C, TRN-CBTRN02C, FIN-CBACT04C and
+# RPT-CBTRN03C unit scenarios verify them and never depend on page zero, so
+# when the page-zero probe fails these scenarios block only the CBSTM03A and
+# CBSTM03B items, COSTM01 and CUSTREC.
 tags:
 - suspected-defect
 gap_ids:

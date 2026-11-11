@@ -26,8 +26,14 @@
 # - INITIALIZE TRAN-RECORD, then the input fields move into the record: the
 #   category text 0001 into the PIC 9(04) TRAN-CAT-CD, the amount through
 #   NUMVAL-C into TRAN-AMT, the 10-character dates into the 26-byte
-#   timestamps, padded with spaces; no clock is involved
-#   [app/cbl/COTRN02C.cbl:383-386,450-465].
+#   timestamps, padded with spaces [app/cbl/COTRN02C.cbl:383-386,450-465].
+#   Both dates are typed as the run date (a run-date input in YYYY-MM-DD
+#   form), since the region clock cannot be fixed, so the written timestamps
+#   are asserted as the run date followed by 16 spaces (run-timestamp
+#   matchers); the three precondition records keep their exact timestamps.
+#   COTRN02C checks only the dates' shape and CSUTLDTC validity, never their
+#   relation to the clock or to each other [app/cbl/COTRN02C.cbl:353-427], so
+#   the outcome is the same on every run date.
 # - The WRITE is NORMAL, so INITIALIZE-ALL-FIELDS blanks every input field and
 #   STRING composes 'Transaction added successfully. ' + ' Your Tran ID is ' +
 #   TRAN-ID + '.' in ERRMSG [app/cbl/COTRN02C.cbl:711-734,762-779].
@@ -140,8 +146,8 @@ inputs:
       TRNSRC: POS TERM
       TDESC: Test purchase
       TRNAMT: '+00000012.34'
-      TORIGDT: '2022-07-01'
-      TPROCDT: '2022-07-01'
+      TORIGDT: {run-date: {format: '%Y-%m-%d'}}
+      TPROCDT: {run-date: {format: '%Y-%m-%d'}}
       MID: '800000001'
       MNAME: Test Merchant
       MCITY: Testville
@@ -239,5 +245,5 @@ expected:
         TRAN-MERCHANT-CITY: 'Testville                                         '
         TRAN-MERCHANT-ZIP: '27601     '
         TRAN-CARD-NUM: '0500024453765740'
-        TRAN-ORIG-TS: '2022-07-01                '
-        TRAN-PROC-TS: '2022-07-01                '
+        TRAN-ORIG-TS: {match: run-timestamp, format: '%Y-%m-%d                '}
+        TRAN-PROC-TS: {match: run-timestamp, format: '%Y-%m-%d                '}

@@ -40,6 +40,12 @@
 # - BMS pads each received field with blanks to its length, and the MOVEs into
 #   the longer record fields pad again: TRAN-DESC to 100, the merchant name and
 #   city to 50, the two timestamps to 26 (the screen carries only the date).
+# - Both dates are typed as the run date (a run-date input in YYYY-MM-DD form),
+#   since the region clock cannot be fixed, so the written TRAN-ORIG-TS and
+#   TRAN-PROC-TS are asserted as the run date followed by 16 spaces
+#   (run-timestamp matchers). COTRN02C checks only the dates' shape and
+#   CSUTLDTC validity, never their relation to the clock or to each other
+#   [app/cbl/COTRN02C.cbl:353-427], so the outcome is the same on every run date.
 # - TRAN-RECORD's 20-byte FILLER is not asserted: INITIALIZE skips FILLER, so
 #   the record keeps whatever the READPREV left there.
 # - Screen values are whole fields at their BMS length with trailing spaces;
@@ -52,11 +58,12 @@ description: >-
   USER0001 signs on, chooses main menu option 8 'Transaction Add' and, on
   COTRN02, enters account 00000000001 with no card number, type 02, category
   0002, source OPERATOR, description 'Test write via account', amount
-  -00000005.00, both dates 2022-07-01 and merchant fields, confirming with Y.
-  COTRN02C looks up the account's card 9680294154603697 through CXACAIX, writes
-  TRANSACT record 0000000996722788 from the entered fields and that card, blanks
-  the screen and shows 'Transaction added successfully.  Your Tran ID is
-  0000000996722788.'.
+  -00000005.00, both dates typed as the run date and merchant fields,
+  confirming with Y. COTRN02C looks up the account's card 9680294154603697
+  through CXACAIX, writes TRANSACT record 0000000996722788 from the entered
+  fields and that card, its TRAN-ORIG-TS and TRAN-PROC-TS the run date followed
+  by 16 spaces, blanks the screen and shows 'Transaction added successfully.
+  Your Tran ID is 0000000996722788.'.
 # The sign-on step's own items (COSGN00, CC00, USRSEC) and the menu option and
 # transaction (CM00) belong to the SEC and MNU scenarios; the confirmation
 # message and the next-id calculation are the primary items of their own
@@ -111,8 +118,8 @@ inputs:
       TRNSRC: OPERATOR
       TDESC: Test write via account
       TRNAMT: '-00000005.00'
-      TORIGDT: '2022-07-01'
-      TPROCDT: '2022-07-01'
+      TORIGDT: {run-date: {format: '%Y-%m-%d'}}
+      TPROCDT: {run-date: {format: '%Y-%m-%d'}}
       MID: '800000001'
       MNAME: Test Merchant
       MCITY: Test City
@@ -203,5 +210,5 @@ expected:
         TRAN-MERCHANT-CITY: 'Test City                                         '
         TRAN-MERCHANT-ZIP: '10001     '
         TRAN-CARD-NUM: '9680294154603697'
-        TRAN-ORIG-TS: '2022-07-01                '
-        TRAN-PROC-TS: '2022-07-01                '
+        TRAN-ORIG-TS: {match: run-timestamp, format: '%Y-%m-%d                '}
+        TRAN-PROC-TS: {match: run-timestamp, format: '%Y-%m-%d                '}

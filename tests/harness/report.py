@@ -463,9 +463,16 @@ PROOF_REPORT_ID_WIDTH = 16
 PROOF_REPORT_TOTALS = (("Page Total", 1, None), ("Account Total", 1, None), ("Grand Total", 1, 1))
 
 # Tech spec Section 6.6.7.1 execution-effort table: seed label, scenarios,
-# the suite areas it seeds and whether only their batch (non-e2e) scenarios.
+# the selectors of the suite scenarios it seeds and whether only their batch
+# (non-e2e) scenarios. A selector is an area code ("SEC") or a scenario-id
+# prefix ("MNU-COADM01C"); a scenario matches it when its id is the selector
+# or begins with the selector and "-". Authentication seeds the sign-on
+# scenarios and the COADM01C admin-menu ones: the Authentication and
+# Authorization Workflow of Sections 6.6.2.2.1 and 6.6.9.1, whose
+# Authorization Testing exercises access to the CA00 admin menu. COMEN01C is
+# seeded by none.
 SEED_COUNTS = (
-    ("Authentication", 5, ("SEC",), False),
+    ("Authentication", 5, ("SEC", "MNU-COADM01C"), False),
     ("User Administration", 12, ("USR",), False),
     ("Account Management", 15, ("ACT",), False),
     ("Card Management", 18, ("CRD",), False),
@@ -2111,8 +2118,32 @@ def _deciding(state: State, scenario_ids: Iterable[str]) -> list[Mapping[str, An
     return [record for scenario_id in scenario_ids for record in state.statuses[scenario_id].records]
 
 
+def _execution_pairs(records: Iterable[Mapping[str, Any]]) -> list[tuple[str, str]]:
+    """One ``(execution_id, evidence_path)`` pair per deciding record, in the
+    records' order: a record with neither value is left out, the value a
+    record lacks is ``''`` so the two columns stay aligned, and only an exact
+    repeat of an earlier pair is dropped. Execution ids are never deduplicated
+    on their own, because imported UniKix records share one execution id
+    across scenarios, each with its own evidence path."""
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for record in records:
+        execution_id, path = record.get("execution_id"), record.get("evidence_path")
+        if not execution_id and not path:
+            continue
+        pair = (str(execution_id) if execution_id else "", str(path) if path else "")
+        if pair not in seen:
+            seen.add(pair)
+            pairs.append(pair)
+    return pairs
+
+
 def render_matrix(state: State) -> str:
-    """``coverage-matrix.csv``: one row per inventory item in id order."""
+    """``coverage-matrix.csv``: one row per inventory item in id order. The
+    ``execution_id`` and ``evidence_path`` columns are paired record by
+    record in scenario order (the row's ``scenario_ids``, then each
+    scenario's deciding records by adapter and execution id), so the i-th
+    execution id is the one recorded in the i-th evidence path."""
     rows: list[Sequence[Any]] = [MATRIX_HEADER]
     for item in state.items:
         scenario_ids = state.item_scenarios[item["id"]]
@@ -2120,12 +2151,10 @@ def render_matrix(state: State) -> str:
             f"{scenario_id}:{','.join(_scenarios.asserted_keys(state.scenarios[scenario_id]))}"
             for scenario_id in scenario_ids
         )
-        records = _deciding(state, scenario_ids)
-        execution_ids = sorted({str(record["execution_id"]) for record in records if record.get("execution_id")})
-        paths = sorted({str(record["evidence_path"]) for record in records if record.get("evidence_path")})
+        pairs = _execution_pairs(_deciding(state, scenario_ids))
         rows.append([
-            item["id"], item.get("source"), ";".join(scenario_ids), assertions,
-            state.item_status[item["id"]], ";".join(execution_ids), ";".join(paths),
+            item["id"], item.get("source"), ";".join(scenario_ids), assertions, state.item_status[item["id"]],
+            ";".join(execution_id for execution_id, _ in pairs), ";".join(path for _, path in pairs),
         ])
     return _csv(rows)
 
@@ -2391,11 +2420,20 @@ def _level_rows(state: State) -> list[list[Any]]:
     return [_status_row(level, state.counts(ids)) for level, ids in groups.items()]
 
 
+def _seed_selects(selectors: Sequence[str], scenario_id: str) -> bool:
+    return any(scenario_id == selector or scenario_id.startswith(f"{selector}-") for selector in selectors)
+
+
 def _seed_of_area() -> dict[str, str]:
-    shown = {}
-    for label, count, areas, batch_only in SEED_COUNTS:
-        for area in areas:
-            shown[area] = f"{count}" if len(areas) == 1 else f"{label} {count} (shared; batch scenarios)"
+    shown: dict[str, str] = {}
+    for label, count, selectors, batch_only in SEED_COUNTS:
+        if len(selectors) == 1 and "-" not in selectors[0]:
+            text = f"{count}"
+        else:
+            qualifier = "batch scenarios" if batch_only else f"{' and '.join(selectors)} scenarios"
+            text = f"{label} {count} (shared; {qualifier})"
+        for area in dict.fromkeys(selector.split("-", 1)[0] for selector in selectors):
+            shown[area] = f"{shown[area]}; {text}" if area in shown else text
     return shown
 
 
@@ -2415,12 +2453,12 @@ def _area_rows(state: State) -> list[list[Any]]:
 
 def _seed_rows(state: State) -> list[list[Any]]:
     rows = []
-    for label, count, areas, batch_only in SEED_COUNTS:
+    for label, count, selectors, batch_only in SEED_COUNTS:
         suite = sum(
             1 for scenario in state.scenarios.values()
-            if scenario.area in areas and not (batch_only and scenario.level == "e2e")
+            if _seed_selects(selectors, scenario.id) and not (batch_only and scenario.level == "e2e")
         )
-        where = ", ".join(areas) + (" (batch scenarios only)" if batch_only else "")
+        where = ", ".join(selectors) + (" (batch scenarios only)" if batch_only else "")
         rows.append([label, count, where, suite])
     rows.append(["Total", SEED_TOTAL, "all areas", len(state.scenarios)])
     return rows

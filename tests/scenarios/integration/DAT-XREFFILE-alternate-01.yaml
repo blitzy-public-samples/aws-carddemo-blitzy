@@ -10,8 +10,10 @@
 # - STEP25 relates it to the cluster through the path, and STEP30 builds it
 #   with BLDINDEX [app/jcl/XREFFILE.jcl:87-103].
 #
-# The repository holds one card per account, so DAT-XREFFILE-normal-01 never
-# gives the alternate key a duplicate. Here CARDXREF-PS is the 50 repository
+# The repository holds one card per account, so only invented records give the
+# alternate key a duplicate: DAT-XREFFILE-normal-01 observes the duplicate
+# order on gnucobol-batch with two invented cards on account 1, while this
+# scenario derives the platform's. Here CARDXREF-PS is the 50 repository
 # records of app/data/ASCII/cardxref.txt followed by one invented record: card
 # 9999000000000001, customer 999999901, account 00000000001. Account 1 thus has
 # two cards, its repository card 9680294154603697 and the invented one. The

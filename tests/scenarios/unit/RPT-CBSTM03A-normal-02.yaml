@@ -47,10 +47,12 @@ inventory_ids:
 - INV-RPT-049  # CBSTM03B file service operations O/C/R/K (interface)
 - INV-LAY-004  # COSTM01 copybook, the TRXFL record
 - INV-LAY-015  # CUSTREC copybook, the customer record the statement reads
-- INV-DTA-001  # acctdata.txt, the ACCTDATA fixture source
-- INV-DTA-011  # EBCDIC account data file, its cross-check counterpart
-- INV-DTA-004  # custdata.txt, the CUSTDATA fixture source
-- INV-DTA-014  # EBCDIC customer data file, its cross-check counterpart
+# The CVACT01Y and CVACT03Y layouts and the account, cross-reference and
+# customer data files (ASCII and EBCDIC) are not listed: the DAT-CBACT01C,
+# DAT-CBACT03C, DAT-CBCUS01C, TRN-CBTRN01C, TRN-CBTRN02C, FIN-CBACT04C and
+# RPT-CBTRN03C unit scenarios verify them and never depend on page zero, so
+# when the page-zero probe fails these scenarios block only the CBSTM03A and
+# CBSTM03B items, COSTM01 and CUSTREC.
 tags: []
 gap_ids:
 - GAP-STB-003  # the page-zero PSA/TCB/TIOT shim in place of the z/OS control blocks

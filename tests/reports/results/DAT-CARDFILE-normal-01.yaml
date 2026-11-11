@@ -353,6 +353,20 @@ decoded:
       CARD-EXPIRAION-DATE: '2023-10-27'
       CARD-NUM: '9805583408996588'
       CARD-RECORD.FILLER#1: '                                                           '
+    - CARD-ACCT-ID: '1'
+      CARD-ACTIVE-STATUS: Y
+      CARD-CVV-CD: '101'
+      CARD-EMBOSSED-NAME: 'Synthetic Duplicate One                           '
+      CARD-EXPIRAION-DATE: '2030-01-31'
+      CARD-NUM: '9900000000000001'
+      CARD-RECORD.FILLER#1: '                                                           '
+    - CARD-ACCT-ID: '1'
+      CARD-ACTIVE-STATUS: Y
+      CARD-CVV-CD: '202'
+      CARD-EMBOSSED-NAME: 'Synthetic Duplicate Two                           '
+      CARD-EXPIRAION-DATE: '2030-02-28'
+      CARD-NUM: '9900000000000002'
+      CARD-RECORD.FILLER#1: '                                                           '
   file_state:
     '@AIX:CARDAIX':
     - CARD-ACCT-ID: '1'
@@ -361,6 +375,20 @@ decoded:
       CARD-EMBOSSED-NAME: 'Immanuel Kessler                                  '
       CARD-EXPIRAION-DATE: '2025-05-20'
       CARD-NUM: '9680294154603697'
+      CARD-RECORD.FILLER#1: '                                                           '
+    - CARD-ACCT-ID: '1'
+      CARD-ACTIVE-STATUS: Y
+      CARD-CVV-CD: '101'
+      CARD-EMBOSSED-NAME: 'Synthetic Duplicate One                           '
+      CARD-EXPIRAION-DATE: '2030-01-31'
+      CARD-NUM: '9900000000000001'
+      CARD-RECORD.FILLER#1: '                                                           '
+    - CARD-ACCT-ID: '1'
+      CARD-ACTIVE-STATUS: Y
+      CARD-CVV-CD: '202'
+      CARD-EMBOSSED-NAME: 'Synthetic Duplicate Two                           '
+      CARD-EXPIRAION-DATE: '2030-02-28'
+      CARD-NUM: '9900000000000002'
       CARD-RECORD.FILLER#1: '                                                           '
     - CARD-ACCT-ID: '2'
       CARD-ACTIVE-STATUS: Y
@@ -716,14 +744,14 @@ decoded:
   - STEP OPCIFIL RC 0000
   return_code: 0
 evidence_path: tests/reports/results/DAT-CARDFILE-normal-01.yaml
-execution_fingerprint: 31fe9c025ade0bf949344ca230f3e00fe24df1021446b71b505b243d77eb735e
-execution_id: gnucobol-batch-07b9780d9a445e49
+execution_fingerprint: 9b627651564bbdebc7e019427c9d233422d257b9ffb30766fb63bcb11798d2ad
+execution_id: gnucobol-batch-3f090951d1034f70
 gap_id: null
 reason: null
-scenario_digest: 019bc6c27e94fb85fc2f649b4007d36085284ff9fd991e2571f9fd68771ec28c
+scenario_digest: 8914f265538feaf681a715682e1e9d9fe606a2dbe0580a27d6ac5d877f29a344
 scenario_id: DAT-CARDFILE-normal-01
 source_identity:
-  commit: ab3f66e8e82d6a0f204d218435c52b0662a2f5df
+  commit: ce9f6aff53f0ac819039927a2edff31f10f77b06
   tree: app
   units:
     app/jcl/CARDFILE.jcl: 0240faee5aec80d976ce0b15a85f101fa0f901b09b72d64545daa09858ddcc0c

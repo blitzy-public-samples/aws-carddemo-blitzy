@@ -11,7 +11,13 @@
 #   [app/jcl/XREFFILE.jcl:87-103].
 #
 # CARDXREF-PS is the 50 repository records of app/data/ASCII/cardxref.txt, each
-# 36-character line padded with spaces to the 50-byte CVACT03Y record.
+# 36-character line padded with spaces to the 50-byte CVACT03Y record, followed
+# by two invented records on account 00000000001 (customer 000000001): cards
+# 9900000000000001 and 9900000000000002. The repository holds one card per
+# account, so these give account 1 three cards with its repository card
+# 9680294154603697 and make it the one duplicate of the NONUNIQUEKEY alternate
+# key. Both sort above the highest repository card, 9805583408996588, so the
+# REPRO input stays in ascending primary-key order.
 # CARDXREF exists before the job with one invented record (card
 # 9999999999999902, customer 999999902, account 99999999902) that the input
 # does not hold: its absence afterwards shows that STEP05 and STEP10 recreate
@@ -24,8 +30,9 @@
 # writes only SYSPRINT, so messages hold just the step lines. CARDXREF is
 # compared in card-number (primary-key) order and @AIX:CXACAIX, the records
 # read through the CXACAIX path [app/csd/CARDDEMO.CSD:63-65], in account-id
-# order. The repository holds one card per account, so the alternate key's
-# duplicate handling is not exercised here.
+# order. Account 1's three cards come back in card-number order
+# (9680294154603697, 9900000000000001, 9900000000000002), as observed, so the
+# duplicate order is pinned.
 #
 # Only the job item is listed. The AIX, PATH and BLDINDEX JCL-semantics item is
 # listed by DAT-XREFFILE-alternate-01, which only unikix runs; listing it here
@@ -37,10 +44,11 @@ level: integration
 type: normal
 description: >-
   XREFFILE deletes and redefines the card cross-reference KSDS, loads the 50
-  repository records into it, and builds the account-id alternate index and
-  path: every step ends with RC 0, the stale pre-existing record is gone, the
-  KSDS holds the 50 records in card-number order, and the path reads them in
-  account-id order.
+  repository records and two invented cards on account 1 into it, and builds
+  the account-id alternate index and path: every step ends with RC 0, the
+  stale pre-existing record is gone, the KSDS holds the 52 records in
+  card-number order, and the path reads them in account-id order, account 1's
+  three cards in card-number order.
 inventory_ids:
 - INV-DAT-025  # XREFFILE job
 tags: []
@@ -50,8 +58,15 @@ gap_ids:
 - GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS, AIX and path
 preconditions:
   datasets:
+    # Two invented records (no real person, account or card) on account 1: the
+    # alternate key XREF-ACCT-ID is NONUNIQUEKEY and the repository has one card
+    # per account, so these give account 1 three cards and pin the duplicate
+    # order in @AIX:CXACAIX.
     CARDXREF-PS:
       base: CARDXREF-PS
+      records:
+      - {XREF-CARD-NUM: '9900000000000001', XREF-CUST-ID: '000000001', XREF-ACCT-ID: '00000000001'}
+      - {XREF-CARD-NUM: '9900000000000002', XREF-CUST-ID: '000000001', XREF-ACCT-ID: '00000000001'}
     CARDXREF:
       records:
       - {XREF-CARD-NUM: '9999999999999902', XREF-CUST-ID: '999999902', XREF-ACCT-ID: '99999999902'}
@@ -70,8 +85,8 @@ expected:
   - STEP STEP25 RC 0000
   - STEP STEP30 RC 0000
   file_state:
-    # The 50 repository records in card-number order; the invented card
-    # 9999999999999902 is absent.
+    # The 50 repository records and the two invented cards on account 1, in
+    # card-number order; the stale invented card 9999999999999902 is absent.
     CARDXREF:
       records:
       - {XREF-CARD-NUM: '0500024453765740', XREF-CUST-ID: '50', XREF-ACCT-ID: '50'}
@@ -124,10 +139,16 @@ expected:
       - {XREF-CARD-NUM: '9501733721429893', XREF-CUST-ID: '9', XREF-ACCT-ID: '9'}
       - {XREF-CARD-NUM: '9680294154603697', XREF-CUST-ID: '1', XREF-ACCT-ID: '1'}
       - {XREF-CARD-NUM: '9805583408996588', XREF-CUST-ID: '40', XREF-ACCT-ID: '40'}
+      - {XREF-CARD-NUM: '9900000000000001', XREF-CUST-ID: '1', XREF-ACCT-ID: '1'}
+      - {XREF-CARD-NUM: '9900000000000002', XREF-CUST-ID: '1', XREF-ACCT-ID: '1'}
     # The same records read through the account-id path, in account-id order.
+    # Account 1 is the one duplicate alternate key: its three cards come first,
+    # in the observed order (card-number order).
     '@AIX:CXACAIX':
       records:
       - {XREF-CARD-NUM: '9680294154603697', XREF-CUST-ID: '1', XREF-ACCT-ID: '1'}
+      - {XREF-CARD-NUM: '9900000000000001', XREF-CUST-ID: '1', XREF-ACCT-ID: '1'}
+      - {XREF-CARD-NUM: '9900000000000002', XREF-CUST-ID: '1', XREF-ACCT-ID: '1'}
       - {XREF-CARD-NUM: '0923877193247330', XREF-CUST-ID: '2', XREF-ACCT-ID: '2'}
       - {XREF-CARD-NUM: '3999169246375885', XREF-CUST-ID: '3', XREF-ACCT-ID: '3'}
       - {XREF-CARD-NUM: '2988091353094312', XREF-CUST-ID: '4', XREF-ACCT-ID: '4'}

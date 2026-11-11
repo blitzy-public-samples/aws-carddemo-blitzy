@@ -51,8 +51,8 @@ Scenarios counts the suite's scenario files of the area; the last column is the 
 
 | Area | verified | failing | blocked | implemented-unexecuted | not-covered | total | Scenarios | Tech-spec seed |
 |---|---:|---:|---:|---:|---:|---:|---:|---|
-| SEC | 0 | 0 | 11 | 0 | 0 | 11 | 9 | 5 |
-| MNU | 0 | 0 | 26 | 0 | 3 | 29 | 22 | - |
+| SEC | 0 | 0 | 11 | 0 | 0 | 11 | 9 | Authentication 5 (shared; SEC and MNU-COADM01C scenarios) |
+| MNU | 0 | 0 | 26 | 0 | 3 | 29 | 22 | Authentication 5 (shared; SEC and MNU-COADM01C scenarios) |
 | USR | 0 | 0 | 58 | 0 | 0 | 58 | 52 | 12 |
 | ACT | 0 | 0 | 170 | 0 | 23 | 193 | 194 | 15 |
 | CRD | 0 | 0 | 68 | 0 | 12 | 80 | 72 | 18 |
@@ -73,7 +73,7 @@ The tech spec's manual scenarios seed the inventory; they are not its bound.
 
 | Seed | Seed scenarios | Suite areas | Suite scenarios |
 |---|---:|---|---:|
-| Authentication | 5 | SEC | 9 |
+| Authentication | 5 | SEC, MNU-COADM01C | 17 |
 | User Administration | 12 | USR | 52 |
 | Account Management | 15 | ACT | 194 |
 | Card Management | 18 | CRD | 72 |
@@ -167,4 +167,4 @@ Observed screen messages that match no inventory item:
 - Toolchain packages (dpkg-query): build-essential 12.12ubuntu2.26.04.2, libgmp-dev 2:6.3.0+dfsg-5ubuntu2, libncurses-dev 6.6+20251231-1, libdb-dev 1:5.3.21ubuntu4, s3270 4.3ga10-5build1
 - Page-zero probe: succeeded (diagnostic in tests/reports/runtime/environment.yaml)
 - vm.mmap_min_addr: 65536
-- Commit: 00a789660f426647fa46874572ba368038d67fd5
+- Commit: ce9f6aff53f0ac819039927a2edff31f10f77b06

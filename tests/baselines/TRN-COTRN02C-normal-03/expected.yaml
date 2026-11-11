@@ -27,9 +27,11 @@
 # One screen per step, each the screen shown after the step's AID; messages
 # holds each step's ERRMSG. Text is full BMS field width with trailing spaces.
 # TRANSACT is listed in primary-key order, the three precondition records
-# unchanged and the added one last. TRAN-ORIG-TS and TRAN-PROC-TS carry the
-# dates typed on the screen, so they are exact values and take no clock
-# matcher; CURDATE and CURTIME are the only clock-derived values. TRAN-RECORD's
+# unchanged and the added one last. The added record's TRAN-ORIG-TS and
+# TRAN-PROC-TS carry the dates typed on the screen, which the scenario types
+# as the run date, so they are run-timestamp matchers: the run date followed
+# by 16 spaces. They, CURDATE and CURTIME are the only run-date-derived values;
+# the three precondition records keep their exact timestamps. TRAN-RECORD's
 # FILLER is not asserted, as in the scenario: INITIALIZE skips it, so it holds
 # whatever the READPREV left.
 file_state:
@@ -83,8 +85,12 @@ file_state:
       TRAN-MERCHANT-ID: '800000001'
       TRAN-MERCHANT-NAME: 'Test Merchant                                     '
       TRAN-MERCHANT-ZIP: '27601     '
-      TRAN-ORIG-TS: '2022-07-01                '
-      TRAN-PROC-TS: '2022-07-01                '
+      TRAN-ORIG-TS:
+        format: '%Y-%m-%d                '
+        match: 'run-timestamp'
+      TRAN-PROC-TS:
+        format: '%Y-%m-%d                '
+        match: 'run-timestamp'
       TRAN-SOURCE: 'POS TERM  '
       TRAN-TYPE-CD: '01'
 messages:

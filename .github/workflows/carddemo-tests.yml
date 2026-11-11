@@ -73,10 +73,12 @@ jobs:
       - name: Build GnuCOBOL 3.2
         if: steps.gnucobol-cache.outputs.cache-hit != 'true'
         run: |
-          mkdir -p "$RUNNER_TEMP/gnucobol-src" && cd "$RUNNER_TEMP/gnucobol-src"
+          mkdir -p "$RUNNER_TEMP/gnucobol-src"
+          cd "$RUNNER_TEMP/gnucobol-src"
           curl -fsSL -o gnucobol-3.2.tar.xz https://ftp.gnu.org/gnu/gnucobol/gnucobol-3.2.tar.xz
           echo "3bb48af46ced4779facf41fdc2ee60e4ccb86eaa99d010b36685315df39c2ee2  gnucobol-3.2.tar.xz" | sha256sum -c -
-          tar -xJf gnucobol-3.2.tar.xz && cd gnucobol-3.2
+          tar -xJf gnucobol-3.2.tar.xz
+          cd gnucobol-3.2
           ./configure --prefix="$HOME/gnucobol-3.2" --with-db && make -j"$(nproc)" && make install
 
       # setup-python has already exported its own LD_LIBRARY_PATH, which is kept.
@@ -133,6 +135,32 @@ jobs:
 
       # The steps below run whatever happened before them; `always()` only makes
       # them run, and any of them failing still fails the job.
+      #
+      # The committed result records come from earlier commits. They stay in
+      # place while the runs execute, because the suite's manifest check needs a
+      # record for every scenario gnucobol-batch can run. Every record a run of
+      # this job writes names this checkout's HEAD in source_identity.commit
+      # (the harness takes `git rev-parse HEAD`), and a committed record can
+      # never name the commit that contains it. Removing the other records
+      # therefore leaves Finalize only the records this job's runs wrote: a run
+      # cut short, or never reached, reports the scenarios it did not execute
+      # as blocked under GAP-MIS-018 instead of counting old records. Only
+      # gnucobol-batch records live in tests/reports/results/;
+      # tests/reports/unikix/ is left alone.
+      - name: Drop result records of earlier commits
+        if: always()
+        run: |
+          head="$(git rev-parse HEAD)"
+          shopt -s nullglob
+          removed=0
+          for record in tests/reports/results/*.yaml; do
+            if ! grep -qxF "  commit: $head" "$record"; then
+              rm -f "$record"
+              removed=$((removed + 1))
+            fi
+          done
+          echo "Removed $removed result records not written at $head"
+
       - name: Finalize reports
         if: always()
         run: python tests/harness/report.py
@@ -151,8 +179,9 @@ jobs:
 
       # The base is the pull request's base commit, else the push's previous
       # commit, else (first push of a branch: an all-zero `before`) the starting
-      # commit. Event values reach the script only through env, never through
-      # expression interpolation.
+      # commit. A previous commit missing from the checkout (a force-push) also
+      # falls back to the starting commit. Event values reach the script only
+      # through env, never through expression interpolation.
       - name: Check baseline version bumps
         if: always()
         env:
@@ -162,6 +191,10 @@ jobs:
           BASE="$PR_BASE"
           if [[ -z "$BASE" ]]; then BASE="$PUSH_BEFORE"; fi
           if [[ -z "$BASE" || "$BASE" =~ ^0+$ ]]; then BASE=93ebec71ff7b59a68cedd7c501afe496a8eaa68d; fi
+          if [[ "$BASE" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] && ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "::notice::bump-check base $BASE is not a commit of this checkout (a force-push drops the previous tip); using the starting commit 93ebec71ff7b59a68cedd7c501afe496a8eaa68d"
+            BASE=93ebec71ff7b59a68cedd7c501afe496a8eaa68d
+          fi
           echo "Baseline bump-check base: $BASE"
           python tests/harness/baselines.py --check-bumps --base "$BASE"
 

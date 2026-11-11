@@ -41,20 +41,26 @@
 # spaces included. BMS pads each received field with blanks to its length, so
 # the description, merchant name and city reach the record padded to 100, 50
 # and 50. TRAN-ORIG-TS and TRAN-PROC-TS receive the 10-character date fields,
-# padded with spaces to 26 [app/cbl/COTRN02C.cbl:464-465]: no clock is
-# involved, so they are exact values. Only the screen CURDATE and CURTIME come
-# from the region clock, so they are matchers and the clock is relative.
+# padded with spaces to 26 [app/cbl/COTRN02C.cbl:464-465]. Both dates are typed
+# as the run date (a run-date input in YYYY-MM-DD form), since the region
+# clock cannot be fixed, so the written timestamps are asserted as the run date
+# followed by 16 spaces (run-timestamp matchers). COTRN02C checks only the
+# dates' shape and CSUTLDTC validity, never their relation to the clock or to
+# each other [app/cbl/COTRN02C.cbl:353-427], so the outcome is the same on
+# every run date. The screen CURDATE and CURTIME also come from the region
+# clock, so they are matchers and the clock is relative.
 id: TRN-COTRN02C-normal-01
 level: e2e
 type: normal
 description: >-
   USER0001 signs on, chooses main-menu option 8 (Transaction Add) and, on
   COTRN02, adds a transaction for repository card 0500024453765740 (type 01,
-  category 0001, POS TERM, 'Test purchase', +00000012.34, dates 2022-07-01,
-  merchant 800000001 'Test Merchant', Testville 27601) with CONFIRM Y. COTRN02C
-  writes TRANSACT record 0000000996722788, one more than the highest of the 300
-  fixture ids, clears the input fields and shows 'Transaction added
-  successfully.  Your Tran ID is 0000000996722788.'
+  category 0001, POS TERM, 'Test purchase', +00000012.34, both dates typed as
+  the run date, merchant 800000001 'Test Merchant', Testville 27601) with
+  CONFIRM Y. COTRN02C writes TRANSACT record 0000000996722788, one more than
+  the highest of the 300 fixture ids, whose TRAN-ORIG-TS and TRAN-PROC-TS are
+  the run date followed by 16 spaces, clears the input fields and shows
+  'Transaction added successfully.  Your Tran ID is 0000000996722788.'
 # Primary item first, then the program, the maps asserted, the transaction
 # step 3 runs under, the CSD files COTRN02C reads and writes, and the
 # online-only copybooks it copies. The written record and its generated id are
@@ -117,8 +123,8 @@ inputs:
       TRNSRC: 'POS TERM'
       TDESC: 'Test purchase'
       TRNAMT: '+00000012.34'
-      TORIGDT: '2022-07-01'
-      TPROCDT: '2022-07-01'
+      TORIGDT: {run-date: {format: '%Y-%m-%d'}}
+      TPROCDT: {run-date: {format: '%Y-%m-%d'}}
       MID: '800000001'
       MNAME: 'Test Merchant'
       MCITY: 'Testville'
@@ -184,5 +190,5 @@ expected:
         TRAN-MERCHANT-CITY: 'Testville                                         '
         TRAN-MERCHANT-ZIP: '27601     '
         TRAN-CARD-NUM: '0500024453765740'
-        TRAN-ORIG-TS: '2022-07-01                '
-        TRAN-PROC-TS: '2022-07-01                '
+        TRAN-ORIG-TS: {match: run-timestamp, format: '%Y-%m-%d                '}
+        TRAN-PROC-TS: {match: run-timestamp, format: '%Y-%m-%d                '}

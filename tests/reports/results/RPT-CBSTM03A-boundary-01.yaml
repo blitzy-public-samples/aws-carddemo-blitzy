@@ -222,13 +222,13 @@ decoded:
   return_code: 0
 evidence_path: tests/reports/results/RPT-CBSTM03A-boundary-01.yaml
 execution_fingerprint: 3ae0d9d6d7212ca19d76a833e55bda582ce1e936022ffb837d0d76df69084dc3
-execution_id: gnucobol-batch-2dffe240878a179f
+execution_id: gnucobol-batch-d1044a412a670852
 gap_id: null
 reason: null
-scenario_digest: 8b8588797b12333e747e4797fc9a82faea2c4cd5553f91277ab8e0e6a2fda6ca
+scenario_digest: b3459c74c9153e707b61cf2fdb8e5a5eab2081ea2002680500bf690efe95230b
 scenario_id: RPT-CBSTM03A-boundary-01
 source_identity:
-  commit: ab3f66e8e82d6a0f204d218435c52b0662a2f5df
+  commit: ce9f6aff53f0ac819039927a2edff31f10f77b06
   tree: app
   units:
     app/cbl/CBSTM03A.CBL: 54210164f798c7b38609400d846d4b03f46da2c67cdf69e968951cfc3e8caf3e

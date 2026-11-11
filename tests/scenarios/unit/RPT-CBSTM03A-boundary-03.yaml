@@ -43,18 +43,23 @@ description: >-
   HTMLFILE stay empty, the four input files and both outputs are closed, and the
   run ends with return code 0. The only messages are the job, step and DD lines
   of the control-block walk [app/cbl/CBSTM03A.CBL:225-233,266-342,818-853].
+  That outcome rests on a crafted byte: TRXFL record 52's merchant id begins
+  with a non-numeric 'Y' (Y90000801), chosen so the run ends deterministically.
+  With a valid numeric merchant id the 52nd card leaves 1000-MAINLINE looping
+  and the run never ends on gnucobol-batch (the scenario deadline passes), and
+  with 'N' the first statement reads past the table until the process faults
+  [app/cbl/CBSTM03A.CBL:316-329].
 inventory_ids:
 - INV-RPT-050  # CBSTM03A 51-card x 10-transaction table limit (rule), the boundary under test
 - INV-RPT-004  # CBSTM03A program
 - INV-RPT-005  # CBSTM03B program, the file service that reads TRXFL and opens and closes the inputs
 - INV-LAY-004  # COSTM01 copybook, the TRXFL record
-- INV-LAY-018  # CVACT03Y copybook, the CARDXREF record
-- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
-- INV-DTA-013  # EBCDIC card cross-reference file, its cross-check counterpart
-- INV-DTA-001  # acctdata.txt, the ACCTDATA fixture source
-- INV-DTA-011  # EBCDIC account file, its cross-check counterpart
-- INV-DTA-004  # custdata.txt, the CUSTDATA fixture source
-- INV-DTA-014  # EBCDIC customer file, its cross-check counterpart
+# The CVACT01Y and CVACT03Y layouts and the account, cross-reference and
+# customer data files (ASCII and EBCDIC) are not listed: the DAT-CBACT01C,
+# DAT-CBACT03C, DAT-CBCUS01C, TRN-CBTRN01C, TRN-CBTRN02C, FIN-CBACT04C and
+# RPT-CBTRN03C unit scenarios verify them and never depend on page zero, so
+# when the page-zero probe fails these scenarios block only the CBSTM03A and
+# CBSTM03B items, COSTM01 and CUSTREC.
 tags:
 - suspected-defect
 gap_ids:

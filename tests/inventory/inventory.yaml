@@ -19299,9 +19299,7 @@ items:
   - GAP-DEF-001
   - GAP-DEF-003
   - GAP-DEF-005
-  - GAP-MIS-002
   - GAP-STB-001
-  - GAP-STB-003
   - GAP-STB-004
   - GAP-STB-010
   - GAP-STB-011
@@ -19322,7 +19320,6 @@ items:
   - FIN-CBACT04C-boundary-02
   - FIN-CBACT04C-boundary-03
   - FIN-CBACT04C-normal-01
-  - RPT-CBSTM03A-normal-01
   - TRN-CBTRN02C-alternate-01
   - TRN-CBTRN02C-boundary-01
   - TRN-CBTRN02C-boundary-02
@@ -19352,12 +19349,9 @@ items:
   gap_ids:
   - GAP-DEF-003
   - GAP-DEF-005
-  - GAP-DEF-007
   - GAP-DEF-012
   - GAP-DOC-003
   - GAP-MIS-001
-  - GAP-MIS-002
-  - GAP-STB-003
   - GAP-STB-004
   - GAP-STB-010
   - GAP-STB-011
@@ -19374,8 +19368,6 @@ items:
   - FIN-CBACT04C-alternate-02
   - FIN-CBACT04C-boundary-02
   - FIN-CBACT04C-normal-01
-  - RPT-CBSTM03A-boundary-03
-  - RPT-CBSTM03A-normal-01
   - RPT-CBTRN03C-boundary-04
   - RPT-CBTRN03C-normal-01
   - TRN-CBTRN01C-negative-02
@@ -19884,13 +19876,10 @@ items:
   - GAP-DEF-003
   - GAP-DEF-005
   - GAP-DEF-006
-  - GAP-DEF-007
   - GAP-DOC-011
   - GAP-DOC-012
   - GAP-DOC-032
-  - GAP-MIS-002
   - GAP-STB-001
-  - GAP-STB-003
   - GAP-STB-004
   - GAP-STB-010
   - GAP-STB-011
@@ -19903,11 +19892,6 @@ items:
   scenario_ids:
   - DAT-CBACT01C-normal-01
   - FIN-CBACT04C-alternate-02
-  - RPT-CBSTM03A-boundary-01
-  - RPT-CBSTM03A-boundary-02
-  - RPT-CBSTM03A-boundary-03
-  - RPT-CBSTM03A-normal-01
-  - RPT-CBSTM03A-normal-02
   - TRN-CBTRN01C-boundary-01
   - TRN-CBTRN01C-negative-01
   - TRN-CBTRN01C-negative-02
@@ -19957,14 +19941,11 @@ items:
   - GAP-DEF-004
   - GAP-DEF-005
   - GAP-DEF-006
-  - GAP-DEF-007
   - GAP-DEF-012
   - GAP-DOC-010
   - GAP-DOC-011
   - GAP-MIS-001
-  - GAP-MIS-002
   - GAP-STB-001
-  - GAP-STB-003
   - GAP-STB-004
   - GAP-STB-010
   - GAP-STB-011
@@ -19978,8 +19959,6 @@ items:
   - DAT-CBACT03C-normal-01
   - FIN-CBACT04C-alternate-02
   - FIN-CBACT04C-recovery-01
-  - RPT-CBSTM03A-boundary-03
-  - RPT-CBSTM03A-normal-01
   - RPT-CBTRN03C-boundary-01
   - RPT-CBTRN03C-boundary-02
   - RPT-CBTRN03C-boundary-03
@@ -20013,10 +19992,7 @@ items:
   gap_ids:
   - GAP-DEF-001
   - GAP-DEF-006
-  - GAP-DEF-007
-  - GAP-MIS-002
   - GAP-STB-001
-  - GAP-STB-003
   - GAP-STB-010
   - GAP-STB-011
   - GAP-UNC-003
@@ -20026,11 +20002,6 @@ items:
   name: custdata.txt data file
   scenario_ids:
   - DAT-CBCUS01C-normal-01
-  - RPT-CBSTM03A-boundary-01
-  - RPT-CBSTM03A-boundary-02
-  - RPT-CBSTM03A-boundary-03
-  - RPT-CBSTM03A-normal-01
-  - RPT-CBSTM03A-normal-02
   - TRN-CBTRN01C-boundary-01
   - TRN-CBTRN01C-negative-01
   - TRN-CBTRN01C-negative-02
@@ -20188,13 +20159,10 @@ items:
   - GAP-DEF-003
   - GAP-DEF-005
   - GAP-DEF-006
-  - GAP-DEF-007
   - GAP-DOC-012
   - GAP-DOC-018
   - GAP-DOC-032
-  - GAP-MIS-002
   - GAP-STB-001
-  - GAP-STB-003
   - GAP-STB-004
   - GAP-STB-010
   - GAP-STB-011
@@ -20207,11 +20175,6 @@ items:
   scenario_ids:
   - DAT-CBACT01C-normal-01
   - FIN-CBACT04C-alternate-02
-  - RPT-CBSTM03A-boundary-01
-  - RPT-CBSTM03A-boundary-02
-  - RPT-CBSTM03A-boundary-03
-  - RPT-CBSTM03A-normal-01
-  - RPT-CBSTM03A-normal-02
   - TRN-CBTRN01C-boundary-01
   - TRN-CBTRN01C-negative-01
   - TRN-CBTRN01C-negative-02
@@ -20261,13 +20224,10 @@ items:
   - GAP-DEF-004
   - GAP-DEF-005
   - GAP-DEF-006
-  - GAP-DEF-007
   - GAP-DEF-012
   - GAP-DOC-018
   - GAP-MIS-001
-  - GAP-MIS-002
   - GAP-STB-001
-  - GAP-STB-003
   - GAP-STB-004
   - GAP-STB-010
   - GAP-STB-011
@@ -20281,8 +20241,6 @@ items:
   - DAT-CBACT03C-normal-01
   - FIN-CBACT04C-alternate-02
   - FIN-CBACT04C-recovery-01
-  - RPT-CBSTM03A-boundary-03
-  - RPT-CBSTM03A-normal-01
   - RPT-CBTRN03C-boundary-01
   - RPT-CBTRN03C-boundary-02
   - RPT-CBTRN03C-boundary-03
@@ -20316,11 +20274,8 @@ items:
   gap_ids:
   - GAP-DEF-001
   - GAP-DEF-006
-  - GAP-DEF-007
   - GAP-DOC-018
-  - GAP-MIS-002
   - GAP-STB-001
-  - GAP-STB-003
   - GAP-STB-010
   - GAP-STB-011
   - GAP-UNC-003
@@ -20330,11 +20285,6 @@ items:
   name: AWS.M2.CARDDEMO.CUSTDATA.PS data file
   scenario_ids:
   - DAT-CBCUS01C-normal-01
-  - RPT-CBSTM03A-boundary-01
-  - RPT-CBSTM03A-boundary-02
-  - RPT-CBSTM03A-boundary-03
-  - RPT-CBSTM03A-normal-01
-  - RPT-CBSTM03A-normal-02
   - TRN-CBTRN01C-boundary-01
   - TRN-CBTRN01C-negative-01
   - TRN-CBTRN01C-negative-02

@@ -97,7 +97,7 @@ gaps:
   needed: The owner's confirmation of intent. The behaviour is pinned as observed and never fixed under app/.
   resolving_evidence: null
   status: open
-  unknown: CBSTM03A holds the statement data in WS-CARD-TBL OCCURS 51 with WS-TRAN-TBL OCCURS 10 and never checks either bound, so a 52nd card or an 11th transaction on one card overruns the table [app/cbl/CBSTM03A.CBL:226-233].
+  unknown: CBSTM03A holds the statement data in WS-CARD-TBL OCCURS 51 with WS-TRAN-TBL OCCURS 10 and never checks either bound, so a 52nd card or an 11th transaction on one card overruns the table [app/cbl/CBSTM03A.CBL:226-233]. Observed on gnucobol-batch, a 52nd card's record overwrites the counter table and MISC-VARIABLES and its first merchant-id byte lands in END-OF-FILE, so the outcome depends on that byte. A digit, as valid data holds, leaves the run looping without end; 'N' makes it fault; 'Y' (the pinned RPT-CBSTM03A-boundary-03 input) ends it with no statement and RC 0. The layout past the table is GnuCOBOL's (GAP-STB-011), so what Enterprise COBOL does is unknown.
 - affected_inventory_ids:
   - INV-RPT-009
   - INV-RPT-054

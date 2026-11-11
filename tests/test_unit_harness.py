@@ -5919,6 +5919,29 @@ def test_report_shows_both_projections_and_names_the_page_zero_one_it_equals() -
     assert "100% may be claimed: no" in lines
 
 
+def test_report_seeds_authentication_with_the_sign_on_and_admin_menu_scenarios(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = report.build_state()
+    scenarios = Counter((scenario.area, scenario.program_or_job) for scenario in state.scenarios.values())
+    sign_on = sum(count for (area, _), count in scenarios.items() if area == "SEC")
+    admin_menu, main_menu = scenarios[("MNU", "COADM01C")], scenarios[("MNU", "COMEN01C")]
+    assert sign_on and admin_menu and main_menu
+    lines = report.render_report(state, (False, "not judged here")).split("\n")
+    # The MNU-COMEN01C scenarios are left out of the Authentication count.
+    assert f"| Authentication | 5 | SEC, MNU-COADM01C | {sign_on + admin_menu} |" in lines
+    by_area = lines[lines.index("## By area"):lines.index("### Tech-spec seed counts (Section 6.6.7.1)")]
+    shared = "| Authentication 5 (shared; SEC and MNU-COADM01C scenarios) |"
+    for area in ("SEC", "MNU"):
+        assert next(line for line in by_area if line.startswith(f"| {area} |")).endswith(shared)
+    assert next(line for line in by_area if line.startswith("| RPT |")).endswith(
+        "| Batch Jobs 15 (shared; batch scenarios) |")
+    # Two seeds naming one area are both shown there.
+    monkeypatch.setattr(report, "SEED_COUNTS", (*report.SEED_COUNTS, ("Main Menu", 1, ("MNU-COMEN01C",), False)))
+    assert report._seed_of_area()["MNU"] == (
+        "Authentication 5 (shared; SEC and MNU-COADM01C scenarios); Main Menu 1 (shared; MNU-COMEN01C scenarios)")
+
+
 @pytest.fixture(scope="module")
 def committed_state() -> report.State:
     """``report.build_state()`` over the committed inventory, register,
@@ -8141,6 +8164,116 @@ def test_unikix_close_raises_what_it_could_not_stop(
     calls.clear()
     assert adapter.close() is None
     assert calls == [("close_all", "")]
+
+
+MATRIX_UNIKIX_EARLIER = "unikix-20250101T000000Z-0123abcd"
+MATRIX_UNIKIX_SHARED = "unikix-20250102T000000Z-0123abcd"
+
+
+def _matrix_result(scenario_id: str) -> str:
+    return f"tests/reports/results/{scenario_id}.yaml"
+
+
+def _matrix_unikix(execution_id: str, scenario_id: str) -> str:
+    return f"tests/reports/unikix/{execution_id}/{scenario_id}"
+
+
+# Each case: the passed records of each scenario listing the item, as
+# (adapter, execution_id, evidence_path), given out of the (adapter,
+# execution id) order the status rules sort them into; and the
+# (execution_id, evidence_path) pairs the item's matrix row must carry, in
+# scenario order.
+MATRIX_PAIRING_CASES = [
+    pytest.param(
+        {
+            "TRN-CBTRN02C-boundary-02": [
+                (results.GNUCOBOL, "gnucobol-batch-770e608f2a41c701", _matrix_result("TRN-CBTRN02C-boundary-02")),
+            ],
+            "TRN-CBTRN02C-negative-04": [
+                (results.GNUCOBOL, "gnucobol-batch-111f877390bb2c24", _matrix_result("TRN-CBTRN02C-negative-04")),
+            ],
+        },
+        [
+            ("gnucobol-batch-770e608f2a41c701", _matrix_result("TRN-CBTRN02C-boundary-02")),
+            ("gnucobol-batch-111f877390bb2c24", _matrix_result("TRN-CBTRN02C-negative-04")),
+        ],
+        id="execution-ids-sorting-opposite-to-scenario-ids",
+    ),
+    # One UniKix execution covers both scenarios: its id is kept once per
+    # scenario, beside that scenario's own evidence path.
+    pytest.param(
+        {
+            "SEC-COSGN00C-negative-01": [
+                (results.UNIKIX, execution_id, _matrix_unikix(execution_id, "SEC-COSGN00C-negative-01"))
+                for execution_id in (MATRIX_UNIKIX_SHARED, MATRIX_UNIKIX_EARLIER)
+            ],
+            "SEC-COSGN00C-normal-01": [
+                (results.UNIKIX, MATRIX_UNIKIX_SHARED, _matrix_unikix(MATRIX_UNIKIX_SHARED, "SEC-COSGN00C-normal-01")),
+            ],
+        },
+        [
+            (MATRIX_UNIKIX_EARLIER, _matrix_unikix(MATRIX_UNIKIX_EARLIER, "SEC-COSGN00C-negative-01")),
+            (MATRIX_UNIKIX_SHARED, _matrix_unikix(MATRIX_UNIKIX_SHARED, "SEC-COSGN00C-negative-01")),
+            (MATRIX_UNIKIX_SHARED, _matrix_unikix(MATRIX_UNIKIX_SHARED, "SEC-COSGN00C-normal-01")),
+        ],
+        id="unikix-execution-shared-by-two-scenarios",
+    ),
+    # A record without an execution id keeps its place with '' in that
+    # column, one with neither value is left out, and an exact repeat of a
+    # pair is listed once.
+    pytest.param(
+        {
+            "TRN-CBTRN02C-boundary-01": [(results.GNUCOBOL, None, _matrix_result("TRN-CBTRN02C-boundary-01"))],
+            "TRN-CBTRN02C-boundary-02": [(results.GNUCOBOL, None, None)],
+            "TRN-CBTRN02C-negative-04": [
+                (results.GNUCOBOL, "gnucobol-batch-111f877390bb2c24", _matrix_result("TRN-CBTRN02C-negative-04")),
+                (results.GNUCOBOL, "gnucobol-batch-111f877390bb2c24", _matrix_result("TRN-CBTRN02C-negative-04")),
+            ],
+        },
+        [
+            ("", _matrix_result("TRN-CBTRN02C-boundary-01")),
+            ("gnucobol-batch-111f877390bb2c24", _matrix_result("TRN-CBTRN02C-negative-04")),
+        ],
+        id="missing-value-blank-and-exact-repeat-once",
+    ),
+]
+
+
+@pytest.mark.parametrize(("deciding", "pairs"), MATRIX_PAIRING_CASES)
+def test_matrix_pairs_each_execution_id_with_its_evidence_path(
+    deciding: dict[str, list[tuple[str, str | None, str | None]]], pairs: list[tuple[str, str]]
+) -> None:
+    item_id, source = "INV-TRN-077", "app/cbl/CBTRN02C.cbl:414-420"
+    scenario_ids = sorted(deciding)
+    listing = {
+        scenario_id: SimpleNamespace(id=scenario_id, expected={"return_code": 4}) for scenario_id in scenario_ids
+    }
+    statuses = {
+        scenario_id: report.scenario_status(listing[scenario_id], [
+            {"adapter": adapter, "execution_id": execution_id, "evidence_path": path, "status": results.STATUS_PASSED}
+            for adapter, execution_id, path in records
+        ])
+        for scenario_id, records in deciding.items()
+    }
+    state = SimpleNamespace(
+        items=[{"id": item_id, "source": source}], scenarios=listing, statuses=statuses,
+        item_scenarios={item_id: scenario_ids}, item_status={item_id: report.VERIFIED},
+    )
+    header, *lines = report.render_matrix(state).splitlines()
+    assert header == ",".join(report.MATRIX_HEADER)
+    assert len(lines) == 1
+    row = dict(zip(report.MATRIX_HEADER, lines[0].split(","), strict=True))
+    assert row == {
+        "inventory_id": item_id,
+        "implementation_locations": source,
+        "scenario_ids": ";".join(scenario_ids),
+        "assertions": ";".join(f"{scenario_id}:return_code" for scenario_id in scenario_ids),
+        "status": report.VERIFIED,
+        "execution_id": ";".join(execution_id for execution_id, _ in pairs),
+        "evidence_path": ";".join(path for _, path in pairs),
+    }
+    # The i-th execution id is the one recorded in the i-th evidence path.
+    assert list(zip(row["execution_id"].split(";"), row["evidence_path"].split(";"), strict=True)) == pairs
 
 
 # --------------------------------------------------------------------------
