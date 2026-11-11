@@ -1,0 +1,116 @@
+---
+title: Transaction list request sequence
+---
+sequenceDiagram
+    box rgb(173,216,230) Compute
+        participant LegendCompute as Compute
+        participant CardServicingUi as Card Servicing UI
+        participant ApiGateway as API gateway
+        participant CardServicingService as Card Servicing service
+    end
+    box rgb(144,238,144) Data stores
+        participant LegendDataStores as Data stores
+        participant AzureManagedRedis as Azure Managed Redis
+    end
+    box rgb(211,211,211) External systems
+        participant LegendExternal as External systems
+        participant AuthService as Auth service
+        participant ConfigService as Config service
+        participant TransactionActivityService as Transaction Activity service
+    end
+    box rgb(244,204,204) Security
+        participant LegendSecurity as Security
+        participant AccountAccessGuard as Account access guard
+    end
+    box rgb(255,255,224) Networking
+        participant LegendNetworking as Networking
+    end
+
+    %% Stage 0 Receipt: no network call, Config included, before validation passes
+    CardServicingUi->>ApiGateway: GET transactions page with bearer token
+    ApiGateway->>CardServicingService: Forward request and bearer token
+    CardServicingService->>CardServicingService: Start 900 ms deadline,<br/>read config snapshot
+    CardServicingService->>CardServicingService: Validate accountId,<br/>typeCode<br/>and categoryCode
+    CardServicingService->>CardServicingService: Check pageSize 1 to 100,<br/>at most max_page_size
+    CardServicingService->>CardServicingService: Decode pageToken,<br/>version 1, fingerprint<br/>of account and filters
+    break invalid parameter or page token
+        CardServicingService->>CardServicingService: Mark cut-off now,<br/>outcome 400 fixed
+        CardServicingService-->>ApiGateway: 400 INVALID_ARGUMENT, no upstream call
+        ApiGateway-->>CardServicingUi: 400 with traceId
+    end
+
+    %% Stage 1 Authentication: fails closed
+    CardServicingService->>AccountAccessGuard: Check access to accountId
+    break token missing, empty or not Bearer
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 401 fixed
+        AccountAccessGuard-->>CardServicingService: UNAUTHENTICATED, no Auth call
+        CardServicingService-->>ApiGateway: 401 UNAUTHENTICATED
+        ApiGateway-->>CardServicingUi: 401 with traceId
+    end
+    AccountAccessGuard->>AuthService: ValidateToken
+    break token invalid, expired or malformed
+        AuthService-->>AccountAccessGuard: UNAUTHENTICATED
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 401 fixed
+        AccountAccessGuard-->>CardServicingService: UNAUTHENTICATED
+        CardServicingService-->>ApiGateway: 401 UNAUTHENTICATED
+        ApiGateway-->>CardServicingUi: 401 with traceId
+    end
+    break Auth unavailable or deadline spent
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 503 or 504 fixed
+        AccountAccessGuard-->>CardServicingService: UNAVAILABLE or DEADLINE_EXCEEDED
+        CardServicingService-->>ApiGateway: 503 or 504, no data read
+        ApiGateway-->>CardServicingUi: 503 or 504 with traceId
+    end
+    AuthService-->>AccountAccessGuard: Subject and roles
+
+    %% Stage 2 Authorization: fails closed, then the Config refresh launches without being awaited
+    AccountAccessGuard->>AuthService: AuthorizeAccountAccess for subject and accountId
+    break allowed false
+        AuthService-->>AccountAccessGuard: allowed false
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 403 fixed
+        AccountAccessGuard-->>CardServicingService: PERMISSION_DENIED
+        CardServicingService-->>ApiGateway: 403 PERMISSION_DENIED, no data read
+        ApiGateway-->>CardServicingUi: 403 with traceId
+    end
+    break Auth unavailable or deadline spent
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 503 or 504 fixed
+        AccountAccessGuard-->>CardServicingService: UNAVAILABLE or DEADLINE_EXCEEDED
+        CardServicingService-->>ApiGateway: 503 or 504, no data read
+        ApiGateway-->>CardServicingUi: 503 or 504 with traceId
+    end
+    AuthService-->>AccountAccessGuard: allowed true
+    AccountAccessGuard-->>CardServicingService: Access allowed
+    opt stale or absent config snapshot
+        CardServicingService-)ConfigService: GetConfig background refresh, not awaited
+    end
+
+    %% Stage 3 Data read: a cached list page is served only while fresh, never stale
+    par transaction page
+        CardServicingService->>AzureManagedRedis: Read cached page
+        AzureManagedRedis-->>CardServicingService: Fresh page, or miss
+        opt no fresh page or Redis failure
+            CardServicingService->>TransactionActivityService: ListTransactions, page size and token passed through
+            TransactionActivityService-->>CardServicingService: items and next_page_token, or error status
+            CardServicingService->>AzureManagedRedis: Store page with cachedAt on success
+        end
+    end
+    Note over CardServicingService: Cut-off at or before 900 ms
+
+    %% Stage 4 Respond: after the cut-off, inside the remaining 100 ms
+    alt page read
+        CardServicingService-->>ApiGateway: 200 items, nextPageToken only if more
+        ApiGateway-->>CardServicingUi: 200 with dataStatus FRESH
+    else no match or unknown filter code
+        CardServicingService-->>ApiGateway: 200 with empty items
+        ApiGateway-->>CardServicingUi: 200 with dataStatus FRESH
+    else account unknown
+        CardServicingService-->>ApiGateway: 404 NOT_FOUND
+        ApiGateway-->>CardServicingUi: 404 with traceId
+    else upstream rejects page token, not retried
+        CardServicingService-->>ApiGateway: 400 INVALID_ARGUMENT,<br/>details field pageToken
+        ApiGateway-->>CardServicingUi: 400 with traceId
+    else upstream unavailable or deadline spent
+        CardServicingService-->>ApiGateway: 503 UNAVAILABLE or 504 DEADLINE_EXCEEDED
+        ApiGateway-->>CardServicingUi: 503 or 504 with traceId
+    end
+    Note over LegendCompute,LegendNetworking: The service checks access, then reads one<br/>keyset page of the account's transactions,<br/>newest processed first. An absent<br/>nextPageToken ends the list.

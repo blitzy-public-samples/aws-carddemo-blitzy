@@ -1,0 +1,62 @@
+---
+title: Card Servicing logical architecture
+config:
+  flowchart:
+    rankSpacing: 350
+    curve: monotoneX
+---
+flowchart LR
+    CardServicingUi["Deferred account servicing UI"]
+    ApiGateway["TLS ingress and routing"]
+    CardServicingService["Balance and transaction API"]
+    AuthService["Token and access decisions"]
+    ConfigService["Paging and timeout settings"]
+    AzureManagedRedis[("Read-through response cache")]
+    FixtureLoader["Loads fixture data"]
+    CardDataService["Account and balance data"]
+    TransactionActivityService["Transaction history"]
+    ReferenceDataService["Type and category descriptions"]
+    AzureKeyVault["Deployed secret source"]
+    AzurePostgres[("Stub mock-data store")]
+
+    subgraph Legend["Legend"]
+        LegendCompute["Compute"]
+        LegendDataStores["Data stores"]
+        LegendExternal["External systems"]
+        LegendSecurity["Security"]
+        LegendNetworking["Networking"]
+    end
+
+    CardServicingUi -->|HTTPS REST| ApiGateway
+    ApiGateway -->|REST or gRPC| CardServicingService
+    CardServicingService -->|gRPC| AuthService
+    CardServicingService -->|gRPC| CardDataService
+    CardServicingService -->|gRPC| TransactionActivityService
+    CardServicingService -->|gRPC| ReferenceDataService
+    CardServicingService -->|gRPC| ConfigService
+    CardServicingService -->|cache read-write| AzureManagedRedis
+    %% Every component that reads a deployed secret (service API key, Redis or database password) reads it from Key Vault, as the TRD environment-variable table lists.
+    CardServicingService -->|secret read| AzureKeyVault
+    FixtureLoader -->|secret read| AzureKeyVault
+    CardDataService -->|secret read| AzureKeyVault
+    TransactionActivityService -->|secret read| AzureKeyVault
+    ReferenceDataService -->|secret read| AzureKeyVault
+    FixtureLoader -->|fixture load| AzurePostgres
+    CardDataService -->|table read| AzurePostgres
+    TransactionActivityService -->|table read| AzurePostgres
+    ReferenceDataService -->|table read| AzurePostgres
+
+    classDef compute fill:#add8e6,stroke:#333333,color:#000000
+    classDef datastore fill:#90ee90,stroke:#333333,color:#000000
+    classDef external fill:#d3d3d3,stroke:#333333,color:#000000
+    classDef security fill:#f4cccc,stroke:#333333,color:#000000
+    classDef networking fill:#ffffe0,stroke:#333333,color:#000000
+
+    class CardServicingUi,ApiGateway,CardServicingService,FixtureLoader,LegendCompute compute
+    class AzurePostgres,AzureManagedRedis,LegendDataStores datastore
+    class CardDataService,TransactionActivityService,ConfigService,ReferenceDataService,AuthService,LegendExternal external
+    class AzureKeyVault,LegendSecurity security
+    class LegendNetworking networking
+
+    style Legend fill:#ffffff,stroke:#333333
+    Description["The Card Servicing service answers UI balance and drill-down requests by calling five stubbed external systems over gRPC, asking the Auth stub for every token and account-access decision and caching in Redis only account, category-balance, transaction and reference-data answers plus the Config snapshot mirror. The Card Data, Transaction Activity and Reference Data stubs read the fixture data that the loader writes to PostgreSQL."]

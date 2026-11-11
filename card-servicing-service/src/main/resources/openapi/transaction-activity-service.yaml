@@ -1,0 +1,652 @@
+openapi: 3.1.0
+info:
+  title: Transaction Activity Service stub contract
+  version: 1.0.0
+  description: >-
+    Stub-phase contract for the gRPC service
+    cardservicing.transactionactivity.v1.TransactionActivityService, described
+    here as HTTP/JSON. The stub answers from mock-data providers seeded by the
+    in-repo fixture loader; swapping in the real service changes only the
+    target address and the credential source. The Card Servicing service
+    forwards the caller's bearer token and sends its own service credential as
+    the x-api-key header; the stub ignores the key and does not re-authorize,
+    so no operation returns 403. A transaction belongs to an account when its
+    card number belongs to one of the account's card cross-reference records
+    (Data Layouts · CVACT03Y). Field names, types and lengths follow
+    Data Layouts · CVTRA05Y. Amounts are scale-2 decimal strings such as
+    "1234.56", and timestamps are RFC 3339 UTC strings with microseconds such
+    as "2024-03-05T14:07:09.123456Z".
+  contact:
+    name: Card Servicing workstream
+  license:
+    name: Apache 2.0
+    identifier: Apache-2.0
+servers:
+  - url: /
+    description: >-
+      Descriptive only. No HTTP address serves these HTTP/JSON operations; the stub is reached
+      over gRPC through the client generated from its proto. / is the OpenAPI default server.
+tags:
+  - name: TransactionActivity
+    description: Posted card transactions, listed per account with keyset paging or looked up by transaction ID.
+security:
+  - bearerAuth: []
+    apiKey: []
+paths:
+  /v1/transaction-activity/accounts/{accountId}/transactions:
+    get:
+      operationId: ListTransactions
+      tags: [TransactionActivity]
+      summary: List one account's transactions, one page at a time
+      description: >-
+        HTTP/JSON form of the gRPC method
+        cardservicing.transactionactivity.v1.TransactionActivityService/ListTransactions.
+        Returns one page of the account's transactions, ordered by
+        processedTimestamp descending, then transactionId descending, served by
+        keyset paging. The typeCode and categoryCode filters match exactly.
+        nextPageToken is present only when a further item exists and is omitted
+        on the last page; pass it back as pageToken to read the next page. The
+        token encodes version 1 and a fingerprint of accountId and the filters,
+        and a token that does not decode, or whose fingerprint differs from this
+        request, returns 400 with a pageToken detail. A pageSize outside 1-100
+        returns 400. An account with no card cross-reference record returns 404.
+        An existing account with no matching transaction, including a
+        well-formed but unknown filter, returns 200 with an empty transactions
+        array. Sources are Use Cases · COTRN00C and Data Layouts · CVTRA05Y.
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          description: >-
+            Account whose transactions are listed, 11 digits
+            (Data Layouts · CVACT01Y · ACCT-ID). The all-zero value 00000000000
+            returns 400 with "Account number must be a non zero 11 digit number"
+            (Use Cases · COACTVWC).
+          schema:
+            type: string
+            pattern: '^[0-9]{11}$'
+          examples:
+            fixtureAccount:
+              summary: Fixture account with six transactions
+              value: '00000000001'
+        - name: typeCode
+          in: query
+          required: false
+          description: >-
+            Transaction-type filter, matched exactly. A value is exactly two
+            characters of any kind, because PIC X places no restriction on its
+            characters (Data Layouts · CVTRA05Y · TRAN-TYPE-CD); omit it for no
+            filter. Reserved characters, the space, control characters and
+            non-ASCII characters are percent-encoded in the URL (RFC 3986,
+            UTF-8 for non-ASCII), and the pattern applies to the decoded value.
+            A well-formed but unknown value returns 200 with an empty
+            transactions array.
+          schema:
+            type: string
+            pattern: '^[\s\S]{2}$'
+          examples:
+            purchase:
+              summary: Purchase transactions
+              value: '01'
+        - name: categoryCode
+          in: query
+          required: false
+          description: >-
+            Transaction-category filter, matched exactly
+            (Data Layouts · CVTRA05Y · TRAN-CAT-CD); omit it for no filter. A
+            well-formed but unknown value returns 200 with an empty transactions
+            array.
+          schema:
+            type: string
+            pattern: '^[0-9]{4}$'
+          examples:
+            regularSalesDraft:
+              summary: Regular sales draft category
+              value: '0001'
+        - name: pageSize
+          in: query
+          required: true
+          description: >-
+            Maximum number of transactions on the page, 1-100. The Card
+            Servicing service always sends the page size from its configuration
+            snapshot (Use Cases · COTRN00C pages its list). A value outside
+            1-100 returns 400.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+          examples:
+            defaultPage:
+              summary: Default page size
+              value: 20
+        - name: pageToken
+          in: query
+          required: false
+          description: >-
+            Opaque keyset cursor taken from the previous page's nextPageToken;
+            leave it empty or omit it for the first page. The token is bound to
+            accountId and the filters, and a token that does not decode or does
+            not match them returns 400 with a pageToken detail. The version-1
+            payload is at most 124 bytes (a 1-byte version marker, the cursor's
+            processed timestamp of at most 27 bytes in its RFC 3339 microsecond
+            form and its 16-character transaction ID of at most 64 bytes in
+            UTF-8, and the 32-byte HMAC-SHA-256 fingerprint), so its unpadded
+            URL-safe encoding is at most 166 characters from A-Z, a-z, 0-9, '-'
+            and '_'. A value longer than 166 characters or holding any other
+            character, padding '=' included, returns 400 with a pageToken detail
+            at receipt, before any upstream call or cache read.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]*$'
+            maxLength: 166
+          examples:
+            nextPage:
+              summary: Cursor returned with the previous page
+              value: 'example-opaque-page-token'
+      responses:
+        '200':
+          description: >-
+            One page of the account's transactions, newest processed first;
+            nextPageToken is omitted on the last page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTransactionsResponse'
+              examples:
+                firstPage:
+                  summary: Whole history of fixture account 00000000001 on one page of 20
+                  value:
+                    transactions:
+                      - transactionId: '0000000776200014'
+                        typeCode: '01'
+                        categoryCode: '0001'
+                        source: 'POS TERM'
+                        description: 'Purchase at Lebsack and Sons'
+                        amount: '985.22'
+                        merchantId: '800000000'
+                        merchantName: 'Lebsack and Sons'
+                        merchantCity: 'Otisbury'
+                        merchantZip: '32545'
+                        cardNumber: '9680294154603697'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                      - transactionId: '0000000755736377'
+                        typeCode: '01'
+                        categoryCode: '0001'
+                        source: 'POS TERM'
+                        description: 'Purchase at Torp-Stark'
+                        amount: '906.44'
+                        merchantId: '800000000'
+                        merchantName: 'Torp-Stark'
+                        merchantCity: 'North Edison'
+                        merchantZip: '41040-7099'
+                        cardNumber: '9680294154603697'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                      - transactionId: '0000000624335286'
+                        typeCode: '01'
+                        categoryCode: '0001'
+                        source: 'POS TERM'
+                        description: 'Purchase at Crona, Turner and Hane'
+                        amount: '598.44'
+                        merchantId: '800000000'
+                        merchantName: 'Crona, Turner and Hane'
+                        merchantCity: 'Glenton'
+                        merchantZip: '32966-6359'
+                        cardNumber: '9680294154603697'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                      - transactionId: '0000000555363230'
+                        typeCode: '01'
+                        categoryCode: '0001'
+                        source: 'POS TERM'
+                        description: 'Purchase at Metz, Blanda and Homenick'
+                        amount: '484.99'
+                        merchantId: '800000000'
+                        merchantName: 'Metz, Blanda and Homenick'
+                        merchantCity: 'North Linwood'
+                        merchantZip: '41398'
+                        cardNumber: '9680294154603697'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                      - transactionId: '0000000532120892'
+                        typeCode: '03'
+                        categoryCode: '0001'
+                        source: 'OPERATOR'
+                        description: 'Return item at Frami-Hyatt'
+                        amount: '-70.77'
+                        merchantId: '800000000'
+                        merchantName: 'Frami-Hyatt'
+                        merchantCity: 'Jamilside'
+                        merchantZip: '14372-1790'
+                        cardNumber: '9680294154603697'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                      - transactionId: '0000000503557384'
+                        typeCode: '01'
+                        categoryCode: '0001'
+                        source: 'POS TERM'
+                        description: 'Purchase at Casper Group'
+                        amount: '81.44'
+                        merchantId: '800000000'
+                        merchantName: 'Casper Group'
+                        merchantCity: 'Millsborough'
+                        merchantZip: '57690'
+                        cardNumber: '9680294154603697'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                pageSizeTwo:
+                  summary: First page of fixture account 00000000001 at a page size of 2
+                  value:
+                    transactions:
+                      - transactionId: '0000000776200014'
+                        typeCode: '01'
+                        categoryCode: '0001'
+                        source: 'POS TERM'
+                        description: 'Purchase at Lebsack and Sons'
+                        amount: '985.22'
+                        merchantId: '800000000'
+                        merchantName: 'Lebsack and Sons'
+                        merchantCity: 'Otisbury'
+                        merchantZip: '32545'
+                        cardNumber: '9680294154603697'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                      - transactionId: '0000000755736377'
+                        typeCode: '01'
+                        categoryCode: '0001'
+                        source: 'POS TERM'
+                        description: 'Purchase at Torp-Stark'
+                        amount: '906.44'
+                        merchantId: '800000000'
+                        merchantName: 'Torp-Stark'
+                        merchantCity: 'North Edison'
+                        merchantZip: '41040-7099'
+                        cardNumber: '9680294154603697'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                    nextPageToken: 'example-opaque-page-token'
+        '400':
+          description: >-
+            INVALID_ARGUMENT. accountId, typeCode or categoryCode is malformed,
+            accountId is all zeros, pageSize is outside 1-100, or pageToken does
+            not decode or its fingerprint does not match this account and these
+            filters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                invalidPageToken:
+                  summary: Page token issued for another account or filter set
+                  value:
+                    code: 'INVALID_ARGUMENT'
+                    message: 'Page token is invalid or does not match this request'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details:
+                      - field: 'pageToken'
+                        description: 'must be a token returned for the same account and filters'
+        '401':
+          description: >-
+            UNAUTHENTICATED. The forwarded bearer token is missing, invalid or
+            expired; the stub does not re-authorize.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unauthenticated:
+                  summary: Missing, invalid or expired bearer token
+                  value:
+                    code: 'UNAUTHENTICATED'
+                    message: 'Token missing, invalid or expired'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '404':
+          description: >-
+            NOT_FOUND. The account has no card cross-reference record
+            (Data Layouts · CVACT03Y · XREF-ACCT-ID).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                accountNotFound:
+                  summary: Account without a card cross-reference record
+                  value:
+                    code: 'NOT_FOUND'
+                    message: 'Account not found'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '503':
+          description: >-
+            UNAVAILABLE. The service is unavailable after retries; stub failure
+            injection answers with this status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unavailable:
+                  summary: Service unavailable
+                  value:
+                    code: 'UNAVAILABLE'
+                    message: 'Upstream unavailable'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '504':
+          description: >-
+            DEADLINE_EXCEEDED. The call's deadline (the caller's per-attempt
+            timeout, 300 ms by default, cut to the time left in the request
+            budget when that is shorter) passed before the service answered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                deadlineExceeded:
+                  summary: Call deadline passed
+                  value:
+                    code: 'DEADLINE_EXCEEDED'
+                    message: 'Request deadline exceeded'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+  /v1/transaction-activity/transactions/{transactionId}:
+    get:
+      operationId: GetTransaction
+      tags: [TransactionActivity]
+      summary: Get one transaction by transaction ID
+      description: >-
+        HTTP/JSON form of the gRPC method
+        cardservicing.transactionactivity.v1.TransactionActivityService/GetTransaction.
+        Returns the one transaction whose transactionId equals the path value,
+        looked up by transaction ID alone as Use Cases · COTRN01C reads it; a
+        single record matches, so no ordering applies. Returns 404 when no
+        transaction has this ID. This stub does not check account ownership;
+        the Card Servicing service checks the transaction's card number against
+        the account's card cross-reference records (Data Layouts · CVACT03Y).
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          description: >-
+            Transaction to return, exactly 16 characters of any kind, because
+            PIC X places no restriction on its characters (Data Layouts ·
+            CVTRA05Y · TRAN-ID). Reserved characters, the space, control
+            characters and non-ASCII characters are percent-encoded in the URL
+            (RFC 3986, UTF-8 for non-ASCII), and the pattern applies to the
+            decoded value.
+          schema:
+            type: string
+            pattern: '^[\s\S]{16}$'
+          examples:
+            fixtureTransaction:
+              summary: Newest transaction of fixture account 00000000001
+              value: '0000000776200014'
+      responses:
+        '200':
+          description: The transaction with the requested transaction ID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTransactionResponse'
+              examples:
+                fixtureTransaction:
+                  summary: Purchase on fixture account 00000000001
+                  value:
+                    transaction:
+                      transactionId: '0000000776200014'
+                      typeCode: '01'
+                      categoryCode: '0001'
+                      source: 'POS TERM'
+                      description: 'Purchase at Lebsack and Sons'
+                      amount: '985.22'
+                      merchantId: '800000000'
+                      merchantName: 'Lebsack and Sons'
+                      merchantCity: 'Otisbury'
+                      merchantZip: '32545'
+                      cardNumber: '9680294154603697'
+                      originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                      processedTimestamp: '2022-06-10T19:27:53.000000Z'
+        '400':
+          description: INVALID_ARGUMENT. transactionId is not exactly 16 characters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                invalidTransactionId:
+                  summary: Malformed transaction ID
+                  value:
+                    code: 'INVALID_ARGUMENT'
+                    message: 'Transaction ID must be exactly 16 characters'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details:
+                      - field: 'transactionId'
+                        description: 'must be exactly 16 characters'
+        '401':
+          description: >-
+            UNAUTHENTICATED. The forwarded bearer token is missing, invalid or
+            expired; the stub does not re-authorize.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unauthenticated:
+                  summary: Missing, invalid or expired bearer token
+                  value:
+                    code: 'UNAUTHENTICATED'
+                    message: 'Token missing, invalid or expired'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '404':
+          description: NOT_FOUND. No transaction has this transaction ID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                transactionNotFound:
+                  summary: Unknown transaction ID
+                  value:
+                    code: 'NOT_FOUND'
+                    message: 'Transaction not found'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '503':
+          description: >-
+            UNAVAILABLE. The service is unavailable after retries; stub failure
+            injection answers with this status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unavailable:
+                  summary: Service unavailable
+                  value:
+                    code: 'UNAVAILABLE'
+                    message: 'Upstream unavailable'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '504':
+          description: >-
+            DEADLINE_EXCEEDED. The call's deadline (the caller's per-attempt
+            timeout, 300 ms by default, cut to the time left in the request
+            budget when that is shorter) passed before the service answered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                deadlineExceeded:
+                  summary: Call deadline passed
+                  value:
+                    code: 'DEADLINE_EXCEEDED'
+                    message: 'Request deadline exceeded'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: The caller's bearer token, forwarded unchanged by the Card Servicing service.
+    apiKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: The Card Servicing service credential; the stub ignores it.
+  schemas:
+    ListTransactionsResponse:
+      type: object
+      description: One page of an account's transactions and the cursor for the next page.
+      required: [transactions]
+      additionalProperties: false
+      properties:
+        transactions:
+          type: array
+          description: >-
+            Up to pageSize transactions, ordered by processedTimestamp
+            descending, then transactionId descending; always present and empty
+            when nothing matches.
+          items:
+            $ref: '#/components/schemas/Transaction'
+        nextPageToken:
+          type: string
+          description: >-
+            Opaque cursor for the next page, passed back as pageToken. Present
+            only when a further item exists and omitted on the last page, where
+            gRPC carries the empty string. It is at most 166 characters of A-Z,
+            a-z, 0-9, '-' and '_', the bound pageToken states.
+          pattern: '^[A-Za-z0-9_-]+$'
+          maxLength: 166
+    GetTransactionResponse:
+      type: object
+      description: >-
+        The one transaction whose transactionId equals the requested ID. An
+        unknown transactionId returns 404 rather than an empty response.
+      required: [transaction]
+      additionalProperties: false
+      properties:
+        transaction:
+          $ref: '#/components/schemas/Transaction'
+    Transaction:
+      type: object
+      description: >-
+        One posted transaction (Data Layouts · CVTRA05Y). Free-text values are
+        carried with trailing padding removed.
+      required:
+        - transactionId
+        - typeCode
+        - categoryCode
+        - source
+        - description
+        - amount
+        - merchantId
+        - merchantName
+        - merchantCity
+        - merchantZip
+        - cardNumber
+        - originalTimestamp
+        - processedTimestamp
+      additionalProperties: false
+      properties:
+        transactionId:
+          type: string
+          description: Transaction identifier, exactly 16 characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA05Y · TRAN-ID).
+          pattern: '^[\s\S]{16}$'
+        typeCode:
+          type: string
+          description: Transaction type code, exactly two characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA05Y · TRAN-TYPE-CD).
+          pattern: '^[\s\S]{2}$'
+        categoryCode:
+          type: string
+          description: Transaction category code (Data Layouts · CVTRA05Y · TRAN-CAT-CD).
+          pattern: '^[0-9]{4}$'
+        source:
+          type: string
+          description: Where the transaction originated, for example POS TERM or OPERATOR (Data Layouts · CVTRA05Y · TRAN-SOURCE).
+          maxLength: 10
+        description:
+          type: string
+          description: Transaction description (Data Layouts · CVTRA05Y · TRAN-DESC).
+          maxLength: 100
+        amount:
+          type: string
+          description: >-
+            Transaction amount as a scale-2 decimal string with at most 9
+            integer digits and 2 decimals, negative for returns,
+            for example 1234.56 (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
+          pattern: '^-?[0-9]{1,9}\.[0-9]{2}$'
+        merchantId:
+          type: string
+          description: Merchant identifier, 9 digits (Data Layouts · CVTRA05Y · TRAN-MERCHANT-ID).
+          pattern: '^[0-9]{9}$'
+        merchantName:
+          type: string
+          description: Merchant name (Data Layouts · CVTRA05Y · TRAN-MERCHANT-NAME).
+          maxLength: 50
+        merchantCity:
+          type: string
+          description: Merchant city (Data Layouts · CVTRA05Y · TRAN-MERCHANT-CITY).
+          maxLength: 50
+        merchantZip:
+          type: string
+          description: Merchant postal code (Data Layouts · CVTRA05Y · TRAN-MERCHANT-ZIP).
+          maxLength: 10
+        cardNumber:
+          type: string
+          description: >-
+            Number of the card the transaction was made with
+            (Data Layouts · CVTRA05Y · TRAN-CARD-NUM); it links the transaction
+            to an account through Data Layouts · CVACT03Y · XREF-CARD-NUM.
+          maxLength: 16
+        originalTimestamp:
+          type: string
+          format: date-time
+          description: >-
+            When the transaction originated, RFC 3339 UTC with microseconds, for
+            example 2024-03-05T14:07:09.123456Z (Data Layouts · CVTRA05Y ·
+            TRAN-ORIG-TS).
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$'
+        processedTimestamp:
+          type: string
+          format: date-time
+          description: >-
+            When the transaction was processed, in the same form as
+            originalTimestamp; equals originalTimestamp when the source value is
+            blank, as in every sample row (Data Layouts · CVTRA05Y ·
+            TRAN-PROC-TS).
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$'
+    ErrorObject:
+      type: object
+      description: Standard error object returned with every non-2xx status; gRPC carries the same message in google.rpc.Status details.
+      required: [code, message, traceId, details]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: Canonical status name - INVALID_ARGUMENT (400), UNAUTHENTICATED (401), PERMISSION_DENIED (403), NOT_FOUND (404), UNAVAILABLE (503) or DEADLINE_EXCEEDED (504).
+        message:
+          type: string
+          description: Human-readable explanation of the error.
+        traceId:
+          type: string
+          description: Identifier of the request that produced the error, used to correlate log lines.
+        details:
+          type: array
+          description: Field-level violations; empty when the error concerns no single field.
+          items:
+            type: object
+            description: One field-level violation.
+            required: [field, description]
+            additionalProperties: false
+            properties:
+              field:
+                type: string
+                description: Name of the request field or parameter that failed, for example accountId or pageToken.
+              description:
+                type: string
+                description: The rule the field must satisfy.

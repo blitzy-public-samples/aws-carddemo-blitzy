@@ -1,0 +1,126 @@
+syntax = "proto3";
+
+package cardservicing.referencedata.v1;
+
+import "cardservicing/common/v1/common.proto";
+
+option java_multiple_files = true;
+option java_package = "com.example.cardservicing.contract.referencedata.v1";
+
+// Serves transaction-type and transaction-category reference data (codes and descriptions), which the
+// Card Servicing service uses to label balances and transactions. The rows are reference data loaded as
+// data, not code (Reference Tables · TRANTYPE file, Reference Tables · TRANCATG file), so a change is a
+// data load with no deploy.
+//
+// Stub-phase hosting: a stub gRPC server answered by a mock-data provider over the seeded reference rows.
+// Replacing it with the real service changes only the target address and the credential source.
+//
+// Identity: the caller's bearer token is forwarded in `authorization` metadata and the service credential
+// travels in `x-api-key`. The stub ignores the key and does not re-authorize.
+service ReferenceDataService {
+  // Lists every transaction type, ordered by type_code ascending.
+  // HTTP/JSON twin: GET /v1/reference-data/transaction-types.
+  //
+  // Example request:
+  //   {}
+  //
+  // Example response:
+  //   {"transactionTypes":[
+  //     {"typeCode":"01","typeDescription":"Purchase"},
+  //     {"typeCode":"02","typeDescription":"Payment"},
+  //     {"typeCode":"03","typeDescription":"Credit"},
+  //     {"typeCode":"04","typeDescription":"Authorization"},
+  //     {"typeCode":"05","typeDescription":"Refund"},
+  //     {"typeCode":"06","typeDescription":"Reversal"},
+  //     {"typeCode":"07","typeDescription":"Adjustment"}
+  //   ]}
+  //
+  // Errors:
+  //   UNAUTHENTICATED - forwarded bearer token missing, invalid or expired (the stub does not re-authorize)
+  //   UNAVAILABLE - service unavailable after retries
+  //   DEADLINE_EXCEEDED - the call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time left in the request budget when that is shorter) passed before the service answered
+  //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
+  rpc ListTransactionTypes(ListTransactionTypesRequest) returns (ListTransactionTypesResponse);
+
+  // Lists every transaction category, ordered by (type_code, category_code) ascending.
+  // HTTP/JSON twin: GET /v1/reference-data/transaction-categories.
+  //
+  // Example request:
+  //   {}
+  //
+  // Example response:
+  //   {"transactionCategories":[
+  //     {"typeCode":"01","categoryCode":"0001","categoryDescription":"Regular Sales Draft"},
+  //     {"typeCode":"01","categoryCode":"0002","categoryDescription":"Regular Cash Advance"},
+  //     {"typeCode":"01","categoryCode":"0003","categoryDescription":"Convenience Check Debit"},
+  //     {"typeCode":"01","categoryCode":"0004","categoryDescription":"ATM Cash Advance"},
+  //     {"typeCode":"01","categoryCode":"0005","categoryDescription":"Interest Amount"},
+  //     {"typeCode":"02","categoryCode":"0001","categoryDescription":"Cash payment"},
+  //     {"typeCode":"02","categoryCode":"0002","categoryDescription":"Electronic payment"},
+  //     {"typeCode":"02","categoryCode":"0003","categoryDescription":"Check payment"},
+  //     {"typeCode":"03","categoryCode":"0001","categoryDescription":"Credit to Account"},
+  //     {"typeCode":"03","categoryCode":"0002","categoryDescription":"Credit to Purchase balance"},
+  //     {"typeCode":"03","categoryCode":"0003","categoryDescription":"Credit to Cash balance"},
+  //     {"typeCode":"04","categoryCode":"0001","categoryDescription":"Zero dollar authorization"},
+  //     {"typeCode":"04","categoryCode":"0002","categoryDescription":"Online purchase authorization"},
+  //     {"typeCode":"04","categoryCode":"0003","categoryDescription":"Travel booking authorization"},
+  //     {"typeCode":"05","categoryCode":"0001","categoryDescription":"Refund credit"},
+  //     {"typeCode":"06","categoryCode":"0001","categoryDescription":"Fraud reversal"},
+  //     {"typeCode":"06","categoryCode":"0002","categoryDescription":"Non-fraud reversal"},
+  //     {"typeCode":"07","categoryCode":"0001","categoryDescription":"Sales draft credit adjustment"}
+  //   ]}
+  //
+  // Errors:
+  //   UNAUTHENTICATED - forwarded bearer token missing, invalid or expired (the stub does not re-authorize)
+  //   UNAVAILABLE - service unavailable after retries
+  //   DEADLINE_EXCEEDED - the call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time left in the request budget when that is shorter) passed before the service answered
+  //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
+  rpc ListTransactionCategories(ListTransactionCategoriesRequest) returns (ListTransactionCategoriesResponse);
+}
+
+// Request for ListTransactionTypes. Carries no fields because the operation returns every transaction type.
+message ListTransactionTypesRequest {}
+
+// Response of ListTransactionTypes: every transaction type, ordered by type_code ascending.
+message ListTransactionTypesResponse {
+  // All transaction types, ordered by type_code ascending; empty only when no type row is loaded.
+  repeated TransactionType transaction_types = 1;
+}
+
+// One transaction type, seeded from Reference Tables · TRANTYPE file.
+message TransactionType {
+  // Transaction type code, exactly two characters of any kind, pattern ^[\s\S]{2}$, e.g. "01", because PIC X
+  // places no restriction on its characters. Data Layouts · CVTRA03Y · TRAN-TYPE X(02).
+  string type_code = 1;
+  // Transaction type description, at most 50 characters with trailing padding removed, e.g. "Purchase".
+  // Data Layouts · CVTRA03Y · TRAN-TYPE-DESC X(50).
+  string type_description = 2;
+}
+
+// Request for ListTransactionCategories. Carries no fields because the operation returns every transaction category.
+message ListTransactionCategoriesRequest {}
+
+// Response of ListTransactionCategories: every transaction category, ordered by (type_code, category_code) ascending.
+message ListTransactionCategoriesResponse {
+  // All transaction categories, ordered by (type_code, category_code) ascending; empty only when no category row is loaded.
+  repeated TransactionCategory transaction_categories = 1;
+}
+
+// One transaction category, seeded from Reference Tables · TRANCATG file; the (type_code, category_code) pair is the key.
+message TransactionCategory {
+  // Owning transaction type code, exactly two characters of any kind, pattern ^[\s\S]{2}$, because PIC X
+  // places no restriction on its characters; always names an existing TransactionType.
+  // Data Layouts · CVTRA04Y · TRAN-TYPE-CD X(02).
+  string type_code = 1;
+  // Transaction category code, pattern ^[0-9]{4}$, e.g. "0001". Data Layouts · CVTRA04Y · TRAN-CAT-CD 9(04).
+  string category_code = 2;
+  // Transaction category description, at most 50 characters with trailing padding removed, e.g. "Regular Sales Draft".
+  // Data Layouts · CVTRA04Y · TRAN-CAT-TYPE-DESC X(50).
+  string category_description = 3;
+}
+
+// Names the standard error object that every RPC in this service packs, as cardservicing.common.v1.ErrorObject itself, into google.rpc.Status details on a non-OK status; not a request or response type.
+message ErrorDetail {
+  // The standard error object for a non-OK status.
+  cardservicing.common.v1.ErrorObject error = 1;
+}

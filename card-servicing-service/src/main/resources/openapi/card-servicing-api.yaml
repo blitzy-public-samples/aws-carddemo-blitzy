@@ -1,0 +1,1313 @@
+openapi: 3.1.0
+info:
+  title: Card Servicing API
+  version: 1.0.0
+  description: >-
+    UI-facing REST API of the Card Servicing service, the REST twin of gRPC
+    service cardservicing.api.v1.CardServicingService. It provides read-only
+    balance and transaction servicing over CardDemo account data through four
+    operations - the account balance summary, the category balances, the
+    transaction list and the transaction detail.
+
+
+    Identity - every request carries a bearer token in the Authorization
+    header. The service validates the token (401 UNAUTHENTICATED when it is
+    missing, invalid or expired), then authorizes the caller for the path
+    account (403 PERMISSION_DENIED when the account is outside the caller's
+    entitlements), before any account data is read from upstream or cache.
+    Access is decided only by that per-account authorization; an inbound
+    x-api-key header is ignored, and a caller never supplies subject, roles or
+    entitlements.
+
+
+    Deadline - the service fixes each request's outcome (full result, degraded
+    result or error) at a cut-off no later than 900 ms after receipt and leaves
+    100 ms for serialization and network. Each upstream attempt times out after
+    300 ms, or sooner when less of the deadline remains, and is retried at most
+    twice, after 50 ms and then 100 ms of backoff, only on UNAVAILABLE or
+    DEADLINE_EXCEEDED and only while a full attempt still fits the deadline.
+
+
+    Freshness - dataStatus in every 200 body, repeated in the X-Data-Status
+    response header, is FRESH, STALE (served from cache past its fresh
+    lifetime) or PARTIAL (at least one reference description unavailable,
+    and only the unavailable descriptions rendered as null), with precedence
+    PARTIAL over STALE over FRESH. asOf is the upstream
+    read time or the oldest cachedAt of the cache entries used.
+
+
+    Formats - amounts are two-decimal strings, for example "1234.56";
+    timestamps are RFC 3339 with microseconds and Z, for example
+    "2024-03-05T14:07:09.123456Z"; dates are YYYY-MM-DD. Arrays are always
+    present and empty when nothing matches; absent optional scalars are
+    omitted. Every non-2xx response carries the standard ErrorObject with a
+    traceId generated at receipt.
+  contact:
+    name: Card Servicing workstream
+  license:
+    name: Apache 2.0
+    identifier: Apache-2.0
+servers:
+  - url: http://localhost:8080
+    description: Local stub-phase address
+tags:
+  - name: CardServicing
+    description: Read-only account balance and transaction servicing operations of the Card Servicing service.
+security:
+  - bearerAuth: []
+paths:
+  /v1/accounts/{accountId}/balance-summary:
+    get:
+      operationId: GetBalanceSummary
+      tags: [CardServicing]
+      summary: Get the balance summary of an account
+      description: >-
+        REST twin of gRPC method
+        cardservicing.api.v1.CardServicingService/GetBalanceSummary. Returns the
+        account's balances, credit limits, dates and status, and one type-group
+        balance per typeCode that has at least one category balance, holding
+        the exact decimal sum of that type's category balances, ordered by
+        typeCode ascending. The bearer token is validated (401) and the caller
+        is authorized for accountId (403) before any account data is read from
+        upstream or cache. The account, its category balances and the
+        transaction types are then read concurrently. A stale cached account or
+        category-balance read gives STALE; unavailable reference data gives
+        PARTIAL with typeDescription null; any other upstream failure returns
+        503 or 504. Sources - Use Cases · COACTVWC; Data Layouts · CVACT01Y,
+        CVTRA01Y.
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          description: >-
+            The account number, 11 digits (Data Layouts · CVACT01Y · ACCT-ID
+            9(11)). The all-zero value 00000000000 returns 400 with the message
+            "Account number must be a non zero 11 digit number" (Use Cases ·
+            COACTVWC).
+          schema:
+            type: string
+            pattern: '^[0-9]{11}$'
+          examples:
+            fixtureAccount:
+              value: '00000000001'
+      responses:
+        '200':
+          description: The balance summary of the account.
+          headers:
+            X-Data-Status:
+              description: Freshness of the data behind the response; equals the body's dataStatus.
+              required: true
+              schema:
+                type: string
+                enum: [FRESH, STALE, PARTIAL]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetBalanceSummaryResponse'
+              examples:
+                fresh:
+                  summary: Fixture account 00000000001 with fresh data
+                  value:
+                    accountId: '00000000001'
+                    currentBalance: '194.00'
+                    creditLimit: '2020.00'
+                    balancesByTypeGroup:
+                      - typeCode: '01'
+                        typeDescription: 'Purchase'
+                        balance: '0.00'
+                    dataStatus: 'FRESH'
+                    asOf: '2024-03-05T14:07:09.123456Z'
+                    activeStatus: 'Y'
+                    openDate: '2014-11-20'
+                    expirationDate: '2025-05-20'
+                    reissueDate: '2025-05-20'
+                    cashCreditLimit: '1020.00'
+                    currentCycleCredit: '0.00'
+                    currentCycleDebit: '0.00'
+                partial:
+                  summary: Fixture account 00000000001 with reference data unavailable
+                  value:
+                    accountId: '00000000001'
+                    currentBalance: '194.00'
+                    creditLimit: '2020.00'
+                    balancesByTypeGroup:
+                      - typeCode: '01'
+                        typeDescription: null
+                        balance: '0.00'
+                    dataStatus: 'PARTIAL'
+                    asOf: '2024-03-05T14:07:09.123456Z'
+                    activeStatus: 'Y'
+                    openDate: '2014-11-20'
+                    expirationDate: '2025-05-20'
+                    reissueDate: '2025-05-20'
+                    cashCreditLimit: '1020.00'
+                    currentCycleCredit: '0.00'
+                    currentCycleDebit: '0.00'
+        '400':
+          description: INVALID_ARGUMENT - accountId malformed or all zeros.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                invalidAccountId:
+                  value:
+                    code: 'INVALID_ARGUMENT'
+                    message: 'Account number must be a non zero 11 digit number'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details:
+                      - field: 'accountId'
+                        description: 'must be 11 digits and not all zeros'
+        '401':
+          description: UNAUTHENTICATED - bearer token missing, invalid or expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unauthenticated:
+                  value:
+                    code: 'UNAUTHENTICATED'
+                    message: 'Token missing, invalid or expired'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '403':
+          description: PERMISSION_DENIED - the account is outside the caller's entitlements; no account data was read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                permissionDenied:
+                  value:
+                    code: 'PERMISSION_DENIED'
+                    message: 'Caller not entitled to the account'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '404':
+          description: NOT_FOUND - account unknown.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                accountNotFound:
+                  value:
+                    code: 'NOT_FOUND'
+                    message: 'Account not found'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '503':
+          description: UNAVAILABLE - a required upstream is unavailable after retries and no degraded result applies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unavailable:
+                  value:
+                    code: 'UNAVAILABLE'
+                    message: 'Upstream unavailable'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '504':
+          description: >-
+            DEADLINE_EXCEEDED - a required upstream call (ValidateToken,
+            AuthorizeAccountAccess or a data read) timed out on its last
+            permitted attempt, with retries exhausted or no retry fitting the
+            deadline, and no degraded result applies; or the 900 ms request
+            deadline was reached at the cut-off before a result or degraded
+            result was available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                deadlineExceeded:
+                  value:
+                    code: 'DEADLINE_EXCEEDED'
+                    message: 'Request deadline exceeded'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+  /v1/accounts/{accountId}/category-balances:
+    get:
+      operationId: ListCategoryBalances
+      tags: [CardServicing]
+      summary: List the category balances of an account
+      description: >-
+        REST twin of gRPC method
+        cardservicing.api.v1.CardServicingService/ListCategoryBalances. Returns
+        the account's category balances, filtered by typeCode when given,
+        ordered by (typeCode, categoryCode) ascending, with no paging. The bearer
+        token is validated (401) and the caller is authorized for accountId
+        (403) before any account data is read from upstream or cache. The
+        category balances, the transaction categories and the transaction types
+        are then read concurrently. While the transaction type list and the
+        transaction category list are both usable (fresh or within their
+        maximum stale age), a typeCode that the type list does not hold and no
+        category carries returns 400, and a stored type that no category
+        carries is known and returns 200 with categoryBalances empty. With
+        either list unusable the typeCode check rejects nothing, the filter
+        still applies and the result is PARTIAL. Each description is null only
+        when it is unavailable - an unusable category list leaves
+        typeDescription and categoryDescription null, an unusable type list
+        alone leaves typeDescription null and keeps categoryDescription, and a
+        code that a usable list does not hold leaves that one description null.
+        A stale cached category-balance read gives STALE; any other upstream
+        failure returns 503 or 504. Source - Data Layouts · CVTRA01Y.
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          description: >-
+            The account number, 11 digits (Data Layouts · CVTRA01Y ·
+            TRANCAT-ACCT-ID 9(11)). The all-zero value 00000000000 returns 400
+            with the message "Account number must be a non zero 11 digit
+            number" (Use Cases · COACTVWC).
+          schema:
+            type: string
+            pattern: '^[0-9]{11}$'
+          examples:
+            fixtureAccount:
+              value: '00000000001'
+        - name: typeCode
+          in: query
+          required: false
+          description: >-
+            Optional filter on the transaction type code, exactly two
+            characters of any kind, because PIC X places no restriction on its
+            characters (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02));
+            omitted returns every type. Reserved characters, the space, control
+            characters and non-ASCII characters are percent-encoded in the URL
+            (RFC 3986, UTF-8 for non-ASCII), and the pattern applies to the
+            decoded value. While the transaction type list and the transaction
+            category list are both usable, a value that the type list does not
+            hold and no category carries returns 400, and a stored type that no
+            category carries returns 200 with categoryBalances empty. With
+            either list unusable the check rejects nothing, the filter still
+            applies and dataStatus is PARTIAL.
+          schema:
+            type: string
+            pattern: '^[\s\S]{2}$'
+          examples:
+            purchase:
+              value: '01'
+      responses:
+        '200':
+          description: The matching category balances of the account.
+          headers:
+            X-Data-Status:
+              description: Freshness of the data behind the response; equals the body's dataStatus.
+              required: true
+              schema:
+                type: string
+                enum: [FRESH, STALE, PARTIAL]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListCategoryBalancesResponse'
+              examples:
+                fresh:
+                  summary: Fixture account 00000000001 with fresh data
+                  value:
+                    accountId: '00000000001'
+                    categoryBalances:
+                      - typeCode: '01'
+                        typeDescription: 'Purchase'
+                        categoryCode: '0001'
+                        categoryDescription: 'Regular Sales Draft'
+                        balance: '0.00'
+                    dataStatus: 'FRESH'
+                    asOf: '2024-03-05T14:07:09.123456Z'
+                partial:
+                  summary: Fixture account 00000000001 with the transaction category list unavailable
+                  value:
+                    accountId: '00000000001'
+                    categoryBalances:
+                      - typeCode: '01'
+                        typeDescription: null
+                        categoryCode: '0001'
+                        categoryDescription: null
+                        balance: '0.00'
+                    dataStatus: 'PARTIAL'
+                    asOf: '2024-03-05T14:07:09.123456Z'
+                partialTypeListOnly:
+                  summary: Fixture account 00000000001 with only the transaction type list unavailable
+                  value:
+                    accountId: '00000000001'
+                    categoryBalances:
+                      - typeCode: '01'
+                        typeDescription: null
+                        categoryCode: '0001'
+                        categoryDescription: 'Regular Sales Draft'
+                        balance: '0.00'
+                    dataStatus: 'PARTIAL'
+                    asOf: '2024-03-05T14:07:09.123456Z'
+        '400':
+          description: >-
+            INVALID_ARGUMENT - accountId malformed or all zeros, typeCode
+            malformed, or typeCode unknown (held by neither the transaction
+            type list nor any transaction category) while both lists are usable
+            (fresh or within their maximum stale age).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                invalidAccountId:
+                  value:
+                    code: 'INVALID_ARGUMENT'
+                    message: 'Account number must be a non zero 11 digit number'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details:
+                      - field: 'accountId'
+                        description: 'must be 11 digits and not all zeros'
+        '401':
+          description: UNAUTHENTICATED - bearer token missing, invalid or expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unauthenticated:
+                  value:
+                    code: 'UNAUTHENTICATED'
+                    message: 'Token missing, invalid or expired'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '403':
+          description: PERMISSION_DENIED - the account is outside the caller's entitlements; no account data was read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                permissionDenied:
+                  value:
+                    code: 'PERMISSION_DENIED'
+                    message: 'Caller not entitled to the account'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '404':
+          description: NOT_FOUND - account unknown.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                accountNotFound:
+                  value:
+                    code: 'NOT_FOUND'
+                    message: 'Account not found'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '503':
+          description: UNAVAILABLE - a required upstream is unavailable after retries and no degraded result applies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unavailable:
+                  value:
+                    code: 'UNAVAILABLE'
+                    message: 'Upstream unavailable'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '504':
+          description: >-
+            DEADLINE_EXCEEDED - a required upstream call (ValidateToken,
+            AuthorizeAccountAccess or a data read) timed out on its last
+            permitted attempt, with retries exhausted or no retry fitting the
+            deadline, and no degraded result applies; or the 900 ms request
+            deadline was reached at the cut-off before a result or degraded
+            result was available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                deadlineExceeded:
+                  value:
+                    code: 'DEADLINE_EXCEEDED'
+                    message: 'Request deadline exceeded'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+  /v1/accounts/{accountId}/transactions:
+    get:
+      operationId: ListTransactions
+      tags: [CardServicing]
+      summary: List one page of an account's transactions
+      description: >-
+        REST twin of gRPC method
+        cardservicing.api.v1.CardServicingService/ListTransactions. Returns one
+        page of the account's transactions, optionally filtered by typeCode and
+        categoryCode, ordered by processedTimestamp descending, then
+        transactionId descending. nextPageToken is present only when a further
+        item exists and is omitted on the last page; backward paging replays
+        tokens the client kept from earlier pages. The list makes no
+        reference-data call, so a well-formed but unknown filter returns 200
+        with empty transactions. A token that does not decode, carries another
+        version, or was issued for another account or filter set returns 400
+        with a pageToken detail. 404 means the account has no cross-reference
+        record. The bearer token is validated (401) and the caller is
+        authorized for accountId (403) before any account data is read from
+        upstream or cache. A failed transaction read returns 503 or 504.
+        Sources - Use Cases · COTRN00C; Data Layouts · CVTRA05Y.
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          description: >-
+            The account number, 11 digits (Data Layouts · CVACT03Y ·
+            XREF-ACCT-ID 9(11)); the account's transactions are those whose card
+            number belongs to one of its cross-reference records. The all-zero
+            value 00000000000 returns 400 with the message "Account number must
+            be a non zero 11 digit number" (Use Cases · COACTVWC).
+          schema:
+            type: string
+            pattern: '^[0-9]{11}$'
+          examples:
+            fixtureAccount:
+              value: '00000000001'
+        - name: typeCode
+          in: query
+          required: false
+          description: >-
+            Optional filter on the transaction type code, exactly two
+            characters of any kind, because PIC X places no restriction on its
+            characters (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)); omitted
+            returns every type. Reserved characters, the space, control
+            characters and non-ASCII characters are percent-encoded in the URL
+            (RFC 3986, UTF-8 for non-ASCII), and the pattern applies to the
+            decoded value. A well-formed but unknown value returns empty
+            transactions.
+          schema:
+            type: string
+            pattern: '^[\s\S]{2}$'
+          examples:
+            purchase:
+              value: '01'
+        - name: categoryCode
+          in: query
+          required: false
+          description: >-
+            Optional filter on the transaction category code, four digits (Data
+            Layouts · CVTRA05Y · TRAN-CAT-CD 9(04)); omitted returns every
+            category. A well-formed but unknown value returns empty
+            transactions.
+          schema:
+            type: string
+            pattern: '^[0-9]{4}$'
+          examples:
+            regularSalesDraft:
+              value: '0001'
+        - name: pageSize
+          in: query
+          required: false
+          description: >-
+            The maximum number of transactions on the page (Use Cases · COTRN00C
+            pages its list). Omitted, it defaults to the configured default page
+            size (20); a value above the configured maximum page size, which is
+            at most 100, returns 400.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+          examples:
+            defaultPage:
+              value: 20
+        - name: pageToken
+          in: query
+          required: false
+          description: >-
+            Opaque keyset cursor copied from the previous page's nextPageToken;
+            an empty or omitted value requests the first page. The token is
+            bound to accountId and the filters, and a token that does not decode
+            or does not match them returns 400 with a details entry whose field
+            is pageToken. The version-1 payload is at most 124 bytes (a 1-byte
+            version marker, the cursor's processed timestamp of at most 27
+            bytes in its RFC 3339 microsecond form and its 16-character
+            transaction ID of at most 64 bytes in UTF-8, and the 32-byte
+            HMAC-SHA-256 fingerprint), so its unpadded URL-safe encoding is at
+            most 166 characters from A-Z, a-z, 0-9, '-' and '_'. A value longer
+            than 166 characters or holding any other character, padding '='
+            included, returns 400 with a details entry whose field is pageToken
+            at receipt, before any upstream call or cache read.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]*$'
+            maxLength: 166
+          examples:
+            nextPage:
+              value: 'example-opaque-page-token'
+      responses:
+        '200':
+          description: One page of the account's transactions.
+          headers:
+            X-Data-Status:
+              description: Freshness of the data behind the response; equals the body's dataStatus.
+              required: true
+              schema:
+                type: string
+                enum: [FRESH, STALE, PARTIAL]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTransactionsResponse'
+              examples:
+                firstPage:
+                  summary: All six transactions of fixture account 00000000001 on one page, so no nextPageToken
+                  value:
+                    accountId: '00000000001'
+                    transactions:
+                      - transactionId: '0000000776200014'
+                        typeCode: '01'
+                        categoryCode: '0001'
+                        description: 'Purchase at Lebsack and Sons'
+                        amount: '985.22'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                      - transactionId: '0000000755736377'
+                        typeCode: '01'
+                        categoryCode: '0001'
+                        description: 'Purchase at Torp-Stark'
+                        amount: '906.44'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                      - transactionId: '0000000624335286'
+                        typeCode: '01'
+                        categoryCode: '0001'
+                        description: 'Purchase at Crona, Turner and Hane'
+                        amount: '598.44'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                      - transactionId: '0000000555363230'
+                        typeCode: '01'
+                        categoryCode: '0001'
+                        description: 'Purchase at Metz, Blanda and Homenick'
+                        amount: '484.99'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                      - transactionId: '0000000532120892'
+                        typeCode: '03'
+                        categoryCode: '0001'
+                        description: 'Return item at Frami-Hyatt'
+                        amount: '-70.77'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                      - transactionId: '0000000503557384'
+                        typeCode: '01'
+                        categoryCode: '0001'
+                        description: 'Purchase at Casper Group'
+                        amount: '81.44'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                    dataStatus: 'FRESH'
+                    asOf: '2024-03-05T14:07:09.123456Z'
+                pageSizeTwo:
+                  summary: First page of fixture account 00000000001 with pageSize 2, so a nextPageToken follows
+                  value:
+                    accountId: '00000000001'
+                    transactions:
+                      - transactionId: '0000000776200014'
+                        typeCode: '01'
+                        categoryCode: '0001'
+                        description: 'Purchase at Lebsack and Sons'
+                        amount: '985.22'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                      - transactionId: '0000000755736377'
+                        typeCode: '01'
+                        categoryCode: '0001'
+                        description: 'Purchase at Torp-Stark'
+                        amount: '906.44'
+                        originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                        processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                    nextPageToken: 'example-opaque-page-token'
+                    dataStatus: 'FRESH'
+                    asOf: '2024-03-05T14:07:09.123456Z'
+        '400':
+          description: >-
+            INVALID_ARGUMENT - accountId malformed or all zeros; typeCode,
+            categoryCode or pageSize malformed; pageSize above the configured
+            maximum page size; or pageToken that does not decode, carries
+            another version, or was issued for another account or filter set,
+            with a details entry whose field is pageToken.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                invalidPageToken:
+                  value:
+                    code: 'INVALID_ARGUMENT'
+                    message: 'Page token is invalid or does not match this request'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details:
+                      - field: 'pageToken'
+                        description: 'must be a token returned for the same account and filters'
+        '401':
+          description: UNAUTHENTICATED - bearer token missing, invalid or expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unauthenticated:
+                  value:
+                    code: 'UNAUTHENTICATED'
+                    message: 'Token missing, invalid or expired'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '403':
+          description: PERMISSION_DENIED - the account is outside the caller's entitlements; no account data was read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                permissionDenied:
+                  value:
+                    code: 'PERMISSION_DENIED'
+                    message: 'Caller not entitled to the account'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '404':
+          description: NOT_FOUND - the account has no cross-reference record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                accountNotFound:
+                  value:
+                    code: 'NOT_FOUND'
+                    message: 'Account not found'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '503':
+          description: >-
+            UNAVAILABLE - a required upstream call is unavailable after retries:
+            the token validation or account authorization call (ValidateToken or
+            AuthorizeAccountAccess), which fails the request closed with no
+            account data read from upstream or cache; or the transaction read,
+            which has no degraded result because a page is never served stale.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unavailable:
+                  value:
+                    code: 'UNAVAILABLE'
+                    message: 'Upstream unavailable'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '504':
+          description: >-
+            DEADLINE_EXCEEDED - a required upstream call timed out on its last
+            permitted attempt, with retries exhausted or no retry fitting the
+            deadline: the token validation or account authorization call
+            (ValidateToken or AuthorizeAccountAccess), which fails the request
+            closed with no account data read from upstream or cache; or the
+            transaction read, which has no degraded result because a page is
+            never served stale. Also returned when the 900 ms request deadline
+            was reached at the cut-off before a result was available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                deadlineExceeded:
+                  value:
+                    code: 'DEADLINE_EXCEEDED'
+                    message: 'Request deadline exceeded'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+  /v1/accounts/{accountId}/transactions/{transactionId}:
+    get:
+      operationId: GetTransaction
+      tags: [CardServicing]
+      summary: Get one transaction of an account
+      description: >-
+        REST twin of gRPC method
+        cardservicing.api.v1.CardServicingService/GetTransaction. Returns one
+        transaction of the account with every field the Transaction View screen
+        shows. The transaction and the account's card cross-reference records
+        are read concurrently, and the transaction belongs to the account only
+        when its card number is among those records. 404 means the transaction
+        is unknown or its card number is not among the account's card
+        cross-reference records. A cross-reference read failure returns 503 or
+        504 even when the transaction came from cache. The bearer token is
+        validated (401) and the caller is authorized for accountId (403) before
+        any account data is read from upstream or cache. Sources - Use Cases ·
+        COTRN01C; Data Layouts · CVTRA05Y, CVACT03Y.
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          description: >-
+            The account number, 11 digits (Data Layouts · CVACT03Y ·
+            XREF-ACCT-ID 9(11)); the transaction's card number must be among
+            this account's cross-reference records. The all-zero value
+            00000000000 returns 400 with the message "Account number must be a
+            non zero 11 digit number" (Use Cases · COACTVWC).
+          schema:
+            type: string
+            pattern: '^[0-9]{11}$'
+          examples:
+            fixtureAccount:
+              value: '00000000001'
+        - name: transactionId
+          in: path
+          required: true
+          description: >-
+            The transaction ID, exactly 16 characters of any kind, because
+            PIC X places no restriction on its characters (Data Layouts ·
+            CVTRA05Y · TRAN-ID X(16); Use Cases · COTRN01C reads by
+            transaction ID). Reserved characters, the space, control
+            characters and non-ASCII characters are percent-encoded in the URL
+            (RFC 3986, UTF-8 for non-ASCII), and the pattern applies to the
+            decoded value. A value of 16 spaces or of 16 NUL characters
+            (U+0000, the screen's LOW-VALUES) is empty and returns 400
+            INVALID_ARGUMENT with a details entry whose field is transactionId,
+            because Use Cases · COTRN01C rejects a Tran ID of SPACES or
+            LOW-VALUES as empty.
+          schema:
+            type: string
+            pattern: '^[\s\S]{16}$'
+          examples:
+            fixtureTransaction:
+              value: '0000000776200014'
+      responses:
+        '200':
+          description: The requested transaction of the account.
+          headers:
+            X-Data-Status:
+              description: Freshness of the data behind the response; equals the body's dataStatus.
+              required: true
+              schema:
+                type: string
+                enum: [FRESH, STALE, PARTIAL]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTransactionResponse'
+              examples:
+                fresh:
+                  summary: Transaction 0000000776200014 of fixture account 00000000001 with fresh data
+                  value:
+                    accountId: '00000000001'
+                    transaction:
+                      transactionId: '0000000776200014'
+                      typeCode: '01'
+                      categoryCode: '0001'
+                      source: 'POS TERM'
+                      description: 'Purchase at Lebsack and Sons'
+                      amount: '985.22'
+                      merchantId: '800000000'
+                      merchantName: 'Lebsack and Sons'
+                      merchantCity: 'Otisbury'
+                      merchantZip: '32545'
+                      cardNumber: '9680294154603697'
+                      originalTimestamp: '2022-06-10T19:27:53.000000Z'
+                      processedTimestamp: '2022-06-10T19:27:53.000000Z'
+                    dataStatus: 'FRESH'
+                    asOf: '2024-03-05T14:07:09.123456Z'
+        '400':
+          description: INVALID_ARGUMENT - accountId malformed or all zeros, or transactionId malformed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                invalidAccountId:
+                  value:
+                    code: 'INVALID_ARGUMENT'
+                    message: 'Account number must be a non zero 11 digit number'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details:
+                      - field: 'accountId'
+                        description: 'must be 11 digits and not all zeros'
+        '401':
+          description: UNAUTHENTICATED - bearer token missing, invalid or expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unauthenticated:
+                  value:
+                    code: 'UNAUTHENTICATED'
+                    message: 'Token missing, invalid or expired'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '403':
+          description: PERMISSION_DENIED - the account is outside the caller's entitlements; no account data was read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                permissionDenied:
+                  value:
+                    code: 'PERMISSION_DENIED'
+                    message: 'Caller not entitled to the account'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '404':
+          description: >-
+            NOT_FOUND - transaction unknown, or its card number is not among the
+            account's card cross-reference records.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                transactionNotFound:
+                  value:
+                    code: 'NOT_FOUND'
+                    message: 'Transaction not found'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '503':
+          description: >-
+            UNAVAILABLE - a required upstream call is unavailable after retries:
+            the token validation or account authorization call (ValidateToken or
+            AuthorizeAccountAccess), which fails the request closed with no
+            account data read from upstream or cache; the transaction read, when
+            no cached transaction is within its maximum stale age; or the
+            cross-reference read, which returns 503 even when the transaction
+            came from cache.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unavailable:
+                  value:
+                    code: 'UNAVAILABLE'
+                    message: 'Upstream unavailable'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '504':
+          description: >-
+            DEADLINE_EXCEEDED - a required upstream call timed out on its last
+            permitted attempt, with retries exhausted or no retry fitting the
+            deadline: the token validation or account authorization call
+            (ValidateToken or AuthorizeAccountAccess), which fails the request
+            closed with no account data read from upstream or cache; the
+            transaction read, when no cached transaction is within its maximum
+            stale age; or the cross-reference read, which returns 504 even when
+            the transaction came from cache. Also returned when the 900 ms
+            request deadline was reached at the cut-off before a result or
+            degraded result was available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                deadlineExceeded:
+                  value:
+                    code: 'DEADLINE_EXCEEDED'
+                    message: 'Request deadline exceeded'
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    GetBalanceSummaryResponse:
+      type: object
+      description: >-
+        Balance summary of one account (Data Layouts · CVACT01Y), with one
+        balance per transaction-type group. accountId through asOf are the
+        baseline fields; activeStatus through groupId carry what the Account
+        View screen shows beyond the baseline (Use Cases · COACTVWC shows them;
+        Data Layouts · CVACT01Y defines them). The screen's Customer Details
+        section is not carried; its labels are flagged field gaps awaiting a
+        Requirements Analysis ID.
+      required: [accountId, currentBalance, creditLimit, balancesByTypeGroup, dataStatus, asOf, activeStatus, openDate, expirationDate, reissueDate, cashCreditLimit, currentCycleCredit, currentCycleDebit]
+      additionalProperties: false
+      properties:
+        accountId:
+          type: string
+          description: The account number from the request, 11 digits (Data Layouts · CVACT01Y · ACCT-ID 9(11)).
+          pattern: '^[0-9]{11}$'
+        currentBalance:
+          type: string
+          description: The current balance as a scale-2 decimal string, for example 1234.56, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CURR-BAL S9(10)V99).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
+        creditLimit:
+          type: string
+          description: The credit limit as a scale-2 decimal string, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CREDIT-LIMIT S9(10)V99).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
+        balancesByTypeGroup:
+          type: array
+          description: >-
+            One element per typeCode that has at least one category balance,
+            ordered by typeCode ascending; always present, empty when the
+            account has no category balance.
+          items:
+            $ref: '#/components/schemas/TypeGroupBalance'
+        dataStatus:
+          type: string
+          description: >-
+            Freshness of the data behind this response, also sent as the
+            X-Data-Status header. PARTIAL (at least one reference description
+            unavailable) outranks STALE (a cached value past its fresh lifetime
+            was used), which outranks FRESH; Config outcomes never affect it.
+          enum: [FRESH, STALE, PARTIAL]
+        asOf:
+          type: string
+          description: >-
+            When the data was read - the upstream read time, or the oldest
+            cachedAt of the cache entries used; RFC 3339 with microseconds and
+            Z, for example 2024-03-05T14:07:09.123456Z.
+          format: date-time
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$'
+        activeStatus:
+          type: string
+          description: The account's active status, one character, for example Y (Data Layouts · CVACT01Y · ACCT-ACTIVE-STATUS X(01); Use Cases · COACTVWC Active Y/N).
+          maxLength: 1
+        openDate:
+          type: string
+          description: The date the account was opened, YYYY-MM-DD (Data Layouts · CVACT01Y · ACCT-OPEN-DATE X(10); Use Cases · COACTVWC Opened).
+          format: date
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        expirationDate:
+          type: string
+          description: The account expiry date, YYYY-MM-DD (Data Layouts · CVACT01Y · ACCT-EXPIRAION-DATE X(10), spelled so in the layout; Use Cases · COACTVWC Expiry).
+          format: date
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        reissueDate:
+          type: string
+          description: The card reissue date, YYYY-MM-DD (Data Layouts · CVACT01Y · ACCT-REISSUE-DATE X(10); Use Cases · COACTVWC Reissue).
+          format: date
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        cashCreditLimit:
+          type: string
+          description: The cash credit limit as a scale-2 decimal string, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CASH-CREDIT-LIMIT S9(10)V99; Use Cases · COACTVWC Cash credit Limit).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
+        currentCycleCredit:
+          type: string
+          description: Credits in the current cycle as a scale-2 decimal string, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CURR-CYC-CREDIT S9(10)V99; Use Cases · COACTVWC Current Cycle Credit).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
+        currentCycleDebit:
+          type: string
+          description: Debits in the current cycle as a scale-2 decimal string, at most 10 integer digits and 2 decimals (Data Layouts · CVACT01Y · ACCT-CURR-CYC-DEBIT S9(10)V99; Use Cases · COACTVWC Current Cycle Debit).
+          pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
+        groupId:
+          type: string
+          description: The account group, at most 10 characters (Data Layouts · CVACT01Y · ACCT-GROUP-ID X(10); Use Cases · COACTVWC Account Group); omitted when the source value is blank.
+          maxLength: 10
+    TypeGroupBalance:
+      type: object
+      description: >-
+        The balance of one transaction-type group of an account - the exact
+        decimal sum of the account's category balances with this typeCode (Data
+        Layouts · CVTRA01Y · TRAN-CAT-BAL), labelled with the type description.
+      required: [typeCode, typeDescription, balance]
+      additionalProperties: false
+      properties:
+        typeCode:
+          type: string
+          description: The transaction type code, exactly two characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)).
+          pattern: '^[\s\S]{2}$'
+        typeDescription:
+          type: [string, "null"]
+          description: >-
+            The transaction type description, at most 50 characters (Data
+            Layouts · CVTRA03Y · TRAN-TYPE-DESC X(50)). Always present; JSON
+            null only when dataStatus is PARTIAL, and then only when this
+            description is unavailable because the transaction type list is
+            unusable or holds no description for typeCode. An empty string
+            never stands for absence. The gRPC twin leaves its optional field
+            unset instead.
+          maxLength: 50
+        balance:
+          type: string
+          description: The exact decimal sum of this type's category balances as a scale-2 decimal string, for example 1234.56. Being a sum, its integer part is not limited to the nine digits of one category balance.
+          pattern: '^-?[0-9]+\.[0-9]{2}$'
+    ListCategoryBalancesResponse:
+      type: object
+      description: The account's category balances matching the request's filter.
+      required: [accountId, categoryBalances, dataStatus, asOf]
+      additionalProperties: false
+      properties:
+        accountId:
+          type: string
+          description: The account number from the request, 11 digits (Data Layouts · CVTRA01Y · TRANCAT-ACCT-ID 9(11)).
+          pattern: '^[0-9]{11}$'
+        categoryBalances:
+          type: array
+          description: >-
+            The matching category balances, ordered by (typeCode, categoryCode)
+            ascending, with no paging; always present, empty when nothing
+            matches.
+          items:
+            $ref: '#/components/schemas/CategoryBalance'
+        dataStatus:
+          type: string
+          description: >-
+            Freshness of the data behind this response, also sent as the
+            X-Data-Status header. PARTIAL (at least one reference description
+            unavailable) outranks STALE (a cached value past its fresh lifetime
+            was used), which outranks FRESH; Config outcomes never affect it.
+          enum: [FRESH, STALE, PARTIAL]
+        asOf:
+          type: string
+          description: >-
+            When the data was read - the upstream read time, or the oldest
+            cachedAt of the cache entries used; RFC 3339 with microseconds and
+            Z, for example 2024-03-05T14:07:09.123456Z.
+          format: date-time
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$'
+    CategoryBalance:
+      type: object
+      description: One category balance of an account (Data Layouts · CVTRA01Y), labelled with its type and category descriptions.
+      required: [typeCode, typeDescription, categoryCode, categoryDescription, balance]
+      additionalProperties: false
+      properties:
+        typeCode:
+          type: string
+          description: The transaction type code, exactly two characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA01Y · TRANCAT-TYPE-CD X(02)).
+          pattern: '^[\s\S]{2}$'
+        typeDescription:
+          type: [string, "null"]
+          description: >-
+            The transaction type description, at most 50 characters (Data
+            Layouts · CVTRA03Y · TRAN-TYPE-DESC X(50)). Always present; JSON
+            null only when dataStatus is PARTIAL, and then only when this
+            description is unavailable because the transaction type list or
+            the transaction category list is unusable, or the type list holds
+            no description for typeCode. An empty string never stands for
+            absence. The gRPC twin leaves its optional field unset instead.
+          maxLength: 50
+        categoryCode:
+          type: string
+          description: The transaction category code, four digits (Data Layouts · CVTRA01Y · TRANCAT-CD 9(04)).
+          pattern: '^[0-9]{4}$'
+        categoryDescription:
+          type: [string, "null"]
+          description: >-
+            The transaction category description, at most 50 characters (Data
+            Layouts · CVTRA04Y · TRAN-CAT-TYPE-DESC X(50)). Always present; JSON
+            null only when dataStatus is PARTIAL, and then only when this
+            description is unavailable because the transaction category list
+            is unusable or holds no description for (typeCode, categoryCode).
+            An unusable transaction type list by itself never makes it null.
+            An empty string never stands for absence. The gRPC twin leaves its
+            optional field unset instead.
+          maxLength: 50
+        balance:
+          type: string
+          description: The category balance as a scale-2 decimal string, for example 1234.56, at most 9 integer digits and 2 decimals (Data Layouts · CVTRA01Y · TRAN-CAT-BAL S9(09)V99).
+          pattern: '^-?[0-9]{1,9}\.[0-9]{2}$'
+    ListTransactionsResponse:
+      type: object
+      description: One page of the account's transactions.
+      required: [accountId, transactions, dataStatus, asOf]
+      additionalProperties: false
+      properties:
+        accountId:
+          type: string
+          description: The account number from the request, 11 digits (Data Layouts · CVACT03Y · XREF-ACCT-ID 9(11)).
+          pattern: '^[0-9]{11}$'
+        transactions:
+          type: array
+          description: >-
+            Up to pageSize transactions, ordered by processedTimestamp
+            descending, then transactionId descending; always present, empty
+            when nothing matches, including a well-formed but unknown typeCode
+            or categoryCode filter.
+          items:
+            $ref: '#/components/schemas/TransactionSummary'
+        nextPageToken:
+          type: string
+          description: >-
+            Opaque cursor for the next page, passed through from the Transaction
+            Activity service; present only when a further item exists and
+            omitted on the last page. It is at most 166 characters of A-Z, a-z,
+            0-9, '-' and '_', the bound pageToken states.
+          pattern: '^[A-Za-z0-9_-]+$'
+          maxLength: 166
+        dataStatus:
+          type: string
+          description: >-
+            Freshness of the data behind this response, also sent as the
+            X-Data-Status header. PARTIAL outranks STALE (a cached value past
+            its fresh lifetime was used), which outranks FRESH; Config outcomes
+            never affect it.
+          enum: [FRESH, STALE, PARTIAL]
+        asOf:
+          type: string
+          description: >-
+            When the data was read - the upstream read time, or the oldest
+            cachedAt of the cache entries used; RFC 3339 with microseconds and
+            Z, for example 2024-03-05T14:07:09.123456Z.
+          format: date-time
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$'
+    TransactionSummary:
+      type: object
+      description: >-
+        One row of the transaction list (Data Layouts · CVTRA05Y; Use Cases ·
+        COTRN00C, whose Description and Date columns it carries, the Date taken
+        from TRAN-ORIG-TS).
+      required: [transactionId, typeCode, categoryCode, description, amount, originalTimestamp, processedTimestamp]
+      additionalProperties: false
+      properties:
+        transactionId:
+          type: string
+          description: The transaction ID, exactly 16 characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA05Y · TRAN-ID X(16)).
+          pattern: '^[\s\S]{16}$'
+        typeCode:
+          type: string
+          description: The transaction type code, exactly two characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)).
+          pattern: '^[\s\S]{2}$'
+        categoryCode:
+          type: string
+          description: The transaction category code, four digits (Data Layouts · CVTRA05Y · TRAN-CAT-CD 9(04)).
+          pattern: '^[0-9]{4}$'
+        description:
+          type: string
+          description: The transaction description, at most 100 characters (Data Layouts · CVTRA05Y · TRAN-DESC X(100); Use Cases · COTRN00C Description column).
+          maxLength: 100
+        amount:
+          type: string
+          description: The transaction amount as a scale-2 decimal string, negative for returns, for example 1234.56, at most 9 integer digits and 2 decimals (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
+          pattern: '^-?[0-9]{1,9}\.[0-9]{2}$'
+        originalTimestamp:
+          type: string
+          description: When the transaction originated, RFC 3339 with microseconds and Z (Data Layouts · CVTRA05Y · TRAN-ORIG-TS X(26); Use Cases · COTRN00C Date column).
+          format: date-time
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$'
+        processedTimestamp:
+          type: string
+          description: When the transaction was processed, in the same form; equals originalTimestamp when the source value is blank (Data Layouts · CVTRA05Y · TRAN-PROC-TS X(26)).
+          format: date-time
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$'
+    GetTransactionResponse:
+      type: object
+      description: The requested transaction of the account.
+      required: [accountId, transaction, dataStatus, asOf]
+      additionalProperties: false
+      properties:
+        accountId:
+          type: string
+          description: The account number from the request, 11 digits (Data Layouts · CVACT03Y · XREF-ACCT-ID 9(11)).
+          pattern: '^[0-9]{11}$'
+        transaction:
+          $ref: '#/components/schemas/Transaction'
+        dataStatus:
+          type: string
+          description: >-
+            Freshness of the data behind this response, also sent as the
+            X-Data-Status header. PARTIAL outranks STALE (a cached value past
+            its fresh lifetime was used), which outranks FRESH; Config outcomes
+            never affect it.
+          enum: [FRESH, STALE, PARTIAL]
+        asOf:
+          type: string
+          description: >-
+            When the data was read - the upstream read time, or the oldest
+            cachedAt of the cache entries used; RFC 3339 with microseconds and
+            Z, for example 2024-03-05T14:07:09.123456Z.
+          format: date-time
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$'
+    Transaction:
+      type: object
+      description: >-
+        One posted transaction with every field the Transaction View screen
+        shows, whose transactionId equals the request's transactionId (Data
+        Layouts · CVTRA05Y; Use Cases · COTRN01C).
+      required: [transactionId, typeCode, categoryCode, source, description, amount, merchantId, merchantName, merchantCity, merchantZip, cardNumber, originalTimestamp, processedTimestamp]
+      additionalProperties: false
+      properties:
+        transactionId:
+          type: string
+          description: The transaction ID, exactly 16 characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA05Y · TRAN-ID X(16)).
+          pattern: '^[\s\S]{16}$'
+        typeCode:
+          type: string
+          description: The transaction type code, exactly two characters of any kind, because PIC X places no restriction on its characters (Data Layouts · CVTRA05Y · TRAN-TYPE-CD X(02)).
+          pattern: '^[\s\S]{2}$'
+        categoryCode:
+          type: string
+          description: The transaction category code, four digits (Data Layouts · CVTRA05Y · TRAN-CAT-CD 9(04)).
+          pattern: '^[0-9]{4}$'
+        source:
+          type: string
+          description: The transaction source, at most 10 characters, for example POS TERM (Data Layouts · CVTRA05Y · TRAN-SOURCE X(10)).
+          maxLength: 10
+        description:
+          type: string
+          description: The transaction description, at most 100 characters (Data Layouts · CVTRA05Y · TRAN-DESC X(100)).
+          maxLength: 100
+        amount:
+          type: string
+          description: The transaction amount as a scale-2 decimal string, negative for returns, for example 1234.56, at most 9 integer digits and 2 decimals (Data Layouts · CVTRA05Y · TRAN-AMT S9(09)V99).
+          pattern: '^-?[0-9]{1,9}\.[0-9]{2}$'
+        merchantId:
+          type: string
+          description: The merchant ID, nine digits (Data Layouts · CVTRA05Y · TRAN-MERCHANT-ID 9(09)).
+          pattern: '^[0-9]{9}$'
+        merchantName:
+          type: string
+          description: The merchant name, at most 50 characters (Data Layouts · CVTRA05Y · TRAN-MERCHANT-NAME X(50)).
+          maxLength: 50
+        merchantCity:
+          type: string
+          description: The merchant city, at most 50 characters (Data Layouts · CVTRA05Y · TRAN-MERCHANT-CITY X(50)).
+          maxLength: 50
+        merchantZip:
+          type: string
+          description: The merchant ZIP code, at most 10 characters (Data Layouts · CVTRA05Y · TRAN-MERCHANT-ZIP X(10)).
+          maxLength: 10
+        cardNumber:
+          type: string
+          description: The card number the transaction was made with, at most 16 characters (Data Layouts · CVTRA05Y · TRAN-CARD-NUM X(16)); it links the transaction to an account through Data Layouts · CVACT03Y · XREF-CARD-NUM.
+          maxLength: 16
+        originalTimestamp:
+          type: string
+          description: When the transaction originated, RFC 3339 with microseconds and Z (Data Layouts · CVTRA05Y · TRAN-ORIG-TS X(26)).
+          format: date-time
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$'
+        processedTimestamp:
+          type: string
+          description: When the transaction was processed, in the same form; equals originalTimestamp when the source value is blank (Data Layouts · CVTRA05Y · TRAN-PROC-TS X(26)).
+          format: date-time
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$'
+    ErrorObject:
+      type: object
+      description: Standard error object returned with every non-2xx status; gRPC carries the same message in google.rpc.Status details.
+      required: [code, message, traceId, details]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: Canonical status name - INVALID_ARGUMENT (400), UNAUTHENTICATED (401), PERMISSION_DENIED (403), NOT_FOUND (404), UNAVAILABLE (503) or DEADLINE_EXCEEDED (504).
+        message:
+          type: string
+          description: Human-readable explanation of the error.
+        traceId:
+          type: string
+          description: Identifier of the request that produced the error, used to correlate log lines.
+        details:
+          type: array
+          description: Field-level violations; empty when the error concerns no single field.
+          items:
+            type: object
+            description: One field-level violation.
+            required: [field, description]
+            additionalProperties: false
+            properties:
+              field:
+                type: string
+                description: Name of the request field or parameter that failed, for example accountId or pageToken.
+              description:
+                type: string
+                description: The rule the field must satisfy.

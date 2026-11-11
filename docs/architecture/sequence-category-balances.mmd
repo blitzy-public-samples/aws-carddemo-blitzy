@@ -1,0 +1,136 @@
+---
+title: Category balances request sequence
+---
+sequenceDiagram
+    box rgb(173,216,230) Compute
+        participant LegendCompute as Compute
+        participant CardServicingUi as Card Servicing UI
+        participant ApiGateway as API gateway
+        participant CardServicingService as Card Servicing service
+    end
+    box rgb(144,238,144) Data stores
+        participant LegendDataStores as Data stores
+        participant AzureManagedRedis as Azure Managed Redis
+    end
+    box rgb(211,211,211) External systems
+        participant LegendExternal as External systems
+        participant AuthService as Auth service
+        participant ConfigService as Config service
+        participant CardDataService as Card Data service
+        participant ReferenceDataService as Reference Data
+    end
+    box rgb(244,204,204) Security
+        participant LegendSecurity as Security
+        participant AccountAccessGuard as Account access guard
+    end
+    box rgb(255,255,224) Networking
+        participant LegendNetworking as Networking
+    end
+
+    CardServicingUi->>ApiGateway: GET category balances
+    ApiGateway->>CardServicingService: Forward request with bearer token
+    CardServicingService->>CardServicingService: Start 900 ms deadline<br/>and traceId
+    CardServicingService->>CardServicingService: Read held<br/>configuration snapshot
+    CardServicingService->>CardServicingService: Validate accountId<br/>11 digits not all zero<br/>and typeCode pattern
+    break invalid parameter
+        CardServicingService->>CardServicingService: Mark cut-off now,<br/>outcome 400 fixed
+        CardServicingService-->>ApiGateway: 400 ErrorObject INVALID_ARGUMENT
+        ApiGateway-->>CardServicingUi: 400 ErrorObject, no upstream or Config call
+    end
+
+    CardServicingService->>AccountAccessGuard: Check bearer token and account access
+    break token missing, empty or not Bearer
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 401 fixed
+        AccountAccessGuard-->>CardServicingService: Deny with 401, no Auth call
+        CardServicingService-->>ApiGateway: 401 ErrorObject UNAUTHENTICATED
+        ApiGateway-->>CardServicingUi: 401 ErrorObject
+    end
+    AccountAccessGuard->>AuthService: ValidateToken
+    break token invalid, expired or malformed
+        AuthService-->>AccountAccessGuard: UNAUTHENTICATED
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 401 fixed
+        AccountAccessGuard-->>CardServicingService: Deny with 401
+        CardServicingService-->>ApiGateway: 401 ErrorObject UNAUTHENTICATED
+        ApiGateway-->>CardServicingUi: 401 ErrorObject
+    end
+    break Auth unavailable or deadline spent
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 503 or 504 fixed
+        AccountAccessGuard-->>CardServicingService: Fail closed after retries
+        CardServicingService-->>ApiGateway: 503 or 504 ErrorObject
+        ApiGateway-->>CardServicingUi: 503 or 504 ErrorObject
+    end
+    AuthService-->>AccountAccessGuard: Subject and roles
+
+    AccountAccessGuard->>AuthService: AuthorizeAccountAccess for subject and accountId
+    break allowed false
+        AuthService-->>AccountAccessGuard: allowed false
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 403 fixed
+        AccountAccessGuard-->>CardServicingService: Deny with 403, no data read
+        CardServicingService-->>ApiGateway: 403 ErrorObject PERMISSION_DENIED
+        ApiGateway-->>CardServicingUi: 403 ErrorObject
+    end
+    break Auth unavailable or deadline spent
+        AccountAccessGuard->>AccountAccessGuard: Mark cut-off now,<br/>outcome 503 or 504 fixed
+        AccountAccessGuard-->>CardServicingService: Fail closed, no data read
+        CardServicingService-->>ApiGateway: 503 or 504 ErrorObject
+        ApiGateway-->>CardServicingUi: 503 or 504 ErrorObject
+    end
+    AuthService-->>AccountAccessGuard: allowed true
+    AccountAccessGuard-->>CardServicingService: Access allowed
+
+    opt stale or absent config snapshot
+        CardServicingService-)ConfigService: GetConfig background refresh, not awaited
+    end
+
+    par category balances
+        CardServicingService->>AzureManagedRedis: Read cached category balances
+        AzureManagedRedis-->>CardServicingService: Fresh entry, stale entry or miss
+        opt miss or stale entry
+            CardServicingService->>CardDataService: ListCategoryBalances
+            CardDataService-->>CardServicingService: Category balances or error
+            CardServicingService->>AzureManagedRedis: Store balances with cachedAt on success
+        end
+    and transaction categories
+        CardServicingService->>AzureManagedRedis: Read cached transaction categories
+        AzureManagedRedis-->>CardServicingService: Fresh entry, stale entry or miss
+        opt miss or stale entry
+            CardServicingService->>ReferenceDataService: ListTransactionCategories
+            ReferenceDataService-->>CardServicingService: Categories with descriptions or error
+            CardServicingService->>AzureManagedRedis: Store categories with cachedAt on success
+        end
+    and transaction types
+        CardServicingService->>AzureManagedRedis: Read cached transaction types
+        AzureManagedRedis-->>CardServicingService: Fresh entry, stale entry or miss
+        opt miss or stale entry
+            CardServicingService->>ReferenceDataService: ListTransactionTypes
+            ReferenceDataService-->>CardServicingService: Types with descriptions or error
+            CardServicingService->>AzureManagedRedis: Store types with cachedAt on success
+        end
+    end
+
+    alt unknown typeCode, both lists usable
+        CardServicingService->>CardServicingService: Discard data read,<br/>outcome 400
+    else a reference list unusable
+        CardServicingService->>CardServicingService: Skip typeCode check,<br/>apply filter,<br/>mark PARTIAL
+    else typeCode known or absent
+        CardServicingService->>CardServicingService: Known when the type list<br/>or a category holds it,<br/>apply typeCode filter<br/>and label descriptions
+    end
+
+    Note over CardServicingService: Cut-off at or before 900 ms
+
+    alt unknown typeCode, both lists usable
+        CardServicingService-->>ApiGateway: 400 ErrorObject for typeCode
+        ApiGateway-->>CardServicingUi: 400 ErrorObject
+    else category balances read or served stale
+        CardServicingService->>CardServicingService: Sort by typeCode<br/>and categoryCode,<br/>resolve dataStatus
+        CardServicingService-->>ApiGateway: 200 balances, dataStatus FRESH, STALE or PARTIAL
+        ApiGateway-->>CardServicingUi: 200 with X-Data-Status,<br/>null only for unavailable descriptions
+    else account unknown
+        CardServicingService-->>ApiGateway: 404 ErrorObject NOT_FOUND
+        ApiGateway-->>CardServicingUi: 404 ErrorObject
+    else balances failed with no stale entry
+        CardServicingService-->>ApiGateway: 503 or 504 ErrorObject
+        ApiGateway-->>CardServicingUi: 503 or 504 ErrorObject
+    end
+
+    Note over LegendCompute,LegendNetworking: The service checks the token and account<br/>access, then reads the account's category<br/>balances, the category descriptions and the<br/>type descriptions concurrently through the<br/>cache. A typeCode held by neither the type<br/>list nor any category returns 400 while both<br/>lists are usable, and missing descriptions<br/>give PARTIAL.

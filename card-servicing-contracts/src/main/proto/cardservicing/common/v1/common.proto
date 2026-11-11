@@ -1,0 +1,51 @@
+// Shared Card Servicing contract types used by every Card Servicing interface.
+syntax = "proto3";
+
+package cardservicing.common.v1;
+
+option java_multiple_files = true;
+option java_package = "com.example.cardservicing.contract.common.v1";
+
+// The standard error object for every Card Servicing interface: the UI-facing
+// Card Servicing API and the Card Data, Transaction Activity, Config,
+// Reference Data and Auth services.
+//
+// At runtime a gRPC error is this message packed into google.rpc.Status
+// details, with a status code matching code. No import is needed here,
+// because proto-google-common-protos reaches the runtime through grpc-protobuf.
+//
+// Every OpenAPI document in card-servicing-service/src/main/resources/openapi/
+// embeds an identical JSON-schema ErrorObject that mirrors this message in
+// camelCase: code, message, traceId, details[].field and
+// details[].description. tests/validation/check-contracts.mjs checks that
+// they are identical.
+//
+// Example: {"code":"INVALID_ARGUMENT","message":"Request parameters are invalid","traceId":"4bf92f3577b34da6a3ce929d0e0e4736","details":[{"field":"pageToken","description":"Page token does not match this account and filter set"}]}
+message ErrorObject {
+  // The canonical gRPC status name. It is a string, not an enum, so REST and
+  // gRPC carry identical text. Values, each with the REST status it maps to:
+  // INVALID_ARGUMENT 400, UNAUTHENTICATED 401, PERMISSION_DENIED 403,
+  // NOT_FOUND 404, UNAVAILABLE 503, DEADLINE_EXCEEDED 504.
+  string code = 1;
+  // The human-readable explanation of the error. It never contains bearer
+  // tokens, API keys or other secrets.
+  string message = 2;
+  // JSON name traceId. An opaque identifier that the service's trace-id filter
+  // generates at request receipt and writes to that request's log lines.
+  string trace_id = 3;
+  // One entry per invalid request field, for example pageToken on a paging
+  // INVALID_ARGUMENT, or accountId for a malformed or all-zero account number.
+  // Empty when no single field is at fault; REST always carries it as an array.
+  repeated FieldViolation details = 4;
+}
+
+// One invalid request field and why its value was rejected.
+message FieldViolation {
+  // The parameter name in its camelCase REST/JSON form, for example accountId,
+  // transactionId, typeCode, categoryCode, pageSize, pageToken, keys or token.
+  string field = 1;
+  // Why the value was rejected, for example
+  // "Account number must be a non zero 11 digit number", the CardDemo
+  // Account View (COACTVWC) message for a zero or non-numeric account number.
+  string description = 2;
+}

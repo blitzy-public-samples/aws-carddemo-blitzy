@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package cardservicing.auth.v1;
+
+import "cardservicing/common/v1/common.proto";
+
+option java_multiple_files = true;
+option java_package = "com.example.cardservicing.contract.auth.v1";
+
+// Auth Service: validates the end user's bearer token, returning its subject and roles, and decides whether that subject may access one account.
+// The Card Servicing service calls ValidateToken, then AuthorizeAccountAccess, before any account-data read, cache reads included, and fails closed.
+//
+// Stub-phase hosting: a stub gRPC server answered by a mock-data provider that reads fixture identities derived from the ten CardDemo users.
+// Fixture policy: USER0001-USER0005 are entitled to sample and synthetic accounts; ADMIN001-ADMIN005 are valid with no accounts.
+// The real swap changes only the target address and the credential source.
+//
+// Identity: the caller's bearer token is forwarded in authorization metadata and the service credential travels in x-api-key.
+// The stub ignores the key and does not re-authorize.
+service AuthService {
+  // Validates a bearer token and returns the subject and roles it carries.
+  //
+  // Example request:
+  //   {"token":"fixture-token-user0001"}
+  //
+  // Example response:
+  //   {"subject":"USER0001","roles":["REGULAR"]}
+  //
+  // The example token is an illustrative fixture value, not a secret.
+  //
+  // Errors:
+  //   INVALID_ARGUMENT - token missing, or longer than 8,192 characters
+  //   UNAUTHENTICATED - token invalid, expired or malformed
+  //   UNAVAILABLE - service unavailable after retries
+  //   DEADLINE_EXCEEDED - the call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time left in the request budget when that is shorter) passed before the service answered
+  //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
+  rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
+
+  // Decides whether a subject may access one account; allowed=false is an OK response, which the Card Servicing service maps to PERMISSION_DENIED.
+  //
+  // Example request:
+  //   {"subject":"USER0001","accountId":"00000000001"}
+  //
+  // Example response:
+  //   {"allowed":true}
+  //
+  // Errors:
+  //   INVALID_ARGUMENT - subject outside 1-64 characters or account_id malformed
+  //   UNAUTHENTICATED - forwarded bearer token missing, invalid or expired (the stub does not re-authorize)
+  //   UNAVAILABLE - service unavailable after retries
+  //   DEADLINE_EXCEEDED - the call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time left in the request budget when that is shorter) passed before the service answered
+  //   Every non-OK status packs cardservicing.common.v1.ErrorObject into google.rpc.Status details.
+  rpc AuthorizeAccountAccess(AuthorizeAccountAccessRequest) returns (AuthorizeAccountAccessResponse);
+}
+
+// Request for ValidateToken: the caller's opaque bearer token to validate, at most 8,192 characters; the token is never logged.
+message ValidateTokenRequest {
+  // Bearer token to validate, opaque, with no restriction on its characters; required, at most 8,192 characters; an empty value, or one longer than 8,192 characters, returns INVALID_ARGUMENT before the token is validated; never logged or echoed in an error.
+  string token = 1;
+}
+
+// Response for ValidateToken, returned only when the token is valid: the subject and roles that token carries.
+message ValidateTokenResponse {
+  // Authenticated user identifier, 1-64 characters; fixture subjects are the 8-character CardDemo user IDs (Data Layouts · CSUSR01Y · SEC-USR-ID, X(08)).
+  string subject = 1;
+  // Roles the subject holds: the CardDemo user types REGULAR or ADMIN (Data Layouts · CSUSR01Y · SEC-USR-TYPE, U maps to REGULAR and A to ADMIN).
+  repeated string roles = 2;
+}
+
+// Request for AuthorizeAccountAccess: the subject ValidateToken returned, paired with the account the request targets, for one entitlement decision.
+message AuthorizeAccountAccessRequest {
+  // Subject as returned by ValidateToken, 1-64 characters.
+  string subject = 1;
+  // 11-digit account identifier, pattern ^[0-9]{11}$, not all zeros (Use Cases · COACTVWC); Data Layouts · CVACT01Y · ACCT-ID, 9(11).
+  string account_id = 2;
+}
+
+// Response for AuthorizeAccountAccess: the entitlement decision; allowed=false is an OK response, not an error, which the Card Servicing service maps to PERMISSION_DENIED (403).
+message AuthorizeAccountAccessResponse {
+  // True when the account is within the subject's entitlements; false is still an OK response.
+  bool allowed = 1;
+}
+
+// Names the standard error object that every RPC in this service packs, as cardservicing.common.v1.ErrorObject itself, into google.rpc.Status details on a non-OK status; not a request or response type.
+message ErrorDetail {
+  // The standard error object for a non-OK status.
+  cardservicing.common.v1.ErrorObject error = 1;
+}

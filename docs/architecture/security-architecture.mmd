@@ -1,0 +1,95 @@
+---
+title: Card Servicing security architecture
+config:
+  flowchart:
+    rankSpacing: 360
+    nodeSpacing: 75
+    curve: linear
+---
+flowchart TB
+    subgraph AzureSubscription["Azure subscription"]
+        subgraph AzureVNet["S1 Internet edge"]
+            subgraph PepSubnet["S3 Private data zone"]
+                PepPostgres["Postgres private endpoint"]
+                PepRedis["Redis private endpoint"]
+                PepKeyVault["Key Vault private endpoint"]
+                AzurePostgres[("S8 Encrypted PostgreSQL")]
+                AzureManagedRedis[("S8 Encrypted Redis")]
+                AzureKeyVault["Azure Key Vault"]
+            end
+            subgraph AksSubnet["AKS subnet"]
+                ApiGateway["API gateway"]
+                subgraph AzureAKS["S2 Cluster trust zone"]
+                    CardServicingService["Card Servicing service"]
+                    AccountAccessGuard["Account access guard"]
+                    FixtureLoader["Fixture loader job"]
+                    CardDataService["Card Data stub"]
+                    TransactionActivityService["Transaction Activity stub"]
+                    ConfigService["Config stub"]
+                    ReferenceDataService["Reference Data stub"]
+                    AuthService["Auth stub"]
+                end
+            end
+        end
+    end
+
+    AcmRegularUser["Regular user: entitled accounts"]
+    AcmAdminUser["Admin user: no accounts"]
+    AcmInvalidToken["Invalid token: 401"]
+
+    subgraph Legend["Legend"]
+        LegendCompute["Compute"]
+        LegendDataStores["Data stores"]
+        LegendExternal["External systems"]
+        LegendSecurity["Security"]
+        LegendNetworking["Networking"]
+    end
+
+    ApiGateway -->|S4 mTLS| CardServicingService
+    CardServicingService -->|S4 mTLS| CardDataService
+    CardServicingService -->|S4 mTLS| TransactionActivityService
+    CardServicingService -->|S4 mTLS| ConfigService
+    CardServicingService -->|S4 mTLS| ReferenceDataService
+
+    CardServicingService -->|TLS| PepRedis
+    FixtureLoader -->|TLS| PepPostgres
+    CardDataService -->|TLS| PepPostgres
+    TransactionActivityService -->|TLS| PepPostgres
+    ReferenceDataService -->|TLS| PepPostgres
+    PepPostgres -->|Private link| AzurePostgres
+    PepRedis -->|Private link| AzureManagedRedis
+    PepKeyVault -->|Private link| AzureKeyVault
+
+    CardServicingService -->|Access check| AccountAccessGuard
+    AccountAccessGuard -->|S5 Token validation| AuthService
+    AccountAccessGuard -->|S6 Account authorization| AuthService
+
+    AzureKeyVault -->|S7 Secrets| CardServicingService
+    AzureKeyVault -->|S7 Secrets| FixtureLoader
+    AzureKeyVault -->|S7 Secrets| CardDataService
+    AzureKeyVault -->|S7 Secrets| TransactionActivityService
+    AzureKeyVault -->|S7 Secrets| ReferenceDataService
+
+    AccountAccessGuard -.-> AcmRegularUser
+    AccountAccessGuard -.-> AcmAdminUser
+    AccountAccessGuard -.-> AcmInvalidToken
+
+    classDef compute fill:#ADD8E6,stroke:#333333,color:#000000
+    classDef datastore fill:#90EE90,stroke:#333333,color:#000000
+    classDef external fill:#D3D3D3,stroke:#333333,color:#000000
+    classDef security fill:#F4CCCC,stroke:#333333,color:#000000
+    classDef networking fill:#FFFFE0,stroke:#333333,color:#000000
+
+    class ApiGateway,CardServicingService,FixtureLoader,LegendCompute compute
+    class AzurePostgres,AzureManagedRedis,LegendDataStores datastore
+    class CardDataService,TransactionActivityService,ConfigService,ReferenceDataService,AuthService,LegendExternal external
+    class AccountAccessGuard,AzureKeyVault,AcmRegularUser,AcmAdminUser,AcmInvalidToken,LegendSecurity security
+    class PepPostgres,PepRedis,PepKeyVault,LegendNetworking networking
+
+    style AzureSubscription fill:#ffffff,stroke:#333333
+    style AzureVNet fill:#ffffff,stroke:#333333
+    style AksSubnet fill:#ffffff,stroke:#333333
+    style AzureAKS fill:#ffffff,stroke:#333333
+    style PepSubnet fill:#ffffff,stroke:#333333
+    style Legend fill:#ffffff,stroke:#333333
+    Description["Only the API gateway admits north–south traffic, and every service hop inside the cluster uses mTLS. The access guard validates the token and the account entitlement before any data read."]

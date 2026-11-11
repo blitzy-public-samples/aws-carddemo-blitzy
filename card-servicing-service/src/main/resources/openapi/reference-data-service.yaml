@@ -1,0 +1,317 @@
+openapi: 3.1.0
+info:
+  title: Reference Data Service stub contract
+  version: 1.0.0
+  description: >-
+    Stub-phase contract for the gRPC service cardservicing.referencedata.v1.ReferenceDataService,
+    described as HTTP/JSON. The stub answers from the transaction type and transaction category
+    tables that the in-repo fixture loader seeds from Reference Tables · TRANTYPE file and
+    Reference Tables · TRANCATG file. Reference data is data, not code: a type or category change
+    is a data load by the data owner, which the stub reads on the next request with no deploy.
+    Replacing the stub with the real service changes only the target address and the credential
+    source. The caller's bearer token is forwarded in the Authorization header and the service
+    credential travels in the x-api-key header; the stub ignores the key and does not re-authorize.
+  contact:
+    name: Card Servicing workstream
+  license:
+    name: Apache 2.0
+    identifier: Apache-2.0
+servers:
+  - url: /
+    description: >-
+      Descriptive only. No HTTP address serves these HTTP/JSON operations; the stub is reached
+      over gRPC through the client generated from its proto. / is the OpenAPI default server.
+tags:
+  - name: ReferenceData
+    description: Transaction type and transaction category codes and descriptions that label balances and transactions.
+security:
+  - bearerAuth: []
+    apiKey: []
+paths:
+  /v1/reference-data/transaction-types:
+    get:
+      operationId: ListTransactionTypes
+      tags: [ReferenceData]
+      summary: List every transaction type
+      description: >-
+        HTTP/JSON form of cardservicing.referencedata.v1.ReferenceDataService/ListTransactionTypes.
+        Returns every transaction type (Data Layouts · CVTRA03Y), ordered by typeCode ascending.
+        The list is empty only when no type row is loaded.
+      responses:
+        '200':
+          description: Every transaction type, ordered by typeCode ascending.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTransactionTypesResponse'
+              examples:
+                allTypes:
+                  value:
+                    transactionTypes:
+                      - typeCode: '01'
+                        typeDescription: Purchase
+                      - typeCode: '02'
+                        typeDescription: Payment
+                      - typeCode: '03'
+                        typeDescription: Credit
+                      - typeCode: '04'
+                        typeDescription: Authorization
+                      - typeCode: '05'
+                        typeDescription: Refund
+                      - typeCode: '06'
+                        typeDescription: Reversal
+                      - typeCode: '07'
+                        typeDescription: Adjustment
+        '401':
+          description: The forwarded bearer token is missing, invalid or expired; the stub does not re-authorize.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unauthenticated:
+                  value:
+                    code: UNAUTHENTICATED
+                    message: Token missing, invalid or expired
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '503':
+          description: The service is unavailable after retries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unavailable:
+                  value:
+                    code: UNAVAILABLE
+                    message: Upstream unavailable
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '504':
+          description: >-
+            The call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time
+            left in the request budget when that is shorter) passed before the service answered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                deadlineExceeded:
+                  value:
+                    code: DEADLINE_EXCEEDED
+                    message: Request deadline exceeded
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+  /v1/reference-data/transaction-categories:
+    get:
+      operationId: ListTransactionCategories
+      tags: [ReferenceData]
+      summary: List every transaction category
+      description: >-
+        HTTP/JSON form of cardservicing.referencedata.v1.ReferenceDataService/ListTransactionCategories.
+        Returns every transaction category (Data Layouts · CVTRA04Y), ordered by (typeCode, categoryCode)
+        ascending. Each category belongs to exactly one transaction type, and the (typeCode, categoryCode)
+        pair is its key. The list is empty only when no category row is loaded.
+      responses:
+        '200':
+          description: Every transaction category, ordered by (typeCode, categoryCode) ascending.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTransactionCategoriesResponse'
+              examples:
+                allCategories:
+                  value:
+                    transactionCategories:
+                      - typeCode: '01'
+                        categoryCode: '0001'
+                        categoryDescription: Regular Sales Draft
+                      - typeCode: '01'
+                        categoryCode: '0002'
+                        categoryDescription: Regular Cash Advance
+                      - typeCode: '01'
+                        categoryCode: '0003'
+                        categoryDescription: Convenience Check Debit
+                      - typeCode: '01'
+                        categoryCode: '0004'
+                        categoryDescription: ATM Cash Advance
+                      - typeCode: '01'
+                        categoryCode: '0005'
+                        categoryDescription: Interest Amount
+                      - typeCode: '02'
+                        categoryCode: '0001'
+                        categoryDescription: Cash payment
+                      - typeCode: '02'
+                        categoryCode: '0002'
+                        categoryDescription: Electronic payment
+                      - typeCode: '02'
+                        categoryCode: '0003'
+                        categoryDescription: Check payment
+                      - typeCode: '03'
+                        categoryCode: '0001'
+                        categoryDescription: Credit to Account
+                      - typeCode: '03'
+                        categoryCode: '0002'
+                        categoryDescription: Credit to Purchase balance
+                      - typeCode: '03'
+                        categoryCode: '0003'
+                        categoryDescription: Credit to Cash balance
+                      - typeCode: '04'
+                        categoryCode: '0001'
+                        categoryDescription: Zero dollar authorization
+                      - typeCode: '04'
+                        categoryCode: '0002'
+                        categoryDescription: Online purchase authorization
+                      - typeCode: '04'
+                        categoryCode: '0003'
+                        categoryDescription: Travel booking authorization
+                      - typeCode: '05'
+                        categoryCode: '0001'
+                        categoryDescription: Refund credit
+                      - typeCode: '06'
+                        categoryCode: '0001'
+                        categoryDescription: Fraud reversal
+                      - typeCode: '06'
+                        categoryCode: '0002'
+                        categoryDescription: Non-fraud reversal
+                      - typeCode: '07'
+                        categoryCode: '0001'
+                        categoryDescription: Sales draft credit adjustment
+        '401':
+          description: The forwarded bearer token is missing, invalid or expired; the stub does not re-authorize.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unauthenticated:
+                  value:
+                    code: UNAUTHENTICATED
+                    message: Token missing, invalid or expired
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '503':
+          description: The service is unavailable after retries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                unavailable:
+                  value:
+                    code: UNAVAILABLE
+                    message: Upstream unavailable
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+        '504':
+          description: >-
+            The call's deadline (the caller's per-attempt timeout, 300 ms by default, cut to the time
+            left in the request budget when that is shorter) passed before the service answered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorObject'
+              examples:
+                deadlineExceeded:
+                  value:
+                    code: DEADLINE_EXCEEDED
+                    message: Request deadline exceeded
+                    traceId: '4bf92f3577b34da6a3ce929d0e0e4736'
+                    details: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: The caller's bearer token, forwarded unchanged by the Card Servicing service; the stub does not re-authorize.
+    apiKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: The Card Servicing service credential; the stub ignores its value.
+  schemas:
+    ListTransactionTypesResponse:
+      type: object
+      description: Every transaction type, ordered by typeCode ascending.
+      required: [transactionTypes]
+      additionalProperties: false
+      properties:
+        transactionTypes:
+          type: array
+          description: All transaction types, ordered by typeCode ascending; always present, empty only when no type row is loaded.
+          items:
+            $ref: '#/components/schemas/TransactionType'
+    TransactionType:
+      type: object
+      description: One transaction type, seeded from Reference Tables · TRANTYPE file.
+      required: [typeCode, typeDescription]
+      additionalProperties: false
+      properties:
+        typeCode:
+          type: string
+          pattern: '^[\s\S]{2}$'
+          description: Transaction type code, exactly two characters of any kind, because PIC X places no restriction on its characters. Data Layouts · CVTRA03Y · TRAN-TYPE X(02).
+        typeDescription:
+          type: string
+          maxLength: 50
+          description: Transaction type description with trailing padding removed. Data Layouts · CVTRA03Y · TRAN-TYPE-DESC X(50).
+    ListTransactionCategoriesResponse:
+      type: object
+      description: Every transaction category, ordered by (typeCode, categoryCode) ascending.
+      required: [transactionCategories]
+      additionalProperties: false
+      properties:
+        transactionCategories:
+          type: array
+          description: All transaction categories, ordered by (typeCode, categoryCode) ascending; always present, empty only when no category row is loaded.
+          items:
+            $ref: '#/components/schemas/TransactionCategory'
+    TransactionCategory:
+      type: object
+      description: One transaction category, seeded from Reference Tables · TRANCATG file; the (typeCode, categoryCode) pair is its key.
+      required: [typeCode, categoryCode, categoryDescription]
+      additionalProperties: false
+      properties:
+        typeCode:
+          type: string
+          pattern: '^[\s\S]{2}$'
+          description: Code of the transaction type the category belongs to, exactly two characters of any kind, because PIC X places no restriction on its characters; always names an existing transaction type. Data Layouts · CVTRA04Y · TRAN-TYPE-CD X(02).
+        categoryCode:
+          type: string
+          pattern: '^[0-9]{4}$'
+          description: Transaction category code. Data Layouts · CVTRA04Y · TRAN-CAT-CD 9(04).
+        categoryDescription:
+          type: string
+          maxLength: 50
+          description: Transaction category description with trailing padding removed. Data Layouts · CVTRA04Y · TRAN-CAT-TYPE-DESC X(50).
+    ErrorObject:
+      type: object
+      description: Standard error object returned with every non-2xx status; gRPC carries the same message in google.rpc.Status details.
+      required: [code, message, traceId, details]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: Canonical status name - INVALID_ARGUMENT (400), UNAUTHENTICATED (401), PERMISSION_DENIED (403), NOT_FOUND (404), UNAVAILABLE (503) or DEADLINE_EXCEEDED (504).
+        message:
+          type: string
+          description: Human-readable explanation of the error.
+        traceId:
+          type: string
+          description: Identifier of the request that produced the error, used to correlate log lines.
+        details:
+          type: array
+          description: Field-level violations; empty when the error concerns no single field.
+          items:
+            type: object
+            description: One field-level violation.
+            required: [field, description]
+            additionalProperties: false
+            properties:
+              field:
+                type: string
+                description: Name of the request field or parameter that failed, for example accountId or pageToken.
+              description:
+                type: string
+                description: The rule the field must satisfy.

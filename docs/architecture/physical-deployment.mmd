@@ -1,0 +1,82 @@
+---
+title: Card Servicing physical deployment
+config:
+  flowchart:
+    rankSpacing: 150
+---
+flowchart TB
+    CardServicingUi["P1 Card Servicing UI"]
+
+    subgraph AzureSubscription["Azure subscription"]
+        subgraph AzureVNet["Azure VNet"]
+            subgraph AksSubnet["AKS subnet"]
+                ApiGateway["P2 API gateway"]
+                subgraph AzureAKS["AKS cluster"]
+                    CardServicingService["P3 Card Servicing service"]
+                    FixtureLoader["P4 Fixture loader job"]
+                    CardDataService["P5 Card Data stub"]
+                    TransactionActivityService["P6 Transaction Activity stub"]
+                    ReferenceDataService["P8 Reference Data stub"]
+                    ConfigService["P7 Config stub"]
+                    AuthService["P9 Auth stub"]
+                end
+            end
+            subgraph PepSubnet["Private endpoint subnet"]
+                PepPostgres["P10 Postgres private endpoint"]
+                PepRedis["P11 Redis private endpoint"]
+                PepKeyVault["P12 Key Vault private endpoint"]
+            end
+        end
+        AzurePostgres[("P13 PostgreSQL Flexible Server")]
+        AzureManagedRedis[("P14 Azure Managed Redis")]
+        AzureKeyVault["P15 Azure Key Vault"]
+    end
+
+    subgraph Legend["Legend"]
+        LegendCompute["Compute"]
+        LegendDataStores["Data stores"]
+        LegendExternal["External systems"]
+        LegendSecurity["Security"]
+        LegendNetworking["Networking"]
+    end
+
+    CardServicingUi -->|north–south| ApiGateway
+    ApiGateway -->|east–west| CardServicingService
+    CardServicingService -->|east–west| AuthService
+    CardServicingService -->|east–west| CardDataService
+    CardServicingService -->|east–west| TransactionActivityService
+    CardServicingService -->|east–west| ConfigService
+    CardServicingService -->|east–west| ReferenceDataService
+    CardServicingService -->|east–west| PepRedis
+    CardServicingService -->|east–west| PepKeyVault
+    FixtureLoader -->|east–west| PepPostgres
+    FixtureLoader -->|east–west| PepKeyVault
+    CardDataService -->|east–west| PepPostgres
+    CardDataService -->|east–west| PepKeyVault
+    TransactionActivityService -->|east–west| PepPostgres
+    TransactionActivityService -->|east–west| PepKeyVault
+    ReferenceDataService -->|east–west| PepPostgres
+    ReferenceDataService -->|east–west| PepKeyVault
+    PepPostgres -->|east–west| AzurePostgres
+    PepRedis -->|east–west| AzureManagedRedis
+    PepKeyVault -->|east–west| AzureKeyVault
+
+    classDef compute fill:#add8e6,stroke:#333333,color:#000000
+    classDef datastore fill:#90ee90,stroke:#333333,color:#000000
+    classDef external fill:#d3d3d3,stroke:#333333,color:#000000
+    classDef security fill:#f4cccc,stroke:#333333,color:#000000
+    classDef networking fill:#ffffe0,stroke:#333333,color:#000000
+
+    class CardServicingUi,ApiGateway,CardServicingService,FixtureLoader,LegendCompute compute
+    class AzurePostgres,AzureManagedRedis,LegendDataStores datastore
+    class CardDataService,TransactionActivityService,ConfigService,ReferenceDataService,AuthService,LegendExternal external
+    class AzureKeyVault,LegendSecurity security
+    class PepPostgres,PepRedis,PepKeyVault,LegendNetworking networking
+
+    style AzureSubscription fill:#ffffff,stroke:#333333
+    style AzureVNet fill:#ffffff,stroke:#333333
+    style AksSubnet fill:#ffffff,stroke:#333333
+    style AzureAKS fill:#ffffff,stroke:#333333
+    style PepSubnet fill:#ffffff,stroke:#333333
+    style Legend fill:#ffffff,stroke:#333333
+    Description["Card Servicing runs in one AKS cluster behind the API gateway, with the five stubs beside it. PostgreSQL, Redis and Key Vault are reached only through private endpoints."]
