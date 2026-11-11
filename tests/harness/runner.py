@@ -34,13 +34,28 @@ Steps of ``run``
        produce, or the scenario is ``blocked`` under the adapter's gap for it,
        so no scenario passes on a success message alone.
     8. ``adapter.prepare`` and ``adapter.execute``; ``adapter.cleanup``
-       always, in a ``finally``.
+       exactly once on every path, in a ``finally``. A run that stops at
+       steps 1-4 is cleaned up too, with the working directory it would have
+       had (never created; the work root itself for an id that is not a
+       scenario id), and what that cleanup raises goes to the runtime file
+       without changing the outcome.
     9. ``baselines.decode_result``, ``baselines.compare`` and
        ``baselines.projection`` on the ``Result``.
-    10. The result record (``results.build_record``), the adapter's evidence
-        (``write_evidence``), the working directory kept only for a
-        ``failing`` scenario, and the runtime file
-        ``tests/reports/runtime/<id>.yaml`` (``results.write_runtime``).
+    10. The execution id (with the adapter's ``build_key``) and source
+        identity, the result record (``results.build_record``), the
+        adapter's evidence (``write_evidence``), the working directory kept
+        only for a ``failing`` scenario, and the runtime file
+        ``tests/reports/runtime/<id>.yaml`` (``results.write_runtime``),
+        which holds the run's diff and detail. A step here that raises (a
+        build key, id or identity that cannot be had, a refused record,
+        evidence that cannot be written, a directory that cannot be removed)
+        makes the run ``failing``/``error``: its diff starts with that error
+        and goes on with the verdict and diff the run had before, its
+        traceback is in the runtime file, a directory that cannot be removed
+        is kept, and a record built before the verdict changed is built
+        again. A build key that cannot be read leaves the run without an
+        execution id. A ``failing``/``timeout`` run keeps its verdict (see
+        Timeout precedence).
 
 Runner -> adapter files, in ``<workdir>/inputs/``
     ``<LOGICAL>.dat``
@@ -73,18 +88,20 @@ Timeout precedence
     error goes to the runtime file. Otherwise, once the deadline has passed
     by the end of ``cleanup``, the scenario is ``failing`` with reason
     ``timeout`` whatever was raised, and what was raised goes to the runtime
-    file. The deadline read back is ``adapter.deadline`` as the adapter left
-    it: an adapter re-arms it after session setup, which is not scenario
+    file. That verdict also stands, with its diff and detail, through every
+    error step 10 meets afterwards; each such error goes to the runtime file
+    and a note. The deadline read back is ``adapter.deadline`` as the adapter
+    left it: an adapter re-arms it after session setup, which is not scenario
     time.
 
 Isolation
     Nothing of one run reaches the next: each scenario gets its own working
     directory, which is removed unless the scenario fails, and
     ``adapter.deadline`` is cleared after ``cleanup``. The only state kept
-    across runs is which adapters have had their ``environment()`` written,
-    which never affects an outcome. Inside the repository the runner writes
-    only through ``harness.results`` (``write_runtime``,
-    ``write_environment``).
+    across runs is which adapters have had their ``environment()``
+    successfully written, which never affects an outcome. Inside the
+    repository the runner writes only through ``harness.results``
+    (``write_runtime``, ``write_environment``).
 """
 
 from __future__ import annotations
@@ -176,8 +193,10 @@ _DEFAULT_DATASET_GAP = "GAP-MIS-007"
 # gap, so it is not used here.
 _CAPABILITY_GAPS = (("unikix", "GAP-MIS-009"), ("gnucobol-batch", "GAP-MIS-008"))
 
-# Adapters whose environment() has been written this session. It records
-# bookkeeping only and never changes an outcome.
+# Adapters whose environment() has been successfully written this session. An
+# adapter whose environment() returned None or failed, or whose write failed,
+# is left out, so its next run tries again. It records bookkeeping only and
+# never changes an outcome.
 _ENVIRONMENT_LOCK = threading.Lock()
 _ENVIRONMENT_WRITTEN: weakref.WeakSet = weakref.WeakSet()
 
@@ -268,6 +287,8 @@ class _Run:
     # Runtime-file entries: tracebacks, cleanup errors, superseded errors.
     runtime: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    # Set when adapter.cleanup is called, so each run calls it exactly once.
+    cleanup_called: bool = False
 
     @property
     def scenario_id(self) -> str:
@@ -327,16 +348,27 @@ def run(scenario: Any, adapter: Any, compare: bool = True) -> Outcome:
 
     With ``compare`` the result is compared with the baseline, which must
     exist. Without it (``capture.py``) the run is not compared and
-    ``passed`` means it executed and produced a decodable result; the record
-    then carries no ``baseline_version`` when the scenario has no baseline
-    yet."""
+    ``passed`` means it executed and every observation the scenario's
+    ``expected`` names was produced and decodes, so the result can stand as an
+    observed baseline; an incomplete or undecodable capture is ``failing``
+    with reason ``error``. The record then carries no ``baseline_version``
+    when the scenario has no baseline yet.
+
+    ``adapter.cleanup`` is called exactly once however the run ends, a
+    schema, capability, baseline or working-directory stop included (step 8
+    of the module docstring); a ``KeyboardInterrupt`` or ``SystemExit`` still
+    propagates once it has been called."""
     state = _Run(_scenario_object(scenario), adapter, _adapter_name(adapter), bool(compare), time.monotonic())
-    if _precheck(state):
-        _execute(state)
-        if state.status is None and state.result is not None:
-            _judge(state)
-        if state.status is None:
-            state.fail(REASON_ERROR, f"{state.scenario_id}: the run ended without a result or a status")
+    try:
+        if _precheck(state):
+            _execute(state)
+            if state.status is None and state.result is not None:
+                _judge(state)
+            if state.status is None:
+                state.fail(REASON_ERROR, f"{state.scenario_id}: the run ended without a result or a status")
+    finally:
+        if not state.cleanup_called:
+            _cleanup_unexecuted(state)
     return _finish(state)
 
 
@@ -442,6 +474,7 @@ def _execute(state: _Run) -> None:
             raised = exc
             state.error("the run raised", exc)
     finally:
+        state.cleanup_called = True
         try:
             adapter.cleanup(s, workdir)
         except Exception as exc:
@@ -468,6 +501,42 @@ def _execute(state: _Run) -> None:
             f"{s.id}: timeout: the scenario deadline of {limit} s passed",
             "what the run raised is in the runtime file" if raised is not None else "",
         )
+
+
+def _cleanup_unexecuted(state: _Run) -> None:
+    """``adapter.cleanup`` for a run that ended before ``_execute`` called it:
+    a schema, capability or baseline stop, a working directory that could not
+    be created, or an interrupt. Cleanup gets the run's working directory, or
+    else the one ``_fresh_workdir`` would have made, ``<work root>/<id>/``,
+    which is not created. An id that is not a scenario id names no directory
+    below the work root, so cleanup then gets the work root itself. What
+    cleanup raises goes to the runtime file and never changes the outcome."""
+    s, adapter = state.scenario, state.adapter
+    workdir: Any = state.workdir
+    if workdir is None:
+        work_root = getattr(adapter, "work_root", None)
+        try:
+            resolved = Path(work_root).resolve()
+        except Exception as exc:
+            # No path can be formed below the work root; cleanup still runs,
+            # with the work root as the adapter holds it.
+            state.runtime["cleanup_workdir_error"] = _traceback(exc)
+            try:
+                workdir = Path(work_root)
+            except Exception:
+                workdir = work_root
+        else:
+            workdir = resolved / s.id if _scenarios.ID_RE.fullmatch(s.id) else resolved
+    state.cleanup_called = True
+    try:
+        adapter.cleanup(s, workdir)
+    except Exception as exc:
+        state.runtime["cleanup_error"] = _traceback(exc)
+    finally:
+        try:
+            adapter.deadline = None
+        except AttributeError:
+            pass
 
 
 def _materialize(scenario: Any, workdir: Path) -> dict[str, bytes]:
@@ -560,7 +629,12 @@ def _observation_gap(adapter: Any, observation: str) -> str:
 
 def _judge(state: _Run) -> None:
     """Decode the result and, unless capturing, compare it with the
-    baseline and the scenario's inline expectations."""
+    baseline and the scenario's inline expectations. A capture compares no
+    business value; it passes only when every observation the scenario's
+    ``expected`` names was produced and decodes, each screen identified with
+    the fields its expected step names (``_capture_problems``), and is
+    ``failing``/``error`` otherwise. Either way the decoded result and its
+    projection are kept for the record."""
     s, result = state.scenario, state.result
     try:
         state.decoded = _baselines.decode_result(s, result)
@@ -569,6 +643,14 @@ def _judge(state: _Run) -> None:
         state.error("its result cannot be decoded", exc)
         return
     if not state.compare:
+        problems = _capture_problems(state.decoded, s.expected)
+        if problems:
+            state.fail(
+                REASON_ERROR,
+                f"{s.id}: the capture is incomplete or undecodable, so it cannot stand as an observed baseline:\n"
+                + "\n".join(f"  {problem}" for problem in problems),
+            )
+            return
         state.settle(PASSED, None)
         return
     try:
@@ -577,6 +659,75 @@ def _judge(state: _Run) -> None:
         state.error("the comparison raised", exc)
         return
     state.settle(status, reason, None, diff)
+
+
+def _capture_problems(decoded: Mapping[str, Any], expected: Any) -> list[str]:
+    """One line per observation in ``decoded`` (``baselines.decode_result``)
+    that a capture cannot stand on: ``reject_reason_codes`` read from no
+    DALYREJS, or from records that cannot be split; each ``datasets`` and
+    ``file_state`` entry that is ``@missing`` (not produced) or ``@error``
+    (not decodable); each ``screens`` step without a screen; each captured
+    screen that names no ``@map`` (not identified), or is unformatted
+    (``@map`` ``TEXT``) with no ``@text``; and each captured screen that
+    lacks a field its step in the scenario's ``expected`` names (an
+    ``expected`` that is not a mapping names no step). Only presence is
+    judged, never a value: another map or field text is a changed
+    observation, which a capture records. A ``None`` return code is an
+    abend, a legitimate outcome, and ``messages`` is always the delivered
+    list, so neither is a problem."""
+    expected = expected if isinstance(expected, Mapping) else {}
+    problems: list[str] = []
+    if "reject_reason_codes" in decoded:
+        codes = decoded["reject_reason_codes"]
+        if codes is None:
+            problems.append(
+                f"reject_reason_codes: {_baselines.REJECTS_DATASET} was not produced, so no reason code can be read"
+            )
+        elif isinstance(codes, Mapping):
+            problems.append(f"reject_reason_codes: {codes.get(_baselines.ERROR)}")
+    for section in ("datasets", "file_state"):
+        values = decoded.get(section)
+        if not isinstance(values, Mapping):
+            continue
+        for name, value in values.items():
+            if not isinstance(value, Mapping):
+                continue
+            if _baselines.MISSING in value:
+                problems.append(f"{section}.{name}: {name} was not produced")
+            elif _baselines.ERROR in value:
+                problems.append(f"{section}.{name}: {value[_baselines.ERROR]}")
+    screens = decoded.get("screens")
+    if isinstance(screens, list):
+        wanted = expected.get("screens")
+        steps = wanted if isinstance(wanted, list) else []
+        for index, screen in enumerate(screens):
+            if not isinstance(screen, Mapping):
+                continue
+            if _baselines.MISSING in screen:
+                problems.append(f"screens[{index}]: step {index + 1} produced no screen")
+                continue
+            reported: set[str] = set()
+            if _base.SCREEN_MAP not in screen:
+                problems.append(
+                    f"screens[{index}]: step {index + 1}'s screen names no {_base.SCREEN_MAP}, "
+                    "so it is not identified"
+                )
+                reported.add(_base.SCREEN_MAP)
+            elif screen[_base.SCREEN_MAP] == _base.UNFORMATTED_MAP and _base.SCREEN_TEXT not in screen:
+                problems.append(
+                    f"screens[{index}]: step {index + 1}'s unformatted screen carries no {_base.SCREEN_TEXT}"
+                )
+                reported.add(_base.SCREEN_TEXT)
+            step = steps[index] if index < len(steps) else None
+            if not isinstance(step, Mapping):
+                continue
+            lacking = [str(name) for name in step if name not in screen and name not in reported]
+            if lacking:
+                problems.append(
+                    f"screens[{index}]: step {index + 1}'s screen lacks {', '.join(lacking)}, "
+                    "which the scenario's expected names"
+                )
+    return problems
 
 
 def _run_date(state: _Run) -> _dt.date | None:
@@ -608,9 +759,23 @@ def _finish(state: _Run) -> Outcome:
     _identify(state)
     record = _record(state)
     record = _evidence(state, record)
+    settled = (state.status, state.reason, state.gap_id)
     kept = _dispose(state)
-    _write_runtime(state, kept)
+    if (state.status, state.reason, state.gap_id) != settled:
+        # The working directory is disposed of after the evidence is written,
+        # because a run whose evidence write fails keeps it. A disposal that
+        # then changes the verdict rebuilds the record to agree with it; the
+        # evidence already written keeps the earlier record.
+        record = _record(state)
+        evidence = state.runtime.get("evidence")
+        if evidence is not None:
+            state.note(
+                "evidence_superseded",
+                f"the evidence at {evidence} holds the record as it was before the working directory failed "
+                f"({settled[0]}); that evidence is immutable and is not rewritten",
+            )
     _write_environment_once(state)
+    _write_runtime(state, kept)
     detail = "; ".join(part for part in [state.detail, *state.notes] if part)
     return Outcome(
         scenario_id=state.scenario_id,
@@ -628,30 +793,66 @@ def _finish(state: _Run) -> Outcome:
     )
 
 
+def _finalization_error(state: _Run, key: str, what: str, exc: BaseException) -> bool:
+    """Settle ``exc``, raised by a step after the run's verdict (the build
+    key, the execution id, the source identity, the record, the evidence, the
+    working directory), and say whether the verdict changed.
+
+    Its traceback goes to the runtime file under ``key``. A ``failing``/
+    ``timeout`` run keeps its status, reason, diff and detail: once the
+    deadline has passed, what is raised afterwards goes to the evidence only,
+    and a note names the error. Any other run becomes ``failing``/``error``
+    with a diff that starts with the error and goes on with what the run had
+    decided before, its verdict and its diff in full, so a comparison diff is
+    never lost; its detail is kept."""
+    state.runtime[key] = _traceback(exc)
+    error = f"{what}: {type(exc).__name__}: {exc}"
+    if state.status == FAILING and state.reason == REASON_TIMEOUT:
+        state.notes.append(f"{error}; the timeout verdict stands")
+        return False
+    before = (state.status, state.reason, state.gap_id)
+    verdict = str(state.status)
+    if state.reason:
+        verdict += f": {state.reason}"
+    if state.gap_id:
+        verdict += f" [{state.gap_id}]"
+    lines = [f"{state.scenario_id}: {error}", f"before this the run was {verdict}"]
+    if state.diff:
+        lines.append(state.diff)
+    state.fail(REASON_ERROR, "\n".join(lines), state.detail)
+    return (state.status, state.reason, state.gap_id) != before
+
+
 def _identify(state: _Run) -> None:
     """The execution id and, for a scenario that reached the adapter, the
-    source identity. A ``passed`` run needs both."""
+    source identity. A ``passed`` run needs both. The build key, the
+    execution id and the source identity each fail through
+    ``_finalization_error`` under ``build_key_error``, ``execution_id_error``
+    and ``source_identity_error``. A build key that cannot be read leaves the
+    run without an execution id: an id made without it would name no
+    build."""
     s, adapter = state.scenario, state.adapter
     version = state.baseline.version if state.baseline is not None else None
+    build_key, build_key_read = None, True
+    if state.name != _results.UNIKIX:
+        try:
+            hook = getattr(adapter, "build_key", None)
+            build_key = hook(s) if callable(hook) else None
+        except Exception as exc:
+            build_key_read = False
+            _finalization_error(state, "build_key_error", "its build key cannot be read", exc)
     try:
         if state.name == _results.UNIKIX:
             supplied = getattr(adapter, "execution_id", None)
             if supplied is not None:
                 state.execution_id = _results.execution_id(state.name, s, supplied=supplied)
-        else:
-            build_key = None
-            hook = getattr(adapter, "build_key", None)
-            if callable(hook):
-                try:
-                    build_key = hook(s)
-                except Exception as exc:
-                    state.note("build_key_error", f"build key unavailable: {type(exc).__name__}: {exc}")
+        elif build_key_read:
             commit = git_head()
             state.execution_id = _results.execution_id(
                 state.name, s, version, build_key, None if commit == "unknown" else commit
             )
     except Exception as exc:
-        state.note("execution_id_error", f"execution id unavailable: {type(exc).__name__}: {exc}")
+        _finalization_error(state, "execution_id_error", "its execution id cannot be made", exc)
     if state.workdir is None:
         # Nothing reached the adapter: no sources ran, so there is no identity.
         return
@@ -662,7 +863,7 @@ def _identify(state: _Run) -> None:
         hook = getattr(adapter, "source_identity", None)
         state.identity = hook(s) if callable(hook) else _results.source_identity(s, state.name)
     except Exception as exc:
-        state.note("source_identity_error", f"source identity unavailable: {type(exc).__name__}: {exc}")
+        _finalization_error(state, "source_identity_error", "its source identity cannot be derived", exc)
 
 
 def _build(state: _Run, decoded: Any, identity: Any) -> dict:
@@ -681,15 +882,16 @@ def _build(state: _Run, decoded: Any, identity: Any) -> dict:
 
 
 def _record(state: _Run) -> dict | None:
-    """The result record. A record the contract refuses (a passed run
-    without its execution evidence, a decoded outcome holding an absolute
-    path) turns the run into ``failing``/``error`` with a record of that,
-    without the refused parts."""
+    """The result record of the run as it now stands. A record the contract
+    refuses (a passed run without its execution evidence, a decoded outcome
+    holding an absolute path) goes through ``_finalization_error`` under
+    ``record_error``, which makes the run ``failing``/``error`` unless its
+    timeout stands, and the record is built again from that verdict without
+    the refused parts."""
     try:
         return _build(state, state.projection, state.identity)
     except Exception as exc:
-        state.runtime["record_error"] = _traceback(exc)
-        state.fail(REASON_ERROR, f"{state.scenario_id}: the result record is refused: {exc}", state.detail)
+        _finalization_error(state, "record_error", "the result record is refused", exc)
     try:
         return _build(state, None, None)
     except Exception as exc:
@@ -699,20 +901,19 @@ def _record(state: _Run) -> dict | None:
 
 def _evidence(state: _Run, record: dict | None) -> dict | None:
     """Hand the record to the adapter's evidence writer, when it has one. A
-    writer that fails turns the run into ``failing``/``error``."""
+    writer that fails goes through ``_finalization_error`` under
+    ``evidence_error``: the run becomes ``failing``/``error`` and its record
+    is built again for that verdict. A timeout that stands, or a run that was
+    already ``failing``/``error``, keeps the record it has."""
     writer = getattr(state.adapter, "write_evidence", None)
     if record is None or not callable(writer):
         return record
     try:
         path = writer(state.scenario, record)
     except Exception as exc:
-        state.runtime["evidence_error"] = _traceback(exc)
-        state.fail(REASON_ERROR, f"{state.scenario_id}: its evidence cannot be written: {exc}", state.detail)
-        try:
-            return _build(state, None, None)
-        except Exception as rebuild:
-            state.note("record_unbuilt", f"no result record could be built: {type(rebuild).__name__}: {rebuild}")
-            return None
+        if _finalization_error(state, "evidence_error", "its evidence cannot be written", exc):
+            return _record(state)
+        return record
     if path is not None:
         state.runtime["evidence"] = str(path)
     return record
@@ -720,7 +921,15 @@ def _evidence(state: _Run, record: dict | None) -> dict | None:
 
 def _dispose(state: _Run) -> Path | None:
     """Keep the working directory of a ``failing`` run (CI uploads it);
-    remove every other. Returns the kept directory."""
+    remove every other. Returns the kept directory. A directory that cannot
+    be removed is kept and returned, and goes through
+    ``_finalization_error`` under ``workdir_error``, so the run is
+    ``failing``/``error`` rather than ``passed`` with its data left
+    behind. A ``FileNotFoundError`` counts as removal only when nothing,
+    not even a dangling symbolic link, is left at the directory's path (an
+    adapter's ``cleanup`` may have removed it); one raised for an entry
+    that vanished while ``rmtree`` ran stops the removal part-way, and the
+    directory left is kept like any other."""
     workdir = state.workdir
     if workdir is None:
         return None
@@ -728,16 +937,31 @@ def _dispose(state: _Run) -> Path | None:
         return workdir
     try:
         shutil.rmtree(workdir)
-    except FileNotFoundError:
-        pass
     except OSError as exc:
-        state.note("workdir_error", f"working directory {workdir} not removed: {exc}")
+        if isinstance(exc, FileNotFoundError) and _absent(workdir):
+            return None
+        _finalization_error(state, "workdir_error", "its working directory cannot be removed", exc)
+        return workdir
     return None
+
+
+def _absent(path: Path) -> bool:
+    """Whether nothing at all is at ``path``: a dangling symbolic link there
+    is something, and a path that cannot be examined is not absent."""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
 
 
 def _write_runtime(state: _Run, kept: Path | None) -> None:
     """``tests/reports/runtime/<id>.yaml``: the run's elapsed time, kept
-    working directory and error details, which stay out of the record."""
+    working directory and error details, which stay out of the record: the
+    ``diff`` and ``detail`` a failing run reports, and the tracebacks. A
+    ``failing`` run's detail names this file."""
     data: dict[str, Any] = {
         "scenario_id": state.scenario_id,
         "adapter": state.name,
@@ -745,6 +969,7 @@ def _write_runtime(state: _Run, kept: Path | None) -> None:
         "reason": state.reason,
         "gap_id": state.gap_id,
         "elapsed_s": round(time.monotonic() - state.started, 3),
+        "diff": state.diff or None,
         "detail": state.detail or None,
         "workdir": str(kept) if kept is not None else None,
         "elapsed_execute_s": state.result.elapsed_s if state.result is not None else None,
@@ -763,8 +988,11 @@ def _write_runtime(state: _Run, kept: Path | None) -> None:
 
 
 def _write_environment_once(state: _Run) -> None:
-    """Write the adapter's ``environment()`` after its first run of the
-    session."""
+    """Write the adapter's ``environment()`` after the adapter's first run of
+    the session that collects and writes it; a ``None`` result or a failure is
+    retried by the next run. A failure is a note, a ``RuntimeWarning`` and the
+    runtime file's ``environment_error`` traceback, and never changes the
+    run's status."""
     adapter = state.adapter
     hook = getattr(adapter, "environment", None)
     if not callable(hook):
@@ -773,15 +1001,23 @@ def _write_environment_once(state: _Run) -> None:
         try:
             if adapter in _ENVIRONMENT_WRITTEN:
                 return
-            _ENVIRONMENT_WRITTEN.add(adapter)
         except TypeError:
             # An adapter that cannot be weakly referenced is written every run.
             pass
         try:
             environment = hook()
-            if environment is not None:
-                _results.write_environment(environment)
+            if environment is None:
+                # Not collected yet: the adapter's next run is asked again.
+                return
+            _results.write_environment(environment)
         except Exception as exc:
             message = f"environment not written: {type(exc).__name__}: {exc}"
+            state.runtime["environment_error"] = _traceback(exc)
             state.notes.append(message)
             warnings.warn(f"{state.name}: {message}", RuntimeWarning, stacklevel=3)
+            return
+        try:
+            _ENVIRONMENT_WRITTEN.add(adapter)
+        except TypeError:
+            # Not weakly referenceable, as above: it is written every run.
+            pass

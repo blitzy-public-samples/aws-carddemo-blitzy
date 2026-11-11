@@ -75,6 +75,7 @@ __all__ = [
     "DEFAULT_DEADLINE_S",
     "GAP_ID_RE",
     "REGION_FILES",
+    "REJECTS_DATASET",
     "SCREENS",
     "SCREEN_COLS",
     "SCREEN_MAP",
@@ -128,6 +129,12 @@ TDQ_RECORD_LENGTH = 80
 # matches by prefix, as in "@AIX:*".
 BUSINESS_DATASETS = "@DATASETS"
 SCREENS = "@SCREENS"
+
+# The logical dataset whose records carry the CBTRN02C reject reason codes
+# that expected.reject_reason_codes asserts (harness/baselines.py reads them
+# from it), so asserting reject codes needs this observation even when a
+# scenario names no DALYREJS of its own.
+REJECTS_DATASET = "DALYREJS"
 
 CATALOG_TYPES = ("CLUSTER", "AIX", "PATH", "GDG", "GENERATION", "NONVSAM")
 
@@ -424,7 +431,9 @@ def observation_matches(key: str, patterns: Iterable[str]) -> bool:
 def required_observations(expected: Mapping[str, Any] | Any) -> set[str]:
     """The observations a scenario's ``expected`` section needs: the keys of
     ``expected.datasets`` and ``expected.file_state``, plus ``SCREENS`` when
-    ``expected.screens`` is non-empty.
+    ``expected.screens`` is non-empty, plus ``REJECTS_DATASET`` whenever
+    ``expected`` has a ``reject_reason_codes`` key (a list, an empty list or
+    ``'baseline'``), because the reason codes are read from its records.
 
     ``expected`` is the section itself or a scenario carrying it as
     ``.expected``. The runner's observation rule checks each name with
@@ -443,6 +452,8 @@ def required_observations(expected: Mapping[str, Any] | Any) -> set[str]:
             names.update(str(name) for name in value)
     if expected.get("screens"):
         names.add(SCREENS)
+    if "reject_reason_codes" in expected:
+        names.add(REJECTS_DATASET)
     return names
 
 

@@ -220,7 +220,7 @@ _PROBLEMS_PER_KEY = 20
 # The DALYREJS reason: the 4 bytes CBTRN02C moves from its PIC 9(04)
 # WS-VALIDATION-FAIL-REASON [app/cbl/CBTRN02C.cbl:180-182,446-451]. They are
 # read as text, because the decoded number would drop the leading zero.
-REJECTS_DATASET = "DALYREJS"
+REJECTS_DATASET = _base.REJECTS_DATASET
 REJECT_LAYOUT = "CBTRN02C/REJECT-RECORD"
 REJECT_REASON_FIELD = "WS-VALIDATION-FAIL-REASON"
 
